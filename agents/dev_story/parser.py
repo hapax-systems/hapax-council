@@ -27,6 +27,34 @@ class ParsedSession:
     file_changes: list[FileChange] = field(default_factory=list)
 
 
+def discover_archived_sessions(archive_dir: Path) -> list[Path]:
+    """Find JSONL session files in archived conversation directories.
+
+    Expects a structure like:
+        archive_dir/
+            ai-agents-conversations/
+                session1.jsonl
+                session2.jsonl
+            hapaxromana-conversations/
+                session3.jsonl
+
+    Returns:
+        Sorted list of JSONL file paths.
+    """
+    results: list[Path] = []
+    if not archive_dir.is_dir():
+        log.warning("Archive directory not found: %s", archive_dir)
+        return results
+
+    for subdir in sorted(archive_dir.iterdir()):
+        if not subdir.is_dir():
+            continue
+        for jsonl_file in sorted(subdir.glob("*.jsonl")):
+            results.append(jsonl_file)
+
+    return results
+
+
 def extract_project_path(encoded: str) -> str:
     """Decode Claude Code's project directory encoding.
 

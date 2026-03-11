@@ -56,12 +56,14 @@ class Commit(BaseModel):
     files_changed: int = 0
     insertions: int = 0
     deletions: int = 0
+    source_repo: str | None = None
 
 
 class CommitFile(BaseModel):
     commit_hash: str
     file_path: str
     operation: str  # A | M | D
+    source_repo: str | None = None
 
 
 class Correlation(BaseModel):

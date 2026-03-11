@@ -20,12 +20,31 @@ from agents.dev_story.critical_moments import (
     detect_high_token_sessions,
     detect_wrong_path_moments,
 )
-from agents.dev_story.git_extractor import extract_commits
+from agents.dev_story.git_extractor import (
+    discover_bundles,
+    extract_commits,
+    extract_commits_from_bundle,
+)
 from agents.dev_story.models import CommitFile, FileChange
-from agents.dev_story.parser import extract_project_path, parse_session
+from agents.dev_story.parser import (
+    discover_archived_sessions,
+    extract_project_path,
+    parse_session,
+)
 from agents.dev_story.phase_detector import detect_phase_sequence
 
 log = logging.getLogger(__name__)
+
+# Default paths for external history sources (configurable via env vars)
+import os
+
+BUNDLES_DIR = Path(os.environ.get("DEV_STORY_BUNDLES_DIR", os.path.expanduser("~/backups")))
+CONVERSATIONS_ARCHIVE_DIR = Path(
+    os.environ.get(
+        "DEV_STORY_CONVERSATIONS_ARCHIVE_DIR",
+        os.path.expanduser("~/backups/claude-conversations"),
+    )
+)
 
 
 @dataclass
@@ -168,15 +187,18 @@ def index_session(conn: sqlite3.Connection, sf: SessionFile) -> None:
     conn.commit()
 
 
-def index_git(conn: sqlite3.Connection, repo_path: str, since: str | None = None) -> None:
-    """Extract and insert git history for a repository."""
-    commits, commit_files = extract_commits(repo_path, since=since)
-
+def _insert_commits(
+    conn: sqlite3.Connection,
+    commits: list,
+    commit_files: list,
+    source_label: str,
+) -> None:
+    """Insert commits and commit_files into the database."""
     for c in commits:
         conn.execute(
             """INSERT OR IGNORE INTO commits
-               (hash, author_date, message, branch, files_changed, insertions, deletions)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (hash, author_date, message, branch, files_changed, insertions, deletions, source_repo)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 c.hash,
                 c.author_date,
@@ -185,19 +207,55 @@ def index_git(conn: sqlite3.Connection, repo_path: str, since: str | None = None
                 c.files_changed,
                 c.insertions,
                 c.deletions,
+                c.source_repo,
             ),
         )
 
     for cf in commit_files:
         conn.execute(
-            "INSERT OR IGNORE INTO commit_files (commit_hash, file_path, operation) VALUES (?, ?, ?)",
-            (cf.commit_hash, cf.file_path, cf.operation),
+            """INSERT OR IGNORE INTO commit_files
+               (commit_hash, file_path, operation, source_repo)
+               VALUES (?, ?, ?, ?)""",
+            (cf.commit_hash, cf.file_path, cf.operation, cf.source_repo),
         )
 
     conn.commit()
     log.info(
-        "Indexed %d commits, %d file records from %s", len(commits), len(commit_files), repo_path
+        "Indexed %d commits, %d file records from %s",
+        len(commits),
+        len(commit_files),
+        source_label,
     )
+
+
+def index_git(conn: sqlite3.Connection, repo_path: str, since: str | None = None) -> None:
+    """Extract and insert git history for a repository."""
+    commits, commit_files = extract_commits(repo_path, since=since)
+    _insert_commits(conn, commits, commit_files, repo_path)
+
+
+def index_bundles(conn: sqlite3.Connection, bundles_dir: Path) -> int:
+    """Discover and index git bundles from a directory.
+
+    Returns:
+        Total number of commits indexed from bundles.
+    """
+    bundles = discover_bundles(bundles_dir)
+    if not bundles:
+        log.info("No bundles found in %s", bundles_dir)
+        return 0
+
+    total = 0
+    for bundle_path, repo_name in bundles:
+        try:
+            commits, commit_files = extract_commits_from_bundle(bundle_path, repo_name)
+            _insert_commits(conn, commits, commit_files, f"bundle:{repo_name}")
+            total += len(commits)
+        except Exception:
+            log.exception("Failed to index bundle %s", bundle_path)
+
+    log.info("Indexed %d total commits from %d bundles", total, len(bundles))
+    return total
 
 
 def run_correlations(conn: sqlite3.Connection) -> int:
@@ -403,6 +461,31 @@ def _compute_critical_moments(conn: sqlite3.Connection) -> int:
     return inserted
 
 
+def _discover_archived_session_files(archive_dir: Path) -> list[SessionFile]:
+    """Convert archived conversation JSONL files into SessionFile entries."""
+    archived_paths = discover_archived_sessions(archive_dir)
+    results: list[SessionFile] = []
+    for jsonl_path in archived_paths:
+        # Archived conversations live in dirs like 'ai-agents-conversations/'
+        # The parent dir name encodes the source project
+        parent_name = jsonl_path.parent.name  # e.g. 'ai-agents-conversations'
+        # Strip '-conversations' suffix to get project name
+        project_name = parent_name
+        if project_name.endswith("-conversations"):
+            project_name = project_name[: -len("-conversations")]
+        # Use the parent dir name as the encoded project path
+        # (these are archived, so the real project path may not exist)
+        results.append(
+            SessionFile(
+                path=jsonl_path,
+                session_id=jsonl_path.stem,
+                project_path=f"(archived)/{project_name}",
+                project_encoded=parent_name,
+            )
+        )
+    return results
+
+
 def full_index(db_path: str, claude_projects_dir: Path) -> dict:
     """Run the full indexing pipeline.
 
@@ -414,9 +497,15 @@ def full_index(db_path: str, claude_projects_dir: Path) -> dict:
     conn = open_db(db_path)
     stats = {"sessions_indexed": 0, "commits_indexed": 0, "correlations_created": 0}
 
-    # 1. Discover and index sessions
+    # 1. Discover and index sessions (current + archived)
     session_files = discover_sessions(claude_projects_dir)
-    log.info("Discovered %d session files", len(session_files))
+    log.info("Discovered %d current session files", len(session_files))
+
+    # Also discover archived conversation sessions
+    archived_session_files = _discover_archived_session_files(CONVERSATIONS_ARCHIVE_DIR)
+    if archived_session_files:
+        log.info("Discovered %d archived session files", len(archived_session_files))
+        session_files.extend(archived_session_files)
 
     # Track unique project paths for git extraction
     project_paths: set[str] = set()
@@ -429,26 +518,36 @@ def full_index(db_path: str, claude_projects_dir: Path) -> dict:
         except Exception:
             log.exception("Failed to index session %s", sf.session_id)
 
-    # 2. Index git history for each project
+    # 2. Index git history for each project (current repos only)
     for project_path in sorted(project_paths):
         if Path(project_path).is_dir() and (Path(project_path) / ".git").exists():
             try:
                 index_git(conn, project_path)
-                cursor = conn.execute("SELECT COUNT(*) FROM commits")
+                cursor = conn.execute("SELECT COUNT(*) FROM commits WHERE source_repo IS NULL")
                 stats["commits_indexed"] = cursor.fetchone()[0]
             except Exception:
                 log.exception("Failed to index git for %s", project_path)
 
-    # 3. Run correlations
+    # 3. Index git bundles (archived repo histories)
+    if BUNDLES_DIR.is_dir():
+        stats["bundle_commits_indexed"] = index_bundles(conn, BUNDLES_DIR)
+    else:
+        stats["bundle_commits_indexed"] = 0
+
+    # Update total commit count
+    cursor = conn.execute("SELECT COUNT(*) FROM commits")
+    stats["commits_indexed"] = cursor.fetchone()[0]
+
+    # 4. Run correlations
     stats["correlations_created"] = run_correlations(conn)
 
-    # 4. Compute session metrics (phase detection + tool aggregation)
+    # 5. Compute session metrics (phase detection + tool aggregation)
     stats["sessions_with_metrics"] = _compute_session_metrics(conn)
 
-    # 5. Compute session tags (classification across dimensions)
+    # 6. Compute session tags (classification across dimensions)
     stats["sessions_with_tags"] = _compute_session_tags(conn)
 
-    # 6. Detect critical moments (churn + wrong-path patterns)
+    # 7. Detect critical moments (churn + wrong-path patterns)
     stats["critical_moments"] = _compute_critical_moments(conn)
 
     # Store index timestamp
