@@ -1,0 +1,205 @@
+axiom_id: single_user
+derived_at: '2026-03-03'
+model: balanced
+derivation_version: 1
+implications:
+- id: su-auth-001
+  tier: T0
+  text: All authentication, authorization, and user management code must be removed
+    or disabled since there is exactly one authorized user.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: component
+- id: su-config-001
+  tier: T1
+  text: Configuration files should hardcode the operator's preferences rather than providing
+    generic defaults or multi-user options.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: su-data-001
+  tier: T1
+  text: All data storage can assume single-user ownership without access control,
+    permissions checks, or data isolation.
+  enforcement: review
+  canon: textualist
+  mode: compatibility
+  level: component
+- id: su-privacy-001
+  tier: T0
+  text: Privacy controls, data anonymization, and consent mechanisms are unnecessary
+    since the user is also the developer.
+  enforcement: block
+  canon: purposivist
+  mode: compatibility
+  level: component
+- id: su-error-001
+  tier: T2
+  text: Error messages can include sensitive debugging information since only the operator
+    will see them.
+  enforcement: warn
+  canon: purposivist
+  mode: compatibility
+  level: component
+- id: su-logging-001
+  tier: T2
+  text: Logging can be more verbose and include personal details since logs are private
+    to the operator.
+  enforcement: warn
+  canon: purposivist
+  mode: compatibility
+  level: component
+- id: su-ui-001
+  tier: T1
+  text: User interfaces should optimize for the operator's specific workflows rather than
+    general usability patterns.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+- id: su-naming-001
+  tier: T3
+  text: Code comments and variable names can reference the operator's personal context without
+    explanation.
+  enforcement: lint
+  canon: purposivist
+  mode: compatibility
+  level: component
+- id: su-security-001
+  tier: T0
+  text: Multi-tenant security measures, rate limiting per user, and user input validation
+    for malicious intent are unnecessary.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: component
+- id: su-scale-001
+  tier: T1
+  text: Performance optimizations should target single-user load patterns rather than
+    concurrent multi-user scenarios.
+  enforcement: review
+  canon: purposivist
+  mode: compatibility
+  level: component
+- id: su-api-001
+  tier: T1
+  text: API endpoints can assume trusted caller and skip user verification, quotas,
+    and abuse prevention.
+  enforcement: review
+  canon: textualist
+  mode: compatibility
+  level: component
+- id: su-storage-001
+  tier: T2
+  text: File paths, database schemas, and data structures can use operator-specific identifiers
+    without generalization.
+  enforcement: warn
+  canon: purposivist
+  mode: compatibility
+  level: component
+- id: su-notification-001
+  tier: T2
+  text: All notifications, alerts, and communications can be addressed directly to
+    the operator without user preference systems.
+  enforcement: warn
+  canon: textualist
+  mode: compatibility
+  level: component
+- id: su-deployment-001
+  tier: T1
+  text: Deployment and infrastructure should optimize for single-instance usage rather
+    than multi-tenant architecture.
+  enforcement: review
+  canon: purposivist
+  mode: compatibility
+  level: subsystem
+- id: su-perf-001
+  tier: T2
+  text: Performance optimizations should prioritize single-user workflows over multi-user
+    scalability concerns.
+  enforcement: warn
+  canon: purposivist
+  mode: compatibility
+  level: component
+- id: su-audit-001
+  tier: T2
+  text: Audit logs and monitoring can omit user identification fields since all activity
+    is attributed to the operator by definition.
+  enforcement: warn
+  canon: purposivist
+  mode: compatibility
+  level: component
+- id: su-deploy-001
+  tier: T1
+  text: Deployment and infrastructure configuration must assume single-user access
+    patterns and can skip multi-tenancy considerations.
+  enforcement: review
+  canon: purposivist
+  mode: compatibility
+  level: subsystem
+- id: su-feature-001
+  tier: T0
+  text: Features for user collaboration, sharing between users, or multi-user coordination
+    must not be developed.
+  enforcement: block
+  canon: absurdity
+  mode: compatibility
+  level: component
+- id: su-decision-001
+  tier: T1
+  text: All architectural and design decisions must be evaluated primarily for how
+    they serve the operator's specific needs rather than generalized user bases.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: system
+- id: su-paths-001
+  tier: T2
+  text: File paths and database queries must not dynamically construct user-specific
+    paths or apply user-based filters.
+  enforcement: warn
+  canon: textualist
+  mode: compatibility
+  level: component
+- id: su-scaling-001
+  tier: T1
+  text: System architecture must not include user-based load balancing, user sharding,
+    or per-user scaling mechanisms.
+  enforcement: review
+  canon: purposivist
+  mode: compatibility
+  level: subsystem
+- id: su-cache-001
+  tier: T2
+  text: Caching strategies must not implement user-specific cache keys or user-scoped
+    cache invalidation patterns.
+  enforcement: warn
+  canon: textualist
+  mode: compatibility
+  level: component
+- id: su-admin-001
+  tier: T0
+  text: Administrative interfaces, user management UIs, or role assignment systems
+    must not exist since the single user is the admin by default.
+  enforcement: block
+  canon: absurdity
+  mode: compatibility
+  level: component
+- id: su-notify-001
+  tier: T2
+  text: Notification systems in shared/notify.py must not support user-specific notification
+    preferences or multi-user delivery mechanisms.
+  enforcement: warn
+  canon: textualist
+  mode: compatibility
+  level: component
+- id: su-agents-001
+  tier: T1
+  text: AI agents must not implement user context switching, user permission checking,
+    or user-specific behavior customization.
+  enforcement: review
+  canon: purposivist
+  mode: compatibility
+  level: component

@@ -1,0 +1,71 @@
+# axioms/precedents/seed/management-seeds.yaml
+# Retroactive precedents from management tooling implementation.
+# These document existing compliant implementations as operator-authority precedents.
+
+precedents:
+  - id: sp-mgmt-001
+    axiom_id: management_governance
+    situation: "management_prep.py enforces CRITICAL BOUNDARIES in system prompt — no feedback drafting, no coaching recs, no language suggestions"
+    decision: compliant
+    reasoning: >
+      The management prep agent explicitly blocks itself from generating
+      feedback language, coaching hypotheses, or recommendations about
+      individual team members via prompt-level CRITICAL BOUNDARIES. This
+      directly enforces mg-boundary-001 and mg-boundary-002.
+    tier: T0
+    distinguishing_facts:
+      - "CRITICAL BOUNDARIES in system prompt text"
+      - "Output schema has no feedback/recommendation fields"
+      - "Prep focuses on signal aggregation only"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-mgmt-002
+    axiom_id: management_governance
+    situation: "cockpit/data/management.py collects all management state deterministically — zero LLM calls for PersonState, CoachingState, FeedbackState"
+    decision: compliant
+    reasoning: >
+      Management data collection uses pure filesystem reads and frontmatter
+      parsing. No model is loaded or invoked. The ManagementSnapshot is built
+      entirely from vault files and dates, making it reproducible and auditable.
+    tier: T1
+    distinguishing_facts:
+      - "No import of get_model or Agent in management.py"
+      - "All data from Path reads and YAML frontmatter"
+      - "Deterministic output from same vault state"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-mgmt-003
+    axiom_id: management_governance
+    situation: "Cognitive load in person notes comes from operator self-report frontmatter field, not LLM inference"
+    decision: compliant
+    reasoning: >
+      The cognitive-load property in person note frontmatter is set manually
+      by the operator. Management data collection reads this value as-is.
+      No system component attempts to infer or predict cognitive load from
+      other signals — the operator's assessment is authoritative.
+    tier: T1
+    distinguishing_facts:
+      - "cognitive-load is a frontmatter property set by operator"
+      - "management.py reads, never writes cognitive-load"
+      - "No inference or prediction of load values"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-mgmt-004
+    axiom_id: management_governance
+    situation: "Bridge zone (32-bridge/) separates work-specific employer-provided LLM tools prompts from home system"
+    decision: compliant
+    reasoning: >
+      Work data requiring corporate LLM tools stays in the bridge zone.
+      Home-only features (chat, RAG search, agent commands) require localhost
+      access. The Zscaler boundary is bridged by Obsidian Sync for notes,
+      but system tooling remains home-only.
+    tier: T1
+    distinguishing_facts:
+      - "32-bridge/ folder in vault with explicit data boundary guides"
+      - "Home features require localhost:4000 (LiteLLM)"
+      - "No work PII in home system agent outputs"
+    created: "2026-03-03"
+    authority: operator

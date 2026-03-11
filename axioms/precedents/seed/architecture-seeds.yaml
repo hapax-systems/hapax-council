@@ -1,0 +1,161 @@
+# axioms/precedents/seed/architecture-seeds.yaml
+# Retroactive precedents from documented architectural decisions.
+# These record decisions already made and validated in practice.
+
+precedents:
+  - id: sp-arch-001
+    axiom_id: single_user
+    situation: "All LLM calls routed through LiteLLM proxy at localhost:4000"
+    decision: compliant
+    reasoning: >
+      Single gateway for all model access. No per-user API key management,
+      no user-scoped rate limiting, no multi-tenant routing. The proxy serves
+      exactly one operator.
+    tier: T1
+    distinguishing_facts:
+      - "Single gateway, single operator"
+      - "No user-based routing or quotas"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-arch-002
+    axiom_id: single_user
+    situation: "Single Docker Compose stack for all infrastructure"
+    decision: compliant
+    reasoning: >
+      One docker-compose.yml, no multi-instance orchestration, no k8s, no
+      per-user container isolation. All services share a single network with
+      ports bound to 127.0.0.1.
+    tier: T1
+    distinguishing_facts:
+      - "Single-instance architecture"
+      - "No multi-tenant container isolation"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-arch-003
+    axiom_id: single_user
+    situation: "Secrets managed via pass + GPG + direnv auto-loading"
+    decision: compliant
+    reasoning: >
+      Single GPG key, single pass store. No multi-user vault, no key sharing,
+      no access control lists. direnv auto-loads per-project secrets for the
+      single user.
+    tier: T1
+    distinguishing_facts:
+      - "Single GPG identity"
+      - "No multi-user secret management"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-arch-004
+    axiom_id: single_user
+    situation: "Obsidian Sync for knowledge base synchronization"
+    decision: compliant
+    reasoning: >
+      E2E encrypted sync between operator's personal devices only. No shared
+      vaults, no collaborative editing, no multi-user access. vault_writer.py
+      writes system output to operator's vault.
+    tier: T2
+    distinguishing_facts:
+      - "Single-user vault sync"
+      - "No collaborative features used"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-arch-005
+    axiom_id: single_user
+    situation: "Takeout dual-path processor with zero-LLM structured facts"
+    decision: compliant
+    reasoning: >
+      Processes a single user's Google Takeout data. Structured path maps
+      directly to ProfileFact for one operator. No multi-user data isolation,
+      no anonymization. Leverages single-user assumption for deterministic
+      fact extraction (zero LLM cost).
+    tier: T1
+    distinguishing_facts:
+      - "Single user's personal data"
+      - "No multi-user data isolation needed"
+      - "Zero-LLM cost leverages single-user assumption"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-arch-006
+    axiom_id: executive_function
+    situation: "Flat orchestration — Claude Code hub, agents never invoke each other"
+    decision: compliant
+    reasoning: >
+      Reduces cognitive complexity of the agent system. Operator only needs
+      to understand one control surface (Claude Code). No hidden agent-to-agent
+      call chains to debug. Execution paths are always visible.
+    tier: T1
+    distinguishing_facts:
+      - "Single orchestration point"
+      - "No hidden inter-agent dependencies"
+      - "Reduces debugging cognitive load"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-arch-007
+    axiom_id: executive_function
+    situation: "ntfy push notifications for all critical alerts"
+    decision: compliant
+    reasoning: >
+      Proactive delivery to mobile device. Operator doesn't need to check
+      dashboards or logs. Health monitor failures, briefing completion, and
+      agent errors all push via ntfy. Addresses ex-attention-001.
+    tier: T0
+    distinguishing_facts:
+      - "Proactive push, not pull"
+      - "Critical alerts delivered externally"
+      - "No log monitoring required"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-arch-008
+    axiom_id: executive_function
+    situation: "All recurring agents scheduled via systemd user timers"
+    decision: compliant
+    reasoning: >
+      Every agent that should run periodically has a systemd timer. No manual
+      cron management, no remembering to trigger tasks. Timer failures
+      trigger notify-failure@.service for proactive alerting.
+    tier: T0
+    distinguishing_facts:
+      - "Fully automated scheduling"
+      - "Failure notification built in"
+      - "Zero operator initiation required"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-arch-009
+    axiom_id: executive_function
+    situation: "Nudge system with observational framing (not judgmental)"
+    decision: compliant
+    reasoning: >
+      Nudges surface stalled work as system design signals, not operator
+      failures. Framing respects neurocognitive profile. ActionItemsList
+      is the single attention surface. Copilot line is observational only.
+    tier: T1
+    distinguishing_facts:
+      - "Observational, not judgmental framing"
+      - "System design signal, not personal failure"
+      - "Single attention surface"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-arch-010
+    axiom_id: executive_function
+    situation: "RAG retry queue with automatic exponential backoff"
+    decision: compliant
+    reasoning: >
+      Failed ingestion retries automatically (30s→2m→10m→1h→1h, 5 max).
+      Operator doesn't need to diagnose or manually re-trigger failed
+      ingestions. Auto-recovery addresses ex-error-006.
+    tier: T1
+    distinguishing_facts:
+      - "Automatic retry without operator intervention"
+      - "Graceful degradation with backoff"
+      - "Status visible via --retry-status flag"
+    created: "2026-03-03"
+    authority: operator
