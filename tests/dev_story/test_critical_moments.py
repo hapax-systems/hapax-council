@@ -38,7 +38,10 @@ def _seed_churn_data(conn: sqlite3.Connection) -> None:
             (hash_val, date, msg, dels),
         )
         op = "A" if i == 0 else "M"
-        conn.execute("INSERT INTO commit_files (commit_hash, file_path, operation) VALUES (?, 'widget.py', ?)", (hash_val, op))
+        conn.execute(
+            "INSERT INTO commit_files (commit_hash, file_path, operation) VALUES (?, 'widget.py', ?)",
+            (hash_val, op),
+        )
     conn.execute("INSERT INTO correlations VALUES (1, 'm1', 'c0', 0.9, 'file_and_timestamp')")
     conn.commit()
 
