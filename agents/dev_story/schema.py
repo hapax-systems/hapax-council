@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -59,13 +59,15 @@ CREATE TABLE IF NOT EXISTS commits (
     branch TEXT,
     files_changed INTEGER DEFAULT 0,
     insertions INTEGER DEFAULT 0,
-    deletions INTEGER DEFAULT 0
+    deletions INTEGER DEFAULT 0,
+    source_repo TEXT
 );
 
 CREATE TABLE IF NOT EXISTS commit_files (
     commit_hash TEXT NOT NULL REFERENCES commits(hash),
     file_path TEXT NOT NULL,
     operation TEXT NOT NULL,
+    source_repo TEXT,
     PRIMARY KEY (commit_hash, file_path)
 );
 
@@ -143,9 +145,30 @@ CREATE INDEX IF NOT EXISTS idx_critical_moments_type ON critical_moments(moment_
 """
 
 
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """Add source_repo columns to commits and commit_files tables."""
+    # Check if source_repo column already exists (idempotent)
+    cursor = conn.execute("PRAGMA table_info(commits)")
+    columns = {row[1] for row in cursor.fetchall()}
+    if "source_repo" not in columns:
+        conn.execute("ALTER TABLE commits ADD COLUMN source_repo TEXT")
+    cursor = conn.execute("PRAGMA table_info(commit_files)")
+    columns = {row[1] for row in cursor.fetchall()}
+    if "source_repo" not in columns:
+        conn.execute("ALTER TABLE commit_files ADD COLUMN source_repo TEXT")
+
+
 def create_tables(conn: sqlite3.Connection) -> None:
     """Create all tables and indexes. Idempotent."""
     conn.executescript(_DDL)
+
+    # Run migrations for existing databases
+    cursor = conn.execute("SELECT value FROM index_state WHERE key = 'schema_version'")
+    row = cursor.fetchone()
+    old_version = int(row[0]) if row else 0
+    if old_version < 2:
+        _migrate_v1_to_v2(conn)
+
     conn.execute(
         "INSERT OR REPLACE INTO index_state (key, value) VALUES ('schema_version', ?)",
         (str(SCHEMA_VERSION),),

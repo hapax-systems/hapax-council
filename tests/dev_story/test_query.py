@@ -71,9 +71,11 @@ def test_file_history():
     conn = _make_db()
     _seed_basic_data(conn)
     conn.execute(
-        "INSERT INTO commits VALUES ('c1', '2026-03-01 10:05:00 -0500', 'feat: widget', 'main', 1, 50, 0)"
+        "INSERT INTO commits (hash, author_date, message, branch, files_changed, insertions, deletions) VALUES ('c1', '2026-03-01 10:05:00 -0500', 'feat: widget', 'main', 1, 50, 0)"
     )
-    conn.execute("INSERT INTO commit_files VALUES ('c1', 'widget.py', 'A')")
+    conn.execute(
+        "INSERT INTO commit_files (commit_hash, file_path, operation) VALUES ('c1', 'widget.py', 'A')"
+    )
     conn.execute("INSERT INTO correlations VALUES (1, 'm2', 'c1', 0.9, 'file_and_timestamp')")
     conn.commit()
 

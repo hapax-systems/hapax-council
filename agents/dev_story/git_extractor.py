@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import tempfile
+from pathlib import Path
 
 from agents.dev_story.models import Commit, CommitFile
 
@@ -132,3 +134,69 @@ def extract_commits(
         commits.append(current_commit)
 
     return commits, commit_files
+
+
+def discover_bundles(bundles_dir: Path) -> list[tuple[Path, str]]:
+    """Find .bundle files and derive repo names from filenames.
+
+    Expects filenames like 'ai-agents-history.bundle' -> 'ai-agents'.
+    Strips the '-history' suffix if present.
+
+    Returns:
+        List of (bundle_path, repo_name) tuples.
+    """
+    if not bundles_dir.is_dir():
+        log.warning("Bundles directory not found: %s", bundles_dir)
+        return []
+
+    results: list[tuple[Path, str]] = []
+    for path in sorted(bundles_dir.glob("*.bundle")):
+        name = path.stem  # e.g. 'ai-agents-history'
+        if name.endswith("-history"):
+            name = name[: -len("-history")]
+        results.append((path, name))
+    return results
+
+
+def extract_commits_from_bundle(
+    bundle_path: Path,
+    repo_name: str,
+    since: str | None = None,
+) -> tuple[list[Commit], list[CommitFile]]:
+    """Extract commits from a git bundle file.
+
+    Creates a temporary bare clone from the bundle, extracts commits
+    using the same git log parsing, and sets source_repo on each result.
+
+    Args:
+        bundle_path: Path to the .bundle file.
+        repo_name: Name to set as source_repo on extracted records.
+        since: Only commits after this date (ISO 8601 or relative).
+
+    Returns:
+        Tuple of (commits, commit_files) with source_repo populated.
+    """
+    with tempfile.TemporaryDirectory(prefix=f"dev-story-{repo_name}-") as tmp_dir:
+        clone_path = str(Path(tmp_dir) / "repo")
+
+        # Clone the bundle into a bare repository
+        result = subprocess.run(
+            ["git", "clone", "--bare", str(bundle_path), clone_path],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            log.warning("Failed to clone bundle %s: %s", bundle_path, result.stderr[:200])
+            return [], []
+
+        commits, commit_files = extract_commits(clone_path, since=since)
+
+        # Tag all results with source_repo
+        for commit in commits:
+            commit.source_repo = repo_name
+        for cf in commit_files:
+            cf.source_repo = repo_name
+
+        log.info("Extracted %d commits from bundle %s", len(commits), bundle_path.name)
+        return commits, commit_files

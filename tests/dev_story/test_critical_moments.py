@@ -34,11 +34,14 @@ def _seed_churn_data(conn: sqlite3.Connection) -> None:
         msg = "feat: add widget" if i == 0 else f"fix: rewrite widget v{i}"
         dels = 0 if i == 0 else 30
         conn.execute(
-            "INSERT INTO commits VALUES (?, ?, ?, 'main', 1, 50, ?)",
+            "INSERT INTO commits (hash, author_date, message, branch, files_changed, insertions, deletions) VALUES (?, ?, ?, 'main', 1, 50, ?)",
             (hash_val, date, msg, dels),
         )
         op = "A" if i == 0 else "M"
-        conn.execute("INSERT INTO commit_files VALUES (?, 'widget.py', ?)", (hash_val, op))
+        conn.execute(
+            "INSERT INTO commit_files (commit_hash, file_path, operation) VALUES (?, 'widget.py', ?)",
+            (hash_val, op),
+        )
     conn.execute("INSERT INTO correlations VALUES (1, 'm1', 'c0', 0.9, 'file_and_timestamp')")
     conn.commit()
 
