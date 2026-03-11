@@ -2,16 +2,14 @@
 
 No LLM calls; tests focus on render function output.
 """
+
 from __future__ import annotations
 
-import pytest
 from rich.text import Text
 
-from cockpit.formatters import render_infra_detail
-from cockpit.formatters import render_scout_detail
 from cockpit.data.infrastructure import ContainerStatus
 from cockpit.data.scout import ScoutData, ScoutRecommendation
-
+from cockpit.formatters import render_infra_detail, render_scout_detail
 
 # ── render_infra_detail tests ────────────────────────────────────────────────
 
@@ -26,16 +24,22 @@ def test_render_infra_detail_with_data():
     """Container list renders names and status."""
     containers = [
         ContainerStatus(
-            name="ollama", service="ollama",
-            state="running", health="healthy",
+            name="ollama",
+            service="ollama",
+            state="running",
+            health="healthy",
         ),
         ContainerStatus(
-            name="qdrant", service="qdrant",
-            state="running", health="healthy",
+            name="qdrant",
+            service="qdrant",
+            state="running",
+            health="healthy",
         ),
         ContainerStatus(
-            name="postgres", service="postgres",
-            state="exited", health="",
+            name="postgres",
+            service="postgres",
+            state="exited",
+            health="",
         ),
     ]
     result = render_infra_detail(containers)

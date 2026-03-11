@@ -1,10 +1,8 @@
 """Tests for cockpit.accommodations — negotiated accommodation engine."""
+
 from __future__ import annotations
 
-import json
 from unittest.mock import patch
-
-import pytest
 
 from cockpit.accommodations import (
     Accommodation,
@@ -14,11 +12,10 @@ from cockpit.accommodations import (
     load_accommodations,
     propose_accommodation,
     save_accommodations,
-    _PROPOSALS,
 )
 
-
 # ── propose_accommodation tests ────────────────────────────────────────────
+
 
 def test_propose_time_perception():
     proposals = propose_accommodation("time_perception")
@@ -53,6 +50,7 @@ def test_propose_task_initiation():
 
 # ── AccommodationSet tests ─────────────────────────────────────────────────
 
+
 def test_accommodation_set_defaults():
     acc = AccommodationSet()
     assert acc.time_anchor_enabled is False
@@ -64,18 +62,21 @@ def test_accommodation_set_defaults():
 
 # ── Save/load tests ────────────────────────────────────────────────────────
 
+
 def test_save_and_load(tmp_path):
     path = tmp_path / "accommodations.json"
-    acc = AccommodationSet(accommodations=[
-        Accommodation(
-            id="time_anchor",
-            pattern_category="time_perception",
-            description="Show elapsed time",
-            active=True,
-            proposed_at="2026-03-01T10:00:00Z",
-            confirmed_at="2026-03-01T10:05:00Z",
-        ),
-    ])
+    acc = AccommodationSet(
+        accommodations=[
+            Accommodation(
+                id="time_anchor",
+                pattern_category="time_perception",
+                description="Show elapsed time",
+                active=True,
+                proposed_at="2026-03-01T10:00:00Z",
+                confirmed_at="2026-03-01T10:05:00Z",
+            ),
+        ]
+    )
     with patch("cockpit.accommodations._ACCOMMODATIONS_PATH", path):
         with patch("cockpit.accommodations.PROFILES_DIR", tmp_path):
             save_accommodations(acc)
@@ -104,17 +105,20 @@ def test_load_corrupt_file(tmp_path):
 
 # ── confirm/disable tests ──────────────────────────────────────────────────
 
+
 def test_confirm_accommodation(tmp_path):
     path = tmp_path / "accommodations.json"
-    acc = AccommodationSet(accommodations=[
-        Accommodation(
-            id="soft_framing",
-            pattern_category="demand_sensitivity",
-            description="Use observational framing",
-            active=False,
-            proposed_at="2026-03-01T10:00:00Z",
-        ),
-    ])
+    acc = AccommodationSet(
+        accommodations=[
+            Accommodation(
+                id="soft_framing",
+                pattern_category="demand_sensitivity",
+                description="Use observational framing",
+                active=False,
+                proposed_at="2026-03-01T10:00:00Z",
+            ),
+        ]
+    )
     with patch("cockpit.accommodations._ACCOMMODATIONS_PATH", path):
         with patch("cockpit.accommodations.PROFILES_DIR", tmp_path):
             result = confirm_accommodation(acc, "soft_framing")
@@ -132,16 +136,18 @@ def test_confirm_nonexistent():
 
 def test_disable_accommodation(tmp_path):
     path = tmp_path / "accommodations.json"
-    acc = AccommodationSet(accommodations=[
-        Accommodation(
-            id="time_anchor",
-            pattern_category="time_perception",
-            description="Show elapsed time",
-            active=True,
-            proposed_at="2026-03-01T10:00:00Z",
-            confirmed_at="2026-03-01T10:05:00Z",
-        ),
-    ])
+    acc = AccommodationSet(
+        accommodations=[
+            Accommodation(
+                id="time_anchor",
+                pattern_category="time_perception",
+                description="Show elapsed time",
+                active=True,
+                proposed_at="2026-03-01T10:00:00Z",
+                confirmed_at="2026-03-01T10:05:00Z",
+            ),
+        ]
+    )
     with patch("cockpit.accommodations._ACCOMMODATIONS_PATH", path):
         with patch("cockpit.accommodations.PROFILES_DIR", tmp_path):
             result = disable_accommodation(acc, "time_anchor")
@@ -152,8 +158,10 @@ def test_disable_accommodation(tmp_path):
 
 # ── Copilot accommodation tests ───────────────────────────────────────────
 
+
 def test_copilot_time_anchor():
     from cockpit.copilot import CopilotContext, CopilotEngine
+
     acc = AccommodationSet(time_anchor_enabled=True)
     ctx = CopilotContext(
         health_status="healthy",
@@ -167,6 +175,7 @@ def test_copilot_time_anchor():
 
 def test_copilot_no_time_anchor_when_disabled():
     from cockpit.copilot import CopilotContext, CopilotEngine
+
     acc = AccommodationSet(time_anchor_enabled=False)
     ctx = CopilotContext(
         health_status="healthy",
@@ -180,6 +189,7 @@ def test_copilot_no_time_anchor_when_disabled():
 
 def test_copilot_no_accommodations():
     from cockpit.copilot import CopilotContext, CopilotEngine
+
     ctx = CopilotContext(
         health_status="healthy",
         session_age_s=600,

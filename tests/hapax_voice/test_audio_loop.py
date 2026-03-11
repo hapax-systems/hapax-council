@@ -9,6 +9,7 @@ exact chunk sizes:
 
 Wake word runs on ALL audio (no VAD gating). VAD feeds presence detection only.
 """
+
 from __future__ import annotations
 
 import struct
@@ -19,15 +20,15 @@ import pytest
 
 from agents.hapax_voice.__main__ import VoiceDaemon
 
-_FRAME_SAMPLES = 480      # 30ms at 16kHz
+_FRAME_SAMPLES = 480  # 30ms at 16kHz
 _FRAME_BYTES = _FRAME_SAMPLES * 2  # 960 bytes
 _WAKE_SAMPLES = 1280
-_WAKE_BYTES = _WAKE_SAMPLES * 2    # 2560 bytes
+_WAKE_BYTES = _WAKE_SAMPLES * 2  # 2560 bytes
 _VAD_SAMPLES = 512
-_VAD_BYTES = _VAD_SAMPLES * 2      # 1024 bytes
+_VAD_BYTES = _VAD_SAMPLES * 2  # 1024 bytes
 
 _FRAMES_FOR_WAKE = 3  # 3 × 480 = 1440 ≥ 1280 → 1 wake call
-_FRAMES_FOR_VAD = 3   # 3 × 480 = 1440 ≥ 1024 → 1 VAD call
+_FRAMES_FOR_VAD = 3  # 3 × 480 = 1440 ≥ 1024 → 1 VAD call
 
 
 def _make_daemon() -> VoiceDaemon:

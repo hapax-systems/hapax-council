@@ -1,4 +1,5 @@
 """Tests for hapax_voice TTS tier abstraction and synthesis backends."""
+
 from __future__ import annotations
 
 import struct
@@ -12,7 +13,6 @@ from agents.hapax_voice.tts import (
     _audio_to_pcm_int16,
     select_tier,
 )
-
 
 # ---------------------------------------------------------------------------
 # select_tier

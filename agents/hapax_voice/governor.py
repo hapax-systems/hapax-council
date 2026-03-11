@@ -5,6 +5,7 @@ Directives:
   - "pause": FrameGate drops audio frames, pipeline frozen
   - "withdraw": session should close gracefully
 """
+
 from __future__ import annotations
 
 import logging

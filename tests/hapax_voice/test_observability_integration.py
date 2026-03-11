@@ -1,11 +1,12 @@
 # tests/hapax_voice/test_observability_integration.py
 """Integration test: verify observability events flow end-to-end."""
+
 import json
 
-from agents.hapax_voice.event_log import EventLog
-from agents.hapax_voice.presence import PresenceDetector
 from agents.hapax_voice.context_gate import ContextGate
+from agents.hapax_voice.event_log import EventLog
 from agents.hapax_voice.notification_queue import NotificationQueue, VoiceNotification
+from agents.hapax_voice.presence import PresenceDetector
 from agents.hapax_voice.session import SessionManager
 
 

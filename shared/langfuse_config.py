@@ -6,6 +6,7 @@ Import this module as a side-effect in any agent script:
 Requires env vars:
     LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY
 """
+
 import os
 
 HOST = os.environ.get("LANGFUSE_HOST", "http://localhost:3000")

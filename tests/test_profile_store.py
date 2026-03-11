@@ -1,19 +1,19 @@
 """Tests for the profile store — Qdrant-backed profile fact search and digest access."""
+
 import json
 import uuid
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from shared.profile_store import ProfileStore, COLLECTION, VECTOR_DIM
-
+from shared.profile_store import COLLECTION, VECTOR_DIM, ProfileStore
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+
 def _make_profile(facts_per_dim=2):
     """Build a minimal UserProfile-like object for testing."""
-    from agents.profiler import ProfileFact, ProfileDimension, UserProfile
+    from agents.profiler import ProfileDimension, ProfileFact, UserProfile
 
     dims = []
     for dim_name in ["work_patterns", "identity"]:
@@ -49,6 +49,7 @@ def _mock_store():
 
 # ── Collection management ────────────────────────────────────────────────────
 
+
 def test_ensure_collection_creates_when_missing():
     store = _mock_store()
     mock_collections = MagicMock()
@@ -75,6 +76,7 @@ def test_ensure_collection_skips_when_exists():
 
 # ── Index profile ────────────────────────────────────────────────────────────
 
+
 @patch("shared.config.embed_batch")
 def test_index_profile_upserts_facts(mock_embed):
     store = _mock_store()
@@ -95,8 +97,11 @@ def test_index_profile_upserts_facts(mock_embed):
 @patch("shared.config.embed_batch")
 def test_index_profile_empty(mock_embed):
     from agents.profiler import UserProfile
+
     store = _mock_store()
-    profile = UserProfile(name="Empty", summary="", dimensions=[], sources_processed=[], version=1, updated_at="")
+    profile = UserProfile(
+        name="Empty", summary="", dimensions=[], sources_processed=[], version=1, updated_at=""
+    )
 
     count = store.index_profile(profile)
     assert count == 0
@@ -125,12 +130,16 @@ def test_index_profile_deterministic_ids(mock_embed):
 def test_index_profile_batches_large_profiles(mock_embed):
     """Profiles with >100 facts are upserted in batches."""
     store = _mock_store()
-    from agents.profiler import ProfileFact, ProfileDimension, UserProfile
+    from agents.profiler import ProfileDimension, ProfileFact, UserProfile
 
     facts = [
         ProfileFact(
-            dimension="work_patterns", key=f"fact_{i}", value=f"v{i}",
-            confidence=0.5, source="test", evidence="test",
+            dimension="work_patterns",
+            key=f"fact_{i}",
+            value=f"v{i}",
+            confidence=0.5,
+            source="test",
+            evidence="test",
         )
         for i in range(150)
     ]
@@ -152,6 +161,7 @@ def test_index_profile_batches_large_profiles(mock_embed):
 
 
 # ── Search ───────────────────────────────────────────────────────────────────
+
 
 @patch("shared.config.embed")
 def test_search_returns_results(mock_embed):
@@ -219,6 +229,7 @@ def test_search_empty_results(mock_embed):
 
 # ── Digest access ────────────────────────────────────────────────────────────
 
+
 def test_get_digest_returns_none_when_missing(tmp_path, monkeypatch):
     monkeypatch.setattr("shared.profile_store.PROFILES_DIR", tmp_path)
     store = _mock_store()
@@ -233,10 +244,14 @@ def test_get_digest_loads_valid_file(tmp_path, monkeypatch):
         "total_facts": 100,
         "overall_summary": "Test summary",
         "dimensions": {
-            "work_patterns": {"summary": "Work patterns summary", "fact_count": 50, "avg_confidence": 0.8},
+            "work_patterns": {
+                "summary": "Work patterns summary",
+                "fact_count": 50,
+                "avg_confidence": 0.8,
+            },
         },
     }
-    (tmp_path / "ryan-digest.json").write_text(json.dumps(digest))
+    (tmp_path / "operator-digest.json").write_text(json.dumps(digest))
 
     store = _mock_store()
     result = store.get_digest()
@@ -247,7 +262,7 @@ def test_get_digest_loads_valid_file(tmp_path, monkeypatch):
 
 def test_get_digest_handles_corrupt_file(tmp_path, monkeypatch):
     monkeypatch.setattr("shared.profile_store.PROFILES_DIR", tmp_path)
-    (tmp_path / "ryan-digest.json").write_text("not valid json")
+    (tmp_path / "operator-digest.json").write_text("not valid json")
 
     store = _mock_store()
     assert store.get_digest() is None
@@ -260,7 +275,7 @@ def test_get_dimension_summary_returns_summary(tmp_path, monkeypatch):
             "work_patterns": {"summary": "Work patterns narrative here", "fact_count": 50},
         },
     }
-    (tmp_path / "ryan-digest.json").write_text(json.dumps(digest))
+    (tmp_path / "operator-digest.json").write_text(json.dumps(digest))
 
     store = _mock_store()
     summary = store.get_dimension_summary("work_patterns")
@@ -270,7 +285,7 @@ def test_get_dimension_summary_returns_summary(tmp_path, monkeypatch):
 def test_get_dimension_summary_returns_none_for_missing_dim(tmp_path, monkeypatch):
     monkeypatch.setattr("shared.profile_store.PROFILES_DIR", tmp_path)
     digest = {"dimensions": {}}
-    (tmp_path / "ryan-digest.json").write_text(json.dumps(digest))
+    (tmp_path / "operator-digest.json").write_text(json.dumps(digest))
 
     store = _mock_store()
     assert store.get_dimension_summary("nonexistent") is None
@@ -283,6 +298,7 @@ def test_get_dimension_summary_returns_none_without_digest(tmp_path, monkeypatch
 
 
 # ── Digest generation ────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_generate_digest_structure(tmp_path, monkeypatch):
@@ -314,11 +330,12 @@ async def test_generate_digest_structure(tmp_path, monkeypatch):
     assert digest["dimensions"]["work_patterns"]["fact_count"] == 5
 
     # Verify file was saved
-    saved = json.loads((tmp_path / "ryan-digest.json").read_text())
+    saved = json.loads((tmp_path / "operator-digest.json").read_text())
     assert saved["total_facts"] == 10
 
 
 # ── Stale point cleanup ────────────────────────────────────────────────────
+
 
 def test_cleanup_stale_points_removes_orphans():
     store = _mock_store()

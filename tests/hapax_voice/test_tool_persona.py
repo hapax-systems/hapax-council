@@ -1,4 +1,5 @@
 """Tests for tool-aware system prompt."""
+
 from agents.hapax_voice.persona import system_prompt
 
 

@@ -2,13 +2,13 @@
 
 No LLM calls; tests focus on deterministic split/repair/classification logic.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -18,10 +18,15 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from cockpit.chat_agent import _find_safe_split, ChatSession, format_conversation_export, classify_chat_error
-
+from cockpit.chat_agent import (
+    ChatSession,
+    _find_safe_split,
+    classify_chat_error,
+    format_conversation_export,
+)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _user(text: str) -> ModelRequest:
     return ModelRequest(parts=[UserPromptPart(content=text)])
@@ -32,22 +37,31 @@ def _assistant(text: str) -> ModelResponse:
 
 
 def _tool_call(tool_name: str, tool_call_id: str) -> ModelResponse:
-    return ModelResponse(parts=[ToolCallPart(
-        tool_name=tool_name,
-        args={"key": "val"},
-        tool_call_id=tool_call_id,
-    )])
+    return ModelResponse(
+        parts=[
+            ToolCallPart(
+                tool_name=tool_name,
+                args={"key": "val"},
+                tool_call_id=tool_call_id,
+            )
+        ]
+    )
 
 
 def _tool_result(tool_name: str, tool_call_id: str) -> ModelRequest:
-    return ModelRequest(parts=[ToolReturnPart(
-        tool_name=tool_name,
-        content="ok",
-        tool_call_id=tool_call_id,
-    )])
+    return ModelRequest(
+        parts=[
+            ToolReturnPart(
+                tool_name=tool_name,
+                content="ok",
+                tool_call_id=tool_call_id,
+            )
+        ]
+    )
 
 
 # ── _find_safe_split tests ──────────────────────────────────────────────────
+
 
 def test_find_safe_split_no_tool_returns():
     """Clean history with no tool calls — split at the expected position."""
@@ -68,13 +82,13 @@ def test_find_safe_split_no_tool_returns():
 def test_find_safe_split_avoids_orphan():
     """Split must not leave an orphaned ToolReturnPart in recent messages."""
     msgs = [
-        _user("hello"),                             # 0 — safe
-        _assistant("hi"),                           # 1
-        _user("do something"),                      # 2 — safe
-        _tool_call("record_fact", "tc1"),            # 3
-        _tool_result("record_fact", "tc1"),          # 4 — NOT safe (tool return)
-        _assistant("noted"),                        # 5
-        _user("thanks"),                            # 6 — safe
+        _user("hello"),  # 0 — safe
+        _assistant("hi"),  # 1
+        _user("do something"),  # 2 — safe
+        _tool_call("record_fact", "tc1"),  # 3
+        _tool_result("record_fact", "tc1"),  # 4 — NOT safe (tool return)
+        _assistant("noted"),  # 5
+        _user("thanks"),  # 6 — safe
     ]
     # keep_recent=3 → target index 4. Index 4 is a ToolReturnPart — unsafe.
     # Should scan backward to index 2 ("do something" — clean user turn).
@@ -111,6 +125,7 @@ def test_find_safe_split_keep_more_than_length():
 
 
 # ── _repair_history tests ───────────────────────────────────────────────────
+
 
 def test_repair_history_preserves_interview_state():
     """Repair clears broken history but preserves interview_state."""
@@ -155,11 +170,10 @@ def test_repair_history_clears_when_no_safe_point():
 
 # ── classify_chat_error tests ───────────────────────────────────────────────
 
+
 def test_classify_tool_result_error():
     """tool_result / tool_use_id mismatch → history_corrupt."""
-    e = Exception(
-        "unexpected 'tool_use_id' found in 'tool_result' blocks: toolu_abc123"
-    )
+    e = Exception("unexpected 'tool_use_id' found in 'tool_result' blocks: toolu_abc123")
     msg, cat = classify_chat_error(e)
     assert cat == "history_corrupt"
     assert "orphaned tool_result" in msg.lower()
@@ -199,6 +213,7 @@ def test_classify_unknown_truncates():
 
 # ── last_turn_tokens tests ─────────────────────────────────────────────────
 
+
 def test_last_turn_tokens_default():
     """ChatSession.last_turn_tokens defaults to 0."""
     session = ChatSession(project_dir=Path("/tmp"))
@@ -206,6 +221,7 @@ def test_last_turn_tokens_default():
 
 
 # ── format_conversation_export tests ───────────────────────────────────────
+
 
 def test_format_export_basic():
     """User + assistant messages formatted as markdown."""
@@ -244,9 +260,11 @@ def test_format_export_with_tools():
 
 # ── Interview model_alias tests ────────────────────────────────────────────
 
+
 def test_interview_agent_accepts_model_alias():
     """create_interview_agent accepts model_alias parameter with default 'balanced'."""
     import inspect
+
     from cockpit.interview import create_interview_agent
 
     sig = inspect.signature(create_interview_agent)
@@ -257,6 +275,7 @@ def test_interview_agent_accepts_model_alias():
 def test_interview_plan_accepts_model_alias():
     """generate_interview_plan accepts model_alias parameter with default 'balanced'."""
     import inspect
+
     from cockpit.interview import generate_interview_plan
 
     sig = inspect.signature(generate_interview_plan)
@@ -266,11 +285,13 @@ def test_interview_plan_accepts_model_alias():
 
 # ── F-2.2: end_interview preserves state on flush failure ────────────────
 
+
 @pytest.mark.asyncio
 async def test_end_interview_preserves_state_on_flush_failure():
     """Interview state is preserved when flush_interview_facts raises."""
     from unittest.mock import AsyncMock
-    from cockpit.interview import InterviewState, InterviewPlan, InterviewTopic, RecordedFact
+
+    from cockpit.interview import InterviewPlan, InterviewState, InterviewTopic, RecordedFact
 
     session = ChatSession.__new__(ChatSession)
     session.mode = "interview"
@@ -279,14 +300,22 @@ async def test_end_interview_preserves_state_on_flush_failure():
     session._interview_agent = AsyncMock()
     session.interview_state = InterviewState(
         plan=InterviewPlan(
-            topics=[InterviewTopic(
-                topic="test", dimension="test_dim",
-                rationale="testing", question_seed="q?",
-                depth="surface",
-            )],
+            topics=[
+                InterviewTopic(
+                    topic="test",
+                    dimension="test_dim",
+                    rationale="testing",
+                    question_seed="q?",
+                    depth="surface",
+                )
+            ],
             overall_focus="testing",
         ),
-        facts=[RecordedFact(dimension="test_dim", key="k", value="v", confidence=0.8, evidence="said so")],
+        facts=[
+            RecordedFact(
+                dimension="test_dim", key="k", value="v", confidence=0.8, evidence="said so"
+            )
+        ],
         insights=[],
         topics_explored=[],
     )

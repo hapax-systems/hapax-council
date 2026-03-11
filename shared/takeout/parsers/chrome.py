@@ -4,14 +4,14 @@ Chrome Takeout includes:
 - BrowserHistory.json: [{page_transition, title, url, time_usec, client_id}]
 - Bookmarks.html: Netscape bookmark format
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import zipfile
-from collections import defaultdict
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from shared.takeout.models import NormalizedRecord, ServiceConfig, make_record_id
 
@@ -143,7 +143,7 @@ def _parse_bookmarks(
         timestamp = None
         if add_date:
             try:
-                timestamp = datetime.fromtimestamp(int(add_date), tz=timezone.utc)
+                timestamp = datetime.fromtimestamp(int(add_date), tz=UTC)
             except (ValueError, OSError):
                 pass
 
@@ -173,6 +173,6 @@ def _chrome_time_to_datetime(time_usec: int) -> datetime | None:
     # Difference: 11644473600 seconds
     try:
         unix_seconds = (time_usec / 1_000_000) - 11644473600
-        return datetime.fromtimestamp(unix_seconds, tz=timezone.utc)
+        return datetime.fromtimestamp(unix_seconds, tz=UTC)
     except (ValueError, OSError, OverflowError):
         return None

@@ -1,12 +1,11 @@
 """Tests for shared.threshold_tuner."""
-import json
 
 from shared.threshold_tuner import (
     ThresholdOverride,
-    load_thresholds,
-    save_thresholds,
     get_threshold,
     is_suppressed,
+    load_thresholds,
+    save_thresholds,
 )
 
 

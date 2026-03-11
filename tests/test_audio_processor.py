@@ -1,9 +1,11 @@
 """Tests for audio_processor — schemas, segmentation helpers, RAG formatting."""
+
 from __future__ import annotations
 
 
 def test_audio_segment_defaults():
     from agents.audio_processor import AudioSegment
+
     seg = AudioSegment(
         source_file="rec-20260308-143000.flac",
         start_seconds=30.0,
@@ -19,6 +21,7 @@ def test_audio_segment_defaults():
 
 def test_processor_state_empty():
     from agents.audio_processor import AudioProcessorState
+
     s = AudioProcessorState()
     assert s.processed_files == {}
     assert s.last_run == 0.0
@@ -26,6 +29,7 @@ def test_processor_state_empty():
 
 def test_format_timestamp():
     from agents.audio_processor import _format_timestamp
+
     assert _format_timestamp(0.0) == "00:00:00"
     assert _format_timestamp(65.5) == "00:01:05"
     assert _format_timestamp(3661.0) == "01:01:01"
@@ -33,6 +37,7 @@ def test_format_timestamp():
 
 def test_format_transcript_markdown():
     from agents.audio_processor import AudioSegment, _format_transcript_markdown
+
     seg = AudioSegment(
         source_file="rec-20260308-143000.flac",
         start_seconds=330.0,
@@ -53,6 +58,7 @@ def test_format_transcript_markdown():
 
 def test_format_event_markdown():
     from agents.audio_processor import AudioSegment, _format_event_markdown
+
     seg = AudioSegment(
         source_file="rec-20260308-150000.flac",
         start_seconds=130.0,
@@ -72,7 +78,12 @@ def test_format_event_markdown():
 
 
 def test_generate_profile_facts():
-    from agents.audio_processor import AudioProcessorState, ProcessedFileInfo, _generate_profile_facts
+    from agents.audio_processor import (
+        AudioProcessorState,
+        ProcessedFileInfo,
+        _generate_profile_facts,
+    )
+
     state = AudioProcessorState()
     state.processed_files["f1"] = ProcessedFileInfo(
         filename="rec-20260308-143000.flac",
@@ -90,12 +101,14 @@ def test_generate_profile_facts():
 
 def test_check_vram_available():
     from agents.audio_processor import _check_vram_available
+
     result = _check_vram_available(6000)
     assert isinstance(result, bool)
 
 
 def test_find_unprocessed_files(tmp_path):
     from agents.audio_processor import AudioProcessorState, _find_unprocessed_files
+
     (tmp_path / "rec-20260308-143000.flac").write_bytes(b"fake")
     (tmp_path / "rec-20260308-144500.flac").write_bytes(b"fake")
     (tmp_path / "rec-20260308-150000.flac").write_bytes(b"fake")
@@ -111,26 +124,34 @@ def test_find_unprocessed_files(tmp_path):
 
 
 def test_run_vad_returns_segments():
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
+
     import numpy as np
+
     from agents.audio_processor import _run_vad
+
     sr = 16000
     waveform = np.zeros(sr * 3, dtype=np.float32)
 
     with patch("agents.audio_processor._load_vad_model") as mock_load:
         mock_model = MagicMock()
         mock_load.return_value = (mock_model, MagicMock())
-        with patch("agents.audio_processor.silero_get_speech_timestamps",
-                    return_value=[{"start": 16000, "end": 32000}]):
+        with patch(
+            "agents.audio_processor.silero_get_speech_timestamps",
+            return_value=[{"start": 16000, "end": 32000}],
+        ):
             segments = _run_vad(waveform, sr)
     assert len(segments) == 1
     assert segments[0] == (1.0, 2.0)
 
 
 def test_classify_segments_returns_labels():
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
+
     import numpy as np
+
     from agents.audio_processor import _classify_audio_frames
+
     with patch("agents.audio_processor._load_panns_model") as mock_load:
         mock_at = MagicMock()
         mock_load.return_value = mock_at
@@ -147,6 +168,7 @@ def test_classify_segments_returns_labels():
 
 def test_merge_adjacent_segments():
     from agents.audio_processor import _merge_segments
+
     raw = [
         (0.0, 5.0, "speech", 0.9),
         (5.5, 10.0, "speech", 0.85),
@@ -163,6 +185,7 @@ def test_merge_adjacent_segments():
 
 def test_should_skip_segment():
     from agents.audio_processor import _should_skip_segment
+
     assert _should_skip_segment("silence", 0.9) is True
     assert _should_skip_segment("white_noise", 0.8) is True
     assert _should_skip_segment("air_conditioning", 0.7) is True
@@ -173,11 +196,14 @@ def test_should_skip_segment():
 
 def test_process_file_speech(tmp_path):
     """Test full processing pipeline for a file with speech."""
-    from agents.audio_processor import (
-        _process_file, AudioProcessorState, AUDIO_RAG_DIR,
-    )
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
+
     import numpy as np
+
+    from agents.audio_processor import (
+        AudioProcessorState,
+        _process_file,
+    )
 
     fake_flac = tmp_path / "rec-20260308-143000.flac"
     fake_flac.write_bytes(b"fake-audio-data")
@@ -185,15 +211,16 @@ def test_process_file_speech(tmp_path):
     state = AudioProcessorState()
     rag_dir = tmp_path / "rag-output"
 
-    with patch("agents.audio_processor.torchaudio") as mock_ta, \
-         patch("agents.audio_processor._run_vad") as mock_vad, \
-         patch("agents.audio_processor._classify_audio_frames") as mock_classify, \
-         patch("agents.audio_processor._merge_segments") as mock_merge, \
-         patch("agents.audio_processor._run_diarization") as mock_diar, \
-         patch("agents.audio_processor._run_transcription") as mock_trans, \
-         patch("agents.audio_processor._check_vram_available", return_value=True), \
-         patch("agents.audio_processor.AUDIO_RAG_DIR", rag_dir):
-
+    with (
+        patch("agents.audio_processor.torchaudio") as mock_ta,
+        patch("agents.audio_processor._run_vad") as mock_vad,
+        patch("agents.audio_processor._classify_audio_frames") as mock_classify,
+        patch("agents.audio_processor._merge_segments") as mock_merge,
+        patch("agents.audio_processor._run_diarization") as mock_diar,
+        patch("agents.audio_processor._run_transcription") as mock_trans,
+        patch("agents.audio_processor._check_vram_available", return_value=True),
+        patch("agents.audio_processor.AUDIO_RAG_DIR", rag_dir),
+    ):
         # Mock waveform tensor with shape attribute
         mock_waveform = MagicMock()
         mock_waveform.shape = (1, 16000 * 180)
@@ -201,7 +228,9 @@ def test_process_file_speech(tmp_path):
 
         # Mock resample result with squeeze().numpy() chain
         mock_resampled = MagicMock()
-        mock_resampled.squeeze.return_value.numpy.return_value = np.zeros(16000 * 180, dtype=np.float32)
+        mock_resampled.squeeze.return_value.numpy.return_value = np.zeros(
+            16000 * 180, dtype=np.float32
+        )
         mock_ta.functional.resample.return_value = mock_resampled
 
         mock_vad.return_value = [(10.0, 55.0)]
@@ -222,8 +251,9 @@ def test_process_file_speech(tmp_path):
 
 def test_run_diarization():
     """Test diarization returns speaker-labeled segments."""
+    from unittest.mock import MagicMock, patch
+
     from agents.audio_processor import _run_diarization
-    from unittest.mock import patch, MagicMock
 
     with patch("agents.audio_processor._load_diarization_pipeline") as mock_load:
         mock_pipeline = MagicMock()
@@ -249,8 +279,9 @@ def test_run_diarization():
 
 def test_run_transcription():
     """Test transcription returns text with timestamps."""
+    from unittest.mock import MagicMock, patch
+
     from agents.audio_processor import _run_transcription
-    from unittest.mock import patch, MagicMock
 
     with patch("agents.audio_processor._load_whisper_model") as mock_load:
         mock_model = MagicMock()

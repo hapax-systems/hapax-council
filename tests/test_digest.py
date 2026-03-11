@@ -2,29 +2,29 @@
 
 LLM calls and external I/O are mocked.
 """
+
 from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agents.digest import (
+    SYSTEM_PROMPT,
     Digest,
     DigestStats,
     NotableItem,
-    collect_recent_documents,
     collect_collection_stats,
+    collect_recent_documents,
     format_digest_human,
     format_digest_md,
     send_notification,
-    SYSTEM_PROMPT,
 )
 
-
 # ── Schema tests ─────────────────────────────────────────────────────────────
+
 
 def test_digest_stats_defaults():
     s = DigestStats()
@@ -82,6 +82,7 @@ def test_digest_defaults():
 
 # ── Formatter tests ──────────────────────────────────────────────────────────
 
+
 def _sample_digest() -> Digest:
     return Digest(
         generated_at="2026-03-01T06:45:00Z",
@@ -89,8 +90,14 @@ def _sample_digest() -> Digest:
         headline="5 new documents, 2 vault items processed",
         summary="Active content day. New research papers and vault notes ingested.",
         notable_items=[
-            NotableItem(title="ML Survey 2026", source="ml-survey.pdf", relevance="Covers latest techniques"),
-            NotableItem(title="Meeting notes", source="meeting-2026-03-01.md", relevance="Contains action items"),
+            NotableItem(
+                title="ML Survey 2026", source="ml-survey.pdf", relevance="Covers latest techniques"
+            ),
+            NotableItem(
+                title="Meeting notes",
+                source="meeting-2026-03-01.md",
+                relevance="Contains action items",
+            ),
         ],
         suggested_actions=[
             "Review ML survey for relevant sections",
@@ -129,7 +136,9 @@ def test_format_digest_human_contains_actions():
 def test_format_digest_human_no_notable_when_empty():
     d = Digest(
         generated_at="2026-03-01T06:45:00Z",
-        hours=24, headline="Quiet", summary="Nothing new.",
+        hours=24,
+        headline="Quiet",
+        summary="Nothing new.",
     )
     output = format_digest_human(d)
     assert "Notable" not in output
@@ -138,7 +147,9 @@ def test_format_digest_human_no_notable_when_empty():
 def test_format_digest_human_no_actions_when_empty():
     d = Digest(
         generated_at="2026-03-01T06:45:00Z",
-        hours=24, headline="Quiet", summary="Nothing new.",
+        hours=24,
+        headline="Quiet",
+        summary="Nothing new.",
     )
     output = format_digest_human(d)
     assert "Actions" not in output
@@ -168,7 +179,9 @@ def test_format_digest_md_notable_items():
 def test_format_digest_md_no_notable_when_empty():
     d = Digest(
         generated_at="2026-03-01T06:45:00Z",
-        hours=24, headline="Clean", summary="Nothing.",
+        hours=24,
+        headline="Clean",
+        summary="Nothing.",
     )
     output = format_digest_md(d)
     assert "Notable Items" not in output
@@ -177,7 +190,9 @@ def test_format_digest_md_no_notable_when_empty():
 def test_format_digest_md_unavailable_collection():
     d = Digest(
         generated_at="2026-03-01T06:45:00Z",
-        hours=24, headline="Test", summary="Test.",
+        hours=24,
+        headline="Test",
+        summary="Test.",
         stats=DigestStats(collection_sizes={"documents": -1}),
     )
     output = format_digest_md(d)
@@ -185,6 +200,7 @@ def test_format_digest_md_unavailable_collection():
 
 
 # ── Collector tests ──────────────────────────────────────────────────────────
+
 
 @patch("agents.digest.get_qdrant")
 def test_collect_recent_documents_returns_grouped(mock_qdrant):
@@ -279,6 +295,7 @@ def test_collect_collection_stats_partial_failure(mock_qdrant):
 
 # ── Notification tests ───────────────────────────────────────────────────────
 
+
 @patch("shared.notify.send_notification")
 def test_send_notification_calls_shared_notify(mock_notify):
     d = _sample_digest()
@@ -300,7 +317,9 @@ def test_send_notification_includes_doc_count(mock_notify):
 def test_send_notification_no_vault_items_when_zero(mock_notify):
     d = Digest(
         generated_at="2026-03-01T06:45:00Z",
-        hours=24, headline="Test", summary="Test.",
+        hours=24,
+        headline="Test",
+        summary="Test.",
         stats=DigestStats(new_documents=3),
     )
     send_notification(d)
@@ -309,6 +328,7 @@ def test_send_notification_no_vault_items_when_zero(mock_notify):
 
 
 # ── System prompt tests ──────────────────────────────────────────────────────
+
 
 def test_system_prompt_mentions_precision():
     assert "precision" in SYSTEM_PROMPT.lower()
@@ -337,14 +357,21 @@ class _FakeDigestResult:
 @patch("agents.digest.collect_collection_stats")
 @patch("agents.digest.digest_agent")
 async def test_generate_digest_pipeline(
-    mock_agent, mock_stats, mock_docs,
+    mock_agent,
+    mock_stats,
+    mock_docs,
 ):
     """End-to-end pipeline test with all I/O mocked."""
     from agents.digest import generate_digest
 
     mock_docs.return_value = [
-        {"filename": "paper.pdf", "chunk_count": 3, "source": "/data/paper.pdf",
-         "ingested_at": 0, "text_preview": "..."},
+        {
+            "filename": "paper.pdf",
+            "chunk_count": 3,
+            "source": "/data/paper.pdf",
+            "ingested_at": 0,
+            "text_preview": "...",
+        },
     ]
     mock_stats.return_value = {"documents": 1500, "samples": 80}
     mock_agent.run = AsyncMock(return_value=_FakeDigestResult())
@@ -361,7 +388,9 @@ async def test_generate_digest_pipeline(
 @patch("agents.digest.collect_collection_stats")
 @patch("agents.digest.digest_agent")
 async def test_generate_digest_empty_results(
-    mock_agent, mock_stats, mock_docs,
+    mock_agent,
+    mock_stats,
+    mock_docs,
 ):
     """Pipeline handles no new content gracefully."""
     from agents.digest import generate_digest
@@ -383,7 +412,9 @@ async def test_generate_digest_empty_results(
 @patch("agents.digest.collect_collection_stats")
 @patch("agents.digest.digest_agent")
 async def test_generate_digest_llm_failure_graceful(
-    mock_agent, mock_stats, mock_docs,
+    mock_agent,
+    mock_stats,
+    mock_docs,
 ):
     """Pipeline handles LLM failure gracefully."""
     from agents.digest import generate_digest
@@ -402,7 +433,9 @@ async def test_generate_digest_llm_failure_graceful(
 @patch("agents.digest.collect_collection_stats")
 @patch("agents.digest.digest_agent")
 async def test_generate_digest_prompt_includes_collection_stats(
-    mock_agent, mock_stats, mock_docs,
+    mock_agent,
+    mock_stats,
+    mock_docs,
 ):
     """Pipeline includes collection size stats in prompt."""
     from agents.digest import generate_digest

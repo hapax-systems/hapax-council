@@ -1,4 +1,5 @@
 """Gruvbox-themed data visualization for demos."""
+
 from __future__ import annotations
 
 import json
@@ -6,6 +7,7 @@ import logging
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
@@ -53,7 +55,9 @@ def _normalize_chart_spec(spec: dict) -> dict:
             # Inherit colors from dataset backgroundColor if present
             bg_colors = first.get("backgroundColor")
             if bg_colors:
-                spec["data"]["colors"] = bg_colors if isinstance(bg_colors, list) else [bg_colors] * len(labels)
+                spec["data"]["colors"] = (
+                    bg_colors if isinstance(bg_colors, list) else [bg_colors] * len(labels)
+                )
             log.info("Normalized Chart.js format to Matplotlib format")
 
     # Chart.js wraps config in data.datasets for line charts too
@@ -169,8 +173,16 @@ def _render_fallback(spec: dict, output_path: Path, figsize: tuple, dpi: int) ->
     """Render a simple text-only fallback when chart spec can't be parsed."""
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     title = spec.get("title", "Data Visualization")
-    ax.text(0.5, 0.5, title, ha="center", va="center", fontsize=32,
-            color=COLORS["fg"], transform=ax.transAxes)
+    ax.text(
+        0.5,
+        0.5,
+        title,
+        ha="center",
+        va="center",
+        fontsize=32,
+        color=COLORS["fg"],
+        transform=ax.transAxes,
+    )
     ax.set_axis_off()
     fig.savefig(output_path)
     plt.close(fig)
@@ -215,8 +227,15 @@ def _render_stacked_bar(spec: dict, output_path: Path, figsize: tuple, dpi: int)
     """Render stacked bar chart. Expects datasets with multiple value series."""
     data = spec["data"]
     labels = data.get("labels", [])
-    palette = [COLORS["orange"], COLORS["yellow"], COLORS["green"],
-               COLORS["blue"], COLORS["purple"], COLORS["aqua"], COLORS["red"]]
+    palette = [
+        COLORS["orange"],
+        COLORS["yellow"],
+        COLORS["green"],
+        COLORS["blue"],
+        COLORS["purple"],
+        COLORS["aqua"],
+        COLORS["red"],
+    ]
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
@@ -228,7 +247,7 @@ def _render_stacked_bar(spec: dict, output_path: Path, figsize: tuple, dpi: int)
         for i, ds in enumerate(datasets):
             values = ds.get("data", ds.get("values", []))
             color = palette[i % len(palette)]
-            ax.bar(x, values, bottom=bottom, label=ds.get("label", f"Series {i+1}"), color=color)
+            ax.bar(x, values, bottom=bottom, label=ds.get("label", f"Series {i + 1}"), color=color)
             bottom += np.array(values, dtype=float)
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=45, ha="right")
@@ -319,13 +338,23 @@ def _render_pie(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None
     data = spec["data"]
     labels = data["labels"]
     values = data["values"]
-    palette = [COLORS["orange"], COLORS["yellow"], COLORS["green"],
-               COLORS["blue"], COLORS["purple"], COLORS["aqua"], COLORS["red"]]
+    palette = [
+        COLORS["orange"],
+        COLORS["yellow"],
+        COLORS["green"],
+        COLORS["blue"],
+        COLORS["purple"],
+        COLORS["aqua"],
+        COLORS["red"],
+    ]
     colors = data.get("colors") or [palette[i % len(palette)] for i in range(len(labels))]
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     wedges, texts, autotexts = ax.pie(
-        values, labels=labels, colors=colors, autopct="%1.0f%%",
+        values,
+        labels=labels,
+        colors=colors,
+        autopct="%1.0f%%",
         textprops={"color": COLORS["fg"]},
     )
     for t in autotexts:
@@ -355,7 +384,9 @@ def _render_gauge(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> No
     fill_theta = np.linspace(np.pi, np.pi - (np.pi * ratio), int(100 * ratio))
     color = COLORS["green"] if ratio > 0.8 else COLORS["yellow"] if ratio > 0.5 else COLORS["red"]
     if len(fill_theta) > 1:
-        ax.plot(fill_theta, [1] * len(fill_theta), color=color, linewidth=20, solid_capstyle="round")
+        ax.plot(
+            fill_theta, [1] * len(fill_theta), color=color, linewidth=20, solid_capstyle="round"
+        )
 
     ax.set_ylim(0, 1.5)
     ax.set_axis_off()
@@ -372,8 +403,15 @@ def _render_multi_line(spec: dict, output_path: Path, figsize: tuple, dpi: int) 
     data = spec["data"]
     labels = data.get("labels", [])
     datasets = data.get("datasets", [])
-    palette = [COLORS["orange"], COLORS["yellow"], COLORS["green"],
-               COLORS["blue"], COLORS["purple"], COLORS["aqua"], COLORS["red"]]
+    palette = [
+        COLORS["orange"],
+        COLORS["yellow"],
+        COLORS["green"],
+        COLORS["blue"],
+        COLORS["purple"],
+        COLORS["aqua"],
+        COLORS["red"],
+    ]
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
@@ -382,8 +420,15 @@ def _render_multi_line(spec: dict, output_path: Path, figsize: tuple, dpi: int) 
         for i, ds in enumerate(datasets):
             values = ds.get("data", ds.get("values", []))
             color = palette[i % len(palette)]
-            ax.plot(x, values, label=ds.get("label", f"Series {i+1}"),
-                    color=color, linewidth=2, marker="o", markersize=4)
+            ax.plot(
+                x,
+                values,
+                label=ds.get("label", f"Series {i + 1}"),
+                color=color,
+                linewidth=2,
+                marker="o",
+                markersize=4,
+            )
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=45, ha="right")
         ax.legend()
@@ -406,8 +451,15 @@ def _render_timeline(spec: dict, output_path: Path, figsize: tuple, dpi: int) ->
     """Render a timeline of events as a horizontal schedule."""
     data = spec["data"]
     events = data.get("events", [])
-    palette = [COLORS["orange"], COLORS["yellow"], COLORS["green"],
-               COLORS["blue"], COLORS["purple"], COLORS["aqua"], COLORS["red"]]
+    palette = [
+        COLORS["orange"],
+        COLORS["yellow"],
+        COLORS["green"],
+        COLORS["blue"],
+        COLORS["purple"],
+        COLORS["aqua"],
+        COLORS["red"],
+    ]
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
@@ -415,15 +467,15 @@ def _render_timeline(spec: dict, output_path: Path, figsize: tuple, dpi: int) ->
         # Fallback: try labels/values as time/event pairs
         labels = data.get("labels", [])
         values = data.get("values", [])
-        events = [{"time": str(l), "event": str(v)} for l, v in zip(labels, values)]
+        events = [{"time": str(l), "event": str(v)} for l, v in zip(labels, values, strict=False)]
 
     if events:
-        y_positions = list(range(len(events)))
+        list(range(len(events)))
         times = [e.get("time", str(i)) for i, e in enumerate(events)]
         event_names = [e.get("event", e.get("label", "")) for e in events]
 
         # Horizontal timeline with dots and labels
-        for i, (t, name) in enumerate(zip(times, event_names)):
+        for i, (t, name) in enumerate(zip(times, event_names, strict=False)):
             color = palette[i % len(palette)]
             ax.scatter(i, 0, s=200, color=color, zorder=3)
             ax.annotate(
@@ -431,20 +483,28 @@ def _render_timeline(spec: dict, output_path: Path, figsize: tuple, dpi: int) ->
                 (i, 0),
                 textcoords="offset points",
                 xytext=(0, 20 if i % 2 == 0 else -30),
-                ha="center", va="bottom" if i % 2 == 0 else "top",
-                fontsize=9, color=COLORS["fg"],
+                ha="center",
+                va="bottom" if i % 2 == 0 else "top",
+                fontsize=9,
+                color=COLORS["fg"],
                 arrowprops=dict(arrowstyle="-", color=COLORS["fg"], alpha=0.3),
             )
 
         # Draw connecting line
-        ax.plot(range(len(events)), [0] * len(events),
-                color=COLORS["fg"], alpha=0.3, linewidth=2)
+        ax.plot(range(len(events)), [0] * len(events), color=COLORS["fg"], alpha=0.3, linewidth=2)
         ax.set_xlim(-0.5, len(events) - 0.5)
         ax.set_ylim(-1, 1)
     else:
-        ax.text(0.5, 0.5, spec.get("title", "Timeline"),
-                ha="center", va="center", fontsize=32,
-                color=COLORS["fg"], transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            spec.get("title", "Timeline"),
+            ha="center",
+            va="center",
+            fontsize=32,
+            color=COLORS["fg"],
+            transform=ax.transAxes,
+        )
 
     ax.set_axis_off()
     ax.set_title(spec.get("title", ""))
@@ -458,8 +518,15 @@ def _render_network(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> 
     import networkx as nx
 
     data = spec["data"]
-    palette = [COLORS["orange"], COLORS["yellow"], COLORS["green"],
-               COLORS["blue"], COLORS["purple"], COLORS["aqua"], COLORS["red"]]
+    palette = [
+        COLORS["orange"],
+        COLORS["yellow"],
+        COLORS["green"],
+        COLORS["blue"],
+        COLORS["purple"],
+        COLORS["aqua"],
+        COLORS["red"],
+    ]
 
     G = nx.Graph()
 
@@ -503,8 +570,16 @@ def _render_network(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
     if G.number_of_nodes() == 0:
-        ax.text(0.5, 0.5, spec.get("title", "Network"), ha="center", va="center",
-                fontsize=32, color=COLORS["fg"], transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.5,
+            spec.get("title", "Network"),
+            ha="center",
+            va="center",
+            fontsize=32,
+            color=COLORS["fg"],
+            transform=ax.transAxes,
+        )
         ax.set_axis_off()
     else:
         pos = nx.spring_layout(G, seed=42, k=2.0 / max(1, G.number_of_nodes() ** 0.5))
@@ -514,17 +589,27 @@ def _render_network(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> 
         for n in G.nodes():
             labels[n] = G.nodes[n].get("label", str(n))
 
-        nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
-                               node_size=2000, edgecolors=COLORS["bg1"], linewidths=2)
-        nx.draw_networkx_edges(G, pos, ax=ax, edge_color=COLORS["fg"],
-                               width=2, alpha=0.6)
-        nx.draw_networkx_labels(G, pos, labels=labels, ax=ax,
-                                font_size=10, font_color=COLORS["fg"], font_weight="bold")
+        nx.draw_networkx_nodes(
+            G,
+            pos,
+            ax=ax,
+            node_color=node_colors,
+            node_size=2000,
+            edgecolors=COLORS["bg1"],
+            linewidths=2,
+        )
+        nx.draw_networkx_edges(G, pos, ax=ax, edge_color=COLORS["fg"], width=2, alpha=0.6)
+        nx.draw_networkx_labels(
+            G, pos, labels=labels, ax=ax, font_size=10, font_color=COLORS["fg"], font_weight="bold"
+        )
 
-        edge_labels = {(u, v): d.get("label", "") for u, v, d in G.edges(data=True) if d.get("label")}
+        edge_labels = {
+            (u, v): d.get("label", "") for u, v, d in G.edges(data=True) if d.get("label")
+        }
         if edge_labels:
-            nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, ax=ax,
-                                         font_size=8, font_color=COLORS["yellow"])
+            nx.draw_networkx_edge_labels(
+                G, pos, edge_labels=edge_labels, ax=ax, font_size=8, font_color=COLORS["yellow"]
+            )
 
         ax.set_axis_off()
 

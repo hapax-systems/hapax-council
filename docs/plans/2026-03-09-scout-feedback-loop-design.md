@@ -52,7 +52,7 @@ New block in `hapax-system/hooks/scripts/session-context.sh` after the cycle mod
 
 ### Logic
 
-1. Check if `~/projects/ai-agents/profiles/scout-report.json` exists.
+1. Check if `~/projects/hapax-council/profiles/scout-report.json` exists.
 2. Use `jq` to extract recommendations where tier is "adopt" or "evaluate".
 3. Compute report age in days from `generated_at`.
 4. If age > 8 days or zero actionable items: emit nothing.

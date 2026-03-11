@@ -1,4 +1,5 @@
 """Video assembly pipeline — screenshots + audio -> MP4."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,7 +7,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from moviepy import ImageClip, VideoFileClip, AudioFileClip, concatenate_videoclips, vfx
+from moviepy import AudioFileClip, ImageClip, VideoFileClip, concatenate_videoclips, vfx
 
 log = logging.getLogger(__name__)
 

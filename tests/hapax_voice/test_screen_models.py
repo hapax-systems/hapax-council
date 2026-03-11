@@ -64,27 +64,39 @@ def test_camera_config_defaults():
 
 def test_camera_config_ir():
     cfg = CameraConfig(
-        device="/dev/video2", role="ir",
-        width=340, height=340,
-        input_format="rawvideo", pixel_format="gray",
+        device="/dev/video2",
+        role="ir",
+        width=340,
+        height=340,
+        input_format="rawvideo",
+        pixel_format="gray",
     )
     assert cfg.pixel_format == "gray"
 
 
 def test_gear_observation():
     obs = GearObservation(
-        device="MPC Live III", powered=True,
-        display_content="Song mode", notes="",
+        device="MPC Live III",
+        powered=True,
+        display_content="Song mode",
+        notes="",
     )
     assert obs.powered is True
 
 
 def test_workspace_analysis_extends_screen():
     wa = WorkspaceAnalysis(
-        app="foot", context="running pytest", summary="Tests passing.",
-        issues=[], suggestions=[], keywords=["pytest"],
-        operator_present=True, operator_activity="typing",
-        operator_attention="screen", gear_state=[], workspace_change=False,
+        app="foot",
+        context="running pytest",
+        summary="Tests passing.",
+        issues=[],
+        suggestions=[],
+        keywords=["pytest"],
+        operator_present=True,
+        operator_activity="typing",
+        operator_attention="screen",
+        gear_state=[],
+        workspace_change=False,
     )
     assert wa.operator_present is True
     assert wa.app == "foot"
@@ -92,7 +104,9 @@ def test_workspace_analysis_extends_screen():
 
 def test_workspace_analysis_defaults():
     wa = WorkspaceAnalysis(
-        app="unknown", context="", summary="",
+        app="unknown",
+        context="",
+        summary="",
     )
     assert wa.operator_present is None
     assert wa.operator_activity == "unknown"

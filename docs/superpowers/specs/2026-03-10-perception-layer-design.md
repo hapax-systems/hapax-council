@@ -9,7 +9,7 @@
 The voice daemon lacks environment awareness during active sessions. Three concrete failures:
 
 1. **Interruption cascade** — background speech (e.g., child talking) triggers Pipecat's VAD → STT → cancels in-flight LLM response → LLM never completes → TTS never speaks
-2. **No behavioral constraints** — daemon doesn't know when Ryan is in conversation, recording, or producing; it interrupts regardless
+2. **No behavioral constraints** — daemon doesn't know when the operator is in conversation, recording, or producing; it interrupts regardless
 3. **Fragmented sensing** — audio classification, presence detection, workspace analysis, and webcam feeds operate independently with no unified state
 
 ## Goal

@@ -51,11 +51,13 @@ class DockerCapability(Capability):
         for line in stdout.strip().splitlines():
             parts = line.split("|", 2)
             if len(parts) == 3:
-                containers.append({
-                    "name": parts[0],
-                    "status": parts[1],
-                    "running_for": parts[2],
-                })
+                containers.append(
+                    {
+                        "name": parts[0],
+                        "status": parts[1],
+                        "running_for": parts[2],
+                    }
+                )
         return ProbeResult(
             capability=self.name,
             raw={"containers": containers},
@@ -69,9 +71,7 @@ class DockerCapability(Capability):
         """Validate proposal: action must exist and container_name must be present."""
         if proposal.action_name not in _ACTIONS:
             return False
-        if not proposal.params.get("container_name"):
-            return False
-        return True
+        return bool(proposal.params.get("container_name"))
 
     async def execute(self, proposal: FixProposal) -> ExecutionResult:
         """Execute a validated fix proposal."""

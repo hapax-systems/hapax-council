@@ -2,17 +2,17 @@
 
 No LLM calls; tests focus on deterministic logic and mocked dependencies.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.research import _build_system_prompt, Deps
-
+from agents.research import Deps, _build_system_prompt
 
 # ── _build_system_prompt tests ────────────────────────────────────────────
+
 
 def test_build_system_prompt_includes_base_context():
     """System prompt contains SYSTEM_CONTEXT."""
@@ -49,6 +49,7 @@ def test_build_system_prompt_string_goals():
 
 
 # ── search_knowledge_base tool tests ──────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_search_knowledge_base_no_results():
@@ -99,16 +100,17 @@ async def test_search_knowledge_base_with_results():
 
 # ── query() pipeline tests ───────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_query_returns_output():
     """query() returns agent output on success."""
     mock_result = MagicMock()
     mock_result.output = "Research response"
 
-    with patch("agents.research.agent") as mock_agent, \
-         patch("agents.research.get_qdrant"):
+    with patch("agents.research.agent") as mock_agent, patch("agents.research.get_qdrant"):
         mock_agent.run = AsyncMock(return_value=mock_result)
         from agents.research import query
+
         result = await query("test prompt")
 
     assert result == "Research response"
@@ -117,12 +119,14 @@ async def test_query_returns_output():
 @pytest.mark.asyncio
 async def test_query_handles_error():
     """query() returns error message on LLM failure."""
-    with patch("agents.research.agent") as mock_agent, \
-         patch("agents.research.get_qdrant"):
+    with patch("agents.research.agent") as mock_agent, patch("agents.research.get_qdrant"):
+
         async def _fail(*a, **kw):
             raise RuntimeError("model unavailable")
+
         mock_agent.run = _fail
         from agents.research import query
+
         result = await query("test prompt")
 
     assert "Research query failed" in result
@@ -131,13 +135,16 @@ async def test_query_handles_error():
 
 # ── F-6.6: CLI main() tests ──────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_main_with_prompt(capsys):
     """main() with args runs query and prints output."""
     from agents.research import main
 
-    with patch("agents.research.query", new_callable=AsyncMock, return_value="test response"), \
-         patch("sys.argv", ["research", "test query"]):
+    with (
+        patch("agents.research.query", new_callable=AsyncMock, return_value="test response"),
+        patch("sys.argv", ["research", "test query"]),
+    ):
         await main()
 
     captured = capsys.readouterr()

@@ -1,11 +1,11 @@
 """Tests for demo evaluation structural rubrics."""
+
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from PIL import Image
-
 from pydantic_ai.messages import BinaryContent
 
 from agents.demo_models import DemoEvalDimension
@@ -39,9 +39,13 @@ def _make_demo_dir(tmp_path: Path, scenes: int = 3) -> Path:
         "title": "Test Demo",
         "audience": "family",
         "scenes": [
-            {"title": f"Scene {i}", "narration": f"Narration {i}",
-             "duration_hint": 10.0, "key_points": [f"Point {i}"],
-             "screenshot": {"url": "http://localhost:5173"}}
+            {
+                "title": f"Scene {i}",
+                "narration": f"Narration {i}",
+                "duration_hint": 10.0,
+                "key_points": [f"Point {i}"],
+                "screenshot": {"url": "http://localhost:5173"},
+            }
             for i in range(1, scenes + 1)
         ],
         "intro_narration": "Welcome.",
@@ -50,11 +54,19 @@ def _make_demo_dir(tmp_path: Path, scenes: int = 3) -> Path:
     (demo_dir / "script.json").write_text(json.dumps(script))
 
     metadata = {
-        "title": "Test Demo", "audience": "family", "scope": "the system",
-        "scenes": scenes, "format": "slides", "duration": 30.0,
-        "timestamp": "20260305-120000", "output_dir": str(demo_dir),
-        "primary_file": "demo.html", "has_video": False, "has_audio": False,
-        "target_duration": 180, "quality_pass": True,
+        "title": "Test Demo",
+        "audience": "family",
+        "scope": "the system",
+        "scenes": scenes,
+        "format": "slides",
+        "duration": 30.0,
+        "timestamp": "20260305-120000",
+        "output_dir": str(demo_dir),
+        "primary_file": "demo.html",
+        "has_video": False,
+        "has_audio": False,
+        "target_duration": 180,
+        "quality_pass": True,
         "narrative_framework": "guided-tour",
     }
     (demo_dir / "metadata.json").write_text(json.dumps(metadata))
@@ -65,7 +77,7 @@ def _make_demo_dir(tmp_path: Path, scenes: int = 3) -> Path:
 
     html = f"""<!DOCTYPE html>
 <html><body style="background:#282828;color:#ebdbb2">
-<div id="app">{''.join(f'<div class="slide">{s["title"]}</div>' for s in script["scenes"])}
+<div id="app">{"".join(f'<div class="slide">{s["title"]}</div>' for s in script["scenes"])}
 <img src="data:image/png;base64,iVBOR"/>
 <button>play</button>
 </div></body></html>"""
@@ -172,7 +184,11 @@ class TestBuildTextEvalPrompt:
                 {"title": "Scene 1", "narration": "This is scene one.", "key_points": ["Point A"]},
             ],
         }
-        style_guide = {"voice": "first-person", "avoid": ["leverage"], "embrace": ["concrete numbers"]}
+        style_guide = {
+            "voice": "first-person",
+            "avoid": ["leverage"],
+            "embrace": ["concrete numbers"],
+        }
         prompt = _build_text_eval_prompt(script_data, style_guide, 180)
         assert "Welcome to the system" in prompt
         assert "scene one" in prompt
@@ -207,7 +223,8 @@ class TestRunTextEvaluation:
             mock_agent.run = AsyncMock(return_value=mock_result)
             dims = await run_text_evaluation(
                 {"audience": "family", "scenes": [], "intro_narration": "", "outro_narration": ""},
-                {}, 180,
+                {},
+                180,
             )
 
         assert len(dims) == 5
@@ -284,8 +301,14 @@ class TestRunVisualEvaluation:
 class TestBuildDiagnosisPrompt:
     def test_includes_failing_dimensions(self):
         dims = [
-            DemoEvalDimension(name="style", category="text", passed=False, score=0.3,
-                              issues=["Uses 'leverage'", "Passive voice"], evidence="Scene 2: 'leverage the system'"),
+            DemoEvalDimension(
+                name="style",
+                category="text",
+                passed=False,
+                score=0.3,
+                issues=["Uses 'leverage'", "Passive voice"],
+                evidence="Scene 2: 'leverage the system'",
+            ),
             DemoEvalDimension(name="clarity", category="visual", passed=True, score=0.9),
         ]
         prompt = _build_diagnosis_prompt(dims, {"title": "Demo", "scenes": []}, {}, 1)
@@ -301,17 +324,29 @@ class TestBuildDiagnosisPrompt:
 
     def test_includes_scene_details_and_jargon(self):
         """Diagnosis prompt should include per-scene word counts, narration excerpts, and jargon detection."""
-        dims = [DemoEvalDimension(
-            name="audience_calibration", category="text",
-            passed=False, score=0.5,
-            issues=["Technical jargon found for family audience"],
-        )]
+        dims = [
+            DemoEvalDimension(
+                name="audience_calibration",
+                category="text",
+                passed=False,
+                score=0.5,
+                issues=["Technical jargon found for family audience"],
+            )
+        ]
         script = {
             "audience": "family",
             "title": "Test Demo",
             "scenes": [
-                {"title": "Scene 1", "narration": "The API endpoint uses Docker containers", "visual_type": "diagram"},
-                {"title": "Scene 2", "narration": "A warm welcome to the system", "visual_type": "screenshot"},
+                {
+                    "title": "Scene 1",
+                    "narration": "The API endpoint uses Docker containers",
+                    "visual_type": "diagram",
+                },
+                {
+                    "title": "Scene 2",
+                    "narration": "A warm welcome to the system",
+                    "visual_type": "screenshot",
+                },
             ],
             "intro_narration": "Welcome to the system",
             "outro_narration": "Thanks for watching",
@@ -319,7 +354,9 @@ class TestBuildDiagnosisPrompt:
         style = {"voice": "first-person", "avoid": ["jargon"]}
 
         forbidden = ["API", "Docker", "container"]
-        prompt = _build_diagnosis_prompt(dims, script, style, iteration=1, forbidden_terms=forbidden)
+        prompt = _build_diagnosis_prompt(
+            dims, script, style, iteration=1, forbidden_terms=forbidden
+        )
 
         # Per-scene analysis present
         assert "Per-Scene Analysis" in prompt
@@ -375,8 +412,14 @@ class TestDiagnoseFailures:
         with patch("agents.demo_pipeline.eval_rubrics.diagnosis_agent") as mock_agent:
             mock_agent.run = AsyncMock(return_value=mock_result)
             diagnosis = await diagnose_failures(
-                [DemoEvalDimension(name="style", category="text", passed=False, score=0.3, issues=["jargon"])],
-                {"title": "Demo", "scenes": []}, {}, 1,
+                [
+                    DemoEvalDimension(
+                        name="style", category="text", passed=False, score=0.3, issues=["jargon"]
+                    )
+                ],
+                {"title": "Demo", "scenes": []},
+                {},
+                1,
             )
 
         assert len(diagnosis.root_causes) == 1

@@ -1,4 +1,5 @@
 """Tests for hapax_voice ambient audio classifier."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -8,13 +9,10 @@ import pytest
 
 from agents.hapax_voice import ambient_classifier
 from agents.hapax_voice.ambient_classifier import (
-    AmbientResult,
-    BLOCK_PATTERNS,
-    DEFAULT_BLOCK_THRESHOLD,
     PANNS_SAMPLE_RATE,
+    _build_label_index,
     classify,
     reset,
-    _build_label_index,
 )
 
 
@@ -29,6 +27,7 @@ def _reset_model_state():
 # ---------------------------------------------------------------------------
 # Label index tests
 # ---------------------------------------------------------------------------
+
 
 def test_build_label_index_finds_block_labels() -> None:
     labels = ["Music", "Silence", "Speech", "Dog bark", "Guitar"]
@@ -61,19 +60,20 @@ def test_build_label_index_case_insensitive() -> None:
 # Classification tests with mocked model
 # ---------------------------------------------------------------------------
 
+
 def _make_fake_labels() -> list[str]:
     """Create a minimal set of labels for testing."""
     return [
-        "Speech",          # 0 - block
-        "Music",           # 1 - block
-        "Silence",         # 2 - allow
-        "Dog bark",        # 3 - neutral
-        "Typing",          # 4 - allow
-        "Guitar",          # 5 - block
-        "Car horn",        # 6 - neutral
-        "Singing",         # 7 - block
-        "White noise",     # 8 - allow
-        "Conversation",    # 9 - block
+        "Speech",  # 0 - block
+        "Music",  # 1 - block
+        "Silence",  # 2 - allow
+        "Dog bark",  # 3 - neutral
+        "Typing",  # 4 - allow
+        "Guitar",  # 5 - block
+        "Car horn",  # 6 - neutral
+        "Singing",  # 7 - block
+        "White noise",  # 8 - allow
+        "Conversation",  # 9 - block
     ]
 
 
@@ -90,9 +90,11 @@ def test_classify_blocks_on_music() -> None:
     probs = np.zeros(len(labels), dtype=np.float32)
     probs[1] = 0.8  # Music
 
-    with patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)), \
-         patch.object(ambient_classifier, "_labels", labels), \
-         patch.object(ambient_classifier, "_load_attempted", True):
+    with (
+        patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)),
+        patch.object(ambient_classifier, "_labels", labels),
+        patch.object(ambient_classifier, "_load_attempted", True),
+    ):
         audio = np.zeros(PANNS_SAMPLE_RATE * 3, dtype=np.float32)
         result = classify(audio=audio)
 
@@ -106,9 +108,11 @@ def test_classify_blocks_on_speech() -> None:
     probs = np.zeros(len(labels), dtype=np.float32)
     probs[0] = 0.6  # Speech
 
-    with patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)), \
-         patch.object(ambient_classifier, "_labels", labels), \
-         patch.object(ambient_classifier, "_load_attempted", True):
+    with (
+        patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)),
+        patch.object(ambient_classifier, "_labels", labels),
+        patch.object(ambient_classifier, "_load_attempted", True),
+    ):
         audio = np.zeros(PANNS_SAMPLE_RATE * 3, dtype=np.float32)
         result = classify(audio=audio)
 
@@ -123,9 +127,11 @@ def test_classify_allows_silence() -> None:
     probs[2] = 0.9  # Silence
     probs[4] = 0.3  # Typing
 
-    with patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)), \
-         patch.object(ambient_classifier, "_labels", labels), \
-         patch.object(ambient_classifier, "_load_attempted", True):
+    with (
+        patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)),
+        patch.object(ambient_classifier, "_labels", labels),
+        patch.object(ambient_classifier, "_load_attempted", True),
+    ):
         audio = np.zeros(PANNS_SAMPLE_RATE * 3, dtype=np.float32)
         result = classify(audio=audio)
 
@@ -142,9 +148,11 @@ def test_classify_blocks_combined_low_probs() -> None:
     probs[7] = 0.03  # Singing
     # Total block = 0.16 > 0.15 threshold
 
-    with patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)), \
-         patch.object(ambient_classifier, "_labels", labels), \
-         patch.object(ambient_classifier, "_load_attempted", True):
+    with (
+        patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)),
+        patch.object(ambient_classifier, "_labels", labels),
+        patch.object(ambient_classifier, "_load_attempted", True),
+    ):
         audio = np.zeros(PANNS_SAMPLE_RATE * 3, dtype=np.float32)
         result = classify(audio=audio)
 
@@ -157,12 +165,14 @@ def test_classify_allows_below_threshold() -> None:
     probs = np.zeros(len(labels), dtype=np.float32)
     probs[0] = 0.03  # Speech
     probs[1] = 0.02  # Music
-    probs[2] = 0.8   # Silence
+    probs[2] = 0.8  # Silence
     # Total block < 0.15
 
-    with patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)), \
-         patch.object(ambient_classifier, "_labels", labels), \
-         patch.object(ambient_classifier, "_load_attempted", True):
+    with (
+        patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)),
+        patch.object(ambient_classifier, "_labels", labels),
+        patch.object(ambient_classifier, "_load_attempted", True),
+    ):
         audio = np.zeros(PANNS_SAMPLE_RATE * 3, dtype=np.float32)
         result = classify(audio=audio)
 
@@ -176,9 +186,11 @@ def test_classify_returns_top_labels() -> None:
     probs[2] = 0.9  # Silence
     probs[4] = 0.3  # Typing
 
-    with patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)), \
-         patch.object(ambient_classifier, "_labels", labels), \
-         patch.object(ambient_classifier, "_load_attempted", True):
+    with (
+        patch.object(ambient_classifier, "_model", _mock_model_with_probs(probs)),
+        patch.object(ambient_classifier, "_labels", labels),
+        patch.object(ambient_classifier, "_load_attempted", True),
+    ):
         audio = np.zeros(PANNS_SAMPLE_RATE * 3, dtype=np.float32)
         result = classify(audio=audio)
 
@@ -191,10 +203,13 @@ def test_classify_returns_top_labels() -> None:
 # Fail-closed behaviour
 # ---------------------------------------------------------------------------
 
+
 def test_classify_fail_closed_no_model() -> None:
     """Blocks when the model fails to load (fail-closed)."""
-    with patch.object(ambient_classifier, "_model", None), \
-         patch.object(ambient_classifier, "_load_attempted", True):
+    with (
+        patch.object(ambient_classifier, "_model", None),
+        patch.object(ambient_classifier, "_load_attempted", True),
+    ):
         result = classify(audio=np.zeros(PANNS_SAMPLE_RATE * 3, dtype=np.float32))
 
     assert not result.interruptible
@@ -218,9 +233,11 @@ def test_classify_fail_closed_inference_error() -> None:
     model = MagicMock()
     model.inference.side_effect = RuntimeError("ONNX error")
 
-    with patch.object(ambient_classifier, "_model", model), \
-         patch.object(ambient_classifier, "_labels", labels), \
-         patch.object(ambient_classifier, "_load_attempted", True):
+    with (
+        patch.object(ambient_classifier, "_model", model),
+        patch.object(ambient_classifier, "_labels", labels),
+        patch.object(ambient_classifier, "_load_attempted", True),
+    ):
         audio = np.zeros(PANNS_SAMPLE_RATE * 3, dtype=np.float32)
         result = classify(audio=audio)
 
@@ -233,10 +250,12 @@ def test_classify_fail_closed_no_audio() -> None:
     labels = _make_fake_labels()
     model = MagicMock()
 
-    with patch.object(ambient_classifier, "_model", model), \
-         patch.object(ambient_classifier, "_labels", labels), \
-         patch.object(ambient_classifier, "_load_attempted", True), \
-         patch("agents.hapax_voice.ambient_classifier._capture_audio_pipewire", return_value=None):
+    with (
+        patch.object(ambient_classifier, "_model", model),
+        patch.object(ambient_classifier, "_labels", labels),
+        patch.object(ambient_classifier, "_load_attempted", True),
+        patch("agents.hapax_voice.ambient_classifier._capture_audio_pipewire", return_value=None),
+    ):
         # Call without audio= so it tries to capture
         result = classify()
 
@@ -248,6 +267,7 @@ def test_classify_fail_closed_no_audio() -> None:
 # Audio input handling
 # ---------------------------------------------------------------------------
 
+
 def test_classify_accepts_1d_audio() -> None:
     """1D audio arrays are reshaped to (1, samples) for PANNs."""
     labels = _make_fake_labels()
@@ -257,11 +277,13 @@ def test_classify_accepts_1d_audio() -> None:
     model = MagicMock()
     model.inference.return_value = (probs[np.newaxis, :], None)
 
-    with patch.object(ambient_classifier, "_model", model), \
-         patch.object(ambient_classifier, "_labels", labels), \
-         patch.object(ambient_classifier, "_load_attempted", True):
+    with (
+        patch.object(ambient_classifier, "_model", model),
+        patch.object(ambient_classifier, "_labels", labels),
+        patch.object(ambient_classifier, "_load_attempted", True),
+    ):
         audio = np.zeros(PANNS_SAMPLE_RATE * 3, dtype=np.float32)
-        result = classify(audio=audio)
+        classify(audio=audio)
 
     # Verify inference was called with 2D array
     call_args = model.inference.call_args[0][0]

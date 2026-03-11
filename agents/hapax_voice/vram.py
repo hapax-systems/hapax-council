@@ -1,4 +1,5 @@
 """VRAM lockfile coordination with audio processor."""
+
 from __future__ import annotations
 
 import logging

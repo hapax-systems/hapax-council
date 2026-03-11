@@ -11,6 +11,7 @@ Usage:
 
 Say "Hapax" and watch for detection. Ctrl+C to stop.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -65,15 +66,22 @@ async def main() -> None:
         now = time.strftime("%H:%M:%S")
         log.info(
             "=== WAKE WORD DETECTED #%d at %s (after %d frames) ===",
-            detection_count, now, frames_processed,
+            detection_count,
+            now,
+            frames_processed,
         )
         try:
             subprocess.Popen(
-                ["notify-send", "--app-name=Hapax Voice",
-                 "--icon=audio-input-microphone",
-                 "--expire-time=2000", "--transient",
-                 f"Wake word detected (#{detection_count})"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                [
+                    "notify-send",
+                    "--app-name=Hapax Voice",
+                    "--icon=audio-input-microphone",
+                    "--expire-time=2000",
+                    "--transient",
+                    f"Wake word detected (#{detection_count})",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         except FileNotFoundError:
             pass
@@ -118,7 +126,9 @@ async def main() -> None:
             rms = np.sqrt(np.mean(np.frombuffer(frame, dtype=np.int16).astype(np.float64) ** 2))
             log.info(
                 "Status: %d frames processed, %d detections, RMS=%.0f",
-                frames_processed, detection_count, rms,
+                frames_processed,
+                detection_count,
+                rms,
             )
             last_status = now
 
@@ -127,7 +137,8 @@ async def main() -> None:
     detector.close()
     log.info(
         "\nDone. %d detections in %d frames.",
-        detection_count, frames_processed,
+        detection_count,
+        frames_processed,
     )
 
 

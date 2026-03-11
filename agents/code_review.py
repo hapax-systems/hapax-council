@@ -8,6 +8,7 @@ Usage:
     uv run python -m agents.code_review path/to/file.py
     uv run python -m agents.code_review --diff "$(git diff HEAD~1)"
 """
+
 import asyncio
 import logging
 import sys
@@ -30,10 +31,14 @@ except ImportError:
 @dataclass
 class ReviewDeps:
     """Review context passed to the agent."""
+
     filename: str = "stdin"
 
 
-SYSTEM_PROMPT = get_system_prompt_fragment("code-review") + "\nCall lookup_constraints() for additional operator constraints.\n" + """\
+SYSTEM_PROMPT = (
+    get_system_prompt_fragment("code-review")
+    + "\nCall lookup_constraints() for additional operator constraints.\n"
+    + """\
 You are a senior code reviewer. Analyze the provided code or diff and give actionable feedback.
 
 Structure your review as:
@@ -50,13 +55,17 @@ Focus on correctness, security, and maintainability — in that order.
 Don't comment on formatting or style unless it hides a bug.
 If the code looks good, say so briefly. Don't manufacture issues.
 For diffs, focus on the changed lines, not surrounding context."""
+)
+
 
 def _make_agent(model_alias: str) -> Agent:
     a = Agent(get_model(model_alias), deps_type=ReviewDeps, system_prompt=SYSTEM_PROMPT)
     from shared.context_tools import get_context_tools
+
     for _tool_fn in get_context_tools():
         a.tool(_tool_fn)
     from shared.axiom_tools import get_axiom_tools
+
     for _tool_fn in get_axiom_tools():
         a.tool(_tool_fn)
     return a

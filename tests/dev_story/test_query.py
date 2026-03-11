@@ -1,15 +1,13 @@
 """Tests for the dev-story query agent."""
+
 from __future__ import annotations
 
 import sqlite3
-from unittest.mock import patch, MagicMock, AsyncMock
-
-import pytest
 
 from agents.dev_story.query import (
-    _sql_query,
-    _session_content,
     _file_history,
+    _session_content,
+    _sql_query,
     build_system_prompt,
 )
 from agents.dev_story.schema import create_tables
@@ -72,7 +70,9 @@ def test_session_content_missing_session():
 def test_file_history():
     conn = _make_db()
     _seed_basic_data(conn)
-    conn.execute("INSERT INTO commits VALUES ('c1', '2026-03-01 10:05:00 -0500', 'feat: widget', 'main', 1, 50, 0)")
+    conn.execute(
+        "INSERT INTO commits VALUES ('c1', '2026-03-01 10:05:00 -0500', 'feat: widget', 'main', 1, 50, 0)"
+    )
     conn.execute("INSERT INTO commit_files VALUES ('c1', 'widget.py', 'A')")
     conn.execute("INSERT INTO correlations VALUES (1, 'm2', 'c1', 0.9, 'file_and_timestamp')")
     conn.commit()

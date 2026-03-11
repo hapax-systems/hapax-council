@@ -9,6 +9,7 @@ Generates four inharmonic bell-like earcons:
 All chimes use inharmonic partial ratios (1.0 : 2.406 : 3.758) to create
 a metallic bell timbre distinguishable from musical instruments.
 """
+
 from __future__ import annotations
 
 import wave
@@ -23,6 +24,7 @@ SAMPLE_RATE = 48000
 @dataclass
 class NoteSpec:
     """Specification for a single note in a chime."""
+
     frequency: float
     onset_ms: float
     duration_ms: float
@@ -36,6 +38,7 @@ class NoteSpec:
 @dataclass
 class ChimeSpec:
     """Specification for a complete chime."""
+
     notes: list[NoteSpec]
     total_duration_ms: float
 
@@ -58,7 +61,7 @@ def _render_note(note: NoteSpec, total_samples: int) -> np.ndarray:
     t = np.arange(duration_samples) / SAMPLE_RATE
 
     signal = np.zeros(duration_samples, dtype=np.float64)
-    for ratio, level_db in zip(note.partial_ratios, note.partial_levels_db):
+    for ratio, level_db in zip(note.partial_ratios, note.partial_levels_db, strict=False):
         freq = note.frequency * ratio
         amplitude = _db_to_linear(level_db)
         signal += amplitude * np.sin(2 * np.pi * freq * t)
@@ -78,7 +81,7 @@ def _render_note(note: NoteSpec, total_samples: int) -> np.ndarray:
         signal[-fade_samples:] *= np.linspace(1.0, 0.0, fade_samples)
 
     actual_len = min(duration_samples, end_sample - onset_sample)
-    audio[onset_sample:onset_sample + actual_len] += signal[:actual_len]
+    audio[onset_sample : onset_sample + actual_len] += signal[:actual_len]
 
     return audio
 
@@ -86,35 +89,71 @@ def _render_note(note: NoteSpec, total_samples: int) -> np.ndarray:
 CHIME_SPECS: dict[str, ChimeSpec] = {
     "activation": ChimeSpec(
         notes=[
-            NoteSpec(frequency=1175.0, onset_ms=0, duration_ms=180,
-                     attack_ms=15, decay_tau_ms=60, peak_amplitude=0.7),
-            NoteSpec(frequency=1568.0, onset_ms=80, duration_ms=270,
-                     attack_ms=15, decay_tau_ms=80, peak_amplitude=0.85,
-                     partial_levels_db=[0.0, -6.0, -14.0]),
+            NoteSpec(
+                frequency=1175.0,
+                onset_ms=0,
+                duration_ms=180,
+                attack_ms=15,
+                decay_tau_ms=60,
+                peak_amplitude=0.7,
+            ),
+            NoteSpec(
+                frequency=1568.0,
+                onset_ms=80,
+                duration_ms=270,
+                attack_ms=15,
+                decay_tau_ms=80,
+                peak_amplitude=0.85,
+                partial_levels_db=[0.0, -6.0, -14.0],
+            ),
         ],
         total_duration_ms=350,
     ),
     "deactivation": ChimeSpec(
         notes=[
-            NoteSpec(frequency=1568.0, onset_ms=0, duration_ms=140,
-                     attack_ms=15, decay_tau_ms=40, peak_amplitude=0.6),
-            NoteSpec(frequency=1175.0, onset_ms=60, duration_ms=220,
-                     attack_ms=15, decay_tau_ms=60, peak_amplitude=0.5,
-                     partial_levels_db=[0.0, -6.0, -14.0]),
+            NoteSpec(
+                frequency=1568.0,
+                onset_ms=0,
+                duration_ms=140,
+                attack_ms=15,
+                decay_tau_ms=40,
+                peak_amplitude=0.6,
+            ),
+            NoteSpec(
+                frequency=1175.0,
+                onset_ms=60,
+                duration_ms=220,
+                attack_ms=15,
+                decay_tau_ms=60,
+                peak_amplitude=0.5,
+                partial_levels_db=[0.0, -6.0, -14.0],
+            ),
         ],
         total_duration_ms=280,
     ),
     "error": ChimeSpec(
         notes=[
-            NoteSpec(frequency=880.0, onset_ms=0, duration_ms=200,
-                     attack_ms=10, decay_tau_ms=50, peak_amplitude=0.5),
+            NoteSpec(
+                frequency=880.0,
+                onset_ms=0,
+                duration_ms=200,
+                attack_ms=10,
+                decay_tau_ms=50,
+                peak_amplitude=0.5,
+            ),
         ],
         total_duration_ms=200,
     ),
     "completion": ChimeSpec(
         notes=[
-            NoteSpec(frequency=1175.0, onset_ms=0, duration_ms=150,
-                     attack_ms=15, decay_tau_ms=40, peak_amplitude=0.4),
+            NoteSpec(
+                frequency=1175.0,
+                onset_ms=0,
+                duration_ms=150,
+                attack_ms=15,
+                decay_tau_ms=40,
+                peak_amplitude=0.4,
+            ),
         ],
         total_duration_ms=150,
     ),

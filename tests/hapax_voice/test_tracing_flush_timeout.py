@@ -1,4 +1,5 @@
 """Tests for VoiceTracer.flush() timeout behavior."""
+
 from __future__ import annotations
 
 import threading

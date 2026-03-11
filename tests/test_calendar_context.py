@@ -1,14 +1,15 @@
 """Tests for shared calendar context query module."""
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 
 def _make_state():
     """Build a test CalendarSyncState."""
     from agents.gcalendar_sync import CalendarEvent, CalendarSyncState
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     tomorrow = (now + timedelta(days=1)).isoformat()
     tomorrow_end = (now + timedelta(days=1, minutes=30)).isoformat()
     next_week = (now + timedelta(days=7)).isoformat()
@@ -17,18 +18,24 @@ def _make_state():
     return CalendarSyncState(
         events={
             "1": CalendarEvent(
-                event_id="1", summary="1:1 with Alice",
-                start=tomorrow, end=tomorrow_end,
+                event_id="1",
+                summary="1:1 with Alice",
+                start=tomorrow,
+                end=tomorrow_end,
                 attendees=["alice@company.com"],
             ),
             "2": CalendarEvent(
-                event_id="2", summary="Team Standup",
-                start=tomorrow, end=tomorrow_end,
+                event_id="2",
+                summary="Team Standup",
+                start=tomorrow,
+                end=tomorrow_end,
                 attendees=["bob@co.com", "carol@co.com"],
             ),
             "3": CalendarEvent(
-                event_id="3", summary="Planning",
-                start=next_week, end=next_week_end,
+                event_id="3",
+                summary="Planning",
+                start=next_week,
+                end=next_week_end,
                 attendees=["alice@company.com", "dave@co.com"],
             ),
         },
@@ -38,6 +45,7 @@ def _make_state():
 
 def test_next_meeting_with(tmp_path):
     from shared.calendar_context import CalendarContext
+
     state = _make_state()
     ctx = CalendarContext(state)
     meeting = ctx.next_meeting_with("alice@company.com")
@@ -47,6 +55,7 @@ def test_next_meeting_with(tmp_path):
 
 def test_next_meeting_with_unknown(tmp_path):
     from shared.calendar_context import CalendarContext
+
     state = _make_state()
     ctx = CalendarContext(state)
     assert ctx.next_meeting_with("nobody@example.com") is None
@@ -54,6 +63,7 @@ def test_next_meeting_with_unknown(tmp_path):
 
 def test_meetings_in_range():
     from shared.calendar_context import CalendarContext
+
     state = _make_state()
     ctx = CalendarContext(state)
     meetings = ctx.meetings_in_range(days=3)
@@ -61,14 +71,16 @@ def test_meetings_in_range():
 
 
 def test_meeting_count_today():
-    from shared.calendar_context import CalendarContext
     from agents.gcalendar_sync import CalendarEvent, CalendarSyncState
-    now = datetime.now(timezone.utc)
+    from shared.calendar_context import CalendarContext
+
+    now = datetime.now(UTC)
     today_start = (now + timedelta(hours=1)).isoformat()
     today_end = (now + timedelta(hours=2)).isoformat()
-    state = CalendarSyncState(events={
-        "t1": CalendarEvent(event_id="t1", summary="Today",
-                            start=today_start, end=today_end),
-    })
+    state = CalendarSyncState(
+        events={
+            "t1": CalendarEvent(event_id="t1", summary="Today", start=today_start, end=today_end),
+        }
+    )
     ctx = CalendarContext(state)
     assert ctx.meeting_count_today() >= 1

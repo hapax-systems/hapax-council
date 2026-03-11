@@ -5,13 +5,13 @@ We parse into structured records for the social graph.
 
 Uses regex-based parsing to avoid requiring the `vobject` library.
 """
+
 from __future__ import annotations
 
 import logging
 import re
 import zipfile
 from collections.abc import Iterator
-from datetime import datetime
 
 from shared.takeout.models import NormalizedRecord, ServiceConfig, make_record_id
 
@@ -54,7 +54,7 @@ def _parse_vcf(
     """Parse vCard entries from VCF text."""
     # Unfold VCF line continuations (RFC 6350 §3.2)
     # Long lines are split with CRLF + space/tab
-    text = re.sub(r'\r?\n[ \t]', '', text)
+    text = re.sub(r"\r?\n[ \t]", "", text)
 
     # Split into individual vCards
     cards = re.findall(

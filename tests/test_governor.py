@@ -1,12 +1,11 @@
 """Tests for PipelineGovernor."""
+
 from __future__ import annotations
 
 import time
 
-import pytest
-
-from agents.hapax_voice.perception import EnvironmentState
 from agents.hapax_voice.governor import PipelineGovernor
+from agents.hapax_voice.perception import EnvironmentState
 
 
 def _state(**overrides) -> EnvironmentState:

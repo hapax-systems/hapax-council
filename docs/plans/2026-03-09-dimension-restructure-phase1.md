@@ -640,7 +640,7 @@ def test_remap_obsidian_knowledge():
 
 def test_migrate_profile_remaps_facts(tmp_path):
     profile = {
-        "name": "Ryan",
+        "name": "the operator",
         "summary": "Test",
         "version": 42,
         "updated_at": "2026-03-09",
@@ -666,7 +666,7 @@ def test_migrate_profile_remaps_facts(tmp_path):
             },
         ],
     }
-    input_path = tmp_path / "ryan.json"
+    input_path = tmp_path / "operator-profile.json"
     input_path.write_text(json.dumps(profile))
 
     result = migrate_profile(input_path)
@@ -697,7 +697,7 @@ Create `scripts/migrate_profile_dimensions.py`:
 Usage:
     uv run python scripts/migrate_profile_dimensions.py [--dry-run]
 
-Reads profiles/ryan.json, remaps dimensions, writes updated profile.
+Reads profiles/operator-profile.json, remaps dimensions, writes updated profile.
 Dropped facts (e.g. hardware) go to profiles/migration-review.jsonl.
 """
 from __future__ import annotations
@@ -829,7 +829,7 @@ def main():
     from shared.config import PROFILES_DIR
 
     dry_run = "--dry-run" in sys.argv
-    profile_path = PROFILES_DIR / "ryan.json"
+    profile_path = PROFILES_DIR / "operator-profile.json"
 
     if not profile_path.exists():
         print("No profile found at", profile_path)

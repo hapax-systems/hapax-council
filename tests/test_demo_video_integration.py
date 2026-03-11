@@ -1,13 +1,13 @@
 """Integration test for the video assembly pipeline (no actual TTS or GPU)."""
+
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from PIL import Image
 
-from agents.demo_models import DemoScript, DemoScene, ScreenshotSpec
+from agents.demo_models import DemoScene, DemoScript, ScreenshotSpec
 from agents.demo_pipeline.title_cards import generate_title_card
 from agents.demo_pipeline.video import _build_scene_clips, _title_clip
 

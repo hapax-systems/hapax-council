@@ -49,12 +49,12 @@ dev = [
 
 **Step 2: Install**
 
-Run: `cd ~/projects/ai-agents && uv sync`
+Run: `cd ~/projects/hapax-council && uv sync`
 Expected: Clean install, no conflicts.
 
 **Step 3: Verify imports work**
 
-Run: `cd ~/projects/ai-agents && uv run python -c "import fastapi; import uvicorn; import sse_starlette; print('ok')"`
+Run: `cd ~/projects/hapax-council && uv run python -c "import fastapi; import uvicorn; import sse_starlette; print('ok')"`
 Expected: `ok`
 
 **Step 4: Commit**
@@ -112,7 +112,7 @@ class TestAppSkeleton:
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_api.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_api.py -v`
 Expected: ImportError — `cockpit.api.app` doesn't exist yet.
 
 **Step 3: Write minimal implementation**
@@ -163,7 +163,7 @@ async def root():
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_api.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_api.py -v`
 Expected: 2 passed.
 
 **Step 5: Commit**
@@ -238,7 +238,7 @@ class TestDataCache:
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_api_cache.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_api_cache.py -v`
 Expected: ImportError — `cockpit.api.cache` doesn't exist.
 
 **Step 3: Write implementation**
@@ -374,7 +374,7 @@ async def start_refresh_loop() -> None:
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_api_cache.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_api_cache.py -v`
 Expected: 3 passed.
 
 **Step 5: Commit**
@@ -417,7 +417,7 @@ app = FastAPI(
 
 **Step 2: Verify existing tests still pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_api.py tests/test_api_cache.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_api.py tests/test_api_cache.py -v`
 Expected: All pass (the test client fixture creates the app, lifespan runs in test context).
 
 **Step 3: Commit**
@@ -498,7 +498,7 @@ class TestInfrastructureEndpoint:
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_api.py::TestHealthEndpoint -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_api.py::TestHealthEndpoint -v`
 Expected: 404 — route doesn't exist.
 
 **Step 3: Write implementation**
@@ -628,7 +628,7 @@ app.include_router(data_router)
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_api.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_api.py -v`
 Expected: All pass (skeleton + health + GPU + infrastructure tests).
 
 **Step 5: Commit**
@@ -695,7 +695,7 @@ if __name__ == "__main__":
 
 **Step 2: Verify it starts (manual smoke test)**
 
-Run: `cd ~/projects/ai-agents && timeout 5 uv run python -m cockpit.api --verbose 2>&1 || true`
+Run: `cd ~/projects/hapax-council && timeout 5 uv run python -m cockpit.api --verbose 2>&1 || true`
 Expected: uvicorn startup log, then timeout.
 
 **Step 3: Add script entry point to pyproject.toml**
@@ -1345,12 +1345,12 @@ git commit -m "feat: dashboard layout with header, sidebar, nudge list, agent li
 ## Task 11: Docker service definition
 
 **Files:**
-- Create: `~/projects/ai-agents/Dockerfile.api`
+- Create: `~/projects/hapax-council/Dockerfile.api`
 - Modify: `~/llm-stack/docker-compose.yml`
 
 **Step 1: Create Dockerfile**
 
-Create `Dockerfile.api` in `~/projects/ai-agents/`:
+Create `Dockerfile.api` in `~/projects/hapax-council/`:
 
 ```dockerfile
 FROM python:3.12-slim
@@ -1382,7 +1382,7 @@ Add to `~/llm-stack/docker-compose.yml` under services:
 ```yaml
   cockpit-api:
     build:
-      context: ~/projects/ai-agents
+      context: ~/projects/hapax-council
       dockerfile: Dockerfile.api
     container_name: cockpit-api
     restart: unless-stopped
@@ -1390,7 +1390,7 @@ Add to `~/llm-stack/docker-compose.yml` under services:
       - "127.0.0.1:8050:8050"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ~/projects/ai-agents/profiles:/app/profiles
+      - ~/projects/hapax-council/profiles:/app/profiles
       - ~/Documents/Personal:/vault:ro
     environment:
       - OBSIDIAN_VAULT_PATH=/vault
@@ -1411,7 +1411,7 @@ Add to `~/llm-stack/docker-compose.yml` under services:
 **Step 3: Commit**
 
 ```bash
-cd ~/projects/ai-agents
+cd ~/projects/hapax-council
 git add Dockerfile.api
 git commit -m "build: Dockerfile for cockpit-api service"
 ```
@@ -1425,7 +1425,7 @@ git commit -m "build: Dockerfile for cockpit-api service"
 **Step 1: Start the API server locally (not Docker)**
 
 ```bash
-cd ~/projects/ai-agents && uv run python -m cockpit.api --verbose &
+cd ~/projects/hapax-council && uv run python -m cockpit.api --verbose &
 ```
 
 **Step 2: Verify data endpoints**

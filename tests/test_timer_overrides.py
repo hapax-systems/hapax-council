@@ -1,4 +1,5 @@
 """Tests for systemd timer override files — validates syntax and structure."""
+
 from __future__ import annotations
 
 import configparser
@@ -9,10 +10,8 @@ import pytest
 OVERRIDES_DIR = Path(__file__).parent.parent / "systemd" / "overrides" / "dev"
 
 EXPECTED_TIMERS = [
-    "claude-code-sync.timer",
-    "obsidian-sync.timer",
-    "chrome-sync.timer",
-    "gdrive-sync.timer",
+    # Sync-pipeline timers (claude-code-sync, obsidian-sync, chrome-sync,
+    # gdrive-sync) moved to Docker supercronic — no host overrides needed.
     "profile-update.timer",
     "digest.timer",
     "daily-briefing.timer",
@@ -33,10 +32,7 @@ def test_override_has_timer_section(timer_name):
     parser.read(OVERRIDES_DIR / timer_name)
     assert "Timer" in parser.sections(), f"{timer_name} missing [Timer] section"
     timer_section = dict(parser["Timer"])
-    has_schedule = any(
-        k in timer_section
-        for k in ("oncalendar", "onbootsec", "onunitactivesec")
-    )
+    has_schedule = any(k in timer_section for k in ("oncalendar", "onbootsec", "onunitactivesec"))
     assert has_schedule, f"{timer_name} has no schedule directive"
 
 

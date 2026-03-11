@@ -2,6 +2,7 @@
 
 Stdlib-only. No external dependencies.
 """
+
 from __future__ import annotations
 
 import re
@@ -12,6 +13,7 @@ from pathlib import Path
 @dataclass
 class TranscriptSegment:
     """A single segment of a transcript."""
+
     speaker: str
     text: str
     start_time: str = ""
@@ -47,9 +49,8 @@ def _detect_format(content: str) -> str:
         return "vtt"
     # SRT: starts with a number followed by timestamp line
     lines = stripped.split("\n", 5)
-    if len(lines) >= 2:
-        if re.match(r"^\d+$", lines[0].strip()) and "-->" in lines[1]:
-            return "srt"
+    if len(lines) >= 2 and re.match(r"^\d+$", lines[0].strip()) and "-->" in lines[1]:
+        return "srt"
     return "speaker-labeled"
 
 
@@ -107,12 +108,14 @@ def _parse_vtt(content: str) -> list[TranscriptSegment]:
         text = re.sub(r"<[^>]+>", "", text).strip()
 
         if text:
-            segments.append(TranscriptSegment(
-                speaker=speaker,
-                text=text,
-                start_time=start_time,
-                end_time=end_time,
-            ))
+            segments.append(
+                TranscriptSegment(
+                    speaker=speaker,
+                    text=text,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+            )
 
     return segments
 
@@ -150,12 +153,14 @@ def _parse_srt(content: str) -> list[TranscriptSegment]:
             speaker = ""
 
         if text:
-            segments.append(TranscriptSegment(
-                speaker=speaker,
-                text=text,
-                start_time=start_time,
-                end_time=end_time,
-            ))
+            segments.append(
+                TranscriptSegment(
+                    speaker=speaker,
+                    text=text,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+            )
 
     return segments
 
@@ -181,10 +186,12 @@ def _parse_speaker_labeled(content: str) -> list[TranscriptSegment]:
         if speaker_match:
             # Save previous segment
             if current_speaker and current_lines:
-                segments.append(TranscriptSegment(
-                    speaker=current_speaker,
-                    text=" ".join(current_lines),
-                ))
+                segments.append(
+                    TranscriptSegment(
+                        speaker=current_speaker,
+                        text=" ".join(current_lines),
+                    )
+                )
             current_speaker = speaker_match.group(1).strip()
             current_lines = [speaker_match.group(2).strip()]
         elif current_speaker:
@@ -193,10 +200,12 @@ def _parse_speaker_labeled(content: str) -> list[TranscriptSegment]:
 
     # Save last segment
     if current_speaker and current_lines:
-        segments.append(TranscriptSegment(
-            speaker=current_speaker,
-            text=" ".join(current_lines),
-        ))
+        segments.append(
+            TranscriptSegment(
+                speaker=current_speaker,
+                text=" ".join(current_lines),
+            )
+        )
 
     return segments
 

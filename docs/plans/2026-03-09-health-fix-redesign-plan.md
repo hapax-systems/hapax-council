@@ -140,7 +140,7 @@ class TestCapability:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_capabilities_base.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_capabilities_base.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'shared.fix_capabilities'`
 
 **Step 3: Create the package init**
@@ -247,7 +247,7 @@ class Capability(ABC):
 
 **Step 5: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_capabilities_base.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_capabilities_base.py -v`
 Expected: All PASS
 
 **Step 6: Commit**
@@ -343,7 +343,7 @@ class TestRegistry:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_capabilities_registry.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_capabilities_registry.py -v`
 Expected: FAIL — `ImportError: cannot import name 'register_capability'`
 
 **Step 3: Implement the registry**
@@ -388,7 +388,7 @@ def get_all_capabilities() -> list[Capability]:
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_capabilities_registry.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_capabilities_registry.py -v`
 Expected: All PASS
 
 **Step 5: Commit**
@@ -544,7 +544,7 @@ class TestOllamaExecute:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_cap_ollama.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_cap_ollama.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'shared.fix_capabilities.ollama_cap'`
 
 **Step 3: Implement the Ollama capability**
@@ -653,7 +653,7 @@ class OllamaCapability(Capability):
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_cap_ollama.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_cap_ollama.py -v`
 Expected: All PASS
 
 **Step 5: Commit**
@@ -796,7 +796,7 @@ class TestDockerExecute:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_cap_docker.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_cap_docker.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 **Step 3: Implement the Docker capability**
@@ -893,7 +893,7 @@ class DockerCapability(Capability):
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_cap_docker.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_cap_docker.py -v`
 Expected: All PASS
 
 **Step 5: Commit**
@@ -1017,7 +1017,7 @@ class TestSystemdExecute:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_cap_systemd.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_cap_systemd.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 **Step 3: Implement the systemd capability**
@@ -1116,7 +1116,7 @@ class SystemdCapability(Capability):
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_cap_systemd.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_cap_systemd.py -v`
 Expected: All PASS
 
 **Step 5: Commit**
@@ -1234,7 +1234,7 @@ class TestFilesystemExecute:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_cap_filesystem.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_cap_filesystem.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 **Step 3: Implement the filesystem capability**
@@ -1266,8 +1266,8 @@ log = logging.getLogger(__name__)
 # Allowlisted cache directories that are safe to clear
 _SAFE_CACHE_DIRS = frozenset({
     "/tmp/cache",
-    "/home/hapaxlegomenon/.cache/uv",
-    "/home/hapaxlegomenon/.cache/pip",
+    "/home/user/.cache/uv",
+    "/home/user/.cache/pip",
 })
 
 _ACTIONS = {
@@ -1340,7 +1340,7 @@ class FilesystemCapability(Capability):
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_cap_filesystem.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_cap_filesystem.py -v`
 Expected: All PASS
 
 **Step 5: Commit**
@@ -1465,7 +1465,7 @@ class TestEvaluateCheck:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_evaluator.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_evaluator.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 **Step 3: Implement the evaluator**
@@ -1578,7 +1578,7 @@ async def evaluate_check(
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_evaluator.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_evaluator.py -v`
 Expected: All PASS
 
 **Step 5: Commit**
@@ -1774,7 +1774,7 @@ class TestFixPipeline:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_pipeline.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_pipeline.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
 **Step 3: Implement the pipeline**
@@ -1934,7 +1934,7 @@ async def run_fix_pipeline(
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_pipeline.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_pipeline.py -v`
 Expected: All PASS
 
 **Step 5: Commit**
@@ -1995,7 +1995,7 @@ class TestBuiltinRegistration:
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_capabilities_registration.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_capabilities_registration.py -v`
 Expected: FAIL — `ImportError: cannot import name 'load_builtin_capabilities'`
 
 **Step 3: Add load_builtin_capabilities to __init__**
@@ -2018,7 +2018,7 @@ def load_builtin_capabilities() -> None:
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_capabilities_registration.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_capabilities_registration.py -v`
 Expected: All PASS
 
 **Step 5: Commit**
@@ -2100,7 +2100,7 @@ class TestRunFixesNewPipeline:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_health_monitor_pipeline.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_health_monitor_pipeline.py -v`
 Expected: FAIL — `ImportError: cannot import name 'run_fixes_v2'`
 
 **Step 3: Add `run_fixes_v2` and `--apply`/`--dry-run` flags**
@@ -2173,12 +2173,12 @@ Modify the fix handling in `main()` to use the new pipeline when `--apply` or `-
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_health_monitor_pipeline.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_health_monitor_pipeline.py -v`
 Expected: All PASS
 
 **Step 5: Run existing health monitor tests to verify no regressions**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_health_monitor.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_health_monitor.py -v`
 Expected: All PASS (existing tests unaffected)
 
 **Step 6: Commit**
@@ -2361,12 +2361,12 @@ class TestEndToEnd:
 
 **Step 2: Run tests to verify they pass**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_integration.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_integration.py -v`
 Expected: All PASS
 
 **Step 3: Run the full test suite**
 
-Run: `cd /home/hapaxlegomenon/projects/ai-agents && uv run pytest tests/test_fix_capabilities_base.py tests/test_fix_capabilities_registry.py tests/test_fix_cap_ollama.py tests/test_fix_cap_docker.py tests/test_fix_cap_systemd.py tests/test_fix_cap_filesystem.py tests/test_fix_evaluator.py tests/test_fix_pipeline.py tests/test_fix_capabilities_registration.py tests/test_health_monitor_pipeline.py tests/test_fix_integration.py tests/test_health_monitor.py -v`
+Run: `cd /home/user/projects/hapax-council && uv run pytest tests/test_fix_capabilities_base.py tests/test_fix_capabilities_registry.py tests/test_fix_cap_ollama.py tests/test_fix_cap_docker.py tests/test_fix_cap_systemd.py tests/test_fix_cap_filesystem.py tests/test_fix_evaluator.py tests/test_fix_pipeline.py tests/test_fix_capabilities_registration.py tests/test_health_monitor_pipeline.py tests/test_fix_integration.py tests/test_health_monitor.py -v`
 Expected: All PASS
 
 **Step 4: Commit**

@@ -2,13 +2,12 @@
 
 All I/O mocked: Langfuse, Tavily HTTP, filesystem, LLM calls.
 """
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import MagicMock, patch
 
-import pytest
 import yaml
 
 from agents.scout import (
@@ -16,15 +15,14 @@ from agents.scout import (
     Finding,
     Recommendation,
     ScoutReport,
-    load_registry,
-    _tavily_search,
     _build_usage_map,
-    search_component,
-    format_report_md,
+    _tavily_search,
     format_report_human,
+    format_report_md,
+    load_registry,
+    search_component,
     send_notification,
 )
-
 
 # ── Registry tests ──────────────────────────────────────────────────────────
 
@@ -123,16 +121,27 @@ def test_load_registry_handles_missing_fields(mock_file):
 
 # ── Tavily search tests ─────────────────────────────────────────────────────
 
+
 @patch("agents.scout.TAVILY_API_KEY", "test-key")
 @patch("agents.scout.urlopen")
 def test_tavily_search_returns_results(mock_urlopen):
     mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps({
-        "results": [
-            {"title": "Qdrant vs Milvus", "url": "https://example.com", "content": "Comparison..."},
-            {"title": "Vector DB Benchmark", "url": "https://bench.io", "content": "Results..."},
-        ]
-    }).encode()
+    mock_response.read.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "title": "Qdrant vs Milvus",
+                    "url": "https://example.com",
+                    "content": "Comparison...",
+                },
+                {
+                    "title": "Vector DB Benchmark",
+                    "url": "https://bench.io",
+                    "content": "Results...",
+                },
+            ]
+        }
+    ).encode()
     mock_response.__enter__ = lambda s: s
     mock_response.__exit__ = MagicMock(return_value=False)
     mock_urlopen.return_value = mock_response
@@ -154,6 +163,7 @@ def test_tavily_search_no_api_key():
 @patch("agents.scout.urlopen")
 def test_tavily_search_handles_error(mock_urlopen):
     from urllib.error import URLError
+
     mock_urlopen.side_effect = URLError("Connection refused")
     results = _tavily_search("query")
     assert results == []
@@ -161,13 +171,19 @@ def test_tavily_search_handles_error(mock_urlopen):
 
 # ── search_component tests ──────────────────────────────────────────────────
 
+
 @patch("agents.scout.time.sleep")  # Don't actually sleep
 @patch("agents.scout._tavily_search")
 def test_search_component_aggregates_results(mock_search, mock_sleep):
     spec = ComponentSpec(
-        key="test", role="test", current="Test",
-        provider="test", constraints=[], preferences=[],
-        search_hints=["hint1", "hint2"], eval_notes="",
+        key="test",
+        role="test",
+        current="Test",
+        provider="test",
+        constraints=[],
+        preferences=[],
+        search_hints=["hint1", "hint2"],
+        eval_notes="",
     )
     mock_search.side_effect = [
         [{"title": "Result A", "url": "https://a.com", "content": "Content A"}],
@@ -183,9 +199,14 @@ def test_search_component_aggregates_results(mock_search, mock_sleep):
 @patch("agents.scout._tavily_search")
 def test_search_component_deduplicates_by_url(mock_search, mock_sleep):
     spec = ComponentSpec(
-        key="test", role="test", current="Test",
-        provider="test", constraints=[], preferences=[],
-        search_hints=["hint1", "hint2"], eval_notes="",
+        key="test",
+        role="test",
+        current="Test",
+        provider="test",
+        constraints=[],
+        preferences=[],
+        search_hints=["hint1", "hint2"],
+        eval_notes="",
     )
     mock_search.return_value = [
         {"title": "Same", "url": "https://same.com", "content": "Same content"},
@@ -199,9 +220,14 @@ def test_search_component_deduplicates_by_url(mock_search, mock_sleep):
 @patch("agents.scout._tavily_search")
 def test_search_component_no_results(mock_search, mock_sleep):
     spec = ComponentSpec(
-        key="test", role="test", current="Test",
-        provider="test", constraints=[], preferences=[],
-        search_hints=["hint1"], eval_notes="",
+        key="test",
+        role="test",
+        current="Test",
+        provider="test",
+        constraints=[],
+        preferences=[],
+        search_hints=["hint1"],
+        eval_notes="",
     )
     mock_search.return_value = []
     text = search_component(spec)
@@ -209,6 +235,7 @@ def test_search_component_no_results(mock_search, mock_sleep):
 
 
 # ── Usage map tests ─────────────────────────────────────────────────────────
+
 
 @patch("shared.langfuse_client.is_available", return_value=True)
 @patch("shared.langfuse_client.langfuse_get")
@@ -235,10 +262,13 @@ def test_build_usage_map_langfuse_unavailable(mock_avail):
 
 # ── Tier/schema tests ──────────────────────────────────────────────────────
 
+
 def test_recommendation_tiers():
     for tier in ("adopt", "evaluate", "monitor", "current-best"):
         r = Recommendation(
-            component="test", current="Test", tier=tier,
+            component="test",
+            current="Test",
+            tier=tier,
             summary="Test summary",
         )
         assert r.tier == tier
@@ -258,6 +288,7 @@ def test_finding_schema():
 
 # ── Formatter tests ────────────────────────────────────────────────────────
 
+
 def _sample_report() -> ScoutReport:
     return ScoutReport(
         generated_at="2026-03-01T10:00:00Z",
@@ -275,7 +306,9 @@ def _sample_report() -> ScoutReport:
                 current="LiteLLM",
                 tier="evaluate",
                 summary="Portkey showing promise.",
-                findings=[Finding(name="Portkey", description="New gateway", url="https://portkey.ai")],
+                findings=[
+                    Finding(name="Portkey", description="New gateway", url="https://portkey.ai")
+                ],
                 migration_effort="medium",
                 confidence="medium",
             ),
@@ -328,6 +361,7 @@ def test_format_report_md_errors_section():
 
 
 # ── Notification tests ──────────────────────────────────────────────────────
+
 
 @patch("shared.notify.send_notification")
 def test_send_notification_called_with_actionable(mock_notify):

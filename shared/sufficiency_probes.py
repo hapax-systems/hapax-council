@@ -12,14 +12,14 @@ Usage:
     for r in results:
         print(f"{'PASS' if r.met else 'FAIL'} {r.probe_id}: {r.evidence}")
 """
+
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Callable
+from datetime import UTC, datetime
 
 from shared.config import AI_AGENTS_DIR, COCKPIT_STATE_DIR, OBSIDIAN_HAPAX_DIR
 
@@ -46,6 +46,7 @@ class ProbeResult:
 
 # ── Probe implementations ────────────────────────────────────────────────────
 
+
 def _check_agent_error_remediation() -> tuple[bool, str]:
     """Check that agent error handlers contain remediation strings."""
     agents_dir = AI_AGENTS_DIR / "agents"
@@ -70,11 +71,13 @@ def _check_agent_error_remediation() -> tuple[bool, str]:
 
         checked += 1
         # Look for remediation patterns: "Try:", "Run:", "Fix:", "Next:", "Check:"
-        has_remediation = bool(re.search(
-            r'(?:Try|Run|Fix|Next|Check|Suggest|Action|Remediat)[:\s]',
-            content,
-            re.IGNORECASE,
-        ))
+        has_remediation = bool(
+            re.search(
+                r"(?:Try|Run|Fix|Next|Check|Suggest|Action|Remediat)[:\s]",
+                content,
+                re.IGNORECASE,
+            )
+        )
         if has_remediation:
             with_remediation += 1
         else:
@@ -86,7 +89,10 @@ def _check_agent_error_remediation() -> tuple[bool, str]:
     ratio = with_remediation / checked
     if ratio >= 0.7:
         return True, f"{with_remediation}/{checked} agents have remediation strings"
-    return False, f"only {with_remediation}/{checked} agents have remediation strings; missing: {', '.join(missing[:3])}"
+    return (
+        False,
+        f"only {with_remediation}/{checked} agents have remediation strings; missing: {', '.join(missing[:3])}",
+    )
 
 
 def _check_agent_zero_config() -> tuple[bool, str]:
@@ -115,7 +121,7 @@ def _check_agent_zero_config() -> tuple[bool, str]:
         has_required = False
         for m in re.finditer(r'add_argument\(["\']([^-].*?)["\']([^)]*)\)', content):
             arg_opts = m.group(2)
-            if 'nargs=' not in arg_opts and 'default=' not in arg_opts:
+            if "nargs=" not in arg_opts and "default=" not in arg_opts:
                 has_required = True
                 break
         if not has_required:
@@ -128,12 +134,15 @@ def _check_agent_zero_config() -> tuple[bool, str]:
 
     if zero_config == checked:
         return True, f"all {checked} agents with CLI parsers have no required args"
-    return False, f"{len(problems)} agent(s) have required positional args: {', '.join(problems[:3])}"
+    return (
+        False,
+        f"{len(problems)} agent(s) have required positional args: {', '.join(problems[:3])}",
+    )
 
 
 def _check_state_persistence() -> tuple[bool, str]:
     """Check that agents with resume capability persist state files."""
-    agents_dir = AI_AGENTS_DIR / "agents"
+    AI_AGENTS_DIR / "agents"
     profiles_dir = AI_AGENTS_DIR / "profiles"
     cache_dir = COCKPIT_STATE_DIR
 
@@ -146,8 +155,14 @@ def _check_state_persistence() -> tuple[bool, str]:
         state_locations.extend(f.name for f in cache_files)
 
     if len(state_locations) >= 3:
-        return True, f"{len(state_locations)} state files found across profiles/ and ~/.cache/cockpit/"
-    return False, f"only {len(state_locations)} state files found — agents may not be persisting state"
+        return (
+            True,
+            f"{len(state_locations)} state files found across profiles/ and ~/.cache/cockpit/",
+        )
+    return (
+        False,
+        f"only {len(state_locations)} state files found — agents may not be persisting state",
+    )
 
 
 def _check_briefing_multi_source() -> tuple[bool, str]:
@@ -184,10 +199,13 @@ def _check_systemd_timer_coverage() -> tuple[bool, str]:
     try:
         result = subprocess.run(
             ["systemctl", "--user", "list-timers", "--no-pager", "--plain"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         timer_lines = [
-            line for line in result.stdout.splitlines()
+            line
+            for line in result.stdout.splitlines()
             if ".timer" in line and "NEXT" not in line and "timers listed" not in line
         ]
         timer_count = len(timer_lines)
@@ -196,13 +214,22 @@ def _check_systemd_timer_coverage() -> tuple[bool, str]:
 
     # Expected recurring agents
     expected_agents = [
-        "health-monitor", "daily-briefing", "drift-detector",
-        "manifest-snapshot", "llm-backup", "profile-update",
-        "scout", "digest", "knowledge-maint",
+        "health-monitor",
+        "daily-briefing",
+        "drift-detector",
+        "manifest-snapshot",
+        "llm-backup",
+        "profile-update",
+        "scout",
+        "digest",
+        "knowledge-maint",
     ]
 
     if timer_count >= len(expected_agents):
-        return True, f"{timer_count} timers active, covers {len(expected_agents)} expected recurring agents"
+        return (
+            True,
+            f"{timer_count} timers active, covers {len(expected_agents)} expected recurring agents",
+        )
     return False, f"only {timer_count} timers but {len(expected_agents)} recurring agents expected"
 
 
@@ -242,7 +269,10 @@ def _check_profile_context_chain() -> tuple[bool, str]:
     has_sufficiency = "lookup_sufficiency_requirements" in context_content
 
     if has_search_profile and has_profile_summary and has_sufficiency:
-        return True, "context tools chain complete: search_profile + get_profile_summary + lookup_sufficiency_requirements + ProfileStore"
+        return (
+            True,
+            "context tools chain complete: search_profile + get_profile_summary + lookup_sufficiency_requirements + ProfileStore",
+        )
     return False, "context tools chain incomplete"
 
 
@@ -255,12 +285,12 @@ def _check_no_multiuser_indirection() -> tuple[bool, str]:
     content = config_file.read_text()
     # Check for user-parameterized paths (exclude standard system paths like systemd/user)
     multi_user_patterns = [
-        r'(?<!systemd_)user_id',
-        r'(?<!SYSTEMD_)user_dir',
-        r'per_user',
-        r'(?<!systemd/)users/',
-        r'\{user\}',
-        r'current_user',
+        r"(?<!systemd_)user_id",
+        r"(?<!SYSTEMD_)user_dir",
+        r"per_user",
+        r"(?<!systemd/)users/",
+        r"\{user\}",
+        r"current_user",
     ]
 
     found = []
@@ -345,6 +375,7 @@ PROBES: list[SufficiencyProbe] = [
 
 # ── Corporate boundary probes ────────────────────────────────────────────────
 
+
 def _check_plugin_direct_api_support() -> tuple[bool, str]:
     """Check obsidian-hapax supports direct API calls without localhost proxy (cb-llm-001)."""
     providers_dir = OBSIDIAN_HAPAX_DIR / "src" / "providers"
@@ -406,7 +437,7 @@ def _check_plugin_credentials_in_settings() -> tuple[bool, str]:
 
     # Check no secrets in env vars or external files
     src_dir = OBSIDIAN_HAPAX_DIR / "src"
-    env_patterns = [r'process\.env', r'dotenv', r'\.env\b']
+    env_patterns = [r"process\.env", r"dotenv", r"\.env\b"]
     for ts_file in src_dir.rglob("*.ts"):
         try:
             file_content = ts_file.read_text()
@@ -417,7 +448,10 @@ def _check_plugin_credentials_in_settings() -> tuple[bool, str]:
                 return False, f"env-based secret access found in {ts_file.name}"
 
     if has_api_key_field:
-        return True, "API keys stored in plugin settings (data.json via Obsidian), no env-based secrets"
+        return (
+            True,
+            "API keys stored in plugin settings (data.json via Obsidian), no env-based secrets",
+        )
     return False, "apiKey field not found in types.ts"
 
 
@@ -453,6 +487,7 @@ PROBES.extend(CORPORATE_BOUNDARY_PROBES)
 
 # ── Executive function behavioral probes ─────────────────────────────────────
 
+
 def _check_proactive_alert_surfacing() -> tuple[bool, str]:
     """Check health_monitor pushes alerts proactively (ex-alert-004)."""
     hm_file = AI_AGENTS_DIR / "agents" / "health_monitor.py"
@@ -465,10 +500,13 @@ def _check_proactive_alert_surfacing() -> tuple[bool, str]:
 
     # Check the timer fires it automatically
     import subprocess
+
     try:
         result = subprocess.run(
             ["systemctl", "--user", "is-active", "health-monitor.timer"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         timer_active = result.stdout.strip() == "active"
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -498,9 +536,7 @@ EXECUTIVE_FUNCTION_PROBES: list[SufficiencyProbe] = [
 PROBES.extend(EXECUTIVE_FUNCTION_PROBES)
 
 
-def run_probes(
-    *, axiom_id: str = "", level: str = ""
-) -> list[ProbeResult]:
+def run_probes(*, axiom_id: str = "", level: str = "") -> list[ProbeResult]:
     """Run all sufficiency probes and return results.
 
     Args:
@@ -514,7 +550,7 @@ def run_probes(
         probes = [p for p in probes if p.level == level]
 
     results = []
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     for probe in probes:
         try:
@@ -524,11 +560,13 @@ def run_probes(
             evidence = f"probe error: {e}"
             log.warning("Probe %s failed: %s", probe.id, e)
 
-        results.append(ProbeResult(
-            probe_id=probe.id,
-            met=met,
-            evidence=evidence,
-            timestamp=now,
-        ))
+        results.append(
+            ProbeResult(
+                probe_id=probe.id,
+                met=met,
+                evidence=evidence,
+                timestamp=now,
+            )
+        )
 
     return results

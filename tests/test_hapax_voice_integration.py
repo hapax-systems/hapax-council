@@ -1,4 +1,5 @@
 """Integration tests for VoiceDaemon — verifies subsystem wiring."""
+
 from __future__ import annotations
 
 import asyncio
@@ -33,8 +34,10 @@ async def test_daemon_starts_and_stops():
         await asyncio.sleep(0.5)
         daemon.stop()
 
-    with patch.object(daemon.hotkey, "start", new_callable=AsyncMock), \
-         patch.object(daemon.hotkey, "stop", new_callable=AsyncMock):
+    with (
+        patch.object(daemon.hotkey, "start", new_callable=AsyncMock),
+        patch.object(daemon.hotkey, "stop", new_callable=AsyncMock),
+    ):
         task = asyncio.create_task(stop_after_delay())
         await daemon.run()
         await task
@@ -103,8 +106,10 @@ async def test_daemon_loop_handles_timeout():
         await asyncio.sleep(1.5)
         daemon.stop()
 
-    with patch.object(daemon.hotkey, "start", new_callable=AsyncMock), \
-         patch.object(daemon.hotkey, "stop", new_callable=AsyncMock):
+    with (
+        patch.object(daemon.hotkey, "start", new_callable=AsyncMock),
+        patch.object(daemon.hotkey, "stop", new_callable=AsyncMock),
+    ):
         task = asyncio.create_task(stop_after_timeout())
         await daemon.run()
         await task
@@ -120,8 +125,10 @@ def test_gate_blocks_during_active_session():
 
     daemon = VoiceDaemon()
     daemon.session.open(trigger="test")
-    with patch.object(daemon.gate, "_get_sink_volume", return_value=0.3), \
-         patch.object(daemon.gate, "_check_studio", return_value=(True, "")):
+    with (
+        patch.object(daemon.gate, "_get_sink_volume", return_value=0.3),
+        patch.object(daemon.gate, "_check_studio", return_value=(True, "")),
+    ):
         result = daemon.gate.check()
     assert not result.eligible
     assert "Session active" in result.reason
@@ -132,9 +139,11 @@ def test_gate_allows_when_idle():
     from agents.hapax_voice.__main__ import VoiceDaemon
 
     daemon = VoiceDaemon()
-    with patch.object(daemon.gate, "_get_sink_volume", return_value=0.3), \
-         patch.object(daemon.gate, "_check_studio", return_value=(True, "")), \
-         patch.object(daemon.gate, "_check_ambient", return_value=(True, "")):
+    with (
+        patch.object(daemon.gate, "_get_sink_volume", return_value=0.3),
+        patch.object(daemon.gate, "_check_studio", return_value=(True, "")),
+        patch.object(daemon.gate, "_check_ambient", return_value=(True, "")),
+    ):
         result = daemon.gate.check()
     assert result.eligible
 
@@ -145,9 +154,7 @@ def test_notification_queue_wired():
     from agents.hapax_voice.notification_queue import VoiceNotification
 
     daemon = VoiceDaemon()
-    n = VoiceNotification(
-        title="Test", message="Hello", priority="normal", source="test"
-    )
+    n = VoiceNotification(title="Test", message="Hello", priority="normal", source="test")
     daemon.notifications.enqueue(n)
     assert daemon.notifications.pending_count == 1
     item = daemon.notifications.next()
@@ -183,9 +190,7 @@ async def test_ntfy_callback_enqueues():
     from agents.hapax_voice.notification_queue import VoiceNotification
 
     daemon = VoiceDaemon()
-    n = VoiceNotification(
-        title="Alert", message="disk full", priority="urgent", source="ntfy"
-    )
+    n = VoiceNotification(title="Alert", message="disk full", priority="urgent", source="ntfy")
     await daemon._ntfy_callback(n)
     assert daemon.notifications.pending_count == 1
     item = daemon.notifications.next()
@@ -203,9 +208,11 @@ async def test_daemon_starts_background_tasks():
         await asyncio.sleep(0.3)
         daemon.stop()
 
-    with patch.object(daemon.hotkey, "start", new_callable=AsyncMock), \
-         patch.object(daemon.hotkey, "stop", new_callable=AsyncMock), \
-         patch("agents.hapax_voice.__main__.subscribe_ntfy", new_callable=AsyncMock):
+    with (
+        patch.object(daemon.hotkey, "start", new_callable=AsyncMock),
+        patch.object(daemon.hotkey, "stop", new_callable=AsyncMock),
+        patch("agents.hapax_voice.__main__.subscribe_ntfy", new_callable=AsyncMock),
+    ):
         task = asyncio.create_task(stop_quickly())
         await daemon.run()
         await task

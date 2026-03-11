@@ -1,8 +1,6 @@
 """Tests for ChimePlayer wiring into VoiceDaemon."""
-from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
 
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from agents.hapax_voice.config import VoiceConfig
 
@@ -31,7 +29,7 @@ class TestDaemonChimeWiring:
         from agents.hapax_voice.__main__ import VoiceDaemon
 
         cfg = VoiceConfig()
-        daemon = VoiceDaemon(cfg=cfg)
+        VoiceDaemon(cfg=cfg)
         MockChime.assert_called_once()
 
     @patch("agents.hapax_voice.__main__._screen_flash")
@@ -59,7 +57,9 @@ class TestDaemonChimeWiring:
     @patch("agents.hapax_voice.__main__.WakeWordDetector")
     @patch("agents.hapax_voice.__main__.HotkeyServer")
     @patch("agents.hapax_voice.__main__.ChimePlayer")
-    def test_chime_disabled_uses_screen_flash(self, MockChime, _hotkey, _ww, _tts, _audio, mock_flash):
+    def test_chime_disabled_uses_screen_flash(
+        self, MockChime, _hotkey, _ww, _tts, _audio, mock_flash
+    ):
         from agents.hapax_voice.__main__ import VoiceDaemon
 
         cfg = VoiceConfig(chime_enabled=False)

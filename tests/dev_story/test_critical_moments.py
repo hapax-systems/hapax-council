@@ -1,4 +1,5 @@
 """Tests for critical moment detection."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -29,7 +30,7 @@ def _seed_churn_data(conn: sqlite3.Connection) -> None:
     # 5 commits touching widget.py — enough to trigger the >= 3 rewrite threshold
     for i in range(5):
         hash_val = f"c{i}"
-        date = f"2026-03-0{i+1} 10:00:00 -0500"
+        date = f"2026-03-0{i + 1} 10:00:00 -0500"
         msg = "feat: add widget" if i == 0 else f"fix: rewrite widget v{i}"
         dels = 0 if i == 0 else 30
         conn.execute(

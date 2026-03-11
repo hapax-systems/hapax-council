@@ -1,4 +1,5 @@
 """Demo generator agent — produces audience-tailored demos from natural language requests."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,7 +9,7 @@ import logging
 import re
 import sys
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from opentelemetry.trace import get_tracer
@@ -30,7 +31,7 @@ from agents.demo_models import (
 )
 from agents.demo_pipeline.screenshots import capture_screenshots
 from agents.demo_pipeline.slides import render_slides
-from shared.config import get_model, PROFILES_DIR
+from shared.config import PROFILES_DIR, get_model
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +69,12 @@ AUDIENCE_HINTS: dict[str, str] = {
 
 def parse_duration(duration_str: str | None, audience: str) -> int:
     """Parse duration string to seconds. Falls back to audience defaults."""
-    AUDIENCE_DEFAULTS = {"family": 180, "team-member": 420, "leadership": 600, "technical-peer": 720}
+    AUDIENCE_DEFAULTS = {
+        "family": 180,
+        "team-member": 420,
+        "leadership": 600,
+        "technical-peer": 720,
+    }
     if duration_str is None:
         return AUDIENCE_DEFAULTS.get(audience, 420)
     duration_str = duration_str.strip().lower()
@@ -90,9 +96,7 @@ def parse_request(text: str) -> tuple[str, str]:
     return text.strip(), "technical-peer"
 
 
-def resolve_audience(
-    audience_text: str, personas: dict[str, AudiencePersona]
-) -> tuple[str, str]:
+def resolve_audience(audience_text: str, personas: dict[str, AudiencePersona]) -> tuple[str, str]:
     """Resolve audience text to archetype name + extra context."""
     lower = audience_text.lower()
 
@@ -453,9 +457,7 @@ def build_content_prompt(
     forbidden_section = ""
     if persona.forbidden_terms:
         terms_list = "\n".join(f"- {t}" for t in persona.forbidden_terms)
-        forbidden_section = (
-            f"\n\nFORBIDDEN TERMS (never reference these concepts):\n{terms_list}\n"
-        )
+        forbidden_section = f"\n\nFORBIDDEN TERMS (never reference these concepts):\n{terms_list}\n"
 
     max_scenes = persona.max_scenes
     scene_min, scene_max = duration_constraints["scenes"]
@@ -475,10 +477,10 @@ What to skip:
 {forbidden_section}
 Scene count: {scene_min}-{max_scenes} scenes. AIM FOR {max_scenes} SCENES. Each scene should make 2-3 points, not 5-7. If a topic needs 5+ facts, SPLIT it into multiple scenes with different visuals. Fewer scenes = overstuffed slides where the viewer sees the same image too long while hearing too many unrelated points.
 
-## Narrative Framework: {framework['name']}
-Flow: {framework['section_flow']}
+## Narrative Framework: {framework["name"]}
+Flow: {framework["section_flow"]}
 Structure:
-{chr(10).join(f'  {i}. {s}' for i, s in enumerate(framework['structure'], 1))}
+{chr(10).join(f"  {i}. {s}" for i, s in enumerate(framework["structure"], 1))}
 
 ## OPENING RULE (Critical — demos that fail this feel aimless)
 The viewer must know WHAT THIS IS within 15 seconds. The intro_narration + Scene 1 must answer:
@@ -602,40 +604,40 @@ def build_voice_prompt(
     for key, example in voice_examples.get("examples", {}).items():
         if key.startswith("bad_"):
             bad_example_text += f"""
-## BAD EXAMPLE — {example['label']}:
-"{example['text'].strip()}"
+## BAD EXAMPLE — {example["label"]}:
+"{example["text"].strip()}"
 """
         else:
             examples_text += f"""
-### Example: {example['label']}
-"{example['text'].strip()}"
+### Example: {example["label"]}
+"{example["text"].strip()}"
 """
 
     # Format voice profile dimensions
     profile_text = ""
     if voice_profile:
         identity = voice_profile.get("identity", {})
-        profile_text += f"""Role: {identity.get('role', 'builder')}
-Register: {identity.get('register', 'technical-conversational')}
-Relationship to subject: {identity.get('relationship', 'explaining own work')}
-Rhetorical strategy: {voice_profile.get('rhetorical_strategy', 'descriptive')}
+        profile_text += f"""Role: {identity.get("role", "builder")}
+Register: {identity.get("register", "technical-conversational")}
+Relationship to subject: {identity.get("relationship", "explaining own work")}
+Rhetorical strategy: {voice_profile.get("rhetorical_strategy", "descriptive")}
 """
         attr = voice_profile.get("attribution", {})
-        profile_text += f"""Person: {attr.get('person', 'first-person')}
-Grounding: {attr.get('grounding', 'concrete')}
-Maturity framing: {attr.get('maturity', 'developmental')}
+        profile_text += f"""Person: {attr.get("person", "first-person")}
+Grounding: {attr.get("grounding", "concrete")}
+Maturity framing: {attr.get("maturity", "developmental")}
 """
         patterns = voice_profile.get("sentence_patterns", {})
-        profile_text += f"""Primary sentence type: {patterns.get('primary', 'declarative')}
-Secondary sentence type: {patterns.get('secondary', 'compound-causal')}
+        profile_text += f"""Primary sentence type: {patterns.get("primary", "declarative")}
+Secondary sentence type: {patterns.get("secondary", "compound-causal")}
 """
         transitions = voice_profile.get("transitions", {})
-        profile_text += f"""Transition style: {transitions.get('style', 'functional')}
+        profile_text += f"""Transition style: {transitions.get("style", "functional")}
 """
         opening = voice_profile.get("opening", {})
         closing = voice_profile.get("closing", {})
-        profile_text += f"""Opening: {opening.get('style', 'direct')}
-Closing: {closing.get('style', 'landing')}
+        profile_text += f"""Opening: {opening.get("style", "direct")}
+Closing: {closing.get("style", "landing")}
 """
         beyond = voice_profile.get("content_beyond_facts", [])
         if beyond:
@@ -710,10 +712,10 @@ For each scene, the narration MUST describe what is visible in the visual:
 - For screencast scenes: narration should be timed to describe what the viewer sees happening in the recording
 
 ## Personal Connection (family/non-technical audiences)
-For family audiences, every scene should answer "why does this matter to Ryan's daily life?"
+For family audiences, every scene should answer "why does this matter to the operator's daily life?"
 - Don't just describe WHAT the system does — explain WHY it helps or what changes because of it
 - Connect technical capabilities to human outcomes: less stress, better preparation, fewer things forgotten
-- Use the profile facts to ground narration in real details about how Ryan works, thinks, and lives
+- Use the profile facts to ground narration in real details about how the operator works, thinks, and lives
 - The viewer should feel like they understand the person better after watching, not just the technology
 - Technical architecture scenes (tiers, data flow) should be reframed through personal impact
 
@@ -734,7 +736,9 @@ Return a complete DemoScript with title, audience (set to the archetype name lik
     constraints = voice_profile.get("constraints", [])
     if constraints:
         constraint_lines = "\n".join(f"- {c}" for c in constraints)
-        result += f"\n\n## VOICE CONSTRAINTS (violations cause evaluation failure)\n{constraint_lines}"
+        result += (
+            f"\n\n## VOICE CONSTRAINTS (violations cause evaluation failure)\n{constraint_lines}"
+        )
     if never_rules:
         rules = "\n".join(f"- NEVER: {r}" for r in never_rules)
         result += f"\n\n## AUDIENCE-SPECIFIC HARD CONSTRAINTS\n{rules}"
@@ -776,6 +780,7 @@ async def generate_demo(
     # 4. System readiness gate
     with tracer.start_as_current_span("demo.readiness"):
         from agents.demo_pipeline.readiness import check_readiness
+
         progress("Checking system readiness...")
         readiness = check_readiness(
             require_tts=(format == "video" or enable_voice),
@@ -792,6 +797,7 @@ async def generate_demo(
     # 4.5 Knowledge sufficiency gate
     with tracer.start_as_current_span("demo.sufficiency"):
         from agents.demo_pipeline.sufficiency import check_sufficiency
+
         progress("Checking knowledge sufficiency...")
         sufficiency = check_sufficiency(
             scope=scope,
@@ -803,7 +809,7 @@ async def generate_demo(
         if sufficiency.confidence == "blocked":
             gaps = [c.detail for c in sufficiency.system_checks if not c.available]
             raise RuntimeError(
-                f"Insufficient knowledge for demo generation:\n"
+                "Insufficient knowledge for demo generation:\n"
                 + "\n".join(f"  - {g}" for g in gaps)
             )
         progress(f"Knowledge confidence: {sufficiency.confidence}")
@@ -811,7 +817,8 @@ async def generate_demo(
         # Surface actionable tip when personalization could be improved
         if sufficiency.confidence == "adequate" and sufficiency.dimension_scores:
             missing_person = [
-                d for d in sufficiency.dimension_scores
+                d
+                for d in sufficiency.dimension_scores
                 if d.category == "person" and d.confidence == "missing"
             ]
             if missing_person:
@@ -825,6 +832,7 @@ async def generate_demo(
         progress("Checking for documentation drift...")
         try:
             from agents.drift_detector import detect_drift
+
             drift_report = await detect_drift()
             high_drift = [d for d in drift_report.drift_items if d.severity == "high"]
             if high_drift:
@@ -848,23 +856,32 @@ async def generate_demo(
     # 5. Subject research
     with tracer.start_as_current_span("demo.research"):
         from agents.demo_pipeline.research import gather_research
+
         progress("Researching subject matter...")
         research_context = await gather_research(
-            scope=scope, audience=archetype, on_progress=progress,
+            scope=scope,
+            audience=archetype,
+            on_progress=progress,
             enrichment_actions=sufficiency.enrichment_actions,
             audience_dossier=sufficiency.audience_dossier,
         )
 
     # 6. Load narrative context
     from agents.demo_pipeline.narrative import (
-        load_style_guide, select_framework,
-        get_duration_constraints, format_planning_context,
-        load_voice_examples, load_voice_profile,
+        format_planning_context,
+        get_duration_constraints,
+        load_style_guide,
+        load_voice_examples,
+        load_voice_profile,
+        select_framework,
     )
+
     style_guide = load_style_guide()
     framework = select_framework(archetype)
     duration_constraints = get_duration_constraints(target_seconds)
-    planning_context = format_planning_context(style_guide, framework, duration_constraints, target_seconds)
+    planning_context = format_planning_context(
+        style_guide, framework, duration_constraints, target_seconds
+    )
     if lesson_context:
         planning_context += f"\n\n{lesson_context}"
     voice_examples = load_voice_examples()
@@ -873,7 +890,7 @@ async def generate_demo(
     # 6.5 Resolve display name for title cards (dossier name > archetype label)
     audience_display_name = None
     if sufficiency.audience_dossier:
-        audience_display_name = sufficiency.audience_dossier.name  # e.g. "Alexis"
+        audience_display_name = sufficiency.audience_dossier.name  # e.g. "Alex"
 
     # 6.6 Merge dossier calibration into persona
     dossier_never: list[str] = []
@@ -885,28 +902,42 @@ async def generate_demo(
 
     # 7. Two-pass demo generation
     # 7a: Content planning (what to show) — facts only, no prose
-    with tracer.start_as_current_span("demo.content_plan", attributes={"scope": scope, "audience": archetype}):
+    with tracer.start_as_current_span(
+        "demo.content_plan", attributes={"scope": scope, "audience": archetype}
+    ):
         progress("Pass 1: Planning content structure...")
         content_prompt = build_content_prompt(
-            scope, archetype, persona, research_context,
-            framework, duration_constraints, target_seconds,
+            scope,
+            archetype,
+            persona,
+            research_context,
+            framework,
+            duration_constraints,
+            target_seconds,
             never_rules=dossier_never or None,
             voice_profile=voice_profile,
         )
         if extra_context:
             content_prompt += f"\n\nAdditional audience context: {extra_context}"
         if planning_overrides:
-            content_prompt += f"\n\n## EVALUATION FEEDBACK — CRITICAL CORRECTIONS\n{planning_overrides}"
+            content_prompt += (
+                f"\n\n## EVALUATION FEEDBACK — CRITICAL CORRECTIONS\n{planning_overrides}"
+            )
         skeleton_result = await content_agent.run(content_prompt)
         skeleton = skeleton_result.output
         progress(f"Content plan: {len(skeleton.scenes)} scenes")
 
     # 7b: Voice application (how to say it) — prose from skeleton + voice examples
-    with tracer.start_as_current_span("demo.voice_apply", attributes={"scenes": len(skeleton.scenes)}):
+    with tracer.start_as_current_span(
+        "demo.voice_apply", attributes={"scenes": len(skeleton.scenes)}
+    ):
         progress("Pass 2: Applying voice to content...")
         voice_prompt = build_voice_prompt(
-            skeleton, voice_examples, voice_profile,
-            duration_constraints, target_seconds,
+            skeleton,
+            voice_examples,
+            voice_profile,
+            duration_constraints,
+            target_seconds,
             never_rules=dossier_never or None,
         )
         voice_result = await voice_agent.run(voice_prompt)
@@ -920,7 +951,9 @@ async def generate_demo(
             + sum(len(s.narration.split()) for s in script.scenes)
         )
         if actual_words < target_words * 0.80:
-            progress(f"Word count {actual_words}w is {actual_words/target_words*100:.0f}% of {target_words}w target — retrying voice pass")
+            progress(
+                f"Word count {actual_words}w is {actual_words / target_words * 100:.0f}% of {target_words}w target — retrying voice pass"
+            )
             # Build per-scene breakdown so the model sees exactly what's short
             min_per_scene = target_words // len(skeleton.scenes) if skeleton.scenes else 200
             scene_breakdown = "\n".join(
@@ -941,13 +974,14 @@ async def generate_demo(
                 + len((script.outro_narration or "").split())
                 + sum(len(s.narration.split()) for s in script.scenes)
             )
-            progress(f"Retry narration: {actual_words}w ({actual_words/target_words*100:.0f}%)")
+            progress(f"Retry narration: {actual_words}w ({actual_words / target_words * 100:.0f}%)")
 
         progress(f"Narration complete: {len(script.scenes)} scenes, {actual_words}w")
 
     # 8. Self-critique & revision
     with tracer.start_as_current_span("demo.critique"):
         from agents.demo_pipeline.critique import critique_and_revise
+
         progress("Evaluating script quality...")
         script, quality_report = await critique_and_revise(
             script=script,
@@ -960,7 +994,9 @@ async def generate_demo(
             forbidden_terms=persona.forbidden_terms or None,
         )
         if not quality_report.overall_pass:
-            progress(f"WARNING: Script has {sum(1 for d in quality_report.dimensions if not d.passed)} quality issues remaining")
+            progress(
+                f"WARNING: Script has {sum(1 for d in quality_report.dimensions if not d.passed)} quality issues remaining"
+            )
 
     # 8.5 Safety net: truncate intro/outro if still too long (plays over static title card)
     max_bookend_words = 35
@@ -987,13 +1023,17 @@ async def generate_demo(
     # mid-sentence content (sounds broken).
     target_words = int(target_seconds * 2.5)
     max_total = int(target_words * 1.35)  # 135% hard cap
-    total_words = len((script.intro_narration or "").split()) + len((script.outro_narration or "").split())
+    total_words = len((script.intro_narration or "").split()) + len(
+        (script.outro_narration or "").split()
+    )
     scene_words = [(i, len(s.narration.split())) for i, s in enumerate(script.scenes)]
     total_words += sum(wc for _, wc in scene_words)
 
     if total_words > max_total:
         excess = total_words - max_total
-        progress(f"Total {total_words}w exceeds {max_total}w cap, trimming {excess}w from longest scenes")
+        progress(
+            f"Total {total_words}w exceeds {max_total}w cap, trimming {excess}w from longest scenes"
+        )
         # Trim from longest scenes first, proportionally
         scene_words_sorted = sorted(scene_words, key=lambda x: x[1], reverse=True)
         updates = {}
@@ -1028,14 +1068,18 @@ async def generate_demo(
             script = script.model_copy(update={"scenes": new_scenes})
 
         # Final hard-trim pass if sentence-boundary trimming left us over cap
-        total_after = len((script.intro_narration or "").split()) + len((script.outro_narration or "").split())
+        total_after = len((script.intro_narration or "").split()) + len(
+            (script.outro_narration or "").split()
+        )
         total_after += sum(len(s.narration.split()) for s in script.scenes)
         if total_after > max_total:
             overshoot = total_after - max_total
             # Hard-trim the single longest scene
-            longest_idx = max(range(len(script.scenes)), key=lambda i: len(script.scenes[i].narration.split()))
+            longest_idx = max(
+                range(len(script.scenes)), key=lambda i: len(script.scenes[i].narration.split())
+            )
             words = script.scenes[longest_idx].narration.split()
-            words = words[:len(words) - overshoot]
+            words = words[: len(words) - overshoot]
             if words and not words[-1].endswith((".", "!", "?")):
                 words[-1] = words[-1].rstrip(",;:") + "."
             hard_scenes = list(script.scenes)
@@ -1046,10 +1090,11 @@ async def generate_demo(
 
     # 8.7 Refresh quality report to reflect post-loop fixes (trimming, deterministic fixers)
     from agents.demo_pipeline.critique import (
-        _check_word_count,
-        _check_visual_variety,
         _check_intro_outro_length,
+        _check_visual_variety,
+        _check_word_count,
     )
+
     det_names = {"duration_feasibility", "visual_appropriateness", "intro_outro_length"}
     quality_report.dimensions = [d for d in quality_report.dimensions if d.name not in det_names]
     for check_fn in [_check_word_count, _check_visual_variety, _check_intro_outro_length]:
@@ -1059,12 +1104,16 @@ async def generate_demo(
             result = check_fn(script)
         if result:
             quality_report.dimensions.append(result)
-    critical_count = sum(1 for d in quality_report.dimensions if not d.passed and d.severity == "critical")
-    important_count = sum(1 for d in quality_report.dimensions if not d.passed and d.severity == "important")
+    critical_count = sum(
+        1 for d in quality_report.dimensions if not d.passed and d.severity == "critical"
+    )
+    important_count = sum(
+        1 for d in quality_report.dimensions if not d.passed and d.severity == "important"
+    )
     quality_report.overall_pass = critical_count == 0 and important_count <= 1
 
     # Create output directory
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     slug = re.sub(r"[^a-z0-9]+", "-", scope.lower()).strip("-")[:30]
     demo_dir = OUTPUT_DIR / f"{ts}-{slug}"
     demo_dir.mkdir(parents=True, exist_ok=True)
@@ -1091,29 +1140,36 @@ async def generate_demo(
                 screenshot_specs.append((name, scene.screenshot))
             elif scene.visual_type == "diagram":
                 from agents.demo_pipeline.diagrams import render_d2
+
                 path = render_d2(scene.diagram_spec or "", visual_dir / f"{name}.png")
                 screenshot_map[scene.title] = path
             elif scene.visual_type == "chart":
                 from agents.demo_pipeline.charts import render_chart
+
                 path = render_chart(scene.diagram_spec or "{}", visual_dir / f"{name}.png")
                 screenshot_map[scene.title] = path
             elif scene.visual_type == "screencast":
                 if scene.interaction:
                     screencast_specs.append((name, scene.interaction))
                 else:
-                    log.warning("Scene '%s' has visual_type=screencast but no interaction spec", scene.title)
+                    log.warning(
+                        "Scene '%s' has visual_type=screencast but no interaction spec", scene.title
+                    )
             elif scene.visual_type == "illustration":
                 if scene.illustration:
                     illustration_specs.append((name, scene.illustration))
                 else:
-                    log.warning("Scene '%s' has visual_type=illustration but no illustration spec", scene.title)
+                    log.warning(
+                        "Scene '%s' has visual_type=illustration but no illustration spec",
+                        scene.title,
+                    )
 
         # Screenshots via Playwright
         if screenshot_specs:
             screenshot_paths = await capture_screenshots(
                 screenshot_specs, visual_dir, on_progress=progress
             )
-            for (_, spec), path in zip(screenshot_specs, screenshot_paths):
+            for (_, spec), path in zip(screenshot_specs, screenshot_paths, strict=False):
                 # Find scene by screenshot spec match
                 for scene in script.scenes:
                     if scene.screenshot == spec and scene.title not in screenshot_map:
@@ -1135,16 +1191,19 @@ async def generate_demo(
                         "DUPLICATE SCREENSHOTS DETECTED (%d identical, %d bytes): %s. "
                         "These will appear as the same image in the demo. "
                         "Use different routes (/, /chat, /demos) instead of scroll variations.",
-                        len(paths_group), sz, ", ".join(names),
+                        len(paths_group),
+                        sz,
+                        ", ".join(names),
                     )
 
         # Screencasts via Playwright video recording
         if screencast_specs:
             from agents.demo_pipeline.screencasts import record_screencasts
+
             screencast_paths = await record_screencasts(
                 screencast_specs, visual_dir, on_progress=progress
             )
-            for (sc_name, _), path in zip(screencast_specs, screencast_paths):
+            for (sc_name, _), path in zip(screencast_specs, screencast_paths, strict=False):
                 # Find scene by matching name prefix
                 for scene in script.scenes:
                     slug = re.sub(r"[^a-z0-9]+", "-", scene.title.lower()).strip("-")
@@ -1154,7 +1213,10 @@ async def generate_demo(
 
         # Illustrations via Gemini image generation
         if illustration_specs:
-            from agents.demo_pipeline.illustrations import generate_illustrations, load_illustration_style
+            from agents.demo_pipeline.illustrations import (
+                generate_illustrations,
+                load_illustration_style,
+            )
 
             # Inject audience style into specs that don't have one
             audience_style = load_illustration_style(script.audience)
@@ -1167,7 +1229,7 @@ async def generate_demo(
             illustration_paths = await generate_illustrations(
                 styled_specs, visual_dir, on_progress=progress
             )
-            for (ill_name, _), path in zip(illustration_specs, illustration_paths):
+            for (ill_name, _), path in zip(illustration_specs, illustration_paths, strict=False):
                 if path is not None:
                     for scene in script.scenes:
                         slug = re.sub(r"[^a-z0-9]+", "-", scene.title.lower()).strip("-")
@@ -1178,8 +1240,10 @@ async def generate_demo(
     # 10. Render slides
     with tracer.start_as_current_span("demo.slides", attributes={"format": format}):
         progress("Rendering slides...")
-        md_path = await render_slides(
-            script, screenshot_map, demo_dir,
+        await render_slides(
+            script,
+            screenshot_map,
+            demo_dir,
             render_pdf=(format != "markdown-only"),
             on_progress=progress,
         )
@@ -1190,11 +1254,11 @@ async def generate_demo(
     want_voice = format == "video" or enable_voice
     if want_voice:
         with tracer.start_as_current_span("demo.voice"):
-            from agents.demo_pipeline.vram import ensure_vram_available
             from agents.demo_pipeline.voice import (
                 check_tts_available,
                 generate_all_voice_segments,
             )
+            from agents.demo_pipeline.vram import ensure_vram_available
 
             # Check TTS service
             tts_available = check_tts_available()
@@ -1221,14 +1285,16 @@ async def generate_demo(
                 audio_dir = demo_dir / "audio"
                 await asyncio.to_thread(
                     generate_all_voice_segments,
-                    voice_segments, audio_dir, on_progress=progress,
+                    voice_segments,
+                    audio_dir,
+                    on_progress=progress,
                 )
 
     # 11b. Assemble video (if video format)
     if format == "video":
         with tracer.start_as_current_span("demo.video"):
-            from agents.demo_pipeline.video import assemble_video
             from agents.demo_pipeline.title_cards import generate_title_card
+            from agents.demo_pipeline.video import assemble_video
 
             # Generate title cards
             progress("Generating title cards...")
@@ -1263,6 +1329,7 @@ async def generate_demo(
     if audio_dir and audio_dir.exists():
         with tracer.start_as_current_span("demo.audio_convert"):
             from agents.demo_pipeline.audio_convert import convert_all_wav_to_mp3
+
             progress("Converting audio to MP3...")
             convert_all_wav_to_mp3(audio_dir, audio_dir)  # MP3s alongside WAVs
             mp3_dir = audio_dir
@@ -1270,6 +1337,7 @@ async def generate_demo(
     # 13. Generate self-contained HTML player (always)
     with tracer.start_as_current_span("demo.html_player"):
         from agents.demo_pipeline.html_player import generate_html_player
+
         progress("Generating HTML player...")
         generate_html_player(
             script=script,
@@ -1283,7 +1351,11 @@ async def generate_demo(
     # 14. Inject chapter markers into video (if video was generated)
     if format == "video" and (demo_dir / "demo.mp4").exists():
         with tracer.start_as_current_span("demo.chapters"):
-            from agents.demo_pipeline.chapters import build_chapter_list_from_script, inject_chapters
+            from agents.demo_pipeline.chapters import (
+                build_chapter_list_from_script,
+                inject_chapters,
+            )
+
             progress("Injecting chapter markers...")
             try:
                 chapters = build_chapter_list_from_script(script, audio_dir)
@@ -1298,7 +1370,9 @@ async def generate_demo(
         "scope": scope,
         "scenes": len(script.scenes),
         "format": format,
-        "duration": actual_duration if format == "video" and actual_duration > 0 else sum(s.duration_hint for s in script.scenes),
+        "duration": actual_duration
+        if format == "video" and actual_duration > 0
+        else sum(s.duration_hint for s in script.scenes),
         "timestamp": ts,
         "output_dir": str(demo_dir),
         "primary_file": "demo.html",
@@ -1335,23 +1409,46 @@ async def main() -> None:
         description="Generate audience-tailored system demos",
         prog="python -m agents.demo",
     )
-    parser.add_argument("request", nargs="?", default=None, help="Natural language request, e.g. 'the entire system for my wife'")
-    parser.add_argument("--audience", help="Override audience archetype (family, technical-peer, leadership, team-member)")
-    parser.add_argument("--format", choices=["slides", "video", "markdown-only"], default="slides", help="Output format")
-    parser.add_argument("--duration", type=str, default=None, help="Target duration, e.g. '5m', '90s', or bare seconds")
-    parser.add_argument("--voice", action="store_true", help="Enable TTS voice narration (works with any format)")
-    parser.add_argument("--json", action="store_true", help="Print script JSON instead of generating demo")
+    parser.add_argument(
+        "request",
+        nargs="?",
+        default=None,
+        help="Natural language request, e.g. 'the entire system for my partner'",
+    )
+    parser.add_argument(
+        "--audience",
+        help="Override audience archetype (family, technical-peer, leadership, team-member)",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["slides", "video", "markdown-only"],
+        default="slides",
+        help="Output format",
+    )
+    parser.add_argument(
+        "--duration",
+        type=str,
+        default=None,
+        help="Target duration, e.g. '5m', '90s', or bare seconds",
+    )
+    parser.add_argument(
+        "--voice", action="store_true", help="Enable TTS voice narration (works with any format)"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Print script JSON instead of generating demo"
+    )
     parser.add_argument("--persona-file", type=Path, help="Path to custom persona YAML file")
     parser.add_argument(
         "--gather-dossier",
         metavar="AUDIENCE",
-        help="Interactively collect audience dossier (e.g., 'my wife')",
+        help="Interactively collect audience dossier (e.g., 'my partner')",
     )
     parser.add_argument("--list", action="store_true", help="List previously generated demos")
     args = parser.parse_args()
 
     if args.list:
         from agents.demo_pipeline.history import list_demos
+
         demos = list_demos(OUTPUT_DIR)
         if not demos:
             print("No demos found.")
@@ -1361,7 +1458,11 @@ async def main() -> None:
         return
 
     if args.gather_dossier:
-        from agents.demo_pipeline.dossier import gather_dossier_interactive, save_dossier, record_relationship_facts
+        from agents.demo_pipeline.dossier import (
+            gather_dossier_interactive,
+            record_relationship_facts,
+            save_dossier,
+        )
 
         audience_key = args.gather_dossier
         personas = load_personas(extra_path=args.persona_file)
@@ -1391,7 +1492,9 @@ async def main() -> None:
         persona = personas[archetype]
         system_desc = _load_system_description()
         prompt = build_planning_prompt(
-            scope, archetype, persona,
+            scope,
+            archetype,
+            persona,
             research_context=system_desc,
             planning_context="",
         )

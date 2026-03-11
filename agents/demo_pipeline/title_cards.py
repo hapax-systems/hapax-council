@@ -1,4 +1,5 @@
 """Gruvbox-styled title card generation with Pillow."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,10 +7,10 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 # Gruvbox dark palette
-BG_COLOR = (40, 40, 40)          # #282828
-FG_COLOR = (235, 219, 178)       # #ebdbb2
-ACCENT_COLOR = (250, 189, 47)    # #fabd2f (yellow)
-SUBTLE_COLOR = (168, 153, 132)   # #a89984 (gray)
+BG_COLOR = (40, 40, 40)  # #282828
+FG_COLOR = (235, 219, 178)  # #ebdbb2
+ACCENT_COLOR = (250, 189, 47)  # #fabd2f (yellow)
+SUBTLE_COLOR = (168, 153, 132)  # #a89984 (gray)
 
 
 def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:

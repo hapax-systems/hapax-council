@@ -1,0 +1,160 @@
+{
+  "name": "hapax-vscode",
+  "displayName": "Hapax",
+  "description": "LLM chat sidebar, interview engine, and management commands for the Hapax vault",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:.hapax-vault"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "hapax",
+          "title": "Hapax",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "hapax": [
+        {
+          "type": "webview",
+          "id": "hapax.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "hapax.openChat",
+        "title": "Hapax: Open Chat"
+      },
+      {
+        "command": "hapax.prepare1on1",
+        "title": "Hapax: Prepare 1:1 for Current Person"
+      },
+      {
+        "command": "hapax.teamSnapshot",
+        "title": "Hapax: Generate Team Snapshot"
+      },
+      {
+        "command": "hapax.searchKnowledge",
+        "title": "Hapax: Search Knowledge Base"
+      },
+      {
+        "command": "hapax.viewNudges",
+        "title": "Hapax: View Active Nudges"
+      },
+      {
+        "command": "hapax.viewProfile",
+        "title": "Hapax: View Operator Profile"
+      },
+      {
+        "command": "hapax.captureDecision",
+        "title": "Hapax: Capture Decision"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "hapax.prepare1on1", "when": "hapax.isWorkVault" },
+        { "command": "hapax.teamSnapshot", "when": "hapax.isWorkVault" },
+        { "command": "hapax.searchKnowledge", "when": "hapax.isWorkVault" },
+        { "command": "hapax.viewNudges", "when": "hapax.isWorkVault" },
+        { "command": "hapax.viewProfile", "when": "hapax.isWorkVault" },
+        { "command": "hapax.captureDecision", "when": "hapax.isWorkVault" }
+      ]
+    },
+    "configuration": {
+      "title": "Hapax",
+      "properties": {
+        "hapax.provider": {
+          "type": "string",
+          "enum": [
+            "litellm",
+            "openai",
+            "anthropic"
+          ],
+          "default": "litellm",
+          "description": "LLM provider"
+        },
+        "hapax.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the selected provider"
+        },
+        "hapax.model": {
+          "type": "string",
+          "default": "claude-sonnet",
+          "description": "Model name"
+        },
+        "hapax.litellmUrl": {
+          "type": "string",
+          "default": "http://localhost:4000",
+          "description": "LiteLLM proxy URL"
+        },
+        "hapax.qdrantUrl": {
+          "type": "string",
+          "default": "http://localhost:6333",
+          "description": "Qdrant URL"
+        },
+        "hapax.qdrantCollection": {
+          "type": "string",
+          "default": "documents",
+          "description": "Qdrant collection name"
+        },
+        "hapax.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "description": "Max response tokens"
+        },
+        "hapax.maxContextLength": {
+          "type": "number",
+          "default": 8000,
+          "description": "Max context length in characters"
+        },
+        "hapax.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama URL for local embeddings"
+        },
+        "hapax.systemPrompt": {
+          "type": "string",
+          "default": "You are Hapax, an assistant embedded in the operator's vault — one interface within a three-tier autonomous agent system.\n\nThe operator has ADHD and autism. This shapes how you communicate:\n- Lead with the actionable point, not context-setting\n- Use structured output (bullets, headers) over prose\n- Be direct and specific — no hedging or filler\n- Support task initiation: break large requests into concrete first steps\n- State epistemic confidence. Prefer \"I don't know\" over speculation\n\nYou have access to the current note as context and can search the knowledge base via Qdrant. Be concise and actionable.",
+          "description": "System prompt for chat"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "package": "vsce package",
+    "lint": "eslint src/"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3",
+    "marked": "^15.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "@vscode/vsce-sign",
+      "keytar"
+    ]
+  }
+}

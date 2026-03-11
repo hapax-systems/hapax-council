@@ -1,13 +1,11 @@
 """Integration test: chime synthesis -> ChimePlayer -> daemon lifecycle."""
-import wave
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+
+from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
-from agents.hapax_voice.chime_synthesis import generate_all_chimes, synthesize_chime, SAMPLE_RATE
 from agents.hapax_voice.chime_player import ChimePlayer
+from agents.hapax_voice.chime_synthesis import SAMPLE_RATE, generate_all_chimes, synthesize_chime
 
 
 class TestChimeIntegration:
@@ -79,6 +77,7 @@ class TestChimeIntegration:
         player.play("activation")
         # play() runs in a thread, wait briefly
         import time
+
         time.sleep(0.1)
 
         # Verify the written audio is non-empty

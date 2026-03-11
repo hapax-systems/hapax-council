@@ -1,20 +1,19 @@
 """Tests for shared.takeout.profiler_bridge and profiler_sources integration."""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import pytest
-
 from shared.takeout.profiler_bridge import (
-    structured_to_facts,
-    generate_facts,
     _extract_domain,
     _make_fact,
+    generate_facts,
+    structured_to_facts,
 )
 
-
 # ── _extract_domain ──────────────────────────────────────────────────────────
+
 
 class TestExtractDomain:
     def test_basic(self):
@@ -35,6 +34,7 @@ class TestExtractDomain:
 
 # ── _make_fact ────────────────────────────────────────────────────────────────
 
+
 class TestMakeFact:
     def test_creates_dict(self):
         fact = _make_fact("identity", "name", "Test", "source:test", "evidence")
@@ -45,6 +45,7 @@ class TestMakeFact:
 
 # ── structured_to_facts ──────────────────────────────────────────────────────
 
+
 class TestStructuredToFacts:
     def _write_jsonl(self, path: Path, records: list[dict]) -> None:
         with open(path, "w") as f:
@@ -53,20 +54,23 @@ class TestStructuredToFacts:
 
     def test_chrome_facts(self, tmp_path):
         jsonl = tmp_path / "structured.jsonl"
-        self._write_jsonl(jsonl, [
-            {
-                "service": "chrome",
-                "title": "GitHub",
-                "text": "GitHub",
-                "structured_fields": {"url": "https://github.com", "visit_count": 50},
-            },
-            {
-                "service": "chrome",
-                "title": "Stack Overflow",
-                "text": "SO",
-                "structured_fields": {"url": "https://stackoverflow.com", "visit_count": 30},
-            },
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "chrome",
+                    "title": "GitHub",
+                    "text": "GitHub",
+                    "structured_fields": {"url": "https://github.com", "visit_count": 50},
+                },
+                {
+                    "service": "chrome",
+                    "title": "Stack Overflow",
+                    "text": "SO",
+                    "structured_fields": {"url": "https://stackoverflow.com", "visit_count": 30},
+                },
+            ],
+        )
         facts = structured_to_facts(jsonl)
         assert len(facts) >= 1
         website_fact = next(f for f in facts if f["key"] == "frequent_websites")
@@ -74,10 +78,13 @@ class TestStructuredToFacts:
 
     def test_search_facts(self, tmp_path):
         jsonl = tmp_path / "structured.jsonl"
-        self._write_jsonl(jsonl, [
-            {"service": "search", "title": "Searched for MIDI routing linux"},
-            {"service": "search", "title": "Searched for pydantic ai tutorial"},
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {"service": "search", "title": "Searched for MIDI routing linux"},
+                {"service": "search", "title": "Searched for pydantic ai tutorial"},
+            ],
+        )
         facts = structured_to_facts(jsonl)
         assert len(facts) >= 1
         search_fact = next(f for f in facts if f["key"] == "search_topics")
@@ -85,10 +92,13 @@ class TestStructuredToFacts:
 
     def test_youtube_facts(self, tmp_path):
         jsonl = tmp_path / "structured.jsonl"
-        self._write_jsonl(jsonl, [
-            {"service": "youtube", "title": "Watched SP-404 tutorial"},
-            {"service": "youtube", "title": "Watched Beat making tips"},
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {"service": "youtube", "title": "Watched SP-404 tutorial"},
+                {"service": "youtube", "title": "Watched Beat making tips"},
+            ],
+        )
         facts = structured_to_facts(jsonl)
         assert len(facts) >= 1
         yt_fact = next(f for f in facts if f["key"] == "video_topics")
@@ -96,18 +106,21 @@ class TestStructuredToFacts:
 
     def test_calendar_facts(self, tmp_path):
         jsonl = tmp_path / "structured.jsonl"
-        self._write_jsonl(jsonl, [
-            {
-                "service": "calendar",
-                "title": "Weekly Standup",
-                "structured_fields": {"recurring": True, "rrule": "FREQ=WEEKLY"},
-            },
-            {
-                "service": "calendar",
-                "title": "One-off Meeting",
-                "structured_fields": {},
-            },
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "calendar",
+                    "title": "Weekly Standup",
+                    "structured_fields": {"recurring": True, "rrule": "FREQ=WEEKLY"},
+                },
+                {
+                    "service": "calendar",
+                    "title": "One-off Meeting",
+                    "structured_fields": {},
+                },
+            ],
+        )
         facts = structured_to_facts(jsonl)
         recurring_fact = next((f for f in facts if f["key"] == "recurring_commitments"), None)
         assert recurring_fact is not None
@@ -115,23 +128,26 @@ class TestStructuredToFacts:
 
     def test_contacts_facts(self, tmp_path):
         jsonl = tmp_path / "structured.jsonl"
-        self._write_jsonl(jsonl, [
-            {
-                "service": "contacts",
-                "title": "Alice",
-                "structured_fields": {"organization": "Acme Corp"},
-            },
-            {
-                "service": "contacts",
-                "title": "Bob",
-                "structured_fields": {"organization": "Acme Corp"},
-            },
-            {
-                "service": "contacts",
-                "title": "Charlie",
-                "structured_fields": {},
-            },
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "contacts",
+                    "title": "Alice",
+                    "structured_fields": {"organization": "Acme Corp"},
+                },
+                {
+                    "service": "contacts",
+                    "title": "Bob",
+                    "structured_fields": {"organization": "Acme Corp"},
+                },
+                {
+                    "service": "contacts",
+                    "title": "Charlie",
+                    "structured_fields": {},
+                },
+            ],
+        )
         facts = structured_to_facts(jsonl)
         network_fact = next(f for f in facts if f["key"] == "contact_network_size")
         assert network_fact["value"] == "3"
@@ -148,15 +164,18 @@ class TestStructuredToFacts:
 
     def test_mixed_services(self, tmp_path):
         jsonl = tmp_path / "structured.jsonl"
-        self._write_jsonl(jsonl, [
-            {
-                "service": "chrome",
-                "title": "GitHub",
-                "structured_fields": {"url": "https://github.com", "visit_count": 10},
-            },
-            {"service": "search", "title": "Searched for Python async"},
-            {"service": "youtube", "title": "Watched coding tutorial"},
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "chrome",
+                    "title": "GitHub",
+                    "structured_fields": {"url": "https://github.com", "visit_count": 10},
+                },
+                {"service": "search", "title": "Searched for Python async"},
+                {"service": "youtube", "title": "Watched coding tutorial"},
+            ],
+        )
         facts = structured_to_facts(jsonl)
         keys = {f["key"] for f in facts}
         assert "frequent_websites" in keys
@@ -166,16 +185,22 @@ class TestStructuredToFacts:
 
 # ── generate_facts ────────────────────────────────────────────────────────────
 
+
 class TestGenerateFacts:
     def test_generate_and_write(self, tmp_path):
         jsonl = tmp_path / "structured.jsonl"
         output = tmp_path / "facts.json"
         with open(jsonl, "w") as f:
-            f.write(json.dumps({
-                "service": "chrome",
-                "title": "Test",
-                "structured_fields": {"url": "https://test.com", "visit_count": 5},
-            }) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "service": "chrome",
+                        "title": "Test",
+                        "structured_fields": {"url": "https://test.com", "visit_count": 5},
+                    }
+                )
+                + "\n"
+            )
 
         count = generate_facts(jsonl_path=jsonl, output_path=output)
         assert count > 0
@@ -194,9 +219,10 @@ class TestGenerateFacts:
 
 # ── load_structured_facts (profiler.py) ──────────────────────────────────────
 
+
 class TestLoadStructuredFacts:
     def test_load_valid_facts(self, tmp_path, monkeypatch):
-        from agents.profiler import load_structured_facts, PROFILES_DIR
+        from agents.profiler import load_structured_facts
 
         facts_data = [
             {
@@ -220,12 +246,14 @@ class TestLoadStructuredFacts:
 
     def test_load_missing_file(self, tmp_path, monkeypatch):
         from agents.profiler import load_structured_facts
+
         monkeypatch.setattr("agents.profiler.PROFILES_DIR", tmp_path)
         facts = load_structured_facts()
         assert facts == []
 
     def test_load_invalid_json(self, tmp_path, monkeypatch):
         from agents.profiler import load_structured_facts
+
         facts_file = tmp_path / "takeout-structured-facts.json"
         facts_file.write_text("not valid json")
         monkeypatch.setattr("agents.profiler.PROFILES_DIR", tmp_path)
@@ -234,9 +262,16 @@ class TestLoadStructuredFacts:
 
     def test_load_skips_malformed_entries(self, tmp_path, monkeypatch):
         from agents.profiler import load_structured_facts
+
         facts_data = [
-            {"dimension": "identity", "key": "name", "value": "Ryan",
-             "confidence": 0.95, "source": "test", "evidence": "stated"},
+            {
+                "dimension": "identity",
+                "key": "name",
+                "value": "Operator",
+                "confidence": 0.95,
+                "source": "test",
+                "evidence": "stated",
+            },
             {"bad": "entry"},  # missing required fields
         ]
         facts_file = tmp_path / "takeout-structured-facts.json"
@@ -248,13 +283,13 @@ class TestLoadStructuredFacts:
 
 # ── profiler_sources integration ──────────────────────────────────────────────
 
+
 class TestProfilerSourcesIntegration:
     def test_takeout_source_type_in_read_all(self, tmp_path, monkeypatch):
         """Verify that takeout files are discovered and read by profiler_sources."""
         from agents.profiler_sources import (
             DiscoveredSources,
             read_all_sources,
-            read_takeout,
         )
 
         # Create a fake takeout markdown file
@@ -289,6 +324,7 @@ class TestProfilerSourcesIntegration:
 # to ~/projects/rag-pipeline/ingest.py. Since that project has different deps
 # (watchdog, docling), we replicate the pure-logic functions here for testing.
 
+
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     """Local copy of ingest.parse_frontmatter for testing."""
     if not text.startswith("---"):
@@ -297,7 +333,7 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     if end == -1:
         return {}, text
     front = text[3:end].strip()
-    body = text[end + 4:].strip()
+    body = text[end + 4 :].strip()
     metadata: dict = {}
     for line in front.splitlines():
         line = line.strip()
@@ -319,9 +355,14 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 def _enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
     """Local copy of ingest.enrich_payload for testing."""
     enrichment_keys = {
-        "content_type", "source_service", "source_platform",
-        "timestamp", "modality_tags", "people",
-        "platform", "service",
+        "content_type",
+        "source_service",
+        "source_platform",
+        "timestamp",
+        "modality_tags",
+        "people",
+        "platform",
+        "service",
     }
     for key in enrichment_keys:
         if key in frontmatter:
@@ -393,6 +434,7 @@ Hello world
 
 # ── Streaming JSONL tests ────────────────────────────────────────────────────
 
+
 class TestStreamingJSONL:
     """Verify structured_to_facts streams line-by-line instead of loading all into memory."""
 
@@ -451,6 +493,7 @@ class TestStreamingJSONL:
 
 # ── YouTube expanded facts ──────────────────────────────────────────────────
 
+
 class TestYouTubeExpandedFacts:
     @staticmethod
     def _write_jsonl(path: Path, records: list[dict]) -> Path:
@@ -460,26 +503,29 @@ class TestYouTubeExpandedFacts:
 
     def test_youtube_channel_facts(self, tmp_path):
         jsonl = tmp_path / "yt.jsonl"
-        self._write_jsonl(jsonl, [
-            {
-                "service": "youtube",
-                "title": "Watched: Beat making tips",
-                "content_type": "video_watch",
-                "structured_fields": {"channel": "Andrew Huang", "type": "watch"},
-            },
-            {
-                "service": "youtube",
-                "title": "Watched: Lo-fi tutorial",
-                "content_type": "video_watch",
-                "structured_fields": {"channel": "Andrew Huang", "type": "watch"},
-            },
-            {
-                "service": "youtube",
-                "title": "Watched: Python tips",
-                "content_type": "video_watch",
-                "structured_fields": {"channel": "Corey Schafer", "type": "watch"},
-            },
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "youtube",
+                    "title": "Watched: Beat making tips",
+                    "content_type": "video_watch",
+                    "structured_fields": {"channel": "Andrew Huang", "type": "watch"},
+                },
+                {
+                    "service": "youtube",
+                    "title": "Watched: Lo-fi tutorial",
+                    "content_type": "video_watch",
+                    "structured_fields": {"channel": "Andrew Huang", "type": "watch"},
+                },
+                {
+                    "service": "youtube",
+                    "title": "Watched: Python tips",
+                    "content_type": "video_watch",
+                    "structured_fields": {"channel": "Corey Schafer", "type": "watch"},
+                },
+            ],
+        )
         facts = structured_to_facts(jsonl)
         channel_fact = next(f for f in facts if f["key"] == "youtube_channels")
         assert "Andrew Huang (2)" in channel_fact["value"]
@@ -487,20 +533,23 @@ class TestYouTubeExpandedFacts:
 
     def test_youtube_search_facts(self, tmp_path):
         jsonl = tmp_path / "yt.jsonl"
-        self._write_jsonl(jsonl, [
-            {
-                "service": "youtube",
-                "title": "YouTube search: SP-404 tutorial",
-                "content_type": "search_query",
-                "structured_fields": {"query": "SP-404 tutorial", "type": "search"},
-            },
-            {
-                "service": "youtube",
-                "title": "YouTube search: boom bap drums",
-                "content_type": "search_query",
-                "structured_fields": {"query": "boom bap drums", "type": "search"},
-            },
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "youtube",
+                    "title": "YouTube search: SP-404 tutorial",
+                    "content_type": "search_query",
+                    "structured_fields": {"query": "SP-404 tutorial", "type": "search"},
+                },
+                {
+                    "service": "youtube",
+                    "title": "YouTube search: boom bap drums",
+                    "content_type": "search_query",
+                    "structured_fields": {"query": "boom bap drums", "type": "search"},
+                },
+            ],
+        )
         facts = structured_to_facts(jsonl)
         search_fact = next(f for f in facts if f["key"] == "youtube_search_topics")
         assert "SP-404 tutorial" in search_fact["value"]
@@ -508,20 +557,23 @@ class TestYouTubeExpandedFacts:
 
     def test_youtube_subscription_facts(self, tmp_path):
         jsonl = tmp_path / "yt.jsonl"
-        self._write_jsonl(jsonl, [
-            {
-                "service": "youtube",
-                "title": "Subscribed: Andrew Huang",
-                "content_type": "subscription",
-                "structured_fields": {"channel_title": "Andrew Huang", "type": "subscription"},
-            },
-            {
-                "service": "youtube",
-                "title": "Subscribed: Fireship",
-                "content_type": "subscription",
-                "structured_fields": {"channel_title": "Fireship", "type": "subscription"},
-            },
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "youtube",
+                    "title": "Subscribed: Andrew Huang",
+                    "content_type": "subscription",
+                    "structured_fields": {"channel_title": "Andrew Huang", "type": "subscription"},
+                },
+                {
+                    "service": "youtube",
+                    "title": "Subscribed: Fireship",
+                    "content_type": "subscription",
+                    "structured_fields": {"channel_title": "Fireship", "type": "subscription"},
+                },
+            ],
+        )
         facts = structured_to_facts(jsonl)
         sub_fact = next(f for f in facts if f["key"] == "youtube_subscriptions")
         assert "Andrew Huang" in sub_fact["value"]
@@ -529,26 +581,29 @@ class TestYouTubeExpandedFacts:
 
     def test_youtube_playlist_facts(self, tmp_path):
         jsonl = tmp_path / "yt.jsonl"
-        self._write_jsonl(jsonl, [
-            {
-                "service": "youtube",
-                "title": "Playlist [Music]: abc",
-                "content_type": "playlist_item",
-                "structured_fields": {"playlist": "Music", "type": "playlist"},
-            },
-            {
-                "service": "youtube",
-                "title": "Playlist [Music]: def",
-                "content_type": "playlist_item",
-                "structured_fields": {"playlist": "Music", "type": "playlist"},
-            },
-            {
-                "service": "youtube",
-                "title": "Playlist [Tutorials]: ghi",
-                "content_type": "playlist_item",
-                "structured_fields": {"playlist": "Tutorials", "type": "playlist"},
-            },
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "youtube",
+                    "title": "Playlist [Music]: abc",
+                    "content_type": "playlist_item",
+                    "structured_fields": {"playlist": "Music", "type": "playlist"},
+                },
+                {
+                    "service": "youtube",
+                    "title": "Playlist [Music]: def",
+                    "content_type": "playlist_item",
+                    "structured_fields": {"playlist": "Music", "type": "playlist"},
+                },
+                {
+                    "service": "youtube",
+                    "title": "Playlist [Tutorials]: ghi",
+                    "content_type": "playlist_item",
+                    "structured_fields": {"playlist": "Tutorials", "type": "playlist"},
+                },
+            ],
+        )
         facts = structured_to_facts(jsonl)
         playlist_fact = next(f for f in facts if f["key"] == "youtube_playlists")
         assert "Music (2 videos)" in playlist_fact["value"]
@@ -557,9 +612,12 @@ class TestYouTubeExpandedFacts:
     def test_youtube_legacy_no_content_type(self, tmp_path):
         """Legacy activity-based records (no content_type) still produce video_topics."""
         jsonl = tmp_path / "yt.jsonl"
-        self._write_jsonl(jsonl, [
-            {"service": "youtube", "title": "Watched SP-404 tutorial"},
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {"service": "youtube", "title": "Watched SP-404 tutorial"},
+            ],
+        )
         facts = structured_to_facts(jsonl)
         yt_fact = next(f for f in facts if f["key"] == "video_topics")
         assert "SP-404" in yt_fact["value"]
@@ -567,19 +625,22 @@ class TestYouTubeExpandedFacts:
     def test_youtube_full_service_name(self, tmp_path):
         """Records with service='youtube_full' from the full export parser are handled."""
         jsonl = tmp_path / "yt.jsonl"
-        self._write_jsonl(jsonl, [
-            {
-                "service": "youtube_full",
-                "title": "Watched: Full export video",
-                "content_type": "video_watch",
-                "structured_fields": {"channel": "TestChannel", "type": "watch"},
-            },
-            {
-                "service": "youtube_full",
-                "content_type": "subscription",
-                "structured_fields": {"channel_title": "SubChannel", "type": "subscription"},
-            },
-        ])
+        self._write_jsonl(
+            jsonl,
+            [
+                {
+                    "service": "youtube_full",
+                    "title": "Watched: Full export video",
+                    "content_type": "video_watch",
+                    "structured_fields": {"channel": "TestChannel", "type": "watch"},
+                },
+                {
+                    "service": "youtube_full",
+                    "content_type": "subscription",
+                    "structured_fields": {"channel_title": "SubChannel", "type": "subscription"},
+                },
+            ],
+        )
         facts = structured_to_facts(jsonl)
         keys = {f["key"] for f in facts}
         assert "video_topics" in keys

@@ -8,6 +8,7 @@ Strategy:
 - Body → unstructured path (truncated to max_body_chars)
 - Automated senders (noreply, notifications) → filtered out
 """
+
 from __future__ import annotations
 
 import logging
@@ -16,16 +17,23 @@ import shutil
 import tempfile
 import zipfile
 from collections.abc import Iterator
-from datetime import datetime
-from pathlib import Path
 
 from shared.email_utils import (
     MAX_BODY_CHARS,
-    SKIP_SENDER_PATTERNS,
+)
+from shared.email_utils import (
     decode_header as _decode_header,
+)
+from shared.email_utils import (
     extract_body as _extract_body,
+)
+from shared.email_utils import (
     extract_email_addr as _extract_email_addr,
+)
+from shared.email_utils import (
     is_automated as _is_automated,
+)
+from shared.email_utils import (
     parse_email_date as _parse_email_date,
 )
 from shared.takeout.models import NormalizedRecord, ServiceConfig, make_record_id

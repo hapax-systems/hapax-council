@@ -1,4 +1,5 @@
 """Tests for video assembly pipeline."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,6 +17,7 @@ class TestAssembleVideo:
         ss_dir.mkdir()
 
         from PIL import Image
+
         for name in ["01-dashboard", "02-chat"]:
             img = Image.new("RGB", (1920, 1080), (40, 40, 40))
             img.save(ss_dir / f"{name}.png")
@@ -38,7 +40,7 @@ class TestAssembleVideo:
         assert len(clips) == 2
 
     def test_build_scene_clips_with_title_dir(self, scene_dir):
-        from agents.demo_pipeline.video import _build_scene_clips, SCENE_TITLE_DURATION
+        from agents.demo_pipeline.video import SCENE_TITLE_DURATION, _build_scene_clips
 
         screenshots = {
             "Dashboard": scene_dir / "screenshots" / "01-dashboard.png",
@@ -64,8 +66,9 @@ class TestAssembleVideo:
 
     def test_title_card_clip_with_audio(self, scene_dir):
         """Title clip uses audio duration when audio_path is provided."""
+        from unittest.mock import MagicMock, patch
+
         from agents.demo_pipeline.video import _title_clip
-        from unittest.mock import patch, MagicMock
 
         with patch("agents.demo_pipeline.video.AudioFileClip") as mock_audio_cls:
             mock_audio = MagicMock()

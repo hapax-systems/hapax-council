@@ -1,10 +1,11 @@
 """Periodic webcam timelapse capture."""
+
 from __future__ import annotations
 
 import argparse
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 CAMERAS = {
@@ -18,12 +19,22 @@ def capture_frame(device: str, role: str, output_dir: Path) -> None:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     outfile = output_dir / f"{role}-{ts}.jpg"
     cmd = [
-        "ffmpeg", "-y", "-f", "v4l2",
-        "-input_format", "mjpeg",
-        "-video_size", "1280x720",
-        "-i", device,
-        "-frames:v", "1", "-update", "1",
-        "-q:v", "5",
+        "ffmpeg",
+        "-y",
+        "-f",
+        "v4l2",
+        "-input_format",
+        "mjpeg",
+        "-video_size",
+        "1280x720",
+        "-i",
+        device,
+        "-frames:v",
+        "1",
+        "-update",
+        "1",
+        "-q:v",
+        "5",
         str(outfile),
     ]
     try:

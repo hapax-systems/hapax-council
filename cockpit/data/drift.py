@@ -1,10 +1,10 @@
 """Drift report data collector."""
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-
+from datetime import UTC, datetime
 
 from shared.config import PROFILES_DIR
 
@@ -60,16 +60,17 @@ def collect_drift() -> DriftSummary | None:
         doc_claim = raw.get("doc_claim", "")
         reality = raw.get("reality", "")
         description = raw.get("description", "") or (
-            f"{doc_claim} → {reality}" if doc_claim and reality
-            else doc_claim or reality
+            f"{doc_claim} → {reality}" if doc_claim and reality else doc_claim or reality
         )
-        items.append(DriftItem(
-            severity=raw.get("severity", ""),
-            category=raw.get("category", ""),
-            doc_file=raw.get("doc_file", ""),
-            description=description,
-            suggestion=raw.get("suggestion", ""),
-        ))
+        items.append(
+            DriftItem(
+                severity=raw.get("severity", ""),
+                category=raw.get("category", ""),
+                doc_file=raw.get("doc_file", ""),
+                description=description,
+                suggestion=raw.get("suggestion", ""),
+            )
+        )
 
     # Compute report age
     report_age_h = 0.0
@@ -77,8 +78,8 @@ def collect_drift() -> DriftSummary | None:
         try:
             ts = datetime.fromisoformat(timestamp)
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            report_age_h = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+                ts = ts.replace(tzinfo=UTC)
+            report_age_h = (datetime.now(UTC) - ts).total_seconds() / 3600
         except (ValueError, TypeError):
             pass
 

@@ -1,9 +1,10 @@
 """Tests for WebcamCapturer."""
+
 import base64
 import subprocess
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 from agents.hapax_voice.screen_models import CameraConfig
 from agents.hapax_voice.webcam_capturer import WebcamCapturer
@@ -41,9 +42,11 @@ def test_capturer_returns_base64_on_success(tmp_path):
     fake_file = tmp_path / "frame.jpg"
     fake_file.write_bytes(fake_jpg)
 
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run, \
-         patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value=str(tmp_path)), \
-         patch.object(Path, "exists", return_value=True):
+    with (
+        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch.object(Path, "exists", return_value=True),
+    ):
         mock_run.return_value = MagicMock(returncode=0)
         result = cap.capture("operator")
 
@@ -56,8 +59,10 @@ def test_capturer_returns_none_on_ffmpeg_failure():
     cameras = [CameraConfig(device="/dev/video0", role="operator")]
     cap = WebcamCapturer(cameras=cameras, cooldown_s=0)
 
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run, \
-         patch.object(Path, "exists", return_value=True):
+    with (
+        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch.object(Path, "exists", return_value=True),
+    ):
         mock_run.return_value = MagicMock(returncode=1)
         result = cap.capture("operator")
 
@@ -87,10 +92,16 @@ def test_capturer_handles_ffmpeg_timeout():
     cameras = [CameraConfig(device="/dev/video0", role="operator")]
     cap = WebcamCapturer(cameras=cameras, cooldown_s=0)
 
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run",
-               side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10)), \
-         patch.object(Path, "exists", return_value=True), \
-         patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"):
+    with (
+        patch(
+            "agents.hapax_voice.webcam_capturer.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10),
+        ),
+        patch.object(Path, "exists", return_value=True),
+        patch(
+            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+        ),
+    ):
         result = cap.capture("operator")
 
     assert result is None
@@ -101,10 +112,16 @@ def test_capturer_handles_ffmpeg_not_found():
     cameras = [CameraConfig(device="/dev/video0", role="operator")]
     cap = WebcamCapturer(cameras=cameras, cooldown_s=0)
 
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run",
-               side_effect=FileNotFoundError("ffmpeg not found")), \
-         patch.object(Path, "exists", return_value=True), \
-         patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"):
+    with (
+        patch(
+            "agents.hapax_voice.webcam_capturer.subprocess.run",
+            side_effect=FileNotFoundError("ffmpeg not found"),
+        ),
+        patch.object(Path, "exists", return_value=True),
+        patch(
+            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+        ),
+    ):
         result = cap.capture("operator")
 
     assert result is None
@@ -115,9 +132,13 @@ def test_capturer_cooldown_not_updated_on_failure():
     cameras = [CameraConfig(device="/dev/video0", role="operator")]
     cap = WebcamCapturer(cameras=cameras, cooldown_s=10)
 
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run, \
-         patch.object(Path, "exists", return_value=True), \
-         patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"):
+    with (
+        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch.object(Path, "exists", return_value=True),
+        patch(
+            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+        ),
+    ):
         mock_run.return_value = MagicMock(returncode=1)
         result = cap.capture("operator")
 
@@ -131,11 +152,17 @@ def test_capturer_tmpdir_cleaned_on_ffmpeg_exception():
     cameras = [CameraConfig(device="/dev/video0", role="operator")]
     cap = WebcamCapturer(cameras=cameras, cooldown_s=0)
 
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run",
-               side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10)), \
-         patch.object(Path, "exists", return_value=True), \
-         patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"), \
-         patch("shutil.rmtree") as mock_rmtree:
+    with (
+        patch(
+            "agents.hapax_voice.webcam_capturer.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10),
+        ),
+        patch.object(Path, "exists", return_value=True),
+        patch(
+            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+        ),
+        patch("shutil.rmtree") as mock_rmtree,
+    ):
         result = cap.capture("operator")
 
     assert result is None
@@ -150,9 +177,11 @@ def test_capturer_handles_empty_output_file(tmp_path):
     empty_file = tmp_path / "frame.jpg"
     empty_file.write_bytes(b"")
 
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run, \
-         patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value=str(tmp_path)), \
-         patch.object(Path, "exists", return_value=True):
+    with (
+        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch.object(Path, "exists", return_value=True),
+    ):
         mock_run.return_value = MagicMock(returncode=0)
         result = cap.capture("operator")
 
@@ -179,9 +208,13 @@ def test_capturer_pixel_format_optional():
     cameras = [CameraConfig(device="/dev/video0", role="operator", pixel_format=None)]
     cap = WebcamCapturer(cameras=cameras, cooldown_s=0)
 
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run, \
-         patch.object(Path, "exists", return_value=True), \
-         patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"):
+    with (
+        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch.object(Path, "exists", return_value=True),
+        patch(
+            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+        ),
+    ):
         mock_run.return_value = MagicMock(returncode=1)
         cap.capture("operator")
 
@@ -205,9 +238,13 @@ def test_capturer_independent_cooldowns():
     assert cap.capture("operator") is None
 
     # hardware should NOT be on cooldown (just needs device to exist)
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run, \
-         patch.object(Path, "exists", return_value=True), \
-         patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"):
+    with (
+        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch.object(Path, "exists", return_value=True),
+        patch(
+            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+        ),
+    ):
         mock_run.return_value = MagicMock(returncode=1)
         # Should attempt capture (not blocked by cooldown)
         cap.capture("hardware")

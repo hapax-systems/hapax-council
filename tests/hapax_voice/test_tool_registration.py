@@ -1,4 +1,5 @@
 """Tests for tool registration on the Pipecat LLM service."""
+
 from unittest.mock import MagicMock
 
 from agents.hapax_voice.config import VoiceConfig

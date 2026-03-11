@@ -7,7 +7,6 @@ flow, wiring together capabilities, the LLM evaluator, and notifications.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -27,11 +26,11 @@ class FixOutcome(BaseModel):
     """Outcome of processing a single failing check through the pipeline."""
 
     check_name: str
-    proposal: Optional[FixProposal] = None
+    proposal: FixProposal | None = None
     executed: bool = False
     notified: bool = False
-    execution_result: Optional[ExecutionResult] = None
-    rejected_reason: Optional[str] = None
+    execution_result: ExecutionResult | None = None
+    rejected_reason: str | None = None
 
 
 class PipelineResult(BaseModel):
@@ -88,9 +87,7 @@ async def run_fix_pipeline(
         try:
             probe = await cap.gather_context(check)
         except Exception:
-            log.warning(
-                "gather_context failed for check %s", check.name, exc_info=True
-            )
+            log.warning("gather_context failed for check %s", check.name, exc_info=True)
             continue
 
         # Evaluate — ask LLM for a fix proposal
@@ -115,9 +112,7 @@ async def run_fix_pipeline(
 
         # Dry-run: record but don't execute
         if mode == "dry_run":
-            result.outcomes.append(
-                FixOutcome(check_name=check.name, proposal=proposal)
-            )
+            result.outcomes.append(FixOutcome(check_name=check.name, proposal=proposal))
             continue
 
         # Execute or notify based on safety

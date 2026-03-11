@@ -1,18 +1,19 @@
 """voice — warm copilot personality for the cockpit."""
+
 from __future__ import annotations
 
 from datetime import datetime
 
 
 def operator_name() -> str:
-    """Operator first name from profile, fallback 'Ryan'."""
+    """Operator first name from profile, fallback 'Operator'."""
     try:
         from shared.operator import get_operator
 
         op = get_operator().get("operator", {})
-        return op.get("name", "Ryan").split()[0]
+        return op.get("name", "Operator").split()[0]
     except Exception:
-        return "Ryan"
+        return "Operator"
 
 
 def greeting() -> str:

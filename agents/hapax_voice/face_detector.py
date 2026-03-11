@@ -1,4 +1,5 @@
 """Lightweight face detection using MediaPipe BlazeFace (CPU-only)."""
+
 from __future__ import annotations
 
 import base64
@@ -66,6 +67,7 @@ class FaceDetector:
                 if model_path is None:
                     return None
                 import mediapipe as mp
+
                 base_options = mp.tasks.BaseOptions(model_asset_path=str(model_path))
                 options = mp.tasks.vision.FaceDetectorOptions(
                     base_options=base_options,
@@ -90,6 +92,7 @@ class FaceDetector:
 
         try:
             import mediapipe as mp
+
             normalized = _normalize_color(image)
             rgb = cv2.cvtColor(normalized, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)

@@ -4,11 +4,10 @@ Tests that pipeline construction wires processors in the correct order
 and that each component receives the right configuration. Full audio
 round-trip requires live hardware — see smoke_test_voice.sh.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from agents.hapax_voice.pipeline import build_pipeline_task
 
@@ -50,13 +49,13 @@ class TestPipelineWiring:
         call_kwargs = mock_pipeline_cls.call_args.kwargs
         processors = call_kwargs["processors"]
 
-        assert processors[0] == mock_transport.input()   # transport input
-        assert processors[1] == mock_stt_cls()            # STT
-        assert processors[2] == mock_agg.user()           # user aggregator
-        assert processors[3] == mock_llm_cls()            # LLM
-        assert processors[4] == mock_tts_cls()            # TTS
-        assert processors[5] == mock_transport.output()   # transport output
-        assert processors[6] == mock_agg.assistant()      # assistant aggregator
+        assert processors[0] == mock_transport.input()  # transport input
+        assert processors[1] == mock_stt_cls()  # STT
+        assert processors[2] == mock_agg.user()  # user aggregator
+        assert processors[3] == mock_llm_cls()  # LLM
+        assert processors[4] == mock_tts_cls()  # TTS
+        assert processors[5] == mock_transport.output()  # transport output
+        assert processors[6] == mock_agg.assistant()  # assistant aggregator
 
     @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
     @patch("agents.hapax_voice.pipeline.WhisperSTTService")
@@ -93,9 +92,9 @@ class TestPipelineWiring:
         call_kwargs = mock_pipeline_cls.call_args.kwargs
         processors = call_kwargs["processors"]
 
-        assert processors[0] == mock_transport.input()   # transport input
-        assert processors[1] == mock_gate                 # frame gate
-        assert processors[2] == mock_stt_cls()            # STT
+        assert processors[0] == mock_transport.input()  # transport input
+        assert processors[1] == mock_gate  # frame gate
+        assert processors[2] == mock_stt_cls()  # STT
         assert len(processors) == 8
 
     @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
@@ -124,7 +123,10 @@ class TestPipelineWiring:
         build_pipeline_task(stt_model="large-v3")
 
         mock_stt_cls.assert_called_once_with(
-            model="large-v3", device="cuda", compute_type="float16", no_speech_prob=0.4,
+            model="large-v3",
+            device="cuda",
+            compute_type="float16",
+            no_speech_prob=0.4,
         )
 
     @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
@@ -150,10 +152,13 @@ class TestPipelineWiring:
         mock_transport_cls.return_value = MagicMock()
         mock_agg_pair_cls.return_value = MagicMock()
 
-        with patch.dict("os.environ", {
-            "LITELLM_BASE_URL": "http://127.0.0.1:4000",
-            "LITELLM_API_KEY": "test-key",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "LITELLM_BASE_URL": "http://127.0.0.1:4000",
+                "LITELLM_API_KEY": "test-key",
+            },
+        ):
             build_pipeline_task(llm_model="claude-sonnet")
 
         mock_llm_cls.assert_called_once_with(
@@ -191,6 +196,7 @@ class TestPipelineWiring:
         tools_arg = ctx_call.kwargs.get("tools")
         # Tools should be a ToolsSchema (not None / NOT_GIVEN)
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
+
         assert isinstance(tools_arg, ToolsSchema)
 
     @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
@@ -220,6 +226,7 @@ class TestPipelineWiring:
 
         ctx_call = mock_ctx_cls.call_args
         from openai import NOT_GIVEN
+
         assert ctx_call.kwargs.get("tools") is NOT_GIVEN
 
     @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
@@ -276,7 +283,9 @@ class TestSystemPromptContent:
 
         prompt = system_prompt(guest_mode=False)
         # The normal prompt gives access to the operator's system
-        assert any(word in prompt.lower() for word in ["system", "briefing", "calendar", "documents"])
+        assert any(
+            word in prompt.lower() for word in ["system", "briefing", "calendar", "documents"]
+        )
 
     def test_guest_prompt_restricts_access(self):
         from agents.hapax_voice.persona import system_prompt

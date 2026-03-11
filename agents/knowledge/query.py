@@ -1,4 +1,5 @@
 """Pydantic-ai query agent for knowledge and context search."""
+
 from __future__ import annotations
 
 import logging
@@ -125,6 +126,7 @@ def create_agent() -> Agent:
     ) -> str:
         """Search the documents collection via semantic similarity."""
         from shared.knowledge_search import search_documents
+
         return search_documents(
             query,
             source_service=source_service or None,
@@ -134,47 +136,52 @@ def create_agent() -> Agent:
         )
 
     @agent.tool
-    async def search_profile_facts(
-        ctx, query: str, dimension: str = "", limit: int = 5
-    ) -> str:
+    async def search_profile_facts(ctx, query: str, dimension: str = "", limit: int = 5) -> str:
         """Search operator profile facts via semantic similarity."""
         from shared.knowledge_search import search_profile
+
         return search_profile(query, dimension=dimension or None, limit=limit)
 
     @agent.tool
     async def search_conv_memory(ctx, query: str, limit: int = 5) -> str:
         """Search persistent conversation memory from Claude Code sessions."""
         from shared.knowledge_search import search_memory
+
         return search_memory(query, limit=limit)
 
     @agent.tool
     async def briefing(ctx) -> str:
         """Read the latest daily briefing (headline, action items, stats)."""
         from shared.knowledge_search import read_briefing
+
         return read_briefing(ctx.deps.profiles_dir)
 
     @agent.tool
     async def digest(ctx) -> str:
         """Read the latest knowledge digest (new documents, notable items)."""
         from shared.knowledge_search import read_digest
+
         return read_digest(ctx.deps.profiles_dir)
 
     @agent.tool
     async def scout_report(ctx) -> str:
         """Read the latest scout report (technology recommendations, horizon scan)."""
         from shared.knowledge_search import read_scout_report
+
         return read_scout_report(ctx.deps.profiles_dir)
 
     @agent.tool
     async def operator_goals(ctx) -> str:
         """Read the operator's active goals (primary and secondary)."""
         from shared.knowledge_search import get_operator_goals
+
         return get_operator_goals(ctx.deps.profiles_dir)
 
     @agent.tool
     async def collection_stats(ctx) -> str:
         """Get point counts for all Qdrant collections."""
         from shared.knowledge_search import get_collection_stats
+
         return get_collection_stats()
 
     return agent

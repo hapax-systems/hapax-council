@@ -1,7 +1,8 @@
 """Tests for query API route — SSE streaming, refinement, agent listing."""
+
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -12,6 +13,7 @@ from cockpit.query_dispatch import QueryAgentInfo, QueryResult
 @pytest.fixture
 async def client():
     from cockpit.api.app import app
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

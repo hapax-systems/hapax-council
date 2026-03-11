@@ -22,9 +22,9 @@
 Replace the entire agent table in `~/projects/hapax-system/rules/system-context.md` with:
 
 ```markdown
-## Management Agents (~/projects/ai-agents/)
+## Management Agents (~/projects/hapax-council/)
 
-Invoke: `cd ~/projects/ai-agents && uv run python -m agents.<name> [flags]`
+Invoke: `cd ~/projects/hapax-council && uv run python -m agents.<name> [flags]`
 
 | Agent | LLM? | Key Flags |
 |-------|------|-----------|
@@ -249,7 +249,7 @@ Show the operator profile summary and dimension breakdown.
 **Default (no args):** Read the distilled manifest and show a summary:
 
 ```bash
-cd ~/projects/ai-agents && jq '{
+cd ~/projects/hapax-council && jq '{
   name: .operator.name,
   goals: [.goals.primary[] | {name, status}],
   patterns: (.patterns | keys),
@@ -261,21 +261,21 @@ cd ~/projects/ai-agents && jq '{
 Then read the full profile and show per-dimension fact counts:
 
 ```bash
-cd ~/projects/ai-agents && uv run python -c "
+cd ~/projects/hapax-council && uv run python -c "
 import json
-p = json.load(open('profiles/ryan.json'))
+p = json.load(open('profiles/operator-profile.json'))
 for dim, facts in sorted(p.get('dimensions', {}).items()):
     count = len(facts) if isinstance(facts, list) else len(facts) if isinstance(facts, dict) else 0
     print(f'  {dim}: {count} facts')
 "
 ```
 
-**With dimension arg** (e.g., `/profile neurocognitive`): Show the facts for that specific dimension from `profiles/ryan.json`.
+**With dimension arg** (e.g., `/profile neurocognitive`): Show the facts for that specific dimension from `profiles/operator-profile.json`.
 
 **With `--refresh` flag:** Run the profiler to update:
 
 ```bash
-cd ~/projects/ai-agents && eval "$(<.envrc)" && uv run python -m agents.profiler --auto
+cd ~/projects/hapax-council && eval "$(<.envrc)" && uv run python -m agents.profiler --auto
 ```
 ```
 
@@ -294,7 +294,7 @@ Show calendar context and meeting prep status.
 **Default (no args):** Show today's meetings and prep status:
 
 ```bash
-cd ~/projects/ai-agents && eval "$(<.envrc)" && uv run python -c "
+cd ~/projects/hapax-council && eval "$(<.envrc)" && uv run python -c "
 from shared.calendar_context import CalendarContext
 ctx = CalendarContext()
 print(f'Meetings today: {ctx.meeting_count_today()}')
@@ -319,7 +319,7 @@ systemctl --user status meeting-prep.timer --no-pager 2>/dev/null | head -5
 **With person arg** (e.g., `/calendar Alice`): Show next meeting with that person:
 
 ```bash
-cd ~/projects/ai-agents && eval "$(<.envrc)" && uv run python -c "
+cd ~/projects/hapax-council && eval "$(<.envrc)" && uv run python -c "
 from shared.calendar_context import CalendarContext
 ctx = CalendarContext()
 m = ctx.next_meeting_with('$PERSON')
@@ -364,7 +364,7 @@ curl -s -X POST http://127.0.0.1:8051/api/nudges/$ID/dismiss | jq .
 ```
 
 If the cockpit API is not running (connection refused), suggest:
-`cd ~/projects/ai-agents && uv run python -m cockpit.api`
+`cd ~/projects/hapax-council && uv run python -m cockpit.api`
 ```
 
 **Step 4: Create `/cycle-mode` skill**
@@ -432,15 +432,15 @@ git commit -m "feat: add profile, calendar, nudges, and cycle-mode skills"
 ### Task 4: Cross-repo memory standard
 
 **Files:**
-- Modify: `~/projects/ai-agents/CLAUDE.md` (add Project Memory section)
-- Modify: `~/projects/ai-agents/agents/drift_detector.py` (add Project Memory check)
-- Create: `~/projects/ai-agents/tests/test_drift_detector_memory.py`
+- Modify: `~/projects/hapax-council/CLAUDE.md` (add Project Memory section)
+- Modify: `~/projects/hapax-council/agents/drift_detector.py` (add Project Memory check)
+- Create: `~/projects/hapax-council/tests/test_drift_detector_memory.py`
 
 **Context:** Every hapax repo should have a `## Project Memory` section in its CLAUDE.md. This section contains stable institutional knowledge that persists across sessions. The drift-detector should enforce this across all 6 repos.
 
 **Step 1: Write the test for the drift-detector check**
 
-Create `~/projects/ai-agents/tests/test_drift_detector_memory.py`:
+Create `~/projects/hapax-council/tests/test_drift_detector_memory.py`:
 
 ```python
 """Tests for drift_detector project memory enforcement check."""
@@ -495,12 +495,12 @@ def test_handles_nonexistent_repo(tmp_path):
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_drift_detector_memory.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_drift_detector_memory.py -v`
 Expected: FAIL with `ImportError: cannot import name 'check_project_memory'` or `AttributeError`
 
 **Step 3: Implement the check in drift_detector.py**
 
-Add near the top of `~/projects/ai-agents/agents/drift_detector.py`, after the existing imports from `shared.config` (around line 33), add the repo directory list:
+Add near the top of `~/projects/hapax-council/agents/drift_detector.py`, after the existing imports from `shared.config` (around line 33), add the repo directory list:
 
 ```python
 HAPAX_REPO_DIRS = [
@@ -567,12 +567,12 @@ And find where the deterministic items are combined (look for the list that aggr
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_drift_detector_memory.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_drift_detector_memory.py -v`
 Expected: 4 passed
 
 **Step 5: Add Project Memory section to ai-agents CLAUDE.md**
 
-Append the following to `~/projects/ai-agents/CLAUDE.md` (before the `# currentDate` line):
+Append the following to `~/projects/hapax-council/CLAUDE.md` (before the `# currentDate` line):
 
 ```markdown
 ## Project Memory
@@ -591,13 +591,13 @@ Stable patterns confirmed across multiple sessions:
 
 **Step 6: Run full drift-detector tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_drift_detector_memory.py tests/test_drift_detector.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_drift_detector_memory.py tests/test_drift_detector.py -v`
 Expected: All tests pass.
 
 **Step 7: Commit**
 
 ```bash
-cd ~/projects/ai-agents
+cd ~/projects/hapax-council
 git add tests/test_drift_detector_memory.py agents/drift_detector.py CLAUDE.md
 git commit -m "feat: add cross-repo project memory enforcement to drift-detector
 
@@ -662,5 +662,5 @@ Expected: Output includes `Profile:`, `Cycle:`, plus all existing lines. No erro
 
 **Step 4: Run all tests in ai-agents**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_cycle_mode.py tests/test_cycle_mode_integration.py tests/test_cycle_mode_api.py tests/test_timer_overrides.py tests/test_drift_detector_memory.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_cycle_mode.py tests/test_cycle_mode_integration.py tests/test_cycle_mode_api.py tests/test_timer_overrides.py tests/test_drift_detector_memory.py -v`
 Expected: All pass.

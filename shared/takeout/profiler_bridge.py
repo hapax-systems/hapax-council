@@ -5,22 +5,26 @@ gets mapped directly to profile facts without LLM involvement.
 
 Zero LLM cost, deterministic output, high confidence (0.95).
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import os
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger("takeout.profiler_bridge")
 
 # Import ProfileFact at function level to avoid circular imports
 # since profiler.py is in agents/ and this is in shared/
-STRUCTURED_JSONL = Path(__file__).resolve().parent.parent.parent / "profiles" / "takeout-structured.jsonl"
-FACTS_OUTPUT = Path(__file__).resolve().parent.parent.parent / "profiles" / "takeout-structured-facts.json"
+STRUCTURED_JSONL = (
+    Path(__file__).resolve().parent.parent.parent / "profiles" / "takeout-structured.jsonl"
+)
+FACTS_OUTPUT = (
+    Path(__file__).resolve().parent.parent.parent / "profiles" / "takeout-structured-facts.json"
+)
 
 
 def _make_fact(dimension: str, key: str, value: str, source: str, evidence: str) -> dict:
@@ -147,7 +151,7 @@ class _ServiceAccumulators:
                 q = title
                 for prefix in ("Searched for ", "searched for "):
                     if q.startswith(prefix):
-                        q = q[len(prefix):]
+                        q = q[len(prefix) :]
                         break
                 if q:
                     self.search_queries.append(q)
@@ -165,7 +169,7 @@ class _ServiceAccumulators:
                     title = record.get("title", "")
                     for prefix in ("Watched: ", "Watched ", "watched "):
                         if title.startswith(prefix):
-                            title = title[len(prefix):]
+                            title = title[len(prefix) :]
                             break
                     if title:
                         self.youtube_titles.append(title)
@@ -193,7 +197,7 @@ class _ServiceAccumulators:
                     title = record.get("title", "")
                     for prefix in ("Watched ", "watched "):
                         if title.startswith(prefix):
-                            title = title[len(prefix):]
+                            title = title[len(prefix) :]
                             break
                     if title:
                         self.youtube_titles.append(title)
@@ -246,7 +250,9 @@ class _ServiceAccumulators:
             top = self.chrome_domain_visits.most_common(15)
             value = ", ".join(f"{d} ({c})" for d, c in top)
             evidence = f"Aggregated from {self.chrome_url_count} unique URLs, {sum(self.chrome_domain_visits.values())} total visits"
-            facts.append(_make_fact("knowledge_domains", "frequent_websites", value, source, evidence))
+            facts.append(
+                _make_fact("knowledge_domains", "frequent_websites", value, source, evidence)
+            )
 
         if "search" in self._services_seen and self.search_queries:
             value = "; ".join(self.search_queries)
@@ -256,25 +262,41 @@ class _ServiceAccumulators:
         if self._services_seen & {"youtube", "youtube_full"}:
             if self.youtube_titles:
                 value = "; ".join(self.youtube_titles)
-                total_label = f" (of {self.youtube_watch_count} total)" if self.youtube_watch_count > len(self.youtube_titles) else ""
+                total_label = (
+                    f" (of {self.youtube_watch_count} total)"
+                    if self.youtube_watch_count > len(self.youtube_titles)
+                    else ""
+                )
                 evidence = f"{len(self.youtube_titles)} videos watched{total_label}"
-                facts.append(_make_fact("knowledge_domains", "video_topics", value, source, evidence))
+                facts.append(
+                    _make_fact("knowledge_domains", "video_topics", value, source, evidence)
+                )
 
             if self.youtube_channel_watches:
                 top = self.youtube_channel_watches.most_common(20)
                 value = ", ".join(f"{ch} ({c})" for ch, c in top)
                 evidence = f"Top channels from {self.youtube_watch_count} video watches"
-                facts.append(_make_fact("knowledge_domains", "youtube_channels", value, source, evidence))
+                facts.append(
+                    _make_fact("knowledge_domains", "youtube_channels", value, source, evidence)
+                )
 
             if self.youtube_search_queries:
                 value = "; ".join(self.youtube_search_queries)
                 evidence = f"{len(self.youtube_search_queries)} YouTube search queries"
-                facts.append(_make_fact("knowledge_domains", "youtube_search_topics", value, source, evidence))
+                facts.append(
+                    _make_fact(
+                        "knowledge_domains", "youtube_search_topics", value, source, evidence
+                    )
+                )
 
             if self.youtube_subscriptions:
                 value = ", ".join(self.youtube_subscriptions)
                 evidence = f"{len(self.youtube_subscriptions)} YouTube channel subscriptions"
-                facts.append(_make_fact("knowledge_domains", "youtube_subscriptions", value, source, evidence))
+                facts.append(
+                    _make_fact(
+                        "knowledge_domains", "youtube_subscriptions", value, source, evidence
+                    )
+                )
 
             if self.youtube_playlists:
                 top = self.youtube_playlists.most_common(10)
@@ -286,24 +308,44 @@ class _ServiceAccumulators:
             if self.calendar_recurring:
                 value = "; ".join(self.calendar_recurring)
                 evidence = f"{len(self.calendar_recurring)} recurring events found"
-                facts.append(_make_fact("workflow", "recurring_commitments", value, source, evidence))
+                facts.append(
+                    _make_fact("workflow", "recurring_commitments", value, source, evidence)
+                )
             if self.calendar_event_count:
                 evidence = f"{self.calendar_event_count} total calendar events"
-                facts.append(_make_fact("workflow", "calendar_event_count", str(self.calendar_event_count), source, evidence))
+                facts.append(
+                    _make_fact(
+                        "workflow",
+                        "calendar_event_count",
+                        str(self.calendar_event_count),
+                        source,
+                        evidence,
+                    )
+                )
 
         if "contacts" in self._services_seen:
             if self.contacts_count:
-                facts.append(_make_fact(
-                    "identity", "contact_network_size", str(self.contacts_count),
-                    source, f"{self.contacts_count} contacts in Google Contacts",
-                ))
+                facts.append(
+                    _make_fact(
+                        "identity",
+                        "contact_network_size",
+                        str(self.contacts_count),
+                        source,
+                        f"{self.contacts_count} contacts in Google Contacts",
+                    )
+                )
             if self.contacts_orgs:
                 top_orgs = self.contacts_orgs.most_common(10)
                 value = ", ".join(f"{o} ({c})" for o, c in top_orgs)
-                facts.append(_make_fact(
-                    "identity", "organizational_connections", value,
-                    source, f"Organizations from {sum(self.contacts_orgs.values())} contacts",
-                ))
+                facts.append(
+                    _make_fact(
+                        "identity",
+                        "organizational_connections",
+                        value,
+                        source,
+                        f"Organizations from {sum(self.contacts_orgs.values())} contacts",
+                    )
+                )
 
         if "maps" in self._services_seen and self.location_places:
             top = self.location_places.most_common(10)
@@ -340,7 +382,9 @@ class _ServiceAccumulators:
                     per_week = per_day * 7
                     value = f"{per_day:.1f} emails/day ({per_week:.0f}/week)"
                     evidence = f"{len(parsed)} emails over {span_days} days"
-                    facts.append(_make_fact("workflow", "proton_email_cadence", value, source, evidence))
+                    facts.append(
+                        _make_fact("workflow", "proton_email_cadence", value, source, evidence)
+                    )
             except (ValueError, TypeError):
                 pass
 
@@ -349,17 +393,22 @@ class _ServiceAccumulators:
             sent_pct = 100 * self.proton_sent_count / total if total else 0
             value = f"{self.proton_sent_count} sent, {self.proton_received_count} received ({sent_pct:.0f}% sent)"
             evidence = f"{total} total Proton Mail messages analyzed"
-            facts.append(_make_fact("workflow", "proton_email_direction_ratio", value, source, evidence))
+            facts.append(
+                _make_fact("workflow", "proton_email_direction_ratio", value, source, evidence)
+            )
 
         if self.proton_label_counts:
             from shared.proton.labels import SYSTEM_LABELS
+
             named: list[str] = []
             for lid, count in self.proton_label_counts.most_common(10):
                 name = SYSTEM_LABELS.get(lid, f"custom:{lid}")
                 named.append(f"{name} ({count})")
             value = ", ".join(named)
             evidence = f"Label distribution across {self.proton_total} messages"
-            facts.append(_make_fact("workflow", "proton_email_organization", value, source, evidence))
+            facts.append(
+                _make_fact("workflow", "proton_email_organization", value, source, evidence)
+            )
 
         return facts
 
@@ -395,9 +444,8 @@ def generate_facts(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     import tempfile
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=output_path.parent, suffix=".tmp"
-    )
+
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".tmp")
     try:
         os.write(tmp_fd, json.dumps(facts, indent=2).encode("utf-8"))
         os.close(tmp_fd)

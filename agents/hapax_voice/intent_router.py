@@ -1,4 +1,5 @@
 """Intent router for backend selection (local vs Gemini)."""
+
 from __future__ import annotations
 
 import logging

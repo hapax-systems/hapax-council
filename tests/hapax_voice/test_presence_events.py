@@ -1,4 +1,5 @@
 """Tests for PresenceDetector transition event emission."""
+
 from unittest.mock import MagicMock
 
 from agents.hapax_voice.presence import PresenceDetector

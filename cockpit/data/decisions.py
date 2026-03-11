@@ -3,28 +3,30 @@
 Records when the operator acts on, dismisses, or lets a nudge expire.
 Persisted to ~/.cache/cockpit/decisions.jsonl for profiler consumption.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import os
-from dataclasses import dataclass, asdict, field
-from datetime import datetime, timezone
-from pathlib import Path
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 
 log = logging.getLogger("cockpit.decisions")
 
 from shared.config import COCKPIT_STATE_DIR
+
 _DECISIONS_PATH = COCKPIT_STATE_DIR / "decisions.jsonl"
 
 
 @dataclass
 class Decision:
     """A recorded operator decision on a nudge."""
+
     timestamp: str
     nudge_title: str
     nudge_category: str
-    action: str          # "executed" | "dismissed" | "expired"
+    action: str  # "executed" | "dismissed" | "expired"
     context: str = ""
     active_accommodations: list[str] = field(default_factory=list)
 
@@ -37,6 +39,7 @@ def _rotate_decisions(max_lines: int = 500) -> None:
         lines = _DECISIONS_PATH.read_text().strip().splitlines()
         if len(lines) > max_lines:
             import tempfile
+
             keep = lines[-max_lines:]
             fd, tmp = tempfile.mkstemp(dir=_DECISIONS_PATH.parent, suffix=".jsonl")
             try:
@@ -59,10 +62,9 @@ def record_decision(decision: Decision) -> None:
     if not decision.active_accommodations:
         try:
             from cockpit.accommodations import load_accommodations
+
             active = load_accommodations()
-            decision.active_accommodations = [
-                a.id for a in active if a.active
-            ]
+            decision.active_accommodations = [a.id for a in active if a.active]
         except Exception:
             pass
 
@@ -80,7 +82,7 @@ def collect_decisions(hours: int = 168) -> list[Decision]:
     if not _DECISIONS_PATH.exists():
         return []
 
-    cutoff = datetime.now(timezone.utc).timestamp() - (hours * 3600)
+    cutoff = datetime.now(UTC).timestamp() - (hours * 3600)
     decisions: list[Decision] = []
 
     try:

@@ -1,11 +1,10 @@
 """Tests for shared.proton — Proton Mail export ingestion pipeline."""
+
 from __future__ import annotations
 
 import json
 from datetime import datetime
 from pathlib import Path
-
-import pytest
 
 from shared.email_utils import (
     decode_header,
@@ -23,10 +22,10 @@ from shared.proton.labels import (
     is_spam_or_trash,
 )
 from shared.proton.parser import parse_export
-from shared.proton.processor import ProcessResult, process_export
-
+from shared.proton.processor import process_export
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
+
 
 def _make_metadata(
     *,
@@ -79,7 +78,7 @@ def _make_eml(
         f"Content-Type: text/plain; charset=utf-8\r\n"
         f"\r\n"
         f"{body}\r\n"
-    ).encode("utf-8")
+    ).encode()
 
 
 def _write_pair(
@@ -102,6 +101,7 @@ def _write_pair(
 
 
 # ── TestLabels ───────────────────────────────────────────────────────────────
+
 
 class TestLabels:
     def test_system_label_lookup(self):
@@ -157,6 +157,7 @@ class TestLabels:
 
 # ── TestEmailUtils ───────────────────────────────────────────────────────────
 
+
 class TestEmailUtils:
     def test_is_automated_noreply(self):
         assert is_automated("noreply@example.com") is True
@@ -194,13 +195,13 @@ class TestEmailUtils:
 
     def test_extract_body_plain(self):
         import email
-        msg = email.message_from_string(
-            "Content-Type: text/plain\r\n\r\nHello world"
-        )
+
+        msg = email.message_from_string("Content-Type: text/plain\r\n\r\nHello world")
         assert extract_body(msg) == "Hello world"
 
 
 # ── TestParser ───────────────────────────────────────────────────────────────
+
 
 class TestParser:
     def test_parse_single_received(self, tmp_path):
@@ -300,6 +301,7 @@ class TestParser:
 
 
 # ── TestProcessor ────────────────────────────────────────────────────────────
+
 
 class TestProcessor:
     def test_dry_run(self, tmp_path):

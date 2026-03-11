@@ -8,6 +8,7 @@ Formats:
 - Semantic Location History/{year}/{month}.json — place visits + activity segments
 - Records.json — raw coordinate pings (legacy format)
 """
+
 from __future__ import annotations
 
 import json
@@ -40,7 +41,7 @@ def parse(zf: zipfile.ZipFile, config: ServiceConfig) -> Iterator[NormalizedReco
             if not name.startswith(prefix):
                 continue
 
-            rel = name[len(prefix):]
+            rel = name[len(prefix) :]
             if rel.startswith("Semantic Location History/") and name.endswith(".json"):
                 semantic_files.append(name)
             elif rel == "Records.json" or rel == "Location History.json":
@@ -103,12 +104,8 @@ def _place_visit_to_record(
     location_str = name or address
 
     # Timestamps
-    start_ts = _parse_location_time(
-        visit.get("duration", {}).get("startTimestamp", "")
-    )
-    end_ts = _parse_location_time(
-        visit.get("duration", {}).get("endTimestamp", "")
-    )
+    start_ts = _parse_location_time(visit.get("duration", {}).get("startTimestamp", ""))
+    end_ts = _parse_location_time(visit.get("duration", {}).get("endTimestamp", ""))
 
     # Duration in minutes
     duration_min = None
@@ -165,12 +162,8 @@ def _activity_segment_to_record(
     """Convert an activity segment (transit) to a NormalizedRecord."""
     activity_type = segment.get("activityType", "UNKNOWN")
 
-    start_ts = _parse_location_time(
-        segment.get("duration", {}).get("startTimestamp", "")
-    )
-    end_ts = _parse_location_time(
-        segment.get("duration", {}).get("endTimestamp", "")
-    )
+    start_ts = _parse_location_time(segment.get("duration", {}).get("startTimestamp", ""))
+    end_ts = _parse_location_time(segment.get("duration", {}).get("endTimestamp", ""))
 
     # Skip very short activities
     if start_ts and end_ts:
@@ -181,8 +174,8 @@ def _activity_segment_to_record(
         duration_min = None
 
     # Start/end locations
-    start_loc = segment.get("startLocation", {})
-    end_loc = segment.get("endLocation", {})
+    segment.get("startLocation", {})
+    segment.get("endLocation", {})
 
     title = f"Transit: {activity_type.replace('_', ' ').title()}"
     text_parts = [title]
@@ -241,7 +234,8 @@ def _parse_raw_records(
             "Large location file: %s is %.0fMB (uncompressed). "
             "This will be loaded entirely into memory. "
             "Consider splitting your Takeout export if memory is constrained.",
-            path, size_mb,
+            path,
+            size_mb,
         )
 
     try:

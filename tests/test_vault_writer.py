@@ -2,38 +2,39 @@
 
 Uses tmp_path for filesystem isolation. No real vault access.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
 from shared.vault_writer import (
-    write_to_vault,
+    create_decision_starter,
+    write_bridge_prompt_to_vault,
     write_briefing_to_vault,
     write_digest_to_vault,
-    write_nudges_to_vault,
     write_goals_to_vault,
-    write_bridge_prompt_to_vault,
-    create_decision_starter,
-    SYSTEM_DIR,
-    BRIEFINGS_DIR,
-    DIGESTS_DIR,
+    write_nudges_to_vault,
+    write_to_vault,
 )
 
 
 @pytest.fixture
 def fake_vault(tmp_path: Path):
     """Patch VAULT_PATH to a temporary directory."""
-    with patch("shared.vault_writer.VAULT_PATH", tmp_path), \
-         patch("shared.vault_writer.SYSTEM_DIR", tmp_path / "system"), \
-         patch("shared.vault_writer.BRIEFINGS_DIR", tmp_path / "system" / "briefings"), \
-         patch("shared.vault_writer.DIGESTS_DIR", tmp_path / "system" / "digests"):
+    with (
+        patch("shared.vault_writer.VAULT_PATH", tmp_path),
+        patch("shared.vault_writer.SYSTEM_DIR", tmp_path / "system"),
+        patch("shared.vault_writer.BRIEFINGS_DIR", tmp_path / "system" / "briefings"),
+        patch("shared.vault_writer.DIGESTS_DIR", tmp_path / "system" / "digests"),
+    ):
         yield tmp_path
 
 
 # ── write_to_vault ───────────────────────────────────────────────────────────
+
 
 class TestWriteToVault:
     def test_basic_write(self, fake_vault: Path):
@@ -49,7 +50,9 @@ class TestWriteToVault:
 
     def test_with_frontmatter(self, fake_vault: Path):
         path = write_to_vault(
-            "system", "fm.md", "Body",
+            "system",
+            "fm.md",
+            "Body",
             frontmatter={"type": "test", "version": 1},
         )
         content = path.read_text()
@@ -68,6 +71,7 @@ class TestWriteToVault:
 
 # ── write_briefing_to_vault ──────────────────────────────────────────────────
 
+
 class TestWriteBriefingToVault:
     def test_writes_dated_file(self, fake_vault: Path):
         path = write_briefing_to_vault("# Briefing\nAll good.")
@@ -81,6 +85,7 @@ class TestWriteBriefingToVault:
 
 
 # ── write_digest_to_vault ───────────────────────────────────────────────────
+
 
 class TestWriteDigestToVault:
     def test_writes_dated_file(self, fake_vault: Path):
@@ -102,6 +107,7 @@ class TestWriteDigestToVault:
 
 # ── write_nudges_to_vault ────────────────────────────────────────────────────
 
+
 class TestWriteNudgesToVault:
     def test_empty_nudges(self, fake_vault: Path):
         path = write_nudges_to_vault([])
@@ -110,7 +116,12 @@ class TestWriteNudgesToVault:
 
     def test_with_nudges(self, fake_vault: Path):
         nudges = [
-            {"priority": 10, "source": "health", "message": "3 checks degraded", "action": "Run --verbose"},
+            {
+                "priority": 10,
+                "source": "health",
+                "message": "3 checks degraded",
+                "action": "Run --verbose",
+            },
             {"priority": 50, "source": "goals", "message": "Goal stale", "action": ""},
         ]
         path = write_nudges_to_vault(nudges)
@@ -133,6 +144,7 @@ class TestWriteNudgesToVault:
 
 # ── write_goals_to_vault ─────────────────────────────────────────────────────
 
+
 class TestWriteGoalsToVault:
     def test_basic_goals(self, fake_vault: Path):
         goals = [
@@ -154,6 +166,7 @@ class TestWriteGoalsToVault:
 
 # ── write_bridge_prompt_to_vault ────────────────────────────────────────────
 
+
 class TestWriteBridgePromptToVault:
     def test_writes_prompt(self, fake_vault: Path):
         path = write_bridge_prompt_to_vault("1on1-prep-prompt", "# Prompt\n[PERSON] context")
@@ -170,6 +183,7 @@ class TestWriteBridgePromptToVault:
 
 
 # ── Starter doc writers ────────────────────────────────────────────────────
+
 
 class TestDecisionStarter:
     def test_creates_decision_doc(self, fake_vault: Path):
@@ -189,6 +203,7 @@ class TestDecisionStarter:
 
 # ── F-4.2: Atomic write_to_vault ──────────────────────────────────────────
 
+
 class TestAtomicWrite:
     """Verify write_to_vault uses atomic write (no temp files left)."""
 
@@ -199,6 +214,7 @@ class TestAtomicWrite:
 
     def test_write_to_vault_atomic(self, fake_vault: Path):
         from shared.vault_writer import write_to_vault
+
         path = write_to_vault("30-system", "test.md", "Hello world")
         assert path is not None
         assert path.read_text() == "Hello world"

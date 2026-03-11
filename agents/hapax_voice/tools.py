@@ -3,6 +3,7 @@
 Defines FunctionSchema objects for each tool and async handlers that execute
 when the LLM calls them mid-conversation.
 """
+
 from __future__ import annotations
 
 import json
@@ -11,30 +12,28 @@ import os
 import subprocess
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
 from openai import OpenAI
-
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from shared.config import embed, get_qdrant
-from shared.google_auth import build_service
 from agents.hapax_voice.desktop_tools import (
     DESKTOP_TOOL_SCHEMAS,
-    handle_focus_window,
-    handle_switch_workspace,
-    handle_open_app,
     handle_confirm_open_app,
+    handle_focus_window,
     handle_get_desktop_state,
+    handle_open_app,
+    handle_switch_workspace,
 )
+from shared.config import embed, get_qdrant
+from shared.google_auth import build_service
 
 if TYPE_CHECKING:
-    from pipecat.services.llm_service import FunctionCallParams
     from pipecat.services.openai.llm import OpenAILLMService
 
     from agents.hapax_voice.config import VoiceConfig
@@ -165,9 +164,7 @@ _confirm_send_sms = FunctionSchema(
 
 _analyze_scene = FunctionSchema(
     name="analyze_scene",
-    description=(
-        "Capture images from cameras and/or screen and analyze what is visible"
-    ),
+    description=("Capture images from cameras and/or screen and analyze what is visible"),
     properties={
         "cameras": {
             "type": "array",
@@ -301,7 +298,7 @@ async def handle_get_calendar_today(params) -> None:
 
     try:
         service = build_service("calendar", "v3", [_CALENDAR_SCOPE])
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         time_max = now + timedelta(days=days_ahead)
 
         result = (
@@ -396,12 +393,7 @@ async def _search_emails_qdrant(params, query: str, max_results: int) -> None:
 async def _search_emails_gmail(params, query: str, max_results: int) -> None:
     """Search emails directly via Gmail API for freshest results."""
     service = build_service("gmail", "v1", [_GMAIL_SCOPE])
-    result = (
-        service.users()
-        .messages()
-        .list(userId="me", q=query, maxResults=max_results)
-        .execute()
-    )
+    result = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
     messages = result.get("messages", [])
     if not messages:
         await params.result_callback("No matching emails found.")
@@ -412,8 +404,12 @@ async def _search_emails_gmail(params, query: str, max_results: int) -> None:
         msg = (
             service.users()
             .messages()
-            .get(userId="me", id=msg_ref["id"], format="metadata",
-                 metadataHeaders=["From", "Subject", "Date"])
+            .get(
+                userId="me",
+                id=msg_ref["id"],
+                format="metadata",
+                metadataHeaders=["From", "Subject", "Date"],
+            )
             .execute()
         )
         headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
@@ -435,7 +431,9 @@ def _get_sms_password(pass_key: str) -> str:
     """Retrieve SMS gateway password from pass store."""
     result = subprocess.run(
         ["pass", "show", pass_key],
-        capture_output=True, text=True, timeout=5,
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
     if result.returncode != 0:
         raise RuntimeError(f"pass show {pass_key} failed: {result.stderr}")
@@ -466,10 +464,12 @@ async def handle_send_sms(params) -> None:
         if recipient.startswith("+"):
             phone = recipient
         else:
-            await params.result_callback({
-                "status": "error",
-                "detail": f"Contact '{recipient}' not found. Known contacts: {', '.join(cfg.sms_contacts.keys())}",
-            })
+            await params.result_callback(
+                {
+                    "status": "error",
+                    "detail": f"Contact '{recipient}' not found. Known contacts: {', '.join(cfg.sms_contacts.keys())}",
+                }
+            )
             return
 
     confirmation_id = str(uuid.uuid4())[:8]
@@ -479,13 +479,15 @@ async def handle_send_sms(params) -> None:
         "recipient": recipient,
     }
 
-    await params.result_callback({
-        "status": "pending_confirmation",
-        "confirmation_id": confirmation_id,
-        "recipient": recipient,
-        "phone": phone,
-        "message": message,
-    })
+    await params.result_callback(
+        {
+            "status": "pending_confirmation",
+            "confirmation_id": confirmation_id,
+            "recipient": recipient,
+            "phone": phone,
+            "message": message,
+        }
+    )
 
 
 async def handle_confirm_send_sms(params) -> None:
@@ -494,10 +496,12 @@ async def handle_confirm_send_sms(params) -> None:
 
     pending = _pending_sms.pop(confirmation_id, None)
     if pending is None:
-        await params.result_callback({
-            "status": "error",
-            "detail": "Confirmation not found or expired.",
-        })
+        await params.result_callback(
+            {
+                "status": "error",
+                "detail": "Confirmation not found or expired.",
+            }
+        )
         return
 
     cfg = _voice_config
@@ -519,16 +523,20 @@ async def handle_confirm_send_sms(params) -> None:
         )
 
         if response.status_code in (200, 201, 202):
-            await params.result_callback({
-                "status": "sent",
-                "recipient": pending["recipient"],
-                "phone": pending["phone"],
-            })
+            await params.result_callback(
+                {
+                    "status": "sent",
+                    "recipient": pending["recipient"],
+                    "phone": pending["phone"],
+                }
+            )
         else:
-            await params.result_callback({
-                "status": "error",
-                "detail": f"SMS gateway returned {response.status_code}: {response.text}",
-            })
+            await params.result_callback(
+                {
+                    "status": "error",
+                    "detail": f"SMS gateway returned {response.status_code}: {response.text}",
+                }
+            )
 
     except Exception as exc:
         log.exception("SMS send failed")
@@ -548,10 +556,12 @@ def _vision_analyze(images: list[str], question: str) -> str:
 
     content = []
     for img in images:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{img}"},
-        })
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img}"},
+            }
+        )
     content.append({"type": "text", "text": question or "Describe what you see in detail."})
 
     response = client.chat.completions.create(
@@ -585,7 +595,9 @@ async def handle_analyze_scene(params) -> None:
                 images.append(screen)
 
         if not images:
-            await params.result_callback("Couldn't capture any images — no cameras or screen available.")
+            await params.result_callback(
+                "Couldn't capture any images — no cameras or screen available."
+            )
             return
 
         analysis = _vision_analyze(images, question)
@@ -624,17 +636,23 @@ async def _run_health_checks(category: str | None = None) -> list[dict]:
         from agents.health_monitor import CHECK_REGISTRY
 
         all_results = []
-        groups = [category] if category and category in CHECK_REGISTRY else list(CHECK_REGISTRY.keys())
+        groups = (
+            [category] if category and category in CHECK_REGISTRY else list(CHECK_REGISTRY.keys())
+        )
         for group in groups:
             for check_fn in CHECK_REGISTRY.get(group, []):
                 results = await check_fn()
                 for r in results:
-                    all_results.append({
-                        "name": r.name,
-                        "group": r.group,
-                        "status": r.status.value if hasattr(r.status, "value") else str(r.status),
-                        "message": r.message,
-                    })
+                    all_results.append(
+                        {
+                            "name": r.name,
+                            "group": r.group,
+                            "status": r.status.value
+                            if hasattr(r.status, "value")
+                            else str(r.status),
+                            "message": r.message,
+                        }
+                    )
         return all_results
     except Exception as exc:
         log.warning("Health check execution failed: %s", exc)
@@ -742,15 +760,19 @@ async def handle_generate_image(params) -> None:
         # Display on screen
         subprocess.Popen(["xdg-open", str(output_path)])
 
-        await params.result_callback({
-            "status": "generated",
-            "path": str(output_path),
-            "description": "Image saved and opened on screen",
-        })
+        await params.result_callback(
+            {
+                "status": "generated",
+                "path": str(output_path),
+                "description": "Image saved and opened on screen",
+            }
+        )
 
     except Exception as exc:
         log.exception("generate_image failed")
-        await params.result_callback({"status": "error", "detail": f"Image generation failed: {exc}"})
+        await params.result_callback(
+            {"status": "error", "detail": f"Image generation failed: {exc}"}
+        )
 
 
 # ---------------------------------------------------------------------------

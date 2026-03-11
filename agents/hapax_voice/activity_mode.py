@@ -1,4 +1,5 @@
 """Activity mode classification from fused workspace signals."""
+
 from __future__ import annotations
 
 from agents.hapax_voice.screen_models import WorkspaceAnalysis

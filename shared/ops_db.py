@@ -3,6 +3,7 @@
 Reusable by query agents, voice tools, cockpit collectors, or any consumer
 needing SQL access to operational history data.
 """
+
 from __future__ import annotations
 
 import json
@@ -238,9 +239,7 @@ def build_ops_db(profiles_dir: Path) -> sqlite3.Connection:
 
 def get_table_schemas(conn: sqlite3.Connection) -> str:
     """Return DDL for all tables in the database."""
-    cursor = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' ORDER BY name"
-    )
+    cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' ORDER BY name")
     return "\n\n".join(row[0] for row in cursor.fetchall() if row[0])
 
 

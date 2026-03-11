@@ -1,6 +1,6 @@
 """Tests for PresenceDetector face detection fusion."""
+
 import time
-from unittest.mock import patch
 
 from agents.hapax_voice.presence import PresenceDetector
 

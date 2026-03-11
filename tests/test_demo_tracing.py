@@ -1,15 +1,15 @@
 """Tests for demo pipeline tracing."""
+
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 class TestDemoTracing:
     def test_tracer_created(self):
         """Verify the demo module creates an OTel tracer."""
         from agents.demo import tracer
+
         assert tracer is not None
 
     @patch("agents.demo.tracer")

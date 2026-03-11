@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 packages = ["agents", "cockpit", "shared"]
 
 [project]
-name = "ai-agents"
+name = "hapax-council"
 version = "0.3.7"
 description = "Personal agent infrastructure for a single-user LLM-first computing environment"
 readme = "README.md"
@@ -58,17 +58,21 @@ audio = [
     #   - After install, force pin: uv pip install 'lightning==2.4.0' --force-reinstall --no-deps
     #   - Use .venv/bin/python (not `uv run`) to avoid re-sync breaking the pin
 ]
-host = [
-    # Everything — for local development on the host machine
-    "ai-agents[cockpit-api]",
-    "ai-agents[sync-pipeline]",
-    "ai-agents[audio]",
+ci = [
+    # CI testing — everything except hardware-only audio deps
+    "hapax-council[cockpit-api]",
+    "hapax-council[sync-pipeline]",
     "google-genai>=1.0.0",
     "matplotlib>=3.9",
     "moviepy>=2.0.0",
     "pillow>=11.0.0",
     "playwright>=1.49.0",
     "watchdog>=6.0.0",
+]
+host = [
+    # Everything — for local development on the host machine
+    "hapax-council[ci]",
+    "hapax-council[audio]",
 ]
 
 [project.scripts]
@@ -77,8 +81,10 @@ cockpit-api = "cockpit.api.__main__:main"
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.400",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.0",
 ]
 
 [tool.pytest.ini_options]

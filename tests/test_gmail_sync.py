@@ -1,9 +1,11 @@
 """Tests for gmail_sync — schemas, formatting, profiler facts."""
+
 from __future__ import annotations
 
 
 def test_email_metadata_defaults():
     from agents.gmail_sync import EmailMetadata
+
     e = EmailMetadata(
         message_id="abc123",
         thread_id="thread1",
@@ -20,6 +22,7 @@ def test_email_metadata_defaults():
 
 def test_gmail_sync_state_empty():
     from agents.gmail_sync import GmailSyncState
+
     s = GmailSyncState()
     assert s.history_id == ""
     assert s.messages == {}
@@ -27,6 +30,7 @@ def test_gmail_sync_state_empty():
 
 def test_email_metadata_with_labels():
     from agents.gmail_sync import EmailMetadata
+
     e = EmailMetadata(
         message_id="def456",
         thread_id="thread2",
@@ -42,6 +46,7 @@ def test_email_metadata_with_labels():
 
 def test_format_email_markdown_metadata_only():
     from agents.gmail_sync import EmailMetadata, _format_email_markdown
+
     e = EmailMetadata(
         message_id="msg1",
         thread_id="thread1",
@@ -64,6 +69,7 @@ def test_format_email_markdown_metadata_only():
 
 def test_format_email_no_recipients():
     from agents.gmail_sync import EmailMetadata, _format_email_markdown
+
     e = EmailMetadata(
         message_id="msg2",
         thread_id="thread2",
@@ -79,19 +85,37 @@ def test_format_email_no_recipients():
 
 def test_generate_gmail_profile_facts():
     from agents.gmail_sync import (
-        _generate_profile_facts, GmailSyncState, EmailMetadata,
+        EmailMetadata,
+        GmailSyncState,
+        _generate_profile_facts,
     )
+
     state = GmailSyncState()
     state.messages = {
-        "1": EmailMetadata(message_id="1", thread_id="t1",
-             subject="Budget Review", sender="alice@company.com",
-             timestamp="2026-03-10T09:00:00Z", labels=["INBOX", "IMPORTANT"]),
-        "2": EmailMetadata(message_id="2", thread_id="t2",
-             subject="Standup Notes", sender="bob@company.com",
-             timestamp="2026-03-10T10:00:00Z", labels=["INBOX"]),
-        "3": EmailMetadata(message_id="3", thread_id="t1",
-             subject="Re: Budget Review", sender="alice@company.com",
-             timestamp="2026-03-10T11:00:00Z", labels=["INBOX"]),
+        "1": EmailMetadata(
+            message_id="1",
+            thread_id="t1",
+            subject="Budget Review",
+            sender="alice@company.com",
+            timestamp="2026-03-10T09:00:00Z",
+            labels=["INBOX", "IMPORTANT"],
+        ),
+        "2": EmailMetadata(
+            message_id="2",
+            thread_id="t2",
+            subject="Standup Notes",
+            sender="bob@company.com",
+            timestamp="2026-03-10T10:00:00Z",
+            labels=["INBOX"],
+        ),
+        "3": EmailMetadata(
+            message_id="3",
+            thread_id="t1",
+            subject="Re: Budget Review",
+            sender="alice@company.com",
+            timestamp="2026-03-10T11:00:00Z",
+            labels=["INBOX"],
+        ),
     }
     facts = _generate_profile_facts(state)
     assert len(facts) > 0

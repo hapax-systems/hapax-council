@@ -1,11 +1,11 @@
 """Tests for agents.demo_pipeline.dossier — interactive audience dossier collection."""
+
 from __future__ import annotations
 
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 import yaml
 
 from agents.demo_models import AudienceDossier
@@ -16,7 +16,6 @@ from agents.demo_pipeline.dossier import (
     save_dossier,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -25,14 +24,16 @@ from agents.demo_pipeline.dossier import (
 def _make_input_fn(answers: list[str]):
     """Return an input_fn that yields answers in order."""
     it = iter(answers)
+
     def _input(prompt: str) -> str:
         return next(it)
+
     return _input
 
 
 def _make_dossier(**overrides) -> AudienceDossier:
     defaults = dict(
-        key="my wife",
+        key="my partner",
         archetype="family",
         name="Sarah",
         context="prior_knowledge: nothing\ngoals_pain_points: wants to understand what I build",
@@ -53,22 +54,22 @@ class TestGatherDossierInteractive:
     def test_all_answers(self):
         """Full responses produce a fully populated dossier."""
         answers = [
-            "Sarah",                           # name
-            "nothing",                         # prior_knowledge_level
-            "wants to understand what I build", # goals
-            "thinks I spend too much time",     # attitudes
-            "spouse, no technical role",        # relationship_role
-            "casual at home",                   # situational_context
+            "Sarah",  # name
+            "nothing",  # prior_knowledge_level
+            "wants to understand what I build",  # goals
+            "thinks I spend too much time",  # attitudes
+            "spouse, no technical role",  # relationship_role
+            "casual at home",  # situational_context
         ]
         printed: list[str] = []
         dossier, responses = gather_dossier_interactive(
-            audience_key="my wife",
+            audience_key="my partner",
             archetype="family",
             input_fn=_make_input_fn(answers),
             print_fn=printed.append,
         )
 
-        assert dossier.key == "my wife"
+        assert dossier.key == "my partner"
         assert dossier.archetype == "family"
         assert dossier.name == "Sarah"
         assert "prior_knowledge: nothing" in dossier.context
@@ -84,12 +85,12 @@ class TestGatherDossierInteractive:
     def test_skip_optional(self):
         """Empty Enter skips that field — context omits it."""
         answers = [
-            "Bob",      # name
+            "Bob",  # name
             "nothing",  # prior_knowledge_level
             "impress him",  # goals
-            "",         # attitudes (skip)
+            "",  # attitudes (skip)
             "peer who might adopt",  # relationship_role
-            "",         # situational_context (skip)
+            "",  # situational_context (skip)
         ]
         dossier, responses = gather_dossier_interactive(
             audience_key="colleague",
@@ -148,9 +149,9 @@ class TestSaveDossier:
         assert result == target
         assert target.exists()
         data = yaml.safe_load(target.read_text())
-        assert "my wife" in data["audiences"]
-        assert data["audiences"]["my wife"]["name"] == "Sarah"
-        assert data["audiences"]["my wife"]["archetype"] == "family"
+        assert "my partner" in data["audiences"]
+        assert data["audiences"]["my partner"]["name"] == "Sarah"
+        assert data["audiences"]["my partner"]["archetype"] == "family"
 
     def test_merge_existing(self, tmp_path: Path):
         """Adds to existing audiences without clobbering."""
@@ -161,14 +162,14 @@ class TestSaveDossier:
         save_dossier(initial, path=target)
 
         # Add another
-        second = _make_dossier(key="my wife", name="Sarah")
+        second = _make_dossier(key="my partner", name="Sarah")
         save_dossier(second, path=target)
 
         data = yaml.safe_load(target.read_text())
         assert "boss" in data["audiences"]
-        assert "my wife" in data["audiences"]
+        assert "my partner" in data["audiences"]
         assert data["audiences"]["boss"]["name"] == "Dave"
-        assert data["audiences"]["my wife"]["name"] == "Sarah"
+        assert data["audiences"]["my partner"]["name"] == "Sarah"
 
     def test_atomic_write(self, tmp_path: Path):
         """Uses tempfile + os.replace for atomic write."""
@@ -244,7 +245,6 @@ def test_dossier_questions_map_to_dimensions():
 def test_cli_gather_dossier_flag():
     """argparse parses --gather-dossier correctly."""
     import argparse
-    from agents.demo import main
 
     # Build the parser the same way main() does — we test parse_args
     parser = argparse.ArgumentParser()
@@ -253,8 +253,8 @@ def test_cli_gather_dossier_flag():
     parser.add_argument("--gather-dossier", metavar="AUDIENCE")
     parser.add_argument("--persona-file", type=Path)
 
-    args = parser.parse_args(["--gather-dossier", "my wife"])
-    assert args.gather_dossier == "my wife"
+    args = parser.parse_args(["--gather-dossier", "my partner"])
+    assert args.gather_dossier == "my partner"
     assert args.request is None
 
 

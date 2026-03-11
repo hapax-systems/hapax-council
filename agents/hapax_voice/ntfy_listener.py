@@ -1,10 +1,11 @@
 """ntfy listener — converts ntfy SSE events into VoiceNotifications."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from typing import Callable, Coroutine
+from collections.abc import Callable, Coroutine
 
 import httpx
 
@@ -83,11 +84,17 @@ async def subscribe_ntfy(
                         notification = parse_ntfy_event(line)
                         if notification is not None:
                             await on_notification(notification)
-        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.ReadError,
-                httpx.RemoteProtocolError, httpx.ConnectTimeout) as exc:
+        except (
+            httpx.HTTPStatusError,
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.RemoteProtocolError,
+            httpx.ConnectTimeout,
+        ) as exc:
             log.warning(
                 "ntfy connection error (%s), reconnecting in %.0fs",
-                exc, backoff,
+                exc,
+                backoff,
             )
         except Exception:
             log.exception(

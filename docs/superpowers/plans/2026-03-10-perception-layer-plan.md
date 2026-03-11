@@ -63,7 +63,7 @@ def test_perception_config_defaults():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_config.py::test_perception_config_defaults -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_config.py::test_perception_config_defaults -v`
 Expected: FAIL with `AttributeError: 'VoiceConfig' object has no attribute 'perception_fast_tick_s'`
 
 - [ ] **Step 3: Add config fields**
@@ -82,7 +82,7 @@ In `agents/hapax_voice/config.py`, after line 84 (`timelapse_path`), add:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_config.py::test_perception_config_defaults -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_config.py::test_perception_config_defaults -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -123,7 +123,7 @@ def test_latest_vad_confidence_stored():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_presence.py::test_latest_vad_confidence_stored -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_presence.py::test_latest_vad_confidence_stored -v`
 Expected: FAIL with `AttributeError: 'PresenceDetector' object has no attribute 'latest_vad_confidence'`
 
 - [ ] **Step 3: Add latest_vad_confidence to PresenceDetector**
@@ -153,7 +153,7 @@ In `process_audio_frame` (line 79, after `probability: float = model(tensor, SAM
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_presence.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_presence.py -v`
 Expected: ALL PASS
 
 - [ ] **Step 5: Commit**
@@ -239,7 +239,7 @@ def test_environment_state_no_conversation_no_speech():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_perception.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_perception.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agents.hapax_voice.perception'`
 
 - [ ] **Step 3: Create perception.py with EnvironmentState**
@@ -301,7 +301,7 @@ class EnvironmentState:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_perception.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_perception.py -v`
 Expected: PASS (5 tests)
 
 - [ ] **Step 5: Commit**
@@ -363,7 +363,7 @@ def test_resume_noop_when_not_paused():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_session.py::test_pause_stops_timeout_clock -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_session.py::test_pause_stops_timeout_clock -v`
 Expected: FAIL with `AttributeError: 'VoiceLifecycle' object has no attribute 'pause'`
 
 - [ ] **Step 3: Add pause/resume to VoiceLifecycle**
@@ -417,7 +417,7 @@ Also reset `_paused` in `close()` — after line 67 (`self.speaker_confidence = 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_session.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_session.py -v`
 Expected: ALL PASS
 
 - [ ] **Step 5: Commit**
@@ -577,7 +577,7 @@ def test_environment_clear_resume_resets_on_new_conversation():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_governor.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_governor.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agents.hapax_voice.governor'`
 
 - [ ] **Step 3: Create governor.py**
@@ -688,7 +688,7 @@ class PipelineGovernor:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_governor.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_governor.py -v`
 Expected: ALL PASS (10 tests)
 
 - [ ] **Step 5: Commit**
@@ -793,7 +793,7 @@ def test_directive_default_is_process():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_frame_gate.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_frame_gate.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agents.hapax_voice.frame_gate'`
 
 - [ ] **Step 3: Create frame_gate.py**
@@ -858,7 +858,7 @@ class FrameGate(FrameProcessor):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_frame_gate.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_frame_gate.py -v`
 Expected: ALL PASS (5 tests)
 
 - [ ] **Step 5: Commit**
@@ -927,7 +927,7 @@ def test_frame_gate_inserted_before_stt():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_pipeline.py::test_frame_gate_inserted_before_stt -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_pipeline.py::test_frame_gate_inserted_before_stt -v`
 Expected: FAIL with `TypeError: build_pipeline_task() got an unexpected keyword argument 'frame_gate'`
 
 - [ ] **Step 3: Add frame_gate parameter to build_pipeline_task**
@@ -996,7 +996,7 @@ With:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_pipeline.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_pipeline.py -v`
 Expected: ALL PASS (existing tests still pass + new test passes)
 
 - [ ] **Step 5: Commit**
@@ -1110,7 +1110,7 @@ def test_engine_gaze_defaults_false():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_perception.py::test_engine_produces_state -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_perception.py::test_engine_produces_state -v`
 Expected: FAIL with `ImportError: cannot import name 'PerceptionEngine'`
 
 - [ ] **Step 3: Add PerceptionEngine to perception.py**
@@ -1208,7 +1208,7 @@ class PerceptionEngine:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_perception.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_perception.py -v`
 Expected: ALL PASS (10 tests)
 
 - [ ] **Step 5: Commit**
@@ -1253,7 +1253,7 @@ def test_gate_respects_environment_state_conversation():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_context_gate.py::test_gate_respects_environment_state_conversation -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_context_gate.py::test_gate_respects_environment_state_conversation -v`
 Expected: FAIL with `AttributeError: 'ContextGate' object has no attribute 'set_environment_state'`
 
 - [ ] **Step 3: Add set_environment_state and conversation blocking**
@@ -1283,7 +1283,7 @@ Modify `_check_activity_mode` (lines 87-90) to also block on "conversation":
 
 - [ ] **Step 4: Run all context gate tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_context_gate.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_context_gate.py -v`
 Expected: ALL PASS
 
 - [ ] **Step 5: Commit**
@@ -1368,7 +1368,7 @@ def test_daemon_passes_frame_gate_to_pipeline():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_daemon_pipeline.py::test_daemon_creates_perception_engine -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_daemon_pipeline.py::test_daemon_creates_perception_engine -v`
 Expected: FAIL with `AssertionError` (daemon doesn't have `perception` attribute yet)
 
 - [ ] **Step 3: Wire perception into VoiceDaemon**
@@ -1507,12 +1507,12 @@ Add before the session open:
 
 - [ ] **Step 4: Run all daemon tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hapax_voice_daemon_pipeline.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hapax_voice_daemon_pipeline.py -v`
 Expected: ALL PASS
 
 - [ ] **Step 5: Run the full test suite to check for regressions**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/ -q --tb=short 2>&1 | tail -20`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/ -q --tb=short 2>&1 | tail -20`
 Expected: All tests pass (no regressions)
 
 - [ ] **Step 6: Commit**
@@ -1643,7 +1643,7 @@ def test_slow_enrichment_updates_state():
 
 - [ ] **Step 2: Run integration tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_perception_integration.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_perception_integration.py -v`
 Expected: ALL PASS (5 tests)
 
 - [ ] **Step 3: Commit**
@@ -1661,17 +1661,17 @@ git commit -m "test(voice): add perception → governor → frame gate integrati
 
 - [ ] **Step 1: Run full test suite**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/ -q --tb=short 2>&1 | tail -30`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/ -q --tb=short 2>&1 | tail -30`
 Expected: All 1524+ tests pass, plus ~25 new tests from this plan
 
 - [ ] **Step 2: Run just the new perception tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_perception.py tests/test_governor.py tests/test_frame_gate.py tests/test_perception_integration.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_perception.py tests/test_governor.py tests/test_frame_gate.py tests/test_perception_integration.py -v`
 Expected: All new tests pass
 
 - [ ] **Step 3: Verify imports are clean**
 
-Run: `cd ~/projects/ai-agents && uv run python -c "from agents.hapax_voice.perception import PerceptionEngine, EnvironmentState; from agents.hapax_voice.governor import PipelineGovernor; from agents.hapax_voice.frame_gate import FrameGate; print('All imports OK')"`
+Run: `cd ~/projects/hapax-council && uv run python -c "from agents.hapax_voice.perception import PerceptionEngine, EnvironmentState; from agents.hapax_voice.governor import PipelineGovernor; from agents.hapax_voice.frame_gate import FrameGate; print('All imports OK')"`
 Expected: "All imports OK"
 
 - [ ] **Step 4: Final commit (if any test fixes needed)**

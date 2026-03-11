@@ -2,11 +2,19 @@
 
 No LLM calls; tests focus on deterministic logic.
 """
+
 import json
 from pathlib import Path
 
 import pytest
 
+from agents.profiler import (
+    ProfileDimension,
+    ProfileFact,
+    UserProfile,
+    flush_interview_facts,
+    load_existing_profile,
+)
 from cockpit.interview import (
     InterviewPlan,
     InterviewState,
@@ -17,19 +25,9 @@ from cockpit.interview import (
     analyze_profile,
     format_interview_summary,
 )
-from agents.profiler import (
-    ProfileDimension,
-    ProfileFact,
-    UserProfile,
-    flush_interview_facts,
-    load_existing_profile,
-    merge_facts,
-    PROFILE_DIMENSIONS,
-    PROFILES_DIR,
-)
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _make_topic(dimension="work_patterns", topic="test", depth="surface"):
     return InterviewTopic(
@@ -55,6 +53,7 @@ def _make_state(**kwargs):
 
 
 # ── Model tests ──────────────────────────────────────────────────────────────
+
 
 def test_interview_topic_creation():
     topic = _make_topic(dimension="work_patterns", topic="daily routine")
@@ -86,14 +85,20 @@ def test_recorded_fact_creation():
 
 def test_recorded_fact_confidence_bounds():
     fact = RecordedFact(
-        dimension="work_patterns", key="test", value="test",
-        confidence=0.0, evidence="test",
+        dimension="work_patterns",
+        key="test",
+        value="test",
+        confidence=0.0,
+        evidence="test",
     )
     assert fact.confidence == 0.0
 
     fact2 = RecordedFact(
-        dimension="work_patterns", key="test", value="test",
-        confidence=1.0, evidence="test",
+        dimension="work_patterns",
+        key="test",
+        value="test",
+        confidence=1.0,
+        evidence="test",
     )
     assert fact2.confidence == 1.0
 
@@ -101,8 +106,11 @@ def test_recorded_fact_confidence_bounds():
 def test_recorded_fact_rejects_invalid_confidence():
     with pytest.raises(Exception):
         RecordedFact(
-            dimension="work_patterns", key="test", value="test",
-            confidence=1.5, evidence="test",
+            dimension="work_patterns",
+            key="test",
+            value="test",
+            confidence=1.5,
+            evidence="test",
         )
 
 
@@ -139,8 +147,11 @@ def test_interview_state_serialization():
         ),
         facts=[
             RecordedFact(
-                dimension="work_patterns", key="start_time", value="7am",
-                confidence=0.9, evidence="said 7am",
+                dimension="work_patterns",
+                key="start_time",
+                value="7am",
+                confidence=0.9,
+                evidence="said 7am",
             ),
         ],
         insights=[
@@ -167,6 +178,7 @@ def test_interview_state_serialization():
 
 
 # ── InterviewState property tests ────────────────────────────────────────────
+
 
 def test_all_topics_explored_false():
     state = _make_state(plan=_make_plan(_make_topic(topic="a"), _make_topic(topic="b")))
@@ -221,6 +233,7 @@ def test_current_topic_all_explored():
 
 # ── Analysis tests ───────────────────────────────────────────────────────────
 
+
 def test_analyze_profile_runs():
     """analyze_profile() runs without error (uses real profile if available)."""
     analysis = analyze_profile()
@@ -252,6 +265,7 @@ def test_profile_analysis_empty():
 
 # ── Profiler integration tests ───────────────────────────────────────────────
 
+
 def test_flush_empty():
     """Flushing empty facts/insights returns a message without modifying profile."""
     result = flush_interview_facts([], [])
@@ -261,12 +275,19 @@ def test_flush_empty():
 def test_recorded_fact_to_profile_fact():
     """RecordedFact fields map correctly to ProfileFact."""
     rf = RecordedFact(
-        dimension="work_patterns", key="preferred_editor", value="neovim",
-        confidence=0.95, evidence="stated preference",
+        dimension="work_patterns",
+        key="preferred_editor",
+        value="neovim",
+        confidence=0.95,
+        evidence="stated preference",
     )
     pf = ProfileFact(
-        dimension=rf.dimension, key=rf.key, value=rf.value,
-        confidence=rf.confidence, source="interview:cockpit", evidence=rf.evidence,
+        dimension=rf.dimension,
+        key=rf.key,
+        value=rf.value,
+        confidence=rf.confidence,
+        source="interview:cockpit",
+        evidence=rf.evidence,
     )
     assert pf.dimension == "work_patterns"
     assert pf.source == "interview:cockpit"
@@ -276,28 +297,41 @@ def test_recorded_fact_to_profile_fact():
 def test_flush_facts_creates_profile_facts(tmp_path, monkeypatch):
     """flush_interview_facts converts RecordedFacts and merges into profile."""
     profile = UserProfile(
-        name="Test", summary="Test profile",
+        name="Test",
+        summary="Test profile",
         dimensions=[
             ProfileDimension(
-                name="work_patterns", summary="test",
-                facts=[ProfileFact(
-                    dimension="work_patterns", key="existing_fact", value="old value",
-                    confidence=0.8, source="test", evidence="test",
-                )],
+                name="work_patterns",
+                summary="test",
+                facts=[
+                    ProfileFact(
+                        dimension="work_patterns",
+                        key="existing_fact",
+                        value="old value",
+                        confidence=0.8,
+                        source="test",
+                        evidence="test",
+                    )
+                ],
             ),
         ],
-        sources_processed=["test"], version=1, updated_at="2026-01-01",
+        sources_processed=["test"],
+        version=1,
+        updated_at="2026-01-01",
     )
 
     profiles_dir = tmp_path / "profiles"
     profiles_dir.mkdir()
-    (profiles_dir / "ryan.json").write_text(profile.model_dump_json(indent=2))
+    (profiles_dir / "operator-profile.json").write_text(profile.model_dump_json(indent=2))
     monkeypatch.setattr("agents.profiler.PROFILES_DIR", profiles_dir)
 
     facts = [
         RecordedFact(
-            dimension="work_patterns", key="new_fact", value="new value",
-            confidence=0.9, evidence="operator said so",
+            dimension="work_patterns",
+            key="new_fact",
+            value="new value",
+            confidence=0.9,
+            evidence="operator said so",
         ),
     ]
     insights = [
@@ -312,15 +346,18 @@ def test_flush_facts_creates_profile_facts(tmp_path, monkeypatch):
     assert "1 facts" in result
     assert "1 insights" in result
 
-    updated = json.loads((profiles_dir / "ryan.json").read_text())
+    updated = json.loads((profiles_dir / "operator-profile.json").read_text())
     assert updated["version"] == 2
 
     work_dim = next(d for d in updated["dimensions"] if d["name"] == "work_patterns")
     fact_keys = [f["key"] for f in work_dim["facts"]]
     assert "existing_fact" in fact_keys
     assert "new_fact" in fact_keys
-    insight_facts = [f for f in work_dim["facts"]
-                     if f["source"] == "interview:cockpit" and "insight_" in f["key"]]
+    insight_facts = [
+        f
+        for f in work_dim["facts"]
+        if f["source"] == "interview:cockpit" and "insight_" in f["key"]
+    ]
     assert len(insight_facts) == 1
 
 
@@ -346,7 +383,7 @@ def test_flush_insights_unique_keys(tmp_path, monkeypatch):
     result = flush_interview_facts([], insights)
     assert "2 insights" in result
 
-    updated = json.loads((profiles_dir / "ryan.json").read_text())
+    updated = json.loads((profiles_dir / "operator-profile.json").read_text())
     work_dim = next(d for d in updated["dimensions"] if d["name"] == "work_patterns")
     insight_keys = [f["key"] for f in work_dim["facts"] if "insight_" in f["key"]]
     # Both insights should be present (unique keys via description hash)
@@ -355,6 +392,7 @@ def test_flush_insights_unique_keys(tmp_path, monkeypatch):
 
 
 # ── Summary formatting tests ─────────────────────────────────────────────────
+
 
 def test_format_interview_summary_empty():
     state = _make_state(plan=_make_plan(focus="test"))
@@ -370,7 +408,9 @@ def test_format_interview_summary_with_data():
             _make_topic(dimension="values", topic="t2", depth="deep"),
         ),
         facts=[
-            RecordedFact(dimension="work_patterns", key="k1", value="v1", confidence=0.9, evidence="e"),
+            RecordedFact(
+                dimension="work_patterns", key="k1", value="v1", confidence=0.9, evidence="e"
+            ),
             RecordedFact(dimension="values", key="k2", value="v2", confidence=0.8, evidence="e"),
         ],
         insights=[
@@ -390,6 +430,7 @@ def test_format_interview_summary_with_data():
 
 
 # ── ChatSession tests ────────────────────────────────────────────────────────
+
 
 def test_chat_session_saves_interview_state(tmp_path):
     """ChatSession serializes interview state alongside message history."""
@@ -421,8 +462,11 @@ def test_chat_session_loads_interview_state(tmp_path):
         ),
         facts=[
             RecordedFact(
-                dimension="work_patterns", key="test_key", value="test_value",
-                confidence=0.85, evidence="test evidence",
+                dimension="work_patterns",
+                key="test_key",
+                value="test_value",
+                confidence=0.85,
+                evidence="test evidence",
             ),
         ],
         started_at="2026-03-01T00:00:00Z",

@@ -1,4 +1,5 @@
 """Critical moment detection — churn, wrong paths, cascades."""
+
 from __future__ import annotations
 
 import logging
@@ -48,7 +49,17 @@ def detect_churn_moments(
 
     moments: list[CriticalMoment] = []
     for row in cursor.fetchall():
-        file_path, rewrite_count, first_intro, last_rewrite, intro_hash, rewrite_hash, first_msg, message_id, avg_conf = row
+        (
+            file_path,
+            rewrite_count,
+            first_intro,
+            last_rewrite,
+            intro_hash,
+            rewrite_hash,
+            first_msg,
+            message_id,
+            avg_conf,
+        ) = row
 
         # Severity scales with rewrite count: 3 rewrites = 0.3, 10 = 0.6, 50+ = 0.95
         severity = min(rewrite_count * 0.06, 0.95)
@@ -66,7 +77,7 @@ def detect_churn_moments(
                     f"first introduced in '{first_msg}'"
                 ),
                 evidence=f'{{"file": "{file_path}", "rewrite_count": {rewrite_count}, '
-                         f'"intro": "{intro_hash}", "last_rewrite": "{rewrite_hash}"}}',
+                f'"intro": "{intro_hash}", "last_rewrite": "{rewrite_hash}"}}',
             )
         )
 

@@ -1,8 +1,9 @@
 """Cockpit API routes for scout decision tracking."""
+
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -30,7 +31,7 @@ async def record_decision(component: str, body: ScoutDecisionRequest):
     record = {
         "component": component,
         "decision": body.decision,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "notes": body.notes,
     }
     DECISIONS_FILE.parent.mkdir(parents=True, exist_ok=True)

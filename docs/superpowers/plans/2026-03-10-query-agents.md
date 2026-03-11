@@ -2182,7 +2182,7 @@ This task requires Langfuse and Qdrant to be running. Run on host with `eval "$(
 
 Run (on host with .envrc loaded):
 ```bash
-cd ~/projects/ai-agents && eval "$(<.envrc)"
+cd ~/projects/hapax-council && eval "$(<.envrc)"
 uv run python -c "
 import asyncio
 from cockpit.query_dispatch import run_query
@@ -2235,7 +2235,7 @@ Expected: SSE events with `event: status`, `event: text_delta`, `event: done`
 - [ ] **Step 4: Rebuild and test container**
 
 ```bash
-cd ~/projects/ai-agents && eval "$(<.envrc)"
+cd ~/projects/hapax-council && eval "$(<.envrc)"
 docker compose build cockpit-api
 docker compose up -d cockpit-api
 sleep 5

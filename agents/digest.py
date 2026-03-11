@@ -13,15 +13,15 @@ Usage:
     uv run python -m agents.digest --hours 48       # Custom lookback window
     uv run python -m agents.digest --notify         # Push notification with summary
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from shared.config import get_model, get_qdrant, PROFILES_DIR
+from shared.config import PROFILES_DIR, get_model, get_qdrant
 from shared.operator import get_system_prompt_fragment
 
 # Import Langfuse OTel config (side-effect: configures exporter)
@@ -41,8 +41,10 @@ except ImportError:
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class NotableItem(BaseModel):
     """A notable piece of recently ingested content."""
+
     title: str
     source: str = Field(description="Filename or service origin")
     relevance: str = Field(description="One sentence on why this is notable")
@@ -50,12 +52,14 @@ class NotableItem(BaseModel):
 
 class DigestStats(BaseModel):
     """Quantitative summary for the digest."""
+
     new_documents: int = 0
     collection_sizes: dict[str, int] = Field(default_factory=dict)
 
 
 class Digest(BaseModel):
     """The synthesized content digest."""
+
     generated_at: str = Field(description="ISO timestamp")
     hours: int = Field(description="Lookback window in hours")
     headline: str = Field(description="One-line content summary")
@@ -78,14 +82,17 @@ def collect_recent_documents(hours: int = 24) -> list[dict]:
     since_ts = time.time() - (hours * 3600)
     try:
         client = get_qdrant()
-        from qdrant_client.models import Filter, FieldCondition, Range
+        from qdrant_client.models import FieldCondition, Filter, Range
+
         results = client.scroll(
             collection_name="documents",
             scroll_filter=Filter(
-                must=[FieldCondition(
-                    key="ingested_at",
-                    range=Range(gte=since_ts),
-                )]
+                must=[
+                    FieldCondition(
+                        key="ingested_at",
+                        range=Range(gte=since_ts),
+                    )
+                ]
             ),
             limit=200,
             with_payload=True,
@@ -100,9 +107,13 @@ def collect_recent_documents(hours: int = 24) -> list[dict]:
             if source not in seen_sources:
                 seen_sources[source] = {
                     "source": source,
-                    "filename": payload.get("filename", Path(source).name if source != "unknown" else "unknown"),
+                    "filename": payload.get(
+                        "filename", Path(source).name if source != "unknown" else "unknown"
+                    ),
                     "ingested_at": payload.get("ingested_at", 0),
-                    "text_preview": (payload.get("text", "")[:200] + "...") if payload.get("text") else "",
+                    "text_preview": (payload.get("text", "")[:200] + "...")
+                    if payload.get("text")
+                    else "",
                     "chunk_count": 0,
                     "source_service": payload.get("source_service", ""),
                     "content_type": payload.get("content_type", ""),
@@ -111,7 +122,6 @@ def collect_recent_documents(hours: int = 24) -> list[dict]:
         return list(seen_sources.values())
     except Exception:
         return []
-
 
 
 def collect_collection_stats() -> dict[str, int]:
@@ -162,11 +172,13 @@ digest_agent = Agent(
 
 # Register on-demand operator context tools
 from shared.context_tools import get_context_tools
+
 for _tool_fn in get_context_tools():
     digest_agent.tool(_tool_fn)
 
 # Register axiom compliance tools
 from shared.axiom_tools import get_axiom_tools
+
 for _tool_fn in get_axiom_tools():
     digest_agent.tool(_tool_fn)
 
@@ -202,7 +214,11 @@ async def generate_digest(hours: int = 24) -> Digest:
             service_counts[svc] = service_counts.get(svc, 0) + 1
         svc_summary = ""
         if service_counts:
-            svc_summary = "Sources: " + ", ".join(f"{svc}: {n}" for svc, n in sorted(service_counts.items())) + "\n\n"
+            svc_summary = (
+                "Sources: "
+                + ", ".join(f"{svc}: {n}" for svc, n in sorted(service_counts.items()))
+                + "\n\n"
+            )
         docs_section = "## Recently Ingested Documents\n" + svc_summary + "\n".join(doc_lines)
     else:
         docs_section = "## Recently Ingested Documents\nNo new documents in this window."
@@ -215,7 +231,7 @@ async def generate_digest(hours: int = 24) -> Digest:
     prompt = f"""{docs_section}
 
 {stats_section}
-Generate a content digest. The timestamp is {datetime.now(timezone.utc).isoformat()[:19]}Z.
+Generate a content digest. The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
 The lookback window is {hours} hours."""
 
     try:
@@ -224,14 +240,14 @@ The lookback window is {hours} hours."""
     except Exception as e:
         log.error("LLM synthesis failed: %s", e)
         digest = Digest(
-            generated_at=datetime.now(timezone.utc).isoformat()[:19] + "Z",
+            generated_at=datetime.now(UTC).isoformat()[:19] + "Z",
             hours=hours,
             headline="Digest unavailable — LLM error",
             summary=str(e),
             notable_items=[],
             suggested_actions=[],
         )
-    digest.generated_at = datetime.now(timezone.utc).isoformat()[:19] + "Z"
+    digest.generated_at = datetime.now(UTC).isoformat()[:19] + "Z"
     digest.hours = hours
     digest.stats = stats
 
@@ -239,6 +255,7 @@ The lookback window is {hours} hours."""
 
 
 # ── Formatters ───────────────────────────────────────────────────────────────
+
 
 def format_digest_md(digest: Digest) -> str:
     """Format digest as markdown for file storage."""
@@ -315,9 +332,11 @@ def format_digest_human(digest: Digest) -> str:
 
 # ── Notification ─────────────────────────────────────────────────────────────
 
+
 def send_notification(digest: Digest) -> None:
     """Send digest notification via ntfy + desktop (shared.notify)."""
-    from shared.notify import obsidian_uri, send_notification as _notify
+    from shared.notify import obsidian_uri
+    from shared.notify import send_notification as _notify
 
     body_parts = [digest.headline]
     s = digest.stats
@@ -359,6 +378,7 @@ async def main() -> None:
         print(f"Saved to {DIGEST_MD_FILE}", file=sys.stderr)
 
         from shared.vault_writer import write_digest_to_vault
+
         vault_path = write_digest_to_vault(digest_md)
         if vault_path:
             print(f"Vault: {vault_path}", file=sys.stderr)

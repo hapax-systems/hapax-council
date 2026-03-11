@@ -1,21 +1,21 @@
 """Tests for code_review.py -- agent instantiation, schema, system prompt, CLI."""
+
 from __future__ import annotations
 
-import argparse
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agents.code_review import (
-    ReviewDeps,
     SYSTEM_PROMPT,
+    ReviewDeps,
+    _make_agent,
     agent,
     review,
-    _make_agent,
 )
 
-
 # -- Schema tests ------------------------------------------------------------
+
 
 def test_review_deps_defaults():
     deps = ReviewDeps()
@@ -28,6 +28,7 @@ def test_review_deps_custom_filename():
 
 
 # -- System prompt tests -----------------------------------------------------
+
 
 def test_system_prompt_contains_review_instructions():
     assert "code reviewer" in SYSTEM_PROMPT.lower()
@@ -52,6 +53,7 @@ def test_system_prompt_includes_operator_context():
 
 # -- Agent instantiation tests -----------------------------------------------
 
+
 def test_agent_exists():
     assert agent is not None
 
@@ -62,6 +64,7 @@ def test_make_agent_returns_agent():
 
 
 # -- review() function tests -------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_review_with_filename():
@@ -88,7 +91,9 @@ async def test_review_with_stdin():
 @pytest.mark.asyncio
 async def test_review_handles_llm_failure():
     """review() should return error message on LLM failure."""
-    with patch.object(agent, "run", new_callable=AsyncMock, side_effect=RuntimeError("API timeout")):
+    with patch.object(
+        agent, "run", new_callable=AsyncMock, side_effect=RuntimeError("API timeout")
+    ):
         output = await review("def broken(): pass", "broken.py")
         assert "failed" in output.lower()
         assert "API timeout" in output
@@ -96,9 +101,9 @@ async def test_review_handles_llm_failure():
 
 # -- CLI argument tests -------------------------------------------------------
 
+
 def test_cli_accepts_path_argument():
     """CLI parser should accept optional positional path argument."""
-    from agents.code_review import main
     import argparse as _argparse
 
     # Manually test the parser setup (main() creates it internally)

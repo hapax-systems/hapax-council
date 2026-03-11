@@ -1,19 +1,17 @@
 """Integration tests for system-ops query agent against real data."""
+
 from __future__ import annotations
 
 import json
 
-import pytest
-
-from shared.ops_db import build_ops_db, run_sql, get_table_schemas, _load_jsonl
+from shared.ops_db import build_ops_db, get_table_schemas, run_sql
 from shared.ops_live import get_infra_snapshot, get_manifest_section
 from tests.query_integration._helpers import (
-    POPULATED_PROFILES,
     EMPTY_PROFILES,
+    POPULATED_PROFILES,
     make_ops_db,
     skip_if_missing,
 )
-
 
 # ── Populated state — SQL ────────────────────────────────────────────────────
 
@@ -33,22 +31,21 @@ class TestSystemOpsHealthQueries:
     def test_health_status_distribution(self):
         result = run_sql(
             self.conn,
-            "SELECT status, COUNT(*) as cnt FROM health_runs GROUP BY status ORDER BY cnt DESC"
+            "SELECT status, COUNT(*) as cnt FROM health_runs GROUP BY status ORDER BY cnt DESC",
         )
         assert "status" in result
         assert "cnt" in result
 
     def test_latest_health_run(self):
         result = run_sql(
-            self.conn,
-            "SELECT timestamp, status FROM health_runs ORDER BY timestamp DESC LIMIT 1"
+            self.conn, "SELECT timestamp, status FROM health_runs ORDER BY timestamp DESC LIMIT 1"
         )
         assert "timestamp" in result
 
     def test_duration_stats(self):
         result = run_sql(
             self.conn,
-            "SELECT AVG(duration_ms) as avg_dur, MAX(duration_ms) as max_dur FROM health_runs"
+            "SELECT AVG(duration_ms) as avg_dur, MAX(duration_ms) as max_dur FROM health_runs",
         )
         assert "avg_dur" in result
 
@@ -60,7 +57,7 @@ class TestSystemOpsHealthQueries:
                WHERE status != 'healthy'
                GROUP BY value
                ORDER BY fail_count DESC
-               LIMIT 5"""
+               LIMIT 5""",
         )
         # May return "No results." if all runs are healthy — that's fine
         assert isinstance(result, str)
@@ -73,8 +70,7 @@ class TestSystemOpsDriftQueries:
 
     def test_drift_items_by_severity(self):
         result = run_sql(
-            self.conn,
-            "SELECT severity, COUNT(*) as cnt FROM drift_items GROUP BY severity"
+            self.conn, "SELECT severity, COUNT(*) as cnt FROM drift_items GROUP BY severity"
         )
         # May be empty if no drift report
         assert isinstance(result, str)
@@ -82,7 +78,7 @@ class TestSystemOpsDriftQueries:
     def test_drift_runs_trend(self):
         result = run_sql(
             self.conn,
-            "SELECT timestamp, drift_count FROM drift_runs ORDER BY timestamp DESC LIMIT 5"
+            "SELECT timestamp, drift_count FROM drift_runs ORDER BY timestamp DESC LIMIT 5",
         )
         assert isinstance(result, str)
 
@@ -94,8 +90,7 @@ class TestSystemOpsDigestQueries:
 
     def test_digest_headline_search(self):
         result = run_sql(
-            self.conn,
-            "SELECT timestamp, headline FROM digest_runs ORDER BY timestamp DESC LIMIT 3"
+            self.conn, "SELECT timestamp, headline FROM digest_runs ORDER BY timestamp DESC LIMIT 3"
         )
         assert isinstance(result, str)
 
@@ -108,7 +103,7 @@ class TestSystemOpsMaintQueries:
     def test_maint_totals(self):
         result = run_sql(
             self.conn,
-            "SELECT SUM(pruned_count) as total_pruned, SUM(merged_count) as total_merged FROM knowledge_maint"
+            "SELECT SUM(pruned_count) as total_pruned, SUM(merged_count) as total_merged FROM knowledge_maint",
         )
         assert isinstance(result, str)
 
@@ -168,7 +163,7 @@ class TestSystemOpsErrorPaths:
     def test_malformed_jsonl_skips_bad_lines(self, tmp_path):
         """Verify _load_jsonl handles malformed entries."""
         data = '{"timestamp":"2026-01-01","status":"healthy","healthy":1,"degraded":0,"failed":0,"duration_ms":100,"failed_checks":[]}\n'
-        data += 'THIS IS NOT JSON\n'
+        data += "THIS IS NOT JSON\n"
         data += '{"timestamp":"2026-01-02","status":"failed","healthy":0,"degraded":0,"failed":1,"duration_ms":200,"failed_checks":["docker"]}\n'
         (tmp_path / "health-history.jsonl").write_text(data)
 
@@ -180,8 +175,20 @@ class TestSystemOpsErrorPaths:
     def test_multiline_json_parsed_correctly(self, tmp_path):
         """Verify _load_jsonl handles pretty-printed concatenated JSON."""
         entries = [
-            {"timestamp": "2026-01-01", "hours": 24, "headline": "Test 1", "summary": "S1", "new_documents": 5},
-            {"timestamp": "2026-01-02", "hours": 24, "headline": "Test 2", "summary": "S2", "new_documents": 3},
+            {
+                "timestamp": "2026-01-01",
+                "hours": 24,
+                "headline": "Test 1",
+                "summary": "S1",
+                "new_documents": 5,
+            },
+            {
+                "timestamp": "2026-01-02",
+                "hours": 24,
+                "headline": "Test 2",
+                "summary": "S2",
+                "new_documents": 3,
+            },
         ]
         # Write as pretty-printed (not true JSONL)
         text = "\n".join(json.dumps(e, indent=2) for e in entries)

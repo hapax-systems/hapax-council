@@ -1,15 +1,14 @@
-import json
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agents.hapax_voice.desktop_tools import (
     DESKTOP_TOOL_SCHEMAS,
-    handle_focus_window,
-    handle_switch_workspace,
-    handle_open_app,
     handle_confirm_open_app,
+    handle_focus_window,
     handle_get_desktop_state,
+    handle_open_app,
+    handle_switch_workspace,
 )
 
 
@@ -19,7 +18,13 @@ class TestToolSchemas:
 
     def test_schema_names(self):
         names = {s.name for s in DESKTOP_TOOL_SCHEMAS}
-        assert names == {"focus_window", "switch_workspace", "open_app", "confirm_open_app", "get_desktop_state"}
+        assert names == {
+            "focus_window",
+            "switch_workspace",
+            "open_app",
+            "confirm_open_app",
+            "get_desktop_state",
+        }
 
 
 class TestFocusWindow:
@@ -57,6 +62,7 @@ class TestOpenApp:
     @pytest.mark.asyncio
     async def test_open_returns_pending_confirmation(self):
         import agents.hapax_voice.desktop_tools as dt
+
         dt._pending_open = None  # Reset state
 
         params = MagicMock()
@@ -72,6 +78,7 @@ class TestOpenApp:
     @pytest.mark.asyncio
     async def test_confirm_launches_pending(self):
         import agents.hapax_voice.desktop_tools as dt
+
         dt._pending_open = {"command": "foot", "workspace": 2}
 
         params = MagicMock()
@@ -82,9 +89,7 @@ class TestOpenApp:
             mock_ipc.dispatch.return_value = True
             await handle_confirm_open_app(params)
 
-        mock_ipc.dispatch.assert_called_once_with(
-            "exec", "[workspace 2 silent] foot"
-        )
+        mock_ipc.dispatch.assert_called_once_with("exec", "[workspace 2 silent] foot")
         assert dt._pending_open is None
 
 

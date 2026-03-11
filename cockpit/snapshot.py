@@ -1,4 +1,5 @@
 """CLI one-shot mode: collect all data, print formatted snapshot, exit."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,6 +7,7 @@ import asyncio
 from cockpit.data.agents import get_agent_registry
 from cockpit.data.briefing import collect_briefing
 from cockpit.data.cost import CostSnapshot, collect_cost
+from cockpit.data.goals import GoalSnapshot, collect_goals
 from cockpit.data.gpu import VramSnapshot, collect_vram
 from cockpit.data.health import (
     HealthHistory,
@@ -19,7 +21,6 @@ from cockpit.data.infrastructure import (
     collect_docker,
     collect_timers,
 )
-from cockpit.data.goals import GoalSnapshot, collect_goals
 from cockpit.data.readiness import ReadinessSnapshot, collect_readiness
 from cockpit.data.scout import collect_scout
 
@@ -47,8 +48,8 @@ def _format_vram(vram: VramSnapshot | None) -> str:
     bar = "=" * filled + "." * (bar_width - filled)
     lines = [f"VRAM: {vram.name}  {vram.temperature_c}C"]
     lines.append(
-        f"  [{bar}] {vram.used_mb/1024:.1f}/{vram.total_mb/1024:.0f} GB"
-        f"  ({vram.free_mb/1024:.1f} GB free)"
+        f"  [{bar}] {vram.used_mb / 1024:.1f}/{vram.total_mb / 1024:.0f} GB"
+        f"  ({vram.free_mb / 1024:.1f} GB free)"
     )
     if vram.loaded_models:
         lines.append(f"  Loaded: {', '.join(vram.loaded_models)}")
@@ -85,8 +86,11 @@ def _format_actions(briefing) -> str:
         icon_map = {"high": "!!", "medium": "! ", "low": ".."}
         for item in sorted(
             briefing.action_items,
-            key=lambda a: ["high", "medium", "low"].index(a.priority)
-            if a.priority in ["high", "medium", "low"] else 99,
+            key=lambda a: (
+                ["high", "medium", "low"].index(a.priority)
+                if a.priority in ["high", "medium", "low"]
+                else 99
+            ),
         ):
             icon = icon_map.get(item.priority, "??")
             lines.append(f"  [{icon}] {item.action}")
@@ -235,7 +239,9 @@ async def generate_snapshot_rich():
     # VRAM
     vt = Text()
     if vram:
-        temp_color = "green" if vram.temperature_c < 60 else "yellow" if vram.temperature_c < 80 else "red"
+        temp_color = (
+            "green" if vram.temperature_c < 60 else "yellow" if vram.temperature_c < 80 else "red"
+        )
         vt.append(f"{vram.name.replace('NVIDIA GeForce ', '')}  ")
         vt.append(f"{vram.temperature_c}\u00b0C\n", style=temp_color)
         bar_w = 20
@@ -293,6 +299,7 @@ async def generate_snapshot_rich():
     sidebar_parts.append(Panel(gt, title="goals", border_style="blue"))
 
     from rich.console import Group
+
     sidebar = Group(*sidebar_parts)
 
     # --- Main column ---
@@ -308,10 +315,16 @@ async def generate_snapshot_rich():
             color_map = {"high": "red bold", "medium": "yellow", "low": "dim"}
             for item in sorted(
                 briefing.action_items,
-                key=lambda a: ["high", "medium", "low"].index(a.priority)
-                if a.priority in ["high", "medium", "low"] else 99,
+                key=lambda a: (
+                    ["high", "medium", "low"].index(a.priority)
+                    if a.priority in ["high", "medium", "low"]
+                    else 99
+                ),
             ):
-                at.append(f"[{icon_map.get(item.priority, '??')}] ", style=color_map.get(item.priority, ""))
+                at.append(
+                    f"[{icon_map.get(item.priority, '??')}] ",
+                    style=color_map.get(item.priority, ""),
+                )
                 at.append(f"{item.action}\n")
         if briefing.generated_at:
             at.append(f"\n{briefing.generated_at}", style="dim")

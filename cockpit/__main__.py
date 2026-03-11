@@ -1,4 +1,5 @@
 """Entry point for the cockpit: web dashboard API server or one-shot snapshot."""
+
 from __future__ import annotations
 
 import argparse
@@ -12,31 +13,39 @@ def main() -> None:
         prog="cockpit",
     )
     parser.add_argument(
-        "--once", action="store_true",
+        "--once",
+        action="store_true",
         help="Print a snapshot and exit (no server)",
     )
     parser.add_argument(
-        "--color", action="store_true",
+        "--color",
+        action="store_true",
         help="Enable color output in snapshot mode (default: plain text)",
     )
     parser.add_argument(
-        "--host", default="127.0.0.1",
+        "--host",
+        default="127.0.0.1",
         help="Bind host for API server (default: 127.0.0.1)",
     )
     parser.add_argument(
-        "--port", type=int, default=8051,
+        "--port",
+        type=int,
+        default=8051,
         help="Bind port for API server (default: 8051)",
     )
     parser.add_argument(
-        "--reload", action="store_true",
+        "--reload",
+        action="store_true",
         help="Auto-reload on file changes (dev mode)",
     )
     args = parser.parse_args()
 
     if args.once:
         from cockpit.snapshot import generate_snapshot, generate_snapshot_rich
+
         if args.color:
             from rich.console import Console
+
             console = Console()
             output = asyncio.run(generate_snapshot_rich())
             console.print(output)
@@ -47,6 +56,7 @@ def main() -> None:
 
     # Launch API server (web dashboard backend)
     import uvicorn
+
     uvicorn.run(
         "cockpit.api.app:app",
         host=args.host,

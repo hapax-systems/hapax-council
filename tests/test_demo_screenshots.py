@@ -1,15 +1,17 @@
 """Tests for screenshot capture pipeline."""
+
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from agents.demo_models import ScreenshotSpec
 from agents.demo_pipeline.screenshots import (
-    capture_screenshots, _resolve_selector, ROUTE_SELECTORS,
-    validate_screenshot_specs, ROUTE_DEFAULT_ACTIONS,
+    _resolve_selector,
+    capture_screenshots,
+    validate_screenshot_specs,
 )
 
 
@@ -67,7 +69,12 @@ class TestCaptureScreenshots:
         mock_pw.return_value.__aenter__.return_value = mock_context
 
         specs = [
-            ("wide", ScreenshotSpec(url="http://localhost:5173", viewport_width=2560, viewport_height=1440)),
+            (
+                "wide",
+                ScreenshotSpec(
+                    url="http://localhost:5173", viewport_width=2560, viewport_height=1440
+                ),
+            ),
         ]
         await capture_screenshots(specs, output_dir)
         mock_page.set_viewport_size.assert_called_with({"width": 2560, "height": 1440})
@@ -88,7 +95,7 @@ class TestScreenshotRetry:
         mock_pw.return_value.__aenter__.return_value = mock_context
 
         specs = [("test", ScreenshotSpec(url="http://localhost:5173"))]
-        paths = await capture_screenshots(specs, tmp_path, max_retries=2)
+        await capture_screenshots(specs, tmp_path, max_retries=2)
         assert mock_page.goto.call_count == 2
 
     @patch("agents.demo_pipeline.screenshots._preflight_check", new_callable=AsyncMock)
@@ -215,15 +222,22 @@ class TestValidateScreenshotSpecs:
 
     def test_chat_route_overrides_llm_actions(self):
         """LLM actions are unreliable for known routes, so we always override."""
-        specs = [("chat", ScreenshotSpec(url="http://localhost:5173/chat", actions=["type('What')", "press('Enter')"]))]
+        specs = [
+            (
+                "chat",
+                ScreenshotSpec(
+                    url="http://localhost:5173/chat", actions=["type('What')", "press('Enter')"]
+                ),
+            )
+        ]
         result = validate_screenshot_specs(specs)
         # Should replace LLM actions with known-good defaults
         assert "click textarea" in result[0][1].actions[0]
 
     def test_chat_variants_cycle(self):
         """Multiple chat screenshots get different questions."""
-        from agents.demo_pipeline.screenshots import CHAT_QUESTION_VARIANTS, _chat_variant_index
         import agents.demo_pipeline.screenshots as ss_mod
+
         # Reset variant index
         ss_mod._chat_variant_index = 0
         specs = [

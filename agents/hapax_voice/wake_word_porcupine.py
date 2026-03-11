@@ -7,21 +7,22 @@ model file trained via the Picovoice Console. AccessKey loaded from
 Audio contract: 16 kHz int16 mono, frame size = porcupine.frame_length
 (typically 512 samples = 32 ms).
 """
+
 from __future__ import annotations
 
 import logging
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL_PATH = (
-    Path.home() / ".local" / "share" / "hapax-voice" / "hapax_porcupine.ppn"
-)
+DEFAULT_MODEL_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "hapax_porcupine.ppn"
 DETECTION_COOLDOWN_S = 1.5
 
 
@@ -30,7 +31,9 @@ def _load_access_key() -> str | None:
     try:
         result = subprocess.run(
             ["pass", "show", "picovoice/access-key"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         key = result.stdout.strip()
         if key and result.returncode == 0:
@@ -99,8 +102,7 @@ class PorcupineWakeWord:
             )
             self.frame_length = self._handle.frame_length
             log.info(
-                "Porcupine loaded: model=%s, sensitivity=%.2f, "
-                "frame_length=%d, sample_rate=%d",
+                "Porcupine loaded: model=%s, sensitivity=%.2f, frame_length=%d, sample_rate=%d",
                 self.model_path.name,
                 self.sensitivity,
                 self._handle.frame_length,

@@ -1,9 +1,10 @@
 """Custom Pipecat TTS service wrapping the existing Kokoro/Piper TTSManager."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from pipecat.frames.frames import (
     Frame,
@@ -66,9 +67,7 @@ class KokoroTTSService(TTSService):
 
         try:
             # TTSManager.synthesize is synchronous (GPU compute) — run in thread
-            pcm_bytes = await asyncio.to_thread(
-                self._tts_manager.synthesize, text, "conversation"
-            )
+            pcm_bytes = await asyncio.to_thread(self._tts_manager.synthesize, text, "conversation")
         except Exception:
             log.exception("TTS synthesis failed")
             yield TTSStoppedFrame()

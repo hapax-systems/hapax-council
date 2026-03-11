@@ -3,6 +3,7 @@
 Purchases Takeout can be JSON or HTML. Contains order/transaction records
 with items, prices, dates, and merchants.
 """
+
 from __future__ import annotations
 
 import json

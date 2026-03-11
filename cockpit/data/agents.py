@@ -1,4 +1,5 @@
 """Static agent registry for the cockpit with structured flag metadata."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -28,49 +29,76 @@ class AgentInfo:
 
 AGENT_REGISTRY: list[AgentInfo] = [
     AgentInfo(
-        "health-monitor", False, "44 deterministic health checks",
+        "health-monitor",
+        False,
+        "44 deterministic health checks",
         "uv run python -m agents.health_monitor",
         module="agents.health_monitor",
         flags=[
             AgentFlag("--json", "Output machine-readable JSON"),
-            AgentFlag("--check", "Comma-separated check groups", flag_type="value",
-                      metavar="GROUPS",
-                      choices=["docker", "gpu", "systemd", "qdrant", "profiles",
-                               "endpoints", "credentials", "disk"]),
+            AgentFlag(
+                "--check",
+                "Comma-separated check groups",
+                flag_type="value",
+                metavar="GROUPS",
+                choices=[
+                    "docker",
+                    "gpu",
+                    "systemd",
+                    "qdrant",
+                    "profiles",
+                    "endpoints",
+                    "credentials",
+                    "disk",
+                ],
+            ),
             AgentFlag("--fix", "Run remediation commands for failures"),
             AgentFlag("--yes", "Skip confirmation for --fix"),
             AgentFlag("--verbose", "Show detail fields for all checks"),
-            AgentFlag("--history", "Show last N health check results", flag_type="value",
-                      default="20", metavar="N"),
+            AgentFlag(
+                "--history",
+                "Show last N health check results",
+                flag_type="value",
+                default="20",
+                metavar="N",
+            ),
         ],
     ),
     AgentInfo(
-        "briefing", True, "Daily operational briefing",
+        "briefing",
+        True,
+        "Daily operational briefing",
         "uv run python -m agents.briefing",
         module="agents.briefing",
         flags=[
             AgentFlag("--save", "Save to profiles/briefing.md"),
             AgentFlag("--json", "Machine-readable JSON output"),
-            AgentFlag("--hours", "Lookback window in hours", flag_type="value",
-                      default="24", metavar="N"),
+            AgentFlag(
+                "--hours", "Lookback window in hours", flag_type="value", default="24", metavar="N"
+            ),
             AgentFlag("--notify", "Send desktop notification"),
         ],
     ),
     AgentInfo(
-        "scout", True, "Horizon scanner — external fitness",
+        "scout",
+        True,
+        "Horizon scanner — external fitness",
         "uv run python -m agents.scout",
         module="agents.scout",
         flags=[
             AgentFlag("--save", "Save to profiles/scout-report.{json,md}"),
             AgentFlag("--json", "Machine-readable JSON output"),
             AgentFlag("--dry-run", "Show search queries without calling APIs"),
-            AgentFlag("--component", "Scan only this component key", flag_type="value",
-                      metavar="KEY"),
+            AgentFlag(
+                "--component", "Scan only this component key", flag_type="value", metavar="KEY"
+            ),
             AgentFlag("--notify", "Desktop notification if recommendations found"),
         ],
     ),
     AgentInfo(
-        "drift-detector", True, "Docs vs reality comparison",
+        "drift-detector",
+        True,
+        "Docs vs reality comparison",
         "uv run python -m agents.drift_detector",
         module="agents.drift_detector",
         flags=[
@@ -80,7 +108,9 @@ AGENT_REGISTRY: list[AgentInfo] = [
         ],
     ),
     AgentInfo(
-        "introspect", False, "Infrastructure manifest generator",
+        "introspect",
+        False,
+        "Infrastructure manifest generator",
         "uv run python -m agents.introspect",
         module="agents.introspect",
         flags=[
@@ -89,18 +119,23 @@ AGENT_REGISTRY: list[AgentInfo] = [
         ],
     ),
     AgentInfo(
-        "activity-analyzer", False, "Telemetry aggregation",
+        "activity-analyzer",
+        False,
+        "Telemetry aggregation",
         "uv run python -m agents.activity_analyzer",
         module="agents.activity_analyzer",
         flags=[
             AgentFlag("--json", "Machine-readable JSON output"),
-            AgentFlag("--hours", "Time window in hours", flag_type="value",
-                      default="24", metavar="N"),
+            AgentFlag(
+                "--hours", "Time window in hours", flag_type="value", default="24", metavar="N"
+            ),
             AgentFlag("--synthesize", "Add LLM-generated summary"),
         ],
     ),
     AgentInfo(
-        "profiler", True, "Operator profile extraction",
+        "profiler",
+        True,
+        "Operator profile extraction",
         "uv run python -m agents.profiler",
         module="agents.profiler",
         flags=[
@@ -108,10 +143,18 @@ AGENT_REGISTRY: list[AgentInfo] = [
             AgentFlag("--show", "Display current profile"),
             AgentFlag("--full", "Force complete re-extraction (ignore cache)"),
             AgentFlag("--curate", "Run quality curation on existing profile"),
-            AgentFlag("--source", "Only process this source type", flag_type="value",
-                      choices=["config", "transcript", "shell-history", "git", "memory"]),
-            AgentFlag("--ingest", "Import external platform data from file",
-                      flag_type="value", metavar="FILE"),
+            AgentFlag(
+                "--source",
+                "Only process this source type",
+                flag_type="value",
+                choices=["config", "transcript", "shell-history", "git", "memory"],
+            ),
+            AgentFlag(
+                "--ingest",
+                "Import external platform data from file",
+                flag_type="value",
+                metavar="FILE",
+            ),
             AgentFlag("--store-memory", "Push profile to MCP memory graph"),
             AgentFlag("--store-qdrant", "Embed profile in Qdrant"),
             AgentFlag("--generate-prompts", "Output extraction prompts for external platforms"),
@@ -119,7 +162,9 @@ AGENT_REGISTRY: list[AgentInfo] = [
         ],
     ),
     AgentInfo(
-        "research", True, "RAG-backed research with Qdrant",
+        "research",
+        True,
+        "RAG-backed research with Qdrant",
         "uv run python -m agents.research",
         module="agents.research",
         flags=[
@@ -128,7 +173,9 @@ AGENT_REGISTRY: list[AgentInfo] = [
         ],
     ),
     AgentInfo(
-        "code-review", True, "Code review with operator context",
+        "code-review",
+        True,
+        "Code review with operator context",
         "uv run python -m agents.code_review",
         module="agents.code_review",
         flags=[
@@ -138,46 +185,68 @@ AGENT_REGISTRY: list[AgentInfo] = [
         ],
     ),
     AgentInfo(
-        "digest", True, "Content/knowledge digest",
+        "digest",
+        True,
+        "Content/knowledge digest",
         "uv run python -m agents.digest",
         module="agents.digest",
         flags=[
             AgentFlag("--save", "Save to profiles/ and vault"),
             AgentFlag("--json", "Machine-readable JSON output"),
-            AgentFlag("--hours", "Lookback window in hours", flag_type="value",
-                      default="24", metavar="N"),
+            AgentFlag(
+                "--hours", "Lookback window in hours", flag_type="value", default="24", metavar="N"
+            ),
             AgentFlag("--notify", "Send push notification"),
         ],
     ),
     AgentInfo(
-        "knowledge-maint", False, "Qdrant vector DB maintenance",
+        "knowledge-maint",
+        False,
+        "Qdrant vector DB maintenance",
         "uv run python -m agents.knowledge_maint",
         module="agents.knowledge_maint",
         flags=[
             AgentFlag("--dry-run", "Report only, no deletions (default)"),
             AgentFlag("--apply", "Actually perform deletions"),
-            AgentFlag("--collection", "Process a single collection", flag_type="value",
-                      metavar="NAME"),
+            AgentFlag(
+                "--collection", "Process a single collection", flag_type="value", metavar="NAME"
+            ),
             AgentFlag("--json", "Machine-readable JSON output"),
             AgentFlag("--save", "Save report to profiles/"),
             AgentFlag("--summarize", "Add LLM-generated summary"),
             AgentFlag("--notify", "Notify if work done or warnings"),
-            AgentFlag("--score-threshold", "Similarity threshold for dedup",
-                      flag_type="value", default="0.98"),
+            AgentFlag(
+                "--score-threshold",
+                "Similarity threshold for dedup",
+                flag_type="value",
+                default="0.98",
+            ),
         ],
     ),
     AgentInfo(
-        "demo", True, "Generate audience-tailored system demos",
+        "demo",
+        True,
+        "Generate audience-tailored system demos",
         "uv run python -m agents.demo",
         module="agents.demo",
         flags=[
-            AgentFlag("request", "Natural language request", flag_type="positional",
-                      metavar="REQUEST"),
-            AgentFlag("--audience", "Override audience archetype", flag_type="value",
-                      metavar="ARCHETYPE",
-                      choices=["family", "technical-peer", "leadership", "team-member"]),
-            AgentFlag("--format", "Output format", flag_type="value",
-                      default="slides", choices=["slides", "video", "markdown-only"]),
+            AgentFlag(
+                "request", "Natural language request", flag_type="positional", metavar="REQUEST"
+            ),
+            AgentFlag(
+                "--audience",
+                "Override audience archetype",
+                flag_type="value",
+                metavar="ARCHETYPE",
+                choices=["family", "technical-peer", "leadership", "team-member"],
+            ),
+            AgentFlag(
+                "--format",
+                "Output format",
+                flag_type="value",
+                default="slides",
+                choices=["slides", "video", "markdown-only"],
+            ),
             AgentFlag("--json", "Print script JSON instead of generating demo"),
         ],
     ),

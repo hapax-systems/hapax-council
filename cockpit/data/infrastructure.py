@@ -4,6 +4,7 @@ Reads from profiles/infra-snapshot.json written by the host-side health
 monitor, which has access to Docker, systemd, and GPU. The cockpit-api
 runs inside Docker where these commands are unavailable.
 """
+
 from __future__ import annotations
 
 import json
@@ -98,11 +99,13 @@ async def collect_timers() -> list[TimerStatus]:
     mode = get_cycle_mode()
     cron_schedules = _CONTAINER_CRON.get(mode, _CONTAINER_CRON["prod"])
     for agent, schedule in cron_schedules.items():
-        timers.append(TimerStatus(
-            unit=agent,
-            next_fire=schedule,
-            last_fired="-",
-            activates=agent,
-        ))
+        timers.append(
+            TimerStatus(
+                unit=agent,
+                next_fire=schedule,
+                last_fired="-",
+                activates=agent,
+            )
+        )
 
     return timers

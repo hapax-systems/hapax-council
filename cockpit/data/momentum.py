@@ -3,16 +3,16 @@
 Computes continuous signals per domain from vault modification timestamps
 and other activity sources. Zero LLM calls.
 """
+
 from __future__ import annotations
 
 import json
 import statistics
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shared.config import VAULT_PATH
-
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -24,9 +24,9 @@ class MomentumVector:
     """Per-domain momentum summary."""
 
     domain_id: str
-    direction: str      # accelerating | steady | decelerating | dormant
-    regularity: str     # regular | irregular | sporadic
-    alignment: str      # improving | plateaued | regressing
+    direction: str  # accelerating | steady | decelerating | dormant
+    regularity: str  # regular | irregular | sporadic
+    alignment: str  # improving | plateaued | regressing
     activity_rate: float
     regularity_cv: float
     alignment_slope: float
@@ -46,6 +46,7 @@ class DomainMomentum:
 # ---------------------------------------------------------------------------
 
 from shared.config import COCKPIT_STATE_DIR
+
 HISTORY_PATH = COCKPIT_STATE_DIR / "momentum-history.jsonl"
 
 
@@ -62,7 +63,7 @@ def compute_activity_rate(
     if not event_times:
         return 0.0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     short_cutoff = now - timedelta(days=days_short)
     long_cutoff = now - timedelta(days=days_long)
 
@@ -70,7 +71,7 @@ def compute_activity_rate(
     normalized = []
     for t in event_times:
         if t.tzinfo is None:
-            t = t.replace(tzinfo=timezone.utc)
+            t = t.replace(tzinfo=UTC)
         normalized.append(t)
 
     short_count = sum(1 for t in normalized if t >= short_cutoff)
@@ -197,9 +198,7 @@ def _collect_vault_activity(
         for md_file in folder.glob("**/*.md"):
             try:
                 mtime = md_file.stat().st_mtime
-                timestamps.append(
-                    datetime.fromtimestamp(mtime, tz=timezone.utc)
-                )
+                timestamps.append(datetime.fromtimestamp(mtime, tz=UTC))
             except OSError:
                 continue
 
@@ -243,7 +242,7 @@ def save_score_snapshot(domain_id: str, score: float) -> None:
     entry = {
         "domain_id": domain_id,
         "score": score,
-        "timestamp": datetime.now(timezone.utc).isoformat()[:19] + "Z",
+        "timestamp": datetime.now(UTC).isoformat()[:19] + "Z",
     }
     with open(HISTORY_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
@@ -264,11 +263,11 @@ def collect_domain_momentum(
     """
     from cockpit.data.knowledge_sufficiency import (
         DOMAIN_REGISTRY_PATH,
-        load_domain_registry,
         collect_all_domain_gaps,
+        load_domain_registry,
     )
 
-    now_iso = datetime.now(timezone.utc).isoformat()[:19] + "Z"
+    now_iso = datetime.now(UTC).isoformat()[:19] + "Z"
 
     if not DOMAIN_REGISTRY_PATH.is_file():
         return DomainMomentum(vectors=[], computed_at=now_iso)
@@ -302,15 +301,17 @@ def collect_domain_momentum(
             score_history.append(current_score)
         slope = compute_alignment_slope(score_history)
 
-        vectors.append(MomentumVector(
-            domain_id=domain_id,
-            direction=classify_direction(rate),
-            regularity=classify_regularity(cv),
-            alignment=classify_alignment(slope),
-            activity_rate=round(rate, 3),
-            regularity_cv=round(cv, 3),
-            alignment_slope=round(slope, 4),
-            computed_at=now_iso,
-        ))
+        vectors.append(
+            MomentumVector(
+                domain_id=domain_id,
+                direction=classify_direction(rate),
+                regularity=classify_regularity(cv),
+                alignment=classify_alignment(slope),
+                activity_rate=round(rate, 3),
+                regularity_cv=round(cv, 3),
+                alignment_slope=round(slope, 4),
+                computed_at=now_iso,
+            )
+        )
 
     return DomainMomentum(vectors=vectors, computed_at=now_iso)

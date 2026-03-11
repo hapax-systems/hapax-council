@@ -313,7 +313,7 @@ Press Super+Shift+Escape. Expected: BBS-style login prompt on black.
 
 Update test mocks: change `"cosmic-screenshot" in cmd[0]` to `"grim" in cmd[0]`. Update fake output generation to match grim behavior (grim takes output path as argument, writes PNG directly).
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_screen_capturer.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_screen_capturer.py -v`
 Expected: FAIL (screen_capturer.py still calls cosmic-screenshot)
 
 - [ ] **Step 2: Update screen_capturer.py**
@@ -322,7 +322,7 @@ Replace cosmic-screenshot subprocess call with grim. grim is simpler: `grim <out
 
 - [ ] **Step 3: Run tests to verify pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_screen_capturer.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_screen_capturer.py -v`
 Expected: All PASS
 
 - [ ] **Step 4: Update conftest.py skip condition**
@@ -352,7 +352,7 @@ Change `_CODE_APPS` set: replace `"cosmic-term"` with `"foot"`.
 
 - [ ] **Step 3: Run tests to verify pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_workspace_analyzer.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_workspace_analyzer.py -v`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
@@ -378,7 +378,7 @@ Change `(Linux/COSMIC/Wayland)` to `(Linux/Hyprland/Wayland)` in system prompt.
 
 - [ ] **Step 3: Run full voice daemon test suite**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/ -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/ -v`
 Expected: All PASS
 
 - [ ] **Step 4: Commit**
@@ -430,7 +430,7 @@ Expected: Clean lifecycle, colors match aesthetic.
 - [ ] **Step 3: Verify libtmux from Python**
 
 ```bash
-cd ~/projects/ai-agents && uv run python -c "import libtmux; print('libtmux OK')"
+cd ~/projects/hapax-council && uv run python -c "import libtmux; print('libtmux OK')"
 ```
 
 Expected: No errors.
@@ -443,7 +443,7 @@ Expected: No errors.
 - [ ] **Step 1: Run full test suite**
 
 ```bash
-cd ~/projects/ai-agents && uv run pytest tests/ -q
+cd ~/projects/hapax-council && uv run pytest tests/ -q
 ```
 
 Expected: All 1524+ tests pass.
@@ -461,7 +461,7 @@ Expected: All respond. Docker is system-level, unaffected by DE switch.
 - [ ] **Step 3: Verify agent invocation**
 
 ```bash
-cd ~/projects/ai-agents && eval "$(<.envrc)"
+cd ~/projects/hapax-council && eval "$(<.envrc)"
 uv run python -m agents.health_monitor --history 2>&1 | tail -5
 ```
 
@@ -470,7 +470,7 @@ Expected: Runs, outputs status.
 - [ ] **Step 4: Verify voice daemon check**
 
 ```bash
-cd ~/projects/ai-agents && uv run python -m agents.hapax_voice --check
+cd ~/projects/hapax-council && uv run python -m agents.hapax_voice --check
 ```
 
 Expected: Config validation passes, no COSMIC references.
@@ -500,7 +500,7 @@ git commit -m "docs: update Hyprland migration status to active"
 ### Task 18: Update ai-agents CLAUDE.md
 
 **Files:**
-- Modify: `~/projects/ai-agents/CLAUDE.md`
+- Modify: `~/projects/hapax-council/CLAUDE.md`
 
 - [ ] **Step 1: Update any COSMIC references**
 

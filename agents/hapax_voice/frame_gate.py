@@ -7,6 +7,7 @@ On "process": all frames pass through.
 On "pause": audio frames are dropped, control frames pass.
 On "withdraw": not handled here (daemon closes session externally).
 """
+
 from __future__ import annotations
 
 import logging

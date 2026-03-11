@@ -1,9 +1,11 @@
 """Tests for obsidian_sync — schemas, filtering, parsing, profiler facts."""
+
 from __future__ import annotations
 
 
 def test_vault_note_defaults():
     from agents.obsidian_sync import VaultNote
+
     n = VaultNote(
         relative_path="20-personal/some-note.md",
         title="Some Note",
@@ -19,6 +21,7 @@ def test_vault_note_defaults():
 
 def test_obsidian_sync_state_empty():
     from agents.obsidian_sync import ObsidianSyncState
+
     s = ObsidianSyncState()
     assert s.notes == {}
     assert s.last_sync == 0.0
@@ -167,26 +170,38 @@ See also [[Slip Box]] and [[Niklas Luhmann]].
 
 def test_generate_obsidian_profile_facts():
     from agents.obsidian_sync import (
-        _generate_profile_facts, ObsidianSyncState, VaultNote,
+        ObsidianSyncState,
+        VaultNote,
+        _generate_profile_facts,
     )
+
     state = ObsidianSyncState()
     state.notes = {
         "30 Areas/33 Permanent notes/a.md": VaultNote(
             relative_path="30 Areas/33 Permanent notes/a.md",
-            title="Note A", folder="33 Permanent notes",
-            content_hash="h1", size=200, mtime=1.0,
+            title="Note A",
+            folder="33 Permanent notes",
+            content_hash="h1",
+            size=200,
+            mtime=1.0,
             tags=["pkm", "zettelkasten"],
         ),
         "30 Areas/33 Permanent notes/b.md": VaultNote(
             relative_path="30 Areas/33 Permanent notes/b.md",
-            title="Note B", folder="33 Permanent notes",
-            content_hash="h2", size=300, mtime=2.0,
+            title="Note B",
+            folder="33 Permanent notes",
+            content_hash="h2",
+            size=300,
+            mtime=2.0,
             tags=["pkm", "writing"],
         ),
         "20-personal/c.md": VaultNote(
             relative_path="20-personal/c.md",
-            title="Note C", folder="20-personal",
-            content_hash="h3", size=150, mtime=3.0,
+            title="Note C",
+            folder="20-personal",
+            content_hash="h3",
+            size=150,
+            mtime=3.0,
             tags=["music"],
         ),
     }

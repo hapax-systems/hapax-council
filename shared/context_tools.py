@@ -11,12 +11,13 @@ Usage:
     for tool_fn in get_context_tools():
         agent.tool(tool_fn)
 """
+
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from pydantic_ai import RunContext
+from pydantic_ai import RunContext  # noqa: TC002 — needed at runtime for tool registration
 
 log = logging.getLogger("shared.context_tools")
 
@@ -40,7 +41,11 @@ async def lookup_constraints(ctx: RunContext[Any], categories: str = "") -> str:
         return f"Error loading constraints: {e}"
 
     if not rules:
-        return f"No constraints found for categories: {categories}" if categories else "No constraints found."
+        return (
+            f"No constraints found for categories: {categories}"
+            if categories
+            else "No constraints found."
+        )
 
     lines = [f"Operator constraints ({len(rules)} rules):"]
     for rule in rules:
@@ -67,7 +72,11 @@ async def lookup_patterns(ctx: RunContext[Any], categories: str = "") -> str:
         return f"Error loading patterns: {e}"
 
     if not patterns:
-        return f"No patterns found for categories: {categories}" if categories else "No patterns found."
+        return (
+            f"No patterns found for categories: {categories}"
+            if categories
+            else "No patterns found."
+        )
 
     lines = [f"Operator patterns ({len(patterns)} items):"]
     for pattern in patterns:
@@ -132,7 +141,7 @@ async def get_profile_summary(ctx: RunContext[Any], dimension: str = "") -> str:
         return "No profile digest available. Run `profiler --digest` to generate one."
 
     if dimension:
-        summary = (digest.get("dimensions", {}).get(dimension, {}).get("summary"))
+        summary = digest.get("dimensions", {}).get(dimension, {}).get("summary")
         if summary:
             dim_info = digest["dimensions"][dimension]
             return (
@@ -171,7 +180,12 @@ async def lookup_sufficiency_requirements(
         domain: Include domain axioms for this domain (e.g. "management").
             Constitutional axioms are always included (supremacy clause).
     """
-    log.info("context_tool_invoked tool=lookup_sufficiency_requirements axiom_id=%s level=%s domain=%s", axiom_id, level, domain)
+    log.info(
+        "context_tool_invoked tool=lookup_sufficiency_requirements axiom_id=%s level=%s domain=%s",
+        axiom_id,
+        level,
+        domain,
+    )
     try:
         from shared.axiom_registry import load_axioms, load_implications
 

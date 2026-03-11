@@ -1,14 +1,12 @@
 """CLI entry point for the dev-story agent."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
-import sys
-from pathlib import Path
 
-from shared.config import PROFILES_DIR, CLAUDE_CONFIG_DIR
+from shared.config import CLAUDE_CONFIG_DIR, PROFILES_DIR
 
 DB_PATH = str(PROFILES_DIR / "dev-story.db")
 CLAUDE_PROJECTS_DIR = CLAUDE_CONFIG_DIR / "projects"
@@ -21,7 +19,7 @@ async def cmd_index(incremental: bool = False) -> None:
     print(f"Indexing sessions from {CLAUDE_PROJECTS_DIR}")
     print(f"Database: {DB_PATH}")
     stats = full_index(DB_PATH, CLAUDE_PROJECTS_DIR)
-    print(f"\nIndex complete:")
+    print("\nIndex complete:")
     print(f"  Sessions: {stats['sessions_indexed']}")
     print(f"  Commits:  {stats['commits_indexed']}")
     print(f"  Correlations: {stats['correlations_created']}")
@@ -32,9 +30,19 @@ async def cmd_stats() -> None:
     from agents.dev_story.schema import open_db
 
     conn = open_db(DB_PATH)
-    tables = ["sessions", "messages", "tool_calls", "file_changes",
-              "commits", "commit_files", "correlations", "session_metrics",
-              "session_tags", "critical_moments", "hotspots"]
+    tables = [
+        "sessions",
+        "messages",
+        "tool_calls",
+        "file_changes",
+        "commits",
+        "commit_files",
+        "correlations",
+        "session_metrics",
+        "session_tags",
+        "critical_moments",
+        "hotspots",
+    ]
     print("Dev Story Index Statistics\n")
     for table in tables:
         cursor = conn.execute(f"SELECT COUNT(*) FROM {table}")
@@ -51,7 +59,7 @@ async def cmd_stats() -> None:
 
 async def cmd_query(prompt: str) -> None:
     """Run a single query."""
-    from agents.dev_story.query import create_agent, QueryDeps
+    from agents.dev_story.query import QueryDeps, create_agent
 
     agent = create_agent()
     result = await agent.run(prompt, deps=QueryDeps(db_path=DB_PATH))
@@ -60,7 +68,7 @@ async def cmd_query(prompt: str) -> None:
 
 async def cmd_interactive() -> None:
     """Interactive query REPL."""
-    from agents.dev_story.query import create_agent, QueryDeps
+    from agents.dev_story.query import QueryDeps, create_agent
 
     agent = create_agent()
     deps = QueryDeps(db_path=DB_PATH)

@@ -1,12 +1,13 @@
 """Knowledge sufficiency gate — checks available knowledge before demo generation."""
+
 from __future__ import annotations
 
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 from agents.demo_models import AudienceDossier, AudiencePersona, load_audiences, load_personas
 from shared.config import PROFILES_DIR, get_qdrant
@@ -15,6 +16,7 @@ from shared.operator import get_operator
 log = logging.getLogger(__name__)
 
 from shared.config import HAPAXROMANA_DIR
+
 _HAPAXROMANA_CLAUDE_MD = HAPAXROMANA_DIR / "CLAUDE.md"
 _KNOWN_ARCHETYPES = {"family", "team-member", "leadership", "technical-peer"}
 
@@ -382,7 +384,7 @@ def check_sufficiency(
 
     # 8. profile_digest
     progress("Checking profile digest...")
-    digest_path = PROFILES_DIR / "ryan-digest.json"
+    digest_path = PROFILES_DIR / "operator-digest.json"
     try:
         digest_path.stat()
         available = True
@@ -396,6 +398,7 @@ def check_sufficiency(
     progress("Checking doc freshness...")
     try:
         from qdrant_client.models import FieldCondition, Filter, MatchText
+
         doc_filter = Filter(
             must=[FieldCondition(key="source", match=MatchText(text="hapaxromana"))]
         )
@@ -476,10 +479,9 @@ def check_sufficiency(
     progress("Scoring knowledge dimensions...")
     personas = load_personas()
     persona = personas.get(archetype)
-    has_system_knowledge = (
-        any(c.available for c in system_checks if c.name == "component_registry")
-        and any(c.available for c in system_checks if c.name == "operator_manifest")
-    )
+    has_system_knowledge = any(
+        c.available for c in system_checks if c.name == "component_registry"
+    ) and any(c.available for c in system_checks if c.name == "operator_manifest")
     dimension_scores = score_dimensions(
         archetype=archetype,
         dossier=audience_dossier,
@@ -490,8 +492,7 @@ def check_sufficiency(
     # Cap confidence if any PERSON dimension is "missing" AND audience_text references
     # a named person — signals we're targeting a specific individual but lack key knowledge.
     has_missing_person_dim = any(
-        d.category == "person" and d.confidence == "missing"
-        for d in dimension_scores
+        d.category == "person" and d.confidence == "missing" for d in dimension_scores
     )
     if (
         confidence == "high"
@@ -500,7 +501,9 @@ def check_sufficiency(
     ):
         confidence = "adequate"
 
-    progress(f"Knowledge sufficiency: {confidence} ({system_passing}/{len(system_checks)} system checks)")
+    progress(
+        f"Knowledge sufficiency: {confidence} ({system_passing}/{len(system_checks)} system checks)"
+    )
 
     return SufficiencyResult(
         confidence=confidence,

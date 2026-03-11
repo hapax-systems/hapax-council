@@ -5,6 +5,7 @@ Builds a local voice pipeline:
 
 Or routes to Gemini Live when config.backend == "gemini".
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,10 +15,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agents.hapax_voice.frame_gate import FrameGate
 
+from openai import NOT_GIVEN
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask
-from openai import NOT_GIVEN
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.services.openai.llm import OpenAILLMService
@@ -27,8 +28,8 @@ from pipecat.transports.local.audio import (
     LocalAudioTransportParams,
 )
 
-from agents.hapax_voice.pipecat_tts import KokoroTTSService
 from agents.hapax_voice.persona import system_prompt
+from agents.hapax_voice.pipecat_tts import KokoroTTSService
 from agents.hapax_voice.tts import KOKORO_SAMPLE_RATE
 
 log = logging.getLogger(__name__)
@@ -188,14 +189,16 @@ def build_pipeline_task(
     processors = [transport.input()]
     if frame_gate is not None:
         processors.append(frame_gate)
-    processors.extend([
-        stt,
-        context_aggregator.user(),
-        llm,
-        tts,
-        transport.output(),
-        context_aggregator.assistant(),
-    ])
+    processors.extend(
+        [
+            stt,
+            context_aggregator.user(),
+            llm,
+            tts,
+            transport.output(),
+            context_aggregator.assistant(),
+        ]
+    )
 
     pipeline = Pipeline(processors=processors)
 

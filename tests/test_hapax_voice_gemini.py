@@ -1,4 +1,5 @@
 """Tests for Gemini Live API client."""
+
 from __future__ import annotations
 
 import asyncio
@@ -77,26 +78,26 @@ class TestGeminiLiveSession:
         mock_genai = MagicMock()
         mock_genai.Client.return_value = mock_client
 
-        with patch.dict("os.environ", {"GOOGLE_API_KEY": "fake-key"}):
-            with patch.dict(
+        with (
+            patch.dict("os.environ", {"GOOGLE_API_KEY": "fake-key"}),
+            patch.dict(
                 "sys.modules",
                 {"google": MagicMock(), "google.genai": mock_genai},
+            ),
+        ):
+            # Patch the imports inside connect()
+            with patch(
+                "agents.hapax_voice.gemini_live.GeminiLiveSession.connect",
+                wraps=session.connect,
             ):
-                # Patch the imports inside connect()
-                with patch(
-                    "agents.hapax_voice.gemini_live.GeminiLiveSession.connect",
-                    wraps=session.connect,
-                ):
-                    # Directly set up what connect() would do
-                    pass
+                # Directly set up what connect() would do
+                pass
 
-                # Instead of fighting import mocking, directly simulate what
-                # connect() does after successful import:
-                session._client = mock_client
-                session._session = mock_ws_session
-                session._receive_task = asyncio.create_task(
-                    session._receive_loop()
-                )
+            # Instead of fighting import mocking, directly simulate what
+            # connect() does after successful import:
+            session._client = mock_client
+            session._session = mock_ws_session
+            session._receive_task = asyncio.create_task(session._receive_loop())
 
         assert session.is_connected
 

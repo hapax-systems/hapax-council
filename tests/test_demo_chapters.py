@@ -1,4 +1,5 @@
 """Tests for MP4 chapter marker injection."""
+
 from __future__ import annotations
 
 from pathlib import Path

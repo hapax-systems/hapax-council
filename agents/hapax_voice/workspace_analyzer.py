@@ -1,4 +1,5 @@
 """Workspace analysis via Gemini Flash vision model (multi-image)."""
+
 from __future__ import annotations
 
 import json
@@ -101,7 +102,10 @@ class WorkspaceAnalyzer:
         """Analyze workspace from multiple image sources."""
         try:
             return await self._call_vision(
-                screen_b64, operator_b64, hardware_b64, extra_context,
+                screen_b64,
+                operator_b64,
+                hardware_b64,
+                extra_context,
             )
         except Exception as exc:
             log.warning("Workspace analysis failed: %s", exc)
@@ -122,31 +126,39 @@ class WorkspaceAnalyzer:
 
         # Screenshot (always present)
         user_content.append({"type": "text", "text": "SCREENSHOT:"})
-        user_content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{screen_b64}"},
-        })
+        user_content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{screen_b64}"},
+            }
+        )
 
         # Operator camera (optional)
         if operator_b64:
             user_content.append({"type": "text", "text": "OPERATOR CAMERA:"})
-            user_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{operator_b64}"},
-            })
+            user_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{operator_b64}"},
+                }
+            )
 
         # Hardware camera (optional)
         if hardware_b64:
             user_content.append({"type": "text", "text": "HARDWARE CAMERA:"})
-            user_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{hardware_b64}"},
-            })
+            user_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{hardware_b64}"},
+                }
+            )
 
-        user_content.append({
-            "type": "text",
-            "text": "Analyze this workspace.",
-        })
+        user_content.append(
+            {
+                "type": "text",
+                "text": "Analyze this workspace.",
+            }
+        )
 
         return [
             {"role": "system", "content": system},
@@ -162,7 +174,10 @@ class WorkspaceAnalyzer:
     ) -> WorkspaceAnalysis | None:
         client = self._get_client()
         messages = self._build_messages(
-            screen_b64, operator_b64, hardware_b64, extra_context,
+            screen_b64,
+            operator_b64,
+            hardware_b64,
+            extra_context,
         )
 
         response = await client.chat.completions.create(
@@ -180,12 +195,14 @@ class WorkspaceAnalyzer:
 
         gear_state = []
         for g in data.get("gear_state") or []:
-            gear_state.append(GearObservation(
-                device=g.get("device", "unknown"),
-                powered=g.get("powered"),
-                display_content=g.get("display_content", ""),
-                notes=g.get("notes", ""),
-            ))
+            gear_state.append(
+                GearObservation(
+                    device=g.get("device", "unknown"),
+                    powered=g.get("powered"),
+                    display_content=g.get("display_content", ""),
+                    notes=g.get("notes", ""),
+                )
+            )
 
         return WorkspaceAnalysis(
             app=data.get("app", "unknown"),

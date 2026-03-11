@@ -1,31 +1,29 @@
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from shared.hyprland import (
     HyprlandIPC,
-    WindowInfo,
-    WorkspaceInfo,
 )
 
 
 class TestHyprlandQuery:
     def test_get_active_window_parses_json(self):
-        fake_json = json.dumps({
-            "address": "0x1234",
-            "class": "foot",
-            "title": "~/projects",
-            "workspace": {"id": 1, "name": "1"},
-            "pid": 42,
-            "at": [0, 0],
-            "size": [800, 600],
-            "floating": False,
-            "fullscreen": False,
-            "mapped": True,
-        })
+        fake_json = json.dumps(
+            {
+                "address": "0x1234",
+                "class": "foot",
+                "title": "~/projects",
+                "workspace": {"id": 1, "name": "1"},
+                "pid": 42,
+                "at": [0, 0],
+                "size": [800, 600],
+                "floating": False,
+                "fullscreen": False,
+                "mapped": True,
+            }
+        )
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout=fake_json, returncode=0
-            )
+            mock_run.return_value = MagicMock(stdout=fake_json, returncode=0)
             ipc = HyprlandIPC()
             win = ipc.get_active_window()
 
@@ -36,7 +34,9 @@ class TestHyprlandQuery:
         assert win.pid == 42
         mock_run.assert_called_once_with(
             ["hyprctl", "-j", "activewindow"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
 
     def test_get_active_window_returns_none_on_error(self):
@@ -46,24 +46,36 @@ class TestHyprlandQuery:
             assert ipc.get_active_window() is None
 
     def test_get_clients_returns_list(self):
-        fake_json = json.dumps([
-            {
-                "address": "0x1", "class": "foot", "title": "term",
-                "workspace": {"id": 1, "name": "1"}, "pid": 10,
-                "at": [0, 0], "size": [800, 600],
-                "floating": False, "fullscreen": False, "mapped": True,
-            },
-            {
-                "address": "0x2", "class": "google-chrome", "title": "Tab",
-                "workspace": {"id": 3, "name": "3"}, "pid": 20,
-                "at": [0, 0], "size": [1920, 1080],
-                "floating": False, "fullscreen": False, "mapped": True,
-            },
-        ])
+        fake_json = json.dumps(
+            [
+                {
+                    "address": "0x1",
+                    "class": "foot",
+                    "title": "term",
+                    "workspace": {"id": 1, "name": "1"},
+                    "pid": 10,
+                    "at": [0, 0],
+                    "size": [800, 600],
+                    "floating": False,
+                    "fullscreen": False,
+                    "mapped": True,
+                },
+                {
+                    "address": "0x2",
+                    "class": "google-chrome",
+                    "title": "Tab",
+                    "workspace": {"id": 3, "name": "3"},
+                    "pid": 20,
+                    "at": [0, 0],
+                    "size": [1920, 1080],
+                    "floating": False,
+                    "fullscreen": False,
+                    "mapped": True,
+                },
+            ]
+        )
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout=fake_json, returncode=0
-            )
+            mock_run.return_value = MagicMock(stdout=fake_json, returncode=0)
             ipc = HyprlandIPC()
             clients = ipc.get_clients()
 
@@ -72,16 +84,20 @@ class TestHyprlandQuery:
         assert clients[1].workspace_id == 3
 
     def test_get_workspaces_returns_list(self):
-        fake_json = json.dumps([
-            {"id": 1, "name": "1", "windows": 3,
-             "lastwindowtitle": "foot", "monitor": "DP-1"},
-            {"id": 3, "name": "3", "windows": 1,
-             "lastwindowtitle": "Chrome", "monitor": "DP-1"},
-        ])
+        fake_json = json.dumps(
+            [
+                {"id": 1, "name": "1", "windows": 3, "lastwindowtitle": "foot", "monitor": "DP-1"},
+                {
+                    "id": 3,
+                    "name": "3",
+                    "windows": 1,
+                    "lastwindowtitle": "Chrome",
+                    "monitor": "DP-1",
+                },
+            ]
+        )
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout=fake_json, returncode=0
-            )
+            mock_run.return_value = MagicMock(stdout=fake_json, returncode=0)
             ipc = HyprlandIPC()
             workspaces = ipc.get_workspaces()
 
@@ -98,21 +114,27 @@ class TestHyprlandDispatch:
 
         mock_run.assert_called_once_with(
             ["hyprctl", "dispatch", "workspace", "3"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
 
     def test_batch_sends_semicolon_joined(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             ipc = HyprlandIPC()
-            ipc.batch([
-                "dispatch workspace 3",
-                "dispatch exec foot",
-            ])
+            ipc.batch(
+                [
+                    "dispatch workspace 3",
+                    "dispatch exec foot",
+                ]
+            )
 
         mock_run.assert_called_once_with(
             ["hyprctl", "--batch", "dispatch workspace 3 ; dispatch exec foot"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
 
     def test_dispatch_returns_false_on_missing_hyprctl(self):

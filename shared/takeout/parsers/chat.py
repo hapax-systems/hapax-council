@@ -6,6 +6,7 @@ Format varies but typically:
 - DMs/{dm_name}/messages.json
 - Each message has: {creator, created_date, text, ...}
 """
+
 from __future__ import annotations
 
 import json

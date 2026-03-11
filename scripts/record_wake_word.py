@@ -10,6 +10,7 @@ Usage:
     uv run python scripts/record_wake_word.py --count 50
     uv run python scripts/record_wake_word.py --output-dir /path/to/dir
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,11 +29,7 @@ FORMAT = pyaudio.paInt16
 CHUNK = 1024
 RECORD_SECONDS = 2.0
 OUTPUT_DIR = (
-    Path(__file__).resolve().parent.parent
-    / "data"
-    / "wake-word-training"
-    / "positive"
-    / "real"
+    Path(__file__).resolve().parent.parent / "data" / "wake-word-training" / "positive" / "real"
 )
 
 
@@ -70,7 +67,9 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Record wake word utterances")
     parser.add_argument("--count", type=int, default=50, help="Target number of recordings")
-    parser.add_argument("--duration", type=float, default=RECORD_SECONDS, help="Seconds per recording")
+    parser.add_argument(
+        "--duration", type=float, default=RECORD_SECONDS, help="Seconds per recording"
+    )
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR, help="Output directory")
     args = parser.parse_args()
 
@@ -83,18 +82,20 @@ def main() -> None:
         start_idx = 0
 
     pa = pyaudio.PyAudio()
-    print(f"\n=== Wake Word Recording Tool ===")
+    print("\n=== Wake Word Recording Tool ===")
     print(f"Say 'hapax' after each prompt. {args.duration}s recording window.")
     print(f"Target: {args.count} recordings (existing: {existing})")
     print(f"Output: {args.output_dir}")
-    print(f"Press Enter to record, 'q' to quit, 's' to skip/discard last.\n")
+    print("Press Enter to record, 'q' to quit, 's' to skip/discard last.\n")
 
     idx = start_idx
     last_path: Path | None = None
 
     try:
         while idx < start_idx + args.count:
-            response = input(f"  [{idx + 1}] Press Enter to record ('q' quit, 's' skip last): ").strip()
+            response = input(
+                f"  [{idx + 1}] Press Enter to record ('q' quit, 's' skip last): "
+            ).strip()
             if response.lower() == "q":
                 break
             if response.lower() == "s" and last_path and last_path.exists():

@@ -1,4 +1,5 @@
 """Tests for audio_input_source config field."""
+
 from agents.hapax_voice.config import VoiceConfig
 
 

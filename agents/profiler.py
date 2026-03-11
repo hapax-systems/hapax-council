@@ -14,6 +14,7 @@ Usage:
     uv run python -m agents.profiler --auto             # Unattended: detect changes, update if needed
     uv run python -m agents.profiler --curate           # Run quality curation on existing profile
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,15 +22,14 @@ import asyncio
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-
 from typing import Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from shared.config import get_model, get_qdrant, embed, PROFILES_DIR as _PROFILES_DIR_CONFIG
+from shared.config import get_model
 
 # Import Langfuse OTel config (side-effect: configures exporter)
 try:
@@ -39,7 +39,6 @@ except ImportError:
 
 from agents.profiler_sources import (
     BRIDGED_SOURCE_TYPES,
-    DiscoveredSources,
     SourceChunk,
     detect_changed_sources,
     discover_sources,
@@ -54,13 +53,12 @@ log = logging.getLogger("profiler")
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
-from shared.dimensions import get_dimension_names, DIMENSIONS as _DIMENSIONS
+from shared.dimensions import DIMENSIONS as _DIMENSIONS
+from shared.dimensions import get_dimension_names
 
 PROFILE_DIMENSIONS = get_dimension_names()
 
-_DIM_DESCRIPTIONS = "\n".join(
-    f"- {d.name} ({d.kind}): {d.description}" for d in _DIMENSIONS
-)
+_DIM_DESCRIPTIONS = "\n".join(f"- {d.name} ({d.kind}): {d.description}" for d in _DIMENSIONS)
 
 # Sources representing operator intent (explicit statements).
 # These take precedence over observation sources during merge.
@@ -69,6 +67,7 @@ AUTHORITY_SOURCES = frozenset({"interview", "config", "memory", "operator"})
 
 class ProfileFact(BaseModel):
     """A single extracted fact about the user."""
+
     dimension: str = Field(description="Profile dimension: " + ", ".join(PROFILE_DIMENSIONS))
     key: str = Field(description="Snake_case identifier for this fact")
     value: str = Field(description="The factual information")
@@ -79,11 +78,13 @@ class ProfileFact(BaseModel):
 
 class ChunkExtraction(BaseModel):
     """Structured output from the extraction agent."""
+
     facts: list[ProfileFact] = Field(default_factory=list)
 
 
 class ProfileDimension(BaseModel):
     """A group of facts under one dimension with a narrative summary."""
+
     name: str
     summary: str = ""
     facts: list[ProfileFact] = Field(default_factory=list)
@@ -91,6 +92,7 @@ class ProfileDimension(BaseModel):
 
 class UserProfile(BaseModel):
     """The complete user profile."""
+
     name: str = ""
     email: str | None = None
     summary: str = ""
@@ -102,6 +104,7 @@ class UserProfile(BaseModel):
 
 class SynthesisOutput(BaseModel):
     """Structured output from the synthesis agent."""
+
     name: str = Field(description="User's name")
     email: str | None = Field(default=None, description="User's email if found")
     summary: str = Field(description="2-3 sentence profile summary")
@@ -148,6 +151,7 @@ synthesis_agent = Agent(
 
 # Register axiom compliance tools on agents that make architectural decisions
 from shared.axiom_tools import get_axiom_tools
+
 for _tool_fn in get_axiom_tools():
     extraction_agent.tool(_tool_fn)
     synthesis_agent.tool(_tool_fn)
@@ -155,12 +159,13 @@ for _tool_fn in get_axiom_tools():
 
 class OperatorUpdate(BaseModel):
     """Structured output for operator manifest dynamic updates."""
+
     goal_updates: dict[str, str] = Field(
         description="Goal ID → updated progress string for each goal that has changed"
     )
     new_patterns: list[str] = Field(
         default_factory=list,
-        description="New behavioral patterns observed that aren't in the current manifest"
+        description="New behavioral patterns observed that aren't in the current manifest",
     )
     summary: str = Field(
         description="Updated 1-2 sentence operator summary if facts warrant a change, else empty string"
@@ -200,8 +205,10 @@ operator_agent = Agent(
 
 # ── Curation schemas & agent ─────────────────────────────────────────────────
 
+
 class CurationOp(BaseModel):
     """A single curation operation on profile facts."""
+
     action: Literal["merge", "delete", "update", "flag"] = Field(
         description="merge: combine redundant facts; delete: remove stale/irrelevant; "
         "update: fix key/value/confidence; flag: mark contradiction for human review"
@@ -211,24 +218,23 @@ class CurationOp(BaseModel):
     new_key: str | None = Field(default=None, description="For merge/update: the resulting key")
     new_value: str | None = Field(default=None, description="For merge/update: the resulting value")
     new_confidence: float | None = Field(
-        default=None, ge=0.0, le=1.0,
-        description="For merge/update: the resulting confidence"
+        default=None, ge=0.0, le=1.0, description="For merge/update: the resulting confidence"
     )
     gap_type: str | None = Field(
         default=None,
         description="For flag action: executive_function (knows but struggles to initiate/sustain), "
         "knowledge (genuinely doesn't know), context_dependent (both valid in different contexts), "
-        "or preference_shift (stated preference outdated, behavior reflects change)"
+        "or preference_shift (stated preference outdated, behavior reflects change)",
     )
 
 
 class DimensionCuration(BaseModel):
     """Curation results for a single profile dimension."""
+
     dimension: str
     operations: list[CurationOp] = Field(default_factory=list)
     health_score: float = Field(
-        ge=0.0, le=1.0,
-        description="0.0 = needs major cleanup, 1.0 = pristine"
+        ge=0.0, le=1.0, description="0.0 = needs major cleanup, 1.0 = pristine"
     )
 
 
@@ -276,6 +282,7 @@ curator_agent = Agent(
 
 
 # ── Fact merging ─────────────────────────────────────────────────────────────
+
 
 def _source_prefix(source: str) -> str:
     """Extract the source type prefix (e.g., 'interview' from 'interview:2024-...')."""
@@ -330,7 +337,6 @@ def group_facts_by_dimension(facts: list[ProfileFact]) -> dict[str, list[Profile
 # ── Pipeline ─────────────────────────────────────────────────────────────────
 
 from shared.config import PROFILES_DIR
-
 
 DEFAULT_EXTRACTION_CONCURRENCY = 8
 
@@ -448,11 +454,15 @@ async def synthesize_profile(facts: list[ProfileFact]) -> SynthesisOutput:
     for dim, dim_facts in sorted(grouped.items()):
         parts.append(f"## {dim}")
         for f in dim_facts:
-            parts.append(f"- **{f.key}**: {f.value} (confidence: {f.confidence}, source: {f.source})")
+            parts.append(
+                f"- **{f.key}**: {f.value} (confidence: {f.confidence}, source: {f.source})"
+            )
         parts.append("")
 
     facts_text = "\n".join(parts)
-    prompt = f"Synthesize the following extracted facts into a coherent user profile:\n\n{facts_text}"
+    prompt = (
+        f"Synthesize the following extracted facts into a coherent user profile:\n\n{facts_text}"
+    )
 
     result = await synthesis_agent.run(prompt)
     return result.output
@@ -472,20 +482,24 @@ def build_profile(
         dim_facts = grouped.get(dim_name, [])
         summary = synthesis.dimension_summaries.get(dim_name, "")
         if dim_facts or summary:
-            dimensions.append(ProfileDimension(
-                name=dim_name,
-                summary=summary,
-                facts=dim_facts,
-            ))
+            dimensions.append(
+                ProfileDimension(
+                    name=dim_name,
+                    summary=summary,
+                    facts=dim_facts,
+                )
+            )
 
     # Include any extra dimensions not in the default list
     for dim_name in sorted(grouped.keys()):
         if dim_name not in PROFILE_DIMENSIONS:
-            dimensions.append(ProfileDimension(
-                name=dim_name,
-                summary=synthesis.dimension_summaries.get(dim_name, ""),
-                facts=grouped[dim_name],
-            ))
+            dimensions.append(
+                ProfileDimension(
+                    name=dim_name,
+                    summary=synthesis.dimension_summaries.get(dim_name, ""),
+                    facts=grouped[dim_name],
+                )
+            )
 
     version = (existing_profile.version + 1) if existing_profile else 1
 
@@ -496,15 +510,16 @@ def build_profile(
         dimensions=dimensions,
         sources_processed=sources_processed,
         version=version,
-        updated_at=datetime.now(timezone.utc).isoformat(),
+        updated_at=datetime.now(UTC).isoformat(),
     )
 
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
+
 def load_existing_profile() -> UserProfile | None:
     """Load existing profile from disk if it exists."""
-    path = PROFILES_DIR / "ryan.json"
+    path = PROFILES_DIR / "operator-profile.json"
     if not path.exists():
         return None
     try:
@@ -523,12 +538,12 @@ def save_profile(profile: UserProfile) -> None:
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
     # JSON
-    json_path = PROFILES_DIR / "ryan.json"
+    json_path = PROFILES_DIR / "operator-profile.json"
     json_path.write_text(profile.model_dump_json(indent=2))
     print(f"Saved: {json_path}")
 
     # Markdown
-    md_path = PROFILES_DIR / "ryan.md"
+    md_path = PROFILES_DIR / "operator-profile.md"
     md_path.write_text(_profile_to_markdown(profile))
     print(f"Saved: {md_path}")
 
@@ -588,6 +603,7 @@ def _profile_to_markdown(profile: UserProfile) -> str:
 
 # ── Interview integration ────────────────────────────────────────────────────
 
+
 def flush_interview_facts(
     facts: list,
     insights: list,
@@ -611,19 +627,21 @@ def flush_interview_facts(
         return "No facts or insights to flush."
 
     source_tag = source
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
 
     # Convert RecordedFact → ProfileFact
     new_profile_facts: list[ProfileFact] = []
     for rf in facts:
-        new_profile_facts.append(ProfileFact(
-            dimension=rf.dimension,
-            key=rf.key,
-            value=rf.value,
-            confidence=rf.confidence,
-            source=source_tag,
-            evidence=rf.evidence,
-        ))
+        new_profile_facts.append(
+            ProfileFact(
+                dimension=rf.dimension,
+                key=rf.key,
+                value=rf.value,
+                confidence=rf.confidence,
+                source=source_tag,
+                evidence=rf.evidence,
+            )
+        )
 
     # Convert insights to facts in the relevant dimension
     insight_dimension_map = {
@@ -634,18 +652,22 @@ def flush_interview_facts(
         "contradiction": "values",
         "neurocognitive_pattern": "neurocognitive",
     }
-    for i, ins in enumerate(insights):
+    for _i, ins in enumerate(insights):
         dim = insight_dimension_map.get(ins.category, "philosophy")
         # Use index + truncated description hash for unique keys across flushes
         desc_hash = hex(hash(ins.description) & 0xFFFF)[2:]
-        new_profile_facts.append(ProfileFact(
-            dimension=dim,
-            key=f"insight_{ins.category}_{desc_hash}",
-            value=f"{ins.description}. Recommendation: {ins.recommendation}" if ins.recommendation else ins.description,
-            confidence=0.85,
-            source=source_tag,
-            evidence=f"Interview insight ({ins.category})",
-        ))
+        new_profile_facts.append(
+            ProfileFact(
+                dimension=dim,
+                key=f"insight_{ins.category}_{desc_hash}",
+                value=f"{ins.description}. Recommendation: {ins.recommendation}"
+                if ins.recommendation
+                else ins.description,
+                confidence=0.85,
+                source=source_tag,
+                evidence=f"Interview insight ({ins.category})",
+            )
+        )
 
     # Load existing profile and merge
     existing = load_existing_profile()
@@ -665,20 +687,24 @@ def flush_interview_facts(
     for dim_name in PROFILE_DIMENSIONS:
         dim_facts = grouped.get(dim_name, [])
         if dim_facts:
-            dimensions.append(ProfileDimension(
-                name=dim_name,
-                summary=existing_summaries.get(dim_name, ""),
-                facts=dim_facts,
-            ))
+            dimensions.append(
+                ProfileDimension(
+                    name=dim_name,
+                    summary=existing_summaries.get(dim_name, ""),
+                    facts=dim_facts,
+                )
+            )
 
     # Include extra dimensions
     for dim_name in sorted(grouped.keys()):
         if dim_name not in PROFILE_DIMENSIONS:
-            dimensions.append(ProfileDimension(
-                name=dim_name,
-                summary=existing_summaries.get(dim_name, ""),
-                facts=grouped[dim_name],
-            ))
+            dimensions.append(
+                ProfileDimension(
+                    name=dim_name,
+                    summary=existing_summaries.get(dim_name, ""),
+                    facts=grouped[dim_name],
+                )
+            )
 
     version = (existing.version + 1) if existing else 1
     updated_profile = UserProfile(
@@ -704,6 +730,7 @@ def flush_interview_facts(
 
 # ── Operator corrections ──────────────────────────────────────────────────────
 
+
 def apply_corrections(corrections: list[dict]) -> str:
     """Apply operator corrections to the profile.
 
@@ -722,7 +749,7 @@ def apply_corrections(corrections: list[dict]) -> str:
         return "No profile found. Run extraction first."
 
     existing_facts = [f for dim in existing.dimensions for f in dim.facts]
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     applied = 0
     deleted = 0
 
@@ -735,8 +762,7 @@ def apply_corrections(corrections: list[dict]) -> str:
             # Delete: remove matching facts
             before = len(existing_facts)
             existing_facts = [
-                f for f in existing_facts
-                if not (f.dimension == dim and f.key == key)
+                f for f in existing_facts if not (f.dimension == dim and f.key == key)
             ]
             if len(existing_facts) < before:
                 deleted += 1
@@ -761,18 +787,22 @@ def apply_corrections(corrections: list[dict]) -> str:
     for dim_name in PROFILE_DIMENSIONS:
         dim_facts = grouped.get(dim_name, [])
         if dim_facts:
-            dimensions.append(ProfileDimension(
-                name=dim_name,
-                summary=existing_summaries.get(dim_name, ""),
-                facts=dim_facts,
-            ))
+            dimensions.append(
+                ProfileDimension(
+                    name=dim_name,
+                    summary=existing_summaries.get(dim_name, ""),
+                    facts=dim_facts,
+                )
+            )
     for dim_name in sorted(grouped.keys()):
         if dim_name not in PROFILE_DIMENSIONS:
-            dimensions.append(ProfileDimension(
-                name=dim_name,
-                summary=existing_summaries.get(dim_name, ""),
-                facts=grouped[dim_name],
-            ))
+            dimensions.append(
+                ProfileDimension(
+                    name=dim_name,
+                    summary=existing_summaries.get(dim_name, ""),
+                    facts=grouped[dim_name],
+                )
+            )
 
     updated_profile = UserProfile(
         name=existing.name,
@@ -795,6 +825,7 @@ def apply_corrections(corrections: list[dict]) -> str:
 
 
 # ── Ingest ───────────────────────────────────────────────────────────────────
+
 
 def load_structured_facts() -> list[ProfileFact]:
     """Load pre-computed structured facts from profiler bridges.
@@ -855,33 +886,38 @@ async def ingest_file(path: Path) -> list[ProfileFact]:
 
     # Freeform text fallback: chunk and extract
     print(f"Running extraction on freeform text from {path.name}...")
-    from agents.profiler_sources import SourceChunk, _chunk_text
+    from agents.profiler_sources import _chunk_text
+
     chunks = _chunk_text(text, f"ingest:{path.name}", "ingest")
     return await extract_from_chunks(chunks)
 
 
 # ── Extraction prompts ───────────────────────────────────────────────────────
 
+
 def generate_extraction_prompts() -> str:
     """Generate prompts for external platform data extraction."""
-    schema_example = json.dumps([
-        {
-            "dimension": "technical_skills",
-            "key": "preferred_language",
-            "value": "Python with type hints",
-            "confidence": 0.9,
-            "source": "platform-history",
-            "evidence": "Consistently requests Python solutions with full type annotations"
-        },
-        {
-            "dimension": "communication_style",
-            "key": "brevity_preference",
-            "value": "Prefers concise, precise responses over verbose explanations",
-            "confidence": 0.85,
-            "source": "platform-history",
-            "evidence": "Frequently asks to shorten responses or get to the point"
-        }
-    ], indent=2)
+    schema_example = json.dumps(
+        [
+            {
+                "dimension": "technical_skills",
+                "key": "preferred_language",
+                "value": "Python with type hints",
+                "confidence": 0.9,
+                "source": "platform-history",
+                "evidence": "Consistently requests Python solutions with full type annotations",
+            },
+            {
+                "dimension": "communication_style",
+                "key": "brevity_preference",
+                "value": "Prefers concise, precise responses over verbose explanations",
+                "confidence": 0.85,
+                "source": "platform-history",
+                "evidence": "Frequently asks to shorten responses or get to the point",
+            },
+        ],
+        indent=2,
+    )
 
     dimensions_list = "\n".join(f"- **{d.name}** ({d.kind}): {d.description}" for d in _DIMENSIONS)
 
@@ -959,18 +995,17 @@ uv run python -m agents.profiler --ingest gemini-export.json
 
 # ── Profile digest generation ─────────────────────────────────────────────────
 
+
 async def generate_digest(profile: UserProfile) -> dict:
     """Generate a pre-computed profile digest with per-dimension summaries.
 
     One LLM call per dimension using the fast model. Samples top facts by
     confidence per dimension for summarization. Returns the digest dict
-    and saves it to profiles/ryan-digest.json.
+    and saves it to profiles/operator-digest.json.
     """
     from shared.config import get_model as _get_model
 
-    grouped = group_facts_by_dimension(
-        [f for dim in profile.dimensions for f in dim.facts]
-    )
+    grouped = group_facts_by_dimension([f for dim in profile.dimensions for f in dim.facts])
 
     dimensions: dict[str, dict] = {}
     for dim_name in PROFILE_DIMENSIONS:
@@ -1000,8 +1035,7 @@ async def generate_digest(profile: UserProfile) -> dict:
             )
             result = await summary_agent.run(
                 f"Dimension: {dim_name}\n"
-                f"Facts ({count} total, showing top {len(top_facts)}):\n"
-                + "\n".join(fact_lines)
+                f"Facts ({count} total, showing top {len(top_facts)}):\n" + "\n".join(fact_lines)
             )
             summary = result.output
         except Exception as e:
@@ -1017,7 +1051,7 @@ async def generate_digest(profile: UserProfile) -> dict:
     total_facts = sum(d["fact_count"] for d in dimensions.values())
 
     digest = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "profile_version": profile.version,
         "total_facts": total_facts,
         "overall_summary": profile.summary or "",
@@ -1025,7 +1059,7 @@ async def generate_digest(profile: UserProfile) -> dict:
     }
 
     # Save to disk
-    digest_path = PROFILES_DIR / "ryan-digest.json"
+    digest_path = PROFILES_DIR / "operator-digest.json"
     digest_path.write_text(json.dumps(digest, indent=2))
     log.info("Saved profile digest: %s (%d facts)", digest_path, total_facts)
 
@@ -1033,6 +1067,7 @@ async def generate_digest(profile: UserProfile) -> dict:
 
 
 # ── Operator manifest regeneration ────────────────────────────────────────────
+
 
 async def regenerate_operator(profile: UserProfile) -> None:
     """Update dynamic sections of operator.json from current profile.
@@ -1062,9 +1097,7 @@ async def regenerate_operator(profile: UserProfile) -> None:
             return
 
     # Build a compact fact summary for the LLM
-    grouped = group_facts_by_dimension(
-        [f for dim in profile.dimensions for f in dim.facts]
-    )
+    grouped = group_facts_by_dimension([f for dim in profile.dimensions for f in dim.facts])
     recent_facts: list[str] = []
     for dim_name, facts in sorted(grouped.items()):
         for f in sorted(facts, key=lambda x: -x.confidence)[:10]:
@@ -1078,8 +1111,7 @@ async def regenerate_operator(profile: UserProfile) -> None:
         f"Current operator manifest goals:\n{current_goals}\n\n"
         f"Current operator manifest patterns:\n{current_patterns}\n\n"
         f"Current neurocognitive profile:\n{current_neurocognitive}\n\n"
-        f"Profile facts (top per dimension, {len(recent_facts)} total):\n"
-        + "\n".join(recent_facts)
+        f"Profile facts (top per dimension, {len(recent_facts)} total):\n" + "\n".join(recent_facts)
     )
 
     try:
@@ -1093,7 +1125,7 @@ async def regenerate_operator(profile: UserProfile) -> None:
 
     # Apply goal progress updates
     if update.goal_updates:
-        now_iso = datetime.now(timezone.utc).isoformat()[:19] + "Z"
+        now_iso = datetime.now(UTC).isoformat()[:19] + "Z"
         for goal_list_key in ("primary", "secondary"):
             goals = operator_data.get("goals", {}).get(goal_list_key, [])
             for goal in goals:
@@ -1130,18 +1162,22 @@ async def regenerate_operator(profile: UserProfile) -> None:
         # F-1.1: Validate, backup, and atomic write
         new_content = json.dumps(operator_data, indent=2)
         if len(new_content) < 100:
-            log.error("Operator update produced suspiciously small output (%d bytes) — aborting write",
-                      len(new_content))
+            log.error(
+                "Operator update produced suspiciously small output (%d bytes) — aborting write",
+                len(new_content),
+            )
             return
 
         # Backup existing before overwrite
         if operator_path.exists():
             backup_path = operator_path.with_suffix(".json.bak")
             import shutil
+
             shutil.copy2(operator_path, backup_path)
 
         # Atomic write via temp file
         import tempfile
+
         tmp_fd, tmp_path = tempfile.mkstemp(dir=operator_path.parent, suffix=".json")
         try:
             with open(tmp_fd, "w", encoding="utf-8") as f:
@@ -1233,6 +1269,7 @@ def _regenerate_operator_md(operator_data: dict) -> None:
 
 # ── Profile curation ─────────────────────────────────────────────────────────
 
+
 def apply_curation(
     facts: list[ProfileFact],
     curation: DimensionCuration,
@@ -1279,7 +1316,9 @@ def apply_curation(
                     dimension=curation.dimension,
                     key=target_key,
                     value=op.new_value or fact.value,
-                    confidence=op.new_confidence if op.new_confidence is not None else fact.confidence,
+                    confidence=op.new_confidence
+                    if op.new_confidence is not None
+                    else fact.confidence,
                     source=fact.source,
                     evidence=fact.evidence,
                 )
@@ -1321,15 +1360,12 @@ async def curate_profile(profile: UserProfile) -> tuple[UserProfile, list[Curati
         fact_lines = []
         for f in dim.facts:
             fact_lines.append(
-                f"- **{f.key}**: {f.value} "
-                f"(confidence={f.confidence:.2f}, source={f.source})"
+                f"- **{f.key}**: {f.value} (confidence={f.confidence:.2f}, source={f.source})"
             )
 
         prompt = (
             f"Dimension: {dim.name}\n"
-            f"Fact count: {len(dim.facts)}\n\n"
-            + "\n".join(fact_lines)
-            + fitness_context
+            f"Fact count: {len(dim.facts)}\n\n" + "\n".join(fact_lines) + fitness_context
         )
 
         print(f"  Curating {dim.name} ({len(dim.facts)} facts)...", flush=True)
@@ -1348,15 +1384,20 @@ async def curate_profile(profile: UserProfile) -> tuple[UserProfile, list[Curati
                     op_summary.append(f"{count} {action}")
 
             if op_summary:
-                print(f"    → {', '.join(op_summary)} | health: {curation.health_score:.2f}", flush=True)
+                print(
+                    f"    → {', '.join(op_summary)} | health: {curation.health_score:.2f}",
+                    flush=True,
+                )
             else:
                 print(f"    → clean | health: {curation.health_score:.2f}", flush=True)
 
-            curated_dimensions.append(ProfileDimension(
-                name=dim.name,
-                summary=dim.summary,
-                facts=curated_facts,
-            ))
+            curated_dimensions.append(
+                ProfileDimension(
+                    name=dim.name,
+                    summary=dim.summary,
+                    facts=curated_facts,
+                )
+            )
 
         except Exception as e:
             log.error(f"Curation failed for {dim.name}: {e}")
@@ -1365,11 +1406,13 @@ async def curate_profile(profile: UserProfile) -> tuple[UserProfile, list[Curati
     before_count = sum(len(d.facts) for d in profile.dimensions)
     after_count = sum(len(d.facts) for d in curated_dimensions)
 
-    curated_profile = profile.model_copy(update={
-        "dimensions": curated_dimensions,
-        "version": profile.version + 1,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    })
+    curated_profile = profile.model_copy(
+        update={
+            "dimensions": curated_dimensions,
+            "version": profile.version + 1,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+    )
 
     print(f"\nCuration complete: {total_ops} operations applied")
     print(f"  Facts: {before_count} → {after_count} ({before_count - after_count} removed/merged)")
@@ -1387,8 +1430,10 @@ async def run_curate() -> None:
         return
 
     fact_count = sum(len(d.facts) for d in profile.dimensions)
-    print(f"Curating profile v{profile.version} ({fact_count} facts, "
-          f"{len(profile.dimensions)} dimensions)...\n")
+    print(
+        f"Curating profile v{profile.version} ({fact_count} facts, "
+        f"{len(profile.dimensions)} dimensions)...\n"
+    )
 
     curated, flagged = await curate_profile(profile)
     save_profile(curated)
@@ -1404,15 +1449,17 @@ async def run_curate() -> None:
         new_summary = synthesis.dimension_summaries.get(dim.name, dim.summary)
         final_dims.append(ProfileDimension(name=dim.name, summary=new_summary, facts=dim.facts))
 
-    final = curated.model_copy(update={
-        "summary": synthesis.summary,
-        "dimensions": final_dims,
-    })
+    final = curated.model_copy(
+        update={
+            "summary": synthesis.summary,
+            "dimensions": final_dims,
+        }
+    )
     save_profile(final)
 
     # Append flagged items to the markdown
     if flagged:
-        md_path = PROFILES_DIR / "ryan.md"
+        md_path = PROFILES_DIR / "operator-profile.md"
         flag_lines = ["\n## Flagged for Review\n"]
         for op in flagged:
             prefix = f"[{op.gap_type}] " if op.gap_type else ""
@@ -1423,6 +1470,7 @@ async def run_curate() -> None:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 async def run_extraction(
     source_filter: str | None = None,
@@ -1455,7 +1503,9 @@ async def run_extraction(
     if not chunks:
         print("No new sources to process.")
         if existing:
-            print(f"Current profile: v{existing.version} with {sum(len(d.facts) for d in existing.dimensions)} facts")
+            print(
+                f"Current profile: v{existing.version} with {sum(len(d.facts) for d in existing.dimensions)} facts"
+            )
         return
 
     print(f"Processing {len(chunks)} chunks...")
@@ -1479,7 +1529,9 @@ async def run_extraction(
         new_facts.extend(structured_facts)
 
     all_facts = merge_facts(existing_facts, new_facts)
-    print(f"Merged to {len(all_facts)} facts ({len(existing_facts)} existing + {len(new_facts)} new)")
+    print(
+        f"Merged to {len(all_facts)} facts ({len(existing_facts)} existing + {len(new_facts)} new)"
+    )
 
     # Synthesize
     print("\nSynthesizing profile...")
@@ -1525,9 +1577,7 @@ async def run_ingest(file_path: str) -> None:
     synthesis = await synthesize_profile(all_facts)
 
     source_id = f"ingest:{path.name}"
-    all_processed = sorted(
-        set(existing.sources_processed if existing else []) | {source_id}
-    )
+    all_processed = sorted(set(existing.sources_processed if existing else []) | {source_id})
 
     profile = build_profile(all_facts, synthesis, all_processed, existing)
     save_profile(profile)
@@ -1545,7 +1595,7 @@ def run_show() -> None:
         print("  uv run python -m agents.profiler")
         return
 
-    md_path = PROFILES_DIR / "ryan.md"
+    md_path = PROFILES_DIR / "operator-profile.md"
     if md_path.exists():
         print(md_path.read_text())
     else:
@@ -1562,8 +1612,6 @@ def run_generate_prompts() -> None:
     print(prompts)
 
 
-
-
 async def run_digest() -> None:
     """Generate profile digest only."""
     profile = load_existing_profile()
@@ -1571,8 +1619,10 @@ async def run_digest() -> None:
         print("No profile found. Run extraction first.")
         return
     digest = await generate_digest(profile)
-    print(f"Generated digest: {digest['total_facts']} facts across {len(digest['dimensions'])} dimensions")
-    print(f"Saved to: {PROFILES_DIR / 'ryan-digest.json'}")
+    print(
+        f"Generated digest: {digest['total_facts']} facts across {len(digest['dimensions'])} dimensions"
+    )
+    print(f"Saved to: {PROFILES_DIR / 'operator-digest.json'}")
 
 
 async def run_index_profile() -> None:
@@ -1604,6 +1654,7 @@ async def run_auto() -> None:
     # Pre-flight: abort early if critical services are unreachable
     try:
         from agents.health_monitor import quick_check
+
         ok, results = await quick_check(["litellm", "qdrant"])
         if not ok:
             failed = [r for r in results if r.status.value != "healthy"]
@@ -1623,7 +1674,8 @@ async def run_auto() -> None:
 
     log.info(
         "Changes detected: %d modified, %d new sources",
-        len(changed), len(new),
+        len(changed),
+        len(new),
     )
     for sid in sorted(changed):
         log.info("  modified: %s", sid)
@@ -1672,7 +1724,9 @@ async def run_auto() -> None:
     all_facts = merge_facts(existing_facts, new_facts)
     log.info(
         "Merged to %d facts (%d existing + %d new)",
-        len(all_facts), len(existing_facts), len(new_facts),
+        len(all_facts),
+        len(existing_facts),
+        len(new_facts),
     )
 
     # Synthesize
@@ -1680,16 +1734,16 @@ async def run_auto() -> None:
 
     # Track sources
     new_source_ids = {c.source_id for c in chunks}
-    all_processed = sorted(
-        set(existing.sources_processed if existing else []) | new_source_ids
-    )
+    all_processed = sorted(set(existing.sources_processed if existing else []) | new_source_ids)
 
     # Build, save, persist state
     profile = build_profile(all_facts, synthesis, all_processed, existing)
     save_profile(profile)
     log.info(
         "Profile v%d: %d facts across %d dimensions",
-        profile.version, len(all_facts), len(profile.dimensions),
+        profile.version,
+        len(all_facts),
+        len(profile.dimensions),
     )
 
     # Curate after extraction
@@ -1723,6 +1777,7 @@ async def run_auto() -> None:
 
     try:
         from shared.profile_store import ProfileStore
+
         store = ProfileStore()
         store.ensure_collection()
         count = store.index_profile(final)
@@ -1738,28 +1793,49 @@ async def main() -> None:
         description="User profile extraction agent",
         prog="python -m agents.profiler",
     )
-    parser.add_argument("--source", choices=[
-                            "config", "transcript", "shell-history", "git", "memory",
-                            "llm-export", "takeout", "proton", "management",
-                            "drift", "conversation", "decisions", "langfuse",
-                        ],
-                        help="Only process this source type")
-    parser.add_argument("--generate-prompts", action="store_true",
-                        help="Output extraction prompts for external platforms")
-    parser.add_argument("--ingest", metavar="FILE",
-                        help="Import external platform data from file")
-    parser.add_argument("--show", action="store_true",
-                        help="Display current profile")
-    parser.add_argument("--full", action="store_true",
-                        help="Force complete re-extraction (ignore cached sources)")
-    parser.add_argument("--auto", action="store_true",
-                        help="Unattended mode: detect changes, update if needed")
-    parser.add_argument("--curate", action="store_true",
-                        help="Run quality curation on existing profile")
-    parser.add_argument("--digest", action="store_true",
-                        help="Generate profile digest (per-dimension summaries)")
-    parser.add_argument("--index-profile", action="store_true",
-                        help="Index profile facts into Qdrant profile-facts collection")
+    parser.add_argument(
+        "--source",
+        choices=[
+            "config",
+            "transcript",
+            "shell-history",
+            "git",
+            "memory",
+            "llm-export",
+            "takeout",
+            "proton",
+            "management",
+            "drift",
+            "conversation",
+            "decisions",
+            "langfuse",
+        ],
+        help="Only process this source type",
+    )
+    parser.add_argument(
+        "--generate-prompts",
+        action="store_true",
+        help="Output extraction prompts for external platforms",
+    )
+    parser.add_argument("--ingest", metavar="FILE", help="Import external platform data from file")
+    parser.add_argument("--show", action="store_true", help="Display current profile")
+    parser.add_argument(
+        "--full", action="store_true", help="Force complete re-extraction (ignore cached sources)"
+    )
+    parser.add_argument(
+        "--auto", action="store_true", help="Unattended mode: detect changes, update if needed"
+    )
+    parser.add_argument(
+        "--curate", action="store_true", help="Run quality curation on existing profile"
+    )
+    parser.add_argument(
+        "--digest", action="store_true", help="Generate profile digest (per-dimension summaries)"
+    )
+    parser.add_argument(
+        "--index-profile",
+        action="store_true",
+        help="Index profile facts into Qdrant profile-facts collection",
+    )
 
     args = parser.parse_args()
 

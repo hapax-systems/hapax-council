@@ -1,0 +1,18 @@
+{
+    "include": ["agents", "shared", "cockpit"],
+    "exclude": ["tests", "**/__pycache__"],
+    "pythonVersion": "3.12",
+    "typeCheckingMode": "basic",
+    "reportMissingImports": false,
+    "reportMissingTypeStubs": false,
+    "reportOptionalMemberAccess": false,
+    "reportOptionalCall": false,
+    "reportOptionalOperand": false,
+    "reportUndefinedVariable": false,
+    "reportGeneralTypeIssues": false,
+    "reportAttributeAccessIssue": false,
+    "reportCallIssue": false,
+    "reportArgumentType": false,
+    "reportReturnType": false,
+    "reportAssignmentType": false
+}

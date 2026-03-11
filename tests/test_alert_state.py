@@ -1,7 +1,6 @@
 """Tests for shared.alert_state."""
-import json
 
-from shared.alert_state import AlertPhase, AlertStateTracker, CheckAlertState
+from shared.alert_state import AlertPhase, AlertStateTracker
 
 
 class TestAlertStateTracker:

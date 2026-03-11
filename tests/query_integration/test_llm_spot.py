@@ -7,6 +7,7 @@ Requires:
 - LiteLLM running at localhost:4000
 - Test data in test-data/ (run scripts/extract-test-data.py first)
 """
+
 from __future__ import annotations
 
 import shutil
@@ -16,10 +17,10 @@ import pytest
 
 from cockpit.query_dispatch import run_query
 from tests.query_integration._helpers import (
-    POPULATED_PROFILES,
-    POPULATED_DEV_STORY_DB,
-    EMPTY_PROFILES,
     EMPTY_DEV_STORY_DB,
+    EMPTY_PROFILES,
+    POPULATED_DEV_STORY_DB,
+    POPULATED_PROFILES,
     skip_if_missing,
 )
 
@@ -110,7 +111,14 @@ class TestEmptyStateLLM:
         md = result.markdown.lower()
         assert any(
             phrase in md
-            for phrase in ["no data", "not populated", "no sessions", "no commits", "empty", "unavailable"]
+            for phrase in [
+                "no data",
+                "not populated",
+                "no sessions",
+                "no commits",
+                "empty",
+                "unavailable",
+            ]
         ), f"Expected empty-state message, got: {result.markdown[:200]}"
 
     async def test_system_ops_empty_surfaces_limitation(self):

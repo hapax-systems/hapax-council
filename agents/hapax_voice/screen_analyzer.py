@@ -1,4 +1,5 @@
 """Screen analysis via Gemini Flash vision model."""
+
 from __future__ import annotations
 
 import json

@@ -1,13 +1,14 @@
 """Tests for scout decision-awareness (cooldown suppression)."""
+
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from agents.scout import load_decisions, DECISION_COOLDOWN_DAYS
+from agents.scout import DECISION_COOLDOWN_DAYS, load_decisions
 
 
 @pytest.fixture
@@ -16,14 +17,19 @@ def decisions_file(tmp_path):
 
 
 def _write_decision(path: Path, component: str, decision: str, days_ago: int) -> None:
-    ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+    ts = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
     with open(path, "a") as f:
-        f.write(json.dumps({
-            "component": component,
-            "decision": decision,
-            "timestamp": ts,
-            "notes": "",
-        }) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "component": component,
+                    "decision": decision,
+                    "timestamp": ts,
+                    "notes": "",
+                }
+            )
+            + "\n"
+        )
 
 
 def test_dismissed_within_cooldown_skipped(decisions_file):
@@ -32,7 +38,7 @@ def test_dismissed_within_cooldown_skipped(decisions_file):
     assert "vector-database" in decisions
     assert decisions["vector-database"]["decision"] == "dismissed"
     ts = datetime.fromisoformat(decisions["vector-database"]["timestamp"])
-    age_days = (datetime.now(timezone.utc) - ts).days
+    age_days = (datetime.now(UTC) - ts).days
     assert age_days < DECISION_COOLDOWN_DAYS
 
 
@@ -41,7 +47,7 @@ def test_dismissed_past_cooldown_evaluated(decisions_file):
     decisions = load_decisions(decisions_file)
     assert "vector-database" in decisions
     ts = datetime.fromisoformat(decisions["vector-database"]["timestamp"])
-    age_days = (datetime.now(timezone.utc) - ts).days
+    age_days = (datetime.now(UTC) - ts).days
     assert age_days >= DECISION_COOLDOWN_DAYS
 
 
@@ -51,7 +57,7 @@ def test_deferred_within_cooldown_skipped(decisions_file):
     assert "embedding-model" in decisions
     assert decisions["embedding-model"]["decision"] == "deferred"
     ts = datetime.fromisoformat(decisions["embedding-model"]["timestamp"])
-    age_days = (datetime.now(timezone.utc) - ts).days
+    age_days = (datetime.now(UTC) - ts).days
     assert age_days < DECISION_COOLDOWN_DAYS
 
 
@@ -67,7 +73,7 @@ def test_latest_decision_wins(decisions_file):
     _write_decision(decisions_file, "vector-database", "dismissed", days_ago=10)
     decisions = load_decisions(decisions_file)
     ts = datetime.fromisoformat(decisions["vector-database"]["timestamp"])
-    age_days = (datetime.now(timezone.utc) - ts).days
+    age_days = (datetime.now(UTC) - ts).days
     assert age_days < 15
 
 

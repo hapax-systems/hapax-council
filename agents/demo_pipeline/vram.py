@@ -1,4 +1,5 @@
 """VRAM management for GPU-intensive pipeline stages."""
+
 from __future__ import annotations
 
 import logging
@@ -74,7 +75,7 @@ def ensure_vram_available(required_mb: int = TTS_VRAM_MB, timeout: int = 30) -> 
     free = get_vram_free_mb()
     if free < required_mb:
         log.warning(
-            "VRAM still low after unload: %d MB free (need %d MB). "
-            "TTS may fail or be slow.",
-            free, required_mb,
+            "VRAM still low after unload: %d MB free (need %d MB). TTS may fail or be slow.",
+            free,
+            required_mb,
         )

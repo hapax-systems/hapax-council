@@ -3,6 +3,7 @@
 Separate from health_monitor.py to keep the monitor zero-LLM.
 Uses the 'fast' model for quick analysis.
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
@@ -10,11 +11,12 @@ from pydantic_ai import Agent
 
 from shared.config import get_model
 
-
 # ── Root Cause Analysis ─────────────────────────────────────────────────────
+
 
 class RootCauseAnalysis(BaseModel):
     """Structured root cause analysis for health failures."""
+
     summary: str = Field(description="One-sentence summary of the likely root cause")
     probable_cause: str = Field(description="Detailed explanation of the most likely cause")
     related_failures: list[str] = Field(
@@ -57,8 +59,10 @@ async def analyze_failures(
     """
     prompt_parts = ["## Failed Checks\n"]
     for c in failed_checks:
-        prompt_parts.append(f"- **{c.get('name', '?')}**: {c.get('message', '')} "
-                           f"(detail: {c.get('detail', 'none')})")
+        prompt_parts.append(
+            f"- **{c.get('name', '?')}**: {c.get('message', '')} "
+            f"(detail: {c.get('detail', 'none')})"
+        )
 
     if recent_history:
         prompt_parts.append("\n## Recent Health History (last 5 runs)\n")
@@ -81,8 +85,10 @@ async def analyze_failures(
 
 # ── Remediation Plan (Batch 6 extension point) ─────────────────────────────
 
+
 class RemediationStep(BaseModel):
     """A single step in a remediation plan."""
+
     order: int
     description: str
     command: str = ""  # shell command if applicable
@@ -93,6 +99,7 @@ class RemediationStep(BaseModel):
 
 class RemediationPlan(BaseModel):
     """Multi-step remediation plan with rollback."""
+
     summary: str
     steps: list[RemediationStep] = Field(default_factory=list)
     estimated_duration: str = ""  # e.g. "2-5 minutes"
@@ -120,7 +127,7 @@ async def generate_remediation_plan(
         f"## Root Cause\n{analysis.probable_cause}\n\n"
         f"## Failed Checks\n"
         + "\n".join(f"- {c.get('name', '?')}: {c.get('message', '')}" for c in failed_checks)
-        + f"\n\n## Suggested Actions\n"
+        + "\n\n## Suggested Actions\n"
         + "\n".join(f"- {a}" for a in analysis.suggested_actions)
     )
     result = await _remediation_agent.run(prompt)

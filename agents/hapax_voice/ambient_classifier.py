@@ -8,11 +8,11 @@ happening nearby.
 The model (~300MB) is lazy-loaded on first use and runs on CPU to leave
 the GPU free for Ollama/STT workloads.
 """
+
 from __future__ import annotations
 
 import logging
 import subprocess
-import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -119,13 +119,12 @@ def _load_model() -> bool:
     _load_attempted = True
 
     try:
-        from panns_inference import AudioTagging, labels as panns_labels  # type: ignore[import-untyped]
+        from panns_inference import AudioTagging  # type: ignore[import-untyped]
+        from panns_inference import labels as panns_labels
 
         _model = AudioTagging(checkpoint_path=None, device="cpu")
         _labels = panns_labels
-        log.info(
-            "PANNs model loaded on CPU (%d AudioSet labels)", len(_labels)
-        )
+        log.info("PANNs model loaded on CPU (%d AudioSet labels)", len(_labels))
         return True
     except ImportError:
         log.warning(
@@ -165,10 +164,14 @@ def _capture_audio_pipewire(duration_s: float = CAPTURE_DURATION_S) -> np.ndarra
         result = subprocess.run(
             [
                 "pw-record",
-                "--format", "s16",
-                "--rate", str(PANNS_SAMPLE_RATE),
-                "--channels", "1",
-                "--target", "0",  # default source
+                "--format",
+                "s16",
+                "--rate",
+                str(PANNS_SAMPLE_RATE),
+                "--channels",
+                "1",
+                "--target",
+                "0",  # default source
                 "-",
             ],
             capture_output=True,
@@ -192,7 +195,9 @@ def _capture_audio_pipewire(duration_s: float = CAPTURE_DURATION_S) -> np.ndarra
     return None
 
 
-def classify(audio: np.ndarray | None = None, block_threshold: float = DEFAULT_BLOCK_THRESHOLD) -> AmbientResult:
+def classify(
+    audio: np.ndarray | None = None, block_threshold: float = DEFAULT_BLOCK_THRESHOLD
+) -> AmbientResult:
     """Classify ambient audio and return whether the environment is interruptible.
 
     Args:

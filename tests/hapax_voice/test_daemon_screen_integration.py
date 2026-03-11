@@ -42,8 +42,12 @@ def test_screen_context_block_with_analysis():
 
 def test_screen_context_block_no_issues():
     analysis = ScreenAnalysis(
-        app="Chrome", context="Browsing", summary="Web page.",
-        issues=[], suggestions=[], keywords=[],
+        app="Chrome",
+        context="Browsing",
+        summary="Web page.",
+        issues=[],
+        suggestions=[],
+        keywords=[],
     )
     result = screen_context_block(analysis)
     assert "Chrome" in result
@@ -52,6 +56,7 @@ def test_screen_context_block_no_issues():
 
 def test_voice_config_has_webcam_fields():
     from agents.hapax_voice.config import VoiceConfig
+
     cfg = VoiceConfig()
     assert cfg.webcam_enabled is True
     assert "BRIO" in cfg.webcam_brio_device
@@ -66,14 +71,19 @@ def test_voice_config_has_webcam_fields():
 
 def test_workspace_context_block_with_gear():
     from agents.hapax_voice.persona import screen_context_block
-    from agents.hapax_voice.screen_models import WorkspaceAnalysis, GearObservation
+    from agents.hapax_voice.screen_models import GearObservation, WorkspaceAnalysis
+
     analysis = WorkspaceAnalysis(
-        app="foot", context="running build", summary="Build in progress.",
-        operator_present=True, operator_activity="typing",
+        app="foot",
+        context="running build",
+        summary="Build in progress.",
+        operator_present=True,
+        operator_activity="typing",
         operator_attention="screen",
         gear_state=[
-            GearObservation(device="MPC Live III", powered=True,
-                          display_content="Song mode", notes=""),
+            GearObservation(
+                device="MPC Live III", powered=True, display_content="Song mode", notes=""
+            ),
         ],
     )
     result = screen_context_block(analysis)
@@ -85,28 +95,34 @@ def test_workspace_context_block_with_gear():
 def test_daemon_creates_workspace_monitor():
     """VoiceDaemon should use WorkspaceMonitor with camera configs."""
     from agents.hapax_voice.config import VoiceConfig
+
     cfg = VoiceConfig(screen_monitor_enabled=True, webcam_enabled=True)
 
     with patch("agents.hapax_voice.__main__.WorkspaceMonitor") as mock_wm:
         from agents.hapax_voice.__main__ import VoiceDaemon
-        daemon = VoiceDaemon(cfg=cfg)
+
+        VoiceDaemon(cfg=cfg)
         # Should have created a workspace monitor with camera configs
         assert mock_wm.called
 
 
 def test_daemon_creates_event_log():
     """VoiceDaemon should create EventLog and VoiceTracer."""
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch
+
     from agents.hapax_voice.config import VoiceConfig
 
     cfg = VoiceConfig(
         screen_monitor_enabled=False,
         webcam_enabled=False,
     )
-    with patch("agents.hapax_voice.__main__.HotkeyServer"), \
-         patch("agents.hapax_voice.__main__.WakeWordDetector"), \
-         patch("agents.hapax_voice.__main__.TTSManager"):
+    with (
+        patch("agents.hapax_voice.__main__.HotkeyServer"),
+        patch("agents.hapax_voice.__main__.WakeWordDetector"),
+        patch("agents.hapax_voice.__main__.TTSManager"),
+    ):
         from agents.hapax_voice.__main__ import VoiceDaemon
+
         daemon = VoiceDaemon(cfg=cfg)
         assert hasattr(daemon, "event_log")
         assert hasattr(daemon, "tracer")
@@ -116,16 +132,20 @@ def test_daemon_creates_event_log():
 
 def test_daemon_wires_event_log_to_subsystems():
     from unittest.mock import patch
+
     from agents.hapax_voice.config import VoiceConfig
 
     cfg = VoiceConfig(
         screen_monitor_enabled=False,
         webcam_enabled=False,
     )
-    with patch("agents.hapax_voice.__main__.HotkeyServer"), \
-         patch("agents.hapax_voice.__main__.WakeWordDetector"), \
-         patch("agents.hapax_voice.__main__.TTSManager"):
+    with (
+        patch("agents.hapax_voice.__main__.HotkeyServer"),
+        patch("agents.hapax_voice.__main__.WakeWordDetector"),
+        patch("agents.hapax_voice.__main__.TTSManager"),
+    ):
         from agents.hapax_voice.__main__ import VoiceDaemon
+
         daemon = VoiceDaemon(cfg=cfg)
         assert daemon.presence._event_log is daemon.event_log
         assert daemon.gate._event_log is daemon.event_log

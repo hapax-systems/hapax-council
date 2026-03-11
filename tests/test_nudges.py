@@ -2,37 +2,36 @@
 
 All deterministic, no LLM calls.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
-import pytest
-
+from cockpit.data.briefing import ActionItem, BriefingData
+from cockpit.data.drift import DriftItem, DriftSummary
+from cockpit.data.health import HealthHistory, HealthHistoryEntry
 from cockpit.data.nudges import (
+    STALE_BRIEFING_H,
+    STALE_DRIFT_H,
+    STALE_SCOUT_H,
     Nudge,
     _age_hours,
     _collect_action_item_nudges,
+    _collect_briefing_nudges,
+    _collect_drift_nudges,
     _collect_emergence_nudges,
     _collect_goal_nudges,
     _collect_health_nudges,
-    _collect_briefing_nudges,
-    _collect_readiness_nudges,
     _collect_profile_nudges,
+    _collect_readiness_nudges,
     _collect_scout_nudges,
-    _collect_drift_nudges,
     collect_nudges,
-    STALE_BRIEFING_H,
-    STALE_SCOUT_H,
-    STALE_DRIFT_H,
 )
-from cockpit.data.health import HealthHistory, HealthHistoryEntry
-from cockpit.data.briefing import BriefingData, ActionItem
 from cockpit.data.scout import ScoutData, ScoutRecommendation
-from cockpit.data.drift import DriftItem, DriftSummary
-
 
 # ── _age_hours tests ─────────────────────────────────────────────────────────
+
 
 def test_age_hours_empty_returns_none():
     assert _age_hours("") is None
@@ -44,14 +43,14 @@ def test_age_hours_none_input_returns_none():
 
 
 def test_age_hours_recent_timestamp():
-    recent = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    recent = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     age = _age_hours(recent)
     assert age is not None
     assert 1.9 < age < 2.5
 
 
 def test_age_hours_z_suffix():
-    ts = (datetime.now(timezone.utc) - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = (datetime.now(UTC) - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
     age = _age_hours(ts)
     assert age is not None
     assert 4.5 < age < 5.5
@@ -62,7 +61,7 @@ def test_age_hours_invalid_returns_none():
 
 
 def test_age_hours_truncated_timestamp():
-    ts = (datetime.now(timezone.utc) - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%S")
+    ts = (datetime.now(UTC) - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%S")
     age = _age_hours(ts)
     assert age is not None
     assert 9.5 < age < 10.5
@@ -70,12 +69,19 @@ def test_age_hours_truncated_timestamp():
 
 # ── Health nudges ────────────────────────────────────────────────────────────
 
+
 def _health_history(status: str, failed: int = 0, healthy: int = 44) -> HealthHistory:
     return HealthHistory(
-        entries=[HealthHistoryEntry(
-            timestamp="2026-03-01T12:00:00Z",
-            status=status, healthy=healthy, degraded=0, failed=failed, duration_ms=100,
-        )],
+        entries=[
+            HealthHistoryEntry(
+                timestamp="2026-03-01T12:00:00Z",
+                status=status,
+                healthy=healthy,
+                degraded=0,
+                failed=failed,
+                duration_ms=100,
+            )
+        ],
         uptime_pct=100.0 if status == "healthy" else 50.0,
         total_runs=1,
     )
@@ -137,12 +143,13 @@ def test_health_single_failure_singular(mock_health):
 
 # ── Briefing nudges ──────────────────────────────────────────────────────────
 
+
 def _fresh_ts() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    return (datetime.now(UTC) - timedelta(hours=2)).isoformat()
 
 
 def _stale_ts() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=STALE_BRIEFING_H + 4)).isoformat()
+    return (datetime.now(UTC) - timedelta(hours=STALE_BRIEFING_H + 4)).isoformat()
 
 
 @patch("cockpit.data.nudges.collect_briefing")
@@ -216,6 +223,7 @@ def test_briefing_fresh_empty_nothing(mock_briefing):
 
 # ── Action item nudges ──────────────────────────────────────────────────────
 
+
 def test_action_items_converted_to_nudges():
     briefing = BriefingData(
         headline="Test",
@@ -288,15 +296,27 @@ def test_action_items_preserve_reason_as_detail():
 
 # ── Goal nudges ─────────────────────────────────────────────────────────────
 
+
 @patch("cockpit.data.goals.collect_goals")
 def test_goal_stale_primary_score_60(mock_goals):
     from cockpit.data.goals import GoalSnapshot, GoalStatus
+
     mock_goals.return_value = GoalSnapshot(
-        goals=[GoalStatus(
-            id="test", name="Test Goal", status="active", category="primary",
-            last_activity_h=200.0, stale=True, progress_summary="", description="",
-        )],
-        active_count=1, stale_count=1, primary_stale=["Test Goal"],
+        goals=[
+            GoalStatus(
+                id="test",
+                name="Test Goal",
+                status="active",
+                category="primary",
+                last_activity_h=200.0,
+                stale=True,
+                progress_summary="",
+                description="",
+            )
+        ],
+        active_count=1,
+        stale_count=1,
+        primary_stale=["Test Goal"],
     )
     nudges: list[Nudge] = []
     _collect_goal_nudges(nudges)
@@ -309,12 +329,23 @@ def test_goal_stale_primary_score_60(mock_goals):
 @patch("cockpit.data.goals.collect_goals")
 def test_goal_stale_secondary_score_35(mock_goals):
     from cockpit.data.goals import GoalSnapshot, GoalStatus
+
     mock_goals.return_value = GoalSnapshot(
-        goals=[GoalStatus(
-            id="s1", name="Side Goal", status="active", category="secondary",
-            last_activity_h=300.0, stale=True, progress_summary="", description="",
-        )],
-        active_count=1, stale_count=1, primary_stale=[],
+        goals=[
+            GoalStatus(
+                id="s1",
+                name="Side Goal",
+                status="active",
+                category="secondary",
+                last_activity_h=300.0,
+                stale=True,
+                progress_summary="",
+                description="",
+            )
+        ],
+        active_count=1,
+        stale_count=1,
+        primary_stale=[],
     )
     nudges: list[Nudge] = []
     _collect_goal_nudges(nudges)
@@ -326,12 +357,23 @@ def test_goal_stale_secondary_score_35(mock_goals):
 @patch("cockpit.data.goals.collect_goals")
 def test_goal_not_stale_no_nudge(mock_goals):
     from cockpit.data.goals import GoalSnapshot, GoalStatus
+
     mock_goals.return_value = GoalSnapshot(
-        goals=[GoalStatus(
-            id="fresh", name="Fresh Goal", status="active", category="primary",
-            last_activity_h=24.0, stale=False, progress_summary="", description="",
-        )],
-        active_count=1, stale_count=0, primary_stale=[],
+        goals=[
+            GoalStatus(
+                id="fresh",
+                name="Fresh Goal",
+                status="active",
+                category="primary",
+                last_activity_h=24.0,
+                stale=False,
+                progress_summary="",
+                description="",
+            )
+        ],
+        active_count=1,
+        stale_count=0,
+        primary_stale=[],
     )
     nudges: list[Nudge] = []
     _collect_goal_nudges(nudges)
@@ -348,8 +390,12 @@ def test_goal_exception_produces_nothing(mock_goals):
 
 # ── Readiness nudges ────────────────────────────────────────────────────────
 
-def _mock_readiness(interview_conducted=False, priorities_known=False, neurocognitive_mapped=False, total_facts=100):
+
+def _mock_readiness(
+    interview_conducted=False, priorities_known=False, neurocognitive_mapped=False, total_facts=100
+):
     from cockpit.data.readiness import ReadinessSnapshot
+
     return ReadinessSnapshot(
         interview_conducted=interview_conducted,
         priorities_known=priorities_known,
@@ -373,7 +419,9 @@ def test_readiness_no_interview_score_65(mock_collect):
 
 @patch("cockpit.data.readiness.collect_readiness")
 def test_readiness_priorities_unvalidated_score_55(mock_collect):
-    snap = _mock_readiness(interview_conducted=True, priorities_known=False, neurocognitive_mapped=True)
+    snap = _mock_readiness(
+        interview_conducted=True, priorities_known=False, neurocognitive_mapped=True
+    )
     mock_collect.return_value = snap
     nudges: list[Nudge] = []
     _collect_readiness_nudges(nudges)
@@ -383,7 +431,9 @@ def test_readiness_priorities_unvalidated_score_55(mock_collect):
 
 @patch("cockpit.data.readiness.collect_readiness")
 def test_readiness_neurocognitive_empty_score_50(mock_collect):
-    snap = _mock_readiness(interview_conducted=True, priorities_known=True, neurocognitive_mapped=False)
+    snap = _mock_readiness(
+        interview_conducted=True, priorities_known=True, neurocognitive_mapped=False
+    )
     mock_collect.return_value = snap
     nudges: list[Nudge] = []
     _collect_readiness_nudges(nudges)
@@ -393,7 +443,9 @@ def test_readiness_neurocognitive_empty_score_50(mock_collect):
 
 @patch("cockpit.data.readiness.collect_readiness")
 def test_readiness_all_good_nothing(mock_collect):
-    snap = _mock_readiness(interview_conducted=True, priorities_known=True, neurocognitive_mapped=True)
+    snap = _mock_readiness(
+        interview_conducted=True, priorities_known=True, neurocognitive_mapped=True
+    )
     mock_collect.return_value = snap
     nudges: list[Nudge] = []
     _collect_readiness_nudges(nudges)
@@ -410,8 +462,10 @@ def test_readiness_exception_nothing(mock_collect):
 
 # ── Profile nudges ───────────────────────────────────────────────────────────
 
+
 def _mock_analysis(missing=None, sparse=None, dimension_stats=None):
     from cockpit.interview import ProfileAnalysis
+
     return ProfileAnalysis(
         missing_dimensions=missing or [],
         sparse_dimensions=sparse or [],
@@ -486,6 +540,7 @@ def test_profile_error_produces_nothing(mock_analyze):
 
 # ── Scout nudges ─────────────────────────────────────────────────────────────
 
+
 @patch("cockpit.data.nudges.collect_scout")
 def test_scout_adopt_score_30(mock_scout):
     mock_scout.return_value = ScoutData(
@@ -521,7 +576,7 @@ def test_scout_evaluate_only_score_20(mock_scout):
 
 @patch("cockpit.data.nudges.collect_scout")
 def test_scout_stale_score_25(mock_scout):
-    stale = (datetime.now(timezone.utc) - timedelta(hours=STALE_SCOUT_H + 10)).isoformat()
+    stale = (datetime.now(UTC) - timedelta(hours=STALE_SCOUT_H + 10)).isoformat()
     mock_scout.return_value = ScoutData(
         generated_at=stale,
         components_scanned=10,
@@ -543,6 +598,7 @@ def test_scout_none_produces_nothing(mock_scout):
 
 
 # ── Drift nudges ─────────────────────────────────────────────────────────────
+
 
 @patch("cockpit.data.nudges.collect_drift")
 def test_drift_items_high_priority(mock_drift):
@@ -580,7 +636,7 @@ def test_drift_with_high_severity_items_critical(mock_drift):
 
 @patch("cockpit.data.nudges.collect_drift")
 def test_drift_stale_score_25(mock_drift):
-    stale = (datetime.now(timezone.utc) - timedelta(hours=STALE_DRIFT_H + 10)).isoformat()
+    stale = (datetime.now(UTC) - timedelta(hours=STALE_DRIFT_H + 10)).isoformat()
     mock_drift.return_value = DriftSummary(
         drift_count=0,
         docs_analyzed=10,
@@ -616,6 +672,7 @@ def test_drift_none_produces_nothing(mock_drift):
 
 # ── Integration tests ────────────────────────────────────────────────────────
 
+
 @patch("cockpit.data.nudges._collect_knowledge_sufficiency_nudges")
 @patch("cockpit.data.nudges.collect_drift")
 @patch("cockpit.data.nudges.collect_scout")
@@ -624,11 +681,18 @@ def test_drift_none_produces_nothing(mock_drift):
 @patch("cockpit.data.nudges.collect_health_history")
 @patch("cockpit.data.readiness.collect_readiness")
 def test_collect_nudges_sorted_by_priority(
-    mock_readiness, mock_health, mock_briefing, mock_profile, mock_scout, mock_drift,
+    mock_readiness,
+    mock_health,
+    mock_briefing,
+    mock_profile,
+    mock_scout,
+    mock_drift,
     mock_knowledge_sufficiency,
 ):
     mock_readiness.return_value = _mock_readiness(
-        interview_conducted=True, priorities_known=True, neurocognitive_mapped=True,
+        interview_conducted=True,
+        priorities_known=True,
+        neurocognitive_mapped=True,
     )
     mock_health.return_value = _health_history("failed", failed=2, healthy=42)
     mock_briefing.return_value = BriefingData(
@@ -647,7 +711,9 @@ def test_collect_nudges_sorted_by_priority(
             ScoutRecommendation(component="x", current="y", tier="adopt", summary="s"),
         ],
     )
-    mock_drift.return_value = DriftSummary(drift_count=2, docs_analyzed=5, latest_timestamp=_fresh_ts())
+    mock_drift.return_value = DriftSummary(
+        drift_count=2, docs_analyzed=5, latest_timestamp=_fresh_ts()
+    )
 
     nudges = collect_nudges()
     # Budget cap may add a meta nudge beyond the max_nudges limit
@@ -666,11 +732,18 @@ def test_collect_nudges_sorted_by_priority(
 @patch("cockpit.data.nudges.collect_health_history")
 @patch("cockpit.data.readiness.collect_readiness")
 def test_collect_nudges_max_nudges_truncates(
-    mock_readiness, mock_health, mock_briefing, mock_profile, mock_scout, mock_drift,
+    mock_readiness,
+    mock_health,
+    mock_briefing,
+    mock_profile,
+    mock_scout,
+    mock_drift,
     mock_knowledge_sufficiency,
 ):
     mock_readiness.return_value = _mock_readiness(
-        interview_conducted=True, priorities_known=True, neurocognitive_mapped=True,
+        interview_conducted=True,
+        priorities_known=True,
+        neurocognitive_mapped=True,
     )
     mock_health.return_value = _health_history("failed", failed=2, healthy=42)
     mock_briefing.return_value = BriefingData(
@@ -689,7 +762,9 @@ def test_collect_nudges_max_nudges_truncates(
             ScoutRecommendation(component="x", current="y", tier="adopt", summary="s"),
         ],
     )
-    mock_drift.return_value = DriftSummary(drift_count=2, docs_analyzed=5, latest_timestamp=_fresh_ts())
+    mock_drift.return_value = DriftSummary(
+        drift_count=2, docs_analyzed=5, latest_timestamp=_fresh_ts()
+    )
 
     nudges = collect_nudges(max_nudges=2)
     assert len(nudges) == 3  # 2 visible + 1 meta overflow nudge
@@ -709,12 +784,22 @@ def test_collect_nudges_max_nudges_truncates(
 @patch("cockpit.data.nudges.collect_health_history")
 @patch("cockpit.data.readiness.collect_readiness")
 def test_all_healthy_returns_empty(
-    mock_readiness, mock_health, mock_briefing, mock_profile, mock_scout, mock_drift,
-    mock_goals, mock_sufficiency, mock_knowledge_sufficiency,
+    mock_readiness,
+    mock_health,
+    mock_briefing,
+    mock_profile,
+    mock_scout,
+    mock_drift,
+    mock_goals,
+    mock_sufficiency,
+    mock_knowledge_sufficiency,
 ):
     from cockpit.data.goals import GoalSnapshot
+
     mock_readiness.return_value = _mock_readiness(
-        interview_conducted=True, priorities_known=True, neurocognitive_mapped=True,
+        interview_conducted=True,
+        priorities_known=True,
+        neurocognitive_mapped=True,
     )
     mock_health.return_value = _health_history("healthy")
     mock_briefing.return_value = BriefingData(
@@ -732,7 +817,9 @@ def test_all_healthy_returns_empty(
         adopt_count=0,
         evaluate_count=0,
     )
-    mock_drift.return_value = DriftSummary(drift_count=0, docs_analyzed=10, latest_timestamp=_fresh_ts())
+    mock_drift.return_value = DriftSummary(
+        drift_count=0, docs_analyzed=10, latest_timestamp=_fresh_ts()
+    )
     mock_goals.return_value = GoalSnapshot()
 
     nudges = collect_nudges()
@@ -746,21 +833,31 @@ def test_all_healthy_returns_empty(
 @patch("cockpit.data.nudges.collect_health_history")
 @patch("cockpit.data.readiness.collect_readiness")
 def test_collect_nudges_with_briefing_param_injects_action_items(
-    mock_readiness, mock_health, mock_profile, mock_scout, mock_drift,
+    mock_readiness,
+    mock_health,
+    mock_profile,
+    mock_scout,
+    mock_drift,
     mock_knowledge_sufficiency,
 ):
     """When briefing is passed explicitly, action items become individual nudges."""
     mock_readiness.return_value = _mock_readiness(
-        interview_conducted=True, priorities_known=True, neurocognitive_mapped=True,
+        interview_conducted=True,
+        priorities_known=True,
+        neurocognitive_mapped=True,
     )
     mock_health.return_value = _health_history("healthy")
     mock_profile.return_value = _mock_analysis(
         dimension_stats={"workflow": {"count": 5, "avg_confidence": 0.9}},
     )
     mock_scout.return_value = ScoutData(
-        generated_at=_fresh_ts(), adopt_count=0, evaluate_count=0,
+        generated_at=_fresh_ts(),
+        adopt_count=0,
+        evaluate_count=0,
     )
-    mock_drift.return_value = DriftSummary(drift_count=0, docs_analyzed=10, latest_timestamp=_fresh_ts())
+    mock_drift.return_value = DriftSummary(
+        drift_count=0, docs_analyzed=10, latest_timestamp=_fresh_ts()
+    )
 
     briefing = BriefingData(
         headline="Test",
@@ -780,6 +877,7 @@ def test_collect_nudges_with_briefing_param_injects_action_items(
 
 
 # ── Nudge dataclass tests ────────────────────────────────────────────────────
+
 
 def test_nudge_default_command_hint():
     n = Nudge(
@@ -808,6 +906,7 @@ def test_nudge_with_command_hint():
 
 # ── Attention budget cap tests ──────────────────────────────────────────────
 
+
 class TestNudgeBudgetCap:
     def _make_nudges(self, count: int) -> list[Nudge]:
         return [
@@ -832,9 +931,9 @@ class TestNudgeBudgetCap:
     @patch("cockpit.data.nudges._collect_sufficiency_nudges")
     @patch("cockpit.data.nudges._collect_knowledge_sufficiency_nudges")
     def test_under_cap_no_meta(self, *mocks):
-        from cockpit.data.nudges import MAX_VISIBLE_NUDGES
         def inject(nudges):
             nudges.extend(self._make_nudges(3))
+
         mocks[-1].side_effect = inject
         result = collect_nudges(max_nudges=20)
         assert len(result) == 3
@@ -851,8 +950,10 @@ class TestNudgeBudgetCap:
     @patch("cockpit.data.nudges._collect_knowledge_sufficiency_nudges")
     def test_over_cap_adds_meta(self, *mocks):
         from cockpit.data.nudges import MAX_VISIBLE_NUDGES
+
         def inject(nudges):
             nudges.extend(self._make_nudges(15))
+
         mocks[-1].side_effect = inject
         result = collect_nudges(max_nudges=20)
         assert len(result) == MAX_VISIBLE_NUDGES + 1
@@ -863,6 +964,7 @@ class TestNudgeBudgetCap:
 
 
 # ── Emergence nudges ──────────────────────────────────────────────────────
+
 
 class TestEmergenceNudges:
     def test_emergence_candidates_produce_nudges(self) -> None:

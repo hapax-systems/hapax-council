@@ -1,12 +1,13 @@
 """Data models for the demo generator agent."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from pathlib import Path
-
-import yaml
 from typing import Literal
 
+import yaml
 from pydantic import BaseModel, Field
 
 PERSONAS_PATH = Path(__file__).resolve().parent.parent / "profiles" / "demo-personas.yaml"
@@ -21,9 +22,7 @@ class InteractionStep(BaseModel):
     action: Literal["click", "type", "wait", "scroll", "press"] = Field(
         description="Action to perform"
     )
-    target: str = Field(
-        default="", description="CSS selector or text selector for click targets"
-    )
+    target: str = Field(default="", description="CSS selector or text selector for click targets")
     value: str = Field(
         default="",
         description="Text to type, key to press, wait duration in ms, or scroll distance in px",
@@ -44,9 +43,7 @@ class InteractionSpec(BaseModel):
         default=None,
         description="Named recipe to use instead of custom steps (e.g. 'chat-health-query')",
     )
-    max_duration: float = Field(
-        default=30.0, ge=1.0, le=120.0, description="Safety cap in seconds"
-    )
+    max_duration: float = Field(default=30.0, ge=1.0, le=120.0, description="Safety cap in seconds")
 
 
 class IllustrationSpec(BaseModel):
@@ -89,9 +86,13 @@ class DemoScene(BaseModel):
     """A single scene in a demo — one screenshot with narration."""
 
     title: str = Field(description="Scene title (used in slide heading)")
-    narration: str = Field(description="Spoken narration text — MUST be 5-8 sentences, minimum 120 words")
+    narration: str = Field(
+        description="Spoken narration text — MUST be 5-8 sentences, minimum 120 words"
+    )
     duration_hint: float = Field(ge=1.0, description="Estimated duration in seconds")
-    key_points: list[str] = Field(default_factory=list, description="Bullet points to display on the slide")
+    key_points: list[str] = Field(
+        default_factory=list, description="Bullet points to display on the slide"
+    )
     screenshot: ScreenshotSpec | None = Field(
         default=None,
         description="How to capture the visual (required for screenshot visual_type, omit for diagram/chart)",
@@ -188,9 +189,7 @@ class SceneSkeleton(BaseModel):
         default="screenshot",
         description="Type of visual for this scene: screenshot, diagram, chart, screencast, or illustration",
     )
-    visual_brief: str = Field(
-        default="", description="What this visual shows and why"
-    )
+    visual_brief: str = Field(default="", description="What this visual shows and why")
     screenshot: ScreenshotSpec | None = None
     diagram_spec: str | None = None
     interaction: InteractionSpec | None = None
@@ -255,8 +254,7 @@ def load_personas(
     p = path or PERSONAS_PATH
     raw = yaml.safe_load(p.read_text())
     personas = {
-        name: AudiencePersona.model_validate(data)
-        for name, data in raw["archetypes"].items()
+        name: AudiencePersona.model_validate(data) for name, data in raw["archetypes"].items()
     }
     # Merge custom personas (override if same name)
     if extra_path and extra_path.exists():
@@ -270,7 +268,7 @@ def load_personas(
 class AudienceDossier:
     """A named audience member that overlays on an archetype."""
 
-    key: str  # "my wife"
+    key: str  # "my partner"
     archetype: str  # "family"
     name: str  # "Sarah"
     context: str  # free-text background

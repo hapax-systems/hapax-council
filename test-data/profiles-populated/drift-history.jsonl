@@ -1,4 +1,0 @@
-{"timestamp": "2026-03-01T01:33:48Z", "drift_count": 13, "docs_analyzed": 3, "summary": "The documentation describes a comprehensive three-tier LLM agent architecture with extensive infrastructure, but the liv"}
-{"timestamp": "2026-03-01T16:27:56Z", "drift_count": 5, "docs_analyzed": 3, "summary": "The documentation is largely accurate but contains several discrepancies: (1) The CLAUDE.md claims LiteLLM models includ"}
-{"timestamp": "2026-03-08T08:04:56Z", "drift_count": 5, "docs_analyzed": 7, "summary": "Drift analysis failed: The next request would exceed the request_limit of 50 (5 deterministic finding(s) from code scan)"}
-{"timestamp": "2026-03-09T17:05:02Z", "drift_count": 25, "docs_analyzed": 18, "summary": "1 cross-project boundary drift(s), 5 missing project memory section(s) found in codebase. Analysis of 12 documentation f"}

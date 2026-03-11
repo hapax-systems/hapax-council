@@ -61,9 +61,7 @@ class OllamaCapability(Capability):
         """Validate proposal: action must exist and required params present."""
         if proposal.action_name not in _ACTIONS:
             return False
-        if proposal.action_name == "stop_model" and not proposal.params.get("model_name"):
-            return False
-        return True
+        return not (proposal.action_name == "stop_model" and not proposal.params.get("model_name"))
 
     async def execute(self, proposal: FixProposal) -> ExecutionResult:
         """Execute a validated fix proposal."""

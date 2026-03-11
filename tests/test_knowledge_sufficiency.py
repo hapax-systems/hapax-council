@@ -53,6 +53,7 @@ class TestMultiDomainAudit:
     def test_management_report_matches_single_domain(self) -> None:
         """Multi-domain management report matches single-domain collect_knowledge_gaps."""
         from cockpit.data.knowledge_sufficiency import collect_knowledge_gaps
+
         single = collect_knowledge_gaps()
         multi = collect_all_domain_gaps()
         if "management" in multi:
@@ -62,7 +63,7 @@ class TestMultiDomainAudit:
     def test_returns_reports_for_domains_with_models(self) -> None:
         """Only domains with existing sufficiency YAML files get reports."""
         reports = collect_all_domain_gaps()
-        for domain_id, report in reports.items():
+        for _domain_id, report in reports.items():
             assert isinstance(report, SufficiencyReport)
             assert report.total_requirements >= 0
 
@@ -90,6 +91,7 @@ class TestDomainScopedNudges:
             satisfied=False,
         )
         from cockpit.data.knowledge_sufficiency import gaps_to_nudges
+
         nudges = gaps_to_nudges([gap], domain_id="music")
         assert len(nudges) == 1
         assert nudges[0].source_id == "knowledge:music:test-req"
@@ -106,5 +108,6 @@ class TestDomainScopedNudges:
             satisfied=False,
         )
         from cockpit.data.knowledge_sufficiency import gaps_to_nudges
+
         nudges = gaps_to_nudges([gap])
         assert nudges[0].source_id == "knowledge:test-req"

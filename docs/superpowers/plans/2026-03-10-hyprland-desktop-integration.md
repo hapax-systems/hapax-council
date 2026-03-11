@@ -171,7 +171,7 @@ class TestHyprlandDispatch:
             assert ipc.dispatch("workspace", "3") is False
 ```
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hyprland.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hyprland.py -v`
 Expected: FAIL — `shared.hyprland` does not exist
 
 - [ ] **Step 2: Implement `shared/hyprland.py`**
@@ -322,7 +322,7 @@ class HyprlandIPC:
 
 - [ ] **Step 3: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_hyprland.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_hyprland.py -v`
 Expected: All PASS
 
 - [ ] **Step 4: Commit**
@@ -478,7 +478,7 @@ class TestFallback:
             assert listener.available is False
 ```
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_hyprland_listener.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_hyprland_listener.py -v`
 Expected: FAIL — module does not exist
 
 - [ ] **Step 2: Implement `hyprland_listener.py`**
@@ -674,7 +674,7 @@ class HyprlandEventListener:
 
 - [ ] **Step 3: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_hyprland_listener.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_hyprland_listener.py -v`
 Expected: All PASS
 
 - [ ] **Step 4: Commit**
@@ -755,7 +755,7 @@ def test_perception_engine_tick_includes_desktop():
     assert state.window_count == 4
 ```
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_perception_desktop.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_perception_desktop.py -v`
 Expected: FAIL — fields don't exist
 
 - [ ] **Step 2: Add desktop fields to EnvironmentState**
@@ -808,12 +808,12 @@ Add these fields to the `EnvironmentState(...)` construction in `tick()`:
 
 - [ ] **Step 3: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_perception_desktop.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_perception_desktop.py -v`
 Expected: All PASS
 
 - [ ] **Step 4: Run existing perception-related tests for regressions**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/ -k "perception or governor or frame_gate" -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/ -k "perception or governor or frame_gate" -v`
 Expected: All PASS (new fields have defaults, existing code unchanged)
 
 - [ ] **Step 5: Commit**
@@ -855,7 +855,7 @@ def test_workspace_monitor_uses_hyprland_listener():
         assert mock_instance.on_focus_changed is not None
 ```
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_workspace_monitor.py::test_workspace_monitor_uses_hyprland_listener -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_workspace_monitor.py::test_workspace_monitor_uses_hyprland_listener -v`
 Expected: FAIL — HyprlandEventListener not imported
 
 - [ ] **Step 2: Update WorkspaceMonitor imports and constructor**
@@ -922,12 +922,12 @@ And update the guard:
 
 - [ ] **Step 3: Run workspace monitor tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_workspace_monitor.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_workspace_monitor.py -v`
 Expected: All PASS
 
 - [ ] **Step 4: Run full voice daemon test suite for regressions**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/ -v --timeout=60`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/ -v --timeout=60`
 Expected: All pass except known pre-existing failures (tool_registration, wake_word_augmentation)
 
 - [ ] **Step 5: Commit**
@@ -970,7 +970,7 @@ In `__main__.py`, add to `VoiceDaemon.__init__()` after the perception engine cr
 
 - [ ] **Step 2: Run full voice daemon tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/ -v --timeout=60`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/ -v --timeout=60`
 Expected: No new failures
 
 - [ ] **Step 3: Commit**
@@ -1021,7 +1021,7 @@ git rm tests/hapax_voice/test_screen_change_detector.py
 
 - [ ] **Step 6: Run full test suite**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/ -v --timeout=60`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/ -v --timeout=60`
 Expected: No new failures
 
 - [ ] **Step 7: Commit**
@@ -1165,7 +1165,7 @@ class TestGetDesktopState:
         assert len(result["workspaces"]) == 2
 ```
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_desktop_tools.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_desktop_tools.py -v`
 Expected: FAIL — module does not exist
 
 - [ ] **Step 2: Implement `desktop_tools.py`**
@@ -1335,7 +1335,7 @@ async def handle_get_desktop_state(params) -> None:
 
 - [ ] **Step 3: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_desktop_tools.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_desktop_tools.py -v`
 Expected: All PASS
 
 - [ ] **Step 4: Commit**
@@ -1391,7 +1391,7 @@ This ensures `pipeline.py` passes all 13 tool schemas to `OpenAILLMContext(tools
 
 - [ ] **Step 3: Run tool-related tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/ -k "tool" -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/ -k "tool" -v`
 Expected: All PASS
 
 - [ ] **Step 4: Commit**
@@ -1430,7 +1430,7 @@ class TestDeterministicContext:
         from shared.hyprland import WindowInfo
 
         mock_clients = [
-            WindowInfo("0x1", "foot", "~/projects/ai-agents", 1, 10, 0, 0, 800, 600, False, False),
+            WindowInfo("0x1", "foot", "~/projects/hapax-council", 1, 10, 0, 0, 800, 600, False, False),
             WindowInfo("0x2", "google-chrome", "cockpit-web", 3, 20, 0, 0, 1920, 1080, False, False),
         ]
 
@@ -1447,7 +1447,7 @@ class TestDeterministicContext:
         assert "ai-agents" in context
 ```
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_workspace_monitor_optimization.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_workspace_monitor_optimization.py -v`
 Expected: FAIL — method doesn't exist
 
 - [ ] **Step 2: Add `_build_deterministic_context()` method**
@@ -1494,7 +1494,7 @@ Then pass `combined_context` instead of `rag_context` to `extra_context=`.
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_workspace_monitor_optimization.py tests/hapax_voice/test_workspace_monitor.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_workspace_monitor_optimization.py tests/hapax_voice/test_workspace_monitor.py -v`
 Expected: All PASS
 
 - [ ] **Step 5: Commit**

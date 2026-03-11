@@ -3,11 +3,11 @@
 Tests hotkey server lifecycle, command validation, and real
 Unix domain socket communication.
 """
+
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -111,7 +111,7 @@ class TestHotkeyCommandDispatch:
 
         await server.start()
 
-        for i in range(3):
+        for _i in range(3):
             reader, writer = await asyncio.open_unix_connection(str(sock))
             writer.write(b"status\n")
             await writer.drain()

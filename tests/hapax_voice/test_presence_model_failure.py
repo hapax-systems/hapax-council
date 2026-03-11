@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from agents.hapax_voice.presence import PresenceDetector
 
@@ -14,8 +14,10 @@ class TestLoadModelFailure:
         """If silero_vad import fails and torch.hub.load raises, return None."""
         detector = PresenceDetector()
 
-        with patch.dict("sys.modules", {"silero_vad": None}), \
-             patch("agents.hapax_voice.presence.torch") as mock_torch:
+        with (
+            patch.dict("sys.modules", {"silero_vad": None}),
+            patch("agents.hapax_voice.presence.torch") as mock_torch,
+        ):
             # Make import fail via the patched sys.modules (ImportError)
             # and torch.hub.load raise a RuntimeError
             mock_torch.hub.load.side_effect = RuntimeError("network unavailable")
@@ -38,8 +40,10 @@ class TestLoadModelFailure:
         detector = PresenceDetector()
         dummy_audio = b"\x00" * 960
 
-        with patch.object(detector, "load_model", return_value=None), \
-             patch.object(detector, "record_vad_event") as mock_record:
+        with (
+            patch.object(detector, "load_model", return_value=None),
+            patch.object(detector, "record_vad_event") as mock_record,
+        ):
             detector.process_audio_frame(dummy_audio)
 
         mock_record.assert_not_called()

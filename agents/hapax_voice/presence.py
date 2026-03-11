@@ -1,4 +1,5 @@
 """Presence detection via sliding-window VAD event scoring."""
+
 from __future__ import annotations
 
 import logging
@@ -24,9 +25,7 @@ class PresenceDetector:
     and scores presence based on event count within the window.
     """
 
-    def __init__(
-        self, window_minutes: float = 5, vad_threshold: float = 0.4
-    ) -> None:
+    def __init__(self, window_minutes: float = 5, vad_threshold: float = 0.4) -> None:
         self.window_minutes = window_minutes
         self.vad_threshold = vad_threshold
         self._events: deque[float] = deque()
@@ -141,7 +140,12 @@ class PresenceDetector:
         if new_score != self._last_score and self._event_log is not None:
             self._event_log.emit(
                 "presence_transition",
-                **{"from": self._last_score, "to": new_score, "vad_count": count, "face_detected": face},
+                **{
+                    "from": self._last_score,
+                    "to": new_score,
+                    "vad_count": count,
+                    "face_detected": face,
+                },
             )
         self._last_score = new_score
         return new_score

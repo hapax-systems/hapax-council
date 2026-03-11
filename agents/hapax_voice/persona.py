@@ -1,4 +1,5 @@
 """Hapax persona — system prompts, greetings, notification formatting."""
+
 from __future__ import annotations
 
 import logging
@@ -43,7 +44,7 @@ _GUEST_PROMPT = (
     "You're chatting with someone who isn't your primary operator. "
     "Be friendly and helpful for general conversation, but you cannot access "
     "system information, briefings, or personal data. "
-    "If asked about those, explain that you'll need Ryan for that."
+    "If asked about those, explain that you'll need the operator for that."
 )
 
 _NOTIFICATION_TEMPLATE = "Hey {name} — {summary}"
@@ -70,10 +71,7 @@ def format_notification(title: str, message: str) -> str:
 def session_end_message(queued_count: int = 0) -> str:
     """Return an appropriate session-ending message."""
     if queued_count > 0:
-        return (
-            f"Before you go — I have {queued_count} notifications queued. "
-            "Want to hear them?"
-        )
+        return f"Before you go — I have {queued_count} notifications queued. Want to hear them?"
     return "Catch you later."
 
 
@@ -90,11 +88,15 @@ def screen_context_block(analysis: ScreenAnalysis | None) -> str:
     if analysis.issues:
         lines.append("Issues:")
         for issue in analysis.issues:
-            lines.append(f"  - [{issue.severity}] {issue.description} (confidence: {issue.confidence:.2f})")
+            lines.append(
+                f"  - [{issue.severity}] {issue.description} (confidence: {issue.confidence:.2f})"
+            )
 
     # WorkspaceAnalysis extensions (duck-type check)
     if hasattr(analysis, "operator_present") and analysis.operator_present is not None:
-        lines.append(f"Operator: {analysis.operator_activity}, attention on {analysis.operator_attention}")
+        lines.append(
+            f"Operator: {analysis.operator_activity}, attention on {analysis.operator_attention}"
+        )
     if hasattr(analysis, "gear_state") and analysis.gear_state:
         lines.append("Hardware:")
         for g in analysis.gear_state:

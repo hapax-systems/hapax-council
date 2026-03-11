@@ -137,7 +137,7 @@ archetypes:
 # ── Repo declarations ────────────────────────────────────────────────
 repos:
   ai-agents:
-    path: ~/projects/ai-agents
+    path: ~/projects/hapax-council
     required_docs:
       - path: CLAUDE.md
         archetype: project-context

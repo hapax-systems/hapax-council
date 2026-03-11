@@ -1,8 +1,8 @@
 """Tests for cockpit demo API endpoints."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -22,7 +22,13 @@ class TestDemoEndpoints:
         """Create fake demo dirs."""
         d = tmp_path / "20260304-120000-test"
         d.mkdir()
-        meta = {"title": "Test Demo", "audience": "family", "format": "slides", "scenes": 2, "duration": 15.0}
+        meta = {
+            "title": "Test Demo",
+            "audience": "family",
+            "format": "slides",
+            "scenes": 2,
+            "duration": 15.0,
+        }
         (d / "metadata.json").write_text(json.dumps(meta))
         (d / "script.json").write_text("{}")
         (d / "slides.md").write_text("# slides")

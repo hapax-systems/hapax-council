@@ -14,9 +14,17 @@ def test_environment_state_has_desktop_fields():
 
 def test_environment_state_with_active_window():
     win = WindowInfo(
-        address="0x1", app_class="foot", title="~/projects",
-        workspace_id=1, pid=42, x=0, y=0, width=800, height=600,
-        floating=False, fullscreen=False,
+        address="0x1",
+        app_class="foot",
+        title="~/projects",
+        workspace_id=1,
+        pid=42,
+        x=0,
+        y=0,
+        width=800,
+        height=600,
+        floating=False,
+        fullscreen=False,
     )
     state = EnvironmentState(
         timestamp=time.monotonic(),
@@ -43,9 +51,17 @@ def test_perception_engine_tick_includes_desktop():
 
     # Simulate hyprland data
     win = WindowInfo(
-        address="0x1", app_class="foot", title="term",
-        workspace_id=1, pid=1, x=0, y=0, width=800, height=600,
-        floating=False, fullscreen=False,
+        address="0x1",
+        app_class="foot",
+        title="term",
+        workspace_id=1,
+        pid=1,
+        x=0,
+        y=0,
+        width=800,
+        height=600,
+        floating=False,
+        fullscreen=False,
     )
     engine.update_desktop_state(active_window=win, window_count=4, active_workspace_id=1)
 

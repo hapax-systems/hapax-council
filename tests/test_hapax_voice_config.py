@@ -1,4 +1,5 @@
 """Tests for hapax_voice configuration loading."""
+
 from pathlib import Path
 
 import yaml
@@ -6,6 +7,7 @@ import yaml
 
 def test_default_config_values():
     import os
+
     from agents.hapax_voice.config import VoiceConfig
 
     cfg = VoiceConfig()
@@ -49,6 +51,7 @@ def test_config_missing_file_returns_defaults():
 def test_perception_config_defaults():
     """Perception fields have sensible defaults."""
     from agents.hapax_voice.config import VoiceConfig
+
     cfg = VoiceConfig()
     assert cfg.perception_fast_tick_s == 2.5
     assert cfg.perception_slow_tick_s == 12.0

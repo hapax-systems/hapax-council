@@ -1,14 +1,14 @@
 """Tests for git history extraction."""
+
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from agents.dev_story.git_extractor import (
+    extract_commits,
     parse_log_line,
     parse_numstat_line,
-    extract_commits,
 )
-from agents.dev_story.models import Commit, CommitFile
 
 
 def test_parse_log_line_standard():

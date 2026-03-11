@@ -1,7 +1,7 @@
 """Tests for AudioInputStream wiring into VoiceDaemon lifecycle."""
+
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,10 +19,12 @@ class TestAudioInputCreated:
             screen_monitor_enabled=False,
             webcam_enabled=False,
         )
-        with patch("agents.hapax_voice.__main__.AudioInputStream") as mock_cls, \
-             patch("agents.hapax_voice.__main__.HotkeyServer"), \
-             patch("agents.hapax_voice.__main__.WakeWordDetector"), \
-             patch("agents.hapax_voice.__main__.TTSManager"):
+        with (
+            patch("agents.hapax_voice.__main__.AudioInputStream") as mock_cls,
+            patch("agents.hapax_voice.__main__.HotkeyServer"),
+            patch("agents.hapax_voice.__main__.WakeWordDetector"),
+            patch("agents.hapax_voice.__main__.TTSManager"),
+        ):
             daemon = VoiceDaemon(cfg=cfg)
             mock_cls.assert_called_once_with(source_name=cfg.audio_input_source)
             assert daemon._audio_input is mock_cls.return_value
@@ -120,8 +122,6 @@ class TestAudioLoopBackgroundTask:
     async def test_audio_loop_as_background_task_when_active(self):
         daemon = _make_daemon(audio_active=True)
         # Track tasks created via create_task
-        created_tasks = []
-        original_create_task = asyncio.create_task
 
         async def _dummy_audio_loop():
             pass

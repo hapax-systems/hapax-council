@@ -1,29 +1,26 @@
 # tests/test_sufficiency_probes.py
 """Tests for shared.sufficiency_probes."""
-import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from shared.sufficiency_probes import (
-    SufficiencyProbe,
-    ProbeResult,
-    run_probes,
     PROBES,
+    ProbeResult,
+    SufficiencyProbe,
     _check_agent_error_remediation,
     _check_agent_zero_config,
-    _check_state_persistence,
     _check_briefing_multi_source,
-    _check_notification_chain,
-    _check_profile_context_chain,
     _check_no_multiuser_indirection,
+    _check_notification_chain,
+    _check_plugin_credentials_in_settings,
     _check_plugin_direct_api_support,
     _check_plugin_graceful_degradation,
-    _check_plugin_credentials_in_settings,
     _check_proactive_alert_surfacing,
+    _check_profile_context_chain,
+    _check_state_persistence,
+    run_probes,
 )
 
-
 # ── Probe registry ──────────────────────────────────────────────────────────
+
 
 def test_probes_have_valid_fields():
     """All probes have required fields populated."""
@@ -53,6 +50,7 @@ def test_probes_cover_all_axioms():
 
 
 # ── run_probes ──────────────────────────────────────────────────────────────
+
 
 def test_run_probes_returns_results():
     results = run_probes()
@@ -96,6 +94,7 @@ def test_run_probes_results_have_timestamp():
 
 
 # ── Individual probe checks ─────────────────────────────────────────────────
+
 
 def test_check_agent_error_remediation():
     """Runs against real codebase — should find remediation patterns."""
@@ -144,8 +143,10 @@ def test_check_no_multiuser_indirection():
 
 # ── Error handling ──────────────────────────────────────────────────────────
 
+
 def test_probe_error_returns_false():
     """If a probe check raises, result is met=False with error evidence."""
+
     def broken_check():
         raise RuntimeError("test error")
 
@@ -175,9 +176,11 @@ def test_probe_error_returns_false():
 
 # ── Drift detector integration ──────────────────────────────────────────────
 
+
 def test_scan_sufficiency_gaps_import():
     """scan_sufficiency_gaps can be called from drift_detector."""
     from agents.drift_detector import scan_sufficiency_gaps
+
     gaps = scan_sufficiency_gaps()
     assert isinstance(gaps, list)
     # All items should be DriftItems with the right category
@@ -186,6 +189,7 @@ def test_scan_sufficiency_gaps_import():
 
 
 # ── Corporate boundary probes ──────────────────────────────────────────────
+
 
 def test_check_plugin_direct_api_support():
     """obsidian-hapax should have anthropic + openai direct providers."""
@@ -222,6 +226,7 @@ def test_corporate_boundary_probes_registered():
 
 
 # ── Executive function behavioral probes ───────────────────────────────────
+
 
 def test_check_proactive_alert_surfacing():
     """health_monitor should push alerts proactively."""

@@ -1,11 +1,12 @@
 """Tests for shared.health_analysis — LLM root cause analysis (mocked)."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.health_analysis import RootCauseAnalysis, RemediationPlan
+from shared.health_analysis import RemediationPlan, RootCauseAnalysis
 
 
 class TestRootCauseAnalysis:
@@ -21,6 +22,7 @@ class TestRootCauseAnalysis:
     @pytest.mark.asyncio
     async def test_analyze_failures_calls_agent(self):
         from shared.health_analysis import analyze_failures
+
         mock_rca = RootCauseAnalysis(
             summary="OOM killed",
             probable_cause="Container exceeded memory limit",

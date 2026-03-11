@@ -1,11 +1,13 @@
 """Langfuse trace integration for hapax-voice observability."""
+
 from __future__ import annotations
 
 import contextlib
 import logging
 import os
+from collections.abc import Generator
 from dataclasses import dataclass
-from typing import Any, Generator
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +21,7 @@ except ImportError:
 class NoOpSpan:
     """No-op span for when tracing is disabled."""
 
-    def span(self, name: str, **kwargs: Any) -> "NoOpSpan":
+    def span(self, name: str, **kwargs: Any) -> NoOpSpan:
         return self
 
     def end(self, **kwargs: Any) -> None:
@@ -152,6 +154,7 @@ class VoiceTracer:
         if self._client is None:
             return
         import threading
+
         t = threading.Thread(target=self._do_flush, daemon=True)
         t.start()
         t.join(timeout=timeout_s)

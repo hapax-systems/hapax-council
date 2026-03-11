@@ -1,27 +1,23 @@
 """Tests for shared.takeout models, registry, and chunker."""
+
 from __future__ import annotations
 
 import json
-import tempfile
-import zipfile
 from datetime import datetime
-from pathlib import Path
 
-import pytest
-
-from shared.takeout.models import NormalizedRecord, ServiceConfig, make_record_id
-from shared.takeout.registry import SERVICE_REGISTRY, detect_services
 from shared.takeout.chunker import (
     StructuredWriter,
     _yaml_list,
-    record_to_markdown,
     record_to_jsonl,
+    record_to_markdown,
     sanitize_filename,
     write_record,
 )
-
+from shared.takeout.models import NormalizedRecord, ServiceConfig, make_record_id
+from shared.takeout.registry import SERVICE_REGISTRY, detect_services
 
 # ── make_record_id ────────────────────────────────────────────────────────────
+
 
 class TestMakeRecordId:
     def test_deterministic(self):
@@ -45,6 +41,7 @@ class TestMakeRecordId:
 
 # ── ServiceConfig ─────────────────────────────────────────────────────────────
 
+
 class TestServiceConfig:
     def test_defaults(self):
         cfg = ServiceConfig(parser="test", takeout_path="Test", tier=1)
@@ -67,6 +64,7 @@ class TestServiceConfig:
 
 
 # ── NormalizedRecord ──────────────────────────────────────────────────────────
+
 
 class TestNormalizedRecord:
     def test_minimal(self):
@@ -106,12 +104,25 @@ class TestNormalizedRecord:
 
 # ── SERVICE_REGISTRY ──────────────────────────────────────────────────────────
 
+
 class TestServiceRegistry:
     def test_all_services_present(self):
         expected = {
-            "chrome", "search", "keep", "youtube", "youtube_full", "calendar",
-            "contacts", "tasks", "gmail", "drive", "chat", "maps", "photos",
-            "purchases", "gemini",
+            "chrome",
+            "search",
+            "keep",
+            "youtube",
+            "youtube_full",
+            "calendar",
+            "contacts",
+            "tasks",
+            "gmail",
+            "drive",
+            "chat",
+            "maps",
+            "photos",
+            "purchases",
+            "gemini",
         }
         assert set(SERVICE_REGISTRY.keys()) == expected
 
@@ -137,6 +148,7 @@ class TestServiceRegistry:
 
 
 # ── detect_services ───────────────────────────────────────────────────────────
+
 
 class TestDetectServices:
     def test_detect_chrome(self):
@@ -197,6 +209,7 @@ class TestDetectServices:
 
 
 # ── record_to_markdown ────────────────────────────────────────────────────────
+
 
 class TestRecordToMarkdown:
     def test_minimal(self):
@@ -270,6 +283,7 @@ class TestRecordToMarkdown:
 
 # ── record_to_jsonl ───────────────────────────────────────────────────────────
 
+
 class TestRecordToJsonl:
     def test_roundtrip(self):
         r = NormalizedRecord(
@@ -306,6 +320,7 @@ class TestRecordToJsonl:
 
 # ── sanitize_filename ─────────────────────────────────────────────────────────
 
+
 class TestSanitizeFilename:
     def test_basic(self):
         assert sanitize_filename("hello-world") == "hello-world"
@@ -326,6 +341,7 @@ class TestSanitizeFilename:
 
 
 # ── write_record ──────────────────────────────────────────────────────────────
+
 
 class TestWriteRecord:
     def test_unstructured_write(self, tmp_path):
@@ -381,6 +397,7 @@ class TestWriteRecord:
 
 # ── _yaml_list tests ────────────────────────────────────────────────────────
 
+
 class TestYamlList:
     def test_simple_items(self):
         assert _yaml_list(["alice", "bob"]) == "[alice, bob]"
@@ -420,8 +437,8 @@ class TestYamlList:
     def test_backslash_with_special_chars_escaped(self):
         """Backslash is escaped when item also has YAML special chars."""
         result = _yaml_list([r'path\to\file: "test"'])
-        assert r'\\' in result
-        assert r'\"' in result
+        assert r"\\" in result
+        assert r"\"" in result
 
 
 class TestRecordToMarkdownYamlEscaping:
@@ -456,6 +473,7 @@ class TestRecordToMarkdownYamlEscaping:
 
 # ── Experimental flag tests ─────────────────────────────────────────────────
 
+
 class TestExperimentalFlag:
     def test_service_config_default_not_experimental(self):
         cfg = ServiceConfig(parser="test", takeout_path="Test", tier=1)
@@ -473,6 +491,7 @@ class TestExperimentalFlag:
 
 
 # ── StructuredWriter tests ─────────────────────────────────────────────────
+
 
 def _make_record(record_id: str = "abc123", service: str = "chrome") -> NormalizedRecord:
     return NormalizedRecord(

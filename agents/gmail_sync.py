@@ -9,14 +9,14 @@ Usage:
     uv run python -m agents.gmail_sync --auto         # Incremental sync
     uv run python -m agents.gmail_sync --stats        # Show sync state
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -43,8 +43,10 @@ BODY_EXTRACT_LABELS = {"IMPORTANT", "STARRED"}
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class EmailMetadata(BaseModel):
     """Email message metadata."""
+
     message_id: str
     thread_id: str
     subject: str
@@ -64,6 +66,7 @@ class EmailMetadata(BaseModel):
 
 class GmailSyncState(BaseModel):
     """Persistent sync state."""
+
     history_id: str = ""
     messages: dict[str, EmailMetadata] = Field(default_factory=dict)
     last_full_sync: float = 0.0
@@ -72,6 +75,7 @@ class GmailSyncState(BaseModel):
 
 
 # ── State Management ─────────────────────────────────────────────────────────
+
 
 def _load_state(path: Path = STATE_FILE) -> GmailSyncState:
     if path.exists():
@@ -90,6 +94,7 @@ def _save_state(state: GmailSyncState, path: Path = STATE_FILE) -> None:
 
 
 # ── Email Formatting ─────────────────────────────────────────────────────────
+
 
 def _format_email_markdown(e: EmailMetadata) -> str:
     people = [e.sender] + [r for r in e.recipients if r != e.sender]
@@ -126,18 +131,20 @@ has_attachments: {str(e.has_attachments).lower()}
 # {e.subject}
 
 **From:** {e.sender}
-**To:** {', '.join(e.recipients) if e.recipients else 'me'}
+**To:** {", ".join(e.recipients) if e.recipients else "me"}
 **Date:** {date_display}
-**Labels:** {', '.join(e.labels) if e.labels else 'none'}
-**Thread:** {e.thread_length} message{'s' if e.thread_length != 1 else ''}{snippet_block}
+**Labels:** {", ".join(e.labels) if e.labels else "none"}
+**Thread:** {e.thread_length} message{"s" if e.thread_length != 1 else ""}{snippet_block}
 """
 
 
 # ── Gmail API Operations ────────────────────────────────────────────────────
 
+
 def _get_gmail_service():
     """Build authenticated Gmail API service."""
     from shared.google_auth import build_service
+
     return build_service("gmail", "v1", SCOPES)
 
 
@@ -168,17 +175,11 @@ def _parse_message(msg: dict) -> EmailMetadata:
     sender = _clean_email_address(sender_raw)
 
     recipients_raw = headers.get("to", "")
-    recipients = [
-        _clean_email_address(r)
-        for r in recipients_raw.split(",")
-        if r.strip()
-    ]
+    recipients = [_clean_email_address(r) for r in recipients_raw.split(",") if r.strip()]
 
     # Convert internalDate (ms epoch) to ISO timestamp
     internal_date_ms = int(msg.get("internalDate", "0"))
-    timestamp = datetime.fromtimestamp(
-        internal_date_ms / 1000, tz=timezone.utc
-    ).isoformat()
+    timestamp = datetime.fromtimestamp(internal_date_ms / 1000, tz=UTC).isoformat()
 
     # Detect attachments from payload parts
     has_attachments = False
@@ -219,11 +220,16 @@ def _full_sync(service, state: GmailSyncState) -> int:
     message_ids: list[str] = []
     page_token = None
     while len(message_ids) < MAX_FULL_SYNC:
-        resp = service.users().messages().list(
-            userId="me",
-            maxResults=min(100, MAX_FULL_SYNC - len(message_ids)),
-            pageToken=page_token,
-        ).execute()
+        resp = (
+            service.users()
+            .messages()
+            .list(
+                userId="me",
+                maxResults=min(100, MAX_FULL_SYNC - len(message_ids)),
+                pageToken=page_token,
+            )
+            .execute()
+        )
 
         for m in resp.get("messages", []):
             message_ids.append(m["id"])
@@ -236,10 +242,17 @@ def _full_sync(service, state: GmailSyncState) -> int:
     count = 0
     for mid in message_ids:
         try:
-            msg = service.users().messages().get(
-                userId="me", id=mid, format="metadata",
-                metadataHeaders=["From", "To", "Subject", "Date"],
-            ).execute()
+            msg = (
+                service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=mid,
+                    format="metadata",
+                    metadataHeaders=["From", "To", "Subject", "Date"],
+                )
+                .execute()
+            )
             email = _parse_message(msg)
             state.messages[email.message_id] = email
             count += 1
@@ -263,12 +276,17 @@ def _incremental_sync(service, state: GmailSyncState) -> list[str]:
 
     while True:
         try:
-            resp = service.users().history().list(
-                userId="me",
-                startHistoryId=state.history_id,
-                historyTypes=["messageAdded", "labelAdded", "labelRemoved"],
-                pageToken=page_token,
-            ).execute()
+            resp = (
+                service.users()
+                .history()
+                .list(
+                    userId="me",
+                    startHistoryId=state.history_id,
+                    historyTypes=["messageAdded", "labelAdded", "labelRemoved"],
+                    pageToken=page_token,
+                )
+                .execute()
+            )
         except Exception as exc:
             if "404" in str(exc) or "notFound" in str(exc):
                 log.warning("historyId expired — full sync required")
@@ -297,10 +315,17 @@ def _incremental_sync(service, state: GmailSyncState) -> list[str]:
     # Fetch updated metadata for changed messages
     for mid in changed_ids:
         try:
-            msg = service.users().messages().get(
-                userId="me", id=mid, format="metadata",
-                metadataHeaders=["From", "To", "Subject", "Date"],
-            ).execute()
+            msg = (
+                service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=mid,
+                    format="metadata",
+                    metadataHeaders=["From", "To", "Subject", "Date"],
+                )
+                .execute()
+            )
             email = _parse_message(msg)
             old = state.messages.get(mid)
             if old:
@@ -318,6 +343,7 @@ def _incremental_sync(service, state: GmailSyncState) -> list[str]:
 
 # ── Behavioral Logging ───────────────────────────────────────────────────────
 
+
 def _log_change(email: EmailMetadata, change_type: str, extra: dict | None = None) -> None:
     """Append email change event to JSONL log."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -332,7 +358,7 @@ def _log_change(email: EmailMetadata, change_type: str, extra: dict | None = Non
             "thread_id": email.thread_id,
             **(extra or {}),
         },
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     with open(CHANGES_LOG, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry) + "\n")
@@ -341,11 +367,12 @@ def _log_change(email: EmailMetadata, change_type: str, extra: dict | None = Non
 
 # ── File Writing ─────────────────────────────────────────────────────────────
 
+
 def _write_recent_emails(state: GmailSyncState) -> int:
     """Write recent email metadata as markdown stubs to rag-sources/gmail/."""
     GMAIL_DIR.mkdir(parents=True, exist_ok=True)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(days=RAG_WINDOW_DAYS)
     written = 0
 
@@ -377,6 +404,7 @@ def _write_recent_emails(state: GmailSyncState) -> int:
 
 # ── Profiler Integration ─────────────────────────────────────────────────────
 
+
 def _generate_profile_facts(state: GmailSyncState) -> list[dict]:
     """Generate deterministic profile facts from email state."""
     from collections import Counter
@@ -394,25 +422,29 @@ def _generate_profile_facts(state: GmailSyncState) -> list[dict]:
     source = "gmail-sync:gmail-profile-facts"
 
     if total:
-        facts.append({
-            "dimension": "communication_patterns",
-            "key": "email_volume",
-            "value": f"{total} emails synced, {len(thread_ids)} threads",
-            "confidence": 0.95,
-            "source": source,
-            "evidence": f"Computed from {total} messages across {len(thread_ids)} threads",
-        })
+        facts.append(
+            {
+                "dimension": "communication_patterns",
+                "key": "email_volume",
+                "value": f"{total} emails synced, {len(thread_ids)} threads",
+                "confidence": 0.95,
+                "source": source,
+                "evidence": f"Computed from {total} messages across {len(thread_ids)} threads",
+            }
+        )
 
     if sender_counts:
         top = ", ".join(f"{email} ({n})" for email, n in sender_counts.most_common(10))
-        facts.append({
-            "dimension": "communication_patterns",
-            "key": "email_frequent_senders",
-            "value": top,
-            "confidence": 0.95,
-            "source": source,
-            "evidence": f"Top senders across {total} emails",
-        })
+        facts.append(
+            {
+                "dimension": "communication_patterns",
+                "key": "email_frequent_senders",
+                "value": top,
+                "confidence": 0.95,
+                "source": source,
+                "evidence": f"Top senders across {total} emails",
+            }
+        )
 
     # Thread patterns: threads with multiple messages indicate active conversations
     thread_lengths: Counter[str] = Counter()
@@ -421,14 +453,16 @@ def _generate_profile_facts(state: GmailSyncState) -> list[dict]:
     multi_msg_threads = {tid: cnt for tid, cnt in thread_lengths.items() if cnt > 1}
     if multi_msg_threads:
         avg_len = sum(multi_msg_threads.values()) / len(multi_msg_threads)
-        facts.append({
-            "dimension": "communication_patterns",
-            "key": "email_thread_patterns",
-            "value": f"{len(multi_msg_threads)} active threads, avg {avg_len:.1f} messages",
-            "confidence": 0.95,
-            "source": source,
-            "evidence": f"Threads with >1 message out of {len(thread_ids)} total",
-        })
+        facts.append(
+            {
+                "dimension": "communication_patterns",
+                "key": "email_thread_patterns",
+                "value": f"{len(multi_msg_threads)} active threads, avg {avg_len:.1f} messages",
+                "confidence": 0.95,
+                "source": source,
+                "evidence": f"Threads with >1 message out of {len(thread_ids)} total",
+            }
+        )
 
     # Behavioral patterns from changes log
     if CHANGES_LOG.exists():
@@ -443,14 +477,16 @@ def _generate_profile_facts(state: GmailSyncState) -> list[dict]:
                 continue
         if total_changes:
             dist = ", ".join(f"{k} ({v})" for k, v in change_counts.most_common(5))
-            facts.append({
-                "dimension": "communication_patterns",
-                "key": "email_change_patterns",
-                "value": f"{total_changes} changes: {dist}",
-                "confidence": 0.95,
-                "source": source,
-                "evidence": f"Accumulated from {total_changes} email change events",
-            })
+            facts.append(
+                {
+                    "dimension": "communication_patterns",
+                    "key": "email_change_patterns",
+                    "value": f"{total_changes} changes: {dist}",
+                    "confidence": 0.95,
+                    "source": source,
+                    "evidence": f"Accumulated from {total_changes} email change events",
+                }
+            )
 
     return facts
 
@@ -468,6 +504,7 @@ def _write_profile_facts(state: GmailSyncState) -> None:
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────
+
 
 def _print_stats(state: GmailSyncState) -> None:
     """Print sync statistics."""
@@ -488,8 +525,12 @@ def _print_stats(state: GmailSyncState) -> None:
     print(f"Unread:          {unread:,}")
     print(f"Starred:         {starred:,}")
     print(f"Threads:         {len(thread_ids):,}")
-    print(f"Last full sync:  {datetime.fromtimestamp(state.last_full_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_full_sync else 'never'}")
-    print(f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}")
+    print(
+        f"Last full sync:  {datetime.fromtimestamp(state.last_full_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_full_sync else 'never'}"
+    )
+    print(
+        f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}"
+    )
 
     if sender_counts:
         print("\nTop senders:")
@@ -498,6 +539,7 @@ def _print_stats(state: GmailSyncState) -> None:
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
+
 
 def run_auth() -> None:
     """Verify OAuth credentials work for Gmail."""
@@ -568,6 +610,7 @@ def run_stats() -> None:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gmail RAG sync")

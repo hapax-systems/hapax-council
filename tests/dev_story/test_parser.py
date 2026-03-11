@@ -1,4 +1,5 @@
 """Tests for JSONL session transcript parser."""
+
 from __future__ import annotations
 
 import json
@@ -6,9 +7,8 @@ import tempfile
 from pathlib import Path
 
 from agents.dev_story.parser import (
-    parse_session,
     extract_project_path,
-    ParsedSession,
+    parse_session,
 )
 
 
@@ -69,7 +69,12 @@ def test_parse_session_extracts_assistant_message_strips_tool_use():
                 "model": "claude-sonnet-4-5-20250514",
                 "content": [
                     {"type": "text", "text": "Let me check that."},
-                    {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/tmp/foo.py"}},
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Read",
+                        "input": {"file_path": "/tmp/foo.py"},
+                    },
                 ],
                 "usage": {"input_tokens": 100, "output_tokens": 50},
             },
@@ -96,8 +101,18 @@ def test_parse_session_extracts_tool_calls():
             "message": {
                 "role": "assistant",
                 "content": [
-                    {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/tmp/foo.py"}},
-                    {"type": "tool_use", "id": "t2", "name": "Edit", "input": {"file_path": "/tmp/foo.py", "old_string": "a", "new_string": "b"}},
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Read",
+                        "input": {"file_path": "/tmp/foo.py"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "t2",
+                        "name": "Edit",
+                        "input": {"file_path": "/tmp/foo.py", "old_string": "a", "new_string": "b"},
+                    },
                 ],
             },
         }
@@ -182,9 +197,18 @@ def test_parse_session_computes_session_metadata():
 def test_parse_session_handles_malformed_lines():
     with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
         f.write("not valid json\n")
-        f.write(json.dumps({"type": "user", "uuid": "u1", "sessionId": "s1",
-                            "timestamp": "2026-03-10T10:00:00Z",
-                            "message": {"role": "user", "content": "ok"}}) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "sessionId": "s1",
+                    "timestamp": "2026-03-10T10:00:00Z",
+                    "message": {"role": "user", "content": "ok"},
+                }
+            )
+            + "\n"
+        )
         f.flush()
         result = parse_session(Path(f.name), project_path="/tmp/test")
     assert len(result.messages) == 1

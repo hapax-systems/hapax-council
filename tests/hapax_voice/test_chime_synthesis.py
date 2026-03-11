@@ -1,11 +1,11 @@
 """Tests for chime WAV synthesis."""
+
 import wave
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-from agents.hapax_voice.chime_synthesis import synthesize_chime, generate_all_chimes, CHIME_SPECS
+from agents.hapax_voice.chime_synthesis import CHIME_SPECS, generate_all_chimes, synthesize_chime
 
 
 class TestSynthesizeChime:

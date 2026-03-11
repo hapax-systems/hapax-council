@@ -1,4 +1,5 @@
 """Tests for query dispatch — agent registry and classification."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from cockpit.query_dispatch import (
-    QueryAgentInfo,
     classify_query,
     get_agent_list,
     run_query,
@@ -85,9 +85,7 @@ class TestRunQuerySystemOps:
     @patch("cockpit.query_dispatch._call_factory")
     async def test_run_system_ops_query(self, mock_factory, mock_extract):
         mock_result = MagicMock()
-        mock_result.usage.return_value = MagicMock(
-            input_tokens=800, output_tokens=400
-        )
+        mock_result.usage.return_value = MagicMock(input_tokens=800, output_tokens=400)
         mock_agent = AsyncMock()
         mock_agent.run.return_value = mock_result
         mock_factory.return_value = (mock_agent, MagicMock())
@@ -111,9 +109,7 @@ class TestRunQuery:
     @patch("cockpit.query_dispatch._call_factory")
     async def test_run_query_returns_markdown(self, mock_factory, mock_extract):
         mock_result = MagicMock()
-        mock_result.usage.return_value = MagicMock(
-            input_tokens=1000, output_tokens=500
-        )
+        mock_result.usage.return_value = MagicMock(input_tokens=1000, output_tokens=500)
         mock_agent = AsyncMock()
         mock_agent.run.return_value = mock_result
         mock_factory.return_value = (mock_agent, MagicMock())

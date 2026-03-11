@@ -1,4 +1,5 @@
 """Pydantic models for the dev-story data layer."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

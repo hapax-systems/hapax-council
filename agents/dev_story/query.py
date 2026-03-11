@@ -1,4 +1,5 @@
 """Pydantic-ai query agent for the dev-story database."""
+
 from __future__ import annotations
 
 import logging
@@ -228,7 +229,7 @@ def _file_history(conn: sqlite3.Connection, file_path: str, since: str | None = 
         return f"No history found for {file_path}"
 
     lines = [f"History for {file_path}:\n"]
-    for hash, date, msg, ins, dels, conf, method, sess_id, proj in rows:
+    for hash, date, msg, ins, dels, conf, _method, sess_id, proj in rows:
         line = f"- {hash[:8]} ({date}) {msg} [+{ins}/-{dels}]"
         if sess_id:
             line += f" <- session {sess_id[:8]} ({proj}, confidence={conf:.2f})"
@@ -280,6 +281,7 @@ def create_agent() -> Agent:
     async def git_diff(ctx, commit_hash: str) -> str:
         """Show the actual diff for a git commit."""
         import subprocess
+
         conn = sqlite3.connect(ctx.deps.db_path)
         cursor = conn.execute(
             """SELECT DISTINCT s.project_path FROM correlations cor
@@ -296,9 +298,15 @@ def create_agent() -> Agent:
 
         result = subprocess.run(
             ["git", "-C", row[0], "show", "--stat", commit_hash],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
-        return result.stdout[:3000] if result.returncode == 0 else f"git show failed: {result.stderr[:200]}"
+        return (
+            result.stdout[:3000]
+            if result.returncode == 0
+            else f"git show failed: {result.stderr[:200]}"
+        )
 
     return agent
 

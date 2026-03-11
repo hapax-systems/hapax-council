@@ -1,7 +1,7 @@
 """Tests for the EventLog JSONL writer."""
+
 import datetime
 import json
-from pathlib import Path
 
 from agents.hapax_voice.event_log import EventLog
 

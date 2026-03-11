@@ -13,14 +13,14 @@
 ### Task 1: Decision Loading and Cooldown Logic
 
 **Files:**
-- Modify: `~/projects/ai-agents/agents/scout.py:48-58` (constants area)
-- Modify: `~/projects/ai-agents/agents/scout.py:81-86` (ScoutReport model)
-- Modify: `~/projects/ai-agents/agents/scout.py:353-406` (run_scout function)
-- Test: `~/projects/ai-agents/tests/test_scout_decision_awareness.py`
+- Modify: `~/projects/hapax-council/agents/scout.py:48-58` (constants area)
+- Modify: `~/projects/hapax-council/agents/scout.py:81-86` (ScoutReport model)
+- Modify: `~/projects/hapax-council/agents/scout.py:353-406` (run_scout function)
+- Test: `~/projects/hapax-council/tests/test_scout_decision_awareness.py`
 
 **Step 1: Write the failing tests**
 
-Create `~/projects/ai-agents/tests/test_scout_decision_awareness.py`:
+Create `~/projects/hapax-council/tests/test_scout_decision_awareness.py`:
 
 ```python
 """Tests for scout decision-awareness (cooldown suppression)."""
@@ -107,12 +107,12 @@ def test_missing_file_returns_empty(tmp_path):
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_scout_decision_awareness.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_scout_decision_awareness.py -v`
 Expected: FAIL with `ImportError: cannot import name 'load_decisions' from 'agents.scout'`
 
 **Step 3: Add constant, load_decisions function, update ScoutReport, and modify run_scout**
 
-In `~/projects/ai-agents/agents/scout.py`, after line 53 (`REPORT_MD = ...`), add:
+In `~/projects/hapax-council/agents/scout.py`, after line 53 (`REPORT_MD = ...`), add:
 
 ```python
 DECISIONS_FILE = PROFILES_DIR / "scout-decisions.jsonl"
@@ -181,7 +181,7 @@ Inside the `for spec in components:` loop (line 383), before the `log.info` call
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_scout_decision_awareness.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_scout_decision_awareness.py -v`
 Expected: 6 passed
 
 **Step 5: Update markdown formatter**
@@ -198,13 +198,13 @@ In `format_report_md()` (line 411), after the errors section (around line 456), 
 
 **Step 6: Verify full test suite still passes**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_scout_decisions.py tests/test_scout_decision_awareness.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_scout_decisions.py tests/test_scout_decision_awareness.py -v`
 Expected: 9 passed (3 existing + 6 new)
 
 **Step 7: Commit**
 
 ```bash
-cd ~/projects/ai-agents
+cd ~/projects/hapax-council
 git add agents/scout.py tests/test_scout_decision_awareness.py
 git commit -m "feat: add decision-aware scout runs with 90-day cooldown"
 ```
@@ -298,15 +298,15 @@ git commit -m "feat: add scout recommendations to session context hook"
 
 **Step 1: Run ai-agents tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_scout_decisions.py tests/test_scout_decision_awareness.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_scout_decisions.py tests/test_scout_decision_awareness.py -v`
 Expected: 9 passed
 
 **Step 2: Test session hook end-to-end**
 
-Run: `cd ~/projects/ai-agents && bash ~/projects/hapax-system/hooks/scripts/session-context.sh`
+Run: `cd ~/projects/hapax-council && bash ~/projects/hapax-system/hooks/scripts/session-context.sh`
 Expected: Output includes all existing lines (Axioms, Branch, Health, Docker, GPU, Profile, Cycle) plus Scout line if `profiles/scout-report.json` exists with actionable items less than 8 days old. If no scout report or no actionable items, Scout line is absent.
 
 **Step 3: Verify scout dry-run still works**
 
-Run: `cd ~/projects/ai-agents && uv run python -m agents.scout --dry-run 2>&1 | head -20`
+Run: `cd ~/projects/hapax-council && uv run python -m agents.scout --dry-run 2>&1 | head -20`
 Expected: Lists search queries for all registry components, no errors.

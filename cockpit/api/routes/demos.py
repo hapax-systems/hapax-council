@@ -1,14 +1,14 @@
 """Demo history and management API endpoints."""
+
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from pathlib import Path
-
-from agents.demo_pipeline.history import list_demos, get_demo
+from agents.demo_pipeline.history import get_demo, list_demos
 
 # OUTPUT_DIR defined here to avoid importing agents.demo which pulls in playwright
 OUTPUT_DIR = Path(__file__).resolve().parents[3] / "output" / "demos"

@@ -1,11 +1,13 @@
 """Tests for chrome_sync — schemas, formatting, timestamp conversion, profiler facts."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def test_history_entry_defaults():
     from agents.chrome_sync import HistoryEntry
+
     e = HistoryEntry(url="https://example.com/page")
     assert e.title == ""
     assert e.domain == ""
@@ -16,6 +18,7 @@ def test_history_entry_defaults():
 
 def test_bookmark_entry_defaults():
     from agents.chrome_sync import BookmarkEntry
+
     b = BookmarkEntry(url="https://example.com")
     assert b.title == ""
     assert b.folder == ""
@@ -24,6 +27,7 @@ def test_bookmark_entry_defaults():
 
 def test_chrome_sync_state_empty():
     from agents.chrome_sync import ChromeSyncState
+
     s = ChromeSyncState()
     assert s.last_visit_time == 0
     assert s.domains == {}
@@ -32,6 +36,7 @@ def test_chrome_sync_state_empty():
 
 def test_should_skip_domain():
     from agents.chrome_sync import _should_skip_domain
+
     # Noise domains should be skipped
     assert _should_skip_domain("localhost") is True
     assert _should_skip_domain("127.0.0.1") is True
@@ -58,21 +63,23 @@ def test_should_skip_domain():
 
 def test_webkit_timestamp_conversion():
     from agents.chrome_sync import _webkit_to_datetime
+
     # 2026-01-01 00:00:00 UTC
     # Unix timestamp: 1767225600
     # WebKit: (1767225600 + 11644473600) * 1_000_000
     webkit_ts = (1767225600 + 11644473600) * 1_000_000
     result = _webkit_to_datetime(webkit_ts)
-    expected = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    expected = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
     assert result == expected
 
     # Zero timestamp should return epoch
     zero = _webkit_to_datetime(0)
-    assert zero == datetime(1970, 1, 1, tzinfo=timezone.utc)
+    assert zero == datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def test_format_domain_markdown():
     from agents.chrome_sync import HistoryEntry, _format_domain_markdown
+
     entries = [
         HistoryEntry(
             url="https://github.com/user/repo",
@@ -99,6 +106,7 @@ def test_format_domain_markdown():
 
 def test_format_bookmarks_markdown():
     from agents.chrome_sync import BookmarkEntry, _format_bookmarks_markdown
+
     bookmarks = [
         BookmarkEntry(url="https://github.com", title="GitHub", folder="Dev"),
         BookmarkEntry(url="https://python.org", title="Python", folder="Dev"),
@@ -116,7 +124,8 @@ def test_format_bookmarks_markdown():
 
 
 def test_generate_chrome_profile_facts():
-    from agents.chrome_sync import _generate_profile_facts, ChromeSyncState
+    from agents.chrome_sync import ChromeSyncState, _generate_profile_facts
+
     state = ChromeSyncState()
     state.domains = {
         "github.com": 50,

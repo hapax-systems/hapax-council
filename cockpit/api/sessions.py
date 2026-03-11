@@ -3,6 +3,7 @@
 AgentRunManager: tracks active subprocess, enforces single concurrent run.
 SessionManager: chat session lifecycle (Phase 3).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +20,7 @@ PROJECT_DIR = Path(__file__).parent.parent.parent
 @dataclass
 class AgentRunStatus:
     """Status of an active agent run."""
+
     agent_name: str
     started_at: float
     pid: int | None = None
@@ -85,22 +87,30 @@ class AgentRunManager:
                 await self._process.wait()
                 exit_code = self._process.returncode or 0
                 duration = time.monotonic() - start
-                await queue.put({
-                    "event": "done",
-                    "data": {"exit_code": exit_code, "duration": round(duration, 1)},
-                })
+                await queue.put(
+                    {
+                        "event": "done",
+                        "data": {"exit_code": exit_code, "duration": round(duration, 1)},
+                    }
+                )
             except asyncio.CancelledError:
                 if self._process and self._process.returncode is None:
                     self._process.terminate()
                     try:
                         await asyncio.wait_for(self._process.wait(), timeout=5.0)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         self._process.kill()
                 duration = time.monotonic() - start
-                await queue.put({
-                    "event": "done",
-                    "data": {"exit_code": -1, "duration": round(duration, 1), "cancelled": True},
-                })
+                await queue.put(
+                    {
+                        "event": "done",
+                        "data": {
+                            "exit_code": -1,
+                            "duration": round(duration, 1),
+                            "cancelled": True,
+                        },
+                    }
+                )
             except Exception as e:
                 log.exception("Agent run error: %s", e)
                 await queue.put({"event": "error", "data": {"message": str(e)}})
@@ -118,7 +128,7 @@ class AgentRunManager:
             self._process.terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._process.kill()
             return True
         return False

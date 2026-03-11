@@ -1,20 +1,17 @@
 """Tests for cockpit.data.goals — goal collection and staleness."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
 import shared.operator
 from cockpit.data.goals import (
-    GoalSnapshot,
-    GoalStatus,
     _activity_hours,
     _is_stale,
     collect_goals,
-    STALE_ACTIVE_DAYS,
-    STALE_ONGOING_DAYS,
 )
 
 
@@ -28,6 +25,7 @@ def _clear_operator_cache():
 
 # ── _activity_hours tests ──────────────────────────────────────────────────
 
+
 def test_activity_hours_none_returns_none():
     assert _activity_hours(None) is None
 
@@ -37,14 +35,14 @@ def test_activity_hours_empty_returns_none():
 
 
 def test_activity_hours_recent():
-    recent = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    recent = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
     h = _activity_hours(recent)
     assert h is not None
     assert 2.5 < h < 3.5
 
 
 def test_activity_hours_z_suffix():
-    ts = (datetime.now(timezone.utc) - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = (datetime.now(UTC) - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
     h = _activity_hours(ts)
     assert h is not None
     assert 9.5 < h < 10.5
@@ -55,6 +53,7 @@ def test_activity_hours_invalid():
 
 
 # ── _is_stale tests ────────────────────────────────────────────────────────
+
 
 def test_active_goal_no_activity_is_stale():
     assert _is_stale("active", None) is True
@@ -86,6 +85,7 @@ def test_ongoing_goal_old_is_stale():
 
 # ── collect_goals tests ────────────────────────────────────────────────────
 
+
 def _make_operator_data(primary=None, secondary=None):
     return {
         "goals": {
@@ -97,15 +97,17 @@ def _make_operator_data(primary=None, secondary=None):
 
 @patch("shared.operator._load_operator")
 def test_collect_goals_basic(mock_load):
-    recent = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    recent = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     mock_load.return_value = _make_operator_data(
-        primary=[{
-            "id": "test-goal",
-            "name": "Test Goal",
-            "status": "active",
-            "progress": "Making progress",
-            "last_activity_at": recent,
-        }],
+        primary=[
+            {
+                "id": "test-goal",
+                "name": "Test Goal",
+                "status": "active",
+                "progress": "Making progress",
+                "last_activity_at": recent,
+            }
+        ],
     )
     snap = collect_goals()
     assert len(snap.goals) == 1
@@ -118,14 +120,16 @@ def test_collect_goals_basic(mock_load):
 
 @patch("shared.operator._load_operator")
 def test_collect_goals_stale_primary(mock_load):
-    old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    old = (datetime.now(UTC) - timedelta(days=10)).isoformat()
     mock_load.return_value = _make_operator_data(
-        primary=[{
-            "id": "stale-goal",
-            "name": "Stale Goal",
-            "status": "active",
-            "last_activity_at": old,
-        }],
+        primary=[
+            {
+                "id": "stale-goal",
+                "name": "Stale Goal",
+                "status": "active",
+                "last_activity_at": old,
+            }
+        ],
     )
     snap = collect_goals()
     assert snap.stale_count == 1
@@ -136,12 +140,14 @@ def test_collect_goals_stale_primary(mock_load):
 @patch("shared.operator._load_operator")
 def test_collect_goals_null_activity(mock_load):
     mock_load.return_value = _make_operator_data(
-        secondary=[{
-            "id": "no-activity",
-            "name": "No Activity",
-            "status": "active",
-            "last_activity_at": None,
-        }],
+        secondary=[
+            {
+                "id": "no-activity",
+                "name": "No Activity",
+                "status": "active",
+                "last_activity_at": None,
+            }
+        ],
     )
     snap = collect_goals()
     assert snap.goals[0].stale is True
@@ -158,16 +164,24 @@ def test_collect_goals_empty(mock_load):
 
 @patch("shared.operator._load_operator")
 def test_collect_goals_mixed_categories(mock_load):
-    recent = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    recent = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     mock_load.return_value = _make_operator_data(
-        primary=[{
-            "id": "p1", "name": "Primary 1", "status": "active",
-            "last_activity_at": recent,
-        }],
-        secondary=[{
-            "id": "s1", "name": "Secondary 1", "status": "planned",
-            "last_activity_at": None,
-        }],
+        primary=[
+            {
+                "id": "p1",
+                "name": "Primary 1",
+                "status": "active",
+                "last_activity_at": recent,
+            }
+        ],
+        secondary=[
+            {
+                "id": "s1",
+                "name": "Secondary 1",
+                "status": "planned",
+                "last_activity_at": None,
+            }
+        ],
     )
     snap = collect_goals()
     assert len(snap.goals) == 2
@@ -187,10 +201,14 @@ def test_collect_goals_exception_returns_empty(mock_load):
 @patch("shared.operator._load_operator")
 def test_collect_goals_planned_not_stale(mock_load):
     mock_load.return_value = _make_operator_data(
-        primary=[{
-            "id": "planned", "name": "Planned Goal", "status": "planned",
-            "last_activity_at": None,
-        }],
+        primary=[
+            {
+                "id": "planned",
+                "name": "Planned Goal",
+                "status": "planned",
+                "last_activity_at": None,
+            }
+        ],
     )
     snap = collect_goals()
     assert snap.goals[0].stale is False

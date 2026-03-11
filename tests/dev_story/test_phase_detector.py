@@ -1,7 +1,8 @@
 """Tests for tool sequence phase detection."""
+
 from __future__ import annotations
 
-from agents.dev_story.phase_detector import detect_phases, detect_phase_sequence
+from agents.dev_story.phase_detector import detect_phase_sequence, detect_phases
 
 
 def test_detect_phases_explore():
@@ -23,7 +24,17 @@ def test_detect_phases_test():
 
 
 def test_detect_phases_debug_cycle():
-    tools = ["Read", "Edit", "Bash:pytest", "Read", "Edit", "Bash:pytest", "Read", "Edit", "Bash:pytest"]
+    tools = [
+        "Read",
+        "Edit",
+        "Bash:pytest",
+        "Read",
+        "Edit",
+        "Bash:pytest",
+        "Read",
+        "Edit",
+        "Bash:pytest",
+    ]
     phases = detect_phases(tools)
     assert "debug" in phases
 
@@ -36,9 +47,14 @@ def test_detect_phases_design():
 
 def test_detect_phase_sequence():
     tools = [
-        "Grep", "Read", "Glob", "Read",  # explore
-        "Edit", "Write", "Edit",           # implement
-        "Bash:pytest tests/ -v",           # test
+        "Grep",
+        "Read",
+        "Glob",
+        "Read",  # explore
+        "Edit",
+        "Write",
+        "Edit",  # implement
+        "Bash:pytest tests/ -v",  # test
     ]
     seq = detect_phase_sequence(tools)
     assert seq == "explore>implement>test"

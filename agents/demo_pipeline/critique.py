@@ -1,11 +1,12 @@
 """Self-critique and revision loop for demo script quality."""
+
 from __future__ import annotations
 
 import logging
 
 from pydantic_ai import Agent
 
-from agents.demo_models import DemoScript, DemoQualityReport, QualityDimension
+from agents.demo_models import DemoQualityReport, DemoScript, QualityDimension
 from shared.config import get_model
 
 log = logging.getLogger(__name__)
@@ -13,16 +14,16 @@ log = logging.getLogger(__name__)
 MAX_ITERATIONS = 4
 
 QUALITY_DIMENSIONS = [
-    "narrative_coherence",    # Follows framework? Logical arc?
-    "audience_calibration",   # Vocabulary appropriate? Respects show/skip?
-    "content_adequacy",       # Enough substance? Each scene justified?
-    "duration_feasibility",   # Word count × speech rate ≈ target?
-    "voice_consistency",      # Matches voice examples? Sounds like the builder?
-    "factual_grounding",      # Claims match research context?
-    "honesty_accuracy",       # No fabricated stats? System maturity honest? Unique vs generic?
-    "visual_appropriateness", # Right mix of screenshots/diagrams/charts?
-    "visual_substance",       # Does each visual convey specific information, not decorative filler?
-    "key_points_quality",     # Bullets substantive, not vague?
+    "narrative_coherence",  # Follows framework? Logical arc?
+    "audience_calibration",  # Vocabulary appropriate? Respects show/skip?
+    "content_adequacy",  # Enough substance? Each scene justified?
+    "duration_feasibility",  # Word count × speech rate ≈ target?
+    "voice_consistency",  # Matches voice examples? Sounds like the builder?
+    "factual_grounding",  # Claims match research context?
+    "honesty_accuracy",  # No fabricated stats? System maturity honest? Unique vs generic?
+    "visual_appropriateness",  # Right mix of screenshots/diagrams/charts?
+    "visual_substance",  # Does each visual convey specific information, not decorative filler?
+    "key_points_quality",  # Bullets substantive, not vague?
 ]
 
 critique_agent = Agent(
@@ -90,7 +91,8 @@ def _build_critique_prompt(
         "key_points_quality": "Bullets substantive, not vague?",
     }
     dimensions_text = "\n".join(
-        f"- **{d}**: {dimension_descriptions.get(d, 'evaluate this dimension')}" for d in QUALITY_DIMENSIONS
+        f"- **{d}**: {dimension_descriptions.get(d, 'evaluate this dimension')}"
+        for d in QUALITY_DIMENSIONS
     )
 
     # Voice consistency criteria from examples
@@ -110,7 +112,7 @@ The narration should sound like Examples A-D below (matter-of-fact, first-person
 It should NOT sound like the Bad Example (pitch mode, breathless, selling).
 
 Good voice examples:
-{chr(10).join(f'Example {chr(65+i)}: {ex}' for i, ex in enumerate(good_examples))}
+{chr(10).join(f"Example {chr(65 + i)}: {ex}" for i, ex in enumerate(good_examples))}
 
 Bad Example (pitch mode — narration sounding like this FAILS voice_consistency):
 "{bad_example}"
@@ -131,7 +133,7 @@ Bad Example (pitch mode — narration sounding like this FAILS voice_consistency
 
 ## Context for Evaluation
 Target duration: {target_seconds} seconds ({target_seconds / 60:.0f} minutes)
-Narrative framework: {framework.get('name', 'unknown')}
+Narrative framework: {framework.get("name", "unknown")}
 {voice_section}
 
 ## Research Context (for factual grounding check)
@@ -157,14 +159,14 @@ def _build_revision_prompt(
 ) -> str:
     """Build the prompt for the revision agent."""
     issues_text = "\n".join(
-        f"- {d.name}: {'; '.join(d.issues)}"
-        for d in report.dimensions
-        if not d.passed
+        f"- {d.name}: {'; '.join(d.issues)}" for d in report.dimensions if not d.passed
     )
 
     # Calculate word count targets for explicit guidance
     target_words = int(target_seconds * 2.5)
-    current_words = len((script.intro_narration or "").split()) + len((script.outro_narration or "").split())
+    current_words = len((script.intro_narration or "").split()) + len(
+        (script.outro_narration or "").split()
+    )
     for scene in script.scenes:
         current_words += len(scene.narration.split())
     words_needed = target_words - current_words
@@ -203,7 +205,11 @@ HOW TO EXPAND:
         avg_per_scene = target_words // len(script.scenes) if script.scenes else 150
         over_scenes = [(t, wc) for t, wc in scene_wcs if wc > avg_per_scene + 30]
         over_scenes.sort(key=lambda x: x[1], reverse=True)
-        longest_text = ", ".join(f"'{t}' ({wc}w)" for t, wc in over_scenes[:3]) if over_scenes else "trim evenly"
+        longest_text = (
+            ", ".join(f"'{t}' ({wc}w)" for t, wc in over_scenes[:3])
+            if over_scenes
+            else "trim evenly"
+        )
         # Only ask to cut down to 110%, not all the way to target
         cut_target = -words_needed - int(target_words * 0.05)  # Leave 5% buffer
         word_guidance = f"""
@@ -225,8 +231,7 @@ HOW TO CUT (without losing substance):
     # Visual variety fix guidance
     visual_guidance = ""
     has_visual_issue = any(
-        d.name == "visual_appropriateness" and not d.passed
-        for d in report.dimensions
+        d.name == "visual_appropriateness" and not d.passed for d in report.dimensions
     )
     if has_visual_issue:
         types = [s.visual_type for s in script.scenes]
@@ -240,8 +245,12 @@ HOW TO CUT (without losing substance):
         convert_candidates = []
         for i, s in enumerate(script.scenes):
             if s.visual_type == "diagram":
-                convert_candidates.append(f"Scene {i+1} '{s.title}'")
-        convert_list = "\n".join(f"  - {c}" for c in convert_candidates[:need_ss]) if need_ss > 0 else "(none needed)"
+                convert_candidates.append(f"Scene {i + 1} '{s.title}'")
+        convert_list = (
+            "\n".join(f"  - {c}" for c in convert_candidates[:need_ss])
+            if need_ss > 0
+            else "(none needed)"
+        )
         visual_guidance = f"""
 ## VISUAL VARIETY FIX (CRITICAL — THIS MUST BE FIXED)
 Current mix: {screenshot_count} screenshots, {screencast_count} screencasts, {diagram_count} diagrams, {chart_count} charts
@@ -278,7 +287,7 @@ RULES:
 ## Issues to Fix
 {issues_text}
 
-{f'Revision notes: {report.revision_notes}' if report.revision_notes else ''}
+{f"Revision notes: {report.revision_notes}" if report.revision_notes else ""}
 {word_guidance}
 {visual_guidance}
 
@@ -288,10 +297,10 @@ RULES:
 - Illustration scenes should have prompts that describe something directly related to the scene's narration
 - Illustrations are for abstract concepts only — if the scene describes architecture, use a diagram; if it shows data, use a chart
 - Max 3 illustrations per demo
-- Keep the same narrative framework: {framework.get('name', 'unknown')}
+- Keep the same narrative framework: {framework.get("name", "unknown")}
 - Target duration: {target_seconds} seconds
 - Preserve scene count unless explicitly flagged
-- Style guide: voice={style_guide.get('voice', 'first-person')}, cadence={style_guide.get('cadence', 'state-explain-show')}
+- Style guide: voice={style_guide.get("voice", "first-person")}, cadence={style_guide.get("cadence", "state-explain-show")}
 {chr(10).join(f'- FORBIDDEN TERM: "{t}" — do NOT use this word anywhere in narration' for t in (forbidden_terms or []))}
 {_format_voice_reference(voice_examples)}
 Return the complete revised DemoScript."""
@@ -402,13 +411,14 @@ def _check_visual_variety(script: DemoScript) -> QualityDimension | None:
     for i, s in enumerate(script.scenes):
         if s.visual_type == "illustration" and not s.illustration:
             issues.append(
-                f"Scene {i+1} '{s.title}' has visual_type=illustration but no illustration spec"
+                f"Scene {i + 1} '{s.title}' has visual_type=illustration but no illustration spec"
             )
 
     # Check screenshot route concentration: too many screenshots of the same route
     # produce identical-looking images (scroll actions rarely change the visible content)
     if total >= 6:
         from collections import Counter
+
         route_counts: Counter[str] = Counter()
         for s in script.scenes:
             if s.visual_type == "screenshot" and s.screenshot:
@@ -434,11 +444,17 @@ def _check_visual_variety(script: DemoScript) -> QualityDimension | None:
     # Check for empty visual specs (would produce fallback images)
     for i, s in enumerate(script.scenes):
         if s.visual_type in ("diagram", "chart") and not s.diagram_spec:
-            issues.append(f"Scene {i+1} '{s.title}' has visual_type={s.visual_type} but empty diagram_spec")
+            issues.append(
+                f"Scene {i + 1} '{s.title}' has visual_type={s.visual_type} but empty diagram_spec"
+            )
         if s.visual_type == "screenshot" and not s.screenshot:
-            issues.append(f"Scene {i+1} '{s.title}' has visual_type=screenshot but no screenshot spec")
+            issues.append(
+                f"Scene {i + 1} '{s.title}' has visual_type=screenshot but no screenshot spec"
+            )
         if s.visual_type == "screencast" and not s.interaction:
-            issues.append(f"Scene {i+1} '{s.title}' has visual_type=screencast but no interaction spec")
+            issues.append(
+                f"Scene {i + 1} '{s.title}' has visual_type=screencast but no interaction spec"
+            )
 
     # Check screenshot ratio: at least 50% must be screenshots or screencasts
     ss_count = sum(1 for s in script.scenes if s.visual_type in ("screenshot", "screencast"))
@@ -451,8 +467,8 @@ def _check_visual_variety(script: DemoScript) -> QualityDimension | None:
     # Check consecutive same type (3+ in a row is a problem)
     types = [s.visual_type for s in script.scenes]
     for i in range(len(types) - 2):
-        if types[i] == types[i+1] == types[i+2]:
-            issues.append(f"3+ consecutive {types[i]} scenes (scenes {i+1}-{i+3})")
+        if types[i] == types[i + 1] == types[i + 2]:
+            issues.append(f"3+ consecutive {types[i]} scenes (scenes {i + 1}-{i + 3})")
             break
 
     # Check mandatory routes: /, /chat, /demos must each appear at least once
@@ -510,6 +526,7 @@ def _check_visual_variety(script: DemoScript) -> QualityDimension | None:
 def _sanitize_d2_label(text: str, max_len: int = 50) -> str:
     """Sanitize text for use as a D2 node label inside double quotes."""
     import re as _re
+
     # Remove characters that break D2 syntax
     text = text.replace('"', "'").replace("\\", "")
     text = text.replace("{", "(").replace("}", ")")
@@ -522,7 +539,7 @@ def _sanitize_d2_label(text: str, max_len: int = 50) -> str:
     return text
 
 
-def _generate_d2_from_scene(scene: "DemoScene") -> str:
+def _generate_d2_from_scene(scene: DemoScene) -> str:
     """Generate a substantive D2 diagram from scene content.
 
     Uses key_points and title to create a multi-node diagram rather than
@@ -535,7 +552,7 @@ def _generate_d2_from_scene(scene: "DemoScene") -> str:
         # Fall back to splitting narration into key phrases
         words = scene.narration.split()
         if len(words) > 20:
-            points = [" ".join(words[i:i+5]) for i in range(0, min(20, len(words)), 5)]
+            points = [" ".join(words[i : i + 5]) for i in range(0, min(20, len(words)), 5)]
         else:
             points = [safe_title]
 
@@ -549,7 +566,7 @@ def _generate_d2_from_scene(scene: "DemoScene") -> str:
         if idx == 0:
             lines.append(f"title -> {node_id}")
         else:
-            lines.append(f"p{idx-1} -> {node_id}")
+            lines.append(f"p{idx - 1} -> {node_id}")
 
     return "\n".join(lines)
 
@@ -588,13 +605,16 @@ def _fix_screenshot_ratio(script: DemoScript) -> DemoScript:
     for idx, scene in candidates:
         if converted >= deficit:
             break
-        scenes[idx] = scene.model_copy(update={
-            "visual_type": "screenshot",
-            "diagram_spec": None,
-            "screenshot": ScreenshotSpec(url=routes[route_idx % len(routes)]),
-        })
-        log.info("Converted scene %d '%s' from diagram to screenshot (ratio fix)",
-                 idx + 1, scene.title)
+        scenes[idx] = scene.model_copy(
+            update={
+                "visual_type": "screenshot",
+                "diagram_spec": None,
+                "screenshot": ScreenshotSpec(url=routes[route_idx % len(routes)]),
+            }
+        )
+        log.info(
+            "Converted scene %d '%s' from diagram to screenshot (ratio fix)", idx + 1, scene.title
+        )
         route_idx += 1
         converted += 1
 
@@ -649,19 +669,25 @@ def _fix_consecutive_types(script: DemoScript) -> DemoScript:
                         removed_route = "/demos"
 
                 # Convert middle screenshot to a substantive diagram
-                scenes[mid] = old_scene.model_copy(update={
-                    "visual_type": "diagram",
-                    "screenshot": None,
-                    "diagram_spec": _generate_d2_from_scene(old_scene),
-                })
+                scenes[mid] = old_scene.model_copy(
+                    update={
+                        "visual_type": "diagram",
+                        "screenshot": None,
+                        "diagram_spec": _generate_d2_from_scene(old_scene),
+                    }
+                )
                 types[mid] = "diagram"
-                log.info("Broke consecutive screenshots: converted scene %d '%s' to diagram",
-                         mid + 1, old_scene.title)
+                log.info(
+                    "Broke consecutive screenshots: converted scene %d '%s' to diagram",
+                    mid + 1,
+                    old_scene.title,
+                )
 
                 # Compensate: convert a non-adjacent non-screenshot to screenshot
                 run_zone = set(range(max(0, i - 1), min(len(scenes), i + 4)))
                 candidates = [
-                    (j, s) for j, s in enumerate(scenes)
+                    (j, s)
+                    for j, s in enumerate(scenes)
                     if j not in run_zone and types[j] in ("diagram", "illustration")
                 ]
                 if candidates:
@@ -676,19 +702,30 @@ def _fix_consecutive_types(script: DemoScript) -> DemoScript:
                             can_convert = False
                     if can_convert:
                         route = removed_route or "/chat"
-                        new_url = f"http://localhost:5173{route}" if route != "/" else "http://localhost:5173/"
-                        scenes[comp_idx] = comp_scene.model_copy(update={
-                            "visual_type": "screenshot",
-                            "diagram_spec": None,
-                            "screenshot": ScreenshotSpec(url=new_url),
-                        })
+                        new_url = (
+                            f"http://localhost:5173{route}"
+                            if route != "/"
+                            else "http://localhost:5173/"
+                        )
+                        scenes[comp_idx] = comp_scene.model_copy(
+                            update={
+                                "visual_type": "screenshot",
+                                "diagram_spec": None,
+                                "screenshot": ScreenshotSpec(url=new_url),
+                            }
+                        )
                         types[comp_idx] = "screenshot"
-                        log.info("Compensated: converted scene %d '%s' to screenshot (%s)",
-                                 comp_idx + 1, comp_scene.title, route)
+                        log.info(
+                            "Compensated: converted scene %d '%s' to screenshot (%s)",
+                            comp_idx + 1,
+                            comp_scene.title,
+                            route,
+                        )
 
             elif types[i] == "diagram":
                 # Pick the least-used route to avoid triggering route concentration limits
                 from collections import Counter as _Counter
+
                 _route_counts: _Counter[str] = _Counter()
                 _route_limits = {"/chat": 3, "/": 2, "/demos": 2}
                 for _s in scenes:
@@ -708,27 +745,43 @@ def _fix_consecutive_types(script: DemoScript) -> DemoScript:
                     if _remaining > _best_remaining:
                         _best_remaining = _remaining
                         _best_route = _r
-                _new_url = f"http://localhost:5173{_best_route}" if _best_route != "/" else "http://localhost:5173/"
-                scenes[mid] = old_scene.model_copy(update={
-                    "visual_type": "screenshot",
-                    "diagram_spec": None,
-                    "screenshot": ScreenshotSpec(url=_new_url),
-                })
+                _new_url = (
+                    f"http://localhost:5173{_best_route}"
+                    if _best_route != "/"
+                    else "http://localhost:5173/"
+                )
+                scenes[mid] = old_scene.model_copy(
+                    update={
+                        "visual_type": "screenshot",
+                        "diagram_spec": None,
+                        "screenshot": ScreenshotSpec(url=_new_url),
+                    }
+                )
                 types[mid] = "screenshot"
-                log.info("Broke consecutive diagrams: converted scene %d '%s' to screenshot (%s)",
-                         mid + 1, old_scene.title, _best_route)
+                log.info(
+                    "Broke consecutive diagrams: converted scene %d '%s' to screenshot (%s)",
+                    mid + 1,
+                    old_scene.title,
+                    _best_route,
+                )
             elif types[i] == "chart":
-                scenes[mid] = old_scene.model_copy(update={
-                    "visual_type": "diagram",
-                    "diagram_spec": old_scene.diagram_spec or (
-                        f"direction: down\n"
-                        f"{old_scene.title.replace(':', ' -').replace('/', '-')}: "
-                        f"{{shape: rectangle; style.fill: '#2d2d2d'}}"
-                    ),
-                })
+                scenes[mid] = old_scene.model_copy(
+                    update={
+                        "visual_type": "diagram",
+                        "diagram_spec": old_scene.diagram_spec
+                        or (
+                            f"direction: down\n"
+                            f"{old_scene.title.replace(':', ' -').replace('/', '-')}: "
+                            f"{{shape: rectangle; style.fill: '#2d2d2d'}}"
+                        ),
+                    }
+                )
                 types[mid] = "diagram"
-                log.info("Broke consecutive charts: converted scene %d '%s' to diagram",
-                         mid + 1, old_scene.title)
+                log.info(
+                    "Broke consecutive charts: converted scene %d '%s' to diagram",
+                    mid + 1,
+                    old_scene.title,
+                )
             changed = True
 
     if changed:
@@ -742,9 +795,10 @@ def _fix_route_concentration(script: DemoScript) -> DemoScript:
     The revision model consistently fails to distribute screenshots across routes.
     This function reassigns excess same-route screenshots to underrepresented routes.
     """
-    from agents.demo_models import ScreenshotSpec
     from collections import Counter
     from urllib.parse import urlparse
+
+    from agents.demo_models import ScreenshotSpec
 
     routes = ["/", "/chat", "/demos"]
     # /chat screenshots are each visually unique (different questions seeded),
@@ -785,10 +839,7 @@ def _fix_route_concentration(script: DemoScript) -> DemoScript:
     for over_route, count in over_routes.items():
         excess = count - route_limits.get(over_route, 2)
         # Find indices of scenes using the over-route (prefer middle scenes)
-        indices = [
-            i for i, r in enumerate(scene_routes)
-            if r == over_route
-        ]
+        indices = [i for i, r in enumerate(scene_routes) if r == over_route]
         # Skip first and last occurrence, reassign from the middle
         reassign_indices = indices[1:-1] if len(indices) > 2 else indices[1:]
         reassigned = 0
@@ -798,17 +849,32 @@ def _fix_route_concentration(script: DemoScript) -> DemoScript:
             if under_routes:
                 # Reassign to under-represented route
                 target_route = under_routes[0]
-                new_url = f"http://localhost:5173{target_route}" if target_route != "/" else "http://localhost:5173/"
+                new_url = (
+                    f"http://localhost:5173{target_route}"
+                    if target_route != "/"
+                    else "http://localhost:5173/"
+                )
                 old_scene = patched_scenes[idx]
-                patched_scenes[idx] = old_scene.model_copy(update={
-                    "screenshot": ScreenshotSpec(
-                        url=new_url,
-                        viewport_width=old_scene.screenshot.viewport_width if old_scene.screenshot else 1920,
-                        viewport_height=old_scene.screenshot.viewport_height if old_scene.screenshot else 1080,
-                    ),
-                })
-                log.info("Reassigned scene %d '%s' from %s to %s",
-                         idx + 1, old_scene.title, over_route, target_route)
+                patched_scenes[idx] = old_scene.model_copy(
+                    update={
+                        "screenshot": ScreenshotSpec(
+                            url=new_url,
+                            viewport_width=old_scene.screenshot.viewport_width
+                            if old_scene.screenshot
+                            else 1920,
+                            viewport_height=old_scene.screenshot.viewport_height
+                            if old_scene.screenshot
+                            else 1080,
+                        ),
+                    }
+                )
+                log.info(
+                    "Reassigned scene %d '%s' from %s to %s",
+                    idx + 1,
+                    old_scene.title,
+                    over_route,
+                    target_route,
+                )
                 route_counts[over_route] -= 1
                 route_counts[target_route] += 1
                 scene_routes[idx] = target_route
@@ -818,17 +884,24 @@ def _fix_route_concentration(script: DemoScript) -> DemoScript:
             else:
                 # All routes maxed — try diagram conversion first
                 total_scenes = len(patched_scenes)
-                current_ss = sum(1 for s in patched_scenes if s.visual_type in ("screenshot", "screencast"))
+                current_ss = sum(
+                    1 for s in patched_scenes if s.visual_type in ("screenshot", "screencast")
+                )
                 needed_ss = (total_scenes + 1) // 2
                 if current_ss > needed_ss:
                     old_scene = patched_scenes[idx]
-                    patched_scenes[idx] = old_scene.model_copy(update={
-                        "visual_type": "diagram",
-                        "screenshot": None,
-                        "diagram_spec": _generate_d2_from_scene(old_scene),
-                    })
-                    log.info("Converted scene %d '%s' from screenshot to diagram (all routes full)",
-                             idx + 1, old_scene.title)
+                    patched_scenes[idx] = old_scene.model_copy(
+                        update={
+                            "visual_type": "diagram",
+                            "screenshot": None,
+                            "diagram_spec": _generate_d2_from_scene(old_scene),
+                        }
+                    )
+                    log.info(
+                        "Converted scene %d '%s' from screenshot to diagram (all routes full)",
+                        idx + 1,
+                        old_scene.title,
+                    )
                     route_counts[over_route] -= 1
                     scene_routes[idx] = None
                     reassigned += 1
@@ -839,17 +912,32 @@ def _fix_route_concentration(script: DemoScript) -> DemoScript:
                     other_routes = [r for r in routes if r != over_route]
                     if other_routes:
                         best = min(other_routes, key=lambda r: route_counts.get(r, 0))
-                        new_url = f"http://localhost:5173{best}" if best != "/" else "http://localhost:5173/"
+                        new_url = (
+                            f"http://localhost:5173{best}"
+                            if best != "/"
+                            else "http://localhost:5173/"
+                        )
                         old_scene = patched_scenes[idx]
-                        patched_scenes[idx] = old_scene.model_copy(update={
-                            "screenshot": ScreenshotSpec(
-                                url=new_url,
-                                viewport_width=old_scene.screenshot.viewport_width if old_scene.screenshot else 1920,
-                                viewport_height=old_scene.screenshot.viewport_height if old_scene.screenshot else 1080,
-                            ),
-                        })
-                        log.info("Force-reassigned scene %d '%s' from %s to %s (all routes at limit)",
-                                 idx + 1, old_scene.title, over_route, best)
+                        patched_scenes[idx] = old_scene.model_copy(
+                            update={
+                                "screenshot": ScreenshotSpec(
+                                    url=new_url,
+                                    viewport_width=old_scene.screenshot.viewport_width
+                                    if old_scene.screenshot
+                                    else 1920,
+                                    viewport_height=old_scene.screenshot.viewport_height
+                                    if old_scene.screenshot
+                                    else 1080,
+                                ),
+                            }
+                        )
+                        log.info(
+                            "Force-reassigned scene %d '%s' from %s to %s (all routes at limit)",
+                            idx + 1,
+                            old_scene.title,
+                            over_route,
+                            best,
+                        )
                         route_counts[over_route] -= 1
                         route_counts[best] += 1
                         scene_routes[idx] = best
@@ -894,12 +982,16 @@ def _fix_fabricated_charts(script: DemoScript) -> DemoScript:
             log.info(
                 "Converting scene %d '%s' from chart to diagram — "
                 "chart data looks fabricated (all multiples of 5: %s)",
-                i + 1, scene.title, values,
+                i + 1,
+                scene.title,
+                values,
             )
-            patched[i] = scene.model_copy(update={
-                "visual_type": "diagram",
-                "diagram_spec": _generate_d2_from_scene(scene),
-            })
+            patched[i] = scene.model_copy(
+                update={
+                    "visual_type": "diagram",
+                    "diagram_spec": _generate_d2_from_scene(scene),
+                }
+            )
             changed = True
 
     if changed:
@@ -948,6 +1040,7 @@ async def critique_and_revise(
 
     Loop: deterministic checks → LLM critique → if issues → revise → repeat. Max MAX_ITERATIONS.
     """
+
     def progress(msg: str) -> None:
         if on_progress:
             on_progress(msg)
@@ -963,7 +1056,9 @@ async def critique_and_revise(
         word_check = _check_word_count(current_script, target_seconds)
         variety_check = _check_visual_variety(current_script)
         intro_check = _check_intro_outro_length(current_script)
-        deterministic_failures = [d for d in [word_check, variety_check, intro_check] if d is not None]
+        deterministic_failures = [
+            d for d in [word_check, variety_check, intro_check] if d is not None
+        ]
 
         if deterministic_failures:
             fail_names = [d.name for d in deterministic_failures]
@@ -971,7 +1066,11 @@ async def critique_and_revise(
 
         # LLM Critique
         critique_prompt = _build_critique_prompt(
-            current_script, research_context, style_guide, framework, target_seconds,
+            current_script,
+            research_context,
+            style_guide,
+            framework,
+            target_seconds,
             voice_examples=voice_examples,
         )
         critique_result = await critique_agent.run(critique_prompt)
@@ -984,8 +1083,12 @@ async def critique_and_revise(
             report.dimensions.append(det_dim)
 
         # Re-evaluate overall pass after merging
-        critical_count = sum(1 for d in report.dimensions if not d.passed and d.severity == "critical")
-        important_count = sum(1 for d in report.dimensions if not d.passed and d.severity == "important")
+        critical_count = sum(
+            1 for d in report.dimensions if not d.passed and d.severity == "critical"
+        )
+        important_count = sum(
+            1 for d in report.dimensions if not d.passed and d.severity == "important"
+        )
         report.overall_pass = critical_count == 0 and important_count <= 1
 
         progress(f"Quality: {critical_count} critical, {important_count} important issues")
@@ -997,7 +1100,12 @@ async def critique_and_revise(
         # Revise — include word count targets in revision prompt
         progress("Revising script...")
         revision_prompt = _build_revision_prompt(
-            current_script, report, research_context, style_guide, framework, target_seconds,
+            current_script,
+            report,
+            research_context,
+            style_guide,
+            framework,
+            target_seconds,
             voice_examples=voice_examples,
             forbidden_terms=forbidden_terms,
         )
@@ -1009,7 +1117,7 @@ async def critique_and_revise(
         # changed visual_type (e.g. diagram→screenshot), clearing the old spec is correct.
         if len(revised.scenes) == len(current_script.scenes):
             patched_scenes = []
-            for old_scene, new_scene in zip(current_script.scenes, revised.scenes):
+            for old_scene, new_scene in zip(current_script.scenes, revised.scenes, strict=False):
                 patches = {}
                 same_type = old_scene.visual_type == new_scene.visual_type
                 # Restore diagram_spec if revision cleared it AND type is still diagram
@@ -1033,11 +1141,16 @@ async def critique_and_revise(
                     if not new_scene.illustration:
                         patches["illustration"] = old_scene.illustration
                 # Restore illustration visual_type if revision changed it away
-                if old_scene.visual_type == "illustration" and new_scene.visual_type != "illustration":
+                if (
+                    old_scene.visual_type == "illustration"
+                    and new_scene.visual_type != "illustration"
+                ):
                     if new_scene.visual_type in ("diagram", "chart"):
                         patches["visual_type"] = "illustration"
                         patches["illustration"] = old_scene.illustration
-                        log.info("Restored illustration visual_type for scene '%s'", old_scene.title)
+                        log.info(
+                            "Restored illustration visual_type for scene '%s'", old_scene.title
+                        )
                 if patches:
                     new_scene = new_scene.model_copy(update=patches)
                 patched_scenes.append(new_scene)
@@ -1061,26 +1174,42 @@ async def critique_and_revise(
             log.warning(
                 "Revision shrank narration from %d to %d words (%.0f%% loss). "
                 "Restoring narration for non-flagged scenes.",
-                old_wc, new_wc, (1 - new_wc / old_wc) * 100,
+                old_wc,
+                new_wc,
+                (1 - new_wc / old_wc) * 100,
             )
             # Identify which scenes had content issues flagged
             flagged_scenes = set()
             for d in report.dimensions:
-                if not d.passed and d.name in ("factual_grounding", "honesty_accuracy", "voice_consistency"):
+                if not d.passed and d.name in (
+                    "factual_grounding",
+                    "honesty_accuracy",
+                    "voice_consistency",
+                ):
                     for issue in d.issues:
                         # Extract scene numbers/titles from issue text
                         import re as _re
+
                         for m in _re.finditer(r"[Ss]cene (\d+)", issue):
                             flagged_scenes.add(int(m.group(1)) - 1)  # 0-indexed
 
             if len(revised.scenes) == len(current_script.scenes):
                 restored_scenes = []
-                for idx, (old_sc, new_sc) in enumerate(zip(current_script.scenes, revised.scenes)):
-                    if idx not in flagged_scenes and len(new_sc.narration.split()) < len(old_sc.narration.split()) * 0.70:
+                for idx, (old_sc, new_sc) in enumerate(
+                    zip(current_script.scenes, revised.scenes, strict=False)
+                ):
+                    if (
+                        idx not in flagged_scenes
+                        and len(new_sc.narration.split()) < len(old_sc.narration.split()) * 0.70
+                    ):
                         # Restore longer narration but keep visual changes
                         new_sc = new_sc.model_copy(update={"narration": old_sc.narration})
-                        log.info("Restored narration for scene '%s' (%d→%d words)",
-                                 old_sc.title, len(old_sc.narration.split()), len(new_sc.narration.split()))
+                        log.info(
+                            "Restored narration for scene '%s' (%d→%d words)",
+                            old_sc.title,
+                            len(old_sc.narration.split()),
+                            len(new_sc.narration.split()),
+                        )
                     restored_scenes.append(new_sc)
                 revised = revised.model_copy(update={"scenes": restored_scenes})
                 log.info("After restoration: %d words (was %d)", _word_count(revised), new_wc)
@@ -1106,7 +1235,14 @@ async def critique_and_revise(
     progress(f"WARNING: Max iterations ({MAX_ITERATIONS}) reached, returning best version")
     # Do one final evaluation
     final_critique = await critique_agent.run(
-        _build_critique_prompt(current_script, research_context, style_guide, framework, target_seconds, voice_examples=voice_examples)
+        _build_critique_prompt(
+            current_script,
+            research_context,
+            style_guide,
+            framework,
+            target_seconds,
+            voice_examples=voice_examples,
+        )
     )
     final_report = final_critique.output
 
@@ -1125,8 +1261,12 @@ async def critique_and_revise(
         if result:
             final_report.dimensions.append(result)
 
-    critical_count = sum(1 for d in final_report.dimensions if not d.passed and d.severity == "critical")
-    important_count = sum(1 for d in final_report.dimensions if not d.passed and d.severity == "important")
+    critical_count = sum(
+        1 for d in final_report.dimensions if not d.passed and d.severity == "critical"
+    )
+    important_count = sum(
+        1 for d in final_report.dimensions if not d.passed and d.severity == "important"
+    )
     final_report.overall_pass = critical_count == 0 and important_count <= 1
 
     return current_script, final_report

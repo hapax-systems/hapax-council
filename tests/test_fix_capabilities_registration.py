@@ -1,9 +1,5 @@
 """Tests for fix capabilities auto-registration."""
 
-from unittest.mock import patch
-
-import pytest
-
 
 class TestLoadBuiltinCapabilities:
     """Tests for load_builtin_capabilities()."""
@@ -11,6 +7,7 @@ class TestLoadBuiltinCapabilities:
     def setup_method(self):
         """Clear registry before each test."""
         import shared.fix_capabilities as mod
+
         mod._REGISTRY.clear()
 
     def test_load_registers_ollama(self):

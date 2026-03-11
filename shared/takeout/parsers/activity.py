@@ -4,6 +4,7 @@ Handles Search, YouTube, Gemini, and other My Activity exports.
 These share a common JSON format: array of {title, time, subtitles, ...}.
 Some exports use HTML format instead — we handle both.
 """
+
 from __future__ import annotations
 
 import json
@@ -154,7 +155,7 @@ def _parse_html(
 
         # Try to extract timestamp
         time_match = re.search(
-            r'(\w+ \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?)',
+            r"(\w+ \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?)",
             entry,
         )
         timestamp = None

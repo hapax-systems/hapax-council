@@ -1,4 +1,5 @@
 """Tests for VoiceDaemon pipeline lifecycle management."""
+
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +10,7 @@ import pytest
 from agents.hapax_voice.config import VoiceConfig
 
 
-def _make_daemon(backend: str = "local") -> "VoiceDaemon":
+def _make_daemon(backend: str = "local") -> VoiceDaemon:
     """Create a VoiceDaemon with mocked subsystems for testing."""
     from agents.hapax_voice.__main__ import VoiceDaemon
 
@@ -69,9 +70,7 @@ class TestStartPipeline:
     async def test_gemini_pipeline_starts(self) -> None:
         daemon = _make_daemon(backend="gemini")
 
-        with patch(
-            "agents.hapax_voice.gemini_live.GeminiLiveSession"
-        ) as mock_session_cls:
+        with patch("agents.hapax_voice.gemini_live.GeminiLiveSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.is_connected = True
             mock_session_cls.return_value = mock_session
@@ -205,21 +204,24 @@ class TestConfigBackendField:
 
 def test_daemon_creates_perception_engine():
     """VoiceDaemon initializes a PerceptionEngine."""
+    from unittest.mock import MagicMock, patch
+
     from agents.hapax_voice.__main__ import VoiceDaemon
     from agents.hapax_voice.config import VoiceConfig
-    from unittest.mock import patch, MagicMock
 
-    with patch("agents.hapax_voice.__main__.AudioInputStream"), \
-         patch("agents.hapax_voice.__main__.WorkspaceMonitor") as MockWM, \
-         patch("agents.hapax_voice.__main__.TTSManager"), \
-         patch("agents.hapax_voice.__main__.ChimePlayer"), \
-         patch("agents.hapax_voice.__main__.EventLog"), \
-         patch("agents.hapax_voice.__main__.VoiceTracer"):
+    with (
+        patch("agents.hapax_voice.__main__.AudioInputStream"),
+        patch("agents.hapax_voice.__main__.WorkspaceMonitor") as MockWM,
+        patch("agents.hapax_voice.__main__.TTSManager"),
+        patch("agents.hapax_voice.__main__.ChimePlayer"),
+        patch("agents.hapax_voice.__main__.EventLog"),
+        patch("agents.hapax_voice.__main__.VoiceTracer"),
+    ):
         MockWM.return_value.set_notification_queue = MagicMock()
         MockWM.return_value.set_presence = MagicMock()
         MockWM.return_value.set_event_log = MagicMock()
         MockWM.return_value.set_tracer = MagicMock()
         daemon = VoiceDaemon(cfg=VoiceConfig())
-        assert hasattr(daemon, 'perception')
-        assert hasattr(daemon, 'governor')
-        assert hasattr(daemon, '_frame_gate')
+        assert hasattr(daemon, "perception")
+        assert hasattr(daemon, "governor")
+        assert hasattr(daemon, "_frame_gate")

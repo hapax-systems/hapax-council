@@ -1,4 +1,5 @@
 """Tests for hapax_voice presence detector."""
+
 from __future__ import annotations
 
 import struct
@@ -101,20 +102,22 @@ def test_load_model_lazy() -> None:
     with patch(
         "agents.hapax_voice.presence.load_silero_vad",
         create=True,
-    ) as mock_load:
+    ):
         # Patch the import inside load_model
         import agents.hapax_voice.presence as mod
 
-        with patch.object(mod, "__import__", create=True):
-            with patch.dict(
+        with (
+            patch.object(mod, "__import__", create=True),
+            patch.dict(
                 "sys.modules",
                 {"silero_vad": MagicMock(load_silero_vad=MagicMock(return_value=fake_model))},
-            ):
-                model = det.load_model()
-                assert model is fake_model
-                # Second call returns cached
-                model2 = det.load_model()
-                assert model2 is fake_model
+            ),
+        ):
+            model = det.load_model()
+            assert model is fake_model
+            # Second call returns cached
+            model2 = det.load_model()
+            assert model2 is fake_model
 
 
 def test_latest_vad_confidence_stored() -> None:

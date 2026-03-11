@@ -1,4 +1,5 @@
 """Tests for voice tool config fields."""
+
 from agents.hapax_voice.config import VoiceConfig
 
 

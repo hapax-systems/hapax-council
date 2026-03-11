@@ -6,10 +6,10 @@ analyzer uses as its system knowledge prompt.
 
 Output: ~/.local/share/hapax-voice/screen_context.md
 """
+
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 OUTPUT_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "screen_context.md"
@@ -29,7 +29,9 @@ def get_docker_services() -> str:
     try:
         result = subprocess.run(
             ["docker", "compose", "ps", "--format", "table {{.Name}}\t{{.Status}}\t{{.Ports}}"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
             cwd=str(llm_stack) if llm_stack.exists() else None,
         )
         return result.stdout.strip()
@@ -38,7 +40,16 @@ def get_docker_services() -> str:
 
 
 def get_systemd_user_units() -> str:
-    output = run_cmd(["systemctl", "--user", "list-units", "--type=service,timer", "--state=active", "--no-pager"])
+    output = run_cmd(
+        [
+            "systemctl",
+            "--user",
+            "list-units",
+            "--type=service,timer",
+            "--state=active",
+            "--no-pager",
+        ]
+    )
     return output
 
 
@@ -63,7 +74,9 @@ def get_agent_list() -> str:
     agents_dir = Path.home() / "projects" / "ai-agents" / "agents"
     if not agents_dir.exists():
         return "(agents directory not found)"
-    agents = sorted(d.name for d in agents_dir.iterdir() if d.is_dir() and not d.name.startswith("_"))
+    agents = sorted(
+        d.name for d in agents_dir.iterdir() if d.is_dir() and not d.name.startswith("_")
+    )
     return "\n".join(f"- {a}" for a in agents)
 
 

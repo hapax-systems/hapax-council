@@ -1,4 +1,5 @@
 """Workspace awareness orchestrator composing screen, webcam, and analysis."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,9 +8,9 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from agents.hapax_voice.hyprland_listener import FocusEvent, HyprlandEventListener
 from agents.hapax_voice.notification_queue import VoiceNotification
 from agents.hapax_voice.screen_capturer import ScreenCapturer
-from agents.hapax_voice.hyprland_listener import HyprlandEventListener, FocusEvent
 from agents.hapax_voice.screen_models import (
     CameraConfig,
     WorkspaceAnalysis,
@@ -114,7 +115,9 @@ class WorkspaceMonitor:
     def set_tracer(self, tracer) -> None:
         self._tracer = tracer
 
-    def _emit_analysis_event(self, analysis: WorkspaceAnalysis, *, latency_ms: int, images_sent: int) -> None:
+    def _emit_analysis_event(
+        self, analysis: WorkspaceAnalysis, *, latency_ms: int, images_sent: int
+    ) -> None:
         if self._event_log is None:
             return
         self._event_log.emit(
@@ -192,7 +195,7 @@ class WorkspaceMonitor:
             return ""
         lines = ["Open windows:"]
         for c in clients:
-            lines.append(f"  - [{c.app_class}] \"{c.title}\" on workspace {c.workspace_id}")
+            lines.append(f'  - [{c.app_class}] "{c.title}" on workspace {c.workspace_id}')
         return "\n".join(lines)
 
     async def _capture_and_analyze(self) -> None:
@@ -233,7 +236,7 @@ class WorkspaceMonitor:
         )
 
         t0 = time.monotonic()
-        with trace_cm as trace:
+        with trace_cm:
             analysis = await self._analyzer.analyze(
                 screen_b64=screen_b64,
                 operator_b64=operator_b64,
@@ -262,6 +265,7 @@ class WorkspaceMonitor:
         """Write latest analysis to shared state file for cockpit API."""
         import json
         from pathlib import Path
+
         state_path = Path.home() / ".local" / "share" / "hapax-voice" / "workspace_state.json"
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -291,10 +295,7 @@ class WorkspaceMonitor:
             return
 
         for issue in analysis.issues:
-            if (
-                issue.severity == "error"
-                and issue.confidence >= self.proactive_min_confidence
-            ):
+            if issue.severity == "error" and issue.confidence >= self.proactive_min_confidence:
                 self._notification_queue.enqueue(
                     VoiceNotification(
                         title="Workspace Alert",
@@ -339,7 +340,9 @@ class WorkspaceMonitor:
                         detected=result.detected,
                         count=result.count,
                     )
-                    self._emit_face_event(detected=result.detected, count=result.count, latency_ms=latency_ms)
+                    self._emit_face_event(
+                        detected=result.detected, count=result.count, latency_ms=latency_ms
+                    )
             except Exception as exc:
                 log.debug("Face detection loop error: %s", exc)
             await asyncio.sleep(self._face_interval_s)

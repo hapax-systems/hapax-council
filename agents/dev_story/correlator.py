@@ -1,10 +1,11 @@
 """Correlation engine — joins conversation file changes to git commits."""
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
 
-from agents.dev_story.models import Correlation, FileChange, CommitFile
+from agents.dev_story.models import CommitFile, Correlation, FileChange
 
 log = logging.getLogger(__name__)
 
@@ -40,9 +41,9 @@ def _time_diff_minutes(ts1: str, ts2: str) -> float | None:
         return None
     # Ensure both are UTC for comparison
     if dt1.tzinfo is None:
-        dt1 = dt1.replace(tzinfo=timezone.utc)
+        dt1 = dt1.replace(tzinfo=UTC)
     if dt2.tzinfo is None:
-        dt2 = dt2.replace(tzinfo=timezone.utc)
+        dt2 = dt2.replace(tzinfo=UTC)
     return abs((dt2 - dt1).total_seconds()) / 60.0
 
 

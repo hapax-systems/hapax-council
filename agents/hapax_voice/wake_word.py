@@ -1,10 +1,11 @@
 """Wake word detection wrapper for openwakeword."""
+
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 
@@ -73,7 +74,8 @@ class WakeWordDetector:
                     log.warning(
                         "Custom model incompatible with OWW predict(): %s. "
                         "Falling back to built-in '%s'",
-                        exc, _FALLBACK_MODEL,
+                        exc,
+                        _FALLBACK_MODEL,
                     )
 
             # Fall back to built-in model

@@ -6,22 +6,23 @@ Four sub-checks:
 3. CI coverage rules
 4. Mutual awareness constraints
 """
+
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 
 from agents.drift_detector import DriftItem
+from shared.ci_discovery import (
+    discover_agents,
+    discover_mcp_servers,
+    discover_repos,
+    discover_services,
+    discover_timers,
+)
 from shared.document_registry import (
     DocumentRegistry,
     load_registry,
-)
-from shared.ci_discovery import (
-    discover_agents,
-    discover_timers,
-    discover_services,
-    discover_repos,
-    discover_mcp_servers,
 )
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ def _expand_path(p: str) -> Path:
 
 # ── Sub-check 1: Required document existence ─────────────────────────
 
+
 def check_required_docs(registry: DocumentRegistry) -> list[DriftItem]:
     """Check that every declared required_doc exists on disk."""
     items: list[DriftItem] = []
@@ -42,18 +44,21 @@ def check_required_docs(registry: DocumentRegistry) -> list[DriftItem]:
         for doc in repo.required_docs:
             doc_path = repo_path / doc["path"]
             if not doc_path.is_file():
-                items.append(DriftItem(
-                    severity="medium",
-                    category="missing-required-doc",
-                    doc_file=f"{repo_name}/{doc['path']}",
-                    doc_claim=f"Registry requires {doc['path']} in {repo_name}",
-                    reality="File does not exist",
-                    suggestion=f"Create {doc['path']} in {repo_name} with archetype '{doc.get('archetype', 'unknown')}'",
-                ))
+                items.append(
+                    DriftItem(
+                        severity="medium",
+                        category="missing-required-doc",
+                        doc_file=f"{repo_name}/{doc['path']}",
+                        doc_claim=f"Registry requires {doc['path']} in {repo_name}",
+                        reality="File does not exist",
+                        suggestion=f"Create {doc['path']} in {repo_name} with archetype '{doc.get('archetype', 'unknown')}'",
+                    )
+                )
     return items
 
 
 # ── Sub-check 2: Archetype section validation ────────────────────────
+
 
 def check_archetype_sections(registry: DocumentRegistry) -> list[DriftItem]:
     """Check that documents have the required sections for their archetype."""
@@ -79,18 +84,21 @@ def check_archetype_sections(registry: DocumentRegistry) -> list[DriftItem]:
 
             for section in archetype.required_sections:
                 if section not in content:
-                    items.append(DriftItem(
-                        severity="medium",
-                        category="missing-section",
-                        doc_file=f"{repo_name}/{doc['path']}",
-                        doc_claim=f"Archetype '{archetype_name}' requires section: {section}",
-                        reality=f"Section '{section}' not found in {doc['path']}",
-                        suggestion=f"Add '{section}' section to {repo_name}/{doc['path']}",
-                    ))
+                    items.append(
+                        DriftItem(
+                            severity="medium",
+                            category="missing-section",
+                            doc_file=f"{repo_name}/{doc['path']}",
+                            doc_claim=f"Archetype '{archetype_name}' requires section: {section}",
+                            reality=f"Section '{section}' not found in {doc['path']}",
+                            suggestion=f"Add '{section}' section to {repo_name}/{doc['path']}",
+                        )
+                    )
     return items
 
 
 # ── Sub-check 3: CI coverage rules ──────────────────────────────────
+
 
 def check_coverage_rules(
     registry: DocumentRegistry,
@@ -130,7 +138,7 @@ def check_coverage_rules(
             section_start = content.find(rule.reference_section)
             if section_start >= 0:
                 # Find the next ## heading after this section
-                rest = content[section_start + len(rule.reference_section):]
+                rest = content[section_start + len(rule.reference_section) :]
                 next_section = rest.find("\n## ")
                 if next_section >= 0:
                     search_text = rest[:next_section]
@@ -147,19 +155,22 @@ def check_coverage_rules(
 
             if not found:
                 short_ref = rule.reference_doc.replace(str(Path.home()), "~")
-                items.append(DriftItem(
-                    severity=rule.severity,
-                    category="coverage-gap",
-                    doc_file=short_ref,
-                    doc_claim=rule.description,
-                    reality=f"{rule.ci_type} '{ci_name}' not found in {rule.reference_section or 'document'}",
-                    suggestion=f"Add '{ci_name}' to {short_ref}",
-                ))
+                items.append(
+                    DriftItem(
+                        severity=rule.severity,
+                        category="coverage-gap",
+                        doc_file=short_ref,
+                        doc_claim=rule.description,
+                        reality=f"{rule.ci_type} '{ci_name}' not found in {rule.reference_section or 'document'}",
+                        suggestion=f"Add '{ci_name}' to {short_ref}",
+                    )
+                )
 
     return items
 
 
 # ── Sub-check 4: Mutual awareness ───────────────────────────────────
+
 
 def check_mutual_awareness(
     registry: DocumentRegistry,
@@ -184,25 +195,29 @@ def check_mutual_awareness(
             if not all(p.is_file() for p in paths):
                 missing = [str(p) for p in paths if not p.is_file()]
                 for m in missing:
-                    items.append(DriftItem(
-                        severity=rule.severity,
-                        category="boundary-mismatch",
-                        doc_file=m.replace(str(Path.home()), "~"),
-                        doc_claim=rule.description,
-                        reality="File does not exist",
-                        suggestion=f"Create or copy file: {m}",
-                    ))
+                    items.append(
+                        DriftItem(
+                            severity=rule.severity,
+                            category="boundary-mismatch",
+                            doc_file=m.replace(str(Path.home()), "~"),
+                            doc_claim=rule.description,
+                            reality="File does not exist",
+                            suggestion=f"Create or copy file: {m}",
+                        )
+                    )
                 continue
             contents = [p.read_bytes() for p in paths]
             if len(set(contents)) > 1:
-                items.append(DriftItem(
-                    severity=rule.severity,
-                    category="boundary-mismatch",
-                    doc_file=", ".join(str(p).replace(str(Path.home()), "~") for p in paths),
-                    doc_claim=rule.description,
-                    reality="Files differ",
-                    suggestion="Diff and reconcile the files, then copy to both locations",
-                ))
+                items.append(
+                    DriftItem(
+                        severity=rule.severity,
+                        category="boundary-mismatch",
+                        doc_file=", ".join(str(p).replace(str(Path.home()), "~") for p in paths),
+                        doc_claim=rule.description,
+                        reality="Files differ",
+                        suggestion="Diff and reconcile the files, then copy to both locations",
+                    )
+                )
 
         elif rule.type == "spec_reference":
             phrase = rule.target_phrase
@@ -217,14 +232,16 @@ def check_mutual_awareness(
                 except OSError:
                     continue
                 if phrase.lower() not in content.lower():
-                    items.append(DriftItem(
-                        severity=rule.severity,
-                        category="spec-reference-gap",
-                        doc_file=f"{repo_name}/CLAUDE.md",
-                        doc_claim=rule.description,
-                        reality=f"'{phrase}' not found in {repo_name}/CLAUDE.md",
-                        suggestion=f"Add reference to {phrase} in {repo_name}/CLAUDE.md",
-                    ))
+                    items.append(
+                        DriftItem(
+                            severity=rule.severity,
+                            category="spec-reference-gap",
+                            doc_file=f"{repo_name}/CLAUDE.md",
+                            doc_claim=rule.description,
+                            reality=f"'{phrase}' not found in {repo_name}/CLAUDE.md",
+                            suggestion=f"Add reference to {phrase} in {repo_name}/CLAUDE.md",
+                        )
+                    )
 
         elif rule.type == "repo_registry":
             registry_path = _expand_path(rule.registry_doc)
@@ -238,19 +255,22 @@ def check_mutual_awareness(
             for repo_name in known_repos:
                 # Check if repo name appears in registry doc
                 if repo_name not in content:
-                    items.append(DriftItem(
-                        severity=rule.severity,
-                        category="repo-awareness-gap",
-                        doc_file=rule.registry_doc.replace(str(Path.home()), "~"),
-                        doc_claim=rule.description,
-                        reality=f"Repo '{repo_name}' not found in registry document",
-                        suggestion=f"Add '{repo_name}' to {rule.registry_section or 'document'}",
-                    ))
+                    items.append(
+                        DriftItem(
+                            severity=rule.severity,
+                            category="repo-awareness-gap",
+                            doc_file=rule.registry_doc.replace(str(Path.home()), "~"),
+                            doc_claim=rule.description,
+                            reality=f"Repo '{repo_name}' not found in registry document",
+                            suggestion=f"Add '{repo_name}' to {rule.registry_section or 'document'}",
+                        )
+                    )
 
     return items
 
 
 # ── Main entry point ─────────────────────────────────────────────────
+
 
 def check_document_registry(
     *,
@@ -265,6 +285,7 @@ def check_document_registry(
     if registry is None:
         if registry_path is None:
             from shared.config import HAPAXROMANA_DIR
+
             registry_path = HAPAXROMANA_DIR / "docs" / "document-registry.yaml"
         registry = load_registry(path=registry_path)
 

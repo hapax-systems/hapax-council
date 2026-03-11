@@ -1,4 +1,5 @@
 """Screen capture via grim with downscaling."""
+
 from __future__ import annotations
 
 import base64

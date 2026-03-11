@@ -1,8 +1,7 @@
 """Tests for Langfuse pagination limits in activity_analyzer and profiler_sources."""
-from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone
 
-import pytest
+from datetime import UTC, datetime
+from unittest.mock import patch
 
 
 def _make_page(n_items: int, total: int) -> dict:
@@ -15,9 +14,9 @@ def _make_page(n_items: int, total: int) -> dict:
 
 def test_activity_analyzer_traces_pagination_limit():
     """collect_langfuse stops after MAX_PAGES even if more data exists."""
-    from agents.activity_analyzer import collect_langfuse, MAX_PAGES
+    from agents.activity_analyzer import MAX_PAGES, collect_langfuse
 
-    since = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    since = datetime(2025, 1, 1, tzinfo=UTC)
 
     # Mock returns 100 items per page, claims 5000 total (50 pages needed)
     call_count = 0
@@ -29,7 +28,7 @@ def test_activity_analyzer_traces_pagination_limit():
 
     with patch("agents.activity_analyzer._langfuse_api", side_effect=fake_api):
         with patch("agents.activity_analyzer.LANGFUSE_PK", "pk-test"):
-            result = collect_langfuse(since)
+            collect_langfuse(since)
 
     # Should have fetched MAX_PAGES pages of traces + MAX_PAGES of observations
     # Each pagination loop is capped at MAX_PAGES
@@ -52,7 +51,8 @@ def test_profiler_sources_traces_pagination_limit():
     with patch("agents.profiler_sources._langfuse_get", side_effect=fake_get):
         with patch("agents.profiler_sources._LANGFUSE_PK", "pk-test"):
             from agents.profiler_sources import read_langfuse
-            result = read_langfuse(lookback_days=7)
+
+            read_langfuse(lookback_days=7)
 
     # MAX_PAGES is 20 in profiler_sources, so traces + observations <= 40 calls
     assert call_count <= 42  # 20 traces + 20 observations + slack

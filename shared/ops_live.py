@@ -4,15 +4,16 @@ Reusable functions for fetching current infrastructure state from
 files and HTTP endpoints. Returns formatted strings for LLM consumption.
 No pydantic-ai dependency.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from shared.ops_db import _load_json
 from shared.config import get_qdrant
+from shared.ops_db import _load_json
 
 log = logging.getLogger("shared.ops_live")
 
@@ -73,7 +74,7 @@ def query_langfuse_cost(days: int = 7) -> str:
     if not _lf.LANGFUSE_PK:
         return "Langfuse not available (no credentials configured)."
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     from_time = (now - timedelta(days=days)).isoformat()
 
     model_costs: dict[str, dict] = {}
@@ -119,7 +120,9 @@ def query_langfuse_cost(days: int = 7) -> str:
     lines = [f"LLM Cost Summary (last {days} days)"]
     lines.append(f"Total: ${total_cost:.4f} across {total_generations} generations")
     lines.append("")
-    lines.append(f"{'Model':35s} {'Calls':>6s} {'Cost':>10s} {'Tokens In':>12s} {'Tokens Out':>12s}")
+    lines.append(
+        f"{'Model':35s} {'Calls':>6s} {'Cost':>10s} {'Tokens In':>12s} {'Tokens Out':>12s}"
+    )
     lines.append("-" * 80)
     for model, stats in sorted(model_costs.items(), key=lambda x: -x[1]["cost"]):
         lines.append(

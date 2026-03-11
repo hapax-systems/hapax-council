@@ -1,4 +1,5 @@
 """Continuous audio input from PipeWire/ALSA via PyAudio callback stream."""
+
 from __future__ import annotations
 
 import asyncio
@@ -73,7 +74,8 @@ class AudioInputStream:
             )
             if result.returncode == 0:
                 log.info(
-                    "Set PipeWire default source to '%s'", self._source_name,
+                    "Set PipeWire default source to '%s'",
+                    self._source_name,
                 )
                 return True
             log.warning(
@@ -159,8 +161,6 @@ class AudioInputStream:
     async def get_frame(self, timeout: float = 1.0) -> bytes | None:
         loop = asyncio.get_running_loop()
         try:
-            return await loop.run_in_executor(
-                None, lambda: self._queue.get(timeout=timeout)
-            )
+            return await loop.run_in_executor(None, lambda: self._queue.get(timeout=timeout))
         except queue.Empty:
             return None

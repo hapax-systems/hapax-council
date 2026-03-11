@@ -1,7 +1,6 @@
 """Tests for shared.fix_capabilities.base — base types for fix capabilities."""
 
 import unittest
-from unittest.mock import AsyncMock
 
 from shared.fix_capabilities.base import (
     Action,
@@ -107,15 +106,11 @@ class TestFixProposal(unittest.TestCase):
         assert proposal.rationale == "Unit is in failed state"
 
     def test_is_safe_true(self):
-        proposal = FixProposal(
-            capability="docker", action_name="restart", safety=Safety.SAFE
-        )
+        proposal = FixProposal(capability="docker", action_name="restart", safety=Safety.SAFE)
         assert proposal.is_safe() is True
 
     def test_is_safe_false_for_destructive(self):
-        proposal = FixProposal(
-            capability="docker", action_name="prune", safety=Safety.DESTRUCTIVE
-        )
+        proposal = FixProposal(capability="docker", action_name="prune", safety=Safety.DESTRUCTIVE)
         assert proposal.is_safe() is False
 
 
@@ -129,9 +124,7 @@ class TestExecutionResult(unittest.TestCase):
         assert result.output == ""
 
     def test_failure_with_output(self):
-        result = ExecutionResult(
-            success=False, message="Failed", output="Error: timeout"
-        )
+        result = ExecutionResult(success=False, message="Failed", output="Error: timeout")
         assert result.success is False
         assert result.output == "Error: timeout"
 
@@ -229,9 +222,7 @@ class TestCapabilityABC(unittest.TestCase):
                 return True
 
             async def execute(self, proposal):
-                return ExecutionResult(
-                    success=True, message="executed", output="details"
-                )
+                return ExecutionResult(success=True, message="executed", output="details")
 
         cap = ExecCapability()
         proposal = FixProposal(capability="exec", action_name="run")
@@ -247,9 +238,7 @@ class TestCapabilityABC(unittest.TestCase):
             check_groups = {"grp"}
 
             async def gather_context(self, check):
-                return ProbeResult(
-                    capability=self.name, raw={"check_id": check}
-                )
+                return ProbeResult(capability=self.name, raw={"check_id": check})
 
             def available_actions(self):
                 return []

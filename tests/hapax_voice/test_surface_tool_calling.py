@@ -3,6 +3,7 @@
 Tests that tool handlers execute correctly when invoked by the LLM
 and that results flow back through the result_callback.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -92,7 +93,11 @@ class TestSearchDocumentsTool:
         params = _make_params({"query": "test query", "max_results": 3})
 
         mock_point = MagicMock()
-        mock_point.payload = {"filename": "doc1.md", "text": "result content", "source_service": "obsidian"}
+        mock_point.payload = {
+            "filename": "doc1.md",
+            "text": "result content",
+            "source_service": "obsidian",
+        }
         mock_point.score = 0.85
 
         mock_results = MagicMock()
@@ -256,7 +261,9 @@ class TestGetSystemStatusTool:
 
         mock_results = [{"name": "gpu-vram", "group": "gpu", "status": "ok", "message": "ok"}]
 
-        with patch("agents.hapax_voice.tools._run_health_checks", return_value=mock_results) as mock_checks:
+        with patch(
+            "agents.hapax_voice.tools._run_health_checks", return_value=mock_results
+        ) as mock_checks:
             await handler(params)
 
         mock_checks.assert_called_once_with("gpu")
@@ -481,7 +488,9 @@ class TestAnalyzeSceneTool:
         cfg = VoiceConfig(tools_enabled=True)
         # Pass no capturers
         register_tool_handlers(mock_llm, cfg, webcam_capturer=None, screen_capturer=None)
-        handlers = {call.args[0]: call.args[1] for call in mock_llm.register_function.call_args_list}
+        handlers = {
+            call.args[0]: call.args[1] for call in mock_llm.register_function.call_args_list
+        }
 
         params = _make_params({"cameras": ["operator", "screen"]})
         await handlers["analyze_scene"](params)
@@ -503,11 +512,15 @@ class TestAnalyzeSceneTool:
         mock_screen.reset_cooldown = MagicMock()
 
         register_tool_handlers(mock_llm, cfg, webcam_capturer=None, screen_capturer=mock_screen)
-        handlers = {call.args[0]: call.args[1] for call in mock_llm.register_function.call_args_list}
+        handlers = {
+            call.args[0]: call.args[1] for call in mock_llm.register_function.call_args_list
+        }
 
         params = _make_params({"cameras": ["screen"], "question": "What is on screen?"})
 
-        with patch("agents.hapax_voice.tools._vision_analyze", return_value="A terminal window is open"):
+        with patch(
+            "agents.hapax_voice.tools._vision_analyze", return_value="A terminal window is open"
+        ):
             await handlers["analyze_scene"](params)
 
         params.result_callback.assert_called_once()
@@ -591,6 +604,7 @@ class TestOpenAppTool:
 
     def setup_method(self):
         import agents.hapax_voice.desktop_tools as dt
+
         dt._pending_open = None
 
     @pytest.mark.asyncio
@@ -626,6 +640,7 @@ class TestConfirmOpenAppTool:
 
     def setup_method(self):
         import agents.hapax_voice.desktop_tools as dt
+
         dt._pending_open = None
 
     @pytest.mark.asyncio
@@ -644,6 +659,7 @@ class TestConfirmOpenAppTool:
     @pytest.mark.asyncio
     async def test_confirm_launches_app(self):
         import agents.hapax_voice.desktop_tools as dt
+
         dt._pending_open = {"command": "foot", "workspace": None}
 
         handlers = _setup_tools()
@@ -664,6 +680,7 @@ class TestConfirmOpenAppTool:
     @pytest.mark.asyncio
     async def test_confirm_with_workspace_uses_workspace_dispatch(self):
         import agents.hapax_voice.desktop_tools as dt
+
         dt._pending_open = {"command": "obsidian", "workspace": 4}
 
         handlers = _setup_tools()

@@ -1,4 +1,5 @@
 """Tests for agents.system_ops.query — system operations query agent."""
+
 from __future__ import annotations
 
 from agents.system_ops.query import (

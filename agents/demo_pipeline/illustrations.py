@@ -1,4 +1,5 @@
 """Illustration generation pipeline using Gemini image generation API."""
+
 from __future__ import annotations
 
 import logging
@@ -69,8 +70,7 @@ async def _generate_single(
         image_bytes = image.image.image_bytes
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(image_bytes)
-        log.info("Saved illustration: %s (%.1f KB)",
-                 output_path.name, len(image_bytes) / 1024)
+        log.info("Saved illustration: %s (%.1f KB)", output_path.name, len(image_bytes) / 1024)
         return output_path
 
     except Exception as e:

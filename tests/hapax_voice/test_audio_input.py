@@ -1,8 +1,9 @@
 """Tests for AudioInputStream — PyAudio wrapper with PipeWire source routing."""
+
 from __future__ import annotations
 
 import queue
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,13 +19,16 @@ def _make_stream(**kwargs):
     mock_result = MagicMock(returncode=pactl_rc, stderr=pactl_stderr)
     with (
         patch("agents.hapax_voice.audio_input.pyaudio.PyAudio", return_value=mock_pa),
-        patch("agents.hapax_voice.audio_input.subprocess.run", return_value=mock_result) as mock_run,
+        patch(
+            "agents.hapax_voice.audio_input.subprocess.run", return_value=mock_result
+        ) as mock_run,
     ):
         stream = AudioInputStream(**kwargs)
     return stream, mock_pa, mock_run
 
 
 # --- PipeWire source routing ---
+
 
 class TestPipeWireRouting:
     """AudioInputStream sets PipeWire default source via pactl."""
@@ -69,6 +73,7 @@ class TestPipeWireRouting:
 
 # --- Frame queue ---
 
+
 class TestFrameQueue:
     """Callback writes frames to queue, get_frame() retrieves them."""
 
@@ -107,6 +112,7 @@ class TestFrameQueue:
 
 
 # --- Lifecycle ---
+
 
 class TestLifecycle:
     """Start/stop manage the PyAudio stream."""
@@ -216,6 +222,7 @@ class TestLifecycle:
 
 
 # --- Frame size ---
+
 
 class TestFrameSize:
     """Verify frame size calculations."""

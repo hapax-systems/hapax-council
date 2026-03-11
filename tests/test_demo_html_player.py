@@ -1,14 +1,13 @@
 """Tests for the HTML player generator module."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from PIL import Image
 
 from agents.demo_models import DemoScene, DemoScript, ScreenshotSpec
 from agents.demo_pipeline.html_player import (
-    _audio_to_base64,
     _make_title_card_background,
     _png_to_jpeg_base64,
     generate_html_player,
@@ -213,9 +212,7 @@ class TestGenerateHtmlPlayerNoAudioFallback:
     def test_nonexistent_audio_dir(self, tmp_path: Path) -> None:
         script = _make_script()
         out = tmp_path / "player.html"
-        generate_html_player(
-            script, {}, audio_dir=tmp_path / "no-such-dir", output_path=out
-        )
+        generate_html_player(script, {}, audio_dir=tmp_path / "no-such-dir", output_path=out)
 
         html = out.read_text()
         assert "data:audio" not in html

@@ -1,7 +1,8 @@
 """Nudge action endpoints — act on or dismiss nudges."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -47,11 +48,13 @@ def _record(source_id: str, action: str) -> NudgeActionResponse:
     title = nudge.title if hasattr(nudge, "title") else nudge.get("title", source_id)
     category = nudge.category if hasattr(nudge, "category") else nudge.get("category", "unknown")
 
-    record_decision(Decision(
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        nudge_title=title,
-        nudge_category=category,
-        action=action,
-    ))
+    record_decision(
+        Decision(
+            timestamp=datetime.now(UTC).isoformat(),
+            nudge_title=title,
+            nudge_category=category,
+            action=action,
+        )
+    )
 
     return NudgeActionResponse(status="ok", source_id=source_id, action=action)

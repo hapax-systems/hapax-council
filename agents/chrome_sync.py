@@ -8,6 +8,7 @@ Usage:
     uv run python -m agents.chrome_sync --auto         # Incremental sync
     uv run python -m agents.chrome_sync --stats        # Show sync state
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,8 +18,7 @@ import logging
 import shutil
 import sqlite3
 import time
-from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -64,8 +64,10 @@ SKIP_DOMAINS: set[str] = {
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class HistoryEntry(BaseModel):
     """A visited URL from Chrome history."""
+
     url: str
     title: str = ""
     domain: str = ""
@@ -76,6 +78,7 @@ class HistoryEntry(BaseModel):
 
 class BookmarkEntry(BaseModel):
     """A Chrome bookmark."""
+
     url: str
     title: str = ""
     folder: str = ""
@@ -84,6 +87,7 @@ class BookmarkEntry(BaseModel):
 
 class ChromeSyncState(BaseModel):
     """Persistent sync state."""
+
     last_visit_time: int = 0
     domains: dict[str, int] = Field(default_factory=dict)
     bookmark_hash: str = ""
@@ -93,28 +97,28 @@ class ChromeSyncState(BaseModel):
 
 # ── Timestamp Conversion ────────────────────────────────────────────────────
 
+
 def _webkit_to_datetime(webkit_ts: int) -> datetime:
     """Convert WebKit microseconds timestamp to Python datetime (UTC)."""
     if webkit_ts <= 0:
-        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return datetime(1970, 1, 1, tzinfo=UTC)
     unix_seconds = webkit_ts / 1_000_000 - WEBKIT_EPOCH_OFFSET
-    return datetime.fromtimestamp(unix_seconds, tz=timezone.utc)
+    return datetime.fromtimestamp(unix_seconds, tz=UTC)
 
 
 # ── Domain Filtering ────────────────────────────────────────────────────────
+
 
 def _should_skip_domain(domain: str) -> bool:
     """Check if a domain should be skipped (noise domains)."""
     if not domain:
         return True
     domain_lower = domain.lower()
-    for skip in SKIP_DOMAINS:
-        if domain_lower == skip or domain_lower.startswith(skip):
-            return True
-    return False
+    return any(domain_lower == skip or domain_lower.startswith(skip) for skip in SKIP_DOMAINS)
 
 
 # ── State Management ─────────────────────────────────────────────────────────
+
 
 def _load_state(path: Path = STATE_FILE) -> ChromeSyncState:
     """Load sync state from disk."""
@@ -135,6 +139,7 @@ def _save_state(state: ChromeSyncState, path: Path = STATE_FILE) -> None:
 
 
 # ── History DB Operations ────────────────────────────────────────────────────
+
 
 def _copy_history_db() -> Path | None:
     """Copy Chrome History DB to temp location (Chrome locks the original)."""
@@ -172,14 +177,16 @@ def _query_history(db_path: Path, since_webkit_ts: int = 0) -> list[HistoryEntry
             if _should_skip_domain(domain):
                 continue
 
-            entries.append(HistoryEntry(
-                url=url,
-                title=title or "",
-                domain=domain,
-                visit_count=visit_count or 0,
-                last_visit=_webkit_to_datetime(last_visit_time) if last_visit_time else None,
-                first_visit=_webkit_to_datetime(first_visit_time) if first_visit_time else None,
-            ))
+            entries.append(
+                HistoryEntry(
+                    url=url,
+                    title=title or "",
+                    domain=domain,
+                    visit_count=visit_count or 0,
+                    last_visit=_webkit_to_datetime(last_visit_time) if last_visit_time else None,
+                    first_visit=_webkit_to_datetime(first_visit_time) if first_visit_time else None,
+                )
+            )
         conn.close()
     except Exception as exc:
         log.error("Failed to query history: %s", exc)
@@ -187,6 +194,7 @@ def _query_history(db_path: Path, since_webkit_ts: int = 0) -> list[HistoryEntry
 
 
 # ── Bookmarks ────────────────────────────────────────────────────────────────
+
 
 def _read_bookmarks(path: Path = CHROME_BOOKMARKS_FILE) -> list[BookmarkEntry]:
     """Read Chrome bookmarks JSON, recursively walking the tree."""
@@ -214,12 +222,14 @@ def _read_bookmarks(path: Path = CHROME_BOOKMARKS_FILE) -> list[BookmarkEntry]:
             except (ValueError, TypeError):
                 added_dt = None
 
-            bookmarks.append(BookmarkEntry(
-                url=url,
-                title=node.get("name", ""),
-                folder=folder,
-                added_at=added_dt,
-            ))
+            bookmarks.append(
+                BookmarkEntry(
+                    url=url,
+                    title=node.get("name", ""),
+                    folder=folder,
+                    added_at=added_dt,
+                )
+            )
         elif node_type == "folder":
             name = node.get("name", "")
             subfolder = f"{folder}/{name}" if folder else name
@@ -235,6 +245,7 @@ def _read_bookmarks(path: Path = CHROME_BOOKMARKS_FILE) -> list[BookmarkEntry]:
 
 
 # ── Formatting ───────────────────────────────────────────────────────────────
+
 
 def _format_domain_markdown(domain: str, entries: list[HistoryEntry], total_visits: int) -> str:
     """Format a domain's history as a markdown document for RAG ingestion."""
@@ -304,6 +315,7 @@ def _format_bookmarks_markdown(bookmarks: list[BookmarkEntry]) -> str:
 
 # ── File Writing ─────────────────────────────────────────────────────────────
 
+
 def _write_domain_files(entries: list[HistoryEntry], state: ChromeSyncState) -> int:
     """Group entries by domain, write files for domains with MIN_DOMAIN_VISITS+ visits."""
     by_domain: dict[str, list[HistoryEntry]] = {}
@@ -354,6 +366,7 @@ def _write_bookmarks_file(bookmarks: list[BookmarkEntry], state: ChromeSyncState
 
 
 # ── Sync Operations ──────────────────────────────────────────────────────────
+
 
 def _full_sync(state: ChromeSyncState) -> tuple[int, bool]:
     """Full sync: all history + bookmarks. Returns (domains_written, bookmarks_updated)."""
@@ -426,6 +439,7 @@ def _incremental_sync(state: ChromeSyncState) -> tuple[int, bool]:
 
 # ── Profiler Integration ─────────────────────────────────────────────────────
 
+
 def _generate_profile_facts(state: ChromeSyncState) -> list[dict]:
     """Generate deterministic profile facts from Chrome browsing state."""
     facts: list[dict] = []
@@ -435,14 +449,16 @@ def _generate_profile_facts(state: ChromeSyncState) -> list[dict]:
         # Top domains by visit count
         sorted_domains = sorted(state.domains.items(), key=lambda x: x[1], reverse=True)
         top = ", ".join(f"{d} ({n})" for d, n in sorted_domains[:15])
-        facts.append({
-            "dimension": "information_seeking",
-            "key": "browsing_top_domains",
-            "value": top,
-            "confidence": 0.85,
-            "source": source,
-            "evidence": f"Top domains across {sum(state.domains.values())} total visits to {len(state.domains)} domains",
-        })
+        facts.append(
+            {
+                "dimension": "information_seeking",
+                "key": "browsing_top_domains",
+                "value": top,
+                "confidence": 0.85,
+                "source": source,
+                "evidence": f"Top domains across {sum(state.domains.values())} total visits to {len(state.domains)} domains",
+            }
+        )
 
     return facts
 
@@ -461,6 +477,7 @@ def _write_profile_facts(state: ChromeSyncState) -> None:
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 
+
 def _print_stats(state: ChromeSyncState) -> None:
     """Print sync statistics."""
     total_visits = sum(state.domains.values())
@@ -469,7 +486,9 @@ def _print_stats(state: ChromeSyncState) -> None:
     print(f"Tracked domains: {len(state.domains):,}")
     print(f"Total visits:    {total_visits:,}")
     print(f"Bookmark hash:   {state.bookmark_hash or 'none'}")
-    print(f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}")
+    print(
+        f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}"
+    )
 
     if state.domains:
         sorted_domains = sorted(state.domains.items(), key=lambda x: x[1], reverse=True)
@@ -479,6 +498,7 @@ def _print_stats(state: ChromeSyncState) -> None:
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
+
 
 def run_full_sync() -> None:
     """Full sync of Chrome history and bookmarks."""
@@ -534,6 +554,7 @@ def run_stats() -> None:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Chrome RAG sync")

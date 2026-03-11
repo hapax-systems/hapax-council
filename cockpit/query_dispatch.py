@@ -1,4 +1,5 @@
 """Query dispatch — agent registry, classification, and execution."""
+
 from __future__ import annotations
 
 import logging
@@ -38,28 +39,77 @@ _AGENTS: dict[str, dict] = {
         "name": "Development Archaeology",
         "description": "Query development history, sessions, commits, and patterns",
         "keywords": [
-            "story", "development", "commit", "session", "feature", "arc",
-            "history", "git", "churn", "token", "pattern", "code",
+            "story",
+            "development",
+            "commit",
+            "session",
+            "feature",
+            "arc",
+            "history",
+            "git",
+            "churn",
+            "token",
+            "pattern",
+            "code",
         ],
     },
     "system_ops": {
         "name": "System Operations",
         "description": "Query infrastructure health, Docker services, costs, drift, and operational state",
         "keywords": [
-            "health", "docker", "container", "service", "timer", "systemd",
-            "gpu", "vram", "ollama", "model", "cost", "spend", "langfuse",
-            "drift", "uptime", "degraded", "failed", "qdrant", "collection",
-            "infrastructure", "disk", "port", "running", "status",
+            "health",
+            "docker",
+            "container",
+            "service",
+            "timer",
+            "systemd",
+            "gpu",
+            "vram",
+            "ollama",
+            "model",
+            "cost",
+            "spend",
+            "langfuse",
+            "drift",
+            "uptime",
+            "degraded",
+            "failed",
+            "qdrant",
+            "collection",
+            "infrastructure",
+            "disk",
+            "port",
+            "running",
+            "status",
         ],
     },
     "knowledge": {
         "name": "Knowledge & Context",
         "description": "Search documents, profile facts, briefings, digests, and operator context",
         "keywords": [
-            "document", "search", "find", "briefing", "digest", "scout",
-            "goal", "profile", "memory", "knowledge", "obsidian", "drive",
-            "email", "gmail", "youtube", "chrome", "calendar", "note",
-            "vault", "rag", "context", "recommendation", "fact",
+            "document",
+            "search",
+            "find",
+            "briefing",
+            "digest",
+            "scout",
+            "goal",
+            "profile",
+            "memory",
+            "knowledge",
+            "obsidian",
+            "drive",
+            "email",
+            "gmail",
+            "youtube",
+            "chrome",
+            "calendar",
+            "note",
+            "vault",
+            "rag",
+            "context",
+            "recommendation",
+            "fact",
         ],
     },
 }
@@ -90,6 +140,7 @@ def classify_query(query: str) -> str:
 
 # ── Agent Factories ──────────────────────────────────────────────────────────
 
+
 def _create_dev_story_agent():
     """Create the dev-story query agent and its deps."""
     db_path = str(PROFILES_DIR / "dev-story.db")
@@ -100,7 +151,8 @@ def _create_dev_story_agent():
 
 def _create_system_ops_agent():
     """Create the system-ops query agent and its deps."""
-    from agents.system_ops.query import SystemOpsDeps, create_agent as create_system_ops_agent
+    from agents.system_ops.query import SystemOpsDeps
+    from agents.system_ops.query import create_agent as create_system_ops_agent
     from shared.ops_db import build_ops_db
 
     db = build_ops_db(PROFILES_DIR)
@@ -111,7 +163,8 @@ def _create_system_ops_agent():
 
 def _create_knowledge_agent():
     """Create the knowledge & context query agent and its deps."""
-    from agents.knowledge.query import KnowledgeDeps, create_agent as create_knowledge_agent
+    from agents.knowledge.query import KnowledgeDeps
+    from agents.knowledge.query import create_agent as create_knowledge_agent
 
     agent = create_knowledge_agent()
     deps = KnowledgeDeps(profiles_dir=PROFILES_DIR)
@@ -136,9 +189,7 @@ def _call_factory(agent_type: str):
     return factory()
 
 
-async def run_query(
-    agent_type: str, query: str, prior_context: str | None = None
-) -> QueryResult:
+async def run_query(agent_type: str, query: str, prior_context: str | None = None) -> QueryResult:
     """Run a query against the specified agent and return the result."""
     if agent_type not in _AGENT_FACTORY_NAMES:
         raise ValueError(f"Unknown query agent: {agent_type!r}")

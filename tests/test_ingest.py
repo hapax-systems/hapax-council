@@ -1,24 +1,21 @@
 """Tests for ingest.py — pure-function tests that avoid heavy deps."""
+
 import hashlib
 import json
 import time
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock
 
 from agents import ingest
-
 
 # ── parse_frontmatter ────────────────────────────────────────────────────────
 
 
 class TestParseFrontmatter:
     def test_valid_frontmatter(self):
-        text = "---\ntitle: Hello World\nauthor: Ryan\n---\nBody text here."
+        text = "---\ntitle: Hello World\nauthor: Operator\n---\nBody text here."
         meta, body = ingest.parse_frontmatter(text)
         assert meta["title"] == "Hello World"
-        assert meta["author"] == "Ryan"
+        assert meta["author"] == "Operator"
         assert body == "Body text here."
 
     def test_list_values(self):
@@ -138,9 +135,9 @@ class TestEnrichPayload:
 
     def test_location(self):
         base = {}
-        fm = {"location": "Minneapolis, MN"}
+        fm = {"location": ", MN"}
         result = ingest.enrich_payload(base, fm)
-        assert result["location"] == "Minneapolis, MN"
+        assert result["location"] == ", MN"
 
     def test_empty_frontmatter(self):
         base = {"text": "hello"}
@@ -260,13 +257,15 @@ class TestRetryQueue:
         fake_queue = tmp_path / "retry.jsonl"
         monkeypatch.setattr(ingest, "RETRY_QUEUE", fake_queue)
 
-        valid = json.dumps({
-            "path": "/tmp/test.md",
-            "error": "err",
-            "attempts": 1,
-            "next_retry": time.time() + 100,
-            "first_failed": time.time(),
-        })
+        valid = json.dumps(
+            {
+                "path": "/tmp/test.md",
+                "error": "err",
+                "attempts": 1,
+                "next_retry": time.time() + 100,
+                "first_failed": time.time(),
+            }
+        )
         fake_queue.write_text(f"{valid}\nnot json\n")
         entries = ingest.load_retry_queue()
         assert len(entries) == 1
@@ -287,7 +286,9 @@ class TestDedupTracker:
         fake_path = tmp_path / "subdir" / "processed.json"
         monkeypatch.setattr(ingest, "DEDUP_PATH", fake_path)
 
-        tracker = {"/some/file.md": {"hash": "abc123", "mtime": 1234.0, "ingested_at": "2026-01-01"}}
+        tracker = {
+            "/some/file.md": {"hash": "abc123", "mtime": 1234.0, "ingested_at": "2026-01-01"}
+        }
         ingest._save_dedup_tracker(tracker)
 
         loaded = ingest._load_dedup_tracker()
@@ -417,10 +418,14 @@ class TestBulkIngestDedup:
         watch_dir.mkdir()
         (watch_dir / "a.md").write_text("hello")
 
-        monkeypatch.setattr(ingest, "CFG", ingest.Config(
-            watch_dirs=[watch_dir],
-            supported_extensions={".md"},
-        ))
+        monkeypatch.setattr(
+            ingest,
+            "CFG",
+            ingest.Config(
+                watch_dirs=[watch_dir],
+                supported_extensions={".md"},
+            ),
+        )
 
         # Mock ingest_file to avoid heavy deps
         mock_ingest = MagicMock(return_value=(True, ""))
@@ -446,10 +451,14 @@ class TestBulkIngestDedup:
         f = watch_dir / "a.md"
         f.write_text("hello")
 
-        monkeypatch.setattr(ingest, "CFG", ingest.Config(
-            watch_dirs=[watch_dir],
-            supported_extensions={".md"},
-        ))
+        monkeypatch.setattr(
+            ingest,
+            "CFG",
+            ingest.Config(
+                watch_dirs=[watch_dir],
+                supported_extensions={".md"},
+            ),
+        )
 
         # Pre-populate tracker with current file state
         tracker = {str(f): {"hash": ingest._file_hash(f), "mtime": f.stat().st_mtime}}
@@ -473,10 +482,14 @@ class TestBulkIngestDedup:
         f = watch_dir / "new.md"
         f.write_text("brand new")
 
-        monkeypatch.setattr(ingest, "CFG", ingest.Config(
-            watch_dirs=[watch_dir],
-            supported_extensions={".md"},
-        ))
+        monkeypatch.setattr(
+            ingest,
+            "CFG",
+            ingest.Config(
+                watch_dirs=[watch_dir],
+                supported_extensions={".md"},
+            ),
+        )
 
         saved_tracker = {}
 
@@ -501,10 +514,14 @@ class TestBulkIngestDedup:
         f = watch_dir / "bad.md"
         f.write_text("will fail")
 
-        monkeypatch.setattr(ingest, "CFG", ingest.Config(
-            watch_dirs=[watch_dir],
-            supported_extensions={".md"},
-        ))
+        monkeypatch.setattr(
+            ingest,
+            "CFG",
+            ingest.Config(
+                watch_dirs=[watch_dir],
+                supported_extensions={".md"},
+            ),
+        )
 
         saved_tracker = {}
 

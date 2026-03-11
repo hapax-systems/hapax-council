@@ -1,14 +1,13 @@
 """Integration test: perception → governor → frame gate → session."""
+
 from __future__ import annotations
 
 import time
 from unittest.mock import MagicMock
 
-import pytest
-
-from agents.hapax_voice.perception import PerceptionEngine, EnvironmentState
-from agents.hapax_voice.governor import PipelineGovernor
 from agents.hapax_voice.frame_gate import FrameGate
+from agents.hapax_voice.governor import PipelineGovernor
+from agents.hapax_voice.perception import PerceptionEngine
 from agents.hapax_voice.session import VoiceLifecycle
 
 

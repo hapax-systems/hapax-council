@@ -1,4 +1,5 @@
 """Detect development phases from tool call sequences."""
+
 from __future__ import annotations
 
 _EXPLORE_TOOLS = {"Read", "Grep", "Glob", "LS"}
@@ -52,7 +53,7 @@ def detect_phases(tools: list[str]) -> list[str]:
     """Detect all phases present in a tool sequence."""
     phases: set[str] = set()
     for i in range(0, len(tools), _WINDOW_SIZE // 2):
-        window = tools[i:i + _WINDOW_SIZE]
+        window = tools[i : i + _WINDOW_SIZE]
         if not window:
             break
         phase = _classify_window(window)
@@ -73,7 +74,7 @@ def detect_phase_sequence(tools: list[str]) -> str:
     prev_phase: str | None = None
 
     for i in range(0, len(tools), _WINDOW_SIZE // 2):
-        window = tools[i:i + _WINDOW_SIZE]
+        window = tools[i : i + _WINDOW_SIZE]
         if not window:
             break
         phase = _classify_window(window)

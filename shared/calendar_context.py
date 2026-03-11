@@ -3,10 +3,11 @@
 Reads synced calendar state — no Google API dependency.
 Agents import this to answer scheduling questions.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -24,11 +25,10 @@ class CalendarContext:
             self._state = state
         else:
             from agents.gcalendar_sync import CalendarSyncState
+
             if STATE_FILE.exists():
                 try:
-                    self._state = CalendarSyncState.model_validate_json(
-                        STATE_FILE.read_text()
-                    )
+                    self._state = CalendarSyncState.model_validate_json(STATE_FILE.read_text())
                 except Exception:
                     self._state = CalendarSyncState()
             else:
@@ -43,7 +43,7 @@ class CalendarContext:
 
     def next_meeting_with(self, email: str) -> object | None:
         """Find the next upcoming event with a specific attendee."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         candidates = []
         for e in self._state.events.values():
             if email.lower() in [a.lower() for a in e.attendees]:
@@ -57,7 +57,7 @@ class CalendarContext:
 
     def meetings_in_range(self, days: int = 7) -> list:
         """Return events within the next N days, sorted by start time."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cutoff = now + timedelta(days=days)
         result = []
         for e in self._state.events.values():
@@ -69,7 +69,7 @@ class CalendarContext:
 
     def meeting_count_today(self) -> int:
         """Count meetings remaining today."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         end_of_day = now.replace(hour=23, minute=59, second=59)
         count = 0
         for e in self._state.events.values():
@@ -88,7 +88,7 @@ class CalendarContext:
         Returns meetings with attendees (likely 1:1s or group meetings,
         not focus blocks).
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cutoff = now + timedelta(hours=hours)
         result = []
         for e in self._state.events.values():

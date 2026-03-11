@@ -1,18 +1,20 @@
 """Tests for D2 diagram generation and sanitization."""
-import pytest
+
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+
 from agents.demo_pipeline.diagrams import (
+    _convert_inline_chain,
+    _expand_semicolons,
+    _extract_nodes_and_edges,
+    _fallback_diagram,
+    _simplify_d2,
+    _strip_style_blocks,
     is_d2_available,
     render_d2,
     sanitize_d2_source,
-    _convert_inline_chain,
-    _convert_bracket_shapes,
-    _expand_semicolons,
-    _strip_style_blocks,
-    _simplify_d2,
-    _extract_nodes_and_edges,
-    _fallback_diagram,
 )
 
 
@@ -38,9 +40,11 @@ class TestDiagrams:
     def test_gruvbox_theme_in_source(self, tmp_path):
         """Verify theme is prepended (check via mock subprocess)."""
         output = tmp_path / "diagram.png"
-        with patch("agents.demo_pipeline.diagrams.is_d2_available", return_value=True), \
-             patch("subprocess.run") as mock_run, \
-             patch("tempfile.NamedTemporaryFile") as mock_tmp:
+        with (
+            patch("agents.demo_pipeline.diagrams.is_d2_available", return_value=True),
+            patch("subprocess.run") as mock_run,
+            patch("tempfile.NamedTemporaryFile") as mock_tmp,
+        ):
             # Make mock work
             mock_file = mock_tmp.return_value.__enter__.return_value
             mock_file.name = str(tmp_path / "test.d2")
@@ -212,7 +216,7 @@ class TestSanitizeD2Source:
 
 class TestExpandSemicolons:
     def test_expands_inline_properties(self):
-        src = 'litellm: LiteLLM Gateway {shape: hexagon; style: {fill: #E8F8F5}}'
+        src = "litellm: LiteLLM Gateway {shape: hexagon; style: {fill: #E8F8F5}}"
         result = _expand_semicolons(src)
         assert "shape: hexagon" in result
         # Style block should be expanded
@@ -254,20 +258,20 @@ class TestStripStyleBlocks:
 class TestBracketShapeSyntax:
     def test_converts_bracket_shape_with_label(self):
         """LLMs generate 'id [shape: X]: Label' which is invalid D2."""
-        src = 'profile_extraction [shape: rectangle]: Profile Extractor'
+        src = "profile_extraction [shape: rectangle]: Profile Extractor"
         result = sanitize_d2_source(src)
         assert '"Profile Extractor"' in result
         assert "shape: rectangle" in result
         assert "[shape:" not in result
 
     def test_converts_bracket_shape_only(self):
-        src = 'tier1 [shape: hexagon]'
+        src = "tier1 [shape: hexagon]"
         result = sanitize_d2_source(src)
         assert "shape: hexagon" in result
         assert "[shape:" not in result
 
     def test_replaces_invalid_shape_in_brackets(self):
-        src = 'mynode [shape: server]: My Server'
+        src = "mynode [shape: server]: My Server"
         result = sanitize_d2_source(src)
         assert "shape: rectangle" in result
         assert "shape: server" not in result
@@ -302,7 +306,7 @@ class TestSanitizeStyleStripping:
 
     def test_strips_inline_semicolon_styles(self):
         """LLM-generated D2 with inline semicolons and styles."""
-        src = 'litellm: LiteLLM Gateway:4000 {shape: hexagon; style: {fill: #E8F8F5}}'
+        src = "litellm: LiteLLM Gateway:4000 {shape: hexagon; style: {fill: #E8F8F5}}"
         result = sanitize_d2_source(src)
         assert "shape: hexagon" in result
         assert "fill" not in result
@@ -375,7 +379,9 @@ class TestSimplifyD2:
 
     def test_multi_word_edges(self):
         """Multi-word node names in edges should be handled."""
-        result = _simplify_d2("Corporate Data -> Axiom Governance\nAxiom Governance -> Decision Support")
+        result = _simplify_d2(
+            "Corporate Data -> Axiom Governance\nAxiom Governance -> Decision Support"
+        )
         assert "corporate_data -> axiom_governance" in result
         assert "axiom_governance -> decision_support" in result
         # Nodes should be extracted with original labels

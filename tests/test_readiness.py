@@ -2,20 +2,21 @@
 
 All deterministic, no LLM calls.
 """
+
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from cockpit.data.readiness import (
     ReadinessSnapshot,
-    collect_readiness,
     _check_interview_facts,
     _check_priorities_validated,
     _compute_level,
+    collect_readiness,
 )
 
-
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
 
 def _mock_analysis(
     missing=None,
@@ -26,6 +27,7 @@ def _mock_analysis(
     goal_gaps=None,
 ):
     from cockpit.interview import ProfileAnalysis
+
     return ProfileAnalysis(
         missing_dimensions=missing or [],
         sparse_dimensions=sparse or [],
@@ -55,6 +57,7 @@ def _mock_profile(facts_with_sources=None):
 
 
 # ── Level computation ───────────────────────────────────────────────────────
+
 
 def test_level_bootstrapping_no_interview():
     snap = ReadinessSnapshot(interview_conducted=False)
@@ -113,12 +116,15 @@ def test_level_operational():
 
 # ── Interview detection ─────────────────────────────────────────────────────
 
+
 @patch("agents.profiler.load_existing_profile")
 def test_interview_facts_detected(mock_profiler_load):
-    profile = _mock_profile({
-        "identity": ["config:CLAUDE.md", "interview:cockpit"],
-        "workflow": ["config:operator.json", "interview:cockpit"],
-    })
+    profile = _mock_profile(
+        {
+            "identity": ["config:CLAUDE.md", "interview:cockpit"],
+            "workflow": ["config:operator.json", "interview:cockpit"],
+        }
+    )
     mock_profiler_load.return_value = profile
     conducted, count = _check_interview_facts()
     assert conducted is True
@@ -127,10 +133,12 @@ def test_interview_facts_detected(mock_profiler_load):
 
 @patch("agents.profiler.load_existing_profile")
 def test_no_interview_facts(mock_load):
-    profile = _mock_profile({
-        "identity": ["config:CLAUDE.md"],
-        "workflow": ["config:operator.json"],
-    })
+    profile = _mock_profile(
+        {
+            "identity": ["config:CLAUDE.md"],
+            "workflow": ["config:operator.json"],
+        }
+    )
     mock_load.return_value = profile
     conducted, count = _check_interview_facts()
     assert conducted is False
@@ -154,6 +162,7 @@ def test_interview_facts_exception(mock_load):
 
 
 # ── Priorities validation ───────────────────────────────────────────────────
+
 
 @patch("shared.operator.get_goals")
 def test_priorities_validated_some_goals_covered(mock_goals):
@@ -182,6 +191,7 @@ def test_priorities_no_goals_defined(mock_goals):
 
 
 # ── collect_readiness integration ───────────────────────────────────────────
+
 
 @patch("cockpit.data.readiness._check_priorities_validated")
 @patch("cockpit.data.readiness._check_interview_facts")
@@ -241,10 +251,17 @@ def test_collect_operational(mock_analyze, mock_interview, mock_priorities):
         dimension_stats={
             dim: {"count": 10, "avg_confidence": 0.8}
             for dim in [
-                "identity", "technical_skills", "music_production",
-                "hardware", "software_preferences", "communication_style",
-                "decision_patterns", "philosophy", "knowledge_domains",
-                "workflow", "neurocognitive_profile",
+                "identity",
+                "technical_skills",
+                "music_production",
+                "hardware",
+                "software_preferences",
+                "communication_style",
+                "decision_patterns",
+                "philosophy",
+                "knowledge_domains",
+                "workflow",
+                "neurocognitive_profile",
             ]
         },
         total_facts=500,
@@ -270,6 +287,7 @@ def test_collect_readiness_analyze_exception(mock_analyze):
 
 # ── Gap ordering ────────────────────────────────────────────────────────────
 
+
 @patch("cockpit.data.readiness._check_priorities_validated")
 @patch("cockpit.data.readiness._check_interview_facts")
 @patch("cockpit.interview.analyze_profile")
@@ -293,6 +311,7 @@ def test_gap_ordering(mock_analyze, mock_interview, mock_priorities):
 
 
 # ── Coverage percentage ─────────────────────────────────────────────────────
+
 
 @patch("cockpit.data.readiness._check_priorities_validated")
 @patch("cockpit.data.readiness._check_interview_facts")

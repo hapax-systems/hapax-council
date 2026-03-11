@@ -12,11 +12,11 @@ Usage:
         system_prompt=get_system_prompt_fragment("research") + custom_instructions,
     )
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -29,8 +29,10 @@ _operator_cache: dict | None = None
 
 class OperatorSchema(BaseModel, extra="allow"):
     """Minimal validation for operator.json top-level structure."""
+
     version: int | str = 0
     operator: dict = Field(default_factory=dict)
+
 
 # Core system context — lean identity only. Architecture details, constraints,
 # and patterns are available on-demand via context tools.
@@ -182,10 +184,13 @@ def get_system_prompt_fragment(agent_name: str) -> str:
     axioms = data.get("axioms", {})
     try:
         from shared.axiom_registry import load_axioms as _load_axioms
+
         registry_axioms = _load_axioms()
         if registry_axioms:
             lines.append("")
-            lines.append("System axioms (check_axiom_compliance tool available for compliance checks):")
+            lines.append(
+                "System axioms (check_axiom_compliance tool available for compliance checks):"
+            )
             for ax in registry_axioms:
                 lines.append(f"- [{ax.id}] {ax.text.strip()}")
         else:
@@ -193,7 +198,9 @@ def get_system_prompt_fragment(agent_name: str) -> str:
     except Exception:
         # Fall back to boolean axiom injection
         if axioms.get("single_user"):
-            lines.append(f"This is a single-user system. All data and preferences belong to {operator_name}.")
+            lines.append(
+                f"This is a single-user system. All data and preferences belong to {operator_name}."
+            )
         if axioms.get("executive_function"):
             lines.append(
                 "This system is externalized executive function infrastructure. "

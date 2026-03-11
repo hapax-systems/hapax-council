@@ -3,6 +3,7 @@
 Provides authenticated HTTP access to Langfuse's public API. Used by
 profiler_sources (telemetry reader) and activity_analyzer (trace collector).
 """
+
 from __future__ import annotations
 
 import base64
@@ -33,7 +34,9 @@ def langfuse_get(path: str, params: dict | None = None, *, timeout: int = 15) ->
         Callers should check truthiness: empty dict means no data available.
     """
     if not LANGFUSE_PK or not LANGFUSE_SK:
-        log.debug("langfuse: no credentials configured — set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY")
+        log.debug(
+            "langfuse: no credentials configured — set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY"
+        )
         return {}
 
     query = ""

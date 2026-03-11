@@ -1,4 +1,5 @@
 """Tests for cockpit API."""
+
 from __future__ import annotations
 
 import pytest
@@ -8,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 @pytest.fixture
 async def client():
     from cockpit.api.app import app
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -106,6 +108,7 @@ class TestInfrastructureEndpoint:
 
 # ── Slow-cadence endpoints ──────────────────────────────────────────────────
 
+
 @dataclass
 class MockBriefing:
     headline: str = "Stack healthy"
@@ -148,12 +151,6 @@ class MockReadiness:
     level: str = "operational"
     score: float = 0.95
     gaps: list = field(default_factory=list)
-
-
-@dataclass
-class MockManagement:
-    people_count: int = 5
-    stale_1on1s: int = 1
 
 
 @dataclass
@@ -253,15 +250,6 @@ class TestReadinessEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["level"] == "operational"
-
-
-class TestManagementEndpoint:
-    async def test_management_returns_data(self, client):
-        cache.management = MockManagement()
-        resp = await client.get("/api/management")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["people_count"] == 5
 
 
 class TestNudgesEndpoint:

@@ -1,4 +1,5 @@
 """Demo history — list and inspect generated demos."""
+
 from __future__ import annotations
 
 import json

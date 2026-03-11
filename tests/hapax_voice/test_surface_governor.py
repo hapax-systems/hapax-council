@@ -3,6 +3,7 @@
 Tests that environment state changes produce correct governor directives
 and that the daemon applies those directives to the frame gate and session.
 """
+
 from __future__ import annotations
 
 import time
@@ -215,11 +216,12 @@ class TestFrameGateDirective:
     """FrameGate directive management (no Pipecat pipeline required)."""
 
     def test_initial_directive_is_process(self):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         # Patch FrameProcessor to avoid pipecat init complexity
         with patch("agents.hapax_voice.frame_gate.FrameProcessor.__init__", return_value=None):
             from agents.hapax_voice.frame_gate import FrameGate
+
             gate = FrameGate.__new__(FrameGate)
             gate._directive = "process"
             gate._dropped_count = 0
@@ -231,6 +233,7 @@ class TestFrameGateDirective:
 
         with patch("agents.hapax_voice.frame_gate.FrameProcessor.__init__", return_value=None):
             from agents.hapax_voice.frame_gate import FrameGate
+
             gate = FrameGate.__new__(FrameGate)
             gate._directive = "process"
             gate._dropped_count = 0
@@ -246,6 +249,7 @@ class TestFrameGateDirective:
 
         with patch("agents.hapax_voice.frame_gate.FrameProcessor.__init__", return_value=None):
             from agents.hapax_voice.frame_gate import FrameGate
+
             gate = FrameGate.__new__(FrameGate)
             gate._directive = "process"
             gate._dropped_count = 0

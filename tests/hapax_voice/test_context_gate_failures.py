@@ -3,6 +3,7 @@
 Covers wpctl failures, aconnect failures, ambient import/runtime errors,
 and gate_decision event emission across all decision paths.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -10,13 +11,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.context_gate import ContextGate, GateResult
+from agents.hapax_voice.context_gate import ContextGate
 from agents.hapax_voice.session import SessionManager
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_gate(
     session_active: bool = False,
@@ -84,11 +85,14 @@ class TestWpctlFailures:
     def test_wpctl_muted_output(self) -> None:
         """stdout='Volume: 0.50 [MUTED]' -> parses 0.50 correctly."""
         gate, _ = _make_gate(volume_threshold=0.7)
-        with patch(
-            "subprocess.run",
-            return_value=_mock_run_result(stdout="Volume: 0.50 [MUTED]"),
-        ), patch.object(gate, "_check_studio", return_value=(True, "")), \
-             patch.object(gate, "_check_ambient", return_value=(True, "")):
+        with (
+            patch(
+                "subprocess.run",
+                return_value=_mock_run_result(stdout="Volume: 0.50 [MUTED]"),
+            ),
+            patch.object(gate, "_check_studio", return_value=(True, "")),
+            patch.object(gate, "_check_ambient", return_value=(True, "")),
+        ):
             vol = gate._get_sink_volume()
             assert vol == pytest.approx(0.50)
             result = gate.check()
@@ -257,8 +261,10 @@ class TestAmbientFailures:
     def test_ambient_disabled_skips_check(self) -> None:
         """ambient_classification=False -> skips ambient check entirely, gate passes."""
         gate, _ = _make_gate(ambient_classification=False)
-        with patch.object(gate, "_get_sink_volume", return_value=0.3), \
-             patch.object(gate, "_check_studio", return_value=(True, "")):
+        with (
+            patch.object(gate, "_get_sink_volume", return_value=0.3),
+            patch.object(gate, "_check_studio", return_value=(True, "")),
+        ):
             result = gate.check()
         assert result.eligible
         # _check_ambient should never have been called
@@ -273,9 +279,7 @@ class TestGateDecisionEvents:
     """Verify gate_decision event is emitted for every check() code path."""
 
     def _get_gate_decisions(self, event_log: MagicMock) -> list:
-        return [
-            c for c in event_log.emit.call_args_list if c[0][0] == "gate_decision"
-        ]
+        return [c for c in event_log.emit.call_args_list if c[0][0] == "gate_decision"]
 
     def test_session_active_emits_gate_decision(self) -> None:
         gate, event_log = _make_gate(session_active=True)
@@ -298,8 +302,10 @@ class TestGateDecisionEvents:
 
     def test_midi_active_emits_gate_decision(self) -> None:
         gate, event_log = _make_gate()
-        with patch.object(gate, "_get_sink_volume", return_value=0.3), \
-             patch.object(gate, "_check_studio", return_value=(False, "MIDI connections active")):
+        with (
+            patch.object(gate, "_get_sink_volume", return_value=0.3),
+            patch.object(gate, "_check_studio", return_value=(False, "MIDI connections active")),
+        ):
             result = gate.check()
         assert not result.eligible
         decisions = self._get_gate_decisions(event_log)
@@ -308,9 +314,11 @@ class TestGateDecisionEvents:
 
     def test_ambient_block_emits_gate_decision(self) -> None:
         gate, event_log = _make_gate()
-        with patch.object(gate, "_get_sink_volume", return_value=0.3), \
-             patch.object(gate, "_check_studio", return_value=(True, "")), \
-             patch.object(gate, "_check_ambient", return_value=(False, "Music detected")):
+        with (
+            patch.object(gate, "_get_sink_volume", return_value=0.3),
+            patch.object(gate, "_check_studio", return_value=(True, "")),
+            patch.object(gate, "_check_ambient", return_value=(False, "Music detected")),
+        ):
             result = gate.check()
         assert not result.eligible
         decisions = self._get_gate_decisions(event_log)
@@ -319,9 +327,11 @@ class TestGateDecisionEvents:
 
     def test_eligible_emits_gate_decision(self) -> None:
         gate, event_log = _make_gate()
-        with patch.object(gate, "_get_sink_volume", return_value=0.3), \
-             patch.object(gate, "_check_studio", return_value=(True, "")), \
-             patch.object(gate, "_check_ambient", return_value=(True, "")):
+        with (
+            patch.object(gate, "_get_sink_volume", return_value=0.3),
+            patch.object(gate, "_check_studio", return_value=(True, "")),
+            patch.object(gate, "_check_ambient", return_value=(True, "")),
+        ):
             result = gate.check()
         assert result.eligible
         decisions = self._get_gate_decisions(event_log)

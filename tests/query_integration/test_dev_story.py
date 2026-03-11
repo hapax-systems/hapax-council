@@ -1,16 +1,14 @@
 """Integration tests for dev-story query agent against real data."""
+
 from __future__ import annotations
 
-import pytest
-
-from agents.dev_story.query import _sql_query, _session_content, _file_history
+from agents.dev_story.query import _file_history, _session_content, _sql_query
 from tests.query_integration._helpers import (
-    POPULATED_DEV_STORY_DB,
     EMPTY_DEV_STORY_DB,
+    POPULATED_DEV_STORY_DB,
     open_dev_story_db,
     skip_if_missing,
 )
-
 
 # ── Populated state ──────────────────────────────────────────────────────────
 
@@ -37,7 +35,7 @@ class TestDevStoryPopulatedCommits:
     def test_date_range_filter(self):
         result = _sql_query(
             self.conn,
-            "SELECT COUNT(*) as cnt FROM commits WHERE substr(author_date, 1, 4) = '2026'"
+            "SELECT COUNT(*) as cnt FROM commits WHERE substr(author_date, 1, 4) = '2026'",
         )
         assert "cnt" in result
 
@@ -48,7 +46,7 @@ class TestDevStoryPopulatedCommits:
                FROM commit_files cf
                GROUP BY cf.file_path
                ORDER BY changes DESC
-               LIMIT 5"""
+               LIMIT 5""",
         )
         # Should have results (populated db has commits with files)
         assert "file_path" in result or "No results" in result
@@ -60,7 +58,7 @@ class TestDevStoryPopulatedCommits:
                FROM commits
                GROUP BY day
                ORDER BY day DESC
-               LIMIT 5"""
+               LIMIT 5""",
         )
         assert "day" in result
 
@@ -85,7 +83,7 @@ class TestDevStoryPopulatedSessions:
             """SELECT project_name, COUNT(*) as cnt, AVG(message_count) as avg_msgs
                FROM sessions
                WHERE started_at != ''
-               GROUP BY project_name"""
+               GROUP BY project_name""",
         )
         assert "project_name" in result or "No results" in result
 
@@ -145,8 +143,7 @@ class TestDevStoryEmpty:
 
     def test_schema_still_valid(self):
         result = _sql_query(
-            self.conn,
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            self.conn, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         )
         assert "sessions" in result
         assert "commits" in result

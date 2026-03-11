@@ -1,4 +1,5 @@
 """Tests for verbal bridge and persona instructions in system prompt."""
+
 from agents.hapax_voice.persona import system_prompt
 
 

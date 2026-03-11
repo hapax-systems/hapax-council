@@ -8,9 +8,11 @@ Run directly or via systemd: systemctl --user start rag-ingest
 
 Dependencies: uv add docling qdrant-client watchdog ollama pydantic
 """
+
 import hashlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -18,8 +20,6 @@ from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
-
-import os
 
 # Self-contained config (no shared.config import — this module runs in an
 # isolated venv without pydantic-ai due to docling/huggingface-hub conflict).
@@ -40,15 +40,25 @@ log = logging.getLogger("rag-ingest")
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class Config:
-    watch_dirs: list[Path] = field(default_factory=lambda: [
-        RAG_SOURCES_DIR,
-        HAPAX_PROJECTS_DIR / "docs",
-    ])
-    supported_extensions: set[str] = field(default_factory=lambda: {
-        ".pdf", ".docx", ".pptx", ".html", ".md", ".txt",
-    })
+    watch_dirs: list[Path] = field(
+        default_factory=lambda: [
+            RAG_SOURCES_DIR,
+            HAPAX_PROJECTS_DIR / "docs",
+        ]
+    )
+    supported_extensions: set[str] = field(
+        default_factory=lambda: {
+            ".pdf",
+            ".docx",
+            ".pptx",
+            ".html",
+            ".md",
+            ".txt",
+        }
+    )
     qdrant_url: str = QDRANT_URL
     collection: str = "documents"
     embedding_model: str = EMBEDDING_MODEL
@@ -72,7 +82,7 @@ class RetryEntry:
     path: str
     error: str
     attempts: int
-    next_retry: float   # unix timestamp
+    next_retry: float  # unix timestamp
     first_failed: float  # unix timestamp
 
 
@@ -86,6 +96,7 @@ def get_converter():
     global _converter
     if _converter is None:
         from docling.document_converter import DocumentConverter
+
         _converter = DocumentConverter()
         log.info("Docling converter initialized")
     return _converter
@@ -95,6 +106,7 @@ def get_chunker():
     global _chunker
     if _chunker is None:
         from docling.chunking import HybridChunker
+
         _chunker = HybridChunker(
             tokenizer=CFG.chunk_tokenizer,
             max_tokens=CFG.chunk_max_tokens,
@@ -105,10 +117,12 @@ def get_chunker():
 
 _qclient = None
 
+
 def get_qdrant():
     global _qclient
     if _qclient is None:
         from qdrant_client import QdrantClient
+
         _qclient = QdrantClient(QDRANT_URL)
         log.info(f"Qdrant connected: {QDRANT_URL}")
     return _qclient
@@ -116,9 +130,11 @@ def get_qdrant():
 
 # ── Core functions ───────────────────────────────────────────────────────────
 
+
 def embed(text: str, prefix: str = "search_document") -> list[float]:
     """Generate embedding via Ollama with nomic prefix."""
     import ollama
+
     prefixed = f"{prefix}: {text}" if prefix else text
     result = ollama.embed(model=EMBEDDING_MODEL, input=prefixed)
     return result["embeddings"][0]
@@ -135,15 +151,18 @@ def point_id(path: Path, chunk_index: int) -> int:
 def delete_file_points(path: Path):
     """Remove all points for a given source file before re-ingesting."""
     from qdrant_client import models
+
     try:
         get_qdrant().delete(
             CFG.collection,
             points_selector=models.FilterSelector(
                 filter=models.Filter(
-                    must=[models.FieldCondition(
-                        key="source",
-                        match=models.MatchValue(value=str(path.resolve())),
-                    )]
+                    must=[
+                        models.FieldCondition(
+                            key="source",
+                            match=models.MatchValue(value=str(path.resolve())),
+                        )
+                    ]
                 )
             ),
         )
@@ -178,13 +197,18 @@ def queue_retry(path: Path, error: str, attempts: int = 0):
     _remove_from_queue(entry.path)
 
     with open(RETRY_QUEUE, "a") as f:
-        f.write(json.dumps({
-            "path": entry.path,
-            "error": entry.error,
-            "attempts": entry.attempts,
-            "next_retry": entry.next_retry,
-            "first_failed": entry.first_failed,
-        }) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "path": entry.path,
+                    "error": entry.error,
+                    "attempts": entry.attempts,
+                    "next_retry": entry.next_retry,
+                    "first_failed": entry.first_failed,
+                }
+            )
+            + "\n"
+        )
 
     log.info(f"  ↻ Queued retry {attempts}/{MAX_RETRIES} for {path.name} (next in {delay}s)")
 
@@ -200,13 +224,15 @@ def load_retry_queue() -> list[RetryEntry]:
             continue
         try:
             d = json.loads(line)
-            entries.append(RetryEntry(
-                path=d["path"],
-                error=d["error"],
-                attempts=d["attempts"],
-                next_retry=d["next_retry"],
-                first_failed=d.get("first_failed", 0),
-            ))
+            entries.append(
+                RetryEntry(
+                    path=d["path"],
+                    error=d["error"],
+                    attempts=d["attempts"],
+                    next_retry=d["next_retry"],
+                    first_failed=d.get("first_failed", 0),
+                )
+            )
         except (json.JSONDecodeError, KeyError) as e:
             log.warning(f"Skipping corrupt retry queue entry: {e}")
     return entries
@@ -224,13 +250,18 @@ def _write_queue(entries: list[RetryEntry]):
     """Rewrite the retry queue JSONL from a list of entries."""
     with open(RETRY_QUEUE, "w") as f:
         for e in entries:
-            f.write(json.dumps({
-                "path": e.path,
-                "error": e.error,
-                "attempts": e.attempts,
-                "next_retry": e.next_retry,
-                "first_failed": e.first_failed,
-            }) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "path": e.path,
+                        "error": e.error,
+                        "attempts": e.attempts,
+                        "next_retry": e.next_retry,
+                        "first_failed": e.first_failed,
+                    }
+                )
+                + "\n"
+            )
 
 
 def process_retries():
@@ -261,17 +292,23 @@ def process_retries():
             # Re-queue with incremented attempts
             new_attempts = entry.attempts + 1
             if new_attempts > MAX_RETRIES:
-                log.error(f"  ✗ Permanent failure after {MAX_RETRIES} retries: {path.name} — {error}")
+                log.error(
+                    f"  ✗ Permanent failure after {MAX_RETRIES} retries: {path.name} — {error}"
+                )
             else:
                 delay = BACKOFF_SCHEDULE[min(new_attempts - 1, len(BACKOFF_SCHEDULE) - 1)]
-                remaining.append(RetryEntry(
-                    path=entry.path,
-                    error=error,
-                    attempts=new_attempts,
-                    next_retry=time.time() + delay,
-                    first_failed=entry.first_failed,
-                ))
-                log.info(f"  ↻ Re-queued retry {new_attempts}/{MAX_RETRIES} for {path.name} (next in {delay}s)")
+                remaining.append(
+                    RetryEntry(
+                        path=entry.path,
+                        error=error,
+                        attempts=new_attempts,
+                        next_retry=time.time() + delay,
+                        first_failed=entry.first_failed,
+                    )
+                )
+                log.info(
+                    f"  ↻ Re-queued retry {new_attempts}/{MAX_RETRIES} for {path.name} (next in {delay}s)"
+                )
 
     _write_queue(remaining)
 
@@ -291,7 +328,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
         return {}, text
 
     front = text[3:end].strip()
-    body = text[end + 4:].strip()
+    body = text[end + 4 :].strip()
 
     metadata: dict = {}
     for line in front.splitlines():
@@ -322,10 +359,17 @@ def enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
     copy everything from frontmatter.
     """
     enrichment_keys = {
-        "content_type", "source_service", "source_platform",
-        "timestamp", "modality_tags", "people",
-        "platform", "service",  # takeout frontmatter uses these names
-        "record_id", "categories", "location",
+        "content_type",
+        "source_service",
+        "source_platform",
+        "timestamp",
+        "modality_tags",
+        "people",
+        "platform",
+        "service",  # takeout frontmatter uses these names
+        "record_id",
+        "categories",
+        "location",
         "gdrive_folder",
     }
 
@@ -432,12 +476,12 @@ def ingest_file(path: Path) -> tuple[bool, str]:
     if not path.is_file():
         return (True, "")
     # Skip macOS resource forks and __MACOSX junk
-    if path.name.startswith('._') or '/__MACOSX/' in str(path):
+    if path.name.startswith("._") or "/__MACOSX/" in str(path):
         return (True, "")
     # Skip binary files masquerading as text
-    if path.suffix.lower() in ('.txt', '.md') and path.stat().st_size < 1024:
+    if path.suffix.lower() in (".txt", ".md") and path.stat().st_size < 1024:
         try:
-            path.read_bytes().decode('utf-8')
+            path.read_bytes().decode("utf-8")
         except UnicodeDecodeError:
             log.debug(f"Skipping binary file with text extension: {path.name}")
             return (True, "")
@@ -468,6 +512,7 @@ def ingest_file(path: Path) -> tuple[bool, str]:
 
         # Embed and upsert
         from qdrant_client import models
+
         points = []
         for i, chunk in enumerate(chunks):
             try:
@@ -483,11 +528,13 @@ def ingest_file(path: Path) -> tuple[bool, str]:
                 }
                 # Enrich with frontmatter metadata and path-based auto-detection
                 payload = enrich_payload(payload, frontmatter)
-                points.append(models.PointStruct(
-                    id=point_id(path, i),
-                    vector=vec,
-                    payload=payload,
-                ))
+                points.append(
+                    models.PointStruct(
+                        id=point_id(path, i),
+                        vector=vec,
+                        payload=payload,
+                    )
+                )
             except Exception as e:
                 log.error(f"  Embedding failed for chunk {i}: {e}")
 
@@ -508,6 +555,7 @@ def ingest_file(path: Path) -> tuple[bool, str]:
 
 # ── File watcher ─────────────────────────────────────────────────────────────
 
+
 class IngestHandler(FileSystemEventHandler):
     """Debounced file system event handler."""
 
@@ -520,10 +568,7 @@ class IngestHandler(FileSystemEventHandler):
     def process_pending(self):
         """Process files that have been stable for debounce_seconds."""
         now = time.monotonic()
-        ready = [
-            p for p, t in self._pending.items()
-            if now - t >= CFG.debounce_seconds
-        ]
+        ready = [p for p, t in self._pending.items() if now - t >= CFG.debounce_seconds]
         for path_str in ready:
             del self._pending[path_str]
             path = Path(path_str)
@@ -542,6 +587,7 @@ class IngestHandler(FileSystemEventHandler):
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+
 def bulk_ingest(force: bool = False):
     """Initial scan of all watched directories."""
     tracker = {} if force else _load_dedup_tracker()
@@ -552,7 +598,9 @@ def bulk_ingest(force: bool = False):
             log.info(f"Creating watch directory: {d}")
             d.mkdir(parents=True, exist_ok=True)
             continue
-        files = [f for f in d.rglob("*") if f.is_file() and f.suffix.lower() in CFG.supported_extensions]
+        files = [
+            f for f in d.rglob("*") if f.is_file() and f.suffix.lower() in CFG.supported_extensions
+        ]
         log.info(f"Bulk ingesting {len(files)} files from {d}")
         for f in sorted(files):
             if not force and _should_skip(f, tracker):
@@ -608,11 +656,14 @@ if __name__ == "__main__":
     parser.add_argument("--bulk-only", action="store_true", help="Ingest existing files and exit")
     parser.add_argument("--watch-only", action="store_true", help="Skip bulk ingest, only watch")
     parser.add_argument("--retry-status", action="store_true", help="Show retry queue and exit")
-    parser.add_argument("--force", action="store_true", help="Bypass dedup tracking, re-ingest all files")
+    parser.add_argument(
+        "--force", action="store_true", help="Bypass dedup tracking, re-ingest all files"
+    )
     args = parser.parse_args()
 
     if args.retry_status:
         from datetime import datetime
+
         entries = load_retry_queue()
         if not entries:
             print("Retry queue is empty.")
@@ -620,7 +671,11 @@ if __name__ == "__main__":
             print(f"Retry queue: {len(entries)} entries\n")
             for e in entries:
                 next_dt = datetime.fromtimestamp(e.next_retry).strftime("%Y-%m-%d %H:%M:%S")
-                failed_dt = datetime.fromtimestamp(e.first_failed).strftime("%Y-%m-%d %H:%M:%S") if e.first_failed else "unknown"
+                failed_dt = (
+                    datetime.fromtimestamp(e.first_failed).strftime("%Y-%m-%d %H:%M:%S")
+                    if e.first_failed
+                    else "unknown"
+                )
                 status = "DUE" if time.time() >= e.next_retry else "WAITING"
                 print(f"  [{status}] {Path(e.path).name}")
                 print(f"    Path:         {e.path}")

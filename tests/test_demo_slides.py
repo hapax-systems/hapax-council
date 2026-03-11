@@ -1,4 +1,5 @@
 """Tests for Marp slide generation."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -76,17 +77,21 @@ class TestGenerateMarpMarkdown:
 
         assert md.count("\n---\n") >= 4
 
-
     def test_key_points_rendered(self):
         script = DemoScript(
-            title="Test", audience="technical-peer",
-            scenes=[DemoScene(
-                title="Dashboard", narration="Here.",
-                duration_hint=5.0,
-                key_points=["Health checks", "Auto-fix"],
-                screenshot=ScreenshotSpec(url="http://localhost:5173"),
-            )],
-            intro_narration="Hi", outro_narration="Bye",
+            title="Test",
+            audience="technical-peer",
+            scenes=[
+                DemoScene(
+                    title="Dashboard",
+                    narration="Here.",
+                    duration_hint=5.0,
+                    key_points=["Health checks", "Auto-fix"],
+                    screenshot=ScreenshotSpec(url="http://localhost:5173"),
+                )
+            ],
+            intro_narration="Hi",
+            outro_narration="Bye",
         )
         md = generate_marp_markdown(script, {"Dashboard": Path("screenshots/01.png")})
         assert "- Health checks" in md
@@ -94,13 +99,18 @@ class TestGenerateMarpMarkdown:
 
     def test_audience_label_humanized(self):
         script = DemoScript(
-            title="Test", audience="technical-peer",
-            scenes=[DemoScene(
-                title="Test Scene", narration="Test.",
-                duration_hint=5.0,
-                screenshot=ScreenshotSpec(url="http://localhost:5173"),
-            )],
-            intro_narration="Hi", outro_narration="Bye",
+            title="Test",
+            audience="technical-peer",
+            scenes=[
+                DemoScene(
+                    title="Test Scene",
+                    narration="Test.",
+                    duration_hint=5.0,
+                    screenshot=ScreenshotSpec(url="http://localhost:5173"),
+                )
+            ],
+            intro_narration="Hi",
+            outro_narration="Bye",
         )
         md = generate_marp_markdown(script, {})
         assert "Technical Peers" in md
@@ -130,9 +140,7 @@ class TestRenderSlides:
 
         screenshot_map = {"Dash": fake_img}
 
-        md_path = await render_slides(
-            script, screenshot_map, tmp_path, render_pdf=False
-        )
+        md_path = await render_slides(script, screenshot_map, tmp_path, render_pdf=False)
 
         assert md_path.exists()
         assert md_path.suffix == ".md"

@@ -1,9 +1,8 @@
 """Tests for Pipecat pipeline construction."""
+
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, AsyncMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from agents.hapax_voice.pipeline import (
     INPUT_SAMPLE_RATE,
@@ -193,12 +192,12 @@ def test_frame_gate_inserted_before_stt():
     with (
         patch("agents.hapax_voice.pipeline.LocalAudioTransport") as MockTransport,
         patch("agents.hapax_voice.pipeline.WhisperSTTService") as MockSTT,
-        patch("agents.hapax_voice.pipeline.OpenAILLMService") as MockLLM,
-        patch("agents.hapax_voice.pipeline.KokoroTTSService") as MockTTS,
+        patch("agents.hapax_voice.pipeline.OpenAILLMService"),
+        patch("agents.hapax_voice.pipeline.KokoroTTSService"),
         patch("agents.hapax_voice.pipeline.LLMContext") as MockContext,
         patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair") as MockAggPair,
         patch("agents.hapax_voice.pipeline.Pipeline") as MockPipeline,
-        patch("agents.hapax_voice.pipeline.PipelineTask") as MockTask,
+        patch("agents.hapax_voice.pipeline.PipelineTask"),
         patch("agents.hapax_voice.pipeline.system_prompt", return_value="test"),
     ):
         mock_transport = MockTransport.return_value
@@ -212,6 +211,7 @@ def test_frame_gate_inserted_before_stt():
             patch("agents.hapax_voice.tools.register_tool_handlers"),
         ):
             from agents.hapax_voice.pipeline import build_pipeline_task
+
             build_pipeline_task(frame_gate=gate)
 
         # Check the processors list passed to Pipeline

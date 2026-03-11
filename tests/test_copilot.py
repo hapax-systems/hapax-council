@@ -1,12 +1,12 @@
 """Tests for cockpit.copilot — CopilotEngine rule evaluation."""
+
 from __future__ import annotations
 
 from cockpit.copilot import (
+    _BOOTSTRAPPING_OBSERVATIONS,
+    _READINESS_COOLDOWN,
     CopilotContext,
     CopilotEngine,
-    _BOOTSTRAPPING_OBSERVATIONS,
-    _DEVELOPING_OBSERVATIONS,
-    _READINESS_COOLDOWN,
 )
 
 
@@ -233,6 +233,7 @@ def test_health_failed_status():
 
 # ── Readiness awareness tests ───────────────────────────────────────────────
 
+
 def test_bootstrapping_message_fires():
     """Bootstrapping readiness alert fires when cooldown expired."""
     engine = _engine()
@@ -418,6 +419,7 @@ def test_developing_message_formats_gap():
 def test_idle_with_probe_surfaces_question():
     """Probe surfaces during idle when eval count aligns."""
     from cockpit.micro_probes import MicroProbe
+
     probe = MicroProbe(
         dimension="neurocognitive",
         topic="task_initiation",

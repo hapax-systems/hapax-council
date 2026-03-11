@@ -2,25 +2,22 @@
 
 Tests operate on stdlib email.message.Message objects — no I/O.
 """
+
 from __future__ import annotations
 
 import email
 from email.message import Message
 
-import pytest
-
 from shared.email_utils import (
-    is_automated,
+    decode_header,
     extract_body,
     extract_email_addr,
-    decode_header,
+    is_automated,
     parse_email_date,
-    SKIP_SENDER_PATTERNS,
-    MAX_BODY_CHARS,
 )
 
-
 # ── is_automated tests ──────────────────────────────────────────────────────
+
 
 class TestIsAutomated:
     def test_noreply(self):
@@ -62,6 +59,7 @@ class TestIsAutomated:
 
 # ── extract_email_addr tests ──────────────────────────────────────────────
 
+
 class TestExtractEmailAddr:
     def test_plain_address(self):
         assert extract_email_addr("alice@example.com") == "alice@example.com"
@@ -80,6 +78,7 @@ class TestExtractEmailAddr:
 
 
 # ── decode_header tests ─────────────────────────────────────────────────────
+
 
 class TestDecodeHeader:
     def test_plain_ascii(self):
@@ -100,6 +99,7 @@ class TestDecodeHeader:
 
 
 # ── parse_email_date tests ──────────────────────────────────────────────────
+
 
 class TestParseEmailDate:
     def test_standard_date(self):
@@ -126,11 +126,10 @@ class TestParseEmailDate:
 
 # ── extract_body tests ──────────────────────────────────────────────────────
 
+
 class TestExtractBody:
     def test_plain_text_message(self):
-        msg = email.message_from_string(
-            "Content-Type: text/plain; charset=utf-8\n\nHello, world!"
-        )
+        msg = email.message_from_string("Content-Type: text/plain; charset=utf-8\n\nHello, world!")
         body = extract_body(msg)
         assert "Hello, world!" in body
 

@@ -1,7 +1,8 @@
 """Tests for FrameGate Pipecat processor."""
+
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -43,7 +44,7 @@ async def test_drops_audio_on_pause():
 @pytest.mark.asyncio
 async def test_passes_control_frames_on_pause():
     """Non-audio frames (control frames) pass through even on pause."""
-    from pipecat.frames.frames import Frame, StartFrame
+    from pipecat.frames.frames import StartFrame
     from pipecat.processors.frame_processor import FrameDirection
 
     gate = FrameGate()

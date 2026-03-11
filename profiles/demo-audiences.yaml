@@ -1,9 +1,9 @@
 audiences:
-  my wife:
+  my partner:
     archetype: family
-    name: Alexis
+    name: Alex
     context: |
-      Alexis is Ryan's wife. She knows he's been working on this system nonstop
+      The partner is a close family member. She knows he's been working on this system nonstop
       for the past week, but has no technical details about what it is or does.
       She is not technical but is intellectually curious about systems thinking,
       knowledge flow, partitioning, and agent dynamics at a conceptual level —
@@ -11,15 +11,15 @@ audiences:
 
       Her interests in this demo:
       - The genuine uniqueness of this system in the LLM space
-      - How it helps Ryan with his Autism and ADHD
-      - How it helps Ryan at work
+      - How it helps the operator with his Autism and ADHD
+      - How it helps the operator at work
       - The nuanced knowledge systems that underlie the architecture
       - Systems design thinking and systems thinking (knowledge flow, partitioning, agent dynamics)
-      - How it helps Ryan connect with and understand people
-      - How it might help Ryan achieve balance in life and achieve his goals more effectively
+      - How it helps the operator connect with and understand people
+      - How it might help the operator achieve balance in life and achieve his goals more effectively
 
-      Setting: At home in Ryan's office. Casual, personal, intimate.
-      Relationship: Spouse — she cares about Ryan, not the technology.
+      Setting: At home in the operator's office. Casual, personal, intimate.
+      Relationship: Family member — she cares about the operator, not the technology.
     calibration:
       emphasize:
         - START with the big picture — what this is as a whole, before any details
@@ -27,7 +27,7 @@ audiences:
         - connecting with and understanding people — management tools that make him a better partner, father, and leader
         - executive function accommodation and ADHD/autism support — practical daily impact
         - knowledge systems and information flow (conceptual, not technical)
-        - the distinction between what LLMs already do (chat, answer questions) and what Ryan built on top (agents, self-monitoring, profile learning, management support) — this helps her understand "his work"
+        - the distinction between what LLMs already do (chat, answer questions) and what the operator built on top (agents, self-monitoring, profile learning, management support) — this helps her understand "his work"
         - personal growth, family impact, and freeing cognitive energy for relationships
         - systems thinking and agent dynamics (conceptual)
         - the Obsidian notes app as "external brain" — agents write briefings and prep docs into it, it syncs across devices, and the system reads back from it to answer questions
@@ -67,17 +67,17 @@ audiences:
         - dwell on system health monitoring or self-healing — mention it once as background reliability, not as a selling point
         - mention cost, spending, or money — it's too complicated for this context
 
-  chris beron:
+  chris b:
     archetype: leadership
     name: Chris
     context: |
-      Chris Beron is an Enterprise Architect (Level 5) at the same company where Ryan
+      Chris is a senior architect at the same company where the operator
       is AVP. Chris has extraordinarily broad and deep expertise: Azure Cloud, containerization,
       security, networking, governance, strategy — seemingly everything. He is brilliant
       and makes for a very difficult, high-bar audience. Nothing gets past him.
 
-      This is a cold introduction — Chris knows nothing about this system. Ryan looks up
-      to Chris and respects him deeply. This is NOT a pitch. Ryan is seeking honest,
+      This is a cold introduction — Chris knows nothing about this system. the operator looks up
+      to Chris and respects him deeply. This is NOT a pitch. the operator is seeking honest,
       critical technical feedback from someone whose judgment he trusts. The goal is for
       Chris to evaluate the architecture on its merits and provide candid assessment.
 
@@ -99,9 +99,9 @@ audiences:
       - Over-engineering or under-engineering relative to the problem space
       - Whether design decisions are principled or accidental
 
-      Setting: Professional but collegial. Ryan sharing his personal project with a
+      Setting: Professional but collegial. the operator sharing his personal project with a
       respected peer whose feedback genuinely matters.
-      Relationship: Ryan (AVP) looks up to Chris (EA LVL5) — seeking peer review, not approval.
+      Relationship: the operator (AVP) looks up to Chris (EA LVL5) — seeking peer review, not approval.
     calibration:
       emphasize:
         - service topology and container orchestration

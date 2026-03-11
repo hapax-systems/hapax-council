@@ -7,12 +7,13 @@ A 50GB Takeout export can take hours. This tracker enables:
 
 State persisted as JSONL at ~/.cache/takeout-ingest/progress.jsonl
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,7 @@ PROGRESS_FILE = PROGRESS_DIR / "progress.jsonl"
 @dataclass
 class ServiceProgress:
     """Progress state for a single service."""
+
     service: str
     status: str = "pending"  # pending, in_progress, completed, failed
     records_processed: int = 0
@@ -94,7 +96,9 @@ class ProgressTracker:
                 for sp in self._services.values()
             ],
         }
-        import tempfile, os as _os
+        import os as _os
+        import tempfile
+
         tmp_fd, tmp_path = tempfile.mkstemp(dir=self.progress_dir, suffix=".tmp")
         try:
             _os.write(tmp_fd, json.dumps(data, indent=2).encode())

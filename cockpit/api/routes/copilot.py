@@ -1,5 +1,8 @@
 """Copilot observation endpoint — context-aware message from CopilotEngine."""
+
 from __future__ import annotations
+
+from datetime import UTC
 
 from fastapi import APIRouter
 
@@ -28,17 +31,22 @@ async def get_copilot_observation():
         ctx.loaded_model = cache.gpu.loaded_models[0] if cache.gpu.loaded_models else ""
 
     if cache.briefing:
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         try:
             gen = datetime.fromisoformat(cache.briefing.generated_at)
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             ctx.briefing_age_h = (now - gen).total_seconds() / 3600
         except Exception:
             pass
         ctx.action_item_count = len(getattr(cache.briefing, "action_items", []))
 
     if cache.drift:
-        ctx.drift_count = cache.drift.total_items if hasattr(cache.drift, "total_items") else len(getattr(cache.drift, "items", []))
+        ctx.drift_count = (
+            cache.drift.total_items
+            if hasattr(cache.drift, "total_items")
+            else len(getattr(cache.drift, "items", []))
+        )
 
     if cache.readiness:
         ctx.readiness_level = cache.readiness.level

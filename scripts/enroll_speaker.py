@@ -10,14 +10,12 @@ Usage:
 
 Requires HF_TOKEN in environment (for pyannote model access).
 """
+
 from __future__ import annotations
 
 import argparse
-import io
 import subprocess
 import sys
-import tempfile
-import wave
 from pathlib import Path
 
 import numpy as np
@@ -41,9 +39,12 @@ def record_audio(duration_s: int) -> np.ndarray:
     """
     cmd = [
         "parecord",
-        "--rate", str(SAMPLE_RATE),
-        "--channels", str(CHANNELS),
-        "--format", "s16le",
+        "--rate",
+        str(SAMPLE_RATE),
+        "--channels",
+        str(CHANNELS),
+        "--format",
+        "s16le",
         "--raw",
     ]
     try:
@@ -112,15 +113,21 @@ def main() -> None:
         description="Enroll operator voice for Hapax Voice speaker identification."
     )
     parser.add_argument(
-        "--samples", type=int, default=3,
+        "--samples",
+        type=int,
+        default=3,
         help="Number of voice samples to record and average (default: 3)",
     )
     parser.add_argument(
-        "--duration", type=int, default=5,
+        "--duration",
+        type=int,
+        default=5,
         help="Duration of each recording in seconds (default: 5)",
     )
     parser.add_argument(
-        "--output", type=Path, default=DEFAULT_OUTPUT,
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT,
         help=f"Path to save the embedding (default: {DEFAULT_OUTPUT})",
     )
     args = parser.parse_args()
@@ -136,6 +143,7 @@ def main() -> None:
 
     # Pre-flight: check HF_TOKEN
     import os
+
     if not os.environ.get("HF_TOKEN"):
         print("WARNING: HF_TOKEN not set. The pyannote embedding model requires a")
         print("Hugging Face token with access to pyannote/embedding.")
@@ -149,7 +157,9 @@ def main() -> None:
     try:
         subprocess.run(
             ["parecord", "--help"],
-            capture_output=True, check=False, timeout=5,
+            capture_output=True,
+            check=False,
+            timeout=5,
         )
         print("  parecord: OK")
     except FileNotFoundError:
@@ -218,6 +228,7 @@ def main() -> None:
     # Report inter-sample consistency
     if len(embeddings) > 1:
         from agents.hapax_voice.speaker_id import _cosine_similarity
+
         sims = []
         for i in range(len(embeddings)):
             for j in range(i + 1, len(embeddings)):
@@ -235,7 +246,7 @@ def main() -> None:
 
     print()
     print("=" * 60)
-    print(f"  Enrollment complete.")
+    print("  Enrollment complete.")
     print(f"  Saved to: {args.output}")
     print("=" * 60)
 

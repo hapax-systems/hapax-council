@@ -3,21 +3,21 @@
 Collects health failures, Langfuse error traces, and docker events, clusters
 them within time windows, and uses LLM to hypothesize causal relationships.
 """
+
 from __future__ import annotations
 
 import json
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from shared.config import get_model, PROFILES_DIR
+from shared.config import PROFILES_DIR, get_model
 
 
 class CorrelatedEvent(BaseModel):
     """A single event in a correlation window."""
+
     timestamp: str
     source: str  # "health", "langfuse", "docker"
     event: str  # description
@@ -25,6 +25,7 @@ class CorrelatedEvent(BaseModel):
 
 class CorrelationCluster(BaseModel):
     """A group of events within a time window that may be related."""
+
     window_start: str
     window_end: str
     events: list[CorrelatedEvent] = Field(default_factory=list)
@@ -33,6 +34,7 @@ class CorrelationCluster(BaseModel):
 
 class CorrelationReport(BaseModel):
     """Full correlation analysis report."""
+
     generated_at: str = ""
     hours_analyzed: int = 4
     total_events: int = 0
@@ -52,7 +54,7 @@ def _collect_health_events(hours: int) -> list[CorrelatedEvent]:
     path = PROFILES_DIR / "health-history.jsonl"
     if not path.exists():
         return []
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
     events = []
     for line in path.read_text().splitlines():
         if not line.strip():
@@ -64,11 +66,13 @@ def _collect_health_events(hours: int) -> list[CorrelatedEvent]:
                 continue
             failed = d.get("failed_checks", [])
             if failed:
-                events.append(CorrelatedEvent(
-                    timestamp=d["timestamp"],
-                    source="health",
-                    event=f"Failed checks: {', '.join(failed)}",
-                ))
+                events.append(
+                    CorrelatedEvent(
+                        timestamp=d["timestamp"],
+                        source="health",
+                        event=f"Failed checks: {', '.join(failed)}",
+                    )
+                )
         except json.JSONDecodeError:
             continue
     return events
@@ -76,19 +80,19 @@ def _collect_health_events(hours: int) -> list[CorrelatedEvent]:
 
 def _collect_langfuse_errors(hours: int) -> list[CorrelatedEvent]:
     """Collect Langfuse error traces (best-effort)."""
-    import os
-    from urllib.request import Request, urlopen
-    from urllib.error import URLError
     import base64
+    import os
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
 
     pk = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
     sk = os.environ.get("LANGFUSE_SECRET_KEY", "")
     if not pk or not sk:
         return []
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
     auth = base64.b64encode(f"{pk}:{sk}".encode()).decode()
-    url = f"http://localhost:3000/api/public/traces?limit=50"
+    url = "http://localhost:3000/api/public/traces?limit=50"
 
     events = []
     try:
@@ -102,11 +106,13 @@ def _collect_langfuse_errors(hours: int) -> list[CorrelatedEvent]:
                 continue
             # Look for error status
             if trace.get("status") == "ERROR" or trace.get("level") == "ERROR":
-                events.append(CorrelatedEvent(
-                    timestamp=ts,
-                    source="langfuse",
-                    event=f"Error trace: {trace.get('name', 'unknown')} - {trace.get('statusMessage', '')[:100]}",
-                ))
+                events.append(
+                    CorrelatedEvent(
+                        timestamp=ts,
+                        source="langfuse",
+                        event=f"Error trace: {trace.get('name', 'unknown')} - {trace.get('statusMessage', '')[:100]}",
+                    )
+                )
     except (URLError, json.JSONDecodeError, Exception):
         pass
     return events
@@ -131,19 +137,23 @@ def _cluster_events(
             current.append(e)
         else:
             if len(current) >= 2:  # only report multi-event clusters
-                clusters.append(CorrelationCluster(
-                    window_start=current[0].timestamp,
-                    window_end=current[-1].timestamp,
-                    events=current,
-                ))
+                clusters.append(
+                    CorrelationCluster(
+                        window_start=current[0].timestamp,
+                        window_end=current[-1].timestamp,
+                        events=current,
+                    )
+                )
             current = [e]
 
     if len(current) >= 2:
-        clusters.append(CorrelationCluster(
-            window_start=current[0].timestamp,
-            window_end=current[-1].timestamp,
-            events=current,
-        ))
+        clusters.append(
+            CorrelationCluster(
+                window_start=current[0].timestamp,
+                window_end=current[-1].timestamp,
+                events=current,
+            )
+        )
 
     return clusters
 
@@ -179,7 +189,7 @@ async def correlate_signals(hours: int = 4) -> CorrelationReport:
                     cluster.hypothesis = "Analysis unavailable"
 
     return CorrelationReport(
-        generated_at=datetime.now(timezone.utc).isoformat(),
+        generated_at=datetime.now(UTC).isoformat(),
         hours_analyzed=hours,
         total_events=len(all_events),
         clusters=clusters,

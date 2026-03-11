@@ -1,12 +1,12 @@
 """Tests for audience dossier loading."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import yaml
-import pytest
 
-from agents.demo_models import AudienceDossier, AudiencePersona, load_audiences, load_personas
+from agents.demo_models import AudienceDossier, load_audiences, load_personas
 
 
 class TestLoadAudiences:
@@ -19,8 +19,8 @@ class TestLoadAudiences:
         """Built-in audiences file loads known dossiers."""
         audiences = load_audiences()
         assert len(audiences) >= 2
-        assert "my wife" in audiences
-        assert "chris beron" in audiences
+        assert "my partner" in audiences
+        assert "chris b" in audiences
 
     def test_load_audiences_from_fixture(self, tmp_path: Path) -> None:
         """A populated audiences file parses correctly with all fields."""
@@ -53,7 +53,7 @@ class TestLoadAudiences:
         """Keys are lowercased for case-insensitive lookup."""
         data = {
             "audiences": {
-                "My Wife": {
+                "My Partner": {
                     "archetype": "family",
                     "name": "Jane",
                     "context": "test context",
@@ -63,8 +63,8 @@ class TestLoadAudiences:
         f = tmp_path / "audiences.yaml"
         f.write_text(yaml.dump(data))
         audiences = load_audiences(f)
-        assert "my wife" in audiences
-        assert "My Wife" not in audiences
+        assert "my partner" in audiences
+        assert "My Partner" not in audiences
 
     def test_load_audiences_empty_calibration(self, tmp_path: Path) -> None:
         """Missing calibration defaults to empty dict."""

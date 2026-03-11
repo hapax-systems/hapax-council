@@ -1,4 +1,5 @@
 """Demo evaluation agent — generates, evaluates, and iteratively improves demos."""
+
 from __future__ import annotations
 
 import argparse
@@ -13,7 +14,7 @@ from agents.demo_models import DemoEvalDimension, DemoEvalReport, DemoEvalResult
 
 log = logging.getLogger(__name__)
 
-DEFAULT_SCENARIO = "the system for my wife"
+DEFAULT_SCENARIO = "the system for my partner"
 DEFAULT_FORMAT = "slides"
 DEFAULT_DURATION = "3m"
 DEFAULT_MAX_ITERATIONS = 3
@@ -38,7 +39,9 @@ async def evaluate_demo_output(
     voice_examples = load_voice_examples()
 
     structural_dims = run_structural_checks(demo_dir, expected_audience)
-    text_dims = await run_text_evaluation(script_data, style_guide, target_seconds, voice_examples=voice_examples)
+    text_dims = await run_text_evaluation(
+        script_data, style_guide, target_seconds, voice_examples=voice_examples
+    )
     visual_dims = await run_visual_evaluation(demo_dir, script_data)
 
     all_dims = structural_dims + text_dims + visual_dims
@@ -73,7 +76,7 @@ async def run_eval_loop(
     on_progress: callable | None = None,
 ) -> DemoEvalResult:
     """Run the full generate -> evaluate -> heal loop."""
-    from agents.demo import generate_demo, parse_request, resolve_audience, parse_duration
+    from agents.demo import generate_demo, parse_duration, parse_request, resolve_audience
     from agents.demo_models import load_personas
     from agents.demo_pipeline.eval_rubrics import diagnose_failures
     from agents.demo_pipeline.narrative import load_style_guide
@@ -91,7 +94,8 @@ async def run_eval_loop(
     archetype, _ = resolve_audience(audience_text, personas)
     target_seconds = parse_duration(duration, archetype)
 
-    from agents.demo_pipeline.lessons import load_lessons_for_archetype, format_lessons_block
+    from agents.demo_pipeline.lessons import format_lessons_block, load_lessons_for_archetype
+
     prior_lessons = load_lessons_for_archetype(archetype)
     lessons_block = format_lessons_block(prior_lessons)
     if lessons_block:
@@ -102,15 +106,17 @@ async def run_eval_loop(
     demo_dir: Path | None = None
 
     for iteration in range(1, max_iterations + 1):
-        progress(f"\n{'='*60}")
+        progress(f"\n{'=' * 60}")
         progress(f"ITERATION {iteration}/{max_iterations}")
-        progress(f"{'='*60}")
+        progress(f"{'=' * 60}")
 
         # Generate
         progress("Generating demo...")
         try:
             demo_dir = await generate_demo(
-                request=scenario, format=format, duration=duration,
+                request=scenario,
+                format=format,
+                duration=duration,
                 on_progress=progress,
                 lesson_context=lessons_block if lessons_block else None,
                 planning_overrides=planning_overrides if planning_overrides else None,
@@ -118,11 +124,18 @@ async def run_eval_loop(
         except Exception as e:
             progress(f"Generation failed: {e}")
             report = DemoEvalReport(
-                dimensions=[DemoEvalDimension(
-                    name="generation_error", category="structural",
-                    passed=False, score=0.0, issues=[str(e)],
-                )],
-                overall_pass=False, overall_score=0.0, iteration=iteration,
+                dimensions=[
+                    DemoEvalDimension(
+                        name="generation_error",
+                        category="structural",
+                        passed=False,
+                        score=0.0,
+                        issues=[str(e)],
+                    )
+                ],
+                overall_pass=False,
+                overall_score=0.0,
+                iteration=iteration,
                 adjustments_applied=planning_overrides.split("\n") if planning_overrides else [],
             )
             history.append(report)
@@ -131,7 +144,9 @@ async def run_eval_loop(
         # Evaluate
         progress("Evaluating output...")
         report = await evaluate_demo_output(
-            demo_dir, expected_audience=archetype, target_seconds=target_seconds,
+            demo_dir,
+            expected_audience=archetype,
+            target_seconds=target_seconds,
         )
         report.iteration = iteration
         if planning_overrides:
@@ -147,7 +162,9 @@ async def run_eval_loop(
             progress(f"  [{status}] {dim.name}: {dim.score:.2f}")
             for issue in dim.issues:
                 progress(f"         -> {issue}")
-        progress(f"\n  Overall: {report.overall_score:.2f} ({'PASS' if report.overall_pass else 'FAIL'})")
+        progress(
+            f"\n  Overall: {report.overall_score:.2f} ({'PASS' if report.overall_pass else 'FAIL'})"
+        )
 
         if report.overall_pass:
             progress(f"\nDemo PASSED evaluation on iteration {iteration}")
@@ -159,7 +176,10 @@ async def run_eval_loop(
             script_data = json.loads((demo_dir / "script.json").read_text())
             persona = personas.get(archetype)
             diagnosis = await diagnose_failures(
-                report.dimensions, script_data, style_guide, iteration,
+                report.dimensions,
+                script_data,
+                style_guide,
+                iteration,
                 forbidden_terms=persona.forbidden_terms if persona else None,
             )
             progress(f"Root causes: {'; '.join(diagnosis.root_causes)}")
@@ -171,8 +191,14 @@ async def run_eval_loop(
                 planning_overrides = planning_overrides[:2000].rsplit(" ", 1)[0]
 
     elapsed = time.time() - start_time
-    final_report = history[-1] if history else DemoEvalReport(
-        dimensions=[], overall_pass=False, overall_score=0.0,
+    final_report = (
+        history[-1]
+        if history
+        else DemoEvalReport(
+            dimensions=[],
+            overall_pass=False,
+            overall_score=0.0,
+        )
     )
 
     result = DemoEvalResult(
@@ -192,7 +218,13 @@ async def run_eval_loop(
 
     # Save lessons from passing multi-iteration runs
     if result.passed and result.iterations > 1:
-        from agents.demo_pipeline.lessons import load_lessons, accumulate_lessons, extract_lessons, save_lessons
+        from agents.demo_pipeline.lessons import (
+            accumulate_lessons,
+            extract_lessons,
+            load_lessons,
+            save_lessons,
+        )
+
         new_lesson_texts = extract_lessons(result)
         if new_lesson_texts:
             store = load_lessons()
@@ -209,15 +241,20 @@ async def main() -> None:
         prog="python -m agents.demo_eval",
     )
     parser.add_argument(
-        "--scenario", default=DEFAULT_SCENARIO,
+        "--scenario",
+        default=DEFAULT_SCENARIO,
         help=f"Demo request text (default: '{DEFAULT_SCENARIO}')",
     )
     parser.add_argument("--format", default=DEFAULT_FORMAT, choices=["slides", "video"])
-    parser.add_argument("--duration", default=DEFAULT_DURATION, help="Target duration (e.g. '3m', '180s')")
+    parser.add_argument(
+        "--duration", default=DEFAULT_DURATION, help="Target duration (e.g. '3m', '180s')"
+    )
     parser.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
     parser.add_argument("--pass-threshold", type=float, default=DEFAULT_PASS_THRESHOLD)
     parser.add_argument(
-        "--eval-only", type=Path, default=None,
+        "--eval-only",
+        type=Path,
+        default=None,
         help="Evaluate an existing demo directory (no generation or healing)",
     )
     args = parser.parse_args()
@@ -234,7 +271,9 @@ async def main() -> None:
 
     if args.eval_only:
         report = await evaluate_demo_output(args.eval_only)
-        print_flush(f"\nOverall: {report.overall_score:.2f} ({'PASS' if report.overall_pass else 'FAIL'})")
+        print_flush(
+            f"\nOverall: {report.overall_score:.2f} ({'PASS' if report.overall_pass else 'FAIL'})"
+        )
         for dim in report.dimensions:
             status = "PASS" if dim.passed else "FAIL"
             print_flush(f"  [{status}] {dim.name}: {dim.score:.2f}")
@@ -251,13 +290,13 @@ async def main() -> None:
         on_progress=print_flush,
     )
 
-    print_flush(f"\n{'='*60}")
+    print_flush(f"\n{'=' * 60}")
     print_flush(f"FINAL RESULT: {'PASSED' if result.passed else 'FAILED'}")
     print_flush(f"Iterations: {result.iterations}")
     print_flush(f"Score: {result.final_report.overall_score:.2f}")
     print_flush(f"Duration: {result.total_duration_seconds:.0f}s")
     print_flush(f"Output: {result.demo_dir}")
-    print_flush(f"{'='*60}")
+    print_flush(f"{'=' * 60}")
 
     sys.exit(0 if result.passed else 1)
 

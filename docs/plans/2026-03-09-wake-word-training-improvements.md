@@ -36,7 +36,7 @@ Interactive script: press Enter to record each utterance, 'q' to quit.
 Saves 16kHz mono int16 WAV files to data/wake-word-training/positive/real/.
 
 Usage:
-    cd ~/projects/ai-agents
+    cd ~/projects/hapax-council
     uv run python scripts/record_wake_word.py
     uv run python scripts/record_wake_word.py --count 50  # target count
     uv run python scripts/record_wake_word.py --output-dir /path/to/dir
@@ -164,7 +164,7 @@ if __name__ == "__main__":
 
 **Step 2: Test the script runs without errors**
 
-Run: `cd ~/projects/ai-agents && uv run python scripts/record_wake_word.py --count 2 --duration 1.0`
+Run: `cd ~/projects/hapax-council && uv run python scripts/record_wake_word.py --count 2 --duration 1.0`
 Expected: Interactive prompt, records 2 short clips, saves to `data/wake-word-training/positive/real/`
 
 **Step 3: Commit**
@@ -235,7 +235,7 @@ def test_augment_clips_zero_augments_returns_originals():
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py -v`
 Expected: FAIL with `ImportError` (functions don't exist yet)
 
 **Step 3: Implement augmentation functions**
@@ -298,7 +298,7 @@ def augment_clips(
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py -v`
 Expected: All 4 tests PASS
 
 **Step 5: Commit**
@@ -334,7 +334,7 @@ def test_extract_features_accepts_augment_param():
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py::test_extract_features_accepts_augment_param -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py::test_extract_features_accepts_augment_param -v`
 Expected: FAIL (parameter doesn't exist yet)
 
 **Step 3: Add augment_positive parameter to extract_features_from_clips**
@@ -405,7 +405,7 @@ Finally, update the `run_full_pipeline` call at line 1110 to pass `augment_posit
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py -v`
 Expected: All 5 tests PASS
 
 **Step 5: Commit**
@@ -441,7 +441,7 @@ def test_train_model_accepts_real_weight_param():
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py::test_train_model_accepts_real_weight_param -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py::test_train_model_accepts_real_weight_param -v`
 Expected: FAIL
 
 **Step 3: Implement real sample weighting**
@@ -519,7 +519,7 @@ In `run_full_pipeline` (around line 1118), add after positive feature extraction
 
 **Step 5: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/hapax_voice/test_wake_word_augmentation.py -v`
 Expected: All 6 tests PASS
 
 **Step 6: Commit**
@@ -608,7 +608,7 @@ For training:
 
 **Step 2: Verify**
 
-Run: `cd ~/projects/ai-agents && uv run python scripts/train_wake_word.py --help`
+Run: `cd ~/projects/hapax-council && uv run python scripts/train_wake_word.py --help`
 Expected: Shows new flags (`--no-augment`, `--augment-per-clip`, `--real-weight`) and updated defaults
 
 **Step 3: Commit**
@@ -629,7 +629,7 @@ This is the hands-on task: record real voice samples, then run the full training
 
 **Step 1: Record ~50 real utterances**
 
-Run: `cd ~/projects/ai-agents && uv run python scripts/record_wake_word.py --count 50`
+Run: `cd ~/projects/hapax-council && uv run python scripts/record_wake_word.py --count 50`
 
 Follow the interactive prompts. Tips:
 - Vary your distance from the mic (30cm, 60cm, 1m)
@@ -644,7 +644,7 @@ Expected: ~50 files
 
 **Step 3: Run full training pipeline with augmentation**
 
-Run: `cd ~/projects/ai-agents && uv run python scripts/train_wake_word.py --all --num-positive 10000`
+Run: `cd ~/projects/hapax-council && uv run python scripts/train_wake_word.py --all --num-positive 10000`
 
 This runs: generate, download, extract (with augmentation), train.
 Expected: Completes with model at `~/.local/share/hapax-voice/hapax_wake_word.onnx`
@@ -669,7 +669,7 @@ Expected: "Wake word detected (score=X.XXX)" with score > 0.5
 **Step 6: Verify data/ is gitignored**
 
 ```bash
-cd ~/projects/ai-agents && git status data/
+cd ~/projects/hapax-council && git status data/
 ```
 If data/ is tracked, add it to `.gitignore`.
 
@@ -701,7 +701,7 @@ uv run python scripts/record_wake_word.py --count 10 --output-dir data/wake-word
 **Step 2: Retrain with expanded real data**
 
 ```bash
-cd ~/projects/ai-agents
+cd ~/projects/hapax-council
 uv run python scripts/train_wake_word.py --extract-features --train
 ```
 

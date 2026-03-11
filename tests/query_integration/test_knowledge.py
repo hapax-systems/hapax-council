@@ -1,25 +1,23 @@
 """Integration tests for knowledge query agent against real data."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from shared.knowledge_search import (
+    get_operator_goals,
     read_briefing,
     read_digest,
     read_scout_report,
-    get_operator_goals,
     search_documents,
-    search_profile,
     search_memory,
+    search_profile,
 )
 from tests.query_integration._helpers import (
-    POPULATED_PROFILES,
     EMPTY_PROFILES,
+    POPULATED_PROFILES,
     skip_if_missing,
 )
-
 
 # ── Populated state — File reads ─────────────────────────────────────────────
 
@@ -99,9 +97,7 @@ class TestKnowledgeSearchFilters:
 
         search_profile("work habits", dimension="work_patterns")
 
-        mock_store.search.assert_called_once_with(
-            "work habits", dimension="work_patterns", limit=5
-        )
+        mock_store.search.assert_called_once_with("work habits", dimension="work_patterns", limit=5)
 
 
 # ── Empty state ──────────────────────────────────────────────────────────────

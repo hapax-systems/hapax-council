@@ -16,6 +16,7 @@ Usage:
     uv run python -m agents.scout --dry-run          # Show what would be searched, no API calls
     uv run python -m agents.scout --notify           # Desktop notification if recommendations found
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,7 +28,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -48,6 +49,7 @@ except ImportError:
 log = logging.getLogger("scout")
 
 from shared.config import PROFILES_DIR
+
 REGISTRY_FILE = PROFILES_DIR / "component-registry.yaml"
 REPORT_JSON = PROFILES_DIR / "scout-report.json"
 REPORT_MD = PROFILES_DIR / "scout-report.md"
@@ -62,8 +64,10 @@ TAVILY_API_KEY = os.environ.get(
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class Finding(BaseModel):
     """A single finding about an alternative or update."""
+
     name: str = Field(description="Name of the alternative or update")
     description: str = Field(description="What it is and why it's relevant, 1-2 sentences")
     url: str = Field(default="", description="Source URL if available")
@@ -71,22 +75,30 @@ class Finding(BaseModel):
 
 class Recommendation(BaseModel):
     """Evaluation of a single component against external landscape."""
+
     component: str = Field(description="Component key from registry")
     current: str = Field(description="What we're currently using")
     tier: str = Field(description="adopt, evaluate, monitor, or current-best")
     summary: str = Field(description="1-2 sentence assessment")
-    findings: list[Finding] = Field(default_factory=list, description="Notable alternatives or updates found")
+    findings: list[Finding] = Field(
+        default_factory=list, description="Notable alternatives or updates found"
+    )
     migration_effort: str = Field(default="", description="low, medium, or high")
-    confidence: str = Field(default="medium", description="low, medium, or high — how confident is this assessment")
+    confidence: str = Field(
+        default="medium", description="low, medium, or high — how confident is this assessment"
+    )
 
 
 class ScoutReport(BaseModel):
     """Complete horizon scan report."""
+
     generated_at: str = Field(description="ISO timestamp")
     components_scanned: int = Field(default=0)
     recommendations: list[Recommendation] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list, description="Components that failed to scan")
-    skipped: list[str] = Field(default_factory=list, description="Components skipped due to active decisions")
+    skipped: list[str] = Field(
+        default_factory=list, description="Components skipped due to active decisions"
+    )
 
 
 def load_decisions(path: Path | None = None) -> dict[str, dict]:
@@ -111,9 +123,11 @@ def load_decisions(path: Path | None = None) -> dict[str, dict]:
 
 # ── Component Registry ───────────────────────────────────────────────────────
 
+
 @dataclass
 class ComponentSpec:
     """Parsed component from the registry YAML."""
+
     key: str
     role: str
     current: str
@@ -135,20 +149,23 @@ def load_registry(filter_component: str | None = None) -> list[ComponentSpec]:
     for key, spec in data.get("components", {}).items():
         if filter_component and key != filter_component:
             continue
-        components.append(ComponentSpec(
-            key=key,
-            role=spec.get("role", ""),
-            current=spec.get("current", ""),
-            provider=spec.get("provider", ""),
-            constraints=spec.get("constraints", []),
-            preferences=spec.get("preferences", []),
-            search_hints=spec.get("search_hints", []),
-            eval_notes=spec.get("eval_notes", ""),
-        ))
+        components.append(
+            ComponentSpec(
+                key=key,
+                role=spec.get("role", ""),
+                current=spec.get("current", ""),
+                provider=spec.get("provider", ""),
+                constraints=spec.get("constraints", []),
+                preferences=spec.get("preferences", []),
+                search_hints=spec.get("search_hints", []),
+                eval_notes=spec.get("eval_notes", ""),
+            )
+        )
     return components
 
 
 # ── Web Search ───────────────────────────────────────────────────────────────
+
 
 def _tavily_search(query: str, max_results: int = 5) -> list[dict]:
     """Search via Tavily REST API. Returns list of {title, url, content}."""
@@ -156,12 +173,14 @@ def _tavily_search(query: str, max_results: int = 5) -> list[dict]:
         log.warning("TAVILY_API_KEY not set — skipping web search")
         return []
 
-    payload = json.dumps({
-        "query": query,
-        "max_results": max_results,
-        "search_depth": "basic",
-        "include_answer": False,
-    }).encode()
+    payload = json.dumps(
+        {
+            "query": query,
+            "max_results": max_results,
+            "search_depth": "basic",
+            "include_answer": False,
+        }
+    ).encode()
 
     req = Request(
         "https://api.tavily.com/search",
@@ -260,10 +279,12 @@ eval_agent = Agent(
 
 # Register on-demand operator context tools
 from shared.context_tools import get_context_tools
+
 for _tool_fn in get_context_tools():
     eval_agent.tool(_tool_fn)
 
 from shared.axiom_tools import get_axiom_tools
+
 for _tool_fn in get_axiom_tools():
     eval_agent.tool(_tool_fn)
 
@@ -295,10 +316,10 @@ async def evaluate_component(
 **Provider:** {spec.provider}
 
 **Hard constraints (must satisfy):**
-{chr(10).join(f'- {c}' for c in spec.constraints)}
+{chr(10).join(f"- {c}" for c in spec.constraints)}
 
 **Soft preferences (nice to have):**
-{chr(10).join(f'- {p}' for p in spec.preferences)}
+{chr(10).join(f"- {p}" for p in spec.preferences)}
 
 **Migration notes:** {spec.eval_notes}
 {usage_block}
@@ -329,10 +350,11 @@ alternative deserves attention. Be specific about what you found."""
 
 # ── Main Pipeline ────────────────────────────────────────────────────────────
 
+
 def _build_usage_map() -> dict[str, str]:
     """Build component-key → usage description map from Langfuse data."""
     try:
-        from shared.langfuse_client import langfuse_get, is_available
+        from shared.langfuse_client import is_available, langfuse_get
     except ImportError:
         return {}
 
@@ -340,13 +362,16 @@ def _build_usage_map() -> dict[str, str]:
         return {}
 
     try:
-        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-        result = langfuse_get("/observations", {
-            "fromStartTime": since,
-            "type": "GENERATION",
-            "limit": 100,
-            "page": 1,
-        })
+        since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+        result = langfuse_get(
+            "/observations",
+            {
+                "fromStartTime": since,
+                "type": "GENERATION",
+                "limit": 100,
+                "page": 1,
+            },
+        )
         observations = result.get("data", [])
         total = result.get("meta", {}).get("totalItems", len(observations))
 
@@ -381,7 +406,7 @@ async def run_scout(
     components = load_registry(filter_component)
     if not components:
         return ScoutReport(
-            generated_at=datetime.now(timezone.utc).isoformat()[:19] + "Z",
+            generated_at=datetime.now(UTC).isoformat()[:19] + "Z",
             errors=["No components found in registry"],
         )
 
@@ -392,7 +417,7 @@ async def run_scout(
             for hint in spec.search_hints:
                 print(f"  → {hint}", file=sys.stderr)
         return ScoutReport(
-            generated_at=datetime.now(timezone.utc).isoformat()[:19] + "Z",
+            generated_at=datetime.now(UTC).isoformat()[:19] + "Z",
             components_scanned=0,
         )
 
@@ -403,7 +428,7 @@ async def run_scout(
     decisions = load_decisions()
 
     report = ScoutReport(
-        generated_at=datetime.now(timezone.utc).isoformat()[:19] + "Z",
+        generated_at=datetime.now(UTC).isoformat()[:19] + "Z",
     )
 
     for spec in components:
@@ -412,10 +437,13 @@ async def run_scout(
         if decision and decision.get("decision") in ("dismissed", "deferred"):
             try:
                 decided_at = datetime.fromisoformat(decision["timestamp"])
-                age_days = (datetime.now(timezone.utc) - decided_at).days
+                age_days = (datetime.now(UTC) - decided_at).days
                 if age_days < DECISION_COOLDOWN_DAYS:
                     report.skipped.append(f"{spec.key} ({decision['decision']} {age_days}d ago)")
-                    print(f"Skipping: {spec.key} ({decision['decision']} {age_days}d ago, cooldown active)", file=sys.stderr)
+                    print(
+                        f"Skipping: {spec.key} ({decision['decision']} {age_days}d ago, cooldown active)",
+                        file=sys.stderr,
+                    )
                     continue
             except (ValueError, KeyError):
                 pass  # Malformed timestamp — evaluate normally
@@ -429,7 +457,8 @@ async def run_scout(
 
             # Phase 2: LLM evaluation (with usage context if available)
             rec = await evaluate_component(
-                spec, search_results,
+                spec,
+                search_results,
                 usage_context=usage_map.get(spec.key, ""),
             )
             report.recommendations.append(rec)
@@ -446,6 +475,7 @@ async def run_scout(
 
 
 # ── Formatters ───────────────────────────────────────────────────────────────
+
 
 def format_report_md(report: ScoutReport) -> str:
     """Format scout report as markdown."""
@@ -515,8 +545,11 @@ def format_report_human(report: ScoutReport) -> str:
     # Show actionable items first
     for rec in sorted(
         report.recommendations,
-        key=lambda r: ["adopt", "evaluate", "monitor", "current-best"].index(r.tier)
-        if r.tier in ["adopt", "evaluate", "monitor", "current-best"] else 99,
+        key=lambda r: (
+            ["adopt", "evaluate", "monitor", "current-best"].index(r.tier)
+            if r.tier in ["adopt", "evaluate", "monitor", "current-best"]
+            else 99
+        ),
     ):
         icon = tier_icons.get(rec.tier, "?")
         lines.append(f"  [{icon}] {rec.component}: {rec.tier} ({rec.confidence} confidence)")
@@ -536,6 +569,7 @@ def format_report_human(report: ScoutReport) -> str:
 
 # ── Notification ─────────────────────────────────────────────────────────────
 
+
 def send_notification(report: ScoutReport) -> None:
     """Send desktop notification if there are actionable recommendations."""
     actionable = [r for r in report.recommendations if r.tier in ("adopt", "evaluate")]
@@ -546,10 +580,12 @@ def send_notification(report: ScoutReport) -> None:
     body = "\n".join(f"- {r.component}: {r.tier}" for r in actionable[:3])
 
     from shared.notify import send_notification as _notify
+
     _notify("Horizon Scan", f"{summary}\n{body}", priority="default", tags=["telescope"])
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
@@ -557,10 +593,16 @@ async def main() -> None:
         prog="python -m agents.scout",
     )
     parser.add_argument("--json", action="store_true", help="Machine-readable JSON output")
-    parser.add_argument("--save", action="store_true", help="Save to profiles/scout-report.{json,md}")
+    parser.add_argument(
+        "--save", action="store_true", help="Save to profiles/scout-report.{json,md}"
+    )
     parser.add_argument("--component", type=str, default=None, help="Scan only this component key")
-    parser.add_argument("--dry-run", action="store_true", help="Show search queries without calling APIs")
-    parser.add_argument("--notify", action="store_true", help="Desktop notification if recommendations found")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show search queries without calling APIs"
+    )
+    parser.add_argument(
+        "--notify", action="store_true", help="Desktop notification if recommendations found"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -575,7 +617,9 @@ async def main() -> None:
         try:
             result = subprocess.run(
                 ["pass", "show", "api/tavily"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0:
                 TAVILY_API_KEY = result.stdout.strip()

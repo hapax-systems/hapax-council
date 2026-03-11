@@ -1,4 +1,5 @@
 """Configuration for hapax-voice daemon."""
+
 from __future__ import annotations
 
 import logging
