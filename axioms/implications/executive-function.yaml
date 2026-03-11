@@ -1,0 +1,297 @@
+axiom_id: executive_function
+derived_at: '2026-03-03'
+model: balanced
+derivation_version: 1
+implications:
+- id: ex-init-001
+  tier: T0
+  text: All agents must be runnable with zero configuration or setup steps beyond
+    environment variables.
+  enforcement: block
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-init-002
+  tier: T1
+  text: Agent entry points must not require the operator to remember command-line
+    arguments or flags.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-err-001
+  tier: T0
+  text: Error messages must include specific next actions, not just descriptions of
+    what went wrong.
+  enforcement: block
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-err-002
+  tier: T1
+  text: Agents must gracefully handle missing dependencies and provide clear installation
+    instructions.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-state-001
+  tier: T1
+  text: Agents must persist their own state and resume work without requiring the
+    operator to remember where they left off.
+  enforcement: review
+  canon: textualist
+  mode: sufficiency
+  level: subsystem
+- id: ex-state-002
+  tier: T1
+  text: State transitions and progress must be visible without the operator having
+    to check logs or debug output.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+- id: ex-routine-001
+  tier: T0
+  text: Recurring tasks must be automated rather than requiring manual triggering
+    by the operator.
+  enforcement: block
+  canon: textualist
+  mode: sufficiency
+  level: system
+- id: ex-routine-002
+  tier: T1
+  text: Agents like health_monitor and drift_detector must self-schedule and report
+    completion status.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: system
+- id: ex-cogload-001
+  tier: T1
+  text: Configuration files must use sensible defaults and avoid requiring the operator
+    to make low-stakes decisions.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-cogload-002
+  tier: T2
+  text: Interactive prompts must not ask questions the system can reasonably answer
+    itself.
+  enforcement: warn
+  canon: purposivist
+  mode: compatibility
+  level: component
+- id: ex-feedback-001
+  tier: T1
+  text: Long-running agents must provide regular progress updates without being queried.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-feedback-002
+  tier: T2
+  text: Success states must be explicitly confirmed rather than indicated by absence
+    of error messages.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-context-001
+  tier: T1
+  text: Agents must maintain sufficient context to explain their current state and
+    recent actions when queried.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-context-002
+  tier: T2
+  text: Status outputs must include timestamps and be human-readable without additional
+    parsing.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-attention-001
+  tier: T0
+  text: Critical alerts must be delivered through external channels (notifications,
+    email) rather than requiring log monitoring.
+  enforcement: block
+  canon: textualist
+  mode: sufficiency
+  level: system
+- id: ex-error-001
+  tier: T1
+  text: Error messages must include specific next steps rather than generic failure
+    descriptions.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-error-002
+  tier: T1
+  text: System failures must provide automatic recovery or graceful degradation without
+    operator diagnosis.
+  enforcement: review
+  canon: textualist
+  mode: sufficiency
+  level: subsystem
+- id: ex-config-001
+  tier: T1
+  text: Configuration files must have comprehensive defaults that work in the operator's
+    environment.
+  enforcement: review
+  canon: textualist
+  mode: sufficiency
+  level: component
+- id: ex-depend-001
+  tier: T1
+  text: Agent dependencies must be automatically resolved or clearly documented with
+    installation scripts.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-ui-001
+  tier: T2
+  text: Interactive prompts must timeout with sensible defaults rather than hanging
+    indefinitely.
+  enforcement: warn
+  canon: absurdity
+  mode: sufficiency
+  level: component
+- id: ex-ui-002
+  tier: T2
+  text: Multi-step workflows must checkpoint progress to allow resumption after interruption.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+- id: ex-doc-001
+  tier: T3
+  text: Documentation must focus on "what this does for you" rather than "how this
+    works internally".
+  enforcement: lint
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-log-001
+  tier: T2
+  text: Log messages must distinguish between "needs attention" and "normal operation"
+    without requiring operator to learn what's normal.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-alert-001
+  tier: T1
+  text: Alert conditions must be actionable and include enough context to respond
+    without additional investigation.
+  enforcement: review
+  canon: textualist
+  mode: sufficiency
+  level: component
+- id: ex-batch-001
+  tier: T2
+  text: Batch operations must provide summary reports rather than requiring operator
+    to synthesize results from logs.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-state-003
+  tier: T1
+  text: System must persist task context across interruptions to eliminate restart
+    cognitive overhead.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+- id: ex-alert-004
+  tier: T0
+  text: Alert mechanisms (notify.py, alert_state.py) must proactively surface actionable
+    items rather than requiring operator to check status.
+  enforcement: block
+  canon: textualist
+  mode: sufficiency
+  level: system
+- id: ex-config-005
+  tier: T1
+  text: Configuration files must provide sensible defaults that work without operator
+    customization.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-error-006
+  tier: T1
+  text: Error handling must auto-recover or auto-escalate rather than leaving operator
+    in undefined states requiring diagnosis.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+- id: ex-routine-007
+  tier: T0
+  text: Routine maintenance agents (knowledge_maint, health_monitor) must run autonomously
+    on schedules, not on-demand.
+  enforcement: block
+  canon: textualist
+  mode: sufficiency
+  level: system
+- id: ex-feedback-008
+  tier: T2
+  text: Agent outputs must include clear next-action recommendations to reduce decision
+    paralysis.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-cognitive-009
+  tier: T1
+  text: Interfaces must minimize context switching by batching related information
+    in single views (briefing.py, digest.py).
+  enforcement: review
+  canon: textualist
+  mode: sufficiency
+  level: subsystem
+- id: ex-memory-010
+  tier: T2
+  text: System must automatically capture and surface relevant historical context
+    without requiring operator to recall or search.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: system
+- id: ex-interrupt-011
+  tier: T1
+  text: Long-running processes must be resumable and provide progress indicators to
+    support task switching.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+- id: ex-decision-012
+  tier: T2
+  text: When multiple options exist, system must recommend the path of least cognitive
+    resistance as the default.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: component
+- id: ex-prose-001
+  tier: T0
+  text: >
+    All LLM-generated text outputs — agent reports, briefings, documentation,
+    status messages, demo scripts, and commit messages — must be direct and
+    informative. Generated prose must not contain rhetorical pivots ("This isn't
+    X — it's Y"), performative insight ("The question becomes..."), dramatic
+    restatement of known information, or contrast structures that exist for
+    rhythm rather than content. Every sentence must deliver information the
+    reader does not already have.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: system

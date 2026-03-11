@@ -26,12 +26,10 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-from shared.config import HAPAXROMANA_DIR
-
 AXIOMS_PATH: Path = Path(
     os.environ.get(
         "AXIOMS_PATH",
-        str(HAPAXROMANA_DIR / "axioms"),
+        str(Path(__file__).resolve().parent.parent / "axioms"),
     )
 )
 

@@ -213,31 +213,23 @@ class TestGovernorOperatorAbsence:
 
 
 class TestFrameGateDirective:
-    """FrameGate directive management (no Pipecat pipeline required)."""
+    """FrameGate directive management (no Pipecat pipeline required).
+
+    Hardware deps (pipecat) are stubbed via conftest.py sys.modules injection.
+    FrameProcessor is a MagicMock, so we bypass its __init__ with __new__
+    and set the instance attributes that FrameGate.__init__ would normally set.
+    """
 
     def test_initial_directive_is_process(self):
-        from unittest.mock import patch
+        from agents.hapax_voice.frame_gate import FrameGate
 
-        # Patch FrameProcessor to avoid pipecat init complexity
-        with patch("agents.hapax_voice.frame_gate.FrameProcessor.__init__", return_value=None):
-            from agents.hapax_voice.frame_gate import FrameGate
-
-            gate = FrameGate.__new__(FrameGate)
-            gate._directive = "process"
-            gate._dropped_count = 0
-
+        gate = FrameGate()
         assert gate.directive == "process"
 
     def test_set_directive_changes_value(self):
-        from unittest.mock import patch
+        from agents.hapax_voice.frame_gate import FrameGate
 
-        with patch("agents.hapax_voice.frame_gate.FrameProcessor.__init__", return_value=None):
-            from agents.hapax_voice.frame_gate import FrameGate
-
-            gate = FrameGate.__new__(FrameGate)
-            gate._directive = "process"
-            gate._dropped_count = 0
-
+        gate = FrameGate()
         gate.set_directive("pause")
         assert gate.directive == "pause"
         gate.set_directive("process")
@@ -245,15 +237,9 @@ class TestFrameGateDirective:
 
     def test_set_directive_same_value_is_noop(self):
         """Setting the same directive a second time should not change anything."""
-        from unittest.mock import patch
+        from agents.hapax_voice.frame_gate import FrameGate
 
-        with patch("agents.hapax_voice.frame_gate.FrameProcessor.__init__", return_value=None):
-            from agents.hapax_voice.frame_gate import FrameGate
-
-            gate = FrameGate.__new__(FrameGate)
-            gate._directive = "process"
-            gate._dropped_count = 0
-
+        gate = FrameGate()
         gate.set_directive("process")
         assert gate.directive == "process"
 

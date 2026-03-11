@@ -419,8 +419,30 @@ def sanitize_d2_source(d2_source: str) -> str:
 
 
 def is_d2_available() -> bool:
-    """Check if D2 CLI is installed."""
-    return shutil.which("d2") is not None
+    """Check if D2 CLI is installed and can render.
+
+    D2 requires a Playwright browser for PNG output; if the browser
+    is missing or broken, d2 will hang or fail at render time.
+    """
+    if not shutil.which("d2"):
+        return False
+    # Smoke-test actual rendering (d2 needs Playwright for PNG)
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".d2", mode="w", delete=False) as f:
+            f.write("x -> y")
+            d2_file = Path(f.name)
+        out_file = d2_file.with_suffix(".png")
+        result = subprocess.run(
+            ["d2", str(d2_file), str(out_file)],
+            capture_output=True,
+            timeout=15,
+        )
+        ok = result.returncode == 0 and out_file.exists()
+        d2_file.unlink(missing_ok=True)
+        out_file.unlink(missing_ok=True)
+        return ok
+    except (subprocess.TimeoutExpired, OSError):
+        return False
 
 
 def _try_d2_render(d2_source: str, output_path: Path) -> bool:

@@ -1,0 +1,57 @@
+# axioms/precedents/seed/single-user-seeds.yaml
+axiom_id: single_user
+precedents:
+  - id: sp-su-001
+    situation: "Mobile access via Tailscale to home services"
+    decision: compliant
+    reasoning: >
+      Multi-device access for the single user is consistent with the axiom.
+      Tailscale authenticates the device, not a separate user. No multi-user
+      scaffolding is introduced.
+    tier: T1
+    distinguishing_facts:
+      - "Single user accessing from multiple personal devices"
+      - "No new authentication layer for user identity"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-su-002
+    situation: "ntfy push notifications to Android"
+    decision: compliant
+    reasoning: >
+      Push notifications to the operator's personal device. Service-level
+      auth (topic token), not user-level auth. No user management.
+    tier: T2
+    distinguishing_facts:
+      - "Service authentication, not user authentication"
+      - "Single recipient device"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-su-003
+    situation: "Open WebUI with WEBUI_AUTH=true"
+    decision: compliant
+    reasoning: >
+      Authentication protects the single-user interface from unauthorized
+      network access. Single admin account (admin@localhost.com). Not
+      multi-user scaffolding — security for one user.
+    tier: T2
+    distinguishing_facts:
+      - "Single admin account only"
+      - "Auth protects single-user interface, not manages multiple users"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-su-004
+    situation: "Adding OAuth2 for API access with multiple user accounts"
+    decision: violation
+    reasoning: >
+      OAuth2 with multiple user accounts introduces multi-user identity
+      management. This directly contradicts the single-user axiom by
+      creating infrastructure for distinct user identities.
+    tier: T0
+    distinguishing_facts:
+      - "Multiple user accounts implies multi-user system"
+      - "OAuth2 user management is multi-user scaffolding"
+    created: "2026-03-03"
+    authority: operator

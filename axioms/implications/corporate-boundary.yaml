@@ -1,0 +1,61 @@
+axiom_id: corporate_boundary
+derived_at: '2026-03-05'
+model: balanced
+derivation_version: 1
+implications:
+- id: cb-llm-001
+  tier: T0
+  text: Extension must support direct API calls to sanctioned providers (OpenAI,
+    Anthropic) without requiring a localhost proxy. LiteLLM restriction is
+    auto-detected by probing the proxy health endpoint.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: component
+
+- id: cb-data-001
+  tier: T0
+  text: Vault data flow must use only git via corporate-approved remote.
+    Extension must never require direct network access to home services for
+    core functionality.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: subsystem
+
+- id: cb-degrade-001
+  tier: T0
+  text: Features depending on localhost services (RAG search, health status,
+    embedding) must fail silently with informative UI, not throw errors.
+  enforcement: block
+  canon: purposivist
+  mode: sufficiency
+  level: component
+
+- id: cb-key-001
+  tier: T0
+  text: API credentials resolved from VS Code settings, environment variables,
+    or pass store (in that order). Per-machine settings are not synced via git.
+    No secrets may be committed to the vault repository.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: component
+
+- id: cb-extensible-001
+  tier: T1
+  text: Adding a new LLM provider must require only implementing a provider
+    interface and adding a settings entry, not structural changes.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+
+- id: cb-parity-001
+  tier: T2
+  text: Core chat functionality (conversation, note context, slash commands)
+    must work identically regardless of provider selection.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: component
