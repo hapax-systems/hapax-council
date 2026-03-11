@@ -2,7 +2,9 @@
 
 Externalized executive function infrastructure.
 
-This is a personal operating environment where LLM agents handle the cognitive work that ADHD and autism make expensive: tracking open loops, maintaining context across conversations, surfacing what needs attention, and reacting to changes without requiring the operator to remember to check. It runs on a single workstation for a single person. There is no multi-user mode. That's not a limitation — it's a [constitutional axiom](https://github.com/ryanklee/hapax-constitution).
+This is a personal operating environment where LLM agents handle the cognitive work that compounds silently: tracking open loops, maintaining context across conversations, surfacing what needs attention, and reacting to changes without requiring the operator to remember to check. These are executive function and context processing tasks — the kind of work that every knowledge worker does constantly and that ADHD and autism make acutely expensive. The developer who built this has both; the system was born from necessity. But the problem it solves — externalizing executive function into infrastructure — is general.
+
+It runs on a single workstation for a single person. There is no multi-user mode. That's not a limitation — it's a [constitutional axiom](https://github.com/ryanklee/hapax-constitution).
 
 ## What it does
 
