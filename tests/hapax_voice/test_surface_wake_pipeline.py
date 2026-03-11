@@ -3,6 +3,7 @@
 Tests the critical handoff: wake word fires → session opens →
 daemon audio stops → Pipecat pipeline builds and starts.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -115,10 +116,13 @@ class TestWakeWordStartsPipeline:
         mock_task = MagicMock()
         mock_transport = MagicMock()
 
-        with patch(
-            "agents.hapax_voice.pipeline.build_pipeline_task",
-            return_value=(mock_task, mock_transport),
-        ), patch("pipecat.pipeline.runner.PipelineRunner"):
+        with (
+            patch(
+                "agents.hapax_voice.pipeline.build_pipeline_task",
+                return_value=(mock_task, mock_transport),
+            ),
+            patch("pipecat.pipeline.runner.PipelineRunner"),
+        ):
             await daemon._start_local_pipeline()
 
         daemon._audio_input.stop.assert_called_once()

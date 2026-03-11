@@ -1,19 +1,18 @@
 """Tests for the index orchestrator."""
+
 from __future__ import annotations
 
 import json
 import sqlite3
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from agents.dev_story.indexer import (
-    discover_sessions,
-    index_session,
-    index_git,
-    run_correlations,
-    full_index,
     SessionFile,
+    discover_sessions,
+    index_git,
+    index_session,
 )
 from agents.dev_story.schema import create_tables
 
@@ -39,11 +38,21 @@ def _make_session_dir(base: Path, project_encoded: str, sessions: dict[str, list
 def test_discover_sessions_finds_jsonl():
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp) / "projects"
-        _make_session_dir(base, "-home-user-projects-foo", {
-            "sess-1": [{"type": "user", "uuid": "u1", "sessionId": "sess-1",
+        _make_session_dir(
+            base,
+            "-home-user-projects-foo",
+            {
+                "sess-1": [
+                    {
+                        "type": "user",
+                        "uuid": "u1",
+                        "sessionId": "sess-1",
                         "timestamp": "2026-03-10T10:00:00Z",
-                        "message": {"role": "user", "content": "hi"}}],
-        })
+                        "message": {"role": "user", "content": "hi"},
+                    }
+                ],
+            },
+        )
         results = discover_sessions(base)
         assert len(results) == 1
         assert results[0].session_id == "sess-1"
@@ -64,21 +73,39 @@ def test_index_session_inserts_into_db():
     conn = _make_db()
     with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
         lines = [
-            {"type": "user", "uuid": "u1", "sessionId": "sess-1",
-             "timestamp": "2026-03-10T10:00:00Z",
-             "message": {"role": "user", "content": "hello"}},
-            {"type": "assistant", "uuid": "a1", "sessionId": "sess-1",
-             "timestamp": "2026-03-10T10:00:05Z",
-             "message": {"role": "assistant", "content": [
-                 {"type": "text", "text": "hi there"},
-                 {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/tmp/x"}},
-             ], "usage": {"input_tokens": 10, "output_tokens": 5}}},
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-1",
+                "timestamp": "2026-03-10T10:00:00Z",
+                "message": {"role": "user", "content": "hello"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-1",
+                "timestamp": "2026-03-10T10:00:05Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "hi there"},
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "Read",
+                            "input": {"file_path": "/tmp/x"},
+                        },
+                    ],
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            },
         ]
         for line in lines:
             f.write(json.dumps(line) + "\n")
         f.flush()
-        sf = SessionFile(path=Path(f.name), session_id="sess-1",
-                         project_path="/tmp/test", project_encoded="test")
+        sf = SessionFile(
+            path=Path(f.name), session_id="sess-1", project_path="/tmp/test", project_encoded="test"
+        )
         index_session(conn, sf)
 
     # Check session row
@@ -100,9 +127,17 @@ def test_index_session_inserts_into_db():
 def test_index_git_inserts_commits(mock_extract):
     conn = _make_db()
     mock_extract.return_value = (
-        [MagicMock(hash="abc", author_date="2026-03-10 10:00:00 -0500",
-                   message="feat: test", branch=None, files_changed=1,
-                   insertions=5, deletions=0)],
+        [
+            MagicMock(
+                hash="abc",
+                author_date="2026-03-10 10:00:00 -0500",
+                message="feat: test",
+                branch=None,
+                files_changed=1,
+                insertions=5,
+                deletions=0,
+            )
+        ],
         [MagicMock(commit_hash="abc", file_path="foo.py", operation="A")],
     )
     index_git(conn, "/tmp/repo")

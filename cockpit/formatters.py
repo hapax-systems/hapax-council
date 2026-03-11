@@ -1,4 +1,5 @@
 """Rich text formatters for cockpit data — used by CLI snapshot and tests."""
+
 from __future__ import annotations
 
 from rich.text import Text

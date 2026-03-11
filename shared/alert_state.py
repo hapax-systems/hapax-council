@@ -5,18 +5,19 @@ notifying on state transitions (OK→FIRING) or escalation thresholds.
 
 Persists state to ~/.cache/health-watchdog/alert-state.json.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 
-class AlertPhase(str, Enum):
+class AlertPhase(StrEnum):
     OK = "ok"
     FIRING = "firing"
     ACKNOWLEDGED = "acknowledged"
@@ -25,6 +26,7 @@ class AlertPhase(str, Enum):
 @dataclass
 class CheckAlertState:
     """Tracking state for a single check's alert lifecycle."""
+
     phase: AlertPhase = AlertPhase.OK
     consecutive_failures: int = 0
     last_notified_at: str = ""
@@ -60,9 +62,8 @@ class AlertStateTracker:
 
     def __init__(self, state_path: Path | None = None):
         from shared.config import HEALTH_STATE_DIR
-        self.state_path = state_path or (
-            HEALTH_STATE_DIR / "alert-state.json"
-        )
+
+        self.state_path = state_path or (HEALTH_STATE_DIR / "alert-state.json")
         self._states: dict[str, CheckAlertState] = {}
         self._load()
 
@@ -80,9 +81,7 @@ class AlertStateTracker:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         data = {name: s.to_dict() for name, s in self._states.items()}
         # Atomic write
-        fd, tmp = tempfile.mkstemp(
-            dir=str(self.state_path.parent), suffix=".json"
-        )
+        fd, tmp = tempfile.mkstemp(dir=str(self.state_path.parent), suffix=".json")
         try:
             with open(fd, "w") as f:
                 json.dump(data, f, indent=2)
@@ -96,7 +95,7 @@ class AlertStateTracker:
 
         priority is one of: "high", "default", "low", or "" (no notification).
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         state = self._states.get(check_name, CheckAlertState())
 
         if is_healthy:
@@ -129,8 +128,10 @@ class AlertStateTracker:
 
         # Already firing — check escalation thresholds
         next_level = state.escalation_level + 1
-        if (next_level < len(ESCALATION_THRESHOLDS)
-                and state.consecutive_failures >= ESCALATION_THRESHOLDS[next_level]):
+        if (
+            next_level < len(ESCALATION_THRESHOLDS)
+            and state.consecutive_failures >= ESCALATION_THRESHOLDS[next_level]
+        ):
             state.escalation_level = next_level
             state.last_notified_at = now
             self._states[check_name] = state
@@ -154,8 +155,7 @@ class AlertStateTracker:
     def get_firing(self) -> dict[str, CheckAlertState]:
         """Return all checks currently in FIRING state."""
         return {
-            name: state for name, state in self._states.items()
-            if state.phase == AlertPhase.FIRING
+            name: state for name, state in self._states.items() if state.phase == AlertPhase.FIRING
         }
 
     def reset(self) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.health_monitor import CheckResult, run_cmd
+from agents.health_monitor import run_cmd
 from shared.fix_capabilities.base import (
     Action,
     Capability,
@@ -14,11 +14,13 @@ from shared.fix_capabilities.base import (
     Safety,
 )
 
-_SAFE_CACHE_DIRS: frozenset[str] = frozenset({
-    "/tmp/cache",
-    "/home/hapaxlegomenon/.cache/uv",
-    "/home/hapaxlegomenon/.cache/pip",
-})
+_SAFE_CACHE_DIRS: frozenset[str] = frozenset(
+    {
+        "/tmp/cache",
+        "/home/user/.cache/uv",
+        "/home/user/.cache/pip",
+    }
+)
 
 _ACTIONS: dict[str, Action] = {
     "prune_docker": Action(

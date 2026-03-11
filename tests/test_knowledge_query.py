@@ -1,4 +1,5 @@
 """Tests for agents.knowledge.query — knowledge & context query agent."""
+
 from __future__ import annotations
 
 from agents.knowledge.query import (

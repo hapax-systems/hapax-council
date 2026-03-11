@@ -3,6 +3,7 @@
 Provides typed dataclasses for archetypes, repo declarations, coverage rules,
 and mutual awareness constraints. Zero LLM calls, pure parsing.
 """
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +18,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class Archetype:
     """A document archetype with required structural sections."""
+
     description: str = ""
     required_sections: list[str] = field(default_factory=list)
     composite: bool = False
@@ -25,6 +27,7 @@ class Archetype:
 @dataclass
 class RepoDeclaration:
     """A declared repo with its required documents."""
+
     path: str = ""
     required_docs: list[dict] = field(default_factory=list)
     ci_sources: dict[str, str] = field(default_factory=dict)
@@ -33,6 +36,7 @@ class RepoDeclaration:
 @dataclass
 class CoverageRule:
     """A CI-to-document coverage assertion."""
+
     ci_type: str = ""
     reference_doc: str = ""
     reference_section: str = ""
@@ -44,6 +48,7 @@ class CoverageRule:
 @dataclass
 class MutualAwarenessRule:
     """A cross-repo awareness constraint."""
+
     type: str = ""
     description: str = ""
     registry_doc: str = ""
@@ -56,6 +61,7 @@ class MutualAwarenessRule:
 @dataclass
 class DocumentRegistry:
     """Parsed document registry."""
+
     version: int = 1
     archetypes: dict[str, Archetype] = field(default_factory=dict)
     repos: dict[str, RepoDeclaration] = field(default_factory=dict)
@@ -110,25 +116,29 @@ def load_registry(
 
     # Parse coverage rules
     for rule_data in data.get("coverage_rules", []):
-        reg.coverage_rules.append(CoverageRule(
-            ci_type=rule_data.get("ci_type", ""),
-            reference_doc=rule_data.get("reference_doc", ""),
-            reference_section=rule_data.get("reference_section", ""),
-            match_by=rule_data.get("match_by", "name"),
-            severity=rule_data.get("severity", "medium"),
-            description=rule_data.get("description", ""),
-        ))
+        reg.coverage_rules.append(
+            CoverageRule(
+                ci_type=rule_data.get("ci_type", ""),
+                reference_doc=rule_data.get("reference_doc", ""),
+                reference_section=rule_data.get("reference_section", ""),
+                match_by=rule_data.get("match_by", "name"),
+                severity=rule_data.get("severity", "medium"),
+                description=rule_data.get("description", ""),
+            )
+        )
 
     # Parse mutual awareness
     for ma_data in data.get("mutual_awareness", []):
-        reg.mutual_awareness.append(MutualAwarenessRule(
-            type=ma_data.get("type", ""),
-            description=ma_data.get("description", ""),
-            registry_doc=ma_data.get("registry_doc", ""),
-            registry_section=ma_data.get("registry_section", ""),
-            target_phrase=ma_data.get("target_phrase", ""),
-            docs=ma_data.get("docs", []),
-            severity=ma_data.get("severity", "medium"),
-        ))
+        reg.mutual_awareness.append(
+            MutualAwarenessRule(
+                type=ma_data.get("type", ""),
+                description=ma_data.get("description", ""),
+                registry_doc=ma_data.get("registry_doc", ""),
+                registry_section=ma_data.get("registry_section", ""),
+                target_phrase=ma_data.get("target_phrase", ""),
+                docs=ma_data.get("docs", []),
+                severity=ma_data.get("severity", "medium"),
+            )
+        )
 
     return reg

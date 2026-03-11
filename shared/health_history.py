@@ -3,12 +3,13 @@
 Provides rollup (raw → hourly → daily) and trend analysis over health check
 history. Raw data kept 7 days, hourly rollups 30 days, daily rollups 90 days.
 """
+
 from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shared.config import PROFILES_DIR
@@ -103,11 +104,17 @@ def aggregate_hourly(raw_entries: list[dict]) -> list[HourlyRollup]:
         all_failed = set()
         for e in entries:
             all_failed.update(e.get("failed_checks", []))
-        rollups.append(HourlyRollup(
-            hour=hour_key, total_runs=total,
-            healthy_runs=healthy, degraded_runs=degraded, failed_runs=failed,
-            avg_duration_ms=avg_dur, failed_checks=sorted(all_failed),
-        ))
+        rollups.append(
+            HourlyRollup(
+                hour=hour_key,
+                total_runs=total,
+                healthy_runs=healthy,
+                degraded_runs=degraded,
+                failed_runs=failed,
+                avg_duration_ms=avg_dur,
+                failed_checks=sorted(all_failed),
+            )
+        )
     return rollups
 
 
@@ -129,7 +136,8 @@ def aggregate_daily(hourly_entries: list[dict]) -> list[DailyRollup]:
         failed = sum(e.get("failed_runs", 0) for e in entries)
         avg_dur = (
             int(sum(e.get("avg_duration_ms", 0) * e.get("total_runs", 0) for e in entries) / total)
-            if total else 0
+            if total
+            else 0
         )
         uptime = round((healthy / total) * 100, 1) if total else 0.0
 
@@ -141,11 +149,18 @@ def aggregate_daily(hourly_entries: list[dict]) -> list[DailyRollup]:
         threshold = len(entries) * 0.5
         recurring = sorted(c for c, n in check_counts.items() if n > threshold)
 
-        rollups.append(DailyRollup(
-            date=date_key, total_runs=total,
-            healthy_runs=healthy, degraded_runs=degraded, failed_runs=failed,
-            avg_duration_ms=avg_dur, uptime_pct=uptime, recurring_checks=recurring,
-        ))
+        rollups.append(
+            DailyRollup(
+                date=date_key,
+                total_runs=total,
+                healthy_runs=healthy,
+                degraded_runs=degraded,
+                failed_runs=failed,
+                avg_duration_ms=avg_dur,
+                uptime_pct=uptime,
+                recurring_checks=recurring,
+            )
+        )
     return rollups
 
 
@@ -165,7 +180,7 @@ def rotate_with_rollup(
     hourly_path = hourly_path or PROFILES_DIR / "health-hourly.jsonl"
     daily_path = daily_path or PROFILES_DIR / "health-daily.jsonl"
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     raw_cutoff = now - timedelta(days=raw_days)
     hourly_cutoff = now - timedelta(days=hourly_days)
     daily_cutoff = now - timedelta(days=daily_days)
@@ -191,15 +206,14 @@ def rotate_with_rollup(
         if r.hour not in seen_hours:
             existing_hourly.append(r.to_dict())
     hourly_kept = [
-        e for e in existing_hourly
+        e
+        for e in existing_hourly
         if _parse_timestamp(e.get("hour", "") + ":00:00+00:00") is None
         or _parse_timestamp(e.get("hour", "") + ":00:00+00:00") >= hourly_cutoff
     ]
 
     # Aggregate expired hourly → daily
-    expired_hourly = [
-        e for e in existing_hourly if e not in hourly_kept
-    ]
+    expired_hourly = [e for e in existing_hourly if e not in hourly_kept]
     new_daily = aggregate_daily(expired_hourly)
 
     # Read existing daily, merge, and trim
@@ -209,14 +223,17 @@ def rotate_with_rollup(
         if r.date not in seen_dates:
             existing_daily.append(r.to_dict())
     daily_kept = [
-        e for e in existing_daily
+        e
+        for e in existing_daily
         if _parse_timestamp(e.get("date", "") + "T00:00:00+00:00") is None
         or _parse_timestamp(e.get("date", "") + "T00:00:00+00:00") >= daily_cutoff
     ]
 
     # Write back
     raw_path.write_text("\n".join(json.dumps(e) for e in recent_raw) + "\n" if recent_raw else "")
-    hourly_path.write_text("\n".join(json.dumps(e) for e in hourly_kept) + "\n" if hourly_kept else "")
+    hourly_path.write_text(
+        "\n".join(json.dumps(e) for e in hourly_kept) + "\n" if hourly_kept else ""
+    )
     daily_path.write_text("\n".join(json.dumps(e) for e in daily_kept) + "\n" if daily_kept else "")
 
     return {
@@ -233,7 +250,7 @@ def get_recurring_issues(days: int = 7) -> list[tuple[str, int]]:
     """
     raw_path = PROFILES_DIR / "health-history.jsonl"
     entries = _read_jsonl(raw_path)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
 
     check_counts: Counter[str] = Counter()
     total_runs = 0
@@ -259,7 +276,7 @@ def get_uptime_trend(days: int = 7) -> list[tuple[str, float]]:
     """
     raw_path = PROFILES_DIR / "health-history.jsonl"
     entries = _read_jsonl(raw_path)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
 
     daily_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "healthy": 0})
     for entry in entries:

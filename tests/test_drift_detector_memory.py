@@ -1,7 +1,7 @@
 """Tests for drift_detector project memory enforcement check."""
+
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 from agents.drift_detector import check_project_memory

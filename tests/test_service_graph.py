@@ -1,10 +1,10 @@
 """Tests for shared.service_graph."""
+
 from shared.service_graph import (
-    SERVICE_DEPENDENCIES,
-    get_dependents,
     get_dependencies,
-    remediation_order,
+    get_dependents,
     impact_analysis,
+    remediation_order,
 )
 
 

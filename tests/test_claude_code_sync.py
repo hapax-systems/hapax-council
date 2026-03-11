@@ -1,4 +1,5 @@
 """Tests for claude_code_sync — parsing, discovery, formatting, profiler facts."""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +9,7 @@ from pathlib import Path
 
 def test_transcript_metadata_defaults():
     from agents.claude_code_sync import TranscriptMetadata
+
     m = TranscriptMetadata()
     assert m.session_id == ""
     assert m.project_path == ""
@@ -21,6 +23,7 @@ def test_transcript_metadata_defaults():
 
 def test_sync_state_empty():
     from agents.claude_code_sync import ClaudeCodeSyncState
+
     s = ClaudeCodeSyncState()
     assert s.sessions == {}
     assert s.last_sync == 0.0
@@ -30,15 +33,14 @@ def test_sync_state_empty():
 def test_decode_project_dir():
     from agents.claude_code_sync import _decode_project_dir
 
-    # Real path that exists on this filesystem — should resolve correctly
-    # because /home/hapaxlegomenon/projects/ai-agents exists as a directory
-    decoded = _decode_project_dir("-home-hapaxlegomenon-projects-ai-agents")
-    assert decoded == "/home/hapaxlegomenon/projects/ai-agents"
+    # Synthetic path — decoder splits on dashes and tries to find existing dirs.
+    # /tmp always exists, so -tmp should decode to /tmp.
+    decoded = _decode_project_dir("-tmp")
+    assert decoded == "/tmp"
 
-    # Real path with dashes: hapax-system should resolve
-    decoded2 = _decode_project_dir("-home-hapaxlegomenon-projects-hapax-system")
-    assert "hapax" in decoded2
-    assert decoded2.startswith("/home/hapaxlegomenon/projects/")
+    # Edge case: non-existent path falls back to slash-joining all parts
+    decoded2 = _decode_project_dir("-nonexistent-path-segments")
+    assert decoded2.startswith("/")
 
     # Edge case: dirname without leading dash
     assert _decode_project_dir("plainname") == "plainname"
@@ -49,43 +51,53 @@ def test_parse_transcript_messages():
 
     lines = [
         # User message (string content)
-        json.dumps({
-            "type": "user",
-            "message": {"role": "user", "content": "How do I fix this bug?"},
-            "timestamp": "2026-03-08T10:00:00Z",
-            "sessionId": "sess-123",
-        }),
+        json.dumps(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "How do I fix this bug?"},
+                "timestamp": "2026-03-08T10:00:00Z",
+                "sessionId": "sess-123",
+            }
+        ),
         # Assistant message (list content with text + tool_use + thinking)
-        json.dumps({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "thinking", "text": "Let me think about this..."},
-                    {"type": "text", "text": "Here is the fix."},
-                    {"type": "tool_use", "name": "read_file", "input": {"path": "/tmp/foo"}},
-                    {"type": "text", "text": "You should also check the config."},
-                ],
-            },
-            "timestamp": "2026-03-08T10:00:05Z",
-        }),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "text": "Let me think about this..."},
+                        {"type": "text", "text": "Here is the fix."},
+                        {"type": "tool_use", "name": "read_file", "input": {"path": "/tmp/foo"}},
+                        {"type": "text", "text": "You should also check the config."},
+                    ],
+                },
+                "timestamp": "2026-03-08T10:00:05Z",
+            }
+        ),
         # Progress entry (should be skipped)
-        json.dumps({
-            "type": "progress",
-            "message": "Processing...",
-            "timestamp": "2026-03-08T10:00:03Z",
-        }),
+        json.dumps(
+            {
+                "type": "progress",
+                "message": "Processing...",
+                "timestamp": "2026-03-08T10:00:03Z",
+            }
+        ),
         # file-history-snapshot (should be skipped)
-        json.dumps({
-            "type": "file-history-snapshot",
-            "files": ["/tmp/foo.py"],
-        }),
+        json.dumps(
+            {
+                "type": "file-history-snapshot",
+                "files": ["/tmp/foo.py"],
+            }
+        ),
         # Another user message
-        json.dumps({
-            "type": "user",
-            "message": {"role": "user", "content": "Thanks!"},
-            "timestamp": "2026-03-08T10:01:00Z",
-        }),
+        json.dumps(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "Thanks!"},
+                "timestamp": "2026-03-08T10:01:00Z",
+            }
+        ),
     ]
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
@@ -180,7 +192,7 @@ def test_discover_projects():
         assert "beta" in names
 
         # Check file counts
-        for name, path, files in projects:
+        for name, _path, files in projects:
             if name == "alpha":
                 assert len(files) == 2
             elif name == "beta":
@@ -189,7 +201,9 @@ def test_discover_projects():
 
 def test_generate_profile_facts():
     from agents.claude_code_sync import (
-        _generate_profile_facts, ClaudeCodeSyncState, TranscriptMetadata,
+        ClaudeCodeSyncState,
+        TranscriptMetadata,
+        _generate_profile_facts,
     )
 
     state = ClaudeCodeSyncState()

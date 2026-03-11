@@ -2,30 +2,29 @@
 
 External I/O (Qdrant, LLM) is mocked.
 """
+
 from __future__ import annotations
 
 import json
-from unittest.mock import patch, MagicMock, PropertyMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from agents.knowledge_maint import (
+    DEFAULT_SCORE_THRESHOLD,
+    EXPECTED_DIMENSIONS,
     CollectionStats,
     MaintenanceReport,
-    EXPECTED_DIMENSIONS,
-    DEFAULT_SCORE_THRESHOLD,
-    get_collection_info,
-    find_stale_sources,
-    prune_stale_sources,
     find_near_duplicates,
-    merge_duplicates,
+    find_stale_sources,
     format_report_human,
     format_report_md,
+    get_collection_info,
+    merge_duplicates,
+    prune_stale_sources,
     send_notification,
 )
 
-
 # ── Schema tests ─────────────────────────────────────────────────────────────
+
 
 def test_collection_stats_defaults():
     s = CollectionStats(name="test")
@@ -67,6 +66,7 @@ def test_collection_stats_with_warnings():
 
 
 # ── Collection info tests ───────────────────────────────────────────────────
+
 
 @patch("agents.knowledge_maint.get_qdrant")
 def test_get_collection_info_success(mock_qdrant):
@@ -115,6 +115,7 @@ def test_get_collection_info_failure(mock_qdrant):
 
 # ── Stale source tests ──────────────────────────────────────────────────────
 
+
 @patch("agents.knowledge_maint.get_qdrant")
 def test_find_stale_sources_finds_missing(mock_qdrant, tmp_path):
     mock_client = MagicMock()
@@ -155,6 +156,7 @@ def test_find_stale_sources_handles_error(mock_qdrant):
 
 # ── Prune tests ──────────────────────────────────────────────────────────────
 
+
 def test_prune_dry_run_does_not_delete():
     """Dry-run should return count but not call Qdrant delete."""
     result = prune_stale_sources("documents", ["/gone/file1.pdf", "/gone/file2.md"], dry_run=True)
@@ -177,6 +179,7 @@ def test_prune_empty_list():
 
 
 # ── Duplicate detection tests ────────────────────────────────────────────────
+
 
 @patch("agents.knowledge_maint.get_qdrant")
 def test_find_near_duplicates_clusters(mock_qdrant):
@@ -233,6 +236,7 @@ def test_find_near_duplicates_handles_error(mock_qdrant):
 
 # ── Merge tests ──────────────────────────────────────────────────────────────
 
+
 def test_merge_dry_run_returns_count():
     clusters = [
         [
@@ -282,6 +286,7 @@ def test_merge_keeps_newest():
 
 # ── Formatter tests ─────────────────────────────────────────────────────────
 
+
 def _sample_report() -> MaintenanceReport:
     return MaintenanceReport(
         generated_at="2026-03-01T04:30:00Z",
@@ -289,12 +294,18 @@ def _sample_report() -> MaintenanceReport:
         dry_run=True,
         collections=[
             CollectionStats(
-                name="documents", points_before=1000, points_after=1000,
-                dimensions=768, stale_pruned=3, duplicates_merged=5,
+                name="documents",
+                points_before=1000,
+                points_after=1000,
+                dimensions=768,
+                stale_pruned=3,
+                duplicates_merged=5,
                 warnings=["3 stale source(s) would be pruned"],
             ),
             CollectionStats(
-                name="samples", points_before=50, points_after=50,
+                name="samples",
+                points_before=50,
+                points_after=50,
                 dimensions=768,
             ),
         ],
@@ -343,6 +354,7 @@ def test_format_report_md_has_totals():
 
 # ── Notification tests ───────────────────────────────────────────────────────
 
+
 @patch("shared.notify.send_notification")
 def test_send_notification_silent_when_nothing(mock_notify):
     r = MaintenanceReport(generated_at="2026-03-01T04:30:00Z")
@@ -389,6 +401,7 @@ def test_send_notification_dry_run_label(mock_notify):
 
 # ── Dry-run safety tests ────────────────────────────────────────────────────
 
+
 def test_default_is_dry_run():
     """MaintenanceReport defaults to dry_run=True."""
     r = MaintenanceReport(generated_at="now")
@@ -405,6 +418,7 @@ def test_default_score_threshold():
 
 # ── Error logging tests (Fix 31) ──────────────────────────────────────────
 
+
 @patch("agents.knowledge_maint.get_qdrant")
 def test_find_stale_sources_logs_warning_on_error(mock_qdrant):
     """Qdrant failure during stale scan should log warning, not silently pass."""
@@ -412,8 +426,9 @@ def test_find_stale_sources_logs_warning_on_error(mock_qdrant):
     with patch("agents.knowledge_maint.log") as mock_log:
         find_stale_sources("documents")
         mock_log.warning.assert_called_once()
-        assert "stale sources" in mock_log.warning.call_args[0][0].lower() or \
-               "documents" in str(mock_log.warning.call_args)
+        assert "stale sources" in mock_log.warning.call_args[0][0].lower() or "documents" in str(
+            mock_log.warning.call_args
+        )
 
 
 @patch("agents.knowledge_maint.get_qdrant")
@@ -452,6 +467,7 @@ def test_merge_duplicates_logs_warning_on_delete_error(mock_qdrant):
 
 # ── F-3.3: errors_encountered field and report output ──────────────────────
 
+
 def test_maintenance_report_errors_encountered_default():
     """errors_encountered defaults to 0."""
     report = MaintenanceReport(generated_at="2026-03-01T00:00:00Z")
@@ -461,6 +477,7 @@ def test_maintenance_report_errors_encountered_default():
 def test_format_report_shows_errors():
     """format_report_human includes error count when present."""
     from agents.knowledge_maint import format_report_human
+
     report = MaintenanceReport(
         generated_at="2026-03-01T00:00:00Z",
         errors_encountered=2,

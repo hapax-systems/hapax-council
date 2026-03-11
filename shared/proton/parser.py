@@ -6,13 +6,14 @@ Proton Mail exports are flat directories of paired files:
 
 Each pair is parsed into a NormalizedRecord for the dual-path pipeline.
 """
+
 from __future__ import annotations
 
 import email
 import json
 import logging
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.email_utils import (
@@ -100,12 +101,11 @@ def _parse_pair(
     # Parse timestamp
     timestamp: datetime | None = None
     if timestamp_unix:
-        timestamp = datetime.fromtimestamp(timestamp_unix, tz=timezone.utc).replace(tzinfo=None)
+        timestamp = datetime.fromtimestamp(timestamp_unix, tz=UTC).replace(tzinfo=None)
 
     # Date filter
-    if since and timestamp:
-        if timestamp < since.replace(tzinfo=None):
-            return None
+    if since and timestamp and timestamp < since.replace(tzinfo=None):
+        return None
 
     # People
     people: list[str] = []
@@ -125,10 +125,11 @@ def _parse_pair(
 
     # Build from/to display strings
     from_display = f"{sender_name} <{sender_addr}>" if sender_name else sender_addr
-    to_display = ", ".join(
-        f"{r.get('Name', '')} <{r.get('Address', '')}>".strip()
-        for r in to_list
-    ) if to_list else ""
+    to_display = (
+        ", ".join(f"{r.get('Name', '')} <{r.get('Address', '')}>".strip() for r in to_list)
+        if to_list
+        else ""
+    )
 
     # Structured fields (always available from metadata)
     structured: dict = {
@@ -148,7 +149,9 @@ def _parse_pair(
         text = f"Subject: {subject}\nFrom: {from_display}\nTo: {to_display}"
 
         return NormalizedRecord(
-            record_id=make_record_id("proton", "mail", proton_id or f"{timestamp_unix}:{sender_addr}:{subject}"),
+            record_id=make_record_id(
+                "proton", "mail", proton_id or f"{timestamp_unix}:{sender_addr}:{subject}"
+            ),
             platform="proton",
             service="mail",
             title=title,
@@ -189,7 +192,9 @@ def _parse_pair(
     title = subject or f"Email from {from_display}"
 
     return NormalizedRecord(
-        record_id=make_record_id("proton", "mail", proton_id or f"{timestamp_unix}:{sender_addr}:{subject}"),
+        record_id=make_record_id(
+            "proton", "mail", proton_id or f"{timestamp_unix}:{sender_addr}:{subject}"
+        ),
         platform="proton",
         service="mail",
         title=title,

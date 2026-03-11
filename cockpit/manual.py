@@ -1,10 +1,10 @@
 """Operations manual generator — task-oriented reference from agent registry."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from cockpit.data.agents import AgentFlag, AgentInfo, get_agent_registry
-
 from shared.config import PROFILES_DIR
 
 
@@ -125,7 +125,7 @@ TASK_SECTIONS = [
         [
             "The research agent performs RAG-backed queries against indexed documents in Qdrant.",
             "",
-            '```',
+            "```",
             'uv run python -m agents.research "how does MIDI routing work on this system"',
             "uv run python -m agents.research --interactive  # multi-turn conversation",
             "```",
@@ -235,7 +235,7 @@ def generate_manual() -> str:
     lines.append("")
 
     # Task sections
-    for title, agent_name, content in TASK_SECTIONS:
+    for title, _agent_name, content in TASK_SECTIONS:
         lines.append(f"## {title}")
         lines.append("")
         lines.extend(content)
@@ -266,8 +266,10 @@ def generate_manual() -> str:
     lines.append("- **Tier 2 (On-demand):** Pydantic AI agents invoked via CLI or cockpit")
     lines.append("- **Tier 3 (Autonomous):** systemd services and timers")
     lines.append("")
-    lines.append("All tiers share: LiteLLM (:4000) for model routing, "
-                  "Qdrant (:6333) for vector memory, Langfuse (:3000) for observability.")
+    lines.append(
+        "All tiers share: LiteLLM (:4000) for model routing, "
+        "Qdrant (:6333) for vector memory, Langfuse (:3000) for observability."
+    )
     lines.append("No agent calls a provider API directly.")
     lines.append("")
 

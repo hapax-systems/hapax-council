@@ -8,6 +8,7 @@ Usage:
     uv run python -m agents.obsidian_sync --auto          # Incremental (changed files)
     uv run python -m agents.obsidian_sync --stats         # Show sync state
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,7 +17,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -72,8 +73,10 @@ EXCLUDE_DIRS = {
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class VaultNote(BaseModel):
     """An Obsidian vault note with extracted metadata."""
+
     relative_path: str
     title: str
     folder: str
@@ -87,12 +90,14 @@ class VaultNote(BaseModel):
 
 class ObsidianSyncState(BaseModel):
     """Persistent sync state."""
+
     notes: dict[str, VaultNote] = Field(default_factory=dict)
     last_sync: float = 0.0
     stats: dict[str, int] = Field(default_factory=dict)
 
 
 # ── Path Filtering ───────────────────────────────────────────────────────────
+
 
 def _should_include(relative_path: str) -> bool:
     """Check whether a vault path should be synced.
@@ -123,14 +128,11 @@ def _should_include(relative_path: str) -> bool:
         return True
 
     # Check if any subdirectory is in INCLUDE_DIRS (e.g. "30 Areas/33 Permanent notes/")
-    for part in parts[:-1]:
-        if part in INCLUDE_DIRS:
-            return True
-
-    return False
+    return any(part in INCLUDE_DIRS for part in parts[:-1])
 
 
 # ── State Management ─────────────────────────────────────────────────────────
+
 
 def _load_state(path: Path = STATE_FILE) -> ObsidianSyncState:
     """Load sync state from disk."""
@@ -151,6 +153,7 @@ def _save_state(state: ObsidianSyncState, path: Path = STATE_FILE) -> None:
 
 
 # ── Metadata Extraction ─────────────────────────────────────────────────────
+
 
 def _extract_metadata(content: str, relative_path: str) -> dict:
     """Extract metadata from an Obsidian note.
@@ -223,6 +226,7 @@ def _content_hash(content: str) -> str:
 
 # ── Formatting ───────────────────────────────────────────────────────────────
 
+
 def _strip_vault_frontmatter(content: str) -> str:
     """Remove YAML frontmatter from vault content."""
     if content.startswith("---"):
@@ -258,6 +262,7 @@ has_frontmatter: {str(note.has_frontmatter).lower()}
 
 # ── Vault Scanning ───────────────────────────────────────────────────────────
 
+
 def _scan_vault(vault_path: Path = VAULT_PATH) -> list[tuple[str, Path]]:
     """Scan vault for includable .md files.
 
@@ -286,6 +291,7 @@ def _scan_vault(vault_path: Path = VAULT_PATH) -> list[tuple[str, Path]]:
 
 
 # ── Sync Operations ─────────────────────────────────────────────────────────
+
 
 def _sync_note(
     rel_path: str,
@@ -347,9 +353,7 @@ def _sync_note(
     return True
 
 
-def _detect_deletions(
-    state: ObsidianSyncState, current_paths: set[str]
-) -> int:
+def _detect_deletions(state: ObsidianSyncState, current_paths: set[str]) -> int:
     """Remove RAG files for notes no longer in the vault. Returns count."""
     deleted = 0
     stale = [p for p in state.notes if p not in current_paths]
@@ -422,6 +426,7 @@ def _incremental_sync(
 
 # ── Behavioral Logging ───────────────────────────────────────────────────────
 
+
 def _log_change(change_type: str, name: str, extra: dict | None = None) -> None:
     """Append behavioral change event to JSONL log."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -429,7 +434,7 @@ def _log_change(change_type: str, name: str, extra: dict | None = None) -> None:
         "service": "obsidian",
         "change_type": change_type,
         "name": name,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     if extra:
         entry.update(extra)
@@ -439,6 +444,7 @@ def _log_change(change_type: str, name: str, extra: dict | None = None) -> None:
 
 
 # ── Profiler Integration ────────────────────────────────────────────────────
+
 
 def _generate_profile_facts(state: ObsidianSyncState) -> list[dict]:
     """Generate deterministic profile facts from vault state."""
@@ -464,40 +470,44 @@ def _generate_profile_facts(state: ObsidianSyncState) -> list[dict]:
         top_folders = ", ".join(
             f"{folder} ({count})" for folder, count in folder_counts.most_common(10)
         )
-        facts.append({
-            "dimension": "information_seeking",
-            "key": "obsidian_active_areas",
-            "value": top_folders,
-            "confidence": 0.90,
-            "source": source,
-            "evidence": f"Folder distribution across {len(state.notes)} vault notes",
-        })
+        facts.append(
+            {
+                "dimension": "information_seeking",
+                "key": "obsidian_active_areas",
+                "value": top_folders,
+                "confidence": 0.90,
+                "source": source,
+                "evidence": f"Folder distribution across {len(state.notes)} vault notes",
+            }
+        )
 
     # Note volume
     total = len(state.notes)
     total_size = sum(n.size for n in state.notes.values())
-    facts.append({
-        "dimension": "information_seeking",
-        "key": "obsidian_note_volume",
-        "value": f"{total} notes, {total_size / 1024:.0f} KB total",
-        "confidence": 0.95,
-        "source": source,
-        "evidence": f"Computed from {total} synced vault notes",
-    })
+    facts.append(
+        {
+            "dimension": "information_seeking",
+            "key": "obsidian_note_volume",
+            "value": f"{total} notes, {total_size / 1024:.0f} KB total",
+            "confidence": 0.95,
+            "source": source,
+            "evidence": f"Computed from {total} synced vault notes",
+        }
+    )
 
     # Frequent tags
     if tag_counts:
-        top_tags = ", ".join(
-            f"{tag} ({count})" for tag, count in tag_counts.most_common(15)
+        top_tags = ", ".join(f"{tag} ({count})" for tag, count in tag_counts.most_common(15))
+        facts.append(
+            {
+                "dimension": "information_seeking",
+                "key": "obsidian_frequent_tags",
+                "value": top_tags,
+                "confidence": 0.85,
+                "source": source,
+                "evidence": f"Tag frequency across {total} vault notes",
+            }
         )
-        facts.append({
-            "dimension": "information_seeking",
-            "key": "obsidian_frequent_tags",
-            "value": top_tags,
-            "confidence": 0.85,
-            "source": source,
-            "evidence": f"Tag frequency across {total} vault notes",
-        })
 
     return facts
 
@@ -515,6 +525,7 @@ def _write_profile_facts(state: ObsidianSyncState) -> None:
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────
+
 
 def _print_stats(state: ObsidianSyncState) -> None:
     """Print sync statistics."""
@@ -540,7 +551,9 @@ def _print_stats(state: ObsidianSyncState) -> None:
     print(f"Total notes:     {total:,}")
     print(f"Total size:      {total_size / 1024:.0f} KB")
     print(f"With frontmatter: {fm_count:,}")
-    print(f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}")
+    print(
+        f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}"
+    )
 
     if folder_counts:
         print("\nFolders:")
@@ -555,6 +568,7 @@ def _print_stats(state: ObsidianSyncState) -> None:
 
 # ── Orchestration ────────────────────────────────────────────────────────────
 
+
 def run_full_sync() -> None:
     """Full vault sync."""
     from shared.notify import send_notification
@@ -564,10 +578,7 @@ def run_full_sync() -> None:
     _save_state(state)
     _write_profile_facts(state)
 
-    msg = (
-        f"Obsidian sync: {len(state.notes)} notes, "
-        f"{written} written, {deleted} deleted"
-    )
+    msg = f"Obsidian sync: {len(state.notes)} notes, {written} written, {deleted} deleted"
     log.info(msg)
     send_notification("Obsidian Sync", msg, tags=["obsidian"])
 
@@ -588,10 +599,7 @@ def run_auto() -> None:
     _write_profile_facts(state)
 
     if written or deleted:
-        msg = (
-            f"Obsidian sync: {written} written, {deleted} deleted "
-            f"({len(state.notes)} total)"
-        )
+        msg = f"Obsidian sync: {written} written, {deleted} deleted ({len(state.notes)} total)"
         log.info(msg)
         send_notification("Obsidian Sync", msg, tags=["obsidian"])
     else:
@@ -608,6 +616,7 @@ def run_stats() -> None:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Obsidian vault RAG sync")

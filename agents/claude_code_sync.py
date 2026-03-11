@@ -8,13 +8,14 @@ Usage:
     uv run python -m agents.claude_code_sync --auto         # Incremental sync
     uv run python -m agents.claude_code_sync --stats        # Show sync state
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -36,8 +37,10 @@ ACTIVE_SESSION_SECONDS = 600  # Re-process sessions active within this window
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class TranscriptMetadata(BaseModel):
     """Metadata for a single transcript JSONL file."""
+
     session_id: str = ""
     project_path: str = ""
     project_name: str = ""
@@ -50,6 +53,7 @@ class TranscriptMetadata(BaseModel):
 
 class ClaudeCodeSyncState(BaseModel):
     """Persistent sync state."""
+
     sessions: dict[str, TranscriptMetadata] = Field(default_factory=dict)
     last_sync: float = 0.0
     stats: dict[str, int] = Field(default_factory=dict)
@@ -57,11 +61,12 @@ class ClaudeCodeSyncState(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+
 def _decode_project_dir(dirname: str) -> str:
     """Decode a Claude Code project directory name to a filesystem path.
 
     Claude encodes paths by replacing '/' with '-' and stripping the leading '/'.
-    Example: '-home-hapaxlegomenon-projects-ai-agents' → '/home/hapaxlegomenon/projects/ai-agents'
+    Example: '-home-user-projects-ai-agents' → '/home/user/projects/hapax-council'
 
     Since '-' is ambiguous (could be path separator or literal dash in component),
     we use greedy filesystem probing: try replacing dashes left-to-right, preferring
@@ -72,7 +77,7 @@ def _decode_project_dir(dirname: str) -> str:
 
     # Split on dashes, skipping the leading empty segment from the first dash
     parts = dirname[1:].split("-")
-    # parts for '-home-hapaxlegomenon-projects-ai-agents' = ['home', 'hapaxlegomenon', 'projects', 'ai', 'agents']
+    # parts for '-home-user-projects-ai-agents' = ['home', 'user', 'projects', 'ai', 'agents']
 
     # Greedy left-to-right: try to build the path by checking filesystem
     # At each step, try consuming the next part as a new path component first,
@@ -115,13 +120,14 @@ def _save_state(state: ClaudeCodeSyncState, path: Path = STATE_FILE) -> None:
 
 # ── Behavioral Logging ──────────────────────────────────────────────────────
 
+
 def _log_change(change_type: str, name: str, extra: dict | None = None) -> None:
     """Append behavioral change event to JSONL log."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     entry: dict = {
         "change_type": change_type,
         "name": name,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     if extra:
         entry.update(extra)
@@ -131,6 +137,7 @@ def _log_change(change_type: str, name: str, extra: dict | None = None) -> None:
 
 
 # ── Transcript Parsing ──────────────────────────────────────────────────────
+
 
 def _parse_transcript(path: Path) -> list[tuple[str, str, str]]:
     """Parse a JSONL transcript file, extracting user and assistant text.
@@ -142,7 +149,7 @@ def _parse_transcript(path: Path) -> list[tuple[str, str, str]]:
     messages: list[tuple[str, str, str]] = []
 
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -192,6 +199,7 @@ def _parse_transcript(path: Path) -> list[tuple[str, str, str]]:
 
 # ── Formatting ──────────────────────────────────────────────────────────────
 
+
 def _format_session_markdown(meta: TranscriptMetadata, messages: list[tuple[str, str, str]]) -> str:
     """Format a transcript session as markdown with YAML frontmatter."""
     lines = [
@@ -233,6 +241,7 @@ def _format_session_markdown(meta: TranscriptMetadata, messages: list[tuple[str,
 
 # ── Discovery ───────────────────────────────────────────────────────────────
 
+
 def _discover_projects(base_dir: Path = CLAUDE_PROJECTS_DIR) -> list[tuple[str, str, list[Path]]]:
     """Auto-discover all Claude Code project directories with JSONL files.
 
@@ -255,7 +264,9 @@ def _discover_projects(base_dir: Path = CLAUDE_PROJECTS_DIR) -> list[tuple[str, 
         dirname = project_dir.name
         project_path = _decode_project_dir(dirname)
         # Derive a short project name from the last path component
-        project_name = project_path.rstrip("/").rsplit("/", 1)[-1] if "/" in project_path else dirname
+        project_name = (
+            project_path.rstrip("/").rsplit("/", 1)[-1] if "/" in project_path else dirname
+        )
 
         projects.append((project_name, project_path, jsonl_files))
 
@@ -263,6 +274,7 @@ def _discover_projects(base_dir: Path = CLAUDE_PROJECTS_DIR) -> list[tuple[str, 
 
 
 # ── Sync Logic ──────────────────────────────────────────────────────────────
+
 
 def _sync_transcript(
     path: Path,
@@ -329,10 +341,14 @@ def _sync_transcript(
     state.sessions[file_key] = meta
 
     change_type = "new_session" if is_new else "updated_session"
-    _log_change(change_type, f"{project_name}/{session_id}", {
-        "messages": len(messages),
-        "project": project_name,
-    })
+    _log_change(
+        change_type,
+        f"{project_name}/{session_id}",
+        {
+            "messages": len(messages),
+            "project": project_name,
+        },
+    )
 
     log.debug("Synced %s/%s (%d messages)", project_name, session_id, len(messages))
     return True
@@ -406,6 +422,7 @@ def _incremental_sync(state: ClaudeCodeSyncState) -> dict[str, int]:
 
 # ── Profiler Integration ─────────────────────────────────────────────────────
 
+
 def _generate_profile_facts(state: ClaudeCodeSyncState) -> list[dict]:
     """Generate deterministic profile facts from Claude Code state."""
     from collections import Counter
@@ -427,27 +444,30 @@ def _generate_profile_facts(state: ClaudeCodeSyncState) -> list[dict]:
     # claude_code_projects fact
     if project_counts:
         top_projects = ", ".join(
-            f"{name} ({count} sessions)"
-            for name, count in project_counts.most_common(10)
+            f"{name} ({count} sessions)" for name, count in project_counts.most_common(10)
         )
-        facts.append({
-            "dimension": "tool_usage",
-            "key": "claude_code_projects",
-            "value": top_projects,
-            "confidence": 0.95,
-            "source": source,
-            "evidence": f"Top projects across {len(state.sessions)} sessions",
-        })
+        facts.append(
+            {
+                "dimension": "tool_usage",
+                "key": "claude_code_projects",
+                "value": top_projects,
+                "confidence": 0.95,
+                "source": source,
+                "evidence": f"Top projects across {len(state.sessions)} sessions",
+            }
+        )
 
     # claude_code_activity fact
-    facts.append({
-        "dimension": "tool_usage",
-        "key": "claude_code_activity",
-        "value": f"{len(state.sessions)} sessions, {total_messages} messages across {len(project_counts)} projects",
-        "confidence": 0.95,
-        "source": source,
-        "evidence": f"Aggregated from {len(state.sessions)} transcript files",
-    })
+    facts.append(
+        {
+            "dimension": "tool_usage",
+            "key": "claude_code_activity",
+            "value": f"{len(state.sessions)} sessions, {total_messages} messages across {len(project_counts)} projects",
+            "confidence": 0.95,
+            "source": source,
+            "evidence": f"Aggregated from {len(state.sessions)} transcript files",
+        }
+    )
 
     return facts
 
@@ -466,6 +486,7 @@ def _write_profile_facts(state: ClaudeCodeSyncState) -> None:
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 
+
 def _print_stats(state: ClaudeCodeSyncState) -> None:
     """Print sync statistics."""
     from collections import Counter
@@ -482,7 +503,9 @@ def _print_stats(state: ClaudeCodeSyncState) -> None:
     print(f"Total sessions:  {len(state.sessions):,}")
     print(f"Total messages:  {total_messages:,}")
     print(f"Projects:        {len(project_counts):,}")
-    print(f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}")
+    print(
+        f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}"
+    )
 
     if project_counts:
         print("\nTop projects:")
@@ -491,6 +514,7 @@ def _print_stats(state: ClaudeCodeSyncState) -> None:
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
+
 
 def run_full_sync() -> None:
     """Full sync of all Claude Code transcripts."""
@@ -540,6 +564,7 @@ def run_stats() -> None:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Claude Code transcript RAG sync")

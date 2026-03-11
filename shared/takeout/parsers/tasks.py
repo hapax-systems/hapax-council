@@ -3,6 +3,7 @@
 Tasks Takeout includes JSON files with task lists and their items.
 Format: {kind, items: [{id, title, updated, notes, status, due, ...}]}
 """
+
 from __future__ import annotations
 
 import json
@@ -85,7 +86,9 @@ def _parse_tasks_json(
         updated = item.get("updated", "")
         if updated:
             try:
-                timestamp = datetime.fromisoformat(updated.replace("Z", "+00:00")).replace(tzinfo=None)
+                timestamp = datetime.fromisoformat(updated.replace("Z", "+00:00")).replace(
+                    tzinfo=None
+                )
             except ValueError:
                 pass
 

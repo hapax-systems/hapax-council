@@ -14,6 +14,7 @@ Usage:
     constitutional = load_axioms(scope="constitutional")
     domain = load_axioms(scope="domain", domain="management")
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,10 +28,12 @@ log = logging.getLogger(__name__)
 
 from shared.config import HAPAXROMANA_DIR
 
-AXIOMS_PATH: Path = Path(os.environ.get(
-    "AXIOMS_PATH",
-    str(HAPAXROMANA_DIR / "axioms"),
-))
+AXIOMS_PATH: Path = Path(
+    os.environ.get(
+        "AXIOMS_PATH",
+        str(HAPAXROMANA_DIR / "axioms"),
+    )
+)
 
 
 @dataclass
@@ -58,9 +61,7 @@ class Implication:
     level: str = "component"  # "component" | "subsystem" | "system"
 
 
-def load_axioms(
-    *, path: Path = AXIOMS_PATH, scope: str = "", domain: str = ""
-) -> list[Axiom]:
+def load_axioms(*, path: Path = AXIOMS_PATH, scope: str = "", domain: str = "") -> list[Axiom]:
     """Load active axioms from registry.yaml with optional filtering.
 
     Args:
@@ -111,9 +112,7 @@ def get_axiom(axiom_id: str, *, path: Path = AXIOMS_PATH) -> Axiom | None:
     return None
 
 
-def load_implications(
-    axiom_id: str, *, path: Path = AXIOMS_PATH
-) -> list[Implication]:
+def load_implications(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Implication]:
     """Load derived implications for a specific axiom."""
     impl_file = path / "implications" / f"{axiom_id.replace('_', '-')}.yaml"
     if not impl_file.exists():
@@ -130,16 +129,18 @@ def load_implications(
 
     impls = []
     for entry in data.get("implications", []):
-        impls.append(Implication(
-            id=entry["id"],
-            axiom_id=data.get("axiom_id", axiom_id),
-            tier=entry.get("tier", "T2"),
-            text=entry.get("text", ""),
-            enforcement=entry.get("enforcement", "warn"),
-            canon=entry.get("canon", ""),
-            mode=entry.get("mode", "compatibility"),
-            level=entry.get("level", "component"),
-        ))
+        impls.append(
+            Implication(
+                id=entry["id"],
+                axiom_id=data.get("axiom_id", axiom_id),
+                tier=entry.get("tier", "T2"),
+                text=entry.get("text", ""),
+                enforcement=entry.get("enforcement", "warn"),
+                canon=entry.get("canon", ""),
+                mode=entry.get("mode", "compatibility"),
+                level=entry.get("level", "component"),
+            )
+        )
 
     return impls
 
@@ -147,6 +148,7 @@ def load_implications(
 @dataclass
 class SupremacyTension:
     """A pairing of domain vs constitutional T0 blocks that needs operator review."""
+
     domain_impl_id: str
     domain_impl_text: str
     constitutional_impl_id: str
@@ -158,16 +160,20 @@ def _get_reviewed_impl_ids() -> set[str]:
     """Return domain T0 impl IDs that have operator-authority precedents."""
     try:
         from shared.axiom_precedents import PrecedentStore
+
         store = PrecedentStore()
         # Scroll all operator-authority precedents
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
         results = store.client.scroll(
             "axiom-precedents",
-            scroll_filter=Filter(must=[
-                FieldCondition(key="authority", match=MatchValue(value="operator")),
-                FieldCondition(key="tier", match=MatchValue(value="T0")),
-                FieldCondition(key="superseded_by", match=MatchValue(value="")),
-            ]),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="authority", match=MatchValue(value="operator")),
+                    FieldCondition(key="tier", match=MatchValue(value="T0")),
+                    FieldCondition(key="superseded_by", match=MatchValue(value="")),
+                ]
+            ),
             limit=100,
         )
         reviewed: set[str] = set()
@@ -220,12 +226,14 @@ def validate_supremacy(*, path: Path = AXIOMS_PATH) -> list[SupremacyTension]:
             if impl.id in reviewed:
                 continue
             # One entry per domain T0 block — note constitutional T0 blocks exist
-            tensions.append(SupremacyTension(
-                domain_impl_id=impl.id,
-                domain_impl_text=impl.text,
-                constitutional_impl_id=", ".join(const_ids),
-                constitutional_impl_text=f"{len(const_t0)} constitutional T0 block(s)",
-                note=f"Domain {impl.axiom_id} T0 block needs operator review against constitutional T0 blocks",
-            ))
+            tensions.append(
+                SupremacyTension(
+                    domain_impl_id=impl.id,
+                    domain_impl_text=impl.text,
+                    constitutional_impl_id=", ".join(const_ids),
+                    constitutional_impl_text=f"{len(const_t0)} constitutional T0 block(s)",
+                    note=f"Domain {impl.axiom_id} T0 block needs operator review against constitutional T0 blocks",
+                )
+            )
 
     return tensions

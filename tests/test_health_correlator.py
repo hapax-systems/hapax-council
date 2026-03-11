@@ -1,21 +1,19 @@
 """Tests for shared.health_correlator — cross-signal correlation (mocked)."""
+
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from shared.health_correlator import (
     CorrelatedEvent,
-    CorrelationCluster,
     _cluster_events,
     _collect_health_events,
 )
 
 
 def _ts(minutes_ago: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+    return (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
 
 
 class TestClustering:

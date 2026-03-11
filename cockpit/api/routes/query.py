@@ -1,4 +1,5 @@
 """Query endpoints — natural language system introspection with SSE streaming."""
+
 from __future__ import annotations
 
 import json
@@ -76,12 +77,14 @@ async def run_query_endpoint(req: QueryRunRequest):
             }
             yield {
                 "event": "done",
-                "data": json.dumps({
-                    "agent_used": result.agent_type,
-                    "tokens_in": result.tokens_in,
-                    "tokens_out": result.tokens_out,
-                    "elapsed_ms": result.elapsed_ms,
-                }),
+                "data": json.dumps(
+                    {
+                        "agent_used": result.agent_type,
+                        "tokens_in": result.tokens_in,
+                        "tokens_out": result.tokens_out,
+                        "elapsed_ms": result.elapsed_ms,
+                    }
+                ),
             }
         except Exception as e:
             log.exception("Query failed")
@@ -118,12 +121,14 @@ async def refine_query_endpoint(req: QueryRefineRequest):
             }
             yield {
                 "event": "done",
-                "data": json.dumps({
-                    "agent_used": result.agent_type,
-                    "tokens_in": result.tokens_in,
-                    "tokens_out": result.tokens_out,
-                    "elapsed_ms": result.elapsed_ms,
-                }),
+                "data": json.dumps(
+                    {
+                        "agent_used": result.agent_type,
+                        "tokens_in": result.tokens_in,
+                        "tokens_out": result.tokens_out,
+                        "elapsed_ms": result.elapsed_ms,
+                    }
+                ),
             }
         except Exception as e:
             log.exception("Refine query failed")

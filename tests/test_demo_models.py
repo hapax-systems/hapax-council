@@ -1,4 +1,5 @@
 """Tests for demo script data models."""
+
 from __future__ import annotations
 
 import json
@@ -45,7 +46,6 @@ class TestDemoScene:
         restored = DemoScene.model_validate(data)
         assert restored.title == scene.title
 
-
     def test_scene_with_key_points(self):
         scene = DemoScene(
             title="Dashboard",
@@ -59,7 +59,9 @@ class TestDemoScene:
     def test_duration_hint_minimum(self):
         with pytest.raises(ValidationError):
             DemoScene(
-                title="X", narration="Y", duration_hint=0.0,
+                title="X",
+                narration="Y",
+                duration_hint=0.0,
                 screenshot=ScreenshotSpec(url="http://localhost:5173"),
             )
 

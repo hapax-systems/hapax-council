@@ -1,4 +1,5 @@
 """AgentRunner — subprocess lifecycle with streaming output."""
+
 from __future__ import annotations
 
 import asyncio
@@ -84,7 +85,7 @@ class AgentRunner:
                 self._process.terminate()
                 try:
                     await asyncio.wait_for(self._process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     self._process.kill()
             duration = time.monotonic() - start
             self._callback(f"--- {label or 'command'} cancelled ({duration:.1f}s) ---")
@@ -135,7 +136,7 @@ class AgentRunner:
                 self._process.terminate()
                 try:
                     await asyncio.wait_for(self._process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     self._process.kill()
             duration = time.monotonic() - start
             self._callback(f"--- {label or 'shell'} cancelled ({duration:.1f}s) ---")

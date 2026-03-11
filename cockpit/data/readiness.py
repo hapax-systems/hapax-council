@@ -9,6 +9,7 @@ Levels:
 - developing: interview done but gaps remain
 - operational: interview done, dimensions covered, priorities validated
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -38,7 +39,8 @@ class ReadinessSnapshot:
 
 
 def collect_readiness(
-    *, analysis: ProfileAnalysis | None = None,
+    *,
+    analysis: ProfileAnalysis | None = None,
 ) -> ReadinessSnapshot:
     """Assess data readiness for copilot functioning.
 
@@ -55,6 +57,7 @@ def collect_readiness(
     if analysis is None:
         try:
             from cockpit.interview import analyze_profile
+
             analysis = analyze_profile()
         except Exception:
             analysis = None
@@ -79,14 +82,10 @@ def collect_readiness(
     snap.total_dimensions = total if total > 0 else 13
     snap.populated_dimensions = populated
     snap.profile_coverage_pct = (
-        round(populated / snap.total_dimensions * 100, 1)
-        if snap.total_dimensions > 0
-        else 0.0
+        round(populated / snap.total_dimensions * 100, 1) if snap.total_dimensions > 0 else 0.0
     )
     snap.missing_dimensions = list(analysis.missing_dimensions)
-    snap.sparse_dimensions = [
-        s["dimension"] for s in analysis.sparse_dimensions
-    ]
+    snap.sparse_dimensions = [s["dimension"] for s in analysis.sparse_dimensions]
 
     # Interview detection — scan fact sources for "interview"
     snap.interview_conducted, snap.interview_fact_count = _check_interview_facts()
@@ -108,7 +107,9 @@ def collect_readiness(
         count = len(snap.missing_dimensions)
         dims = ", ".join(snap.missing_dimensions[:3])
         suffix = f" + {count - 3} more" if count > 3 else ""
-        gaps.append(f"{count} profile dimension{'s' if count != 1 else ''} missing ({dims}{suffix})")
+        gaps.append(
+            f"{count} profile dimension{'s' if count != 1 else ''} missing ({dims}{suffix})"
+        )
     if snap.sparse_dimensions:
         count = len(snap.sparse_dimensions)
         gaps.append(f"{count} profile dimension{'s' if count != 1 else ''} sparse")
@@ -129,6 +130,7 @@ def _check_interview_facts() -> tuple[bool, int]:
     """
     try:
         from agents.profiler import load_existing_profile
+
         profile = load_existing_profile()
         if profile is None:
             return False, 0
@@ -148,6 +150,7 @@ def _check_priorities_validated(analysis) -> bool:
     """Check if goals exist and have corresponding profile coverage."""
     try:
         from shared.operator import get_goals
+
         goals = get_goals()
         if not goals:
             return False
@@ -163,11 +166,7 @@ def _compute_level(snap: ReadinessSnapshot) -> str:
     if not snap.interview_conducted:
         return "bootstrapping"
 
-    if (
-        snap.missing_dimensions
-        or not snap.neurocognitive_mapped
-        or not snap.priorities_known
-    ):
+    if snap.missing_dimensions or not snap.neurocognitive_mapped or not snap.priorities_known:
         return "developing"
 
     return "operational"

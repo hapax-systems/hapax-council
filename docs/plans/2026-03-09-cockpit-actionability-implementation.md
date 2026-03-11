@@ -487,13 +487,13 @@ git commit -m "feat: connect briefing actions and nudge commands to agent runner
 ### Task 5: Scout Decision Backend
 
 **Files:**
-- Create: `~/projects/ai-agents/cockpit/api/routes/scout.py`
-- Modify: `~/projects/ai-agents/cockpit/api/app.py`
-- Create: `~/projects/ai-agents/tests/test_scout_decisions.py`
+- Create: `~/projects/hapax-council/cockpit/api/routes/scout.py`
+- Modify: `~/projects/hapax-council/cockpit/api/app.py`
+- Create: `~/projects/hapax-council/tests/test_scout_decisions.py`
 
 **Step 1: Write the tests**
 
-Create `~/projects/ai-agents/tests/test_scout_decisions.py`:
+Create `~/projects/hapax-council/tests/test_scout_decisions.py`:
 
 ```python
 """Tests for scout decision API endpoints."""
@@ -563,12 +563,12 @@ async def test_invalid_decision():
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_scout_decisions.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_scout_decisions.py -v`
 Expected: FAIL (import error — `cockpit.api.routes.scout` doesn't exist)
 
 **Step 3: Create scout routes**
 
-Create `~/projects/ai-agents/cockpit/api/routes/scout.py`:
+Create `~/projects/hapax-council/cockpit/api/routes/scout.py`:
 
 ```python
 """Cockpit API routes for scout decision tracking."""
@@ -625,7 +625,7 @@ async def get_decisions():
 
 **Step 4: Register the router**
 
-Modify `~/projects/ai-agents/cockpit/api/app.py`. Add import and registration:
+Modify `~/projects/hapax-council/cockpit/api/app.py`. Add import and registration:
 
 ```python
 from cockpit.api.routes.scout import router as scout_router
@@ -638,13 +638,13 @@ app.include_router(scout_router)
 
 **Step 5: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_scout_decisions.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_scout_decisions.py -v`
 Expected: 3 passed
 
 **Step 6: Commit**
 
 ```bash
-cd ~/projects/ai-agents
+cd ~/projects/hapax-council
 git add cockpit/api/routes/scout.py cockpit/api/app.py tests/test_scout_decisions.py
 git commit -m "feat: add scout decision API endpoints (record + retrieve)"
 ```
@@ -863,7 +863,7 @@ git commit -m "feat: add scout decision workflow with adopt/defer/dismiss button
 
 **Step 1: Run ai-agents tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_scout_decisions.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_scout_decisions.py -v`
 Expected: 3 passed
 
 **Step 2: Run cockpit-web build**
@@ -875,7 +875,7 @@ Expected: Build succeeds, no TypeScript errors.
 
 Start the cockpit stack:
 ```bash
-cd ~/projects/ai-agents && uv run python -m cockpit.api &
+cd ~/projects/hapax-council && uv run python -m cockpit.api &
 cd ~/projects/cockpit-web && pnpm dev &
 ```
 

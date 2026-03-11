@@ -4,22 +4,23 @@ Two output paths:
 - Unstructured → markdown files with YAML frontmatter (for RAG + profiler)
 - Structured → JSONL records (for deterministic profiler mapping)
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import IO
 
-from shared.takeout.models import NormalizedRecord
-
 from shared.config import RAG_SOURCES_DIR
+from shared.takeout.models import NormalizedRecord
 
 log = logging.getLogger("takeout")
 
 DEFAULT_OUTPUT_DIR = RAG_SOURCES_DIR / "takeout"
-STRUCTURED_OUTPUT = Path(__file__).resolve().parent.parent.parent / "profiles" / "takeout-structured.jsonl"
+STRUCTURED_OUTPUT = (
+    Path(__file__).resolve().parent.parent.parent / "profiles" / "takeout-structured.jsonl"
+)
 
 
 class StructuredWriter:
@@ -97,8 +98,8 @@ def _yaml_list(items: list[str]) -> str:
     """Format a list for YAML inline syntax, quoting items with special chars."""
     escaped = []
     for item in items:
-        if any(c in item for c in ',:[]{}&*#!|"\''):
-            safe = item.replace('\\', '\\\\').replace('"', '\\"')
+        if any(c in item for c in ",:[]{}&*#!|\"'"):
+            safe = item.replace("\\", "\\\\").replace('"', '\\"')
             escaped.append(f'"{safe}"')
         else:
             escaped.append(item)
@@ -128,7 +129,7 @@ def record_to_markdown(record: NormalizedRecord) -> str:
         lines.append(f"people: {_yaml_list(record.people)}")
 
     if record.location:
-        lines.append(f"location: \"{record.location}\"")
+        lines.append(f'location: "{record.location}"')
 
     if record.categories:
         lines.append(f"categories: {_yaml_list(record.categories)}")
@@ -172,6 +173,7 @@ def record_to_jsonl(record: NormalizedRecord) -> str:
 def sanitize_filename(name: str) -> str:
     """Convert a string to a filesystem-safe filename, truncated to 64 chars."""
     import re
+
     cleaned = re.sub(r"[^a-zA-Z0-9_-]", "-", name)
     cleaned = re.sub(r"-{2,}", "-", cleaned)
     cleaned = cleaned.strip("-")

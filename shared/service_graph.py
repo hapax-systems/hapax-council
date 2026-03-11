@@ -3,10 +3,10 @@
 Models which services depend on which, enabling topological sort of
 remediation commands (fix upstream before downstream).
 """
+
 from __future__ import annotations
 
 from collections import deque
-
 
 # service → list of services it depends on
 SERVICE_DEPENDENCIES: dict[str, list[str]] = {
@@ -27,10 +27,7 @@ SERVICE_DEPENDENCIES: dict[str, list[str]] = {
 
 def get_dependents(service: str) -> list[str]:
     """Return services that depend on the given service (direct dependents)."""
-    return [
-        svc for svc, deps in SERVICE_DEPENDENCIES.items()
-        if service in deps
-    ]
+    return [svc for svc, deps in SERVICE_DEPENDENCIES.items() if service in deps]
 
 
 def get_dependencies(service: str) -> list[str]:

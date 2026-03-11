@@ -1,14 +1,14 @@
 """Tests for hapax_voice speaker identification."""
+
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 
 import agents.hapax_voice.speaker_id as speaker_id_mod
 from agents.hapax_voice.speaker_id import (
     SpeakerIdentifier,
-    SpeakerResult,
     _cosine_similarity,
 )
 

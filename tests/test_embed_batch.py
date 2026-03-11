@@ -1,9 +1,10 @@
 """Tests for shared/config.py:embed_batch() — batch embedding helper."""
-from unittest.mock import patch, MagicMock
+
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from shared.config import embed_batch, EMBEDDING_MODEL, EXPECTED_EMBED_DIMENSIONS
+from shared.config import EMBEDDING_MODEL, EXPECTED_EMBED_DIMENSIONS, embed_batch
 
 # Helper: valid 768-dim vector
 _VEC = [0.1] * EXPECTED_EMBED_DIMENSIONS

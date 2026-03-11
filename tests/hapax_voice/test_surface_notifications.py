@@ -3,10 +3,10 @@
 Tests the full notification chain: ntfy event parsing, priority queuing,
 TTL expiry, and the proactive delivery conditions.
 """
+
 from __future__ import annotations
 
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -213,9 +213,7 @@ class TestProactiveDeliveryConditions:
 
         # Simulate one iteration of the delivery decision
         # When session is active, we should skip and not call gate.check()
-        if daemon.notifications.pending_count == 0:
-            should_deliver = False
-        elif daemon.session.is_active:
+        if daemon.notifications.pending_count == 0 or daemon.session.is_active:
             should_deliver = False
         else:
             should_deliver = True
@@ -249,11 +247,7 @@ class TestProactiveDeliveryConditions:
         session_active = daemon.session.is_active
         presence = daemon.presence.score
 
-        if pending == 0:
-            should_check_gate = False
-        elif session_active:
-            should_check_gate = False
-        elif presence == "likely_absent":
+        if pending == 0 or session_active or presence == "likely_absent":
             should_check_gate = False
         else:
             should_check_gate = True
@@ -288,7 +282,10 @@ class TestProactiveDeliveryConditions:
         daemon.tts.synthesize.return_value = b"audio-bytes"
         daemon.event_log = MagicMock()
 
-        with patch("agents.hapax_voice.__main__.format_notification", return_value="Notification: Ready — deliver me"):
+        with patch(
+            "agents.hapax_voice.__main__.format_notification",
+            return_value="Notification: Ready — deliver me",
+        ):
             # Simulate the full delivery branch
             pending = daemon.notifications.pending_count
             assert pending == 1
@@ -316,7 +313,9 @@ class TestProactiveDeliveryConditions:
         daemon.session = VoiceLifecycle()  # idle
         daemon.notifications = NotificationQueue()
         daemon.notifications.enqueue(
-            VoiceNotification(title="Blocked", message="blocked msg", priority="normal", source="test")
+            VoiceNotification(
+                title="Blocked", message="blocked msg", priority="normal", source="test"
+            )
         )
 
         gate_result = MagicMock()
@@ -375,7 +374,9 @@ class TestNtfyCallbackWiring:
 
         daemon.notifications = NotificationQueue()
 
-        notif = VoiceNotification(title="Callback", message="cb msg", priority="urgent", source="ntfy")
+        notif = VoiceNotification(
+            title="Callback", message="cb msg", priority="urgent", source="ntfy"
+        )
         await daemon._ntfy_callback(notif)
 
         assert daemon.notifications.pending_count == 1

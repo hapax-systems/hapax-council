@@ -1,4 +1,5 @@
 """Tests for shared.ops_live — live infrastructure queries."""
+
 from __future__ import annotations
 
 import json
@@ -15,17 +16,31 @@ from shared.ops_live import (
 class TestGetInfraSnapshot:
     def test_reads_snapshot_file(self, tmp_path):
         snapshot = tmp_path / "infra-snapshot.json"
-        snapshot.write_text(json.dumps({
-            "timestamp": "2026-03-11T01:33:38Z",
-            "cycle_mode": "prod",
-            "containers": [
-                {"service": "qdrant", "name": "qdrant", "state": "running", "health": "healthy"},
-            ],
-            "timers": [
-                {"unit": "health-monitor.timer", "type": "systemd", "status": "active"},
-            ],
-            "gpu": {"used_mb": 5842, "total_mb": 24576, "free_mb": 18734, "loaded_models": ["nomic-embed-text"]},
-        }))
+        snapshot.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-03-11T01:33:38Z",
+                    "cycle_mode": "prod",
+                    "containers": [
+                        {
+                            "service": "qdrant",
+                            "name": "qdrant",
+                            "state": "running",
+                            "health": "healthy",
+                        },
+                    ],
+                    "timers": [
+                        {"unit": "health-monitor.timer", "type": "systemd", "status": "active"},
+                    ],
+                    "gpu": {
+                        "used_mb": 5842,
+                        "total_mb": 24576,
+                        "free_mb": 18734,
+                        "loaded_models": ["nomic-embed-text"],
+                    },
+                }
+            )
+        )
         result = get_infra_snapshot(tmp_path)
         assert "qdrant" in result
         assert "running" in result
@@ -40,10 +55,14 @@ class TestGetInfraSnapshot:
 class TestGetManifestSection:
     def test_reads_docker_section(self, tmp_path):
         manifest = tmp_path / "manifest.json"
-        manifest.write_text(json.dumps({
-            "docker": {"containers": [{"service": "qdrant", "status": "running"}]},
-            "gpu": {"name": "RTX 3090", "vram_total_mb": 24576},
-        }))
+        manifest.write_text(
+            json.dumps(
+                {
+                    "docker": {"containers": [{"service": "qdrant", "status": "running"}]},
+                    "gpu": {"name": "RTX 3090", "vram_total_mb": 24576},
+                }
+            )
+        )
         result = get_manifest_section(tmp_path, "docker")
         assert "qdrant" in result
 
@@ -63,8 +82,16 @@ class TestQueryLangfuseCost:
     def test_returns_cost_breakdown(self, mock_get):
         mock_get.return_value = {
             "data": [
-                {"model": "claude-sonnet", "calculatedTotalCost": 0.05, "startTime": "2026-03-10T10:00:00Z"},
-                {"model": "claude-haiku", "calculatedTotalCost": 0.01, "startTime": "2026-03-10T11:00:00Z"},
+                {
+                    "model": "claude-sonnet",
+                    "calculatedTotalCost": 0.05,
+                    "startTime": "2026-03-10T10:00:00Z",
+                },
+                {
+                    "model": "claude-haiku",
+                    "calculatedTotalCost": 0.01,
+                    "startTime": "2026-03-10T11:00:00Z",
+                },
             ],
             "meta": {"totalItems": 2},
         }

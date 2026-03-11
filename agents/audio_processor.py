@@ -12,13 +12,14 @@ Usage:
     uv run python -m agents.audio_processor --stats      # Show processing state
     uv run python -m agents.audio_processor --reprocess FILE  # Reprocess a specific file
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -45,20 +46,45 @@ AUDIO_RAG_DIR = RAG_SOURCES / "audio"
 MIN_SEGMENT_SECONDS = 2.0
 
 # AudioSet classes to discard (noise, silence, mechanical)
-SKIP_CLASSIFICATIONS = frozenset({
-    "silence", "white_noise", "static", "hum", "buzz",
-    "air_conditioning", "mechanical_fan",
-    "computer_keyboard", "typing", "mouse_click",
-    "noise", "background_noise",
-})
+SKIP_CLASSIFICATIONS = frozenset(
+    {
+        "silence",
+        "white_noise",
+        "static",
+        "hum",
+        "buzz",
+        "air_conditioning",
+        "mechanical_fan",
+        "computer_keyboard",
+        "typing",
+        "mouse_click",
+        "noise",
+        "background_noise",
+    }
+)
 
 # AudioSet classes to keep as events (non-speech, interesting)
-KEEP_EVENT_CLASSIFICATIONS = frozenset({
-    "music", "singing", "musical_instrument", "guitar", "piano",
-    "drum", "bass_guitar", "synthesizer", "electronic_music",
-    "laughter", "clapping", "door", "doorbell", "telephone",
-    "alarm", "speech", "conversation",
-})
+KEEP_EVENT_CLASSIFICATIONS = frozenset(
+    {
+        "music",
+        "singing",
+        "musical_instrument",
+        "guitar",
+        "piano",
+        "drum",
+        "bass_guitar",
+        "synthesizer",
+        "electronic_music",
+        "laughter",
+        "clapping",
+        "door",
+        "doorbell",
+        "telephone",
+        "alarm",
+        "speech",
+        "conversation",
+    }
+)
 
 # VRAM threshold — skip GPU processing if less than this available (MB)
 MIN_VRAM_FREE_MB = 6000
@@ -66,8 +92,10 @@ MIN_VRAM_FREE_MB = 6000
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class AudioSegment(BaseModel):
     """A classified segment of audio."""
+
     source_file: str
     start_seconds: float
     end_seconds: float
@@ -86,6 +114,7 @@ class AudioSegment(BaseModel):
 
 class ProcessedFileInfo(BaseModel):
     """State for a single processed raw file."""
+
     filename: str
     processed_at: float = 0.0
     speech_seconds: float = 0.0
@@ -98,12 +127,14 @@ class ProcessedFileInfo(BaseModel):
 
 class AudioProcessorState(BaseModel):
     """Persistent processing state."""
+
     processed_files: dict[str, ProcessedFileInfo] = Field(default_factory=dict)
     last_run: float = 0.0
     stats: dict[str, float] = Field(default_factory=dict)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _format_timestamp(seconds: float) -> str:
     """Format seconds as HH:MM:SS."""
@@ -142,7 +173,7 @@ def _log_change(change_type: str, detail: str, extra: dict | None = None) -> Non
     """Append a change entry to the behavioral log."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "type": change_type,
         "detail": detail,
     }
@@ -157,9 +188,12 @@ def _check_vram_available(min_mb: int = MIN_VRAM_FREE_MB) -> bool:
     """Check if enough GPU VRAM is available for processing."""
     try:
         import subprocess
+
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             free_mb = int(result.stdout.strip().split("\n")[0])
@@ -170,14 +204,12 @@ def _check_vram_available(min_mb: int = MIN_VRAM_FREE_MB) -> bool:
     return False
 
 
-def _find_unprocessed_files(
-    raw_dir: Path, state: AudioProcessorState
-) -> list[Path]:
+def _find_unprocessed_files(raw_dir: Path, state: AudioProcessorState) -> list[Path]:
     """Find raw FLAC files that haven't been processed yet."""
     files = sorted(
-        f for f in raw_dir.glob("rec-*.flac")
-        if f.name not in state.processed_files
-        and f.stat().st_size > 0
+        f
+        for f in raw_dir.glob("rec-*.flac")
+        if f.name not in state.processed_files and f.stat().st_size > 0
     )
     return files
 
@@ -193,15 +225,14 @@ def _extract_timestamp_from_filename(filename: str) -> str:
             f"T{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
         )
     except (ValueError, IndexError):
-        return datetime.now(timezone.utc).isoformat()[:19]
+        return datetime.now(UTC).isoformat()[:19]
 
 
 # ── Audio Loading ─────────────────────────────────────────────────────────────
 
 
-def _resample_to_16k(audio_path: Path) -> tuple["np.ndarray", int]:
+def _resample_to_16k(audio_path: Path) -> tuple[np.ndarray, int]:
     """Load and resample audio to 16kHz mono."""
-    import numpy as np
 
     waveform, sr = torchaudio.load(str(audio_path))
 
@@ -216,15 +247,16 @@ def _resample_to_16k(audio_path: Path) -> tuple["np.ndarray", int]:
     return waveform.squeeze(0).numpy(), 16000
 
 
-def _compute_energy_db(waveform: "np.ndarray", start: float, end: float, sr: int) -> float:
+def _compute_energy_db(waveform: np.ndarray, start: float, end: float, sr: int) -> float:
     """Compute average energy in dB for a segment."""
     import numpy as np
+
     start_idx = int(start * sr)
     end_idx = int(end * sr)
     chunk = waveform[start_idx:end_idx]
     if len(chunk) == 0:
         return -100.0
-    rms = np.sqrt(np.mean(chunk ** 2))
+    rms = np.sqrt(np.mean(chunk**2))
     if rms < 1e-10:
         return -100.0
     return float(20 * np.log10(rms))
@@ -241,6 +273,7 @@ def _load_vad_model():
     global _vad_model
     if _vad_model is None:
         import torch
+
         model, utils = torch.hub.load(
             repo_or_dir="snakers4/silero-vad",
             model="silero_vad",
@@ -255,6 +288,7 @@ def _load_panns_model():
     global _panns_model
     if _panns_model is None:
         from panns_inference import AudioTagging
+
         _panns_model = AudioTagging(checkpoint_path=None, device="cuda")
     return _panns_model
 
@@ -263,15 +297,15 @@ def _load_panns_model():
 try:
     from silero_vad import get_speech_timestamps as silero_get_speech_timestamps
 except ImportError:
+
     def silero_get_speech_timestamps(*args, **kwargs):
         return []
 
 
 # ── VAD ──────────────────────────────────────────────────────────────────────
 
-def _run_vad(
-    waveform: "np.ndarray", sample_rate: int
-) -> list[tuple[float, float]]:
+
+def _run_vad(waveform: np.ndarray, sample_rate: int) -> list[tuple[float, float]]:
     """Run Silero VAD on waveform, return list of (start_sec, end_sec) pairs."""
     import torch
 
@@ -283,7 +317,8 @@ def _run_vad(
         tensor = tensor.mean(dim=0)
 
     timestamps = silero_get_speech_timestamps(
-        tensor, model,
+        tensor,
+        model,
         sampling_rate=sample_rate,
         return_seconds=False,
     )
@@ -309,9 +344,13 @@ def _get_audioset_labels() -> list[str]:
     global _AUDIOSET_LABELS
     if _AUDIOSET_LABELS is None:
         try:
-            import panns_inference
             from pathlib import Path as _P
-            labels_path = _P(panns_inference.__file__).parent / "metadata" / "class_labels_indices.csv"
+
+            import panns_inference
+
+            labels_path = (
+                _P(panns_inference.__file__).parent / "metadata" / "class_labels_indices.csv"
+            )
             if labels_path.exists():
                 _AUDIOSET_LABELS = []
                 for line in labels_path.read_text().strip().split("\n")[1:]:
@@ -326,7 +365,7 @@ def _get_audioset_labels() -> list[str]:
 
 
 def _classify_audio_frames(
-    waveform: "np.ndarray",
+    waveform: np.ndarray,
     sample_rate: int,
     vad_segments: list[tuple[float, float]],
 ) -> list[tuple[float, float, str, float]]:
@@ -354,8 +393,9 @@ def _classify_audio_frames(
         try:
             clipwise_output, _ = at.inference(chunk_2d)
         except RuntimeError:
-            log.warning("PANNs failed on segment %.1f-%.1f (len=%d), skipping",
-                        start_s, end_s, len(chunk))
+            log.warning(
+                "PANNs failed on segment %.1f-%.1f (len=%d), skipping", start_s, end_s, len(chunk)
+            )
             continue
 
         top_idx = int(np.argmax(clipwise_output[0]))
@@ -368,6 +408,7 @@ def _classify_audio_frames(
 
 
 # ── Segment Merging ──────────────────────────────────────────────────────────
+
 
 def _merge_segments(
     segments: list[tuple[float, float, str, float]],
@@ -407,16 +448,20 @@ def _load_diarization_pipeline():
     global _diarization_pipeline
     if _diarization_pipeline is None:
         import os
+
         import torch
         from pyannote.audio import Pipeline
 
         hf_token = os.environ.get("HF_TOKEN", "")
         if not hf_token:
             import subprocess
+
             try:
                 result = subprocess.run(
                     ["pass", "show", "huggingface/token"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 if result.returncode == 0:
                     hf_token = result.stdout.strip()
@@ -437,6 +482,7 @@ def _load_whisper_model():
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
+
         _whisper_model = WhisperModel(
             "large-v3-turbo",
             device="cuda",
@@ -485,6 +531,7 @@ def _run_transcription(audio_path: str, start_seconds: float, end_seconds: float
 
 # ── RAG Output Formatting ────────────────────────────────────────────────────
 
+
 def _format_transcript_markdown(seg: AudioSegment, base_timestamp: str) -> str:
     """Format a speech segment as markdown with YAML frontmatter."""
     speakers_yaml = "[" + ", ".join(seg.speakers) + "]" if seg.speakers else "[]"
@@ -524,7 +571,9 @@ def _format_event_markdown(seg: AudioSegment, base_timestamp: str) -> str:
     secs = duration % 60
     duration_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
 
-    sub_class_yaml = "[" + ", ".join(seg.sub_classifications) + "]" if seg.sub_classifications else "[]"
+    sub_class_yaml = (
+        "[" + ", ".join(seg.sub_classifications) + "]" if seg.sub_classifications else "[]"
+    )
 
     sub_line = ""
     if seg.sub_classifications:
@@ -554,6 +603,7 @@ Energy: {seg.energy_db:.1f} dB average
 
 # ── Profiler Integration ─────────────────────────────────────────────────────
 
+
 def _generate_profile_facts(state: AudioProcessorState) -> list[dict]:
     """Generate deterministic profile facts from audio processing state."""
     facts: list[dict] = []
@@ -571,31 +621,33 @@ def _generate_profile_facts(state: AudioProcessorState) -> list[dict]:
     music_h = total_music / 3600
     silence_h = total_silence / 3600
 
-    facts.append({
-        "dimension": "energy_and_attention",
-        "key": "audio_daily_summary",
-        "value": (
-            f"{speech_h:.1f}h speech, {music_h:.1f}h music, "
-            f"{silence_h:.1f}h silence across {len(state.processed_files)} recordings"
-        ),
-        "confidence": 0.95,
-        "source": source,
-        "evidence": f"Aggregated from {total_segments} segments",
-    })
+    facts.append(
+        {
+            "dimension": "energy_and_attention",
+            "key": "audio_daily_summary",
+            "value": (
+                f"{speech_h:.1f}h speech, {music_h:.1f}h music, "
+                f"{silence_h:.1f}h silence across {len(state.processed_files)} recordings"
+            ),
+            "confidence": 0.95,
+            "source": source,
+            "evidence": f"Aggregated from {total_segments} segments",
+        }
+    )
 
     # Conversation patterns
-    multi_speaker = [
-        f for f in state.processed_files.values() if f.speaker_count > 1
-    ]
+    multi_speaker = [f for f in state.processed_files.values() if f.speaker_count > 1]
     if multi_speaker:
-        facts.append({
-            "dimension": "communication_patterns",
-            "key": "audio_conversation_patterns",
-            "value": f"{len(multi_speaker)} recordings with multiple speakers",
-            "confidence": 0.90,
-            "source": source,
-            "evidence": f"Diarization detected multi-speaker in {len(multi_speaker)} files",
-        })
+        facts.append(
+            {
+                "dimension": "communication_patterns",
+                "key": "audio_conversation_patterns",
+                "value": f"{len(multi_speaker)} recordings with multiple speakers",
+                "confidence": 0.90,
+                "source": source,
+                "evidence": f"Diarization detected multi-speaker in {len(multi_speaker)} files",
+            }
+        )
 
     return facts
 
@@ -620,7 +672,6 @@ def _process_file(
     state: AudioProcessorState,
 ) -> ProcessedFileInfo | None:
     """Process a single raw FLAC file through the full pipeline."""
-    import numpy as np
 
     filename = audio_path.name
     base_timestamp = _extract_timestamp_from_filename(filename)
@@ -648,7 +699,8 @@ def _process_file(
     if not vad_segments:
         log.info("No activity detected in %s", filename)
         return ProcessedFileInfo(
-            filename=filename, processed_at=time.time(),
+            filename=filename,
+            processed_at=time.time(),
             silence_seconds=total_seconds,
         )
 
@@ -662,14 +714,14 @@ def _process_file(
     kept = [
         (s, e, label.lower(), conf)
         for s, e, label, conf in merged
-        if not _should_skip_segment(label.lower(), conf)
-        and (e - s) >= MIN_SEGMENT_SECONDS
+        if not _should_skip_segment(label.lower(), conf) and (e - s) >= MIN_SEGMENT_SECONDS
     ]
 
     if not kept:
         log.info("All segments filtered as noise in %s", filename)
         return ProcessedFileInfo(
-            filename=filename, processed_at=time.time(),
+            filename=filename,
+            processed_at=time.time(),
             silence_seconds=total_seconds,
         )
 
@@ -690,9 +742,11 @@ def _process_file(
             try:
                 # Write temp segment for diarization
                 import tempfile
+
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp_path = tmp.name
                 import soundfile  # type: ignore
+
                 start_idx = int(start * sr)
                 end_idx = int(end * sr)
                 soundfile.write(tmp_path, waveform[start_idx:end_idx], sr)
@@ -738,10 +792,12 @@ def _process_file(
                 end_idx = int(end * sr)
                 chunk = waveform[start_idx:end_idx]
                 import numpy as _np
+
                 clipwise, _ = at.inference(chunk[_np.newaxis, :])
                 top_indices = _np.argsort(clipwise[0])[-4:][::-1]  # top 4
                 sub_classes = [
-                    labels_list[i] for i in top_indices[1:4]  # skip primary
+                    labels_list[i]
+                    for i in top_indices[1:4]  # skip primary
                     if clipwise[0][i] > 0.1 and i < len(labels_list)
                 ]
             except Exception:
@@ -763,11 +819,15 @@ def _process_file(
             music_seconds += duration
 
         segment_count += 1
-        _log_change("segment_processed", f"{filename}:{_format_timestamp(start)}", {
-            "classification": label,
-            "duration": round(duration, 1),
-            "speakers": len(all_speakers),
-        })
+        _log_change(
+            "segment_processed",
+            f"{filename}:{_format_timestamp(start)}",
+            {
+                "classification": label,
+                "duration": round(duration, 1),
+                "speakers": len(all_speakers),
+            },
+        )
 
     silence_seconds = total_seconds - speech_seconds - music_seconds
 
@@ -782,7 +842,11 @@ def _process_file(
     )
     log.info(
         "Processed %s: %d segments, %.0fs speech, %.0fs music, %d speakers",
-        filename, segment_count, speech_seconds, music_seconds, len(all_speakers),
+        filename,
+        segment_count,
+        speech_seconds,
+        music_seconds,
+        len(all_speakers),
     )
     return info
 
@@ -831,6 +895,7 @@ def _process_new_files(state: AudioProcessorState) -> dict[str, int]:
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 
+
 def _print_stats(state: AudioProcessorState) -> None:
     """Print processing statistics."""
     total_speech = sum(f.speech_seconds for f in state.processed_files.values())
@@ -845,10 +910,13 @@ def _print_stats(state: AudioProcessorState) -> None:
     print(f"Speech:          {total_speech / 3600:.1f}h")
     print(f"Music:           {total_music / 3600:.1f}h")
     print(f"Errors:          {errors:,}")
-    print(f"Last run:        {datetime.fromtimestamp(state.last_run, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_run else 'never'}")
+    print(
+        f"Last run:        {datetime.fromtimestamp(state.last_run, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_run else 'never'}"
+    )
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ambient audio processor for RAG pipeline")

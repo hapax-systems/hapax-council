@@ -4,20 +4,22 @@ Provides a conversational LLM interface with full system observability:
 health checks, GPU state, container status, timer schedules, briefing data,
 scout reports, RAG search, and the ability to run agents or shell commands.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelMessage
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 
-from shared.config import get_model, get_qdrant, embed, MODELS, LLM_STACK_DIR as _LLM_STACK_DIR, COCKPIT_STATE_DIR
+from shared.config import COCKPIT_STATE_DIR, embed, get_model, get_qdrant
+from shared.config import LLM_STACK_DIR as _LLM_STACK_DIR
 from shared.operator import get_system_prompt_fragment
 
 log = logging.getLogger("cockpit.chat_agent")
@@ -76,6 +78,7 @@ Do NOT record task-specific or ephemeral details.
 
 # ── Agent factory ────────────────────────────────────────────────────────────
 
+
 def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
     """Create a chat agent with all cockpit tools."""
 
@@ -89,10 +92,12 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
 
     # Register on-demand operator context tools
     from shared.context_tools import get_context_tools
+
     for tool_fn in get_context_tools():
         agent.tool(tool_fn)
 
     from shared.axiom_tools import get_axiom_tools
+
     for tool_fn in get_axiom_tools():
         agent.tool(tool_fn)
 
@@ -107,11 +112,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
                 f"--- End Summary ---"
             )
         if ctx.deps.snapshot:
-            parts.append(
-                f"--- Current System State ---\n"
-                f"{ctx.deps.snapshot}\n"
-                f"--- End State ---"
-            )
+            parts.append(f"--- Current System State ---\n{ctx.deps.snapshot}\n--- End State ---")
         return "\n\n".join(parts) if parts else ""
 
     # ── Observe tools ────────────────────────────────────────────────────
@@ -120,15 +121,18 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
     async def get_system_status(ctx: RunContext[ChatDeps]) -> str:
         """Get a comprehensive system status snapshot including health, GPU, containers, timers, briefing, and scout data."""
         from cockpit.snapshot import generate_snapshot
+
         return await generate_snapshot()
 
     @agent.tool
     async def check_health(ctx: RunContext[ChatDeps]) -> str:
         """Run live health checks and return current system health status."""
-        from cockpit.data.health import collect_live_health, collect_health_history
+        from cockpit.data.health import collect_health_history, collect_live_health
+
         health = await collect_live_health()
         history = collect_health_history()
         from cockpit.snapshot import _format_health
+
         return _format_health(health, history)
 
     @agent.tool
@@ -136,6 +140,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         """Check GPU VRAM usage, temperature, and loaded models."""
         from cockpit.data.gpu import collect_vram
         from cockpit.snapshot import _format_vram
+
         vram = await collect_vram()
         return _format_vram(vram)
 
@@ -144,6 +149,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         """List all Docker containers with their state and health."""
         from cockpit.data.infrastructure import collect_docker
         from cockpit.snapshot import _format_containers
+
         containers = await collect_docker()
         return _format_containers(containers)
 
@@ -152,6 +158,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         """List systemd user timers with next fire times and last run."""
         from cockpit.data.infrastructure import collect_timers
         from cockpit.snapshot import _format_timers
+
         timers = await collect_timers()
         return _format_timers(timers)
 
@@ -160,6 +167,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         """Read the latest daily briefing including action items."""
         from cockpit.data.briefing import collect_briefing
         from cockpit.snapshot import _format_actions
+
         briefing = collect_briefing()
         return _format_actions(briefing)
 
@@ -168,20 +176,22 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         """Read the latest scout report with component recommendations."""
         from cockpit.data.scout import collect_scout
         from cockpit.snapshot import _format_scout
+
         scout = collect_scout()
         return _format_scout(scout)
 
     @agent.tool
     async def list_agents(ctx: RunContext[ChatDeps]) -> str:
         """List all available Tier 2 agents with their descriptions and flags."""
-        from cockpit.data.agents import get_agent_registry
         from cockpit.snapshot import _format_agents
+
         return _format_agents()
 
     @agent.tool
     async def read_manual(ctx: RunContext[ChatDeps]) -> str:
         """Read the operations manual — task-oriented reference for the agent stack."""
         from cockpit.manual import generate_manual
+
         return generate_manual()
 
     @agent.tool
@@ -238,6 +248,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             flags: Optional CLI flags (e.g. '--save --hours 48').
         """
         from cockpit.data.agents import get_agent_registry
+
         registry = {a.name: a for a in get_agent_registry()}
         agent_info = registry.get(name)
         if not agent_info:
@@ -260,7 +271,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             if len(output) > 10_000:
                 output = output[:10_000] + "\n... (truncated)"
             return f"Exit code: {exit_code}\n\n{output}"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return f"Agent '{name}' timed out after 120s."
         except Exception as e:
             return f"Error running agent: {e}"
@@ -285,7 +296,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             if len(output) > 10_000:
                 output = output[:10_000] + "\n... (truncated)"
             return f"Exit code: {exit_code}\n\n{output}"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return "Command timed out after 30s."
         except Exception as e:
             return f"Error: {e}"
@@ -300,7 +311,12 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "docker", "compose", "logs", "--tail", str(lines), container,
+                "docker",
+                "compose",
+                "logs",
+                "--tail",
+                str(lines),
+                container,
                 cwd=str(LLM_STACK_DIR),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -310,7 +326,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             if len(output) > 10_000:
                 output = output[:10_000] + "\n... (truncated)"
             return output or "(no output)"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return "Docker logs timed out."
         except Exception as e:
             return f"Error fetching logs: {e}"
@@ -338,8 +354,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             evidence: Quote or paraphrase from the conversation.
         """
         import json
-        from pathlib import Path
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         facts_path = COCKPIT_STATE_DIR / "pending-facts.jsonl"
         facts_path.parent.mkdir(parents=True, exist_ok=True)
@@ -351,7 +366,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             "confidence": 0.6,
             "evidence": evidence,
             "source": "conversation:cockpit",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         with open(facts_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
@@ -412,7 +427,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             dimension: If provided, return facts for this dimension only.
                        If empty, return a summary of all dimensions.
         """
-        from agents.profiler import load_existing_profile, PROFILE_DIMENSIONS
+        from agents.profiler import PROFILE_DIMENSIONS, load_existing_profile
 
         profile = load_existing_profile()
         if not profile:
@@ -426,7 +441,9 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
                 count = len(dim.facts)
                 total += count
                 lines.append(f"  {dim.name}: {count} facts")
-            missing = [d for d in PROFILE_DIMENSIONS if d not in {dim.name for dim in profile.dimensions}]
+            missing = [
+                d for d in PROFILE_DIMENSIONS if d not in {dim.name for dim in profile.dimensions}
+            ]
             if missing:
                 lines.append(f"  Missing: {', '.join(missing)}")
             lines.insert(1, f"Total: {total} facts across {len(profile.dimensions)} dimensions")
@@ -484,7 +501,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         analysis. Reads host-side health history (the health monitor runs
         on the host with full system access)."""
         try:
-            from cockpit.data.health import collect_live_health, collect_health_history
+            from cockpit.data.health import collect_health_history, collect_live_health
 
             current = await collect_live_health()
             if current.overall_status == "healthy" or (
@@ -496,41 +513,38 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
                 )
 
             # Build failure list from current snapshot
-            failed = [
-                {"name": name, "status": "failed"}
-                for name in current.failed_checks
-            ]
+            failed = [{"name": name, "status": "failed"} for name in current.failed_checks]
 
             # Get recent history for pattern context
             history = collect_health_history(limit=5)
             history_dicts = [
-                {"timestamp": e.timestamp, "status": e.status,
-                 "failed_checks": e.failed_checks}
+                {"timestamp": e.timestamp, "status": e.status, "failed_checks": e.failed_checks}
                 for e in history.entries
             ]
 
             # LLM analysis
             from shared.health_analysis import analyze_failures
+
             analysis = await analyze_failures(failed, history_dicts, {})
 
             # Format report
             lines = [
-                f"## Health Diagnosis",
+                "## Health Diagnosis",
                 f"**Summary:** {analysis.summary}",
                 f"**Confidence:** {analysis.confidence}",
                 f"**Score:** {current.healthy}/{current.total_checks} healthy"
                 + (f", {current.degraded} degraded" if current.degraded else "")
                 + (f", {current.failed} failed" if current.failed else ""),
-                f"",
-                f"### Root Cause",
+                "",
+                "### Root Cause",
                 analysis.probable_cause,
             ]
             if analysis.related_failures:
-                lines.append(f"\n### Related Failures")
+                lines.append("\n### Related Failures")
                 for r in analysis.related_failures:
                     lines.append(f"- {r}")
             if analysis.suggested_actions:
-                lines.append(f"\n### Suggested Actions")
+                lines.append("\n### Suggested Actions")
                 for i, a in enumerate(analysis.suggested_actions, 1):
                     lines.append(f"{i}. {a}")
             return "\n".join(lines)
@@ -543,6 +557,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
     async def review_pending_precedents(ctx: RunContext[ChatDeps]) -> str:
         """Show axiom precedents created by agents that await operator review."""
         from shared.axiom_precedents import PrecedentStore
+
         try:
             store = PrecedentStore()
             pending = store.get_pending_review()
@@ -560,7 +575,9 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             lines.append(f"  Reasoning: {p.reasoning}")
             lines.append(f"  Facts: {', '.join(p.distinguishing_facts)}")
             lines.append("")
-        lines.append("Use confirm_precedent(id) to promote or reject_precedent(id, correction) to supersede.")
+        lines.append(
+            "Use confirm_precedent(id) to promote or reject_precedent(id, correction) to supersede."
+        )
         return "\n".join(lines)
 
     @agent.tool
@@ -571,6 +588,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             precedent_id: The precedent ID to confirm (e.g., PRE-20260303-abc123).
         """
         from shared.axiom_precedents import PrecedentStore
+
         try:
             store = PrecedentStore()
             store.promote(precedent_id)
@@ -580,7 +598,9 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
 
     @agent.tool
     async def reject_precedent(
-        ctx: RunContext[ChatDeps], precedent_id: str, correction: str,
+        ctx: RunContext[ChatDeps],
+        precedent_id: str,
+        correction: str,
     ) -> str:
         """Reject an agent precedent and record the operator's correction.
 
@@ -588,7 +608,8 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             precedent_id: The precedent ID to reject.
             correction: The operator's corrected reasoning for this situation.
         """
-        from shared.axiom_precedents import PrecedentStore, Precedent
+        from shared.axiom_precedents import Precedent, PrecedentStore
+
         try:
             store = PrecedentStore()
             results = store.get_pending_review(limit=50)
@@ -617,6 +638,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
 
 
 # ── Chat session ─────────────────────────────────────────────────────────────
+
 
 @dataclass
 class ChatSession:
@@ -665,7 +687,7 @@ class ChatSession:
         Preserves interview_state (facts, insights, topics). Only clears
         message_history to a safe state so the next API call won't fail.
         """
-        from pydantic_ai.messages import ModelRequest, UserPromptPart, ToolReturnPart
+        from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
         # Walk backward to find the last clean user turn
         for i in range(len(self.message_history) - 1, -1, -1):
@@ -684,6 +706,7 @@ class ChatSession:
     async def refresh_snapshot(self) -> str:
         """Generate a fresh system snapshot."""
         from cockpit.snapshot import generate_snapshot
+
         return await generate_snapshot()
 
     # ── Interview lifecycle ──────────────────────────────────────────────
@@ -705,15 +728,17 @@ class ChatSession:
         Returns the interview agent's opening message.
         """
         from cockpit.interview import (
-            analyze_profile, generate_interview_plan, InterviewState,
-            create_interview_agent, InterviewDeps,
+            InterviewState,
+            analyze_profile,
+            create_interview_agent,
+            generate_interview_plan,
         )
 
         analysis = analyze_profile()
         plan = await generate_interview_plan(analysis, model_alias=self.model_alias)
         self.interview_state = InterviewState(
             plan=plan,
-            started_at=datetime.now(timezone.utc).isoformat(),
+            started_at=datetime.now(UTC).isoformat(),
         )
         self.mode = "interview"
         self._interview_agent = create_interview_agent(model_alias=self.model_alias)
@@ -733,8 +758,8 @@ class ChatSession:
         if not self.interview_state:
             return "No active interview."
 
-        from cockpit.interview import format_interview_summary, RecordedFact, RecordedInsight
         from agents.profiler import flush_interview_facts
+        from cockpit.interview import format_interview_summary
 
         summary = format_interview_summary(self.interview_state)
 
@@ -840,6 +865,7 @@ class ChatSession:
                         full_text = ""
                         async for response, _is_last in stream.stream_responses():
                             from pydantic_ai.messages import TextPart, ToolCallPart
+
                             for part in response.parts:
                                 if isinstance(part, ToolCallPart) and on_tool_call:
                                     call_id = part.tool_call_id or part.tool_name
@@ -852,7 +878,7 @@ class ChatSession:
                                             )
                                         on_tool_call(part.tool_name, args_str)
                                 elif isinstance(part, TextPart):
-                                    new_text = part.content[len(full_text):]
+                                    new_text = part.content[len(full_text) :]
                                     if new_text and on_text_delta:
                                         on_text_delta(new_text)
                                     full_text = part.content
@@ -949,6 +975,7 @@ class ChatSession:
 
                     async for response, _is_last in stream.stream_responses():
                         from pydantic_ai.messages import TextPart, ToolCallPart
+
                         for part in response.parts:
                             if isinstance(part, ToolCallPart) and on_tool_call:
                                 call_id = part.tool_call_id or part.tool_name
@@ -961,7 +988,7 @@ class ChatSession:
                                         )
                                     on_tool_call(part.tool_name, args_str)
                             elif isinstance(part, TextPart):
-                                new_text = part.content[len(full_text):]
+                                new_text = part.content[len(full_text) :]
                                 if new_text and on_text_delta:
                                     on_text_delta(new_text)
                                 full_text = part.content
@@ -993,14 +1020,14 @@ class ChatSession:
             "model_alias": self.model_alias,
             "conversation_summary": self.conversation_summary,
             "total_tokens": self.total_tokens,
-            "message_history": ModelMessagesTypeAdapter.dump_json(
-                self.message_history
-            ).decode(),
+            "message_history": ModelMessagesTypeAdapter.dump_json(self.message_history).decode(),
             "mode": self.mode,
         }
         if self.interview_state is not None:
             data["interview_state"] = self.interview_state.model_dump()
-        import tempfile, os as _os
+        import os as _os
+        import tempfile
+
         tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
             _os.write(tmp_fd, json.dumps(data, indent=2).encode())
@@ -1029,6 +1056,7 @@ class ChatSession:
         interview_data = data.get("interview_state")
         if interview_data:
             from cockpit.interview import InterviewState
+
             session.interview_state = InterviewState.model_validate(interview_data)
         return session
 
@@ -1040,13 +1068,14 @@ class ChatSession:
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+
 def _find_safe_split(messages: list[ModelMessage], keep_recent: int) -> int:
     """Find a split index that won't orphan tool_result messages.
 
     Returns the index where 'recent' should start. The recent portion
     messages[split:] will begin with a user prompt, never an orphaned tool result.
     """
-    from pydantic_ai.messages import ModelRequest, UserPromptPart, ToolReturnPart
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
     if not messages:
         return 0
@@ -1073,15 +1102,19 @@ def format_conversation_export(
 ) -> str:
     """Format conversation history as a markdown document for export."""
     from pydantic_ai.messages import (
-        ModelRequest, ModelResponse, UserPromptPart, TextPart,
-        ToolCallPart, ToolReturnPart,
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
     )
 
     lines: list[str] = []
-    lines.append(f"# Chat Export")
-    lines.append(f"")
+    lines.append("# Chat Export")
+    lines.append("")
     lines.append(f"- **Model**: {model_alias}")
-    lines.append(f"- **Exported**: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    lines.append(f"- **Exported**: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}")
     lines.append(f"- **Messages**: {len(message_history)}")
     lines.append("")
     lines.append("---")
@@ -1130,9 +1163,14 @@ def format_conversation_export(
 def _serialize_messages_for_summary(messages: list[ModelMessage]) -> str:
     """Convert messages to plain text for summarization."""
     from pydantic_ai.messages import (
-        ModelRequest, ModelResponse, UserPromptPart, TextPart,
-        ToolCallPart, ToolReturnPart,
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
     )
+
     lines: list[str] = []
     for msg in messages:
         if isinstance(msg, ModelRequest):
@@ -1162,7 +1200,7 @@ def _truncate_error(raw: str, limit: int) -> str:
     for marker in ("AnthropicError:", "BadRequestError:", "HTTPStatusError:"):
         idx = raw.find(marker)
         if idx != -1:
-            msg = raw[idx:idx + limit]
+            msg = raw[idx : idx + limit]
             break
     else:
         msg = raw[:limit]
@@ -1192,8 +1230,17 @@ def classify_chat_error(e: Exception) -> tuple[str, str]:
     if "context length" in err or "max tokens" in err or "too many tokens" in err:
         return "Context length exceeded.", "context_length"
 
-    if any(kw in err for kw in ("connection refused", "connect timeout",
-                                 "timed out", "503", "502", "server error")):
+    if any(
+        kw in err
+        for kw in (
+            "connection refused",
+            "connect timeout",
+            "timed out",
+            "503",
+            "502",
+            "server error",
+        )
+    ):
         return _truncate_error(raw, 150), "provider_down"
 
     return _truncate_error(raw, 200), "unknown"

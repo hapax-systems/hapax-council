@@ -4,6 +4,7 @@ Reads from profiles/infra-snapshot.json written by the host-side health
 monitor, which has access to nvidia-smi and Ollama. The cockpit-api runs
 inside Docker where GPU commands are unavailable.
 """
+
 from __future__ import annotations
 
 import json

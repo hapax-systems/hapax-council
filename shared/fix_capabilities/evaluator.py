@@ -3,16 +3,16 @@
 Receives a failing health check, probe data, and available actions.
 Uses pydantic-ai to select the best action and return a FixProposal.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from pydantic_ai import Agent
 
 from agents.health_monitor import CheckResult, Status
 from shared.config import get_model
-from shared.fix_capabilities.base import Action, FixProposal, ProbeResult, Safety
+from shared.fix_capabilities.base import Action, FixProposal, ProbeResult
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ _evaluator_agent = Agent(
 
 
 # ── Prompt builder ───────────────────────────────────────────────────────────
+
 
 def _build_prompt(
     check: CheckResult,
@@ -86,11 +87,12 @@ def _build_prompt(
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
+
 async def evaluate_check(
     check: CheckResult,
     probe: ProbeResult,
     actions: list[Action],
-) -> Optional[FixProposal]:
+) -> FixProposal | None:
     """Evaluate a failing check and return a fix proposal, or None.
 
     Returns None if:

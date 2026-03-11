@@ -1,23 +1,21 @@
 """Tests for Tier 3 parsers (location, photos, purchases), progress tracking,
 and batch processing."""
+
 from __future__ import annotations
 
 import io
 import json
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from shared.takeout.models import ServiceConfig
 from shared.takeout.parsers import location, photos, purchases
-from shared.takeout.processor import process_takeout, process_batch, ProcessResult
+from shared.takeout.processor import ProcessResult, process_batch, process_takeout
 from shared.takeout.progress import ProgressTracker
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def make_zip(files: dict[str, str | bytes]) -> zipfile.ZipFile:
     """Create an in-memory ZIP with the given files."""
@@ -33,6 +31,7 @@ def make_zip(files: dict[str, str | bytes]) -> zipfile.ZipFile:
 
 # ── Location parser ──────────────────────────────────────────────────────────
 
+
 class TestLocationParser:
     CONFIG = ServiceConfig(
         parser="location",
@@ -44,28 +43,32 @@ class TestLocationParser:
     )
 
     def test_parse_semantic_place_visit(self):
-        data = json.dumps({
-            "timelineObjects": [
-                {
-                    "placeVisit": {
-                        "location": {
-                            "name": "Home Studio",
-                            "address": "123 Music Lane",
-                            "placeId": "ChIJ...",
-                            "latitudeE7": 377749290,
-                            "longitudeE7": -1224193030,
-                        },
-                        "duration": {
-                            "startTimestamp": "2025-06-15T14:00:00Z",
-                            "endTimestamp": "2025-06-15T18:00:00Z",
-                        },
+        data = json.dumps(
+            {
+                "timelineObjects": [
+                    {
+                        "placeVisit": {
+                            "location": {
+                                "name": "Home Studio",
+                                "address": "123 Music Lane",
+                                "placeId": "ChIJ...",
+                                "latitudeE7": 377749290,
+                                "longitudeE7": -1224193030,
+                            },
+                            "duration": {
+                                "startTimestamp": "2025-06-15T14:00:00Z",
+                                "endTimestamp": "2025-06-15T18:00:00Z",
+                            },
+                        }
                     }
-                }
-            ]
-        })
-        zf = make_zip({
-            "Takeout/Location History/Semantic Location History/2025/JUNE.json": data,
-        })
+                ]
+            }
+        )
+        zf = make_zip(
+            {
+                "Takeout/Location History/Semantic Location History/2025/JUNE.json": data,
+            }
+        )
         records = list(location.parse(zf, self.CONFIG))
         assert len(records) == 1
         r = records[0]
@@ -74,79 +77,111 @@ class TestLocationParser:
         assert "spatial" in r.modality_tags
 
     def test_parse_activity_segment(self):
-        data = json.dumps({
-            "timelineObjects": [
-                {
-                    "activitySegment": {
-                        "activityType": "IN_VEHICLE",
-                        "duration": {
-                            "startTimestamp": "2025-06-15T09:00:00Z",
-                            "endTimestamp": "2025-06-15T09:30:00Z",
-                        },
-                        "distance": 15000,
+        data = json.dumps(
+            {
+                "timelineObjects": [
+                    {
+                        "activitySegment": {
+                            "activityType": "IN_VEHICLE",
+                            "duration": {
+                                "startTimestamp": "2025-06-15T09:00:00Z",
+                                "endTimestamp": "2025-06-15T09:30:00Z",
+                            },
+                            "distance": 15000,
+                        }
                     }
-                }
-            ]
-        })
-        zf = make_zip({
-            "Takeout/Location History/Semantic Location History/2025/JUNE.json": data,
-        })
+                ]
+            }
+        )
+        zf = make_zip(
+            {
+                "Takeout/Location History/Semantic Location History/2025/JUNE.json": data,
+            }
+        )
         records = list(location.parse(zf, self.CONFIG))
         assert len(records) == 1
         assert "In Vehicle" in records[0].title
 
     def test_skip_short_activity(self):
         """Activities under 5 minutes should be skipped."""
-        data = json.dumps({
-            "timelineObjects": [
-                {
-                    "activitySegment": {
-                        "activityType": "WALKING",
-                        "duration": {
-                            "startTimestamp": "2025-06-15T09:00:00Z",
-                            "endTimestamp": "2025-06-15T09:02:00Z",
-                        },
+        data = json.dumps(
+            {
+                "timelineObjects": [
+                    {
+                        "activitySegment": {
+                            "activityType": "WALKING",
+                            "duration": {
+                                "startTimestamp": "2025-06-15T09:00:00Z",
+                                "endTimestamp": "2025-06-15T09:02:00Z",
+                            },
+                        }
                     }
-                }
-            ]
-        })
-        zf = make_zip({
-            "Takeout/Location History/Semantic Location History/2025/JUNE.json": data,
-        })
+                ]
+            }
+        )
+        zf = make_zip(
+            {
+                "Takeout/Location History/Semantic Location History/2025/JUNE.json": data,
+            }
+        )
         records = list(location.parse(zf, self.CONFIG))
         assert records == []
 
     def test_parse_raw_records(self):
-        data = json.dumps({
-            "locations": [
-                {"timestamp": "1718456400000", "latitudeE7": 377749290, "longitudeE7": -1224193030},
-                {"timestamp": "1718456401000", "latitudeE7": 377749290, "longitudeE7": -1224193030},
-            ]
-        })
+        data = json.dumps(
+            {
+                "locations": [
+                    {
+                        "timestamp": "1718456400000",
+                        "latitudeE7": 377749290,
+                        "longitudeE7": -1224193030,
+                    },
+                    {
+                        "timestamp": "1718456401000",
+                        "latitudeE7": 377749290,
+                        "longitudeE7": -1224193030,
+                    },
+                ]
+            }
+        )
         zf = make_zip({"Takeout/Location History/Records.json": data})
         records = list(location.parse(zf, self.CONFIG))
         # Aggregated by day
         assert len(records) >= 1
 
     def test_prefer_semantic_over_raw(self):
-        semantic = json.dumps({
-            "timelineObjects": [{
-                "placeVisit": {
-                    "location": {"name": "Coffee Shop"},
-                    "duration": {
-                        "startTimestamp": "2025-06-15T08:00:00Z",
-                        "endTimestamp": "2025-06-15T09:00:00Z",
+        semantic = json.dumps(
+            {
+                "timelineObjects": [
+                    {
+                        "placeVisit": {
+                            "location": {"name": "Coffee Shop"},
+                            "duration": {
+                                "startTimestamp": "2025-06-15T08:00:00Z",
+                                "endTimestamp": "2025-06-15T09:00:00Z",
+                            },
+                        }
+                    }
+                ]
+            }
+        )
+        raw = json.dumps(
+            {
+                "locations": [
+                    {
+                        "timestamp": "1718456400000",
+                        "latitudeE7": 377749290,
+                        "longitudeE7": -1224193030,
                     },
-                }
-            }]
-        })
-        raw = json.dumps({"locations": [
-            {"timestamp": "1718456400000", "latitudeE7": 377749290, "longitudeE7": -1224193030},
-        ]})
-        zf = make_zip({
-            "Takeout/Location History/Semantic Location History/2025/JUNE.json": semantic,
-            "Takeout/Location History/Records.json": raw,
-        })
+                ]
+            }
+        )
+        zf = make_zip(
+            {
+                "Takeout/Location History/Semantic Location History/2025/JUNE.json": semantic,
+                "Takeout/Location History/Records.json": raw,
+            }
+        )
         records = list(location.parse(zf, self.CONFIG))
         # Should only have the semantic record
         assert len(records) == 1
@@ -154,6 +189,7 @@ class TestLocationParser:
 
 
 # ── Photos parser ─────────────────────────────────────────────────────────────
+
 
 class TestPhotosParser:
     CONFIG = ServiceConfig(
@@ -166,13 +202,15 @@ class TestPhotosParser:
     )
 
     def test_parse_photo_metadata(self):
-        meta = json.dumps({
-            "title": "sunset.jpg",
-            "description": "Beautiful sunset at the beach",
-            "photoTakenTime": {"timestamp": "1718456400"},
-            "geoData": {"latitude": 37.7749, "longitude": -122.4194},
-            "people": [{"name": "Alice"}],
-        })
+        meta = json.dumps(
+            {
+                "title": "sunset.jpg",
+                "description": "Beautiful sunset at the beach",
+                "photoTakenTime": {"timestamp": "1718456400"},
+                "geoData": {"latitude": 37.7749, "longitude": -122.4194},
+                "people": [{"name": "Alice"}],
+            }
+        )
         zf = make_zip({"Takeout/Google Photos/Album/sunset.jpg.json": meta})
         records = list(photos.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -189,10 +227,12 @@ class TestPhotosParser:
         assert records == []
 
     def test_photo_without_location(self):
-        meta = json.dumps({
-            "title": "indoor.jpg",
-            "photoTakenTime": {"timestamp": "1718456400"},
-        })
+        meta = json.dumps(
+            {
+                "title": "indoor.jpg",
+                "photoTakenTime": {"timestamp": "1718456400"},
+            }
+        )
         zf = make_zip({"Takeout/Google Photos/Album/indoor.jpg.json": meta})
         records = list(photos.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -200,10 +240,12 @@ class TestPhotosParser:
 
     def test_skip_zero_coordinates(self):
         """Coordinates at (0, 0) should be treated as no location."""
-        meta = json.dumps({
-            "title": "test.jpg",
-            "geoData": {"latitude": 0.0, "longitude": 0.0},
-        })
+        meta = json.dumps(
+            {
+                "title": "test.jpg",
+                "geoData": {"latitude": 0.0, "longitude": 0.0},
+            }
+        )
         zf = make_zip({"Takeout/Google Photos/test.jpg.json": meta})
         records = list(photos.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -211,6 +253,7 @@ class TestPhotosParser:
 
 
 # ── Purchases parser ──────────────────────────────────────────────────────────
+
 
 class TestPurchasesParser:
     CONFIG = ServiceConfig(
@@ -223,16 +266,18 @@ class TestPurchasesParser:
     )
 
     def test_parse_json_purchase(self):
-        data = json.dumps([
-            {
-                "title": "Elektron Digitakt II",
-                "price": "899.99",
-                "currency": "USD",
-                "merchant": "Sweetwater",
-                "date": "2025-06-15",
-                "category": "Musical Instruments",
-            }
-        ])
+        data = json.dumps(
+            [
+                {
+                    "title": "Elektron Digitakt II",
+                    "price": "899.99",
+                    "currency": "USD",
+                    "merchant": "Sweetwater",
+                    "date": "2025-06-15",
+                    "category": "Musical Instruments",
+                }
+            ]
+        )
         zf = make_zip({"Takeout/Purchases/purchases.json": data})
         records = list(purchases.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -248,16 +293,19 @@ class TestPurchasesParser:
         assert records == []
 
     def test_single_purchase_dict(self):
-        data = json.dumps({
-            "title": "USB-C Cable",
-            "price": "12.99",
-        })
+        data = json.dumps(
+            {
+                "title": "USB-C Cable",
+                "price": "12.99",
+            }
+        )
         zf = make_zip({"Takeout/Purchases/order.json": data})
         records = list(purchases.parse(zf, self.CONFIG))
         assert len(records) == 1
 
 
 # ── Progress tracker ──────────────────────────────────────────────────────────
+
 
 class TestProgressTracker:
     def test_create_and_track(self, tmp_path):
@@ -335,23 +383,37 @@ class TestProcessBatch:
 
     def _make_chrome_zip(self, path: Path) -> Path:
         """Create a ZIP with a minimal Chrome history."""
-        history = json.dumps({
-            "Browser History": [
-                {"title": "Test Page", "url": "https://example.com", "time_usec": 1718456400000000},
-            ]
-        })
-        return _write_test_zip(path, {
-            "Takeout/Chrome/BrowserHistory.json": history,
-        })
+        history = json.dumps(
+            {
+                "Browser History": [
+                    {
+                        "title": "Test Page",
+                        "url": "https://example.com",
+                        "time_usec": 1718456400000000,
+                    },
+                ]
+            }
+        )
+        return _write_test_zip(
+            path,
+            {
+                "Takeout/Chrome/BrowserHistory.json": history,
+            },
+        )
 
     def _make_search_zip(self, path: Path) -> Path:
         """Create a ZIP with minimal Search activity."""
-        activity = json.dumps([
-            {"title": "Searched for python testing", "time": "2025-06-15T14:00:00.000Z"},
-        ])
-        return _write_test_zip(path, {
-            "Takeout/My Activity/Search/MyActivity.json": activity,
-        })
+        activity = json.dumps(
+            [
+                {"title": "Searched for python testing", "time": "2025-06-15T14:00:00.000Z"},
+            ]
+        )
+        return _write_test_zip(
+            path,
+            {
+                "Takeout/My Activity/Search/MyActivity.json": activity,
+            },
+        )
 
     def test_batch_aggregates_results(self, tmp_path):
         """Batch should aggregate record counts from multiple ZIPs."""
@@ -430,9 +492,12 @@ class TestProcessBatch:
 
     def test_batch_empty_zip(self, tmp_path):
         """Batch should handle ZIPs with no known services gracefully."""
-        empty_zip = _write_test_zip(tmp_path / "empty.zip", {
-            "Takeout/Unknown/file.txt": "nothing useful",
-        })
+        empty_zip = _write_test_zip(
+            tmp_path / "empty.zip",
+            {
+                "Takeout/Unknown/file.txt": "nothing useful",
+            },
+        )
 
         result = process_batch(
             [empty_zip],
@@ -460,16 +525,26 @@ class TestProcessBatch:
 
 # ── F-2.3: services_processed excludes partially-failed services ─────────
 
+
 def test_services_processed_excludes_partial_failures(tmp_path):
     """services_processed should not include services that errored mid-parse."""
     # Create a ZIP with a valid chrome entry
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("Takeout/Chrome/BrowserHistory.json", json.dumps({
-            "Browser History": [
-                {"url": "https://example.com", "title": "Test", "time_usec": 13370000000000000}
-            ]
-        }))
+        zf.writestr(
+            "Takeout/Chrome/BrowserHistory.json",
+            json.dumps(
+                {
+                    "Browser History": [
+                        {
+                            "url": "https://example.com",
+                            "title": "Test",
+                            "time_usec": 13370000000000000,
+                        }
+                    ]
+                }
+            ),
+        )
     buf.seek(0)
     zip_path = tmp_path / "takeout.zip"
     zip_path.write_bytes(buf.getvalue())
@@ -477,10 +552,15 @@ def test_services_processed_excludes_partial_failures(tmp_path):
     # Patch the parser to raise mid-processing
     def failing_parser(zf, config):
         from shared.takeout.models import NormalizedRecord
+
         yield NormalizedRecord(
-            record_id="ok-1", platform="google", service="chrome",
-            title="Test Page", content_type="browser_history",
-            text="first record", modality_tags=["text"],
+            record_id="ok-1",
+            platform="google",
+            service="chrome",
+            title="Test Page",
+            content_type="browser_history",
+            text="first record",
+            modality_tags=["text"],
         )
         raise RuntimeError("simulated mid-parse failure")
 
@@ -501,19 +581,25 @@ def test_services_processed_excludes_partial_failures(tmp_path):
 
 # ── Resume cleans orphaned .md files ────────────────────────────────────────
 
+
 def test_resume_cleans_orphaned_md_files(tmp_path):
     """On resume, orphaned .md files from interrupted unstructured services are removed."""
-    from shared.takeout.progress import ProgressTracker
     from shared.takeout.processor import _run_id
+    from shared.takeout.progress import ProgressTracker
 
     # Create a Keep ZIP (unstructured data_path)
-    keep_data = json.dumps({
-        "textContent": "Fresh note content",
-        "title": "Fresh Note",
-    })
-    zip_path = _write_test_zip(tmp_path / "takeout.zip", {
-        "Takeout/Keep/note1.json": keep_data,
-    })
+    keep_data = json.dumps(
+        {
+            "textContent": "Fresh note content",
+            "title": "Fresh Note",
+        }
+    )
+    zip_path = _write_test_zip(
+        tmp_path / "takeout.zip",
+        {
+            "Takeout/Keep/note1.json": keep_data,
+        },
+    )
     output_dir = tmp_path / "output"
     structured = tmp_path / "structured.jsonl"
 

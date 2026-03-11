@@ -1,4 +1,5 @@
 """Structured JSONL event log for voice daemon observability."""
+
 from __future__ import annotations
 
 import datetime

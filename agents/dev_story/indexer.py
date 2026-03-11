@@ -1,9 +1,11 @@
 """Index orchestrator — builds the dev-story SQLite database."""
+
 from __future__ import annotations
 
 import logging
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 
 from agents.dev_story.classifier import (
@@ -72,9 +74,19 @@ def index_session(conn: sqlite3.Connection, sf: SessionFile) -> None:
             message_count, total_tokens_in, total_tokens_out, total_cost_estimate,
             model_primary)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (s.id, s.project_path, s.project_name, s.started_at, s.ended_at,
-         s.git_branch, s.message_count, s.total_tokens_in, s.total_tokens_out,
-         s.total_cost_estimate, s.model_primary),
+        (
+            s.id,
+            s.project_path,
+            s.project_name,
+            s.started_at,
+            s.ended_at,
+            s.git_branch,
+            s.message_count,
+            s.total_tokens_in,
+            s.total_tokens_out,
+            s.total_cost_estimate,
+            s.model_primary,
+        ),
     )
 
     # Clear existing data for this session (for re-indexing)
@@ -112,8 +124,17 @@ def index_session(conn: sqlite3.Connection, sf: SessionFile) -> None:
                (id, session_id, parent_id, role, timestamp, content_text, model,
                 tokens_in, tokens_out)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (msg.id, msg.session_id, msg.parent_id, msg.role, msg.timestamp,
-             msg.content_text, msg.model, msg.tokens_in, msg.tokens_out),
+            (
+                msg.id,
+                msg.session_id,
+                msg.parent_id,
+                msg.role,
+                msg.timestamp,
+                msg.content_text,
+                msg.model,
+                msg.tokens_in,
+                msg.tokens_out,
+            ),
         )
 
     for tc in parsed.tool_calls:
@@ -122,8 +143,14 @@ def index_session(conn: sqlite3.Connection, sf: SessionFile) -> None:
                (message_id, tool_name, arguments_summary, duration_ms, success,
                 sequence_position)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (tc.message_id, tc.tool_name, tc.arguments_summary, tc.duration_ms,
-             1 if tc.success else 0, tc.sequence_position),
+            (
+                tc.message_id,
+                tc.tool_name,
+                tc.arguments_summary,
+                tc.duration_ms,
+                1 if tc.success else 0,
+                tc.sequence_position,
+            ),
         )
 
     # Only insert file_changes whose message_id exists in our messages
@@ -150,8 +177,15 @@ def index_git(conn: sqlite3.Connection, repo_path: str, since: str | None = None
             """INSERT OR IGNORE INTO commits
                (hash, author_date, message, branch, files_changed, insertions, deletions)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (c.hash, c.author_date, c.message, c.branch, c.files_changed,
-             c.insertions, c.deletions),
+            (
+                c.hash,
+                c.author_date,
+                c.message,
+                c.branch,
+                c.files_changed,
+                c.insertions,
+                c.deletions,
+            ),
         )
 
     for cf in commit_files:
@@ -161,7 +195,9 @@ def index_git(conn: sqlite3.Connection, repo_path: str, since: str | None = None
         )
 
     conn.commit()
-    log.info("Indexed %d commits, %d file records from %s", len(commits), len(commit_files), repo_path)
+    log.info(
+        "Indexed %d commits, %d file records from %s", len(commits), len(commit_files), repo_path
+    )
 
 
 def run_correlations(conn: sqlite3.Connection) -> int:
@@ -170,7 +206,9 @@ def run_correlations(conn: sqlite3.Connection) -> int:
     conn.execute("DELETE FROM correlations")
 
     # Load file changes
-    cursor = conn.execute("SELECT message_id, file_path, version, change_type, timestamp FROM file_changes")
+    cursor = conn.execute(
+        "SELECT message_id, file_path, version, change_type, timestamp FROM file_changes"
+    )
     file_changes = [
         FileChange(message_id=r[0], file_path=r[1], version=r[2], change_type=r[3], timestamp=r[4])
         for r in cursor.fetchall()
@@ -179,8 +217,7 @@ def run_correlations(conn: sqlite3.Connection) -> int:
     # Load commit files
     cursor = conn.execute("SELECT commit_hash, file_path, operation FROM commit_files")
     commit_files_list = [
-        CommitFile(commit_hash=r[0], file_path=r[1], operation=r[2])
-        for r in cursor.fetchall()
+        CommitFile(commit_hash=r[0], file_path=r[1], operation=r[2]) for r in cursor.fetchall()
     ]
 
     # Load commit dates
@@ -249,8 +286,16 @@ def _compute_session_metrics(conn: sqlite3.Connection) -> int:
                (session_id, tool_call_count, tool_diversity, edit_count, bash_count,
                 agent_dispatch_count, user_steering_ratio, phase_sequence)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (session_id, len(tool_names), len(unique_tools), edit_count, bash_count,
-             agent_count, steering_ratio, phase_seq),
+            (
+                session_id,
+                len(tool_names),
+                len(unique_tools),
+                edit_count,
+                bash_count,
+                agent_count,
+                steering_ratio,
+                phase_seq,
+            ),
         )
         count += 1
 
@@ -342,15 +387,18 @@ def _compute_critical_moments(conn: sqlite3.Connection) -> int:
             """INSERT INTO critical_moments
                (moment_type, severity, session_id, message_id, commit_hash, description, evidence)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (m.moment_type, m.severity, sid, mid, m.commit_hash,
-             m.description, m.evidence),
+            (m.moment_type, m.severity, sid, mid, m.commit_hash, m.description, m.evidence),
         )
         inserted += 1
 
     conn.commit()
     log.info(
         "Detected %d critical moments (%d churn, %d wrong-path, %d token-waste), inserted %d",
-        len(all_moments), len(churn), len(wrong_path), len(token_waste), inserted,
+        len(all_moments),
+        len(churn),
+        len(wrong_path),
+        len(token_waste),
+        inserted,
     )
     return inserted
 
@@ -404,10 +452,11 @@ def full_index(db_path: str, claude_projects_dir: Path) -> dict:
     stats["critical_moments"] = _compute_critical_moments(conn)
 
     # Store index timestamp
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     conn.execute(
         "INSERT OR REPLACE INTO index_state (key, value) VALUES ('last_indexed', ?)",
-        (datetime.now(timezone.utc).isoformat(),),
+        (datetime.now(UTC).isoformat(),),
     )
     conn.commit()
     conn.close()

@@ -1,11 +1,10 @@
 # tests/test_axiom_derivation.py
 """Tests for shared.axiom_derivation."""
-import pytest
 
 from shared.axiom_derivation import (
     build_derivation_prompt,
-    parse_implications_output,
     merge_self_consistent,
+    parse_implications_output,
 )
 
 
@@ -21,7 +20,9 @@ class TestBuildPrompt:
 
     def test_includes_interpretive_canons(self):
         prompt = build_derivation_prompt(
-            axiom_id="test", axiom_text="Test.", codebase_context="",
+            axiom_id="test",
+            axiom_text="Test.",
+            codebase_context="",
         )
         assert "purposivist" in prompt.lower() or "Purposivist" in prompt
         assert "absurdity" in prompt.lower() or "Absurdity" in prompt
@@ -57,9 +58,33 @@ class TestParseOutput:
 class TestMergeSelfConsistent:
     def test_majority_vote_keeps_consensus(self):
         runs = [
-            [{"id": "su-001", "tier": "T0", "text": "No multi-user auth", "enforcement": "block", "canon": "textualist"}],
-            [{"id": "su-001", "tier": "T0", "text": "No multi-user auth", "enforcement": "block", "canon": "textualist"}],
-            [{"id": "su-001", "tier": "T1", "text": "No multi-user auth", "enforcement": "review", "canon": "textualist"}],
+            [
+                {
+                    "id": "su-001",
+                    "tier": "T0",
+                    "text": "No multi-user auth",
+                    "enforcement": "block",
+                    "canon": "textualist",
+                }
+            ],
+            [
+                {
+                    "id": "su-001",
+                    "tier": "T0",
+                    "text": "No multi-user auth",
+                    "enforcement": "block",
+                    "canon": "textualist",
+                }
+            ],
+            [
+                {
+                    "id": "su-001",
+                    "tier": "T1",
+                    "text": "No multi-user auth",
+                    "enforcement": "review",
+                    "canon": "textualist",
+                }
+            ],
         ]
         merged = merge_self_consistent(runs)
         su001 = [i for i in merged if i["id"] == "su-001"]
@@ -70,8 +95,10 @@ class TestMergeSelfConsistent:
         runs = [
             [{"id": "su-001", "tier": "T0", "text": "A", "enforcement": "block", "canon": "t"}],
             [{"id": "su-002", "tier": "T1", "text": "B", "enforcement": "review", "canon": "t"}],
-            [{"id": "su-001", "tier": "T0", "text": "A", "enforcement": "block", "canon": "t"},
-             {"id": "su-003", "tier": "T2", "text": "C", "enforcement": "warn", "canon": "t"}],
+            [
+                {"id": "su-001", "tier": "T0", "text": "A", "enforcement": "block", "canon": "t"},
+                {"id": "su-003", "tier": "T2", "text": "C", "enforcement": "warn", "canon": "t"},
+            ],
         ]
         merged = merge_self_consistent(runs)
         ids = {i["id"] for i in merged}

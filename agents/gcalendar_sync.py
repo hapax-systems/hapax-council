@@ -6,14 +6,14 @@ Usage:
     uv run python -m agents.gcalendar_sync --auto         # Incremental sync
     uv run python -m agents.gcalendar_sync --stats        # Show sync state
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, Field, computed_field
@@ -42,8 +42,10 @@ RAG_WINDOW_DAYS = 14
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class CalendarEvent(BaseModel):
     """A calendar event."""
+
     event_id: str
     summary: str
     start: str  # ISO datetime or date string
@@ -76,6 +78,7 @@ class CalendarEvent(BaseModel):
 
 class CalendarSyncState(BaseModel):
     """Persistent sync state."""
+
     sync_token: str = ""
     events: dict[str, CalendarEvent] = Field(default_factory=dict)
     last_full_sync: float = 0.0
@@ -84,6 +87,7 @@ class CalendarSyncState(BaseModel):
 
 
 # ── State Management ─────────────────────────────────────────────────────────
+
 
 def _load_state(path: Path = STATE_FILE) -> CalendarSyncState:
     """Load sync state from disk."""
@@ -104,6 +108,7 @@ def _save_state(state: CalendarSyncState, path: Path = STATE_FILE) -> None:
 
 
 # ── Event Formatting ─────────────────────────────────────────────────────────
+
 
 def _format_event_markdown(e: CalendarEvent) -> str:
     """Generate markdown file for a calendar event with YAML frontmatter."""
@@ -148,15 +153,17 @@ recurring: {str(e.recurring).lower()}
 # {e.summary}
 
 **When:** {start_display}
-**Attendees:** {', '.join(e.attendees) if e.attendees else 'none'}{location_line}{recurrence_line}{description_block}
+**Attendees:** {", ".join(e.attendees) if e.attendees else "none"}{location_line}{recurrence_line}{description_block}
 """
 
 
 # ── Calendar API Operations ──────────────────────────────────────────────────
 
+
 def _get_calendar_service():
     """Build authenticated Calendar API service."""
     from shared.google_auth import build_service
+
     return build_service("calendar", "v3", SCOPES)
 
 
@@ -198,22 +205,26 @@ def _full_sync(service, state: CalendarSyncState) -> int:
     """Full sync of calendar events within the time window."""
     log.info("Starting full calendar sync...")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     time_min = (now - timedelta(days=PAST_DAYS)).isoformat()
     time_max = (now + timedelta(days=FUTURE_DAYS)).isoformat()
 
     count = 0
     page_token = None
     while True:
-        resp = service.events().list(
-            calendarId="primary",
-            timeMin=time_min,
-            timeMax=time_max,
-            singleEvents=True,
-            orderBy="startTime",
-            maxResults=2500,
-            pageToken=page_token,
-        ).execute()
+        resp = (
+            service.events()
+            .list(
+                calendarId="primary",
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=2500,
+                pageToken=page_token,
+            )
+            .execute()
+        )
 
         for item in resp.get("items", []):
             event = _parse_api_event(item)
@@ -243,12 +254,16 @@ def _incremental_sync(service, state: CalendarSyncState) -> list[str]:
 
     while True:
         try:
-            resp = service.events().list(
-                calendarId="primary",
-                syncToken=sync_token if not page_token else None,
-                pageToken=page_token,
-                maxResults=2500,
-            ).execute()
+            resp = (
+                service.events()
+                .list(
+                    calendarId="primary",
+                    syncToken=sync_token if not page_token else None,
+                    pageToken=page_token,
+                    maxResults=2500,
+                )
+                .execute()
+            )
         except Exception as exc:
             if "410" in str(exc):
                 log.warning("Sync token expired — full sync required")
@@ -287,6 +302,7 @@ def _incremental_sync(service, state: CalendarSyncState) -> list[str]:
 
 # ── Behavioral Logging ───────────────────────────────────────────────────────
 
+
 def _log_change(event: CalendarEvent, change_type: str, extra: dict | None = None) -> None:
     """Append calendar change event to JSONL log."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -301,7 +317,7 @@ def _log_change(event: CalendarEvent, change_type: str, extra: dict | None = Non
             "recurring": event.recurring,
             **(extra or {}),
         },
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     with open(CHANGES_LOG, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry) + "\n")
@@ -310,11 +326,12 @@ def _log_change(event: CalendarEvent, change_type: str, extra: dict | None = Non
 
 # ── File Writing ─────────────────────────────────────────────────────────────
 
+
 def _write_upcoming_events(state: CalendarSyncState) -> int:
     """Write upcoming events as markdown to rag-sources/gcalendar/."""
     GCALENDAR_DIR.mkdir(parents=True, exist_ok=True)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now + timedelta(days=RAG_WINDOW_DAYS)
     written = 0
 
@@ -353,6 +370,7 @@ def _write_upcoming_events(state: CalendarSyncState) -> int:
 
 # ── Profiler Integration ─────────────────────────────────────────────────────
 
+
 def _generate_profile_facts(state: CalendarSyncState) -> list[dict]:
     """Generate deterministic profile facts from calendar state."""
     from collections import Counter
@@ -377,35 +395,41 @@ def _generate_profile_facts(state: CalendarSyncState) -> list[dict]:
 
     if event_count:
         weeks = max(1, (PAST_DAYS + FUTURE_DAYS) / 7)
-        facts.append({
-            "dimension": "work_patterns",
-            "key": "calendar_meeting_cadence",
-            "value": f"{event_count / weeks:.1f} meetings/week, {total_minutes / event_count:.0f} min avg",
-            "confidence": 0.95,
-            "source": source,
-            "evidence": f"Computed from {event_count} events over {PAST_DAYS + FUTURE_DAYS} day window",
-        })
+        facts.append(
+            {
+                "dimension": "work_patterns",
+                "key": "calendar_meeting_cadence",
+                "value": f"{event_count / weeks:.1f} meetings/week, {total_minutes / event_count:.0f} min avg",
+                "confidence": 0.95,
+                "source": source,
+                "evidence": f"Computed from {event_count} events over {PAST_DAYS + FUTURE_DAYS} day window",
+            }
+        )
 
     if attendee_counts:
         top = ", ".join(f"{email} ({n})" for email, n in attendee_counts.most_common(10))
-        facts.append({
-            "dimension": "communication_patterns",
-            "key": "calendar_frequent_attendees",
-            "value": top,
-            "confidence": 0.95,
-            "source": source,
-            "evidence": f"Top attendees across {event_count} events",
-        })
+        facts.append(
+            {
+                "dimension": "communication_patterns",
+                "key": "calendar_frequent_attendees",
+                "value": top,
+                "confidence": 0.95,
+                "source": source,
+                "evidence": f"Top attendees across {event_count} events",
+            }
+        )
 
     if recurring_names:
-        facts.append({
-            "dimension": "work_patterns",
-            "key": "calendar_recurring_commitments",
-            "value": ", ".join(recurring_names[:15]),
-            "confidence": 0.95,
-            "source": source,
-            "evidence": f"{len(recurring_names)} recurring events detected",
-        })
+        facts.append(
+            {
+                "dimension": "work_patterns",
+                "key": "calendar_recurring_commitments",
+                "value": ", ".join(recurring_names[:15]),
+                "confidence": 0.95,
+                "source": source,
+                "evidence": f"{len(recurring_names)} recurring events detected",
+            }
+        )
 
     # Behavioral patterns from changes log
     if CHANGES_LOG.exists():
@@ -420,14 +444,16 @@ def _generate_profile_facts(state: CalendarSyncState) -> list[dict]:
                 continue
         if total_changes:
             dist = ", ".join(f"{k} ({v})" for k, v in change_counts.most_common(5))
-            facts.append({
-                "dimension": "work_patterns",
-                "key": "calendar_change_patterns",
-                "value": f"{total_changes} changes: {dist}",
-                "confidence": 0.95,
-                "source": source,
-                "evidence": f"Accumulated from {total_changes} calendar change events",
-            })
+            facts.append(
+                {
+                    "dimension": "work_patterns",
+                    "key": "calendar_change_patterns",
+                    "value": f"{total_changes} changes: {dist}",
+                    "confidence": 0.95,
+                    "source": source,
+                    "evidence": f"Accumulated from {total_changes} calendar change events",
+                }
+            )
 
     return facts
 
@@ -446,10 +472,11 @@ def _write_profile_facts(state: CalendarSyncState) -> None:
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 
+
 def _print_stats(state: CalendarSyncState) -> None:
     """Print sync statistics."""
     total = len(state.events)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     upcoming = 0
     past = 0
@@ -468,11 +495,16 @@ def _print_stats(state: CalendarSyncState) -> None:
     print(f"Total events:    {total:,}")
     print(f"Upcoming:        {upcoming:,}")
     print(f"Past:            {past:,}")
-    print(f"Last full sync:  {datetime.fromtimestamp(state.last_full_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_full_sync else 'never'}")
-    print(f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}")
+    print(
+        f"Last full sync:  {datetime.fromtimestamp(state.last_full_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_full_sync else 'never'}"
+    )
+    print(
+        f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}"
+    )
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
+
 
 def run_auth() -> None:
     """Verify OAuth credentials work for Calendar."""
@@ -536,6 +568,7 @@ def run_stats() -> None:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Google Calendar RAG sync")

@@ -1,9 +1,10 @@
 """Tests for dev-story SQLite schema."""
+
 from __future__ import annotations
 
 import sqlite3
 
-from agents.dev_story.schema import create_tables, SCHEMA_VERSION
+from agents.dev_story.schema import SCHEMA_VERSION, create_tables
 
 
 def test_create_tables_creates_all_expected_tables():

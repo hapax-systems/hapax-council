@@ -1,7 +1,6 @@
 """Tests for session lifecycle acknowledgment events (chime or screen flash)."""
-from unittest.mock import MagicMock, patch, AsyncMock
 
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from agents.hapax_voice.config import VoiceConfig
 
@@ -24,9 +23,8 @@ class TestDeactivationChime:
         daemon.session.open(trigger="test")
 
         import asyncio
-        asyncio.get_event_loop().run_until_complete(
-            daemon._close_session(reason="test")
-        )
+
+        asyncio.get_event_loop().run_until_complete(daemon._close_session(reason="test"))
         mock_player.play.assert_called_with("deactivation")
 
     @patch("agents.hapax_voice.__main__._screen_flash")
@@ -35,7 +33,9 @@ class TestDeactivationChime:
     @patch("agents.hapax_voice.__main__.WakeWordDetector")
     @patch("agents.hapax_voice.__main__.HotkeyServer")
     @patch("agents.hapax_voice.__main__.ChimePlayer")
-    def test_chime_disabled_uses_screen_flash(self, MockChime, _hotkey, _ww, _tts, _audio, mock_flash):
+    def test_chime_disabled_uses_screen_flash(
+        self, MockChime, _hotkey, _ww, _tts, _audio, mock_flash
+    ):
         from agents.hapax_voice.__main__ import VoiceDaemon
 
         cfg = VoiceConfig(chime_enabled=False)
@@ -46,8 +46,7 @@ class TestDeactivationChime:
         daemon.session.open(trigger="test")
 
         import asyncio
-        asyncio.get_event_loop().run_until_complete(
-            daemon._close_session(reason="test")
-        )
+
+        asyncio.get_event_loop().run_until_complete(daemon._close_session(reason="test"))
         mock_player.play.assert_not_called()
         mock_flash.assert_called_with("deactivation")

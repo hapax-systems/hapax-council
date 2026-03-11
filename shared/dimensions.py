@@ -7,6 +7,7 @@ Each dimension defines its kind (trait vs behavioral), consumers
 (what agents act on it), producers (what writes to it), and whether
 the interview system can target it.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from typing import Literal
 @dataclass(frozen=True)
 class DimensionDef:
     """Definition of a profile dimension."""
+
     name: str
     kind: Literal["trait", "behavioral"]
     description: str
@@ -115,6 +117,7 @@ _BY_NAME: dict[str, DimensionDef] = {d.name: d for d in DIMENSIONS}
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def get_dimension(name: str) -> DimensionDef | None:
     """Look up a dimension by name. Returns None if not found."""

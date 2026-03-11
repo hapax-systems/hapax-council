@@ -1,5 +1,4 @@
 """Tests for shared.incidents."""
-import json
 
 from shared.incidents import IncidentPhase, IncidentTracker
 

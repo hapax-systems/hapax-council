@@ -2,33 +2,29 @@
 
 No LLM calls, no network. All tests use tmp_path and in-memory ZIPs.
 """
+
 import json
 import zipfile
 from pathlib import Path
 
 import pytest
 
+from agents.profiler_sources import (
+    read_llm_export,
+)
 from shared.llm_export_converter import (
     Conversation,
     ConvertResult,
     Message,
-    convert_export,
     conversation_to_markdown,
+    convert_export,
     parse_claude_zip,
     parse_gemini_zip,
     sanitize_filename,
 )
-from agents.profiler_sources import (
-    DiscoveredSources,
-    SourceChunk,
-    _short_path,
-    list_source_ids,
-    read_llm_export,
-    LLM_EXPORT_DIR,
-)
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _make_zip(tmp_path: Path, filename: str, files: dict[str, str]) -> Path:
     """Create a ZIP file with the given name→content mapping."""
@@ -40,9 +36,13 @@ def _make_zip(tmp_path: Path, filename: str, files: dict[str, str]) -> Path:
 
 
 def _make_claude_zip(tmp_path: Path, conversations: list[dict]) -> Path:
-    return _make_zip(tmp_path, "claude-export.zip", {
-        "conversations.json": json.dumps(conversations),
-    })
+    return _make_zip(
+        tmp_path,
+        "claude-export.zip",
+        {
+            "conversations.json": json.dumps(conversations),
+        },
+    )
 
 
 def _make_gemini_zip(tmp_path: Path, conv_files: dict[str, dict]) -> Path:
@@ -51,6 +51,7 @@ def _make_gemini_zip(tmp_path: Path, conv_files: dict[str, dict]) -> Path:
 
 
 # ── Data model tests ────────────────────────────────────────────────────────
+
 
 def test_message_defaults():
     msg = Message(role="user", content="Hello")
@@ -61,8 +62,7 @@ def test_message_defaults():
 
 
 def test_conversation_defaults():
-    conv = Conversation(id="abc", title="Test", platform="claude",
-                        created_at="", updated_at="")
+    conv = Conversation(id="abc", title="Test", platform="claude", created_at="", updated_at="")
     assert conv.messages == []
     assert conv.platform == "claude"
 
@@ -75,6 +75,7 @@ def test_convert_result_fields():
 
 
 # ── Filename sanitization tests ─────────────────────────────────────────────
+
 
 def test_sanitize_uuid_passthrough():
     assert sanitize_filename("abc-123-def") == "abc-123-def"
@@ -108,10 +109,14 @@ def test_sanitize_collapses_hyphens():
 
 # ── Markdown rendering tests ────────────────────────────────────────────────
 
+
 def test_markdown_basic_conversation():
     conv = Conversation(
-        id="test-1", title="Test Conv", platform="claude",
-        created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T01:00:00Z",
+        id="test-1",
+        title="Test Conv",
+        platform="claude",
+        created_at="2025-01-01T00:00:00Z",
+        updated_at="2025-01-01T01:00:00Z",
         messages=[
             Message(role="user", content="Hello"),
             Message(role="assistant", content="Hi there"),
@@ -130,8 +135,11 @@ def test_markdown_basic_conversation():
 
 def test_markdown_frontmatter_fields():
     conv = Conversation(
-        id="abc-123", title="My Chat", platform="gemini",
-        created_at="2025-06-15T10:00:00Z", updated_at="2025-06-15T11:00:00Z",
+        id="abc-123",
+        title="My Chat",
+        platform="gemini",
+        created_at="2025-06-15T10:00:00Z",
+        updated_at="2025-06-15T11:00:00Z",
         messages=[],
     )
     md = conversation_to_markdown(conv)
@@ -142,11 +150,13 @@ def test_markdown_frontmatter_fields():
 
 def test_markdown_with_attachments():
     conv = Conversation(
-        id="att-1", title="Attachments", platform="claude",
-        created_at="", updated_at="",
+        id="att-1",
+        title="Attachments",
+        platform="claude",
+        created_at="",
+        updated_at="",
         messages=[
-            Message(role="user", content="See file",
-                    attachments=["data.csv", "notes.txt"]),
+            Message(role="user", content="See file", attachments=["data.csv", "notes.txt"]),
         ],
     )
     md = conversation_to_markdown(conv)
@@ -157,11 +167,13 @@ def test_markdown_with_attachments():
 
 def test_markdown_with_timestamp():
     conv = Conversation(
-        id="ts-1", title="Timestamps", platform="claude",
-        created_at="", updated_at="",
+        id="ts-1",
+        title="Timestamps",
+        platform="claude",
+        created_at="",
+        updated_at="",
         messages=[
-            Message(role="user", content="Hello",
-                    timestamp="2025-01-01T00:00:00Z"),
+            Message(role="user", content="Hello", timestamp="2025-01-01T00:00:00Z"),
         ],
     )
     md = conversation_to_markdown(conv)
@@ -170,8 +182,11 @@ def test_markdown_with_timestamp():
 
 def test_markdown_special_chars_in_title():
     conv = Conversation(
-        id="sc-1", title='Title with "quotes" and stuff',
-        platform="gemini", created_at="", updated_at="",
+        id="sc-1",
+        title='Title with "quotes" and stuff',
+        platform="gemini",
+        created_at="",
+        updated_at="",
         messages=[],
     )
     md = conversation_to_markdown(conv)
@@ -180,17 +195,23 @@ def test_markdown_special_chars_in_title():
 
 # ── Claude parser tests ─────────────────────────────────────────────────────
 
+
 def test_claude_minimal(tmp_path):
-    zp = _make_claude_zip(tmp_path, [{
-        "uuid": "conv-1",
-        "name": "Test Chat",
-        "created_at": "2025-01-01T00:00:00Z",
-        "updated_at": "2025-01-01T01:00:00Z",
-        "chat_messages": [
-            {"sender": "user", "text": "Hello", "created_at": "2025-01-01T00:00:00Z"},
-            {"sender": "assistant", "text": "Hi", "created_at": "2025-01-01T00:01:00Z"},
+    zp = _make_claude_zip(
+        tmp_path,
+        [
+            {
+                "uuid": "conv-1",
+                "name": "Test Chat",
+                "created_at": "2025-01-01T00:00:00Z",
+                "updated_at": "2025-01-01T01:00:00Z",
+                "chat_messages": [
+                    {"sender": "user", "text": "Hello", "created_at": "2025-01-01T00:00:00Z"},
+                    {"sender": "assistant", "text": "Hi", "created_at": "2025-01-01T00:01:00Z"},
+                ],
+            }
         ],
-    }])
+    )
     convs = parse_claude_zip(zp)
     assert len(convs) == 1
     assert convs[0].id == "conv-1"
@@ -203,37 +224,47 @@ def test_claude_minimal(tmp_path):
 
 def test_claude_human_sender(tmp_path):
     """Older Claude exports use 'human' instead of 'user'."""
-    zp = _make_claude_zip(tmp_path, [{
-        "uuid": "conv-2",
-        "name": "Old Export",
-        "created_at": "2024-01-01T00:00:00Z",
-        "updated_at": "2024-01-01T01:00:00Z",
-        "chat_messages": [
-            {"sender": "human", "text": "Hello old format"},
+    zp = _make_claude_zip(
+        tmp_path,
+        [
+            {
+                "uuid": "conv-2",
+                "name": "Old Export",
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T01:00:00Z",
+                "chat_messages": [
+                    {"sender": "human", "text": "Hello old format"},
+                ],
+            }
         ],
-    }])
+    )
     convs = parse_claude_zip(zp)
     assert convs[0].messages[0].role == "user"
     assert convs[0].messages[0].content == "Hello old format"
 
 
 def test_claude_with_attachments(tmp_path):
-    zp = _make_claude_zip(tmp_path, [{
-        "uuid": "conv-3",
-        "name": "Attachments",
-        "created_at": "",
-        "updated_at": "",
-        "chat_messages": [
+    zp = _make_claude_zip(
+        tmp_path,
+        [
             {
-                "sender": "user",
-                "text": "Check this file",
-                "attachments": [
-                    {"file_name": "report.pdf"},
-                    {"file_name": "data.csv"},
+                "uuid": "conv-3",
+                "name": "Attachments",
+                "created_at": "",
+                "updated_at": "",
+                "chat_messages": [
+                    {
+                        "sender": "user",
+                        "text": "Check this file",
+                        "attachments": [
+                            {"file_name": "report.pdf"},
+                            {"file_name": "data.csv"},
+                        ],
+                    },
                 ],
-            },
+            }
         ],
-    }])
+    )
     convs = parse_claude_zip(zp)
     assert convs[0].messages[0].attachments == ["report.pdf", "data.csv"]
 
@@ -245,12 +276,17 @@ def test_claude_empty_export(tmp_path):
 
 
 def test_claude_missing_fields(tmp_path):
-    zp = _make_claude_zip(tmp_path, [{
-        "uuid": "conv-4",
-        "chat_messages": [
-            {"sender": "user", "text": "Minimal"},
+    zp = _make_claude_zip(
+        tmp_path,
+        [
+            {
+                "uuid": "conv-4",
+                "chat_messages": [
+                    {"sender": "user", "text": "Minimal"},
+                ],
+            }
         ],
-    }])
+    )
     convs = parse_claude_zip(zp)
     assert len(convs) == 1
     assert convs[0].title == "Untitled"
@@ -258,16 +294,21 @@ def test_claude_missing_fields(tmp_path):
 
 
 def test_claude_skips_empty_text(tmp_path):
-    zp = _make_claude_zip(tmp_path, [{
-        "uuid": "conv-5",
-        "name": "Empty msgs",
-        "created_at": "",
-        "updated_at": "",
-        "chat_messages": [
-            {"sender": "user", "text": ""},
-            {"sender": "assistant", "text": "Real answer"},
+    zp = _make_claude_zip(
+        tmp_path,
+        [
+            {
+                "uuid": "conv-5",
+                "name": "Empty msgs",
+                "created_at": "",
+                "updated_at": "",
+                "chat_messages": [
+                    {"sender": "user", "text": ""},
+                    {"sender": "assistant", "text": "Real answer"},
+                ],
+            }
         ],
-    }])
+    )
     convs = parse_claude_zip(zp)
     assert len(convs[0].messages) == 1
     assert convs[0].messages[0].role == "assistant"
@@ -281,19 +322,23 @@ def test_claude_no_conversations_json(tmp_path):
 
 # ── Gemini parser tests ──────────────────────────────────────────────────────
 
+
 def test_gemini_basic(tmp_path):
-    zp = _make_gemini_zip(tmp_path, {
-        "Takeout/Gemini/conversation1.json": {
-            "id": "gem-1",
-            "title": "Gemini Chat",
-            "create_time": "2025-02-01T00:00:00Z",
-            "update_time": "2025-02-01T01:00:00Z",
-            "messages": [
-                {"author": "user", "content": "Hello Gemini"},
-                {"author": "model", "content": "Hello! How can I help?"},
-            ],
+    zp = _make_gemini_zip(
+        tmp_path,
+        {
+            "Takeout/Gemini/conversation1.json": {
+                "id": "gem-1",
+                "title": "Gemini Chat",
+                "create_time": "2025-02-01T00:00:00Z",
+                "update_time": "2025-02-01T01:00:00Z",
+                "messages": [
+                    {"author": "user", "content": "Hello Gemini"},
+                    {"author": "model", "content": "Hello! How can I help?"},
+                ],
+            },
         },
-    })
+    )
     convs = parse_gemini_zip(zp)
     assert len(convs) == 1
     assert convs[0].platform == "gemini"
@@ -304,15 +349,18 @@ def test_gemini_basic(tmp_path):
 
 
 def test_gemini_with_parts(tmp_path):
-    zp = _make_gemini_zip(tmp_path, {
-        "Takeout/Gemini/conv2.json": {
-            "id": "gem-2",
-            "title": "Parts Format",
-            "messages": [
-                {"author": "user", "parts": [{"text": "Multi"}, {"text": "part"}]},
-            ],
+    zp = _make_gemini_zip(
+        tmp_path,
+        {
+            "Takeout/Gemini/conv2.json": {
+                "id": "gem-2",
+                "title": "Parts Format",
+                "messages": [
+                    {"author": "user", "parts": [{"text": "Multi"}, {"text": "part"}]},
+                ],
+            },
         },
-    })
+    )
     convs = parse_gemini_zip(zp)
     assert convs[0].messages[0].content == "Multi part"
 
@@ -324,30 +372,39 @@ def test_gemini_empty_zip(tmp_path):
 
 
 def test_gemini_multiple_files(tmp_path):
-    zp = _make_gemini_zip(tmp_path, {
-        "Takeout/Gemini/conv1.json": {
-            "id": "g1", "title": "First",
-            "messages": [{"author": "user", "content": "A"}],
+    zp = _make_gemini_zip(
+        tmp_path,
+        {
+            "Takeout/Gemini/conv1.json": {
+                "id": "g1",
+                "title": "First",
+                "messages": [{"author": "user", "content": "A"}],
+            },
+            "Takeout/Gemini/conv2.json": {
+                "id": "g2",
+                "title": "Second",
+                "messages": [{"author": "user", "content": "B"}],
+            },
         },
-        "Takeout/Gemini/conv2.json": {
-            "id": "g2", "title": "Second",
-            "messages": [{"author": "user", "content": "B"}],
-        },
-    })
+    )
     convs = parse_gemini_zip(zp)
     assert len(convs) == 2
 
 
 def test_gemini_skips_empty_content(tmp_path):
-    zp = _make_gemini_zip(tmp_path, {
-        "Takeout/Gemini/conv.json": {
-            "id": "g3", "title": "Empty",
-            "messages": [
-                {"author": "user", "content": ""},
-                {"author": "model", "content": "Real answer"},
-            ],
+    zp = _make_gemini_zip(
+        tmp_path,
+        {
+            "Takeout/Gemini/conv.json": {
+                "id": "g3",
+                "title": "Empty",
+                "messages": [
+                    {"author": "user", "content": ""},
+                    {"author": "model", "content": "Real answer"},
+                ],
+            },
         },
-    })
+    )
     convs = parse_gemini_zip(zp)
     assert len(convs[0].messages) == 1
     assert convs[0].messages[0].role == "assistant"
@@ -355,16 +412,22 @@ def test_gemini_skips_empty_content(tmp_path):
 
 # ── End-to-end conversion tests ─────────────────────────────────────────────
 
+
 def test_e2e_files_written(tmp_path):
-    zp = _make_claude_zip(tmp_path, [{
-        "uuid": "e2e-1",
-        "name": "E2E Test",
-        "created_at": "2025-01-01T00:00:00Z",
-        "updated_at": "2025-01-01T01:00:00Z",
-        "chat_messages": [
-            {"sender": "user", "text": "Hello"},
+    zp = _make_claude_zip(
+        tmp_path,
+        [
+            {
+                "uuid": "e2e-1",
+                "name": "E2E Test",
+                "created_at": "2025-01-01T00:00:00Z",
+                "updated_at": "2025-01-01T01:00:00Z",
+                "chat_messages": [
+                    {"sender": "user", "text": "Hello"},
+                ],
+            }
         ],
-    }])
+    )
     out_dir = tmp_path / "output"
     result = convert_export(zp, "claude", out_dir)
     assert result.written == 1
@@ -379,15 +442,20 @@ def test_e2e_files_written(tmp_path):
 
 
 def test_e2e_idempotent(tmp_path):
-    zp = _make_claude_zip(tmp_path, [{
-        "uuid": "idem-1",
-        "name": "Idempotent",
-        "created_at": "",
-        "updated_at": "",
-        "chat_messages": [
-            {"sender": "user", "text": "Same content"},
+    zp = _make_claude_zip(
+        tmp_path,
+        [
+            {
+                "uuid": "idem-1",
+                "name": "Idempotent",
+                "created_at": "",
+                "updated_at": "",
+                "chat_messages": [
+                    {"sender": "user", "text": "Same content"},
+                ],
+            }
         ],
-    }])
+    )
     out_dir = tmp_path / "output"
     convert_export(zp, "claude", out_dir)
     convert_export(zp, "claude", out_dir)
@@ -397,22 +465,25 @@ def test_e2e_idempotent(tmp_path):
 
 
 def test_e2e_since_filter(tmp_path):
-    zp = _make_claude_zip(tmp_path, [
-        {
-            "uuid": "old-1",
-            "name": "Old Chat",
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-01T01:00:00Z",
-            "chat_messages": [{"sender": "user", "text": "Old"}],
-        },
-        {
-            "uuid": "new-1",
-            "name": "New Chat",
-            "created_at": "2025-06-01T00:00:00Z",
-            "updated_at": "2025-06-01T01:00:00Z",
-            "chat_messages": [{"sender": "user", "text": "New"}],
-        },
-    ])
+    zp = _make_claude_zip(
+        tmp_path,
+        [
+            {
+                "uuid": "old-1",
+                "name": "Old Chat",
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T01:00:00Z",
+                "chat_messages": [{"sender": "user", "text": "Old"}],
+            },
+            {
+                "uuid": "new-1",
+                "name": "New Chat",
+                "created_at": "2025-06-01T00:00:00Z",
+                "updated_at": "2025-06-01T01:00:00Z",
+                "chat_messages": [{"sender": "user", "text": "New"}],
+            },
+        ],
+    )
     out_dir = tmp_path / "output"
     result = convert_export(zp, "claude", out_dir, since="2025-01-01")
     assert result.written == 1
@@ -420,13 +491,18 @@ def test_e2e_since_filter(tmp_path):
 
 
 def test_e2e_dry_run(tmp_path):
-    zp = _make_claude_zip(tmp_path, [{
-        "uuid": "dry-1",
-        "name": "Dry Run",
-        "created_at": "",
-        "updated_at": "",
-        "chat_messages": [{"sender": "user", "text": "Test"}],
-    }])
+    zp = _make_claude_zip(
+        tmp_path,
+        [
+            {
+                "uuid": "dry-1",
+                "name": "Dry Run",
+                "created_at": "",
+                "updated_at": "",
+                "chat_messages": [{"sender": "user", "text": "Test"}],
+            }
+        ],
+    )
     out_dir = tmp_path / "output"
     result = convert_export(zp, "claude", out_dir, dry_run=True)
     assert result.written == 1
@@ -435,13 +511,18 @@ def test_e2e_dry_run(tmp_path):
 
 
 def test_e2e_empty_conversations_skipped(tmp_path):
-    zp = _make_claude_zip(tmp_path, [{
-        "uuid": "empty-1",
-        "name": "No Messages",
-        "created_at": "",
-        "updated_at": "",
-        "chat_messages": [],
-    }])
+    zp = _make_claude_zip(
+        tmp_path,
+        [
+            {
+                "uuid": "empty-1",
+                "name": "No Messages",
+                "created_at": "",
+                "updated_at": "",
+                "chat_messages": [],
+            }
+        ],
+    )
     out_dir = tmp_path / "output"
     result = convert_export(zp, "claude", out_dir)
     assert result.written == 0
@@ -455,17 +536,20 @@ def test_e2e_unknown_platform(tmp_path):
 
 
 def test_e2e_gemini(tmp_path):
-    zp = _make_gemini_zip(tmp_path, {
-        "Takeout/Gemini/conv.json": {
-            "id": "gem-e2e",
-            "title": "E2E Gemini",
-            "create_time": "2025-01-01T00:00:00Z",
-            "messages": [
-                {"author": "user", "content": "Hello"},
-                {"author": "model", "content": "World"},
-            ],
+    zp = _make_gemini_zip(
+        tmp_path,
+        {
+            "Takeout/Gemini/conv.json": {
+                "id": "gem-e2e",
+                "title": "E2E Gemini",
+                "create_time": "2025-01-01T00:00:00Z",
+                "messages": [
+                    {"author": "user", "content": "Hello"},
+                    {"author": "model", "content": "World"},
+                ],
+            },
         },
-    })
+    )
     out_dir = tmp_path / "output"
     result = convert_export(zp, "gemini", out_dir)
     assert result.written == 1
@@ -475,6 +559,7 @@ def test_e2e_gemini(tmp_path):
 
 
 # ── Profiler integration tests ──────────────────────────────────────────────
+
 
 def test_profiler_discovery_finds_md_files(tmp_path, monkeypatch):
     """Discovery should find .md files under LLM_EXPORT_DIR."""
@@ -552,6 +637,5 @@ def test_profiler_read_all_sources_skips_known(tmp_path, monkeypatch):
 
     sources = ps.discover_sources()
     sid = f"llm-export:{ps._short_path(md_path)}"
-    chunks = ps.read_all_sources(sources, source_filter="llm-export",
-                                  skip_source_ids={sid})
+    chunks = ps.read_all_sources(sources, source_filter="llm-export", skip_source_ids={sid})
     assert len(chunks) == 0

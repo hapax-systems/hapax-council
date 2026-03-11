@@ -3,9 +3,11 @@
 All endpoints return the latest cached data from the background
 refresh loop. Clients poll at matching cadence (30s fast, 5min slow).
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +49,7 @@ def _slow_response(data: Any) -> JSONResponse:
 
 # ── Fast cadence (30s) ───────────────────────────────────────────────────
 
+
 @router.get("/health")
 async def get_health():
     return _fast_response(_to_dict(cache.health))
@@ -55,7 +58,9 @@ async def get_health():
 @router.get("/health/history")
 async def get_health_history():
     import asyncio
+
     from cockpit.data.health import collect_health_history
+
     history = await asyncio.to_thread(collect_health_history)
     return _to_dict(history)
 
@@ -67,13 +72,16 @@ async def get_gpu():
 
 @router.get("/infrastructure")
 async def get_infrastructure():
-    return _fast_response({
-        "containers": _to_dict(cache.containers),
-        "timers": _to_dict(cache.timers),
-    })
+    return _fast_response(
+        {
+            "containers": _to_dict(cache.containers),
+            "timers": _to_dict(cache.timers),
+        }
+    )
 
 
 # ── Slow cadence (5min) ──────────────────────────────────────────────────
+
 
 @router.get("/briefing")
 async def get_briefing():
@@ -124,6 +132,7 @@ async def get_accommodations():
 async def workspace():
     """Latest workspace analysis (screen + camera + hardware state)."""
     import json
+
     state_path = Path.home() / ".local" / "share" / "hapax-voice" / "workspace_state.json"
     try:
         if state_path.exists():
@@ -157,14 +166,16 @@ async def get_manual():
                 return path.read_text(), path.stat().st_mtime
         # Last resort: generate from agent registry
         from cockpit.manual import generate_manual
+
         return generate_manual(), None
 
     result = await asyncio.to_thread(_read)
     content, mtime = result
     if content is None:
         return JSONResponse(status_code=404, content={"error": "operations manual not found"})
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     resp: dict = {"content": content}
     if mtime is not None:
-        resp["updated_at"] = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+        resp["updated_at"] = datetime.fromtimestamp(mtime, tz=UTC).isoformat()
     return resp

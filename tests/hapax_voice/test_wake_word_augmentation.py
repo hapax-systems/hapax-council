@@ -1,4 +1,5 @@
 """Tests for wake word audio augmentation pipeline."""
+
 from __future__ import annotations
 
 import sys
@@ -19,6 +20,7 @@ def test_build_augmentation_pipeline_returns_compose():
     pipeline = build_augmentation_pipeline()
     assert pipeline is not None
     from audiomentations import Compose
+
     assert isinstance(pipeline, Compose)
 
 
@@ -54,6 +56,7 @@ def test_augment_clips_zero_augments_returns_originals():
 def test_extract_features_accepts_augment_param():
     """extract_features_from_clips accepts augment_positive parameter."""
     import inspect
+
     from train_wake_word import extract_features_from_clips
 
     sig = inspect.signature(extract_features_from_clips)
@@ -64,6 +67,7 @@ def test_extract_features_accepts_augment_param():
 def test_train_model_accepts_real_weight_param():
     """train_model accepts real_sample_weight parameter."""
     import inspect
+
     from train_wake_word import train_model
 
     sig = inspect.signature(train_model)

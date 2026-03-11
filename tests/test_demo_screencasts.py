@@ -1,7 +1,7 @@
 """Tests for screencast recording pipeline."""
+
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -177,7 +177,7 @@ class TestExecuteStep:
         mock_page.keyboard.press.assert_called_once_with("Enter")
 
     async def test_unknown_action_skips(self, mock_page):
-        step = InteractionStep(action="click", target="")
+        InteractionStep(action="click", target="")
         step2 = MagicMock()
         step2.action = "unknown"
         # Just verify no exception
@@ -208,10 +208,13 @@ class TestRecordScreencasts:
         mock_convert.return_value = mp4_path
 
         specs = [
-            ("01-test", InteractionSpec(
-                url="http://localhost:5173/chat",
-                steps=[InteractionStep(action="wait", value="1000")],
-            )),
+            (
+                "01-test",
+                InteractionSpec(
+                    url="http://localhost:5173/chat",
+                    steps=[InteractionStep(action="wait", value="1000")],
+                ),
+            ),
         ]
 
         output_dir = tmp_path / "output"
@@ -252,10 +255,13 @@ class TestRecordScreencasts:
         mock_convert.return_value = mp4_path
 
         specs = [
-            ("01-chat", InteractionSpec(
-                url="http://localhost:5173/chat",
-                recipe="chat-health-query",
-            )),
+            (
+                "01-chat",
+                InteractionSpec(
+                    url="http://localhost:5173/chat",
+                    recipe="chat-health-query",
+                ),
+            ),
         ]
 
         output_dir = tmp_path / "output"

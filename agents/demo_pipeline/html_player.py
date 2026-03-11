@@ -1,10 +1,10 @@
 """Self-contained HTML player generation from DemoScript + screenshots + audio."""
+
 from __future__ import annotations
 
 import base64
 import logging
-import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -119,7 +119,6 @@ def generate_html_player(
     audience_label = audience_display_name or AUDIENCE_LABELS.get(
         script.audience, script.audience.replace("-", " ").title()
     )
-    title_subtitle = f"For {audience_label}" if audience_display_name else audience_label
 
     scenes: list[dict] = []
     scene_id = 0
@@ -209,7 +208,7 @@ def generate_html_player(
     )
 
     total_duration = sum(s["duration"] for s in scenes)
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # ── Render template ─────────────────────────────────────────
     env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=False)
@@ -231,5 +230,7 @@ def generate_html_player(
 
     if on_progress:
         on_progress(f"HTML player written to {output_path}")
-    log.info("HTML player written to %s (%d scenes, %.0fs)", output_path, len(scenes), total_duration)
+    log.info(
+        "HTML player written to %s (%d scenes, %.0fs)", output_path, len(scenes), total_duration
+    )
     return output_path

@@ -5,6 +5,7 @@ Keep Takeout includes JSON files per note with structure:
  isPinned, createdTimestampUsec, userEditedTimestampUsec,
  listContent: [{text, isChecked}]}
 """
+
 from __future__ import annotations
 
 import json

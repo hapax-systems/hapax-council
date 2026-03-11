@@ -238,7 +238,7 @@ Sync agents' `_generate_profile_facts()` gets validated — facts must target `k
 
 ### Fact Migration
 
-One-time migration script for `profiles/ryan.json`:
+One-time migration script for `profiles/operator-profile.json`:
 - Remap dimension names per table above
 - Split facts using key heuristics for dimensions that fan out (e.g., `workflow` → `work_patterns` + `tool_usage`)
 - Ambiguous keys default to the broader bucket
@@ -254,7 +254,7 @@ Key heuristic rules for `workflow` split:
 ### Profiler (`agents/profiler.py`)
 - Import dimensions from `shared/dimensions.py` instead of hardcoded list
 - Extraction prompt updated with 12 dimensions + descriptions + kind
-- Synthesis narrative distinguishes trait ("Ryan states...") from behavioral ("Observed pattern:...")
+- Synthesis narrative distinguishes trait ("the operator states...") from behavioral ("Observed pattern:...")
 - `flush_interview_facts()` insight-to-dimension mapping updated:
   - `workflow_gap` → `work_patterns`
   - `goal_refinement` → `values`
@@ -281,7 +281,7 @@ Key heuristic rules for `workflow` split:
 - Create `shared/dimensions.py` with `DimensionDef` registry
 - Add helper functions: `get_dimension_names()`, `get_dimension()`, `get_dimensions_by_kind()`, `validate_behavioral_write()`
 - Update `agents/profiler.py` to import from registry
-- Write migration script for `profiles/ryan.json`
+- Write migration script for `profiles/operator-profile.json`
 - Update tests
 - **Ship criterion**: all existing tests pass, profile loads correctly with new dimensions
 

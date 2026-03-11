@@ -1,4 +1,5 @@
 """Priority notification queue with TTL expiry."""
+
 from __future__ import annotations
 
 import logging

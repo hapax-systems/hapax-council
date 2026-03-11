@@ -1,21 +1,28 @@
 """Tests for self-critique and revision loop."""
+
 from __future__ import annotations
 
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from agents.demo_models import (
-    DemoScript, DemoScene, ScreenshotSpec, IllustrationSpec,
-    DemoQualityReport, QualityDimension,
+    DemoQualityReport,
+    DemoScene,
+    DemoScript,
+    IllustrationSpec,
+    QualityDimension,
+    ScreenshotSpec,
 )
 from agents.demo_pipeline.critique import (
-    critique_and_revise, _build_critique_prompt,
-    QUALITY_DIMENSIONS, MAX_ITERATIONS,
+    MAX_ITERATIONS,
+    QUALITY_DIMENSIONS,
+    _build_critique_prompt,
+    critique_and_revise,
 )
-
 
 # Use short target_seconds in tests so deterministic word count checks don't interfere
 # with LLM-agent-focused test logic
 TEST_TARGET_SECONDS = 7  # ~17 words target (85% = 14), met by test scripts (~15 words)
+
 
 def _make_script(title="Test Demo", scenes=2):
     return DemoScript(
@@ -37,9 +44,7 @@ def _make_script(title="Test Demo", scenes=2):
 
 def _make_passing_report():
     return DemoQualityReport(
-        dimensions=[
-            QualityDimension(name=d, passed=True) for d in QUALITY_DIMENSIONS
-        ],
+        dimensions=[QualityDimension(name=d, passed=True) for d in QUALITY_DIMENSIONS],
         overall_pass=True,
     )
 
@@ -48,9 +53,15 @@ def _make_failing_report(critical=1, important=0):
     dims = []
     for i, d in enumerate(QUALITY_DIMENSIONS):
         if i < critical:
-            dims.append(QualityDimension(name=d, passed=False, severity="critical", issues=["Fix this"]))
+            dims.append(
+                QualityDimension(name=d, passed=False, severity="critical", issues=["Fix this"])
+            )
         elif i < critical + important:
-            dims.append(QualityDimension(name=d, passed=False, severity="important", issues=["Improve this"]))
+            dims.append(
+                QualityDimension(
+                    name=d, passed=False, severity="important", issues=["Improve this"]
+                )
+            )
         else:
             dims.append(QualityDimension(name=d, passed=True))
     return DemoQualityReport(dimensions=dims, overall_pass=False, revision_notes="Fix issues")
@@ -59,18 +70,28 @@ def _make_failing_report(critical=1, important=0):
 class TestCritiquePrompt:
     def test_includes_all_dimensions(self):
         script = _make_script()
-        prompt = _build_critique_prompt(script, "research", {"avoid": ["jargon"]}, {"name": "Test"}, TEST_TARGET_SECONDS)
+        prompt = _build_critique_prompt(
+            script, "research", {"avoid": ["jargon"]}, {"name": "Test"}, TEST_TARGET_SECONDS
+        )
         for dim in QUALITY_DIMENSIONS:
             assert dim in prompt
 
     def test_includes_style_avoid(self):
         script = _make_script()
-        prompt = _build_critique_prompt(script, "research", {"avoid": ["jargon", "buzzwords"]}, {"name": "Test"}, TEST_TARGET_SECONDS)
+        prompt = _build_critique_prompt(
+            script,
+            "research",
+            {"avoid": ["jargon", "buzzwords"]},
+            {"name": "Test"},
+            TEST_TARGET_SECONDS,
+        )
         assert "jargon" in prompt
 
     def test_includes_target_duration(self):
         script = _make_script()
-        prompt = _build_critique_prompt(script, "research", {}, {"name": "Test"}, TEST_TARGET_SECONDS)
+        prompt = _build_critique_prompt(
+            script, "research", {}, {"name": "Test"}, TEST_TARGET_SECONDS
+        )
         assert f"{TEST_TARGET_SECONDS} seconds" in prompt
 
     def test_includes_framework_name(self):
@@ -80,7 +101,9 @@ class TestCritiquePrompt:
 
     def test_no_avoid_when_empty(self):
         script = _make_script()
-        prompt = _build_critique_prompt(script, "research", {}, {"name": "Test"}, TEST_TARGET_SECONDS)
+        prompt = _build_critique_prompt(
+            script, "research", {}, {"name": "Test"}, TEST_TARGET_SECONDS
+        )
         assert "Style AVOID list" not in prompt
 
 
@@ -95,7 +118,11 @@ class TestCritiqueAndRevise:
             mock_agent.run = AsyncMock(return_value=mock_critique_result)
 
             result_script, result_report = await critique_and_revise(
-                script, "research context", {}, {"name": "Test"}, TEST_TARGET_SECONDS,
+                script,
+                "research context",
+                {},
+                {"name": "Test"},
+                TEST_TARGET_SECONDS,
             )
             assert result_report.overall_pass
             assert result_script == script
@@ -117,13 +144,19 @@ class TestCritiqueAndRevise:
         mock_revision = MagicMock()
         mock_revision.output = revised_script
 
-        with patch("agents.demo_pipeline.critique.critique_agent") as mock_crit, \
-             patch("agents.demo_pipeline.critique.revision_agent") as mock_rev:
+        with (
+            patch("agents.demo_pipeline.critique.critique_agent") as mock_crit,
+            patch("agents.demo_pipeline.critique.revision_agent") as mock_rev,
+        ):
             mock_crit.run = AsyncMock(side_effect=[mock_critique_fail, mock_critique_pass])
             mock_rev.run = AsyncMock(return_value=mock_revision)
 
             result_script, result_report = await critique_and_revise(
-                script, "research", {}, {"name": "Test"}, TEST_TARGET_SECONDS,
+                script,
+                "research",
+                {},
+                {"name": "Test"},
+                TEST_TARGET_SECONDS,
             )
             assert result_script.title == "Revised Demo"
             assert mock_rev.run.call_count == 1
@@ -138,14 +171,20 @@ class TestCritiqueAndRevise:
         mock_revision = MagicMock()
         mock_revision.output = _make_script(title="Still bad")
 
-        with patch("agents.demo_pipeline.critique.critique_agent") as mock_crit, \
-             patch("agents.demo_pipeline.critique.revision_agent") as mock_rev:
+        with (
+            patch("agents.demo_pipeline.critique.critique_agent") as mock_crit,
+            patch("agents.demo_pipeline.critique.revision_agent") as mock_rev,
+        ):
             # All critiques fail, all revisions produce new versions
             mock_crit.run = AsyncMock(return_value=mock_critique)
             mock_rev.run = AsyncMock(return_value=mock_revision)
 
             result_script, result_report = await critique_and_revise(
-                script, "research", {}, {"name": "Test"}, TEST_TARGET_SECONDS,
+                script,
+                "research",
+                {},
+                {"name": "Test"},
+                TEST_TARGET_SECONDS,
             )
             # Should have MAX_ITERATIONS critique calls in the loop + 1 final
             assert mock_crit.run.call_count == MAX_ITERATIONS + 1
@@ -161,7 +200,11 @@ class TestCritiqueAndRevise:
             mock_crit.run = AsyncMock(return_value=mock_result)
 
             result_script, result_report = await critique_and_revise(
-                script, "research", {}, {"name": "Test"}, TEST_TARGET_SECONDS,
+                script,
+                "research",
+                {},
+                {"name": "Test"},
+                TEST_TARGET_SECONDS,
             )
             # 0 critical + 1 important = pass
             assert result_script == script
@@ -178,7 +221,11 @@ class TestCritiqueAndRevise:
             mock_crit.run = AsyncMock(return_value=mock_result)
 
             await critique_and_revise(
-                script, "research", {}, {"name": "Test"}, TEST_TARGET_SECONDS,
+                script,
+                "research",
+                {},
+                {"name": "Test"},
+                TEST_TARGET_SECONDS,
                 on_progress=messages.append,
             )
             assert len(messages) >= 2  # at least evaluation + passed messages
@@ -188,6 +235,7 @@ class TestCritiqueAndRevise:
 class TestDeterministicChecks:
     def test_word_count_passes_when_sufficient(self):
         from agents.demo_pipeline.critique import _check_word_count
+
         script = _make_script()
         # With 10 second target, need ~25 words; test script has enough
         result = _check_word_count(script, TEST_TARGET_SECONDS)
@@ -195,6 +243,7 @@ class TestDeterministicChecks:
 
     def test_word_count_fails_when_too_short(self):
         from agents.demo_pipeline.critique import _check_word_count
+
         script = _make_script()
         # With 600 second target, need ~1500 words; test script has ~20
         result = _check_word_count(script, 600)
@@ -204,6 +253,7 @@ class TestDeterministicChecks:
 
     def test_word_count_fails_when_too_long(self):
         from agents.demo_pipeline.critique import _check_word_count
+
         # Build a script with way too many words for a 5-second target
         long_narration = " ".join(["word"] * 200)
         script = DemoScript(
@@ -228,6 +278,7 @@ class TestDeterministicChecks:
 
     def test_visual_variety_passes_with_few_screenshots(self):
         from agents.demo_pipeline.critique import _check_visual_variety
+
         script = _make_script(scenes=2)
         result = _check_visual_variety(script)
         # 2 screenshots with unique URLs is fine (<=3, no dupes)
@@ -245,6 +296,7 @@ class TestDeterministicChecks:
         failing_report = _make_failing_report(critical=2)
 
         call_count = 0
+
         def make_critique_result():
             nonlocal call_count
             call_count += 1
@@ -259,13 +311,19 @@ class TestDeterministicChecks:
         mock_revision = MagicMock()
         mock_revision.output = script  # revision doesn't improve word count
 
-        with patch("agents.demo_pipeline.critique.critique_agent") as mock_crit, \
-             patch("agents.demo_pipeline.critique.revision_agent") as mock_rev:
+        with (
+            patch("agents.demo_pipeline.critique.critique_agent") as mock_crit,
+            patch("agents.demo_pipeline.critique.revision_agent") as mock_rev,
+        ):
             mock_crit.run = AsyncMock(side_effect=lambda _: make_critique_result())
             mock_rev.run = AsyncMock(return_value=mock_revision)
 
             _result_script, result_report = await critique_and_revise(
-                script, "research", {}, {"name": "Test"}, target_seconds,
+                script,
+                "research",
+                {},
+                {"name": "Test"},
+                target_seconds,
             )
 
             # LLM said pass, but deterministic word count should override
@@ -275,12 +333,14 @@ class TestDeterministicChecks:
 
     def test_intro_outro_passes_when_short(self):
         from agents.demo_pipeline.critique import _check_intro_outro_length
+
         script = _make_script()  # intro/outro are ~4 words each
         result = _check_intro_outro_length(script)
         assert result is None
 
     def test_intro_fails_when_too_long(self):
         from agents.demo_pipeline.critique import _check_intro_outro_length
+
         long_intro = " ".join(["word"] * 50)
         script = DemoScript(
             title="Long Intro",
@@ -303,6 +363,7 @@ class TestDeterministicChecks:
 
     def test_outro_fails_when_too_long(self):
         from agents.demo_pipeline.critique import _check_intro_outro_length
+
         long_outro = " ".join(["word"] * 50)
         script = DemoScript(
             title="Long Outro",
@@ -324,6 +385,7 @@ class TestDeterministicChecks:
 
     def test_both_intro_outro_fail(self):
         from agents.demo_pipeline.critique import _check_intro_outro_length
+
         long_text = " ".join(["word"] * 50)
         script = DemoScript(
             title="Both Long",
@@ -345,6 +407,7 @@ class TestDeterministicChecks:
 
     def test_visual_variety_fails_with_too_many_screenshots(self):
         from agents.demo_pipeline.critique import _check_visual_variety
+
         script = DemoScript(
             title="Many Screenshots",
             audience="family",
@@ -367,6 +430,7 @@ class TestDeterministicChecks:
     def test_visual_variety_fails_with_too_many_screencasts(self):
         from agents.demo_models import InteractionSpec, InteractionStep
         from agents.demo_pipeline.critique import _check_visual_variety
+
         script = DemoScript(
             title="Many Screencasts",
             audience="family",
@@ -392,6 +456,7 @@ class TestDeterministicChecks:
 
     def test_visual_variety_fails_screencast_without_interaction(self):
         from agents.demo_pipeline.critique import _check_visual_variety
+
         script = DemoScript(
             title="Missing Interaction",
             audience="family",
@@ -413,6 +478,7 @@ class TestDeterministicChecks:
     def test_visual_variety_allows_many_screenshots(self):
         """Multiple screenshots with diagram breaks are OK."""
         from agents.demo_pipeline.critique import _check_visual_variety
+
         script = DemoScript(
             title="Many Screenshots",
             audience="family",
@@ -455,24 +521,30 @@ class TestDeterministicChecks:
     def test_visual_variety_fails_route_concentration(self):
         """Too many screenshots of the same route produces identical images."""
         from agents.demo_pipeline.critique import _check_visual_variety
+
         # 6 scenes (triggers route concentration check), 5 on same route
         scenes = []
         for i in range(5):
-            scenes.append(DemoScene(
-                title=f"Dashboard {i+1}",
-                narration=f"Narration {i+1}",
-                duration_hint=10.0,
-                visual_type="screenshot",
-                screenshot=ScreenshotSpec(url="http://localhost:5173/"),
-            ))
+            scenes.append(
+                DemoScene(
+                    title=f"Dashboard {i + 1}",
+                    narration=f"Narration {i + 1}",
+                    duration_hint=10.0,
+                    visual_type="screenshot",
+                    screenshot=ScreenshotSpec(url="http://localhost:5173/"),
+                )
+            )
         # Add a diagram break to avoid consecutive-type trigger dominating
-        scenes.insert(2, DemoScene(
-            title="Diagram",
-            narration="Break",
-            duration_hint=10.0,
-            visual_type="diagram",
-            diagram_spec="A -> B",
-        ))
+        scenes.insert(
+            2,
+            DemoScene(
+                title="Diagram",
+                narration="Break",
+                duration_hint=10.0,
+                visual_type="diagram",
+                diagram_spec="A -> B",
+            ),
+        )
         script = DemoScript(
             title="Route Concentration",
             audience="family",
@@ -487,21 +559,57 @@ class TestDeterministicChecks:
     def test_visual_variety_allows_distributed_routes(self):
         """Screenshots distributed across routes are fine."""
         from agents.demo_pipeline.critique import _check_visual_variety
+
         scenes = [
-            DemoScene(title="Dash 1", narration="N1", duration_hint=10.0,
-                      visual_type="screenshot", screenshot=ScreenshotSpec(url="http://localhost:5173/")),
-            DemoScene(title="Diagram 1", narration="D1", duration_hint=10.0,
-                      visual_type="diagram", diagram_spec="A -> B"),
-            DemoScene(title="Chat 1", narration="N2", duration_hint=10.0,
-                      visual_type="screenshot", screenshot=ScreenshotSpec(url="http://localhost:5173/chat")),
-            DemoScene(title="Dash 2", narration="N3", duration_hint=10.0,
-                      visual_type="screenshot", screenshot=ScreenshotSpec(url="http://localhost:5173/")),
-            DemoScene(title="Diagram 2", narration="D2", duration_hint=10.0,
-                      visual_type="diagram", diagram_spec="C -> D"),
-            DemoScene(title="Demos 1", narration="N4", duration_hint=10.0,
-                      visual_type="screenshot", screenshot=ScreenshotSpec(url="http://localhost:5173/demos")),
-            DemoScene(title="Chat 2", narration="N5", duration_hint=10.0,
-                      visual_type="screenshot", screenshot=ScreenshotSpec(url="http://localhost:5173/chat")),
+            DemoScene(
+                title="Dash 1",
+                narration="N1",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/"),
+            ),
+            DemoScene(
+                title="Diagram 1",
+                narration="D1",
+                duration_hint=10.0,
+                visual_type="diagram",
+                diagram_spec="A -> B",
+            ),
+            DemoScene(
+                title="Chat 1",
+                narration="N2",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/chat"),
+            ),
+            DemoScene(
+                title="Dash 2",
+                narration="N3",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/"),
+            ),
+            DemoScene(
+                title="Diagram 2",
+                narration="D2",
+                duration_hint=10.0,
+                visual_type="diagram",
+                diagram_spec="C -> D",
+            ),
+            DemoScene(
+                title="Demos 1",
+                narration="N4",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/demos"),
+            ),
+            DemoScene(
+                title="Chat 2",
+                narration="N5",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/chat"),
+            ),
         ]
         script = DemoScript(
             title="Distributed Routes",
@@ -517,21 +625,44 @@ class TestDeterministicChecks:
 class TestDeterministicFixes:
     def test_route_redistribution(self):
         from agents.demo_pipeline.critique import _fix_route_concentration
+
         # 5 screenshots on /, 0 on /chat, 0 on /demos — should redistribute
         scenes = [
-            DemoScene(title=f"Dash {i+1}", narration=f"N{i+1}", duration_hint=10.0,
-                      visual_type="screenshot",
-                      screenshot=ScreenshotSpec(url="http://localhost:5173/"))
+            DemoScene(
+                title=f"Dash {i + 1}",
+                narration=f"N{i + 1}",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/"),
+            )
             for i in range(5)
         ]
         # Interleave diagrams
-        scenes.insert(1, DemoScene(title="D1", narration="D", duration_hint=10.0,
-                                   visual_type="diagram", diagram_spec="A -> B"))
-        scenes.insert(3, DemoScene(title="D2", narration="D", duration_hint=10.0,
-                                   visual_type="diagram", diagram_spec="C -> D"))
+        scenes.insert(
+            1,
+            DemoScene(
+                title="D1",
+                narration="D",
+                duration_hint=10.0,
+                visual_type="diagram",
+                diagram_spec="A -> B",
+            ),
+        )
+        scenes.insert(
+            3,
+            DemoScene(
+                title="D2",
+                narration="D",
+                duration_hint=10.0,
+                visual_type="diagram",
+                diagram_spec="C -> D",
+            ),
+        )
         script = DemoScript(
-            title="Test", audience="family",
-            intro_narration="Hi.", outro_narration="Bye.",
+            title="Test",
+            audience="family",
+            intro_narration="Hi.",
+            outro_narration="Bye.",
             scenes=scenes,
         )
         fixed = _fix_route_concentration(script)
@@ -550,13 +681,22 @@ class TestDeterministicFixes:
 
     def test_intro_outro_trim(self):
         from agents.demo_pipeline.critique import _fix_intro_outro
+
         long_intro = " ".join(["word"] * 50)
         long_outro = " ".join(["word"] * 50)
         script = DemoScript(
-            title="Test", audience="family",
-            intro_narration=long_intro, outro_narration=long_outro,
-            scenes=[DemoScene(title="S1", narration="N", duration_hint=10.0,
-                              screenshot=ScreenshotSpec(url="http://localhost:5173/"))],
+            title="Test",
+            audience="family",
+            intro_narration=long_intro,
+            outro_narration=long_outro,
+            scenes=[
+                DemoScene(
+                    title="S1",
+                    narration="N",
+                    duration_hint=10.0,
+                    screenshot=ScreenshotSpec(url="http://localhost:5173/"),
+                )
+            ],
         )
         fixed = _fix_intro_outro(script)
         assert len(fixed.intro_narration.split()) <= 35
@@ -564,24 +704,39 @@ class TestDeterministicFixes:
 
     def test_no_redistribution_when_balanced(self):
         from agents.demo_pipeline.critique import _fix_route_concentration
+
         scenes = [
-            DemoScene(title="Dash", narration="N", duration_hint=10.0,
-                      visual_type="screenshot",
-                      screenshot=ScreenshotSpec(url="http://localhost:5173/")),
-            DemoScene(title="Chat", narration="N", duration_hint=10.0,
-                      visual_type="screenshot",
-                      screenshot=ScreenshotSpec(url="http://localhost:5173/chat")),
-            DemoScene(title="Demos", narration="N", duration_hint=10.0,
-                      visual_type="screenshot",
-                      screenshot=ScreenshotSpec(url="http://localhost:5173/demos")),
+            DemoScene(
+                title="Dash",
+                narration="N",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/"),
+            ),
+            DemoScene(
+                title="Chat",
+                narration="N",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/chat"),
+            ),
+            DemoScene(
+                title="Demos",
+                narration="N",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/demos"),
+            ),
         ]
         script = DemoScript(
-            title="Test", audience="family",
-            intro_narration="Hi.", outro_narration="Bye.",
+            title="Test",
+            audience="family",
+            intro_narration="Hi.",
+            outro_narration="Bye.",
             scenes=scenes,
         )
         fixed = _fix_route_concentration(script)
-        for old, new in zip(script.scenes, fixed.scenes):
+        for old, new in zip(script.scenes, fixed.scenes, strict=False):
             if old.screenshot and new.screenshot:
                 assert old.screenshot.url == new.screenshot.url
 
@@ -590,6 +745,7 @@ class TestIllustrationCritique:
     def test_max_three_illustrations_enforced(self):
         """More than 3 illustration scenes are flagged."""
         from agents.demo_pipeline.critique import _check_visual_variety
+
         illus_spec = IllustrationSpec(
             prompt="A conceptual illustration",
             style="warm minimal illustration",
@@ -606,13 +762,15 @@ class TestIllustrationCritique:
         ]
         # Add enough screenshots to satisfy ratio
         for i in range(1, 5):
-            scenes.append(DemoScene(
-                title=f"Screenshot {i}",
-                narration=f"Screenshot narration {i}",
-                duration_hint=10.0,
-                visual_type="screenshot",
-                screenshot=ScreenshotSpec(url=f"http://localhost:5173/page{i}"),
-            ))
+            scenes.append(
+                DemoScene(
+                    title=f"Screenshot {i}",
+                    narration=f"Screenshot narration {i}",
+                    duration_hint=10.0,
+                    visual_type="screenshot",
+                    screenshot=ScreenshotSpec(url=f"http://localhost:5173/page{i}"),
+                )
+            )
         script = DemoScript(
             title="Too Many Illustrations",
             audience="family",
@@ -627,6 +785,7 @@ class TestIllustrationCritique:
     def test_illustration_without_spec_flagged(self):
         """Illustration scene without illustration spec is flagged."""
         from agents.demo_pipeline.critique import _check_visual_variety
+
         script = DemoScript(
             title="Missing Spec",
             audience="family",
@@ -649,6 +808,7 @@ class TestIllustrationCritique:
     def test_illustrations_dont_count_toward_screenshot_ratio(self):
         """Illustrations don't satisfy the 50% screenshot requirement."""
         from agents.demo_pipeline.critique import _check_visual_variety
+
         illus_spec = IllustrationSpec(
             prompt="A conceptual illustration",
             style="warm minimal illustration",
@@ -664,13 +824,15 @@ class TestIllustrationCritique:
             )
             for i in range(1, 4)  # 3 illustrations
         ]
-        scenes.append(DemoScene(
-            title="Screenshot 1",
-            narration="Screenshot narration",
-            duration_hint=10.0,
-            visual_type="screenshot",
-            screenshot=ScreenshotSpec(url="http://localhost:5173/"),
-        ))
+        scenes.append(
+            DemoScene(
+                title="Screenshot 1",
+                narration="Screenshot narration",
+                duration_hint=10.0,
+                visual_type="screenshot",
+                screenshot=ScreenshotSpec(url="http://localhost:5173/"),
+            )
+        )
         script = DemoScript(
             title="Mostly Illustrations",
             audience="family",

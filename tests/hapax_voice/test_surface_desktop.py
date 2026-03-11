@@ -14,12 +14,14 @@ Key implementation details (verified against source):
 - WindowInfo: app_class (not class_name), no workspace_name field
 - WorkspaceInfo: no active field
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import agents.hapax_voice.desktop_tools as desktop_mod
 from agents.hapax_voice.desktop_tools import (
     DESKTOP_TOOL_SCHEMAS,
     handle_confirm_open_app,
@@ -28,7 +30,6 @@ from agents.hapax_voice.desktop_tools import (
     handle_open_app,
     handle_switch_workspace,
 )
-import agents.hapax_voice.desktop_tools as desktop_mod
 
 
 def _make_params(arguments: dict):
@@ -318,7 +319,6 @@ class TestOpenAppConfirmation:
 class TestGetDesktopState:
     @pytest.mark.asyncio
     async def test_calls_result_callback(self):
-        from shared.hyprland import WindowInfo, WorkspaceInfo
 
         mock_ipc = MagicMock()
         mock_ipc.get_active_window.return_value = None
@@ -333,7 +333,7 @@ class TestGetDesktopState:
 
     @pytest.mark.asyncio
     async def test_result_contains_active_window_info(self):
-        from shared.hyprland import WindowInfo, WorkspaceInfo
+        from shared.hyprland import WindowInfo
 
         active_win = WindowInfo(
             address="0xdeadbeef",
@@ -341,7 +341,10 @@ class TestGetDesktopState:
             title="foot terminal",
             workspace_id=1,
             pid=1234,
-            x=0, y=0, width=800, height=600,
+            x=0,
+            y=0,
+            width=800,
+            height=600,
             floating=False,
             fullscreen=False,
         )
@@ -365,16 +368,30 @@ class TestGetDesktopState:
         from shared.hyprland import WindowInfo
 
         win1 = WindowInfo(
-            address="0x1", app_class="foot", title="terminal",
-            workspace_id=1, pid=100,
-            x=0, y=0, width=800, height=600,
-            floating=False, fullscreen=False,
+            address="0x1",
+            app_class="foot",
+            title="terminal",
+            workspace_id=1,
+            pid=100,
+            x=0,
+            y=0,
+            width=800,
+            height=600,
+            floating=False,
+            fullscreen=False,
         )
         win2 = WindowInfo(
-            address="0x2", app_class="google-chrome", title="Chrome",
-            workspace_id=2, pid=200,
-            x=0, y=0, width=1920, height=1080,
-            floating=False, fullscreen=False,
+            address="0x2",
+            app_class="google-chrome",
+            title="Chrome",
+            workspace_id=2,
+            pid=200,
+            x=0,
+            y=0,
+            width=1920,
+            height=1080,
+            floating=False,
+            fullscreen=False,
         )
         mock_ipc = MagicMock()
         mock_ipc.get_active_window.return_value = None
@@ -396,12 +413,18 @@ class TestGetDesktopState:
         from shared.hyprland import WorkspaceInfo
 
         ws1 = WorkspaceInfo(
-            id=1, name="1", window_count=3,
-            last_window_title="foot", monitor="DP-1",
+            id=1,
+            name="1",
+            window_count=3,
+            last_window_title="foot",
+            monitor="DP-1",
         )
         ws2 = WorkspaceInfo(
-            id=2, name="2", window_count=1,
-            last_window_title="Chrome", monitor="DP-1",
+            id=2,
+            name="2",
+            window_count=1,
+            last_window_title="Chrome",
+            monitor="DP-1",
         )
         mock_ipc = MagicMock()
         mock_ipc.get_active_window.return_value = None

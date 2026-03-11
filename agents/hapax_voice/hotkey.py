@@ -1,11 +1,12 @@
 """Hotkey activation via Unix domain socket."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Callable, Coroutine
 
 log = logging.getLogger(__name__)
 

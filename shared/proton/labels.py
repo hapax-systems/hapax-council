@@ -3,6 +3,7 @@
 Proton uses numeric label IDs and bitmask flags. This module
 maps them to human-readable names for output routing and display.
 """
+
 from __future__ import annotations
 
 # Proton system label IDs → human-readable names

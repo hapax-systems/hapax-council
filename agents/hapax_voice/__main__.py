@@ -1,4 +1,5 @@
 """Entry point for hapax-voice daemon."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,48 +10,61 @@ import subprocess
 import time
 from pathlib import Path
 
-from agents.hapax_voice.config import load_config
-from agents.hapax_voice.session import SessionManager
-from agents.hapax_voice.presence import PresenceDetector
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.hotkey import HotkeyServer
-from agents.hapax_voice.notification_queue import NotificationQueue
-from agents.hapax_voice.wake_word import WakeWordDetector
-from agents.hapax_voice.wake_word_porcupine import PorcupineWakeWord
-from agents.hapax_voice.screen_models import CameraConfig
-from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
-from agents.hapax_voice.ntfy_listener import subscribe_ntfy
-from agents.hapax_voice.tts import TTSManager
-from agents.hapax_voice.persona import format_notification, session_end_message
 from agents.hapax_voice.activity_mode import classify_activity_mode
 from agents.hapax_voice.audio_input import AudioInputStream
-from agents.hapax_voice.event_log import EventLog
-from agents.hapax_voice.tracing import VoiceTracer
 from agents.hapax_voice.chime_player import ChimePlayer
-from agents.hapax_voice.perception import PerceptionEngine
-from agents.hapax_voice.governor import PipelineGovernor
+from agents.hapax_voice.config import load_config
+from agents.hapax_voice.context_gate import ContextGate
+from agents.hapax_voice.event_log import EventLog
 from agents.hapax_voice.frame_gate import FrameGate
+from agents.hapax_voice.governor import PipelineGovernor
+from agents.hapax_voice.hotkey import HotkeyServer
+from agents.hapax_voice.notification_queue import NotificationQueue
+from agents.hapax_voice.ntfy_listener import subscribe_ntfy
+from agents.hapax_voice.perception import PerceptionEngine
+from agents.hapax_voice.persona import format_notification, session_end_message
+from agents.hapax_voice.presence import PresenceDetector
+from agents.hapax_voice.screen_models import CameraConfig
+from agents.hapax_voice.session import SessionManager
+from agents.hapax_voice.tracing import VoiceTracer
+from agents.hapax_voice.tts import TTSManager
+from agents.hapax_voice.wake_word import WakeWordDetector
+from agents.hapax_voice.wake_word_porcupine import PorcupineWakeWord
+from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
 
 log = logging.getLogger("hapax_voice")
 
 
 def _screen_flash(kind: str = "activation") -> None:
     """Brief desktop notification as visual acknowledgment — replaces audio chime."""
-    icons = {"activation": "audio-input-microphone", "deactivation": "microphone-sensitivity-muted",
-             "error": "dialog-error", "completion": "dialog-ok"}
-    labels = {"activation": "Listening…", "deactivation": "Session closed",
-              "error": "Error", "completion": "Done"}
+    icons = {
+        "activation": "audio-input-microphone",
+        "deactivation": "microphone-sensitivity-muted",
+        "error": "dialog-error",
+        "completion": "dialog-ok",
+    }
+    labels = {
+        "activation": "Listening…",
+        "deactivation": "Session closed",
+        "error": "Error",
+        "completion": "Done",
+    }
     try:
         subprocess.Popen(
-            ["notify-send", "--app-name=Hapax Voice",
-             f"--icon={icons.get(kind, 'dialog-information')}",
-             "--expire-time=1500",
-             "--transient",
-             labels.get(kind, kind)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [
+                "notify-send",
+                "--app-name=Hapax Voice",
+                f"--icon={icons.get(kind, 'dialog-information')}",
+                "--expire-time=1500",
+                "--transient",
+                labels.get(kind, kind),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         pass
+
 
 # How often to check for proactive delivery opportunities (seconds)
 _PROACTIVE_CHECK_INTERVAL_S = 30
@@ -63,8 +77,7 @@ _NTFY_TOPICS = ["hapax"]
 class VoiceDaemon:
     """Main daemon coordinating all voice subsystems."""
 
-    def __init__(self, cfg: "VoiceConfig | None" = None) -> None:
-        from agents.hapax_voice.config import VoiceConfig
+    def __init__(self, cfg: VoiceConfig | None = None) -> None:
 
         self.cfg = cfg if cfg is not None else load_config()
         self.session = SessionManager(silence_timeout_s=self.cfg.silence_timeout_s)
@@ -97,22 +110,33 @@ class VoiceDaemon:
         # Build camera configs from config
         cameras = []
         if self.cfg.webcam_enabled:
-            cameras.append(CameraConfig(
-                device=self.cfg.webcam_brio_device, role="operator",
-                width=self.cfg.webcam_capture_width,
-                height=self.cfg.webcam_capture_height,
-            ))
-            cameras.append(CameraConfig(
-                device=self.cfg.webcam_c920_device, role="hardware",
-                width=self.cfg.webcam_capture_width,
-                height=self.cfg.webcam_capture_height,
-            ))
+            cameras.append(
+                CameraConfig(
+                    device=self.cfg.webcam_brio_device,
+                    role="operator",
+                    width=self.cfg.webcam_capture_width,
+                    height=self.cfg.webcam_capture_height,
+                )
+            )
+            cameras.append(
+                CameraConfig(
+                    device=self.cfg.webcam_c920_device,
+                    role="hardware",
+                    width=self.cfg.webcam_capture_width,
+                    height=self.cfg.webcam_capture_height,
+                )
+            )
             if self.cfg.webcam_ir_device:
-                cameras.append(CameraConfig(
-                    device=self.cfg.webcam_ir_device, role="ir",
-                    width=340, height=340,
-                    input_format="rawvideo", pixel_format="gray",
-                ))
+                cameras.append(
+                    CameraConfig(
+                        device=self.cfg.webcam_ir_device,
+                        role="ir",
+                        width=340,
+                        height=340,
+                        input_format="rawvideo",
+                        pixel_format="gray",
+                    )
+                )
 
         self.workspace_monitor = WorkspaceMonitor(
             enabled=self.cfg.screen_monitor_enabled,
@@ -220,9 +244,9 @@ class VoiceDaemon:
         """
         import numpy as np
 
-        _wake_samples = getattr(self.wake_word, 'frame_length', 1280)
-        _WAKE_CHUNK = _wake_samples * 2   # samples × 2 bytes (int16)
-        _VAD_CHUNK = 512 * 2              # 512 samples × 2 bytes (int16)
+        _wake_samples = getattr(self.wake_word, "frame_length", 1280)
+        _WAKE_CHUNK = _wake_samples * 2  # samples × 2 bytes (int16)
+        _VAD_CHUNK = 512 * 2  # 512 samples × 2 bytes (int16)
         _wake_buf = bytearray()
         _vad_buf = bytearray()
 
@@ -300,6 +324,7 @@ class VoiceDaemon:
         LocalAudioTransport can claim the microphone exclusively.
         """
         from pipecat.pipeline.runner import PipelineRunner
+
         from agents.hapax_voice.pipeline import build_pipeline_task
 
         # Release mic so Pipecat can open its own input stream
@@ -446,7 +471,9 @@ class VoiceDaemon:
         self._acknowledge("deactivation")
         if self.session.is_active:
             duration = time.monotonic() - self.session._opened_at
-            self.event_log.emit("session_lifecycle", action="closed", reason=reason, duration_s=round(duration, 1))
+            self.event_log.emit(
+                "session_lifecycle", action="closed", reason=reason, duration_s=round(duration, 1)
+            )
         self.event_log.set_session_id(None)
         self.session.close(reason=reason)
 
@@ -467,11 +494,20 @@ class VoiceDaemon:
             response = await client.chat.completions.create(
                 model=self.workspace_monitor._analyzer.model,
                 messages=[
-                    {"role": "system", "content": "Extract all text from this image. Return plain text only."},
-                    {"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"}},
-                        {"type": "text", "text": "Extract text from this document/label."},
-                    ]},
+                    {
+                        "role": "system",
+                        "content": "Extract all text from this image. Return plain text only.",
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"},
+                            },
+                            {"type": "text", "text": "Extract text from this document/label."},
+                        ],
+                    },
                 ],
                 temperature=0.0,
                 max_tokens=1024,
@@ -511,9 +547,7 @@ class VoiceDaemon:
 
                 gate_result = self.gate.check()
                 if not gate_result.eligible:
-                    log.debug(
-                        "Proactive delivery blocked: %s", gate_result.reason
-                    )
+                    log.debug("Proactive delivery blocked: %s", gate_result.reason)
                     continue
 
                 # Deliver next notification
@@ -521,17 +555,13 @@ class VoiceDaemon:
                 if notification is None:
                     continue
 
-                spoken = format_notification(
-                    notification.title, notification.message
-                )
+                spoken = format_notification(notification.title, notification.message)
                 log.info("Delivering notification: %s", spoken)
                 try:
                     audio = self.tts.synthesize(spoken, use_case="notification")
                     # Audio playback will be handled by Pipecat transport
                     # when fully wired. For now, log that we produced audio.
-                    log.info(
-                        "TTS produced %d bytes for notification", len(audio)
-                    )
+                    log.info("TTS produced %d bytes for notification", len(audio))
                 except Exception:
                     log.exception("TTS failed for notification")
 
@@ -623,25 +653,15 @@ class VoiceDaemon:
         self.event_log.cleanup()
 
         # Start background tasks
+        self._background_tasks.append(asyncio.create_task(self._proactive_delivery_loop()))
         self._background_tasks.append(
-            asyncio.create_task(self._proactive_delivery_loop())
+            asyncio.create_task(subscribe_ntfy(_NTFY_BASE_URL, _NTFY_TOPICS, self._ntfy_callback))
         )
-        self._background_tasks.append(
-            asyncio.create_task(
-                subscribe_ntfy(_NTFY_BASE_URL, _NTFY_TOPICS, self._ntfy_callback)
-            )
-        )
-        self._background_tasks.append(
-            asyncio.create_task(self.workspace_monitor.run())
-        )
+        self._background_tasks.append(asyncio.create_task(self.workspace_monitor.run()))
         if self._audio_input.is_active:
-            self._background_tasks.append(
-                asyncio.create_task(self._audio_loop())
-            )
+            self._background_tasks.append(asyncio.create_task(self._audio_loop()))
 
-        self._background_tasks.append(
-            asyncio.create_task(self._perception_loop())
-        )
+        self._background_tasks.append(asyncio.create_task(self._perception_loop()))
 
         try:
             while self._running:

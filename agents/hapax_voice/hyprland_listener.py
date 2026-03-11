@@ -4,16 +4,17 @@ Connects to Hyprland Socket2 for instant window focus, open/close,
 and workspace change events. Fail-open: if the socket is unavailable,
 becomes a no-op (identical degradation to the old AT-SPI2 detector).
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
-from shared.hyprland import HyprlandIPC, WindowInfo
+from shared.hyprland import HyprlandIPC
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class FocusEvent:
     """A focus change event from Hyprland."""
+
     app_class: str
     title: str
     workspace_id: int
@@ -68,7 +70,11 @@ class HyprlandEventListener:
         return (event, data)
 
     def _handle_focus_event(
-        self, app_class: str, title: str, workspace_id: int, address: str,
+        self,
+        app_class: str,
+        title: str,
+        workspace_id: int,
+        address: str,
     ) -> None:
         """Process a focus change with debounce.
 
@@ -114,7 +120,8 @@ class HyprlandEventListener:
         try:
             loop = asyncio.get_running_loop()
             self._pending_timer = loop.call_later(
-                self.debounce_s, self._confirm_pending,
+                self.debounce_s,
+                self._confirm_pending,
             )
         except RuntimeError:
             # No event loop (e.g. synchronous tests) — fire immediately
@@ -137,7 +144,10 @@ class HyprlandEventListener:
             win = self._ipc.get_active_window()
             if win is not None:
                 self._handle_focus_event(
-                    win.app_class, win.title, win.workspace_id, address,
+                    win.app_class,
+                    win.title,
+                    win.workspace_id,
+                    address,
                 )
         elif event_name == "openwindow":
             # data: address,workspace_name,class,title

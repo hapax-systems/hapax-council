@@ -1,4 +1,5 @@
 """Tests for hapax_voice ntfy listener."""
+
 from __future__ import annotations
 
 import asyncio
@@ -16,13 +17,15 @@ from agents.hapax_voice.ntfy_listener import (
 
 
 def test_parse_message_event() -> None:
-    raw = json.dumps({
-        "event": "message",
-        "topic": "hapax",
-        "title": "Deploy",
-        "message": "staging is up",
-        "priority": 3,
-    })
+    raw = json.dumps(
+        {
+            "event": "message",
+            "topic": "hapax",
+            "title": "Deploy",
+            "message": "staging is up",
+            "priority": 3,
+        }
+    )
     result = parse_ntfy_event(raw)
     assert result is not None
     assert result.title == "Deploy"
@@ -54,21 +57,25 @@ async def test_subscribe_ntfy_dispatches_notifications(monkeypatch: pytest.Monke
     """Test that subscribe_ntfy parses JSON lines and calls the callback."""
     lines = [
         json.dumps({"event": "open", "topic": "alerts"}),
-        json.dumps({
-            "event": "message",
-            "topic": "alerts",
-            "title": "Build",
-            "message": "build passed",
-            "priority": 4,
-        }),
+        json.dumps(
+            {
+                "event": "message",
+                "topic": "alerts",
+                "title": "Build",
+                "message": "build passed",
+                "priority": 4,
+            }
+        ),
         json.dumps({"event": "keepalive"}),
-        json.dumps({
-            "event": "message",
-            "topic": "alerts",
-            "title": "Deploy",
-            "message": "deployed v2",
-            "priority": 2,
-        }),
+        json.dumps(
+            {
+                "event": "message",
+                "topic": "alerts",
+                "title": "Deploy",
+                "message": "deployed v2",
+                "priority": 2,
+            }
+        ),
     ]
 
     call_count = 0
@@ -121,14 +128,15 @@ async def test_subscribe_ntfy_dispatches_notifications(monkeypatch: pytest.Monke
 
     # Verify the URL used comma-separated topics + /json
     fake_client.stream.assert_called_with(
-        "GET", "http://localhost:8090/alerts/json", timeout=None,
+        "GET",
+        "http://localhost:8090/alerts/json",
+        timeout=None,
     )
 
 
 @pytest.mark.asyncio
 async def test_subscribe_ntfy_reconnects_on_connect_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that subscribe_ntfy reconnects with backoff on connection failure."""
-    attempt = 0
     sleep_delays: list[float] = []
 
     fake_client = AsyncMock()

@@ -12,6 +12,7 @@ Usage:
     uv run python -m agents.health_monitor --fix --yes         # Skip confirmation
     uv run python -m agents.health_monitor --verbose           # Show detail fields
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,21 +25,22 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
-from enum import Enum
+from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Coroutine
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 log = logging.getLogger("agents.health_monitor")
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
-class Status(str, Enum):
+
+class Status(StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     FAILED = "failed"
@@ -80,15 +82,28 @@ class HealthReport(BaseModel):
 # ── Constants ────────────────────────────────────────────────────────────────
 
 from shared.config import (
-    PROFILES_DIR, LLM_STACK_DIR, PASSWORD_STORE_DIR,
-    RAG_SOURCES_DIR, RAG_INGEST_STATE_DIR, AXIOM_AUDIT_DIR, CLAUDE_CONFIG_DIR, AI_AGENTS_DIR,
+    AI_AGENTS_DIR,
+    AXIOM_AUDIT_DIR,
+    CLAUDE_CONFIG_DIR,
+    LLM_STACK_DIR,
+    PASSWORD_STORE_DIR,
+    PROFILES_DIR,
+    RAG_INGEST_STATE_DIR,
+    RAG_SOURCES_DIR,
 )
+
 COMPOSE_FILE = LLM_STACK_DIR / "docker-compose.yml"
 AGENTS_COMPOSE_FILE = AI_AGENTS_DIR / "docker-compose.yml"
 PASSWORD_STORE = PASSWORD_STORE_DIR
 
 CORE_CONTAINERS = {"qdrant", "ollama", "postgres", "litellm"}
-REQUIRED_QDRANT_COLLECTIONS = {"documents", "samples", "claude-memory", "profile-facts", "axiom-precedents"}
+REQUIRED_QDRANT_COLLECTIONS = {
+    "documents",
+    "samples",
+    "claude-memory",
+    "profile-facts",
+    "axiom-precedents",
+}
 PASS_ENTRIES = [
     "api/anthropic",
     "api/google",
@@ -103,13 +118,16 @@ CHECK_REGISTRY: dict[str, list[Callable[[], Coroutine[None, None, list[CheckResu
 
 def check_group(group: str):
     """Decorator to register check functions under a group name."""
+
     def decorator(fn: Callable[[], Coroutine[None, None, list[CheckResult]]]):
         CHECK_REGISTRY.setdefault(group, []).append(fn)
         return fn
+
     return decorator
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
+
 
 def worst_status(*statuses: Status) -> Status:
     """Return the most severe status from the given statuses."""
@@ -137,7 +155,7 @@ async def run_cmd(
             stdout.decode("utf-8", errors="replace").strip(),
             stderr.decode("utf-8", errors="replace").strip(),
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()  # type: ignore[possibly-undefined]
         except ProcessLookupError:
@@ -151,6 +169,7 @@ async def run_cmd(
 
 async def http_get(url: str, timeout: float = 3.0) -> tuple[int, str]:
     """HTTP GET returning (status_code, body). Runs in executor to avoid blocking."""
+
     def _fetch() -> tuple[int, str]:
         req = Request(url)
         try:
@@ -160,6 +179,7 @@ async def http_get(url: str, timeout: float = 3.0) -> tuple[int, str]:
             return (0, str(e))
         except Exception as e:
             return (0, str(e))
+
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _fetch)
 
@@ -171,64 +191,97 @@ def _timed(start: float) -> int:
 
 # ── Docker checks ────────────────────────────────────────────────────────────
 
+
 @check_group("docker")
 async def check_docker_daemon() -> list[CheckResult]:
     t = time.monotonic()
     rc, out, err = await run_cmd(["docker", "info", "--format", "{{.ServerVersion}}"])
     if rc == 0 and out:
-        return [CheckResult(
-            name="docker.daemon", group="docker", status=Status.HEALTHY,
-            message=f"Docker {out}", duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="docker.daemon", group="docker", status=Status.FAILED,
-        message="Docker daemon unreachable",
-        detail=err or out,
-        remediation="sudo systemctl start docker",
-        duration_ms=_timed(t),
-    )]
+        return [
+            CheckResult(
+                name="docker.daemon",
+                group="docker",
+                status=Status.HEALTHY,
+                message=f"Docker {out}",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="docker.daemon",
+            group="docker",
+            status=Status.FAILED,
+            message="Docker daemon unreachable",
+            detail=err or out,
+            remediation="sudo systemctl start docker",
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 @check_group("docker")
 async def check_compose_file() -> list[CheckResult]:
     t = time.monotonic()
     if COMPOSE_FILE.is_file():
-        return [CheckResult(
-            name="docker.compose_file", group="docker", status=Status.HEALTHY,
-            message=str(COMPOSE_FILE), duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="docker.compose_file", group="docker", status=Status.FAILED,
-        message=f"Compose file missing: {COMPOSE_FILE}",
-        remediation=f"ls -la {COMPOSE_FILE.parent}/",
-        duration_ms=_timed(t),
-    )]
+        return [
+            CheckResult(
+                name="docker.compose_file",
+                group="docker",
+                status=Status.HEALTHY,
+                message=str(COMPOSE_FILE),
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="docker.compose_file",
+            group="docker",
+            status=Status.FAILED,
+            message=f"Compose file missing: {COMPOSE_FILE}",
+            remediation=f"ls -la {COMPOSE_FILE.parent}/",
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 @check_group("docker")
 async def check_docker_containers() -> list[CheckResult]:
     t = time.monotonic()
-    rc, out, err = await run_cmd([
-        "docker", "compose",
-        "-f", str(COMPOSE_FILE),
-        "ps", "--format", "json",
-    ])
+    rc, out, err = await run_cmd(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(COMPOSE_FILE),
+            "ps",
+            "--format",
+            "json",
+        ]
+    )
     if rc != 0:
-        return [CheckResult(
-            name="docker.containers", group="docker", status=Status.FAILED,
-            message="docker compose ps failed",
-            detail=err or out,
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="docker.containers",
+                group="docker",
+                status=Status.FAILED,
+                message="docker compose ps failed",
+                detail=err or out,
+                duration_ms=_timed(t),
+            )
+        ]
 
     results: list[CheckResult] = []
     if not out:
-        return [CheckResult(
-            name="docker.containers", group="docker", status=Status.FAILED,
-            message="No containers found",
-            remediation=f"cd {COMPOSE_FILE.parent} && docker compose up -d",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="docker.containers",
+                group="docker",
+                status=Status.FAILED,
+                message="No containers found",
+                remediation=f"cd {COMPOSE_FILE.parent} && docker compose up -d",
+                duration_ms=_timed(t),
+            )
+        ]
 
     # NDJSON: one JSON object per line
     for line in out.splitlines():
@@ -262,10 +315,16 @@ async def check_docker_containers() -> list[CheckResult]:
         if not running:
             remediation = f"cd {COMPOSE_FILE.parent} && docker compose up -d {shlex.quote(service)}"
 
-        results.append(CheckResult(
-            name=f"docker.{service}", group="docker", status=status,
-            message=msg, remediation=remediation, duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name=f"docker.{service}",
+                group="docker",
+                status=status,
+                message=msg,
+                remediation=remediation,
+                duration_ms=_timed(t),
+            )
+        )
 
     return results
 
@@ -275,24 +334,38 @@ async def check_agents_containers() -> list[CheckResult]:
     """Check ai-agents containers (cockpit-api, sync-pipeline)."""
     t = time.monotonic()
     if not AGENTS_COMPOSE_FILE.exists():
-        return [CheckResult(
-            name="docker.agents_compose", group="docker", status=Status.DEGRADED,
-            message=f"Compose file missing: {AGENTS_COMPOSE_FILE}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="docker.agents_compose",
+                group="docker",
+                status=Status.DEGRADED,
+                message=f"Compose file missing: {AGENTS_COMPOSE_FILE}",
+                duration_ms=_timed(t),
+            )
+        ]
 
-    rc, out, err = await run_cmd([
-        "docker", "compose",
-        "-f", str(AGENTS_COMPOSE_FILE),
-        "ps", "--format", "json",
-    ])
+    rc, out, err = await run_cmd(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(AGENTS_COMPOSE_FILE),
+            "ps",
+            "--format",
+            "json",
+        ]
+    )
     if rc != 0:
-        return [CheckResult(
-            name="docker.agents_containers", group="docker", status=Status.DEGRADED,
-            message="agents docker compose ps failed",
-            detail=err or out,
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="docker.agents_containers",
+                group="docker",
+                status=Status.DEGRADED,
+                message="agents docker compose ps failed",
+                detail=err or out,
+                duration_ms=_timed(t),
+            )
+        ]
 
     results: list[CheckResult] = []
     for line in (out or "").splitlines():
@@ -321,35 +394,56 @@ async def check_agents_containers() -> list[CheckResult]:
 
         remediation = None
         if not running:
-            remediation = f"cd {AGENTS_COMPOSE_FILE.parent} && docker compose up -d {shlex.quote(service)}"
+            remediation = (
+                f"cd {AGENTS_COMPOSE_FILE.parent} && docker compose up -d {shlex.quote(service)}"
+            )
 
-        results.append(CheckResult(
-            name=f"docker.{service}", group="docker", status=status,
-            message=msg, remediation=remediation, duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name=f"docker.{service}",
+                group="docker",
+                status=status,
+                message=msg,
+                remediation=remediation,
+                duration_ms=_timed(t),
+            )
+        )
 
     if not results:
-        return [CheckResult(
-            name="docker.agents_containers", group="docker", status=Status.DEGRADED,
-            message="No agents containers found",
-            remediation=f"cd {AGENTS_COMPOSE_FILE.parent} && docker compose up -d",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="docker.agents_containers",
+                group="docker",
+                status=Status.DEGRADED,
+                message="No agents containers found",
+                remediation=f"cd {AGENTS_COMPOSE_FILE.parent} && docker compose up -d",
+                duration_ms=_timed(t),
+            )
+        ]
 
     return results
 
 
 # ── GPU checks ───────────────────────────────────────────────────────────────
 
+
 async def _nvidia_smi(query: str) -> tuple[int, str, str]:
     """Try nvidia-smi, fall back to /usr/bin/nvidia-smi."""
-    rc, out, err = await run_cmd([
-        "nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits",
-    ])
+    rc, out, err = await run_cmd(
+        [
+            "nvidia-smi",
+            f"--query-gpu={query}",
+            "--format=csv,noheader,nounits",
+        ]
+    )
     if rc == 127:
-        rc, out, err = await run_cmd([
-            "/usr/bin/nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits",
-        ])
+        rc, out, err = await run_cmd(
+            [
+                "/usr/bin/nvidia-smi",
+                f"--query-gpu={query}",
+                "--format=csv,noheader,nounits",
+            ]
+        )
     return rc, out, err
 
 
@@ -361,17 +455,26 @@ async def check_gpu_available() -> list[CheckResult]:
         parts = [p.strip() for p in out.split(",")]
         driver = parts[0] if parts else "?"
         gpu_name = parts[1] if len(parts) > 1 else "?"
-        return [CheckResult(
-            name="gpu.available", group="gpu", status=Status.HEALTHY,
-            message=f"{gpu_name} (driver {driver})", duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="gpu.available", group="gpu", status=Status.FAILED,
-        message="GPU not detected",
-        detail=err or out,
-        remediation="nvidia-smi",
-        duration_ms=_timed(t),
-    )]
+        return [
+            CheckResult(
+                name="gpu.available",
+                group="gpu",
+                status=Status.HEALTHY,
+                message=f"{gpu_name} (driver {driver})",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="gpu.available",
+            group="gpu",
+            status=Status.FAILED,
+            message="GPU not detected",
+            detail=err or out,
+            remediation="nvidia-smi",
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 @check_group("gpu")
@@ -379,28 +482,41 @@ async def check_gpu_vram() -> list[CheckResult]:
     t = time.monotonic()
     rc, out, err = await _nvidia_smi("memory.used,memory.total,memory.free")
     if rc != 0:
-        return [CheckResult(
-            name="gpu.vram", group="gpu", status=Status.FAILED,
-            message="Cannot query VRAM", detail=err,
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="gpu.vram",
+                group="gpu",
+                status=Status.FAILED,
+                message="Cannot query VRAM",
+                detail=err,
+                duration_ms=_timed(t),
+            )
+        ]
 
     parts = [p.strip() for p in out.split(",")]
     if len(parts) < 3:
-        return [CheckResult(
-            name="gpu.vram", group="gpu", status=Status.DEGRADED,
-            message=f"Unexpected nvidia-smi output: {out}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="gpu.vram",
+                group="gpu",
+                status=Status.DEGRADED,
+                message=f"Unexpected nvidia-smi output: {out}",
+                duration_ms=_timed(t),
+            )
+        ]
 
     try:
         used, total, free = int(parts[0]), int(parts[1]), int(parts[2])
     except ValueError:
-        return [CheckResult(
-            name="gpu.vram", group="gpu", status=Status.DEGRADED,
-            message=f"Cannot parse VRAM values: {out}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="gpu.vram",
+                group="gpu",
+                status=Status.DEGRADED,
+                message=f"Cannot parse VRAM values: {out}",
+                duration_ms=_timed(t),
+            )
+        ]
 
     pct = (used / total * 100) if total > 0 else 0
     if pct < 90:
@@ -427,12 +543,19 @@ async def check_gpu_vram() -> list[CheckResult]:
     except Exception:
         pass
 
-    return [CheckResult(
-        name="gpu.vram", group="gpu", status=status,
-        message=msg, detail=detail,
-        remediation="docker exec ollama ollama stop <model>" if status != Status.HEALTHY else None,
-        duration_ms=_timed(t),
-    )]
+    return [
+        CheckResult(
+            name="gpu.vram",
+            group="gpu",
+            status=status,
+            message=msg,
+            detail=detail,
+            remediation="docker exec ollama ollama stop <model>"
+            if status != Status.HEALTHY
+            else None,
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 @check_group("gpu")
@@ -440,19 +563,28 @@ async def check_gpu_temperature() -> list[CheckResult]:
     t = time.monotonic()
     rc, out, err = await _nvidia_smi("temperature.gpu")
     if rc != 0:
-        return [CheckResult(
-            name="gpu.temperature", group="gpu", status=Status.FAILED,
-            message="Cannot query temperature", detail=err,
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="gpu.temperature",
+                group="gpu",
+                status=Status.FAILED,
+                message="Cannot query temperature",
+                detail=err,
+                duration_ms=_timed(t),
+            )
+        ]
     try:
         temp = int(out.strip())
     except ValueError:
-        return [CheckResult(
-            name="gpu.temperature", group="gpu", status=Status.DEGRADED,
-            message=f"Cannot parse temperature: {out}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="gpu.temperature",
+                group="gpu",
+                status=Status.DEGRADED,
+                message=f"Cannot parse temperature: {out}",
+                duration_ms=_timed(t),
+            )
+        ]
 
     if temp < 80:
         status = Status.HEALTHY
@@ -461,14 +593,19 @@ async def check_gpu_temperature() -> list[CheckResult]:
     else:
         status = Status.FAILED
 
-    return [CheckResult(
-        name="gpu.temperature", group="gpu", status=status,
-        message=f"{temp}°C",
-        duration_ms=_timed(t),
-    )]
+    return [
+        CheckResult(
+            name="gpu.temperature",
+            group="gpu",
+            status=status,
+            message=f"{temp}°C",
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 # ── Systemd checks ──────────────────────────────────────────────────────────
+
 
 @check_group("systemd")
 async def check_systemd_services() -> list[CheckResult]:
@@ -493,19 +630,28 @@ async def check_systemd_services() -> list[CheckResult]:
             enabled = out_en.strip() == "enabled"
 
             if not enabled:
-                results.append(CheckResult(
-                    name=f"systemd.{unit}", group="systemd",
-                    status=Status.FAILED if required else Status.HEALTHY,
-                    message=f"not enabled",
-                    remediation=fix_cmd,
-                    duration_ms=_timed(t),
-                ))
+                results.append(
+                    CheckResult(
+                        name=f"systemd.{unit}",
+                        group="systemd",
+                        status=Status.FAILED if required else Status.HEALTHY,
+                        message="not enabled",
+                        remediation=fix_cmd,
+                        duration_ms=_timed(t),
+                    )
+                )
                 continue
 
             # Parse next trigger time
-            rc_t, out_t, _ = await run_cmd([
-                "systemctl", "--user", "list-timers", unit, "--no-pager",
-            ])
+            rc_t, out_t, _ = await run_cmd(
+                [
+                    "systemctl",
+                    "--user",
+                    "list-timers",
+                    unit,
+                    "--no-pager",
+                ]
+            )
             if rc_t == 0 and out_t:
                 # Try to extract the NEXT column from the timer listing
                 lines = out_t.strip().splitlines()
@@ -522,12 +668,17 @@ async def check_systemd_services() -> list[CheckResult]:
             status = Status.HEALTHY
             msg = f"{out.strip() or 'inactive'} (optional)"
 
-        results.append(CheckResult(
-            name=f"systemd.{unit}", group="systemd",
-            status=status, message=msg, detail=detail,
-            remediation=fix_cmd if not active and required else None,
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name=f"systemd.{unit}",
+                group="systemd",
+                status=status,
+                message=msg,
+                detail=detail,
+                remediation=fix_cmd if not active and required else None,
+                duration_ms=_timed(t),
+            )
+        )
 
     return results
 
@@ -537,16 +688,20 @@ async def check_systemd_drift() -> list[CheckResult]:
     """Verify deployed systemd units match repo source."""
     t = time.monotonic()
     from shared.config import SYSTEMD_USER_DIR
+
     repo_units = AI_AGENTS_DIR / "systemd" / "units"
     deployed_dir = SYSTEMD_USER_DIR
 
     if not repo_units.exists():
-        return [CheckResult(
-            name="systemd.drift", group="systemd",
-            status=Status.HEALTHY,
-            message="No repo units directory found (skipped)",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="systemd.drift",
+                group="systemd",
+                status=Status.HEALTHY,
+                message="No repo units directory found (skipped)",
+                duration_ms=_timed(t),
+            )
+        ]
 
     drifted = []
     for unit_file in sorted(repo_units.iterdir()):
@@ -559,39 +714,55 @@ async def check_systemd_drift() -> list[CheckResult]:
             drifted.append(f"{unit_file.name}: content differs")
 
     if drifted:
-        return [CheckResult(
-            name="systemd.drift", group="systemd",
-            status=Status.DEGRADED,
-            message=f"Systemd drift: {', '.join(drifted[:3])}{'...' if len(drifted) > 3 else ''}",
-            remediation="cd ~/projects/ai-agents && make install-systemd",
+        return [
+            CheckResult(
+                name="systemd.drift",
+                group="systemd",
+                status=Status.DEGRADED,
+                message=f"Systemd drift: {', '.join(drifted[:3])}{'...' if len(drifted) > 3 else ''}",
+                remediation="cd ~/projects/ai-agents && make install-systemd",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="systemd.drift",
+            group="systemd",
+            status=Status.HEALTHY,
+            message=f"All {sum(1 for f in repo_units.iterdir() if f.suffix in ('.service', '.timer'))} units match deployed",
             duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="systemd.drift", group="systemd",
-        status=Status.HEALTHY,
-        message=f"All {sum(1 for f in repo_units.iterdir() if f.suffix in ('.service', '.timer'))} units match deployed",
-        duration_ms=_timed(t),
-    )]
+        )
+    ]
 
 
 # ── Qdrant checks ────────────────────────────────────────────────────────────
+
 
 @check_group("qdrant")
 async def check_qdrant_health() -> list[CheckResult]:
     t = time.monotonic()
     code, body = await http_get("http://localhost:6333/healthz")
     if code == 200:
-        return [CheckResult(
-            name="qdrant.health", group="qdrant", status=Status.HEALTHY,
-            message="Qdrant healthy", duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="qdrant.health", group="qdrant", status=Status.FAILED,
-        message=f"Qdrant unreachable (HTTP {code})",
-        detail=body[:200] if body else None,
-        remediation=f"cd {COMPOSE_FILE.parent} && docker compose up -d qdrant",
-        duration_ms=_timed(t),
-    )]
+        return [
+            CheckResult(
+                name="qdrant.health",
+                group="qdrant",
+                status=Status.HEALTHY,
+                message="Qdrant healthy",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="qdrant.health",
+            group="qdrant",
+            status=Status.FAILED,
+            message=f"Qdrant unreachable (HTTP {code})",
+            detail=body[:200] if body else None,
+            remediation=f"cd {COMPOSE_FILE.parent} && docker compose up -d qdrant",
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 @check_group("qdrant")
@@ -599,22 +770,30 @@ async def check_qdrant_collections() -> list[CheckResult]:
     t = time.monotonic()
     code, body = await http_get("http://localhost:6333/collections")
     if code != 200:
-        return [CheckResult(
-            name="qdrant.collections", group="qdrant", status=Status.FAILED,
-            message="Cannot list collections",
-            detail=body[:200] if body else None,
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="qdrant.collections",
+                group="qdrant",
+                status=Status.FAILED,
+                message="Cannot list collections",
+                detail=body[:200] if body else None,
+                duration_ms=_timed(t),
+            )
+        ]
 
     try:
         data = json.loads(body)
         existing = {c["name"] for c in data.get("result", {}).get("collections", [])}
     except (json.JSONDecodeError, KeyError):
-        return [CheckResult(
-            name="qdrant.collections", group="qdrant", status=Status.DEGRADED,
-            message="Cannot parse collections response",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="qdrant.collections",
+                group="qdrant",
+                status=Status.DEGRADED,
+                message="Cannot parse collections response",
+                duration_ms=_timed(t),
+            )
+        ]
 
     results: list[CheckResult] = []
     for coll in sorted(REQUIRED_QDRANT_COLLECTIONS):
@@ -629,26 +808,37 @@ async def check_qdrant_collections() -> list[CheckResult]:
                     detail = f"{points} points"
                 except (json.JSONDecodeError, KeyError):
                     pass
-            results.append(CheckResult(
-                name=f"qdrant.{coll}", group="qdrant", status=Status.HEALTHY,
-                message=f"exists", detail=detail, duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"qdrant.{coll}",
+                    group="qdrant",
+                    status=Status.HEALTHY,
+                    message="exists",
+                    detail=detail,
+                    duration_ms=_timed(t),
+                )
+            )
         else:
-            results.append(CheckResult(
-                name=f"qdrant.{coll}", group="qdrant", status=Status.FAILED,
-                message="missing",
-                remediation=(
-                    f"curl -X PUT http://localhost:6333/collections/{coll} "
-                    f"-H 'Content-Type: application/json' "
-                    f"-d '{{\"vectors\": {{\"size\": 768, \"distance\": \"Cosine\"}}}}'"
-                ),
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"qdrant.{coll}",
+                    group="qdrant",
+                    status=Status.FAILED,
+                    message="missing",
+                    remediation=(
+                        f"curl -X PUT http://localhost:6333/collections/{coll} "
+                        f"-H 'Content-Type: application/json' "
+                        f'-d \'{{"vectors": {{"size": 768, "distance": "Cosine"}}}}\''
+                    ),
+                    duration_ms=_timed(t),
+                )
+            )
 
     return results
 
 
 # ── Profile checks ───────────────────────────────────────────────────────────
+
 
 @check_group("profiles")
 async def check_profile_files() -> list[CheckResult]:
@@ -656,42 +846,51 @@ async def check_profile_files() -> list[CheckResult]:
     files = {
         ".state.json": Status.FAILED,
         "operator.json": Status.FAILED,
-        "ryan.json": Status.DEGRADED,
+        "operator-profile.json": Status.DEGRADED,
     }
     results: list[CheckResult] = []
 
     for filename, severity_if_missing in files.items():
         path = PROFILES_DIR / filename
         if not path.is_file():
-            results.append(CheckResult(
-                name=f"profiles.{filename}", group="profiles",
-                status=severity_if_missing,
-                message=f"missing: {path}",
-                remediation=(
-                    f"cd {PROFILES_DIR.parent} && eval \"$(<.envrc)\" && "
-                    "uv run python -m agents.profiler --auto"
-                ),
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"profiles.{filename}",
+                    group="profiles",
+                    status=severity_if_missing,
+                    message=f"missing: {path}",
+                    remediation=(
+                        f'cd {PROFILES_DIR.parent} && eval "$(<.envrc)" && '
+                        "uv run python -m agents.profiler --auto"
+                    ),
+                    duration_ms=_timed(t),
+                )
+            )
             continue
 
         # Validate JSON parse
         try:
             text = path.read_text()
             json.loads(text)
-            results.append(CheckResult(
-                name=f"profiles.{filename}", group="profiles",
-                status=Status.HEALTHY,
-                message=f"valid JSON ({len(text)} bytes)",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"profiles.{filename}",
+                    group="profiles",
+                    status=Status.HEALTHY,
+                    message=f"valid JSON ({len(text)} bytes)",
+                    duration_ms=_timed(t),
+                )
+            )
         except (json.JSONDecodeError, OSError) as e:
-            results.append(CheckResult(
-                name=f"profiles.{filename}", group="profiles",
-                status=Status.DEGRADED,
-                message=f"invalid JSON: {e}",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"profiles.{filename}",
+                    group="profiles",
+                    status=Status.DEGRADED,
+                    message=f"invalid JSON: {e}",
+                    duration_ms=_timed(t),
+                )
+            )
 
     return results
 
@@ -701,29 +900,35 @@ async def check_profile_staleness() -> list[CheckResult]:
     t = time.monotonic()
     state_file = PROFILES_DIR / ".state.json"
     if not state_file.is_file():
-        return [CheckResult(
-            name="profiles.staleness", group="profiles",
-            status=Status.FAILED,
-            message="No state file — cannot determine staleness",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="profiles.staleness",
+                group="profiles",
+                status=Status.FAILED,
+                message="No state file — cannot determine staleness",
+                duration_ms=_timed(t),
+            )
+        ]
 
     try:
         data = json.loads(state_file.read_text())
         last_run_str = data.get("last_run")
         if not last_run_str:
-            return [CheckResult(
-                name="profiles.staleness", group="profiles",
-                status=Status.DEGRADED,
-                message="No last_run timestamp in state file",
-                duration_ms=_timed(t),
-            )]
+            return [
+                CheckResult(
+                    name="profiles.staleness",
+                    group="profiles",
+                    status=Status.DEGRADED,
+                    message="No last_run timestamp in state file",
+                    duration_ms=_timed(t),
+                )
+            ]
 
         last_run = datetime.fromisoformat(last_run_str)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Make last_run tz-aware if it isn't
         if last_run.tzinfo is None:
-            last_run = last_run.replace(tzinfo=timezone.utc)
+            last_run = last_run.replace(tzinfo=UTC)
         age_hours = (now - last_run).total_seconds() / 3600
 
         if age_hours < 24:
@@ -737,25 +942,34 @@ async def check_profile_staleness() -> list[CheckResult]:
         remediation = None
         if status != Status.HEALTHY:
             remediation = (
-                f"cd {PROFILES_DIR.parent} && eval \"$(<.envrc)\" && "
+                f'cd {PROFILES_DIR.parent} && eval "$(<.envrc)" && '
                 "uv run python -m agents.profiler --auto"
             )
 
-        return [CheckResult(
-            name="profiles.staleness", group="profiles",
-            status=status, message=msg, remediation=remediation,
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="profiles.staleness",
+                group="profiles",
+                status=status,
+                message=msg,
+                remediation=remediation,
+                duration_ms=_timed(t),
+            )
+        ]
     except (json.JSONDecodeError, OSError, ValueError) as e:
-        return [CheckResult(
-            name="profiles.staleness", group="profiles",
-            status=Status.DEGRADED,
-            message=f"Cannot parse state: {e}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="profiles.staleness",
+                group="profiles",
+                status=Status.DEGRADED,
+                message=f"Cannot parse state: {e}",
+                duration_ms=_timed(t),
+            )
+        ]
 
 
 # ── Endpoint checks ─────────────────────────────────────────────────────────
+
 
 @check_group("endpoints")
 async def check_service_endpoints() -> list[CheckResult]:
@@ -771,12 +985,16 @@ async def check_service_endpoints() -> list[CheckResult]:
         code, body = await http_get(url, timeout=3.0)
         if 200 <= code < 400:
             return CheckResult(
-                name=name, group="endpoints", status=Status.HEALTHY,
-                message=f"HTTP {code}", duration_ms=_timed(t),
+                name=name,
+                group="endpoints",
+                status=Status.HEALTHY,
+                message=f"HTTP {code}",
+                duration_ms=_timed(t),
             )
         svc = name.split(".")[-1]
         return CheckResult(
-            name=name, group="endpoints",
+            name=name,
+            group="endpoints",
             status=Status.FAILED if is_core else Status.DEGRADED,
             message=f"unreachable (HTTP {code})" if code else "unreachable",
             detail=body[:200] if body and code == 0 else None,
@@ -790,23 +1008,30 @@ async def check_service_endpoints() -> list[CheckResult]:
 
 # ── Credential checks ───────────────────────────────────────────────────────
 
+
 @check_group("credentials")
 async def check_pass_store() -> list[CheckResult]:
     t = time.monotonic()
     if PASSWORD_STORE.is_dir():
-        return [CheckResult(
-            name="credentials.pass_store", group="credentials",
-            status=Status.HEALTHY,
-            message=str(PASSWORD_STORE),
+        return [
+            CheckResult(
+                name="credentials.pass_store",
+                group="credentials",
+                status=Status.HEALTHY,
+                message=str(PASSWORD_STORE),
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="credentials.pass_store",
+            group="credentials",
+            status=Status.FAILED,
+            message=f"Password store missing: {PASSWORD_STORE}",
+            remediation="pass init <gpg-id>",
             duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="credentials.pass_store", group="credentials",
-        status=Status.FAILED,
-        message=f"Password store missing: {PASSWORD_STORE}",
-        remediation="pass init <gpg-id>",
-        duration_ms=_timed(t),
-    )]
+        )
+    ]
 
 
 @check_group("credentials")
@@ -816,52 +1041,72 @@ async def check_pass_entries() -> list[CheckResult]:
     for entry in PASS_ENTRIES:
         gpg_file = PASSWORD_STORE / f"{entry}.gpg"
         if gpg_file.is_file():
-            results.append(CheckResult(
-                name=f"credentials.{entry}", group="credentials",
-                status=Status.HEALTHY,
-                message="present",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"credentials.{entry}",
+                    group="credentials",
+                    status=Status.HEALTHY,
+                    message="present",
+                    duration_ms=_timed(t),
+                )
+            )
         else:
-            results.append(CheckResult(
-                name=f"credentials.{entry}", group="credentials",
-                status=Status.FAILED,
-                message="missing",
-                remediation=f"pass insert {shlex.quote(entry)}",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"credentials.{entry}",
+                    group="credentials",
+                    status=Status.FAILED,
+                    message="missing",
+                    remediation=f"pass insert {shlex.quote(entry)}",
+                    duration_ms=_timed(t),
+                )
+            )
     return results
 
 
 # ── Disk checks ──────────────────────────────────────────────────────────────
+
 
 @check_group("disk")
 async def check_disk_usage() -> list[CheckResult]:
     t = time.monotonic()
     rc, out, err = await run_cmd(["df", "--output=pcent", "/home"])
     if rc != 0:
-        return [CheckResult(
-            name="disk.home", group="disk", status=Status.DEGRADED,
-            message="Cannot check disk usage", detail=err,
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="disk.home",
+                group="disk",
+                status=Status.DEGRADED,
+                message="Cannot check disk usage",
+                detail=err,
+                duration_ms=_timed(t),
+            )
+        ]
 
     lines = out.strip().splitlines()
     if len(lines) < 2:
-        return [CheckResult(
-            name="disk.home", group="disk", status=Status.DEGRADED,
-            message=f"Unexpected df output: {out}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="disk.home",
+                group="disk",
+                status=Status.DEGRADED,
+                message=f"Unexpected df output: {out}",
+                duration_ms=_timed(t),
+            )
+        ]
 
     try:
         pct = int(lines[-1].strip().rstrip("%"))
     except ValueError:
-        return [CheckResult(
-            name="disk.home", group="disk", status=Status.DEGRADED,
-            message=f"Cannot parse disk usage: {lines[-1]}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="disk.home",
+                group="disk",
+                status=Status.DEGRADED,
+                message=f"Cannot parse disk usage: {lines[-1]}",
+                duration_ms=_timed(t),
+            )
+        ]
 
     if pct < 85:
         status = Status.HEALTHY
@@ -870,12 +1115,16 @@ async def check_disk_usage() -> list[CheckResult]:
     else:
         status = Status.FAILED
 
-    return [CheckResult(
-        name="disk.home", group="disk", status=status,
-        message=f"/home {pct}% used",
-        remediation="docker system prune -f" if status != Status.HEALTHY else None,
-        duration_ms=_timed(t),
-    )]
+    return [
+        CheckResult(
+            name="disk.home",
+            group="disk",
+            status=status,
+            message=f"/home {pct}% used",
+            remediation="docker system prune -f" if status != Status.HEALTHY else None,
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 # ── Model checks ─────────────────────────────────────────────────────────────
@@ -894,12 +1143,16 @@ async def check_ollama_models() -> list[CheckResult]:
     t = time.monotonic()
     code, body = await http_get("http://localhost:11434/api/tags", timeout=5.0)
     if code != 200:
-        return [CheckResult(
-            name="models.ollama_api", group="models", status=Status.FAILED,
-            message="Cannot list Ollama models",
-            detail=body[:200] if body else None,
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="models.ollama_api",
+                group="models",
+                status=Status.FAILED,
+                message="Cannot list Ollama models",
+                detail=body[:200] if body else None,
+                duration_ms=_timed(t),
+            )
+        ]
 
     try:
         data = json.loads(body)
@@ -907,32 +1160,46 @@ async def check_ollama_models() -> list[CheckResult]:
         # Also keep full name:tag for exact matching
         pulled_full = {m["name"] for m in data.get("models", [])}
     except (json.JSONDecodeError, KeyError):
-        return [CheckResult(
-            name="models.ollama_api", group="models", status=Status.DEGRADED,
-            message="Cannot parse model list",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="models.ollama_api",
+                group="models",
+                status=Status.DEGRADED,
+                message="Cannot parse model list",
+                duration_ms=_timed(t),
+            )
+        ]
 
     results: list[CheckResult] = []
     for model in EXPECTED_OLLAMA_MODELS:
         base = model.split(":")[0]
         if model in pulled_full or base in pulled:
-            results.append(CheckResult(
-                name=f"models.{base}", group="models", status=Status.HEALTHY,
-                message="pulled", duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"models.{base}",
+                    group="models",
+                    status=Status.HEALTHY,
+                    message="pulled",
+                    duration_ms=_timed(t),
+                )
+            )
         else:
-            results.append(CheckResult(
-                name=f"models.{base}", group="models", status=Status.DEGRADED,
-                message="not pulled",
-                remediation=f"docker exec ollama ollama pull {shlex.quote(model)}",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"models.{base}",
+                    group="models",
+                    status=Status.DEGRADED,
+                    message="not pulled",
+                    remediation=f"docker exec ollama ollama pull {shlex.quote(model)}",
+                    duration_ms=_timed(t),
+                )
+            )
 
     return results
 
 
 # ── Auth validation checks ───────────────────────────────────────────────────
+
 
 @check_group("auth")
 async def check_litellm_auth() -> list[CheckResult]:
@@ -941,12 +1208,16 @@ async def check_litellm_auth() -> list[CheckResult]:
     # Try to list models via LiteLLM — requires valid auth
     api_key, _ = _get_secret("LITELLM_API_KEY", "litellm/master-key")
     if not api_key or api_key == "changeme":
-        return [CheckResult(
-            name="auth.litellm", group="auth", status=Status.DEGRADED,
-            message="LITELLM_API_KEY not available (env or pass)",
-            detail="Set via: export LITELLM_API_KEY=$(pass show litellm/master-key)",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="auth.litellm",
+                group="auth",
+                status=Status.DEGRADED,
+                message="LITELLM_API_KEY not available (env or pass)",
+                detail="Set via: export LITELLM_API_KEY=$(pass show litellm/master-key)",
+                duration_ms=_timed(t),
+            )
+        ]
 
     def _check() -> tuple[int, str]:
         req = Request(
@@ -967,26 +1238,38 @@ async def check_litellm_auth() -> list[CheckResult]:
     if code == 200:
         try:
             model_count = len(json.loads(body).get("data", []))
-            return [CheckResult(
-                name="auth.litellm", group="auth", status=Status.HEALTHY,
-                message=f"authenticated ({model_count} models)",
-                duration_ms=_timed(t),
-            )]
+            return [
+                CheckResult(
+                    name="auth.litellm",
+                    group="auth",
+                    status=Status.HEALTHY,
+                    message=f"authenticated ({model_count} models)",
+                    duration_ms=_timed(t),
+                )
+            ]
         except (json.JSONDecodeError, KeyError):
             pass
-        return [CheckResult(
-            name="auth.litellm", group="auth", status=Status.HEALTHY,
-            message="authenticated",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="auth.litellm",
+                group="auth",
+                status=Status.HEALTHY,
+                message="authenticated",
+                duration_ms=_timed(t),
+            )
+        ]
 
-    return [CheckResult(
-        name="auth.litellm", group="auth", status=Status.FAILED,
-        message=f"auth failed (HTTP {code})",
-        detail=body[:200] if body else None,
-        remediation="pass show litellm/master-key",
-        duration_ms=_timed(t),
-    )]
+    return [
+        CheckResult(
+            name="auth.litellm",
+            group="auth",
+            status=Status.FAILED,
+            message=f"auth failed (HTTP {code})",
+            detail=body[:200] if body else None,
+            remediation="pass show litellm/master-key",
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 @check_group("auth")
@@ -997,12 +1280,16 @@ async def check_langfuse_auth() -> list[CheckResult]:
     sk, _ = _get_secret("LANGFUSE_SECRET_KEY", "langfuse/secret-key")
 
     if not pk or not sk:
-        return [CheckResult(
-            name="auth.langfuse", group="auth", status=Status.DEGRADED,
-            message="Langfuse keys not available (env or pass)",
-            detail="Load via: eval \"$(<.envrc)\" in ai-agents dir",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="auth.langfuse",
+                group="auth",
+                status=Status.DEGRADED,
+                message="Langfuse keys not available (env or pass)",
+                detail='Load via: eval "$(<.envrc)" in ai-agents dir',
+                duration_ms=_timed(t),
+            )
+        ]
 
     import base64
 
@@ -1024,21 +1311,30 @@ async def check_langfuse_auth() -> list[CheckResult]:
     code, body = await loop.run_in_executor(None, _check)
 
     if code == 200:
-        return [CheckResult(
-            name="auth.langfuse", group="auth", status=Status.HEALTHY,
-            message="authenticated",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="auth.langfuse",
+                group="auth",
+                status=Status.HEALTHY,
+                message="authenticated",
+                duration_ms=_timed(t),
+            )
+        ]
 
-    return [CheckResult(
-        name="auth.langfuse", group="auth", status=Status.DEGRADED,
-        message=f"auth failed (HTTP {code})",
-        detail=body[:200] if body else None,
-        duration_ms=_timed(t),
-    )]
+    return [
+        CheckResult(
+            name="auth.langfuse",
+            group="auth",
+            status=Status.DEGRADED,
+            message=f"auth failed (HTTP {code})",
+            detail=body[:200] if body else None,
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 # ── Connectivity checks (multi-channel access) ──────────────────────────────
+
 
 @check_group("connectivity")
 async def check_tailscale() -> list[CheckResult]:
@@ -1048,46 +1344,62 @@ async def check_tailscale() -> list[CheckResult]:
     if rc != 0:
         if "not found" in (err or ""):
             # Tailscale not installed yet — planned infrastructure, not a failure
-            return [CheckResult(
-                name="connectivity.tailscale", group="connectivity",
-                status=Status.HEALTHY,
-                message="not installed (planned)",
+            return [
+                CheckResult(
+                    name="connectivity.tailscale",
+                    group="connectivity",
+                    status=Status.HEALTHY,
+                    message="not installed (planned)",
+                    duration_ms=_timed(t),
+                )
+            ]
+        return [
+            CheckResult(
+                name="connectivity.tailscale",
+                group="connectivity",
+                status=Status.DEGRADED,
+                message=f"tailscale error (rc={rc})",
+                detail=(err or out or "")[:200],
                 duration_ms=_timed(t),
-            )]
-        return [CheckResult(
-            name="connectivity.tailscale", group="connectivity",
-            status=Status.DEGRADED,
-            message=f"tailscale error (rc={rc})",
-            detail=(err or out or "")[:200],
-            duration_ms=_timed(t),
-        )]
+            )
+        ]
 
     try:
         import json as _json
+
         data = _json.loads(out)
         self_status = data.get("Self", {}).get("Online", False)
         peer_count = len([p for p in data.get("Peer", {}).values() if p.get("Online")])
         if self_status:
-            return [CheckResult(
-                name="connectivity.tailscale", group="connectivity",
-                status=Status.HEALTHY,
-                message=f"online, {peer_count} peer(s)",
+            return [
+                CheckResult(
+                    name="connectivity.tailscale",
+                    group="connectivity",
+                    status=Status.HEALTHY,
+                    message=f"online, {peer_count} peer(s)",
+                    duration_ms=_timed(t),
+                )
+            ]
+        return [
+            CheckResult(
+                name="connectivity.tailscale",
+                group="connectivity",
+                status=Status.DEGRADED,
+                message="tailscale offline",
+                remediation="sudo tailscale up",
                 duration_ms=_timed(t),
-            )]
-        return [CheckResult(
-            name="connectivity.tailscale", group="connectivity",
-            status=Status.DEGRADED,
-            message="tailscale offline",
-            remediation="sudo tailscale up",
-            duration_ms=_timed(t),
-        )]
+            )
+        ]
     except Exception as e:
-        return [CheckResult(
-            name="connectivity.tailscale", group="connectivity",
-            status=Status.DEGRADED,
-            message=f"tailscale status parse error: {e}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="connectivity.tailscale",
+                group="connectivity",
+                status=Status.DEGRADED,
+                message=f"tailscale status parse error: {e}",
+                duration_ms=_timed(t),
+            )
+        ]
 
 
 @check_group("connectivity")
@@ -1097,20 +1409,26 @@ async def check_ntfy() -> list[CheckResult]:
     ntfy_url = os.environ.get("NTFY_BASE_URL", "http://localhost:8090")
     code, body = await http_get(f"{ntfy_url}/v1/health", timeout=3.0)
     if 200 <= code < 400:
-        return [CheckResult(
-            name="connectivity.ntfy", group="connectivity",
-            status=Status.HEALTHY,
-            message=f"HTTP {code}",
+        return [
+            CheckResult(
+                name="connectivity.ntfy",
+                group="connectivity",
+                status=Status.HEALTHY,
+                message=f"HTTP {code}",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="connectivity.ntfy",
+            group="connectivity",
+            status=Status.DEGRADED,
+            message=f"ntfy unreachable (HTTP {code})" if code else "ntfy unreachable",
+            detail=body[:200] if body else None,
+            remediation=f"cd {COMPOSE_FILE.parent} && docker compose --profile full up -d ntfy",
             duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="connectivity.ntfy", group="connectivity",
-        status=Status.DEGRADED,
-        message=f"ntfy unreachable (HTTP {code})" if code else "ntfy unreachable",
-        detail=body[:200] if body else None,
-        remediation=f"cd {COMPOSE_FILE.parent} && docker compose --profile full up -d ntfy",
-        duration_ms=_timed(t),
-    )]
+        )
+    ]
 
 
 @check_group("connectivity")
@@ -1119,19 +1437,25 @@ async def check_n8n_health() -> list[CheckResult]:
     t = time.monotonic()
     code, body = await http_get("http://localhost:5678/healthz", timeout=3.0)
     if 200 <= code < 400:
-        return [CheckResult(
-            name="connectivity.n8n", group="connectivity",
-            status=Status.HEALTHY,
-            message=f"HTTP {code}",
+        return [
+            CheckResult(
+                name="connectivity.n8n",
+                group="connectivity",
+                status=Status.HEALTHY,
+                message=f"HTTP {code}",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="connectivity.n8n",
+            group="connectivity",
+            status=Status.DEGRADED,
+            message=f"n8n unreachable (HTTP {code})" if code else "n8n unreachable",
+            remediation=f"cd {COMPOSE_FILE.parent} && docker compose --profile full up -d n8n",
             duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="connectivity.n8n", group="connectivity",
-        status=Status.DEGRADED,
-        message=f"n8n unreachable (HTTP {code})" if code else "n8n unreachable",
-        remediation=f"cd {COMPOSE_FILE.parent} && docker compose --profile full up -d n8n",
-        duration_ms=_timed(t),
-    )]
+        )
+    ]
 
 
 @check_group("connectivity")
@@ -1140,18 +1464,24 @@ async def check_obsidian_sync() -> list[CheckResult]:
     t = time.monotonic()
     rc, out, err = await run_cmd(["pgrep", "-x", "obsidian"])
     if rc == 0:
-        return [CheckResult(
-            name="connectivity.obsidian", group="connectivity",
-            status=Status.HEALTHY,
-            message="running",
+        return [
+            CheckResult(
+                name="connectivity.obsidian",
+                group="connectivity",
+                status=Status.HEALTHY,
+                message="running",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="connectivity.obsidian",
+            group="connectivity",
+            status=Status.DEGRADED,
+            message="not running (desktop app)",
             duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="connectivity.obsidian", group="connectivity",
-        status=Status.DEGRADED,
-        message="not running (desktop app)",
-        duration_ms=_timed(t),
-    )]
+        )
+    ]
 
 
 @check_group("connectivity")
@@ -1160,41 +1490,59 @@ async def check_gdrive_sync_freshness() -> list[CheckResult]:
     t = time.monotonic()
     gdrive_dir = RAG_SOURCES_DIR / "gdrive"
     if not gdrive_dir.exists():
-        return [CheckResult(
-            name="connectivity.gdrive-sync", group="connectivity",
-            status=Status.HEALTHY,
-            message="not configured",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="connectivity.gdrive-sync",
+                group="connectivity",
+                status=Status.HEALTHY,
+                message="not configured",
+                duration_ms=_timed(t),
+            )
+        ]
 
     # Check sync-pipeline container is running (gdrive_sync runs inside it)
-    rc, out, err = await run_cmd([
-        "docker", "inspect", "--format", "{{.State.Status}}", "hapax-sync-pipeline",
-    ])
+    rc, out, err = await run_cmd(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            "{{.State.Status}}",
+            "hapax-sync-pipeline",
+        ]
+    )
     container_running = out.strip() == "running"
     if not container_running:
-        return [CheckResult(
-            name="connectivity.gdrive-sync", group="connectivity",
-            status=Status.DEGRADED,
-            message="sync-pipeline container not running (gdrive_sync runs inside it)",
-            remediation=f"cd {AGENTS_COMPOSE_FILE.parent} && docker compose up -d sync-pipeline",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="connectivity.gdrive-sync",
+                group="connectivity",
+                status=Status.DEGRADED,
+                message="sync-pipeline container not running (gdrive_sync runs inside it)",
+                remediation=f"cd {AGENTS_COMPOSE_FILE.parent} && docker compose up -d sync-pipeline",
+                duration_ms=_timed(t),
+            )
+        ]
 
-    return [CheckResult(
-        name="connectivity.gdrive-sync", group="connectivity",
-        status=Status.HEALTHY,
-        message="sync-pipeline container running",
-        duration_ms=_timed(t),
-    )]
+    return [
+        CheckResult(
+            name="connectivity.gdrive-sync",
+            group="connectivity",
+            status=Status.HEALTHY,
+            message="sync-pipeline container running",
+            duration_ms=_timed(t),
+        )
+    ]
 
 
 # ── Latency checks ──────────────────────────────────────────────────────────
 
+
 async def _tcp_connect_ms(host: str, port: int, timeout: float = 3.0) -> float | None:
     """Measure TCP connect time in milliseconds. Returns None on failure."""
     import socket as _socket
+
     loop = asyncio.get_running_loop()
+
     def _connect() -> float | None:
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         sock.settimeout(timeout)
@@ -1202,10 +1550,11 @@ async def _tcp_connect_ms(host: str, port: int, timeout: float = 3.0) -> float |
             t0 = time.monotonic()
             sock.connect((host, port))
             return (time.monotonic() - t0) * 1000
-        except (OSError, _socket.timeout):
+        except (TimeoutError, OSError):
             return None
         finally:
             sock.close()
+
     return await loop.run_in_executor(None, _connect)
 
 
@@ -1215,6 +1564,7 @@ async def _http_latency_ms(url: str, timeout: float = 3.0) -> float | None:
     Times the HTTP call inside the executor thread to exclude thread pool
     queue wait time, which can be significant under contention.
     """
+
     def _timed_fetch() -> float | None:
         req = Request(url)
         t0 = time.monotonic()
@@ -1242,6 +1592,7 @@ def _get_threshold(check_name: str, default: float) -> float:
     """Load threshold override if available, else return default."""
     try:
         from shared.threshold_tuner import get_threshold
+
         return get_threshold(check_name, default)
     except Exception:
         return default
@@ -1256,26 +1607,35 @@ async def check_service_latency() -> list[CheckResult]:
         threshold_ms = _get_threshold(name, default_ms)
         latency = await _http_latency_ms(url)
         if latency is None:
-            results.append(CheckResult(
-                name=name, group="latency",
-                status=Status.FAILED,
-                message="unreachable",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=name,
+                    group="latency",
+                    status=Status.FAILED,
+                    message="unreachable",
+                    duration_ms=_timed(t),
+                )
+            )
         elif latency > threshold_ms:
-            results.append(CheckResult(
-                name=name, group="latency",
-                status=Status.DEGRADED,
-                message=f"{latency:.0f}ms (threshold: {threshold_ms:.0f}ms)",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=name,
+                    group="latency",
+                    status=Status.DEGRADED,
+                    message=f"{latency:.0f}ms (threshold: {threshold_ms:.0f}ms)",
+                    duration_ms=_timed(t),
+                )
+            )
         else:
-            results.append(CheckResult(
-                name=name, group="latency",
-                status=Status.HEALTHY,
-                message=f"{latency:.0f}ms",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=name,
+                    group="latency",
+                    status=Status.HEALTHY,
+                    message=f"{latency:.0f}ms",
+                    duration_ms=_timed(t),
+                )
+            )
     return results
 
 
@@ -1286,23 +1646,34 @@ async def check_postgres_latency() -> list[CheckResult]:
     latency = await _tcp_connect_ms("localhost", 5432)
     threshold = 50.0
     if latency is None:
-        return [CheckResult(
-            name="latency.postgres", group="latency",
-            status=Status.FAILED, message="unreachable",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="latency.postgres",
+                group="latency",
+                status=Status.FAILED,
+                message="unreachable",
+                duration_ms=_timed(t),
+            )
+        ]
     if latency > threshold:
-        return [CheckResult(
-            name="latency.postgres", group="latency",
-            status=Status.DEGRADED,
-            message=f"{latency:.0f}ms (threshold: {threshold:.0f}ms)",
+        return [
+            CheckResult(
+                name="latency.postgres",
+                group="latency",
+                status=Status.DEGRADED,
+                message=f"{latency:.0f}ms (threshold: {threshold:.0f}ms)",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="latency.postgres",
+            group="latency",
+            status=Status.HEALTHY,
+            message=f"{latency:.0f}ms",
             duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="latency.postgres", group="latency",
-        status=Status.HEALTHY, message=f"{latency:.0f}ms",
-        duration_ms=_timed(t),
-    )]
+        )
+    ]
 
 
 # ── Secret validation ────────────────────────────────────────────────────────
@@ -1320,7 +1691,9 @@ def _pass_show(path: str) -> str:
     try:
         result = subprocess.run(
             ["pass", "show", path],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -1346,30 +1719,40 @@ async def check_env_secrets() -> list[CheckResult]:
         t = time.monotonic()
         val, source = _get_secret(var, pass_path)
         if not val:
-            results.append(CheckResult(
-                name=f"secrets.{var.lower()}", group="secrets",
-                status=Status.FAILED,
-                message=f"{var} not set (env or pass)",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"secrets.{var.lower()}",
+                    group="secrets",
+                    status=Status.FAILED,
+                    message=f"{var} not set (env or pass)",
+                    duration_ms=_timed(t),
+                )
+            )
         elif len(val) < 8:
-            results.append(CheckResult(
-                name=f"secrets.{var.lower()}", group="secrets",
-                status=Status.DEGRADED,
-                message=f"{var} suspiciously short ({len(val)} chars, via {source})",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"secrets.{var.lower()}",
+                    group="secrets",
+                    status=Status.DEGRADED,
+                    message=f"{var} suspiciously short ({len(val)} chars, via {source})",
+                    duration_ms=_timed(t),
+                )
+            )
         else:
-            results.append(CheckResult(
-                name=f"secrets.{var.lower()}", group="secrets",
-                status=Status.HEALTHY,
-                message=f"{var} ok ({len(val)} chars, via {source})",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name=f"secrets.{var.lower()}",
+                    group="secrets",
+                    status=Status.HEALTHY,
+                    message=f"{var} ok ({len(val)} chars, via {source})",
+                    duration_ms=_timed(t),
+                )
+            )
     return results
 
 
 # ── Queue/backlog monitoring ─────────────────────────────────────────────────
+
 
 @check_group("queues")
 async def check_rag_retry_queue() -> list[CheckResult]:
@@ -1377,35 +1760,47 @@ async def check_rag_retry_queue() -> list[CheckResult]:
     t = time.monotonic()
     retry_file = RAG_INGEST_STATE_DIR / "retry-queue.jsonl"
     if not retry_file.exists():
-        return [CheckResult(
-            name="queues.rag-retry", group="queues",
-            status=Status.HEALTHY,
-            message="no retry queue",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="queues.rag-retry",
+                group="queues",
+                status=Status.HEALTHY,
+                message="no retry queue",
+                duration_ms=_timed(t),
+            )
+        ]
     try:
         lines = [l for l in retry_file.read_text().splitlines() if l.strip()]
         depth = len(lines)
         if depth > 50:
-            return [CheckResult(
-                name="queues.rag-retry", group="queues",
-                status=Status.DEGRADED,
-                message=f"{depth} items pending retry",
+            return [
+                CheckResult(
+                    name="queues.rag-retry",
+                    group="queues",
+                    status=Status.DEGRADED,
+                    message=f"{depth} items pending retry",
+                    duration_ms=_timed(t),
+                )
+            ]
+        return [
+            CheckResult(
+                name="queues.rag-retry",
+                group="queues",
+                status=Status.HEALTHY,
+                message=f"{depth} items" if depth else "empty",
                 duration_ms=_timed(t),
-            )]
-        return [CheckResult(
-            name="queues.rag-retry", group="queues",
-            status=Status.HEALTHY,
-            message=f"{depth} items" if depth else "empty",
-            duration_ms=_timed(t),
-        )]
+            )
+        ]
     except OSError as e:
-        return [CheckResult(
-            name="queues.rag-retry", group="queues",
-            status=Status.DEGRADED,
-            message=f"could not read queue: {e}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="queues.rag-retry",
+                group="queues",
+                status=Status.DEGRADED,
+                message=f"could not read queue: {e}",
+                duration_ms=_timed(t),
+            )
+        ]
 
 
 @check_group("queues")
@@ -1414,18 +1809,24 @@ async def check_n8n_executions() -> list[CheckResult]:
     t = time.monotonic()
     code, body = await http_get("http://localhost:5678/healthz", timeout=3.0)
     if code == 0:
-        return [CheckResult(
-            name="queues.n8n-executions", group="queues",
-            status=Status.DEGRADED,
-            message="n8n unreachable",
+        return [
+            CheckResult(
+                name="queues.n8n-executions",
+                group="queues",
+                status=Status.DEGRADED,
+                message="n8n unreachable",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="queues.n8n-executions",
+            group="queues",
+            status=Status.HEALTHY,
+            message="n8n responsive",
             duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="queues.n8n-executions", group="queues",
-        status=Status.HEALTHY,
-        message="n8n responsive",
-        duration_ms=_timed(t),
-    )]
+        )
+    ]
 
 
 # ── Budget tracking ──────────────────────────────────────────────────────────
@@ -1442,41 +1843,51 @@ async def check_daily_spend() -> list[CheckResult]:
             "http://localhost:4000/spend/report?group_by=api_key", timeout=5.0
         )
         if code != 200:
-            return [CheckResult(
-                name="budget.daily-spend", group="budget",
-                status=Status.HEALTHY,
-                message="spend endpoint unavailable (non-blocking)",
-                duration_ms=_timed(t),
-            )]
+            return [
+                CheckResult(
+                    name="budget.daily-spend",
+                    group="budget",
+                    status=Status.HEALTHY,
+                    message="spend endpoint unavailable (non-blocking)",
+                    duration_ms=_timed(t),
+                )
+            ]
         data = json.loads(body)
         # LiteLLM spend report returns list of spend entries
-        total = sum(
-            entry.get("spend", 0)
-            for entry in (data if isinstance(data, list) else [])
-        )
+        total = sum(entry.get("spend", 0) for entry in (data if isinstance(data, list) else []))
         if total > DAILY_BUDGET_USD:
-            return [CheckResult(
-                name="budget.daily-spend", group="budget",
-                status=Status.DEGRADED,
-                message=f"${total:.2f} spent (budget: ${DAILY_BUDGET_USD:.2f})",
+            return [
+                CheckResult(
+                    name="budget.daily-spend",
+                    group="budget",
+                    status=Status.DEGRADED,
+                    message=f"${total:.2f} spent (budget: ${DAILY_BUDGET_USD:.2f})",
+                    duration_ms=_timed(t),
+                )
+            ]
+        return [
+            CheckResult(
+                name="budget.daily-spend",
+                group="budget",
+                status=Status.HEALTHY,
+                message=f"${total:.2f} / ${DAILY_BUDGET_USD:.2f}",
                 duration_ms=_timed(t),
-            )]
-        return [CheckResult(
-            name="budget.daily-spend", group="budget",
-            status=Status.HEALTHY,
-            message=f"${total:.2f} / ${DAILY_BUDGET_USD:.2f}",
-            duration_ms=_timed(t),
-        )]
+            )
+        ]
     except Exception as e:
-        return [CheckResult(
-            name="budget.daily-spend", group="budget",
-            status=Status.HEALTHY,
-            message=f"could not check spend: {e}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="budget.daily-spend",
+                group="budget",
+                status=Status.HEALTHY,
+                message=f"could not check spend: {e}",
+                duration_ms=_timed(t),
+            )
+        ]
 
 
 # ── Capacity checks ─────────────────────────────────────────────────────────
+
 
 @check_group("capacity")
 async def check_capacity_forecasts() -> list[CheckResult]:
@@ -1484,41 +1895,55 @@ async def check_capacity_forecasts() -> list[CheckResult]:
     t = time.monotonic()
     try:
         from shared.capacity import forecast_exhaustion
+
         forecasts = forecast_exhaustion()
         if not forecasts:
-            return [CheckResult(
-                name="capacity.forecast", group="capacity",
-                status=Status.HEALTHY,
-                message="insufficient data for forecast",
-                duration_ms=_timed(t),
-            )]
+            return [
+                CheckResult(
+                    name="capacity.forecast",
+                    group="capacity",
+                    status=Status.HEALTHY,
+                    message="insufficient data for forecast",
+                    duration_ms=_timed(t),
+                )
+            ]
         results = []
         for f in forecasts:
             if f.is_warning(threshold_days=7.0):
-                results.append(CheckResult(
-                    name=f"capacity.{f.resource}", group="capacity",
-                    status=Status.DEGRADED,
-                    message=f"{f.resource}: ~{f.days_to_exhaustion:.0f} days to exhaustion",
-                    duration_ms=_timed(t),
-                ))
+                results.append(
+                    CheckResult(
+                        name=f"capacity.{f.resource}",
+                        group="capacity",
+                        status=Status.DEGRADED,
+                        message=f"{f.resource}: ~{f.days_to_exhaustion:.0f} days to exhaustion",
+                        duration_ms=_timed(t),
+                    )
+                )
             else:
-                results.append(CheckResult(
-                    name=f"capacity.{f.resource}", group="capacity",
-                    status=Status.HEALTHY,
-                    message=f"{f.resource}: {f.trend}",
-                    duration_ms=_timed(t),
-                ))
+                results.append(
+                    CheckResult(
+                        name=f"capacity.{f.resource}",
+                        group="capacity",
+                        status=Status.HEALTHY,
+                        message=f"{f.resource}: {f.trend}",
+                        duration_ms=_timed(t),
+                    )
+                )
         return results
     except Exception as e:
-        return [CheckResult(
-            name="capacity.forecast", group="capacity",
-            status=Status.HEALTHY,
-            message=f"forecast unavailable: {e}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="capacity.forecast",
+                group="capacity",
+                status=Status.HEALTHY,
+                message=f"forecast unavailable: {e}",
+                duration_ms=_timed(t),
+            )
+        ]
 
 
 # ── Axiom infrastructure checks ──────────────────────────────────────────────
+
 
 @check_group("axioms")
 async def check_axiom_registry() -> list[CheckResult]:
@@ -1528,120 +1953,177 @@ async def check_axiom_registry() -> list[CheckResult]:
 
     # Check registry exists and is parseable
     try:
-        from shared.axiom_registry import load_axioms, AXIOMS_PATH
+        from shared.axiom_registry import AXIOMS_PATH, load_axioms
+
         registry_file = AXIOMS_PATH / "registry.yaml"
         if registry_file.exists():
             axioms = load_axioms()
             if axioms:
-                results.append(CheckResult(
-                    name="axiom.registry", group="axioms", status=Status.HEALTHY,
-                    message=f"Registry loaded: {len(axioms)} active axiom(s)",
-                    duration_ms=_timed(t),
-                ))
+                results.append(
+                    CheckResult(
+                        name="axiom.registry",
+                        group="axioms",
+                        status=Status.HEALTHY,
+                        message=f"Registry loaded: {len(axioms)} active axiom(s)",
+                        duration_ms=_timed(t),
+                    )
+                )
             else:
-                results.append(CheckResult(
-                    name="axiom.registry", group="axioms", status=Status.DEGRADED,
-                    message="Registry exists but no active axioms found",
-                    duration_ms=_timed(t),
-                ))
+                results.append(
+                    CheckResult(
+                        name="axiom.registry",
+                        group="axioms",
+                        status=Status.DEGRADED,
+                        message="Registry exists but no active axioms found",
+                        duration_ms=_timed(t),
+                    )
+                )
         else:
-            results.append(CheckResult(
-                name="axiom.registry", group="axioms", status=Status.DEGRADED,
-                message="Axiom registry not found",
-                detail=str(registry_file),
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name="axiom.registry",
+                    group="axioms",
+                    status=Status.DEGRADED,
+                    message="Axiom registry not found",
+                    detail=str(registry_file),
+                    duration_ms=_timed(t),
+                )
+            )
     except Exception as e:
-        results.append(CheckResult(
-            name="axiom.registry", group="axioms", status=Status.FAILED,
-            message="Cannot check axiom registry",
-            detail=str(e),
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.registry",
+                group="axioms",
+                status=Status.FAILED,
+                message="Cannot check axiom registry",
+                detail=str(e),
+                duration_ms=_timed(t),
+            )
+        )
 
     # Check precedent collection exists in Qdrant
     t2 = time.monotonic()
     try:
         from shared.config import get_qdrant
+
         client = get_qdrant()
         collections = [c.name for c in client.get_collections().collections]
         if "axiom-precedents" in collections:
             info = client.get_collection("axiom-precedents")
             count = info.points_count
-            results.append(CheckResult(
-                name="axiom.precedents", group="axioms", status=Status.HEALTHY,
-                message=f"Precedent collection: {count} point(s)",
-                duration_ms=_timed(t2),
-            ))
+            results.append(
+                CheckResult(
+                    name="axiom.precedents",
+                    group="axioms",
+                    status=Status.HEALTHY,
+                    message=f"Precedent collection: {count} point(s)",
+                    duration_ms=_timed(t2),
+                )
+            )
         else:
-            results.append(CheckResult(
-                name="axiom.precedents", group="axioms", status=Status.DEGRADED,
-                message="axiom-precedents collection not found in Qdrant",
-                remediation="Run: uv run python -c 'from shared.axiom_precedents import PrecedentStore; PrecedentStore().ensure_collection()'",
-                duration_ms=_timed(t2),
-            ))
+            results.append(
+                CheckResult(
+                    name="axiom.precedents",
+                    group="axioms",
+                    status=Status.DEGRADED,
+                    message="axiom-precedents collection not found in Qdrant",
+                    remediation="Run: uv run python -c 'from shared.axiom_precedents import PrecedentStore; PrecedentStore().ensure_collection()'",
+                    duration_ms=_timed(t2),
+                )
+            )
     except Exception as e:
-        results.append(CheckResult(
-            name="axiom.precedents", group="axioms", status=Status.FAILED,
-            message="Cannot check precedent collection",
-            detail=str(e),
-            duration_ms=_timed(t2),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.precedents",
+                group="axioms",
+                status=Status.FAILED,
+                message="Cannot check precedent collection",
+                detail=str(e),
+                duration_ms=_timed(t2),
+            )
+        )
 
     # Check implications exist for active axioms
     t3 = time.monotonic()
     try:
-        from shared.axiom_registry import load_axioms as _load_axioms, load_implications
+        from shared.axiom_registry import load_axioms as _load_axioms
+        from shared.axiom_registry import load_implications
+
         active = _load_axioms()
         if active:
             missing = [a.id for a in active if not load_implications(a.id)]
             if not missing:
-                results.append(CheckResult(
-                    name="axiom.implications", group="axioms", status=Status.HEALTHY,
-                    message="All active axioms have implication files",
-                    duration_ms=_timed(t3),
-                ))
+                results.append(
+                    CheckResult(
+                        name="axiom.implications",
+                        group="axioms",
+                        status=Status.HEALTHY,
+                        message="All active axioms have implication files",
+                        duration_ms=_timed(t3),
+                    )
+                )
             else:
-                results.append(CheckResult(
-                    name="axiom.implications", group="axioms", status=Status.DEGRADED,
-                    message=f"Missing implications for: {', '.join(missing)}",
-                    remediation=f"Run: uv run python -m shared.axiom_derivation --axiom {missing[0]}",
-                    duration_ms=_timed(t3),
-                ))
+                results.append(
+                    CheckResult(
+                        name="axiom.implications",
+                        group="axioms",
+                        status=Status.DEGRADED,
+                        message=f"Missing implications for: {', '.join(missing)}",
+                        remediation=f"Run: uv run python -m shared.axiom_derivation --axiom {missing[0]}",
+                        duration_ms=_timed(t3),
+                    )
+                )
     except Exception as e:
-        results.append(CheckResult(
-            name="axiom.implications", group="axioms", status=Status.FAILED,
-            message="Cannot check axiom implications",
-            detail=str(e),
-            duration_ms=_timed(t3),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.implications",
+                group="axioms",
+                status=Status.FAILED,
+                message="Cannot check axiom implications",
+                detail=str(e),
+                duration_ms=_timed(t3),
+            )
+        )
 
     # Check supremacy — domain T0 blocks vs constitutional T0 blocks
     t4 = time.monotonic()
     try:
         from shared.axiom_registry import validate_supremacy
+
         tensions = validate_supremacy()
         if not tensions:
-            results.append(CheckResult(
-                name="axiom.supremacy", group="axioms", status=Status.HEALTHY,
-                message="No domain T0 tensions (or no domain axioms)",
-                duration_ms=_timed(t4),
-            ))
+            results.append(
+                CheckResult(
+                    name="axiom.supremacy",
+                    group="axioms",
+                    status=Status.HEALTHY,
+                    message="No domain T0 tensions (or no domain axioms)",
+                    duration_ms=_timed(t4),
+                )
+            )
         else:
             ids = ", ".join(t.domain_impl_id for t in tensions)
-            results.append(CheckResult(
-                name="axiom.supremacy", group="axioms", status=Status.DEGRADED,
-                message=f"{len(tensions)} domain T0 block(s) need operator review: {ids}",
-                remediation="Run: /axiom-review to create precedents acknowledging these",
-                duration_ms=_timed(t4),
-            ))
+            results.append(
+                CheckResult(
+                    name="axiom.supremacy",
+                    group="axioms",
+                    status=Status.DEGRADED,
+                    message=f"{len(tensions)} domain T0 block(s) need operator review: {ids}",
+                    remediation="Run: /axiom-review to create precedents acknowledging these",
+                    duration_ms=_timed(t4),
+                )
+            )
     except Exception as e:
-        results.append(CheckResult(
-            name="axiom.supremacy", group="axioms", status=Status.FAILED,
-            message="Cannot check axiom supremacy",
-            detail=str(e),
-            duration_ms=_timed(t4),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.supremacy",
+                group="axioms",
+                status=Status.FAILED,
+                message="Cannot check axiom supremacy",
+                detail=str(e),
+                duration_ms=_timed(t4),
+            )
+        )
 
     return results
 
@@ -1654,52 +2136,73 @@ async def check_axiom_hooks_active() -> list[CheckResult]:
 
     audit_dir = AXIOM_AUDIT_DIR
     if not audit_dir.exists():
-        results.append(CheckResult(
-            name="axiom.hooks_active", group="axioms", status=Status.DEGRADED,
-            message="Audit directory missing — hooks may never have fired",
-            remediation="Run: cd ~/projects/hapax-system && ./install.sh",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.hooks_active",
+                group="axioms",
+                status=Status.DEGRADED,
+                message="Audit directory missing — hooks may never have fired",
+                remediation="Run: cd ~/projects/hapax-system && ./install.sh",
+                duration_ms=_timed(t),
+            )
+        )
         return results
 
     # Check for audit files from today or yesterday
     from datetime import timedelta
-    today = datetime.now(timezone.utc).date()
+
+    today = datetime.now(UTC).date()
     yesterday = today - timedelta(days=1)
     today_file = audit_dir / f"{today.isoformat()}.jsonl"
     yesterday_file = audit_dir / f"{yesterday.isoformat()}.jsonl"
 
     if today_file.exists():
         lines = sum(1 for _ in today_file.open())
-        results.append(CheckResult(
-            name="axiom.hooks_active", group="axioms", status=Status.HEALTHY,
-            message=f"Audit trail active: {lines} entries today",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.hooks_active",
+                group="axioms",
+                status=Status.HEALTHY,
+                message=f"Audit trail active: {lines} entries today",
+                duration_ms=_timed(t),
+            )
+        )
     elif yesterday_file.exists():
-        results.append(CheckResult(
-            name="axiom.hooks_active", group="axioms", status=Status.HEALTHY,
-            message="Audit trail active (last entry yesterday)",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.hooks_active",
+                group="axioms",
+                status=Status.HEALTHY,
+                message="Audit trail active (last entry yesterday)",
+                duration_ms=_timed(t),
+            )
+        )
     else:
         # Check if any files exist at all
         any_files = list(audit_dir.glob("*.jsonl"))
         if any_files:
             newest = max(any_files, key=lambda p: p.stat().st_mtime)
-            results.append(CheckResult(
-                name="axiom.hooks_active", group="axioms", status=Status.DEGRADED,
-                message=f"Audit trail stale — newest: {newest.name}",
-                remediation="Verify hooks in ~/.claude/settings.json are configured",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name="axiom.hooks_active",
+                    group="axioms",
+                    status=Status.DEGRADED,
+                    message=f"Audit trail stale — newest: {newest.name}",
+                    remediation="Verify hooks in ~/.claude/settings.json are configured",
+                    duration_ms=_timed(t),
+                )
+            )
         else:
-            results.append(CheckResult(
-                name="axiom.hooks_active", group="axioms", status=Status.DEGRADED,
-                message="No audit trail entries found",
-                remediation="Run: cd ~/projects/hapax-system && ./install.sh && restart Claude Code",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name="axiom.hooks_active",
+                    group="axioms",
+                    status=Status.DEGRADED,
+                    message="No audit trail entries found",
+                    remediation="Run: cd ~/projects/hapax-system && ./install.sh && restart Claude Code",
+                    duration_ms=_timed(t),
+                )
+            )
 
     return results
 
@@ -1712,12 +2215,16 @@ async def check_axiom_settings() -> list[CheckResult]:
 
     settings_file = CLAUDE_CONFIG_DIR / "settings.json"
     if not settings_file.exists():
-        results.append(CheckResult(
-            name="axiom.settings", group="axioms", status=Status.DEGRADED,
-            message="Claude Code settings.json not found",
-            remediation="Run: cd ~/projects/hapax-system && ./install.sh",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.settings",
+                group="axioms",
+                status=Status.DEGRADED,
+                message="Claude Code settings.json not found",
+                remediation="Run: cd ~/projects/hapax-system && ./install.sh",
+                duration_ms=_timed(t),
+            )
+        )
         return results
 
     try:
@@ -1741,30 +2248,42 @@ async def check_axiom_settings() -> list[CheckResult]:
         )
 
         if has_scan and has_audit:
-            results.append(CheckResult(
-                name="axiom.settings", group="axioms", status=Status.HEALTHY,
-                message="Hooks configured: scan (PreToolUse) + audit (PostToolUse)",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name="axiom.settings",
+                    group="axioms",
+                    status=Status.HEALTHY,
+                    message="Hooks configured: scan (PreToolUse) + audit (PostToolUse)",
+                    duration_ms=_timed(t),
+                )
+            )
         else:
             missing = []
             if not has_scan:
                 missing.append("axiom-scan (PreToolUse)")
             if not has_audit:
                 missing.append("axiom-audit (PostToolUse)")
-            results.append(CheckResult(
-                name="axiom.settings", group="axioms", status=Status.DEGRADED,
-                message=f"Missing hooks: {', '.join(missing)}",
-                remediation="Run: cd ~/projects/hapax-system && ./install.sh",
-                duration_ms=_timed(t),
-            ))
+            results.append(
+                CheckResult(
+                    name="axiom.settings",
+                    group="axioms",
+                    status=Status.DEGRADED,
+                    message=f"Missing hooks: {', '.join(missing)}",
+                    remediation="Run: cd ~/projects/hapax-system && ./install.sh",
+                    duration_ms=_timed(t),
+                )
+            )
     except (json.JSONDecodeError, OSError) as e:
-        results.append(CheckResult(
-            name="axiom.settings", group="axioms", status=Status.FAILED,
-            message="Cannot parse settings.json",
-            detail=str(e),
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.settings",
+                group="axioms",
+                status=Status.FAILED,
+                message="Cannot parse settings.json",
+                detail=str(e),
+                duration_ms=_timed(t),
+            )
+        )
 
     return results
 
@@ -1777,19 +2296,29 @@ async def check_axiom_ef_zero_config() -> list[CheckResult]:
 
     agents_dir = AI_AGENTS_DIR / "agents"
     if not agents_dir.exists():
-        results.append(CheckResult(
-            name="axiom.ef_zero_config", group="axioms", status=Status.FAILED,
-            message="Agents directory not found",
-            detail=str(agents_dir),
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.ef_zero_config",
+                group="axioms",
+                status=Status.FAILED,
+                message="Agents directory not found",
+                detail=str(agents_dir),
+                duration_ms=_timed(t),
+            )
+        )
         return results
 
     # Agents that should be runnable with no required args
     # research takes a positional query arg (acceptable — it's the input, not config)
     zero_config_agents = [
-        "health_monitor", "introspect", "drift_detector", "briefing",
-        "scout", "digest", "knowledge_maint", "activity_analyzer",
+        "health_monitor",
+        "introspect",
+        "drift_detector",
+        "briefing",
+        "scout",
+        "digest",
+        "knowledge_maint",
+        "activity_analyzer",
     ]
 
     violations = []
@@ -1800,31 +2329,40 @@ async def check_axiom_ef_zero_config() -> list[CheckResult]:
         # Quick check: look for required=True in add_argument that's not a flag
         content = agent_file.read_text()
         import re
+
         # Find add_argument calls with positional args (no -- prefix) that are required
         # Positional args are those without -- prefix and without default
         for match in re.finditer(r'add_argument\(\s*["\']([^-][^"\']*)["\']', content):
             arg_name = match.group(1)
             # Check if it has a default
-            line_start = content.rfind('\n', 0, match.start()) + 1
-            line_end = content.find('\n', match.end())
+            line_start = content.rfind("\n", 0, match.start()) + 1
+            line_end = content.find("\n", match.end())
             line = content[line_start:line_end]
-            if 'default=' not in line and 'nargs=' not in line:
+            if "default=" not in line and "nargs=" not in line:
                 violations.append(f"{agent_name}: required positional arg '{arg_name}'")
 
     if not violations:
-        results.append(CheckResult(
-            name="axiom.ef_zero_config", group="axioms", status=Status.HEALTHY,
-            message=f"All {len(zero_config_agents)} routine agents are zero-config runnable",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.ef_zero_config",
+                group="axioms",
+                status=Status.HEALTHY,
+                message=f"All {len(zero_config_agents)} routine agents are zero-config runnable",
+                duration_ms=_timed(t),
+            )
+        )
     else:
-        results.append(CheckResult(
-            name="axiom.ef_zero_config", group="axioms", status=Status.DEGRADED,
-            message=f"ex-init-001 gap: {len(violations)} agent(s) require positional args",
-            detail="; ".join(violations),
-            remediation="Add defaults or make arguments optional with flags",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.ef_zero_config",
+                group="axioms",
+                status=Status.DEGRADED,
+                message=f"ex-init-001 gap: {len(violations)} agent(s) require positional args",
+                detail="; ".join(violations),
+                remediation="Add defaults or make arguments optional with flags",
+                duration_ms=_timed(t),
+            )
+        )
 
     return results
 
@@ -1854,11 +2392,15 @@ async def check_axiom_ef_automated_routines() -> list[CheckResult]:
     )
 
     if rc != 0:
-        results.append(CheckResult(
-            name="axiom.ef_automated", group="axioms", status=Status.FAILED,
-            message="Cannot check systemd timers",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.ef_automated",
+                group="axioms",
+                status=Status.FAILED,
+                message="Cannot check systemd timers",
+                duration_ms=_timed(t),
+            )
+        )
         return results
 
     missing = []
@@ -1867,19 +2409,27 @@ async def check_axiom_ef_automated_routines() -> list[CheckResult]:
             missing.append(f"{agent_name} ({timer_name})")
 
     if not missing:
-        results.append(CheckResult(
-            name="axiom.ef_automated", group="axioms", status=Status.HEALTHY,
-            message=f"All {len(expected_timers)} recurring agents have active timers",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.ef_automated",
+                group="axioms",
+                status=Status.HEALTHY,
+                message=f"All {len(expected_timers)} recurring agents have active timers",
+                duration_ms=_timed(t),
+            )
+        )
     else:
-        results.append(CheckResult(
-            name="axiom.ef_automated", group="axioms", status=Status.DEGRADED,
-            message=f"ex-routine-001 gap: {len(missing)} agent(s) missing timers",
-            detail="; ".join(missing),
-            remediation="Enable timers: systemctl --user enable --now <timer>",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.ef_automated",
+                group="axioms",
+                status=Status.DEGRADED,
+                message=f"ex-routine-001 gap: {len(missing)} agent(s) missing timers",
+                detail="; ".join(missing),
+                remediation="Enable timers: systemctl --user enable --now <timer>",
+                duration_ms=_timed(t),
+            )
+        )
 
     return results
 
@@ -1893,29 +2443,41 @@ async def check_axiom_ef_notifications() -> list[CheckResult]:
     # Check notify.py exists
     notify_file = AI_AGENTS_DIR / "shared" / "notify.py"
     if not notify_file.exists():
-        results.append(CheckResult(
-            name="axiom.ef_notifications", group="axioms", status=Status.FAILED,
-            message="shared/notify.py not found — no proactive alert mechanism",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.ef_notifications",
+                group="axioms",
+                status=Status.FAILED,
+                message="shared/notify.py not found — no proactive alert mechanism",
+                duration_ms=_timed(t),
+            )
+        )
         return results
 
     # Check ntfy is reachable (the primary notification channel)
     status_code, _ = await http_get("http://127.0.0.1:8090/v1/health", timeout=2.0)
     if status_code == 200:
-        results.append(CheckResult(
-            name="axiom.ef_notifications", group="axioms", status=Status.HEALTHY,
-            message="Notification infrastructure operational (ntfy + notify.py)",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.ef_notifications",
+                group="axioms",
+                status=Status.HEALTHY,
+                message="Notification infrastructure operational (ntfy + notify.py)",
+                duration_ms=_timed(t),
+            )
+        )
     else:
-        results.append(CheckResult(
-            name="axiom.ef_notifications", group="axioms", status=Status.DEGRADED,
-            message="ntfy not reachable — proactive alerts degraded",
-            detail=f"HTTP status: {status_code}",
-            remediation="Check: docker compose -f ~/llm-stack/docker-compose.yml ps ntfy",
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name="axiom.ef_notifications",
+                group="axioms",
+                status=Status.DEGRADED,
+                message="ntfy not reachable — proactive alerts degraded",
+                detail=f"HTTP status: {status_code}",
+                remediation="Check: docker compose -f ~/llm-stack/docker-compose.yml ps ntfy",
+                duration_ms=_timed(t),
+            )
+        )
 
     return results
 
@@ -1956,12 +2518,16 @@ async def check_voice_services() -> list[CheckResult]:
             status = Status.DEGRADED
             msg = f"{out.strip() or 'inactive'} (Bluetooth speaker unavailable)"
 
-        results.append(CheckResult(
-            name=f"voice.{unit}", group="voice",
-            status=status, message=msg,
-            remediation=fix_cmd if not active else None,
-            duration_ms=_timed(t),
-        ))
+        results.append(
+            CheckResult(
+                name=f"voice.{unit}",
+                group="voice",
+                status=status,
+                message=msg,
+                remediation=fix_cmd if not active else None,
+                duration_ms=_timed(t),
+            )
+        )
 
     return results
 
@@ -1973,20 +2539,26 @@ async def check_voice_socket() -> list[CheckResult]:
     sock_path = _voice_socket_path()
 
     if Path(sock_path).exists():
-        return [CheckResult(
-            name="voice.hotkey_socket", group="voice",
-            status=Status.HEALTHY,
-            message=f"socket exists at {sock_path}",
+        return [
+            CheckResult(
+                name="voice.hotkey_socket",
+                group="voice",
+                status=Status.HEALTHY,
+                message=f"socket exists at {sock_path}",
+                duration_ms=_timed(t),
+            )
+        ]
+    return [
+        CheckResult(
+            name="voice.hotkey_socket",
+            group="voice",
+            status=Status.DEGRADED,
+            message=f"socket not found at {sock_path}",
+            detail="Hotkey commands will not work until daemon creates the socket",
+            remediation="systemctl --user restart hapax-voice",
             duration_ms=_timed(t),
-        )]
-    return [CheckResult(
-        name="voice.hotkey_socket", group="voice",
-        status=Status.DEGRADED,
-        message=f"socket not found at {sock_path}",
-        detail="Hotkey commands will not work until daemon creates the socket",
-        remediation="systemctl --user restart hapax-voice",
-        duration_ms=_timed(t),
-    )]
+        )
+    ]
 
 
 @check_group("voice")
@@ -1995,42 +2567,55 @@ async def check_voice_vram_lock() -> list[CheckResult]:
     t = time.monotonic()
 
     if not VOICE_VRAM_LOCK.exists():
-        return [CheckResult(
-            name="voice.vram_lock", group="voice",
-            status=Status.HEALTHY,
-            message="no lock held",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="voice.vram_lock",
+                group="voice",
+                status=Status.HEALTHY,
+                message="no lock held",
+                duration_ms=_timed(t),
+            )
+        ]
 
     try:
         pid = int(VOICE_VRAM_LOCK.read_text().strip())
         os.kill(pid, 0)  # signal 0 = check existence
-        return [CheckResult(
-            name="voice.vram_lock", group="voice",
-            status=Status.HEALTHY,
-            message=f"lock held by PID {pid} (alive)",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="voice.vram_lock",
+                group="voice",
+                status=Status.HEALTHY,
+                message=f"lock held by PID {pid} (alive)",
+                duration_ms=_timed(t),
+            )
+        ]
     except PermissionError:
         # Process exists but owned by different user — still valid
-        return [CheckResult(
-            name="voice.vram_lock", group="voice",
-            status=Status.HEALTHY,
-            message=f"lock held by PID {pid} (alive, different user)",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="voice.vram_lock",
+                group="voice",
+                status=Status.HEALTHY,
+                message=f"lock held by PID {pid} (alive, different user)",
+                duration_ms=_timed(t),
+            )
+        ]
     except (ValueError, ProcessLookupError, OSError):
-        return [CheckResult(
-            name="voice.vram_lock", group="voice",
-            status=Status.DEGRADED,
-            message="stale VRAM lockfile (holder process dead)",
-            detail=f"Lock at {VOICE_VRAM_LOCK}",
-            remediation=f"rm {VOICE_VRAM_LOCK}",
-            duration_ms=_timed(t),
-        )]
+        return [
+            CheckResult(
+                name="voice.vram_lock",
+                group="voice",
+                status=Status.DEGRADED,
+                message="stale VRAM lockfile (holder process dead)",
+                detail=f"Lock at {VOICE_VRAM_LOCK}",
+                remediation=f"rm {VOICE_VRAM_LOCK}",
+                duration_ms=_timed(t),
+            )
+        ]
 
 
 # ── Runner ───────────────────────────────────────────────────────────────────
+
 
 def build_group_result(group: str, checks: list[CheckResult]) -> GroupResult:
     statuses = [c.status for c in checks]
@@ -2066,17 +2651,24 @@ async def run_checks(
             results = await fn()
             return (group, results)
         except Exception as e:
-            return (group, [CheckResult(
-                name=f"{group}.error", group=group, status=Status.FAILED,
-                message=f"Check crashed: {e}",
-                duration_ms=0,
-            )])
+            return (
+                group,
+                [
+                    CheckResult(
+                        name=f"{group}.error",
+                        group=group,
+                        status=Status.FAILED,
+                        message=f"Check crashed: {e}",
+                        duration_ms=0,
+                    )
+                ],
+            )
 
     tasks = [_run_one(g, fn) for g, fn in all_fns]
     raw_results = await asyncio.gather(*tasks)
 
     # Group results and annotate tiers
-    from shared.service_tiers import tier_for_check, ServiceTier
+    from shared.service_tiers import ServiceTier, tier_for_check
 
     grouped: dict[str, list[CheckResult]] = {}
     for g, checks in raw_results:
@@ -2111,7 +2703,7 @@ async def run_checks(
         summary += f", {f} failed"
 
     return HealthReport(
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
         hostname=socket.gethostname(),
         overall_status=overall,
         groups=group_results,
@@ -2125,6 +2717,7 @@ async def run_checks(
 
 
 # ── quick_check() — pre-flight for other agents ─────────────────────────────
+
 
 async def quick_check(
     required_services: list[str] | None = None,
@@ -2149,7 +2742,8 @@ async def quick_check(
         url = service_urls.get(name)
         if not url:
             return CheckResult(
-                name=f"preflight.{name}", group="preflight",
+                name=f"preflight.{name}",
+                group="preflight",
                 status=Status.FAILED,
                 message=f"Unknown service: {name}",
             )
@@ -2157,13 +2751,15 @@ async def quick_check(
         code, body = await http_get(url, timeout=3.0)
         if 200 <= code < 400:
             return CheckResult(
-                name=f"preflight.{name}", group="preflight",
+                name=f"preflight.{name}",
+                group="preflight",
                 status=Status.HEALTHY,
                 message="reachable",
                 duration_ms=_timed(t),
             )
         return CheckResult(
-            name=f"preflight.{name}", group="preflight",
+            name=f"preflight.{name}",
+            group="preflight",
             status=Status.FAILED,
             message=f"unreachable (HTTP {code})",
             detail=body[:200] if body and code == 0 else None,
@@ -2185,9 +2781,9 @@ _STATUS_ICON = {
 }
 
 _STATUS_COLOR = {
-    Status.HEALTHY: "\033[32m",   # green
+    Status.HEALTHY: "\033[32m",  # green
     Status.DEGRADED: "\033[33m",  # yellow
-    Status.FAILED: "\033[31m",    # red
+    Status.FAILED: "\033[31m",  # red
 }
 _RESET = "\033[0m"
 
@@ -2242,14 +2838,14 @@ def format_human(report: HealthReport, verbose: bool = False, color: bool = True
 
 # ── Fix mode ─────────────────────────────────────────────────────────────────
 
+
 async def run_fixes(report: HealthReport, yes: bool = False) -> int:
     """Run remediation commands for failed/degraded checks.
 
     Returns count of fixes attempted.
     """
     fixable = [
-        c for gr in report.groups for c in gr.checks
-        if c.remediation and c.status != Status.HEALTHY
+        c for gr in report.groups for c in gr.checks if c.remediation and c.status != Status.HEALTHY
     ]
     if not fixable:
         print("No remediations available.")
@@ -2275,6 +2871,7 @@ async def run_fixes(report: HealthReport, yes: bool = False) -> int:
     # Sort fixable checks by service dependency order
     try:
         from shared.service_graph import remediation_order
+
         service_names = []
         for c in fixable:
             # Extract service name from check name (e.g. "docker.qdrant" → "qdrant")
@@ -2282,9 +2879,7 @@ async def run_fixes(report: HealthReport, yes: bool = False) -> int:
             service_names.append(parts[1] if len(parts) > 1 else parts[0])
         ordered = remediation_order(service_names)
         name_to_order = {n: i for i, n in enumerate(ordered)}
-        fixable.sort(key=lambda c: name_to_order.get(
-            c.name.split(".", 1)[-1], len(ordered)
-        ))
+        fixable.sort(key=lambda c: name_to_order.get(c.name.split(".", 1)[-1], len(ordered)))
     except Exception:
         pass  # fall back to original order
 
@@ -2294,7 +2889,7 @@ async def run_fixes(report: HealthReport, yes: bool = False) -> int:
         print(f"  Running: {c.remediation}")
         rc, out, err = await run_cmd(["bash", "-c", c.remediation], timeout=30.0)
         if rc == 0:
-            print(f"    OK")
+            print("    OK")
         else:
             print(f"    Failed (rc={rc}): {err or out}")
         count += 1
@@ -2327,11 +2922,15 @@ async def run_fixes_v2(report: HealthReport, mode: str = "apply") -> int:
         elif outcome.notified:
             print(f"  [HELD] {outcome.check_name}: destructive — notification sent")
             if outcome.proposal:
-                print(f"         Proposed: {outcome.proposal.action_name}({outcome.proposal.params})")
+                print(
+                    f"         Proposed: {outcome.proposal.action_name}({outcome.proposal.params})"
+                )
         elif outcome.rejected_reason:
             print(f"  [SKIP] {outcome.check_name}: {outcome.rejected_reason}")
         elif mode == "dry_run" and outcome.proposal:
-            print(f"  [DRY ] {outcome.check_name}: would run {outcome.proposal.action_name}({outcome.proposal.params})")
+            print(
+                f"  [DRY ] {outcome.check_name}: would run {outcome.proposal.action_name}({outcome.proposal.params})"
+            )
             print(f"         Rationale: {outcome.proposal.rationale}")
 
     return result.total
@@ -2369,7 +2968,9 @@ def _collect_all_timers() -> list[dict]:
     try:
         result = subprocess.run(
             ["systemctl", "--user", "list-timers", "--all", "--no-pager", "--output=json"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode == 0 and result.stdout.strip():
             for entry in json.loads(result.stdout):
@@ -2381,21 +2982,25 @@ def _collect_all_timers() -> list[dict]:
                 next_us = entry.get("next", 0)
                 last_us = entry.get("last", 0)
                 next_fire = (
-                    datetime.fromtimestamp(next_us / 1_000_000, tz=timezone.utc).isoformat()
-                    if next_us else "-"
+                    datetime.fromtimestamp(next_us / 1_000_000, tz=UTC).isoformat()
+                    if next_us
+                    else "-"
                 )
                 last_fired = (
-                    datetime.fromtimestamp(last_us / 1_000_000, tz=timezone.utc).isoformat()
-                    if last_us else "-"
+                    datetime.fromtimestamp(last_us / 1_000_000, tz=UTC).isoformat()
+                    if last_us
+                    else "-"
                 )
-                timers.append({
-                    "unit": unit.removesuffix(".timer"),
-                    "type": "systemd",
-                    "activates": activates,
-                    "status": "active" if next_us else "inactive",
-                    "next_fire": next_fire,
-                    "last_fired": last_fired,
-                })
+                timers.append(
+                    {
+                        "unit": unit.removesuffix(".timer"),
+                        "type": "systemd",
+                        "activates": activates,
+                        "status": "active" if next_us else "inactive",
+                        "next_fire": next_fire,
+                        "last_fired": last_fired,
+                    }
+                )
     except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError) as e:
         log.debug("Timer collection failed, falling back to unit files: %s", e)
 
@@ -2404,7 +3009,9 @@ def _collect_all_timers() -> list[dict]:
         try:
             result = subprocess.run(
                 ["systemctl", "--user", "list-timers", "--all", "--no-pager"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 for line in result.stdout.strip().splitlines()[1:]:  # skip header
@@ -2417,13 +3024,15 @@ def _collect_all_timers() -> list[dict]:
                         if unit and unit.removesuffix(".timer") not in _SYSTEM_TIMERS:
                             # Extract NEXT (first 3-4 fields) and LAST
                             next_str = " ".join(parts[:3]) if parts[0] != "-" else "-"
-                            timers.append({
-                                "unit": unit.removesuffix(".timer"),
-                                "type": "systemd",
-                                "status": "active" if parts[0] != "-" else "inactive",
-                                "next_fire": next_str,
-                                "last_fired": "-",
-                            })
+                            timers.append(
+                                {
+                                    "unit": unit.removesuffix(".timer"),
+                                    "type": "systemd",
+                                    "status": "active" if parts[0] != "-" else "inactive",
+                                    "next_fire": next_str,
+                                    "last_fired": "-",
+                                }
+                            )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 
@@ -2447,8 +3056,10 @@ def write_infra_snapshot(report: HealthReport) -> None:
 
             # Docker containers: extract from docker.* checks
             if name.startswith("docker.") and name not in (
-                "docker.daemon", "docker.compose_file",
-                "docker.containers", "docker.agents_compose",
+                "docker.daemon",
+                "docker.compose_file",
+                "docker.containers",
+                "docker.agents_compose",
                 "docker.agents_containers",
             ):
                 service = name.split(".", 1)[1]
@@ -2462,12 +3073,14 @@ def write_infra_snapshot(report: HealthReport) -> None:
                     health = "starting"
                 else:
                     health = check.message
-                containers.append({
-                    "service": service,
-                    "name": service,
-                    "state": "running" if check.status == Status.HEALTHY else "not running",
-                    "health": health,
-                })
+                containers.append(
+                    {
+                        "service": service,
+                        "name": service,
+                        "state": "running" if check.status == Status.HEALTHY else "not running",
+                        "health": health,
+                    }
+                )
 
             # GPU: extract from gpu.* checks
             elif name == "gpu.vram":
@@ -2475,12 +3088,10 @@ def write_infra_snapshot(report: HealthReport) -> None:
                 msg = check.message
                 loaded_models = []
                 if check.detail and "Loaded Ollama models:" in check.detail:
-                    loaded_models = [
-                        m.strip()
-                        for m in check.detail.split(":", 1)[1].split(",")
-                    ]
+                    loaded_models = [m.strip() for m in check.detail.split(":", 1)[1].split(",")]
                 try:
                     import re
+
                     nums = re.findall(r"(\d+)\s*MiB", msg)
                     used = int(nums[0])
                     total = int(nums[1])
@@ -2499,6 +3110,7 @@ def write_infra_snapshot(report: HealthReport) -> None:
 
     # Add container cron jobs (sync-pipeline)
     from shared.cycle_mode import get_cycle_mode
+
     cycle = get_cycle_mode()
     crontab = AI_AGENTS_DIR / "sync-pipeline" / f"crontab.{cycle}"
     if not crontab.exists():
@@ -2512,14 +3124,16 @@ def write_infra_snapshot(report: HealthReport) -> None:
             if len(parts) >= 6:
                 schedule = " ".join(parts[:5])
                 agent = parts[-1].rsplit("/", 1)[-1] if "/" in parts[-1] else parts[-1]
-                timers.append({
-                    "unit": agent,
-                    "type": "container-cron",
-                    "schedule": schedule,
-                    "status": "active",
-                    "next_fire": schedule,
-                    "last_fired": "-",
-                })
+                timers.append(
+                    {
+                        "unit": agent,
+                        "type": "container-cron",
+                        "schedule": schedule,
+                        "status": "active",
+                        "next_fire": schedule,
+                        "last_fired": "-",
+                    }
+                )
 
     snapshot = {
         "timestamp": report.timestamp,
@@ -2531,6 +3145,7 @@ def write_infra_snapshot(report: HealthReport) -> None:
 
     try:
         import tempfile
+
         # Atomic write via rename
         fd, tmp = tempfile.mkstemp(dir=PROFILES_DIR, suffix=".tmp")
         with os.fdopen(fd, "w") as f:
@@ -2575,10 +3190,13 @@ def format_history(n: int = 20) -> str:
     total = len(entries)
     healthy_runs = sum(1 for e in entries if e.get("status") == "healthy")
     lines.append("")
-    lines.append(f"Uptime: {healthy_runs}/{total} runs healthy ({100*healthy_runs//total if total else 0}%)")
+    lines.append(
+        f"Uptime: {healthy_runs}/{total} runs healthy ({100 * healthy_runs // total if total else 0}%)"
+    )
 
     # Most frequently failing checks
     from collections import Counter
+
     fail_counts: Counter[str] = Counter()
     for e in entries:
         for c in e.get("failed_checks", []):
@@ -2593,41 +3211,55 @@ def format_history(n: int = 20) -> str:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
+
 async def main() -> None:
     parser = argparse.ArgumentParser(
         description="Stack health monitor — zero LLM calls, parallel async checks",
         prog="python -m agents.health_monitor",
     )
     parser.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="Output machine-readable JSON",
     )
     parser.add_argument(
-        "--check", metavar="GROUPS",
+        "--check",
+        metavar="GROUPS",
         help="Comma-separated check groups (docker,gpu,systemd,qdrant,profiles,endpoints,credentials,disk)",
     )
     parser.add_argument(
-        "--fix", action="store_true",
+        "--fix",
+        action="store_true",
         help="Run remediation commands for failures",
     )
     parser.add_argument(
-        "--yes", "-y", action="store_true",
+        "--yes",
+        "-y",
+        action="store_true",
         help="Skip confirmation for --fix",
     )
     parser.add_argument(
-        "--apply", action="store_true",
+        "--apply",
+        action="store_true",
         help="Auto-apply safe fixes via LLM pipeline (for watchdog timer)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Evaluate fixes but don't execute (shows what would happen)",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true",
+        "--verbose",
+        "-v",
+        action="store_true",
         help="Show detail fields for all checks",
     )
     parser.add_argument(
-        "--history", metavar="N", nargs="?", const=20, type=int,
+        "--history",
+        metavar="N",
+        nargs="?",
+        const=20,
+        type=int,
         help="Show last N health check results from history (default: 20)",
     )
 

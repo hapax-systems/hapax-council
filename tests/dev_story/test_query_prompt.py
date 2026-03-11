@@ -1,4 +1,5 @@
 """Tests for dev-story query agent prompt content."""
+
 from __future__ import annotations
 
 from agents.dev_story.query import build_system_prompt

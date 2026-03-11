@@ -6,6 +6,7 @@ Handles the "YouTube and YouTube Music/" Takeout folder which contains:
 - subscriptions/subscriptions.csv — channel subscriptions
 - playlists/*.csv — playlist contents (Video ID, timestamp)
 """
+
 from __future__ import annotations
 
 import csv
@@ -21,9 +22,7 @@ from shared.takeout.models import NormalizedRecord, ServiceConfig, make_record_i
 log = logging.getLogger("takeout.youtube")
 
 # Timestamp format in watch/search history HTML
-_TS_PATTERN = re.compile(
-    r"(\w{3} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?\s*\w*)"
-)
+_TS_PATTERN = re.compile(r"(\w{3} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?\s*\w*)")
 
 
 def parse(zf: zipfile.ZipFile, config: ServiceConfig) -> Iterator[NormalizedRecord]:
@@ -34,14 +33,17 @@ def parse(zf: zipfile.ZipFile, config: ServiceConfig) -> Iterator[NormalizedReco
     ]
 
     files_by_type: dict[str, list[str]] = {
-        "watch": [], "search": [], "subscription": [], "playlist": [],
+        "watch": [],
+        "search": [],
+        "subscription": [],
+        "playlist": [],
     }
 
     for name in zf.namelist():
         for prefix in prefix_options:
             if not name.startswith(prefix):
                 continue
-            rel = name[len(prefix):]
+            rel = name[len(prefix) :]
             if rel == "history/watch-history.html":
                 files_by_type["watch"].append(name)
             elif rel == "history/search-history.html":
@@ -66,7 +68,9 @@ def parse(zf: zipfile.ZipFile, config: ServiceConfig) -> Iterator[NormalizedReco
 
 
 def _parse_watch_history(
-    zf: zipfile.ZipFile, path: str, config: ServiceConfig,
+    zf: zipfile.ZipFile,
+    path: str,
+    config: ServiceConfig,
 ) -> Iterator[NormalizedRecord]:
     """Parse watch-history.html — structured entries with video URLs and channels."""
     try:
@@ -122,7 +126,9 @@ def _parse_watch_history(
 
 
 def _parse_search_history(
-    zf: zipfile.ZipFile, path: str, config: ServiceConfig,
+    zf: zipfile.ZipFile,
+    path: str,
+    config: ServiceConfig,
 ) -> Iterator[NormalizedRecord]:
     """Parse search-history.html — YouTube search queries."""
     try:
@@ -164,7 +170,9 @@ def _parse_search_history(
 
 
 def _parse_subscriptions(
-    zf: zipfile.ZipFile, path: str, config: ServiceConfig,
+    zf: zipfile.ZipFile,
+    path: str,
+    config: ServiceConfig,
 ) -> Iterator[NormalizedRecord]:
     """Parse subscriptions.csv — channel subscriptions."""
     try:
@@ -208,7 +216,9 @@ def _parse_subscriptions(
 
 
 def _parse_playlist(
-    zf: zipfile.ZipFile, path: str, config: ServiceConfig,
+    zf: zipfile.ZipFile,
+    path: str,
+    config: ServiceConfig,
 ) -> Iterator[NormalizedRecord]:
     """Parse playlist CSV — video IDs with timestamps."""
     try:
@@ -218,6 +228,7 @@ def _parse_playlist(
 
     # Extract playlist name from filename: "Music-videos.csv" → "Music"
     import os
+
     basename = os.path.basename(path)
     playlist_name = basename.replace("-videos.csv", "").replace("-videos(1).csv", "")
 
@@ -298,4 +309,5 @@ def _extract_timestamp(html_entry: str) -> datetime | None:
 def _decode_html(text: str) -> str:
     """Decode common HTML entities."""
     import html
+
     return html.unescape(text)

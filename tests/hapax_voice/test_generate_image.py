@@ -1,4 +1,5 @@
 """Tests for generate_image tool schema and handler."""
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -203,6 +204,7 @@ class TestGenaiGenerateImage:
             mock_client.models.generate_images.return_value = mock_response
 
             from agents.hapax_voice.tools import _genai_generate_image
+
             result = _genai_generate_image("test prompt")
             assert result is None
 
@@ -211,6 +213,7 @@ class TestGenaiGenerateImage:
             mock_client_cls.side_effect = Exception("API error")
 
             from agents.hapax_voice.tools import _genai_generate_image
+
             result = _genai_generate_image("test prompt")
             assert result is None
 
@@ -224,6 +227,7 @@ class TestGenaiGenerateImage:
             mock_client.models.generate_images.return_value = mock_response
 
             from agents.hapax_voice.tools import _genai_generate_image
+
             result = _genai_generate_image("a red circle")
             assert result == b"fake-png-bytes"
 

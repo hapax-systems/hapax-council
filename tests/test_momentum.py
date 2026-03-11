@@ -1,20 +1,16 @@
 """Tests for cockpit.data.momentum — domain momentum tracking."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from cockpit.data.momentum import (
     MomentumVector,
-    DomainMomentum,
-    compute_activity_rate,
-    compute_regularity,
-    compute_alignment_slope,
     classify_direction,
     classify_regularity,
-    collect_domain_momentum,
+    compute_activity_rate,
+    compute_alignment_slope,
+    compute_regularity,
 )
 
 
@@ -25,21 +21,21 @@ class TestActivityRate:
 
     def test_uniform_events_returns_near_one(self) -> None:
         """Uniform daily events over 30 days produce ratio near 1.0."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         events = [now - timedelta(days=i) for i in range(30)]
         rate = compute_activity_rate(events, days_short=7, days_long=30)
         assert 0.8 <= rate <= 1.2
 
     def test_recent_burst_returns_high(self) -> None:
         """Events only in last 7 days produce ratio > 1.2."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         events = [now - timedelta(hours=i * 6) for i in range(28)]  # 28 events in 7 days
         rate = compute_activity_rate(events, days_short=7, days_long=30)
         assert rate > 1.2
 
     def test_old_events_only_returns_low(self) -> None:
         """Events only 20+ days ago produce ratio < 0.8."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         events = [now - timedelta(days=20 + i) for i in range(10)]
         rate = compute_activity_rate(events, days_short=7, days_long=30)
         assert rate < 0.8
@@ -53,14 +49,14 @@ class TestRegularity:
 
     def test_regular_daily_events(self) -> None:
         """Daily events have low CV."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         events = [now - timedelta(days=i) for i in range(30)]
         cv = compute_regularity(events)
         assert cv < 0.5
 
     def test_bursty_events(self) -> None:
         """Events clustered in bursts have moderate CV."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         events = (
             [now - timedelta(days=i) for i in range(3)]  # burst 1
             + [now - timedelta(days=15 + i) for i in range(3)]  # burst 2

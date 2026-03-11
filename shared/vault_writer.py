@@ -18,11 +18,12 @@ Vault layout:
     vault/30-system/goals.md         Goal snapshot (overwritten)
     vault/30-system/profile-summary.md  Profile overview (overwritten on profiler run)
 """
+
 from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.config import VAULT_PATH
@@ -65,6 +66,7 @@ def write_to_vault(
         parts: list[str] = []
         if frontmatter:
             import yaml
+
             parts.append("---")
             parts.append(yaml.dump(frontmatter, default_flow_style=False).strip())
             parts.append("---")
@@ -75,9 +77,8 @@ def write_to_vault(
 
         # Atomic write via tempfile
         import tempfile
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=target_dir, suffix=".md"
-        )
+
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, suffix=".md")
         try:
             with open(tmp_fd, "w", encoding="utf-8") as f:
                 f.write(full_content)
@@ -102,7 +103,7 @@ def write_briefing_to_vault(briefing_md: str) -> Path | None:
     Returns:
         Path to the written file.
     """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     return write_to_vault(
         "30-system/briefings",
         f"{today}.md",
@@ -125,7 +126,7 @@ def write_digest_to_vault(digest_md: str) -> Path | None:
     Returns:
         Path to the written file.
     """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     return write_to_vault(
         "30-system/digests",
         f"{today}-digest.md",
@@ -150,13 +151,13 @@ def write_nudges_to_vault(nudges: list[dict]) -> Path | None:
     Returns:
         Path to the written file.
     """
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    lines = [f"# Active Nudges", f"*Updated {now}*", ""]
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines = ["# Active Nudges", f"*Updated {now}*", ""]
 
     if not nudges:
         lines.append("No active nudges.")
     else:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         for n in sorted(nudges, key=lambda x: -x.get("priority", 50)):
             pri = n.get("priority", 50)
             source = n.get("source", "unknown")
@@ -186,7 +187,7 @@ def write_goals_to_vault(goals: list[dict]) -> Path | None:
     Returns:
         Path to the written file.
     """
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = ["# Operator Goals", f"*Synced {now}*", ""]
 
     for g in goals:
@@ -203,31 +204,38 @@ def write_goals_to_vault(goals: list[dict]) -> Path | None:
         "30-system",
         "goals.md",
         "\n".join(lines),
-        frontmatter={"type": "goals", "updated": now, "source": "operator.json", "tags": ["system"]},
+        frontmatter={
+            "type": "goals",
+            "updated": now,
+            "source": "operator.json",
+            "tags": ["system"],
+        },
     )
 
 
 def create_decision_starter(decision_text: str, meeting_ref: str) -> Path | None:
     """Create a decision note starter doc in the vault."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     slug = re.sub(r"[^a-z0-9]+", "-", decision_text[:50].lower()).strip("-")
     if not slug:
         slug = "decision"
 
-    content = "\n".join([
-        f"# Decision: {decision_text[:100]}",
-        "",
-        f"**Source:** [[{meeting_ref}]]",
-        "",
-        "## Decision",
-        decision_text,
-        "",
-        "## Rationale",
-        "",
-        "",
-        "## Consequences",
-        "",
-    ])
+    content = "\n".join(
+        [
+            f"# Decision: {decision_text[:100]}",
+            "",
+            f"**Source:** [[{meeting_ref}]]",
+            "",
+            "## Decision",
+            decision_text,
+            "",
+            "## Rationale",
+            "",
+            "",
+            "## Consequences",
+            "",
+        ]
+    )
     return write_to_vault(
         "10-work/decisions",
         f"{today}-{slug}.md",

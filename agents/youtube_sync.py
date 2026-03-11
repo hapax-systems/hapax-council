@@ -9,13 +9,14 @@ Usage:
     uv run python -m agents.youtube_sync --auto         # Incremental sync
     uv run python -m agents.youtube_sync --stats        # Show sync state
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -41,8 +42,10 @@ RAG_RECENT_COUNT = 50
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class LikedVideo(BaseModel):
     """A liked YouTube video."""
+
     video_id: str
     title: str
     channel: str
@@ -57,6 +60,7 @@ class LikedVideo(BaseModel):
 
 class Subscription(BaseModel):
     """A YouTube channel subscription."""
+
     channel_id: str
     channel_name: str
     description: str = ""
@@ -66,6 +70,7 @@ class Subscription(BaseModel):
 
 class PlaylistInfo(BaseModel):
     """A YouTube playlist."""
+
     playlist_id: str
     title: str
     video_count: int = 0
@@ -74,6 +79,7 @@ class PlaylistInfo(BaseModel):
 
 class YouTubeSyncState(BaseModel):
     """Persistent sync state."""
+
     liked_videos: dict[str, LikedVideo] = Field(default_factory=dict)
     subscriptions: dict[str, Subscription] = Field(default_factory=dict)
     playlists: dict[str, PlaylistInfo] = Field(default_factory=dict)
@@ -84,13 +90,16 @@ class YouTubeSyncState(BaseModel):
 
 # ── Auth ────────────────────────────────────────────────────────────────────
 
+
 def _get_youtube_service():
     """Build authenticated YouTube Data API service."""
     from shared.google_auth import build_service
+
     return build_service("youtube", "v3", SCOPES)
 
 
 # ── State Management ─────────────────────────────────────────────────────────
+
 
 def _load_state(path: Path = STATE_FILE) -> YouTubeSyncState:
     """Load sync state from disk."""
@@ -112,13 +121,14 @@ def _save_state(state: YouTubeSyncState, path: Path = STATE_FILE) -> None:
 
 # ── Behavioral Logging ──────────────────────────────────────────────────────
 
+
 def _log_change(change_type: str, name: str, extra: dict | None = None) -> None:
     """Append behavioral change event to JSONL log."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     entry: dict = {
         "change_type": change_type,
         "name": name,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     if extra:
         entry.update(extra)
@@ -128,6 +138,7 @@ def _log_change(change_type: str, name: str, extra: dict | None = None) -> None:
 
 
 # ── Formatting ──────────────────────────────────────────────────────────────
+
 
 def _format_liked_video_markdown(v: LikedVideo) -> str:
     """Format a liked video as a markdown document for RAG ingestion."""
@@ -159,8 +170,8 @@ tags: {tags_str}
 
 **Channel:** {v.channel}
 **Published:** {date_display}
-**Category:** {v.category or 'unknown'}
-**Duration:** {v.duration or 'unknown'}
+**Category:** {v.category or "unknown"}
+**Duration:** {v.duration or "unknown"}
 **Views:** {v.view_count:,}
 **Link:** https://www.youtube.com/watch?v={v.video_id}{desc_block}
 """
@@ -195,6 +206,7 @@ def _format_subscriptions_markdown(subs: list[Subscription]) -> str:
 
 # ── API Sync Operations ─────────────────────────────────────────────────────
 
+
 def _sync_liked_videos(service, state: YouTubeSyncState) -> int:
     """Sync liked videos from YouTube API. Returns count of new likes."""
     log.info("Syncing liked videos...")
@@ -203,12 +215,16 @@ def _sync_liked_videos(service, state: YouTubeSyncState) -> int:
     total_fetched = 0
 
     while total_fetched < MAX_LIKED_VIDEOS:
-        resp = service.videos().list(
-            part="snippet,contentDetails,statistics",
-            myRating="like",
-            maxResults=50,
-            pageToken=page_token,
-        ).execute()
+        resp = (
+            service.videos()
+            .list(
+                part="snippet,contentDetails,statistics",
+                myRating="like",
+                maxResults=50,
+                pageToken=page_token,
+            )
+            .execute()
+        )
 
         for item in resp.get("items", []):
             vid = item["id"]
@@ -249,12 +265,16 @@ def _sync_subscriptions(service, state: YouTubeSyncState) -> int:
     page_token = None
 
     while True:
-        resp = service.subscriptions().list(
-            part="snippet",
-            mine=True,
-            maxResults=50,
-            pageToken=page_token,
-        ).execute()
+        resp = (
+            service.subscriptions()
+            .list(
+                part="snippet",
+                mine=True,
+                maxResults=50,
+                pageToken=page_token,
+            )
+            .execute()
+        )
 
         for item in resp.get("items", []):
             snippet = item.get("snippet", {})
@@ -286,7 +306,9 @@ def _sync_subscriptions(service, state: YouTubeSyncState) -> int:
 
     state.subscriptions = new_subs
     changes = len(added) + len(removed)
-    log.info("Subscriptions: %d total, %d added, %d removed", len(new_subs), len(added), len(removed))
+    log.info(
+        "Subscriptions: %d total, %d added, %d removed", len(new_subs), len(added), len(removed)
+    )
     return changes
 
 
@@ -297,12 +319,16 @@ def _sync_playlists(service, state: YouTubeSyncState) -> int:
     page_token = None
 
     while True:
-        resp = service.playlists().list(
-            part="snippet,contentDetails",
-            mine=True,
-            maxResults=50,
-            pageToken=page_token,
-        ).execute()
+        resp = (
+            service.playlists()
+            .list(
+                part="snippet,contentDetails",
+                mine=True,
+                maxResults=50,
+                pageToken=page_token,
+            )
+            .execute()
+        )
 
         for item in resp.get("items", []):
             pid = item["id"]
@@ -348,6 +374,7 @@ def _full_sync(service, state: YouTubeSyncState) -> dict[str, int]:
 
 # ── File Writing ─────────────────────────────────────────────────────────────
 
+
 def _write_youtube_files(state: YouTubeSyncState) -> None:
     """Write liked videos and subscriptions as markdown for RAG ingestion."""
     likes_dir = YOUTUBE_DIR / "liked"
@@ -381,6 +408,7 @@ def _write_youtube_files(state: YouTubeSyncState) -> None:
 
 # ── Profiler Integration ─────────────────────────────────────────────────────
 
+
 def _generate_profile_facts(state: YouTubeSyncState) -> list[dict]:
     """Generate deterministic profile facts from YouTube state."""
     from collections import Counter
@@ -399,25 +427,29 @@ def _generate_profile_facts(state: YouTubeSyncState) -> list[dict]:
 
     if tag_counts:
         top_tags = ", ".join(t for t, _ in tag_counts.most_common(15))
-        facts.append({
-            "dimension": "information_seeking",
-            "key": "topic_interests",
-            "value": top_tags,
-            "confidence": 0.85,
-            "source": source,
-            "evidence": f"Top tags across {len(state.liked_videos)} liked videos",
-        })
+        facts.append(
+            {
+                "dimension": "information_seeking",
+                "key": "topic_interests",
+                "value": top_tags,
+                "confidence": 0.85,
+                "source": source,
+                "evidence": f"Top tags across {len(state.liked_videos)} liked videos",
+            }
+        )
 
     if channel_counts:
         top_channels = ", ".join(ch for ch, _ in channel_counts.most_common(10))
-        facts.append({
-            "dimension": "information_seeking",
-            "key": "favorite_channels",
-            "value": top_channels,
-            "confidence": 0.85,
-            "source": source,
-            "evidence": f"Most-liked channels across {len(state.liked_videos)} videos",
-        })
+        facts.append(
+            {
+                "dimension": "information_seeking",
+                "key": "favorite_channels",
+                "value": top_channels,
+                "confidence": 0.85,
+                "source": source,
+                "evidence": f"Most-liked channels across {len(state.liked_videos)} videos",
+            }
+        )
 
     # Subscription-based interests
     if state.subscriptions:
@@ -428,14 +460,16 @@ def _generate_profile_facts(state: YouTubeSyncState) -> list[dict]:
                 key=lambda s: s.channel_name.lower(),
             )[:20]
         )
-        facts.append({
-            "dimension": "information_seeking",
-            "key": "subscriptions",
-            "value": sub_names,
-            "confidence": 0.90,
-            "source": source,
-            "evidence": f"Active subscriptions ({len(state.subscriptions)} channels)",
-        })
+        facts.append(
+            {
+                "dimension": "information_seeking",
+                "key": "subscriptions",
+                "value": sub_names,
+                "confidence": 0.90,
+                "source": source,
+                "evidence": f"Active subscriptions ({len(state.subscriptions)} channels)",
+            }
+        )
 
     return facts
 
@@ -454,6 +488,7 @@ def _write_profile_facts(state: YouTubeSyncState) -> None:
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 
+
 def _print_stats(state: YouTubeSyncState) -> None:
     """Print sync statistics."""
     from collections import Counter
@@ -463,8 +498,12 @@ def _print_stats(state: YouTubeSyncState) -> None:
     print(f"Liked videos:    {len(state.liked_videos):,}")
     print(f"Subscriptions:   {len(state.subscriptions):,}")
     print(f"Playlists:       {len(state.playlists):,}")
-    print(f"Last full sync:  {datetime.fromtimestamp(state.last_full_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_full_sync else 'never'}")
-    print(f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}")
+    print(
+        f"Last full sync:  {datetime.fromtimestamp(state.last_full_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_full_sync else 'never'}"
+    )
+    print(
+        f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}"
+    )
 
     if state.liked_videos:
         tag_counts: Counter[str] = Counter()
@@ -483,6 +522,7 @@ def _print_stats(state: YouTubeSyncState) -> None:
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
+
 
 def run_auth() -> None:
     """Interactive OAuth consent flow."""
@@ -536,6 +576,7 @@ def run_stats() -> None:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="YouTube RAG sync")

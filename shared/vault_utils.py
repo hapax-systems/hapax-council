@@ -1,4 +1,5 @@
 """Shared utilities for reading Obsidian vault content."""
+
 from __future__ import annotations
 
 from pathlib import Path

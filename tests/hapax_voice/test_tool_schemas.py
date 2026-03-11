@@ -1,8 +1,6 @@
 """Tests for voice tool schema definitions."""
-import pytest
 
-from agents.hapax_voice.tools import get_tool_schemas, TOOL_SCHEMAS
-
+from agents.hapax_voice.tools import TOOL_SCHEMAS, get_tool_schemas
 
 EXPECTED_TOOL_NAMES = [
     "search_documents",

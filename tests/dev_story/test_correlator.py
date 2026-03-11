@@ -1,12 +1,13 @@
 """Tests for the correlation engine."""
+
 from __future__ import annotations
 
 from agents.dev_story.correlator import (
-    correlate,
     _parse_iso_timestamp,
     _time_diff_minutes,
+    correlate,
 )
-from agents.dev_story.models import FileChange, CommitFile, Correlation
+from agents.dev_story.models import CommitFile, FileChange
 
 
 def test_parse_iso_timestamp_utc():
@@ -114,10 +115,20 @@ def test_correlate_no_match():
 def test_correlate_deduplicates():
     """Same message+commit pair should produce one correlation, not multiple."""
     file_changes = [
-        FileChange(message_id="msg-1", file_path="a.py", version=1,
-                   change_type="modified", timestamp="2026-03-10T10:00:00Z"),
-        FileChange(message_id="msg-1", file_path="b.py", version=1,
-                   change_type="modified", timestamp="2026-03-10T10:00:00Z"),
+        FileChange(
+            message_id="msg-1",
+            file_path="a.py",
+            version=1,
+            change_type="modified",
+            timestamp="2026-03-10T10:00:00Z",
+        ),
+        FileChange(
+            message_id="msg-1",
+            file_path="b.py",
+            version=1,
+            change_type="modified",
+            timestamp="2026-03-10T10:00:00Z",
+        ),
     ]
     commit_files = [
         CommitFile(commit_hash="abc123", file_path="a.py", operation="M"),

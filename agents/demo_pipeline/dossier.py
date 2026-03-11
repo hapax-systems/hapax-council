@@ -4,6 +4,7 @@ Gathers background on a specific person through a CLI interview,
 persists to demo-audiences.yaml, and optionally indexes relationship
 facts to Qdrant profile-facts.
 """
+
 from __future__ import annotations
 
 import logging
@@ -134,7 +135,7 @@ def save_dossier(
 
     # Serialize to YAML-friendly dict
     audiences_data: dict = {}
-    for key, d in existing.items():
+    for _key, d in existing.items():
         audiences_data[d.key] = {
             "archetype": d.archetype,
             "name": d.name,
@@ -205,31 +206,35 @@ def record_relationship_facts(
                 continue
             text = f"relationships/{dossier.key}: {key} = {value}"
             texts.append(text)
-            metadata_list.append({
-                "dimension": "relationships",
-                "key": f"{dossier.key}/{key}",
-                "value": value,
-                "confidence": 0.9,
-                "source": "dossier-interview",
-                "text": text,
-                "audience_key": dossier.key,
-                "audience_name": dossier.name,
-            })
+            metadata_list.append(
+                {
+                    "dimension": "relationships",
+                    "key": f"{dossier.key}/{key}",
+                    "value": value,
+                    "confidence": 0.9,
+                    "source": "dossier-interview",
+                    "text": text,
+                    "audience_key": dossier.key,
+                    "audience_name": dossier.name,
+                }
+            )
 
         # Also index the assembled context as a summary fact
         if dossier.context:
             text = f"relationships/{dossier.key}: context = {dossier.context}"
             texts.append(text)
-            metadata_list.append({
-                "dimension": "relationships",
-                "key": f"{dossier.key}/context",
-                "value": dossier.context,
-                "confidence": 0.9,
-                "source": "dossier-interview",
-                "text": text,
-                "audience_key": dossier.key,
-                "audience_name": dossier.name,
-            })
+            metadata_list.append(
+                {
+                    "dimension": "relationships",
+                    "key": f"{dossier.key}/context",
+                    "value": dossier.context,
+                    "confidence": 0.9,
+                    "source": "dossier-interview",
+                    "text": text,
+                    "audience_key": dossier.key,
+                    "audience_name": dossier.name,
+                }
+            )
 
         if not texts:
             return 0
@@ -237,11 +242,13 @@ def record_relationship_facts(
         vectors = embed_batch(texts, prefix="search_document")
 
         points: list[PointStruct] = []
-        for vec, meta in zip(vectors, metadata_list):
-            point_id = str(uuid.uuid5(
-                uuid.NAMESPACE_DNS,
-                f"profile-fact-relationships-{meta['key']}",
-            ))
+        for vec, meta in zip(vectors, metadata_list, strict=False):
+            point_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_DNS,
+                    f"profile-fact-relationships-{meta['key']}",
+                )
+            )
             points.append(PointStruct(id=point_id, vector=vec, payload=meta))
 
         client = get_qdrant()

@@ -1,4 +1,5 @@
 """WAV-to-MP3 audio conversion using ffmpeg (via imageio_ffmpeg)."""
+
 from __future__ import annotations
 
 import logging
@@ -53,7 +54,12 @@ def wav_to_mp3(
         log.error("ffmpeg stderr: %s", result.stderr)
         raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
 
-    log.info("Converted %s (%.1f KB -> %.1f KB)", wav_path.name, wav_path.stat().st_size / 1024, mp3_path.stat().st_size / 1024)
+    log.info(
+        "Converted %s (%.1f KB -> %.1f KB)",
+        wav_path.name,
+        wav_path.stat().st_size / 1024,
+        mp3_path.stat().st_size / 1024,
+    )
     return mp3_path
 
 

@@ -1,10 +1,9 @@
 """Robustness / failure-mode tests for EventLog."""
+
 import datetime
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from agents.hapax_voice.event_log import EventLog
 

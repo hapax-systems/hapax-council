@@ -9,6 +9,7 @@ We extract file metadata (name, size, modified date) and text content
 where cheaply available. Heavy parsing (PDF, DOCX) is left to the
 RAG pipeline's Docling converter.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,10 +30,29 @@ METADATA_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"
 
 # Extensions to skip entirely (binary, media)
 SKIP_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg",
-    ".mp3", ".mp4", ".wav", ".flac", ".ogg", ".avi", ".mov",
-    ".zip", ".tar", ".gz", ".7z", ".rar",
-    ".exe", ".dll", ".so", ".dylib",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".svg",
+    ".mp3",
+    ".mp4",
+    ".wav",
+    ".flac",
+    ".ogg",
+    ".avi",
+    ".mov",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".7z",
+    ".rar",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
 }
 
 MAX_TEXT_CHARS = 5000
@@ -59,7 +79,7 @@ def parse(zf: zipfile.ZipFile, config: ServiceConfig) -> Iterator[NormalizedReco
             continue
 
         # Get relative path within Drive
-        rel_path = info.filename[len(matched_prefix):]
+        rel_path = info.filename[len(matched_prefix) :]
         if not rel_path:
             continue
 

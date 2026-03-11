@@ -3,6 +3,7 @@
 Extracted from gmail.py for reuse across email parsers (Gmail, Proton, etc.).
 All functions operate on stdlib email.message.Message objects.
 """
+
 from __future__ import annotations
 
 import email.header

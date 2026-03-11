@@ -1,23 +1,30 @@
 """Tests for WorkspaceMonitor orchestrator."""
+
 import sys
 import time
 import types
-from unittest.mock import MagicMock, patch, AsyncMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from agents.hapax_voice.screen_models import (
-    CameraConfig, Issue, WorkspaceAnalysis, GearObservation,
+    Issue,
+    WorkspaceAnalysis,
 )
 from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
 
 
 def _make_analysis(**kwargs):
     defaults = dict(
-        app="chrome", context="browsing", summary="Web page.",
-        issues=[], suggestions=[], keywords=[],
-        operator_present=True, operator_activity="typing",
-        operator_attention="screen", gear_state=[], workspace_change=False,
+        app="chrome",
+        context="browsing",
+        summary="Web page.",
+        issues=[],
+        suggestions=[],
+        keywords=[],
+        operator_present=True,
+        operator_activity="typing",
+        operator_attention="screen",
+        gear_state=[],
+        workspace_change=False,
     )
     defaults.update(kwargs)
     return WorkspaceAnalysis(**defaults)
@@ -41,9 +48,11 @@ def test_monitor_proactive_routing():
     queue = MagicMock()
     monitor = WorkspaceMonitor(enabled=False, proactive_min_confidence=0.8)
     monitor._notification_queue = queue
-    analysis = _make_analysis(issues=[
-        Issue(severity="error", description="Docker down", confidence=0.95),
-    ])
+    analysis = _make_analysis(
+        issues=[
+            Issue(severity="error", description="Docker down", confidence=0.95),
+        ]
+    )
     monitor._route_proactive_issues(analysis)
     assert queue.enqueue.call_count == 1
 
@@ -51,12 +60,16 @@ def test_monitor_proactive_routing():
 def test_monitor_proactive_cooldown():
     queue = MagicMock()
     monitor = WorkspaceMonitor(
-        enabled=False, proactive_min_confidence=0.8, proactive_cooldown_s=300,
+        enabled=False,
+        proactive_min_confidence=0.8,
+        proactive_cooldown_s=300,
     )
     monitor._notification_queue = queue
-    analysis = _make_analysis(issues=[
-        Issue(severity="error", description="fail", confidence=0.9),
-    ])
+    analysis = _make_analysis(
+        issues=[
+            Issue(severity="error", description="fail", confidence=0.9),
+        ]
+    )
     monitor._route_proactive_issues(analysis)
     monitor._route_proactive_issues(analysis)
     assert queue.enqueue.call_count == 1
@@ -87,10 +100,13 @@ def test_monitor_rag_query_returns_chunks():
     mock_config.get_qdrant = MagicMock()
     mock_config.get_qdrant.return_value.query_points.return_value = mock_results
 
-    with patch.dict(sys.modules, {
-        "agents.shared": types.ModuleType("agents.shared"),
-        "agents.shared.config": mock_config,
-    }):
+    with patch.dict(
+        sys.modules,
+        {
+            "agents.shared": types.ModuleType("agents.shared"),
+            "agents.shared.config": mock_config,
+        },
+    ):
         result = monitor._query_rag(["docker"])
     assert result is not None
     assert "docker-compose.yml" in result
@@ -105,15 +121,18 @@ def test_monitor_disabled_without_crash():
 def test_workspace_monitor_uses_hyprland_listener():
     """WorkspaceMonitor should accept a HyprlandEventListener."""
     from unittest.mock import MagicMock, patch
+
     from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
 
-    with patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener") as MockListener, \
-         patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"), \
-         patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"):
+    with (
+        patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener") as MockListener,
+        patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"),
+        patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"),
+    ):
         mock_instance = MagicMock()
         mock_instance.available = True
         MockListener.return_value = mock_instance
 
-        monitor = WorkspaceMonitor(enabled=True)
+        WorkspaceMonitor(enabled=True)
         # Listener should have on_focus_changed set
         assert mock_instance.on_focus_changed is not None

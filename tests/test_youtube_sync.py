@@ -1,9 +1,11 @@
 """Tests for youtube_sync — schemas, formatting, profiler facts."""
+
 from __future__ import annotations
 
 
 def test_liked_video_defaults():
     from agents.youtube_sync import LikedVideo
+
     v = LikedVideo(
         video_id="abc123",
         title="Cool Beat Tutorial",
@@ -17,6 +19,7 @@ def test_liked_video_defaults():
 
 def test_subscription_defaults():
     from agents.youtube_sync import Subscription
+
     s = Subscription(
         channel_id="ch123",
         channel_name="Music Theory",
@@ -27,6 +30,7 @@ def test_subscription_defaults():
 
 def test_youtube_sync_state_empty():
     from agents.youtube_sync import YouTubeSyncState
+
     s = YouTubeSyncState()
     assert s.liked_videos == {}
     assert s.subscriptions == {}
@@ -35,6 +39,7 @@ def test_youtube_sync_state_empty():
 
 def test_format_liked_video_markdown():
     from agents.youtube_sync import LikedVideo, _format_liked_video_markdown
+
     v = LikedVideo(
         video_id="abc123",
         title="Making Lo-Fi Beats on SP-404",
@@ -55,11 +60,20 @@ def test_format_liked_video_markdown():
 
 def test_format_subscriptions_markdown():
     from agents.youtube_sync import Subscription, _format_subscriptions_markdown
+
     subs = [
-        Subscription(channel_id="ch1", channel_name="Music Theory",
-                     description="Learn music theory", video_count=150),
-        Subscription(channel_id="ch2", channel_name="Beat Making",
-                     description="Hip hop production", video_count=80),
+        Subscription(
+            channel_id="ch1",
+            channel_name="Music Theory",
+            description="Learn music theory",
+            video_count=150,
+        ),
+        Subscription(
+            channel_id="ch2",
+            channel_name="Beat Making",
+            description="Hip hop production",
+            video_count=80,
+        ),
     ]
     md = _format_subscriptions_markdown(subs)
     assert "source_service: youtube" in md
@@ -69,14 +83,20 @@ def test_format_subscriptions_markdown():
 
 def test_generate_youtube_profile_facts():
     from agents.youtube_sync import (
-        _generate_profile_facts, YouTubeSyncState, LikedVideo, Subscription,
+        LikedVideo,
+        Subscription,
+        YouTubeSyncState,
+        _generate_profile_facts,
     )
+
     state = YouTubeSyncState()
     state.liked_videos = {
-        "v1": LikedVideo(video_id="v1", title="Beat Tutorial",
-              channel="Producer", tags=["beats", "sp-404"]),
-        "v2": LikedVideo(video_id="v2", title="Synth Jam",
-              channel="SynthHead", tags=["synth", "ambient"]),
+        "v1": LikedVideo(
+            video_id="v1", title="Beat Tutorial", channel="Producer", tags=["beats", "sp-404"]
+        ),
+        "v2": LikedVideo(
+            video_id="v2", title="Synth Jam", channel="SynthHead", tags=["synth", "ambient"]
+        ),
     }
     state.subscriptions = {
         "ch1": Subscription(channel_id="ch1", channel_name="Producer"),

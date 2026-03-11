@@ -1,4 +1,5 @@
 """copilot — context-aware cognitive partner engine."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -97,8 +98,7 @@ class CopilotEngine:
         if ctx.health_changed and ctx.health_status != "healthy":
             check = ctx.failed_checks[0] if ctx.failed_checks else "something"
             return (
-                f"heads up — health just dropped to {ctx.health_status}. "
-                f"{check} needs attention."
+                f"heads up — health just dropped to {ctx.health_status}. {check} needs attention."
             )
 
         if ctx.last_agent_elapsed < 10:
@@ -113,11 +113,7 @@ class CopilotEngine:
             return "back from chat. nothing pressing."
 
         # P2: Ongoing concerns
-        if (
-            ctx.briefing_age_h is not None
-            and ctx.briefing_age_h > 26
-            and ctx.action_item_count > 0
-        ):
+        if ctx.briefing_age_h is not None and ctx.briefing_age_h > 26 and ctx.action_item_count > 0:
             return (
                 f"briefing is {ctx.briefing_age_h:.0f}h old with "
                 f"{ctx.action_item_count} items still open."
@@ -125,10 +121,7 @@ class CopilotEngine:
 
         if ctx.health_status == "degraded":
             check = ctx.failed_checks[0] if ctx.failed_checks else "check"
-            return (
-                f"{ctx.healthy_count}/{ctx.total_checks} checks passing — "
-                f"{check} still down."
-            )
+            return f"{ctx.healthy_count}/{ctx.total_checks} checks passing — {check} still down."
 
         if ctx.health_status == "failed":
             return f"health is failed — {len(ctx.failed_checks)} checks need attention."
@@ -194,9 +187,7 @@ class CopilotEngine:
         if "{gap}" in msg:
             if ctx.readiness_gaps:
                 # Pick a gap that isn't about interview (already done in developing)
-                non_interview_gaps = [
-                    g for g in ctx.readiness_gaps if "interview" not in g
-                ]
+                non_interview_gaps = [g for g in ctx.readiness_gaps if "interview" not in g]
                 gap = non_interview_gaps[0] if non_interview_gaps else ctx.readiness_gaps[0]
             else:
                 gap = "some dimensions"
@@ -260,6 +251,10 @@ def _ambient_status(ctx: CopilotContext) -> str:
 
     # No operational info — surface readiness awareness instead of "all clear"
     if ctx.readiness_level and ctx.readiness_level != "operational":
-        return f"nothing operational to report. {ctx.readiness_top_gap}." if ctx.readiness_top_gap else "all clear. nothing pressing."
+        return (
+            f"nothing operational to report. {ctx.readiness_top_gap}."
+            if ctx.readiness_top_gap
+            else "all clear. nothing pressing."
+        )
 
     return "all clear. nothing pressing."

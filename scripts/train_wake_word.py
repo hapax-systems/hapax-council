@@ -46,19 +46,14 @@ Notes:
     - The official negative feature dataset (~2000 hours) is downloaded from HuggingFace.
     - Output model: ~/.local/share/hapax-voice/hapax_wake_word.onnx
 """
+
 from __future__ import annotations
 
 import argparse
-import io
-import json
 import logging
-import os
-import struct
-import subprocess
 import sys
 import wave
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -172,6 +167,7 @@ NEGATIVE_PHRASES = [
 # Utilities
 # ---------------------------------------------------------------------------
 
+
 def ensure_dir(path: Path) -> Path:
     """Create directory if it doesn't exist."""
     path.mkdir(parents=True, exist_ok=True)
@@ -192,6 +188,7 @@ def load_wav_16k(path: Path) -> np.ndarray:
     """Load a WAV file and resample to 16kHz mono int16."""
     try:
         import torchaudio
+
         waveform, sr = torchaudio.load(str(path))
         # Convert to mono
         if waveform.shape[0] > 1:
@@ -206,11 +203,13 @@ def load_wav_16k(path: Path) -> np.ndarray:
     except Exception:
         # Fallback: scipy
         import scipy.io.wavfile as wavfile
+
         sr, audio = wavfile.read(str(path))
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
         if sr != SAMPLE_RATE:
             from scipy.signal import resample
+
             num_samples = int(len(audio) * SAMPLE_RATE / sr)
             audio = resample(audio, num_samples)
         if audio.dtype == np.float32 or audio.dtype == np.float64:
@@ -222,7 +221,8 @@ def load_wav_16k(path: Path) -> np.ndarray:
 # Audio Augmentation
 # ---------------------------------------------------------------------------
 
-def build_augmentation_pipeline() -> "audiomentations.Compose":
+
+def build_augmentation_pipeline() -> audiomentations.Compose:
     """Build an audiomentations augmentation pipeline for wake word samples.
 
     Applies realistic acoustic variations: noise, speed/pitch changes,
@@ -237,12 +237,14 @@ def build_augmentation_pipeline() -> "audiomentations.Compose":
         TimeStretch,
     )
 
-    return Compose([
-        AddGaussianNoise(min_amplitude=0.002, max_amplitude=0.015, p=0.5),
-        TimeStretch(min_rate=0.85, max_rate=1.15, p=0.5),
-        PitchShift(min_semitones=-3, max_semitones=3, p=0.4),
-        Gain(min_gain_db=-6, max_gain_db=6, p=0.3),
-    ])
+    return Compose(
+        [
+            AddGaussianNoise(min_amplitude=0.002, max_amplitude=0.015, p=0.5),
+            TimeStretch(min_rate=0.85, max_rate=1.15, p=0.5),
+            PitchShift(min_semitones=-3, max_semitones=3, p=0.4),
+            Gain(min_gain_db=-6, max_gain_db=6, p=0.3),
+        ]
+    )
 
 
 def augment_clips(
@@ -285,6 +287,7 @@ def _get_kokoro_pipeline():
     global _kokoro_pipeline
     if _kokoro_pipeline is None:
         import kokoro
+
         _kokoro_pipeline = kokoro.KPipeline(lang_code="a")
     return _kokoro_pipeline
 
@@ -327,6 +330,7 @@ def generate_with_kokoro(
         is_short = len(text.split()) <= 2
         if is_short:
             import random
+
             carrier = random.choice(_CARRIER_SENTENCES).format(word=text)
             synth_text = carrier
         else:
@@ -357,6 +361,7 @@ def generate_with_kokoro(
 
         # Kokoro outputs at 24kHz -- resample to 16kHz
         from scipy.signal import resample
+
         num_samples = int(len(audio) * SAMPLE_RATE / 24000)
         audio = resample(audio, num_samples)
         audio_int16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
@@ -411,6 +416,7 @@ def generate_with_piper(
 
         # Piper synthesize yields AudioChunk objects with int16 audio
         from piper.config import SynthesisConfig
+
         syn_cfg = SynthesisConfig()
         syn_cfg.length_scale = length_scale
         syn_cfg.noise_scale = noise_scale
@@ -430,6 +436,7 @@ def generate_with_piper(
 
         # Resample to 16kHz
         from scipy.signal import resample
+
         piper_sr = piper_sr or 22050
         num_samples = int(len(audio) * SAMPLE_RATE / piper_sr)
         audio_float = audio.astype(np.float64)
@@ -532,7 +539,8 @@ def generate_with_piper_sample_generator(
         log.warning(
             "piper-sample-generator not found at %s. Clone it:\n"
             "  git clone https://github.com/rhasspy/piper-sample-generator.git %s",
-            PIPER_GENERATOR_DIR, PIPER_GENERATOR_DIR,
+            PIPER_GENERATOR_DIR,
+            PIPER_GENERATOR_DIR,
         )
         return 0
 
@@ -542,7 +550,8 @@ def generate_with_piper_sample_generator(
             "  wget -P %s/models/ "
             "https://huggingface.co/rhasspy/piper-sample-generator/resolve/v2.0.0/"
             "models/en_US-libritts_r-medium.pt",
-            PIPER_GENERATOR_MODEL, PIPER_GENERATOR_DIR,
+            PIPER_GENERATOR_MODEL,
+            PIPER_GENERATOR_DIR,
         )
         return 0
 
@@ -582,6 +591,7 @@ def generate_with_piper_sample_generator(
 # ---------------------------------------------------------------------------
 # Sample Generation Orchestration
 # ---------------------------------------------------------------------------
+
 
 def generate_positive_samples(
     target_count: int = 10000,
@@ -657,9 +667,7 @@ def generate_positive_samples(
             for exag in exaggerations:
                 for cfg in cfg_weights:
                     out = POSITIVE_DIR / f"chatterbox_{idx:05d}.wav"
-                    if generate_with_chatterbox(
-                        phrase, out, exaggeration=exag, cfg_weight=cfg
-                    ):
+                    if generate_with_chatterbox(phrase, out, exaggeration=exag, cfg_weight=cfg):
                         cb_count += 1
                         idx += 1
         total += cb_count
@@ -714,13 +722,12 @@ def generate_negative_samples(
 # Feature Extraction
 # ---------------------------------------------------------------------------
 
+
 def download_oww_models() -> None:
     """Download OpenWakeWord's pre-trained feature extraction models."""
     ensure_dir(OWW_MODELS_DIR)
 
-    base_url = (
-        "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
-    )
+    base_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
     models = [
         ("melspectrogram.onnx", MELSPEC_MODEL),
         ("embedding_model.onnx", EMBEDDING_MODEL),
@@ -733,6 +740,7 @@ def download_oww_models() -> None:
         url = f"{base_url}/{name}"
         log.info("Downloading %s ...", url)
         import urllib.request
+
         urllib.request.urlretrieve(url, str(path))
         log.info("Saved to %s", path)
 
@@ -758,6 +766,7 @@ def download_negative_features() -> None:
         log.info("Downloading negative features (~17GB) ...")
         log.info("URL: %s", url)
         import urllib.request
+
         urllib.request.urlretrieve(url, str(features_file))
         log.info("Saved to %s", features_file)
 
@@ -770,6 +779,7 @@ def download_negative_features() -> None:
         )
         log.info("Downloading validation features ...")
         import urllib.request
+
         urllib.request.urlretrieve(url, str(validation_file))
         log.info("Saved to %s", validation_file)
 
@@ -795,10 +805,7 @@ def extract_features_from_clips(
     # Collect all WAV files
     wav_files = sorted(clips_dir.rglob("*.wav"))
     if exclude_dirs:
-        wav_files = [
-            f for f in wav_files
-            if not any(excl in f.parts for excl in exclude_dirs)
-        ]
+        wav_files = [f for f in wav_files if not any(excl in f.parts for excl in exclude_dirs)]
     if not wav_files:
         log.warning("No WAV files found in %s", clips_dir)
         return np.array([])
@@ -816,7 +823,9 @@ def extract_features_from_clips(
             except Exception as e:
                 log.warning("Failed to load %s: %s", wav_path.name, e)
 
-        log.info("Augmenting %d clips (x%d variants each) ...", len(raw_clips), n_augmented_per_clip)
+        log.info(
+            "Augmenting %d clips (x%d variants each) ...", len(raw_clips), n_augmented_per_clip
+        )
         augmented_clips = augment_clips(raw_clips, n_augmented_per_clip=n_augmented_per_clip)
         log.info("Total clips after augmentation: %d", len(augmented_clips))
     else:
@@ -901,7 +910,7 @@ def extract_features_from_clips(
 
 
 def _generate_silence_negatives(
-    oww_model: "Model",
+    oww_model: Model,
     n_synthetic: int = 200,
 ) -> np.ndarray:
     """Generate negative features from silence, synthetic noise, and ambient recordings.
@@ -931,7 +940,7 @@ def _generate_silence_negatives(
 
     # 1. Synthetic silence and noise
     rng = np.random.default_rng(42)
-    for i in range(n_synthetic):
+    for _i in range(n_synthetic):
         noise_level = rng.choice([0, 5, 10, 20, 40, 80, 150])
         if noise_level == 0:
             audio = np.zeros(target_len, dtype=np.int16)
@@ -957,7 +966,8 @@ def _generate_silence_negatives(
                 log.warning("Failed to process ambient file %s: %s", wav_path.name, e)
         log.info(
             "Generated %d features from %d ambient recordings",
-            n_ambient_feats, len(ambient_files),
+            n_ambient_feats,
+            len(ambient_files),
         )
 
     if not all_windows:
@@ -1010,7 +1020,8 @@ def train_model(
     if pos_features.ndim != 3 or pos_features.shape[1:] != (16, 96):
         log.error(
             "Positive features have shape %s but expected (n, 16, 96). "
-            "Re-run --extract-features to regenerate.", pos_features.shape,
+            "Re-run --extract-features to regenerate.",
+            pos_features.shape,
         )
         sys.exit(1)
 
@@ -1025,7 +1036,9 @@ def train_model(
             )
             sample_weights = None
         else:
-            log.info("Real voice features: %s (weight: %.1fx)", real_features.shape, real_sample_weight)
+            log.info(
+                "Real voice features: %s (weight: %.1fx)", real_features.shape, real_sample_weight
+            )
             n_tts = len(pos_features)
             pos_features = np.concatenate([pos_features, real_features], axis=0)
             sample_weights = np.ones(len(pos_features), dtype=np.float64)
@@ -1079,17 +1092,13 @@ def train_model(
     if len(silence_neg) > 0:
         neg_supplement_parts.append(silence_neg)
 
-    neg_supplement = (
-        np.concatenate(neg_supplement_parts, axis=0)
-        if neg_supplement_parts else None
-    )
+    neg_supplement = np.concatenate(neg_supplement_parts, axis=0) if neg_supplement_parts else None
     if neg_supplement is not None:
         log.info("Supplemental negatives: %d", len(neg_supplement))
 
     if neg_primary is None and neg_supplement is None:
         log.error(
-            "No negative features available. Run --download-data and "
-            "--extract-features first.",
+            "No negative features available. Run --download-data and --extract-features first.",
         )
         sys.exit(1)
 
@@ -1098,7 +1107,9 @@ def train_model(
     neg_total_size = neg_primary_size + neg_supplement_size
     log.info(
         "Total negative pool: %d (primary: %d, supplement: %d)",
-        neg_total_size, neg_primary_size, neg_supplement_size,
+        neg_total_size,
+        neg_primary_size,
+        neg_supplement_size,
     )
 
     # Flatten (n, 16, 96) → (n, 1536) for the DNN
@@ -1198,14 +1209,20 @@ def train_model(
         if primary_mask.any():
             p_idx = indices[primary_mask]
             result[primary_mask] = np.array(
-                neg_primary[p_idx], dtype=np.float32,
+                neg_primary[p_idx],
+                dtype=np.float32,
             ).reshape(-1, flat_dim)
 
         if (~primary_mask).any():
             s_idx = indices[~primary_mask] - neg_primary_size
-            result[~primary_mask] = neg_supplement[s_idx].reshape(
-                -1, flat_dim,
-            ).astype(np.float32)
+            result[~primary_mask] = (
+                neg_supplement[s_idx]
+                .reshape(
+                    -1,
+                    flat_dim,
+                )
+                .astype(np.float32)
+            )
 
         return result
 
@@ -1248,8 +1265,14 @@ def train_model(
             log.info(
                 "Step %d/%d | Loss: %.4f | Pos Acc: %.3f | Neg Acc: %.3f | "
                 "Overall: %.3f | LR: %.6f | Neg Weight: %.1f",
-                step + 1, steps, loss.item(), pos_acc, neg_acc, overall_acc,
-                scheduler.get_last_lr()[0], neg_weight_schedule,
+                step + 1,
+                steps,
+                loss.item(),
+                pos_acc,
+                neg_acc,
+                overall_acc,
+                scheduler.get_last_lr()[0],
+                neg_weight_schedule,
             )
 
         # Validation every 5000 steps
@@ -1257,7 +1280,9 @@ def train_model(
             model.eval()
             with torch.no_grad():
                 val_pos_t = torch.tensor(
-                    val_pos, dtype=torch.float32, device=device,
+                    val_pos,
+                    dtype=torch.float32,
+                    device=device,
                 )
                 val_pos_pred = model(val_pos_t)
                 val_recall = (val_pos_pred > 0.5).float().mean().item()
@@ -1271,16 +1296,15 @@ def train_model(
                 val_accuracy = (val_recall + val_specificity) / 2
 
             log.info(
-                "  Validation | Recall: %.3f | Specificity: %.3f | "
-                "Accuracy: %.3f",
-                val_recall, val_specificity, val_accuracy,
+                "  Validation | Recall: %.3f | Specificity: %.3f | Accuracy: %.3f",
+                val_recall,
+                val_specificity,
+                val_accuracy,
             )
 
             if val_accuracy > best_val_accuracy:
                 best_val_accuracy = val_accuracy
-                best_model_state = {
-                    k: v.clone() for k, v in model.state_dict().items()
-                }
+                best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
                 log.info("  New best validation accuracy: %.3f", best_val_accuracy)
 
     # Restore best model
@@ -1295,14 +1319,15 @@ def train_model(
     del model, best_model_state
     if device.type == "cuda":
         import torch
+
         torch.cuda.empty_cache()
 
 
 def export_to_onnx(
-    model: "torch.nn.Module",
+    model: torch.nn.Module,
     n_frames: int,
     embed_dim: int,
-    device: "torch.device",
+    device: torch.device,
 ) -> None:
     """Export trained model to ONNX format compatible with openwakeword.
 
@@ -1336,18 +1361,22 @@ def export_to_onnx(
 
     # Verify the exported model loads correctly with rank-3 input
     import onnxruntime as ort
+
     session = ort.InferenceSession(str(MODEL_OUTPUT_PATH), providers=["CPUExecutionProvider"])
     test_input = np.random.randn(1, n_frames, embed_dim).astype(np.float32)
     result = session.run(None, {"input": test_input})
     log.info(
         "ONNX verification -- input shape: %s, output shape: %s, sample output: %s",
-        test_input.shape, result[0].shape, result[0],
+        test_input.shape,
+        result[0].shape,
+        result[0],
     )
 
 
 # ---------------------------------------------------------------------------
 # Full Pipeline
 # ---------------------------------------------------------------------------
+
 
 def run_full_pipeline(args: argparse.Namespace) -> None:
     """Run the complete training pipeline end-to-end."""
@@ -1425,18 +1454,19 @@ def run_full_pipeline(args: argparse.Namespace) -> None:
     log.info(
         "Test with:\n"
         "  cd ~/projects/ai-agents\n"
-        "  uv run python -c \"\n"
+        '  uv run python -c "\n'
         "    from agents.hapax_voice.wake_word import WakeWordDetector\n"
         "    d = WakeWordDetector(threshold=0.5)\n"
         "    d.load()\n"
         "    print('Model loaded successfully!' if d._model else 'Load failed')\n"
-        "  \""
+        '  "'
     )
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -1464,89 +1494,117 @@ Examples:
     # Pipeline stages
     stages = parser.add_argument_group("pipeline stages")
     stages.add_argument(
-        "--all", action="store_true",
+        "--all",
+        action="store_true",
         help="Run the full pipeline (generate + download + extract + train)",
     )
     stages.add_argument(
-        "--generate", action="store_true",
+        "--generate",
+        action="store_true",
         help="Generate both positive and negative samples",
     )
     stages.add_argument(
-        "--generate-positive", action="store_true",
+        "--generate-positive",
+        action="store_true",
         help="Generate positive samples only",
     )
     stages.add_argument(
-        "--generate-negative", action="store_true",
+        "--generate-negative",
+        action="store_true",
         help="Generate negative samples only",
     )
     stages.add_argument(
-        "--download-data", action="store_true",
+        "--download-data",
+        action="store_true",
         help="Download negative features and augmentation data",
     )
     stages.add_argument(
-        "--extract-features", action="store_true",
+        "--extract-features",
+        action="store_true",
         help="Extract features from generated audio clips",
     )
     stages.add_argument(
-        "--train", action="store_true",
+        "--train",
+        action="store_true",
         help="Train the model (requires features to be extracted)",
     )
 
     # TTS engine selection
     tts = parser.add_argument_group("TTS engine selection")
     tts.add_argument(
-        "--no-chatterbox", action="store_true",
+        "--no-chatterbox",
+        action="store_true",
         help="Skip Chatterbox TTS (default: use if available)",
     )
     tts.add_argument(
-        "--kokoro", action="store_true",
+        "--kokoro",
+        action="store_true",
         help="Include Kokoro TTS (off by default — can't produce short words reliably)",
     )
     tts.add_argument(
-        "--no-piper", action="store_true",
+        "--no-piper",
+        action="store_true",
         help="Skip Piper TTS",
     )
     tts.add_argument(
-        "--no-piper-generator", action="store_true",
+        "--no-piper-generator",
+        action="store_true",
         help="Skip piper-sample-generator (multi-speaker bulk generation)",
     )
 
     # Training hyperparameters
     hparams = parser.add_argument_group("training hyperparameters")
     hparams.add_argument(
-        "--num-positive", type=int, default=10000,
+        "--num-positive",
+        type=int,
+        default=10000,
         help="Target number of positive samples (default: 10000)",
     )
     hparams.add_argument(
-        "--no-augment", action="store_true",
+        "--no-augment",
+        action="store_true",
         help="Disable audio augmentation during feature extraction",
     )
     hparams.add_argument(
-        "--augment-per-clip", type=int, default=4,
+        "--augment-per-clip",
+        type=int,
+        default=4,
         help="Number of augmented variants per clip (default: 4)",
     )
     hparams.add_argument(
-        "--real-weight", type=float, default=3.0,
+        "--real-weight",
+        type=float,
+        default=3.0,
         help="Sampling weight multiplier for real voice samples (default: 3.0)",
     )
     hparams.add_argument(
-        "--steps", type=int, default=50000,
+        "--steps",
+        type=int,
+        default=50000,
         help="Number of training steps (default: 50000)",
     )
     hparams.add_argument(
-        "--lr", type=float, default=0.0001,
+        "--lr",
+        type=float,
+        default=0.0001,
         help="Learning rate (default: 0.0001)",
     )
     hparams.add_argument(
-        "--max-neg-weight", type=int, default=1500,
+        "--max-neg-weight",
+        type=int,
+        default=1500,
         help="Maximum negative loss weight (default: 1500)",
     )
     hparams.add_argument(
-        "--hidden-dim", type=int, default=64,
+        "--hidden-dim",
+        type=int,
+        default=64,
         help="Hidden layer dimension (default: 64)",
     )
     hparams.add_argument(
-        "--n-blocks", type=int, default=2,
+        "--n-blocks",
+        type=int,
+        default=2,
         help="Number of hidden blocks (default: 2)",
     )
 
@@ -1564,9 +1622,13 @@ def main() -> None:
 
     # Check that at least one stage is selected
     any_stage = (
-        args.all or args.generate or args.generate_positive
-        or args.generate_negative or args.download_data
-        or args.extract_features or args.train
+        args.all
+        or args.generate
+        or args.generate_positive
+        or args.generate_negative
+        or args.download_data
+        or args.extract_features
+        or args.train
     )
     if not any_stage:
         log.error("No pipeline stage selected. Use --all or specify stages.")

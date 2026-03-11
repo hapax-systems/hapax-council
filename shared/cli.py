@@ -13,14 +13,17 @@ Usage:
     result = await generate_briefing(args.hours)
     handle_output(result, args, save_path=BRIEFING_FILE)
 """
+
 from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 
 def add_common_args(
@@ -31,21 +34,13 @@ def add_common_args(
     notify: bool = False,
 ) -> None:
     """Add common agent CLI flags to an argument parser."""
-    parser.add_argument(
-        "--json", action="store_true", help="Machine-readable JSON output"
-    )
+    parser.add_argument("--json", action="store_true", help="Machine-readable JSON output")
     if save:
-        parser.add_argument(
-            "--save", action="store_true", help="Save output to disk"
-        )
+        parser.add_argument("--save", action="store_true", help="Save output to disk")
     if hours:
-        parser.add_argument(
-            "--hours", type=int, default=24, help="Lookback window (default: 24)"
-        )
+        parser.add_argument("--hours", type=int, default=24, help="Lookback window (default: 24)")
     if notify:
-        parser.add_argument(
-            "--notify", action="store_true", help="Send push notification"
-        )
+        parser.add_argument("--notify", action="store_true", help="Send push notification")
 
 
 def handle_output(
@@ -78,14 +73,12 @@ def handle_output(
         print(result.model_dump_json(indent=2))
 
     if getattr(args, "save", False) and save_path:
-        content = (
-            save_formatter(result) if save_formatter
-            else result.model_dump_json(indent=2)
-        )
+        content = save_formatter(result) if save_formatter else result.model_dump_json(indent=2)
         save_path.write_text(content)
         print(f"Saved to {save_path}", file=sys.stderr)
 
     if getattr(args, "notify", False) and notify_title:
         from shared.notify import send_notification
+
         body = notify_formatter(result) if notify_formatter else str(result)
         send_notification(notify_title, body[:500])

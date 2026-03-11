@@ -1,0 +1,36 @@
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "TCH",   # flake8-type-checking
+]
+ignore = [
+    "E402",  # import not at top (langfuse try/except pattern)
+    "E501",  # line too long (handled by formatter)
+    "E741",  # ambiguous variable name (single-letter vars in comprehensions)
+    "SIM105", # contextlib.suppress (try/except/pass is clearer for imports)
+    "SIM108", # ternary operator (readability preference)
+    "SIM102", # collapsible if (readability preference)
+    "SIM113", # enumerate instead of manual counter
+    "SIM115", # use context manager for open()
+    "SIM117", # multiple with statements (readability preference)
+    "TCH001", # move first-party import into TYPE_CHECKING (too invasive)
+    "TCH003", # move stdlib import into TYPE_CHECKING (breaks runtime in tests)
+    "B017",   # pytest.raises(Exception) too broad (existing test patterns)
+    "B018",   # useless expression (existing patterns)
+    "B023",   # function variable not used in loop body
+    "F821",   # undefined name (lazy imports with future annotations)
+]
+
+[lint.isort]
+known-first-party = ["agents", "shared", "cockpit"]
+
+[format]
+quote-style = "double"

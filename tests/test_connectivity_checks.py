@@ -2,26 +2,26 @@
 
 All I/O is mocked. No real subprocess calls, HTTP requests, or filesystem access.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from agents.health_monitor import (
-    CheckResult,
-    Status,
     CHECK_REGISTRY,
-    check_tailscale,
-    check_ntfy,
-    check_n8n_health,
-    check_obsidian_sync,
+    Status,
     check_gdrive_sync_freshness,
+    check_n8n_health,
+    check_ntfy,
+    check_obsidian_sync,
+    check_tailscale,
 )
 
-
 # ── Registration ─────────────────────────────────────────────────────────────
+
 
 def test_connectivity_group_registered():
     assert "connectivity" in CHECK_REGISTRY
@@ -30,11 +30,16 @@ def test_connectivity_group_registered():
 
 # ── check_tailscale ──────────────────────────────────────────────────────────
 
+
 class TestCheckTailscale:
     @pytest.mark.asyncio
     @patch("agents.health_monitor.run_cmd")
     async def test_online(self, mock_cmd):
-        mock_cmd.return_value = (0, '{"Self": {"Online": true}, "Peer": {"a": {"Online": true}}}', "")
+        mock_cmd.return_value = (
+            0,
+            '{"Self": {"Online": true}, "Peer": {"a": {"Online": true}}}',
+            "",
+        )
         results = await check_tailscale()
         assert len(results) == 1
         assert results[0].status == Status.HEALTHY
@@ -82,6 +87,7 @@ class TestCheckTailscale:
 
 # ── check_ntfy ───────────────────────────────────────────────────────────────
 
+
 class TestCheckNtfy:
     @pytest.mark.asyncio
     @patch("agents.health_monitor.http_get")
@@ -108,6 +114,7 @@ class TestCheckNtfy:
 
 # ── check_n8n_health ─────────────────────────────────────────────────────────
 
+
 class TestCheckN8nHealth:
     @pytest.mark.asyncio
     @patch("agents.health_monitor.http_get")
@@ -125,6 +132,7 @@ class TestCheckN8nHealth:
 
 
 # ── check_obsidian_sync ──────────────────────────────────────────────────────
+
 
 class TestCheckObsidianSync:
     @pytest.mark.asyncio
@@ -147,6 +155,7 @@ class TestCheckObsidianSync:
 
 # ── check_gdrive_sync_freshness ──────────────────────────────────────────────
 
+
 class TestCheckGdriveSyncFreshness:
     @pytest.mark.asyncio
     @patch("agents.health_monitor.run_cmd")
@@ -159,20 +168,20 @@ class TestCheckGdriveSyncFreshness:
 
     @pytest.mark.asyncio
     @patch("agents.health_monitor.run_cmd")
-    async def test_timer_active(self, mock_cmd, tmp_path):
+    async def test_container_running(self, mock_cmd, tmp_path):
         gdrive_dir = tmp_path / "gdrive"
         gdrive_dir.mkdir(parents=True)
-        mock_cmd.return_value = (0, "active", "")
+        mock_cmd.return_value = (0, "running", "")
         with patch("agents.health_monitor.RAG_SOURCES_DIR", tmp_path):
             results = await check_gdrive_sync_freshness()
         assert results[0].status == Status.HEALTHY
 
     @pytest.mark.asyncio
     @patch("agents.health_monitor.run_cmd")
-    async def test_timer_inactive(self, mock_cmd, tmp_path):
+    async def test_container_not_running(self, mock_cmd, tmp_path):
         gdrive_dir = tmp_path / "gdrive"
         gdrive_dir.mkdir(parents=True)
-        mock_cmd.return_value = (3, "inactive", "")
+        mock_cmd.return_value = (1, "", "No such container")
         with patch("agents.health_monitor.RAG_SOURCES_DIR", tmp_path):
             results = await check_gdrive_sync_freshness()
         assert results[0].status == Status.DEGRADED

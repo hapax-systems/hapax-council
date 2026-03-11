@@ -1,10 +1,11 @@
 """System readiness gate — ensures system is presentable before demo generation."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ def _run_async(coro):
     if loop and loop.is_running():
         # We're inside an existing event loop — create a new thread to run it
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(asyncio.run, coro).result()
     else:
@@ -112,8 +114,7 @@ def check_readiness(
         progress("Cockpit web: OK")
     except Exception:
         issues.append(
-            "Cockpit web (:5173) not reachable — start with: "
-            "cd ~/projects/cockpit-web && pnpm dev"
+            "Cockpit web (:5173) not reachable — start with: cd ~/projects/cockpit-web && pnpm dev"
         )
 
     # 4 & 5. TTS (only if required)

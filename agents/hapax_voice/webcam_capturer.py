@@ -1,4 +1,5 @@
 """Webcam frame capture via ffmpeg V4L2."""
+
 from __future__ import annotations
 
 import base64
@@ -30,9 +31,7 @@ class WebcamCapturer:
         for cam in cameras or []:
             self._cameras[cam.role] = cam
         self._cooldown_s = cooldown_s
-        self._last_capture_time: dict[str, float] = {
-            role: 0.0 for role in self._cameras
-        }
+        self._last_capture_time: dict[str, float] = {role: 0.0 for role in self._cameras}
 
     def has_camera(self, role: str) -> bool:
         """Check whether a camera with the given role is configured."""
@@ -75,22 +74,33 @@ class WebcamCapturer:
 
         try:
             cmd = [
-                "ffmpeg", "-y",
-                "-f", "v4l2",
-                "-input_format", cam.input_format,
-                "-video_size", f"{cam.width}x{cam.height}",
+                "ffmpeg",
+                "-y",
+                "-f",
+                "v4l2",
+                "-input_format",
+                cam.input_format,
+                "-video_size",
+                f"{cam.width}x{cam.height}",
             ]
             if cam.pixel_format:
                 cmd.extend(["-pix_fmt", cam.pixel_format])
-            cmd.extend([
-                "-i", cam.device,
-                "-frames:v", "1",
-                "-update", "1",
-                outpath,
-            ])
+            cmd.extend(
+                [
+                    "-i",
+                    cam.device,
+                    "-frames:v",
+                    "1",
+                    "-update",
+                    "1",
+                    outpath,
+                ]
+            )
 
             proc = subprocess.run(
-                cmd, capture_output=True, timeout=10,
+                cmd,
+                capture_output=True,
+                timeout=10,
             )
 
             if proc.returncode != 0:
@@ -110,4 +120,5 @@ class WebcamCapturer:
             return base64.b64encode(image_data).decode("ascii")
         finally:
             import shutil
+
             shutil.rmtree(tmpdir, ignore_errors=True)

@@ -1,4 +1,5 @@
 """Tests for hapax_voice hotkey activation via Unix socket."""
+
 from __future__ import annotations
 
 import asyncio

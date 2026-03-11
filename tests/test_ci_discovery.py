@@ -1,18 +1,15 @@
 """Tests for shared/ci_discovery.py — CI discovery functions."""
+
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from shared.ci_discovery import (
     discover_agents,
-    discover_timers,
-    discover_services,
-    discover_repos,
     discover_mcp_servers,
+    discover_repos,
+    discover_services,
+    discover_timers,
 )
 
 

@@ -2,10 +2,11 @@
 
 LLM calls and I/O are mocked.
 """
+
 from __future__ import annotations
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,16 +14,14 @@ from agents.briefing import (
     ActionItem,
     Briefing,
     BriefingStats,
+    _collect_axiom_status,
     format_briefing_human,
     format_briefing_md,
     send_notification,
-    _collect_intention_practice_gaps,
-    _collect_profile_health,
-    _collect_axiom_status,
 )
 
-
 # ── Schema tests ─────────────────────────────────────────────────────────────
+
 
 def test_briefing_stats_defaults():
     s = BriefingStats()
@@ -58,8 +57,11 @@ def test_briefing_with_stats():
         headline="Stack healthy",
         body="Nothing notable.",
         stats=BriefingStats(
-            llm_calls=50, llm_cost=0.5, health_current="healthy",
-            health_uptime_pct=99.5, top_model="claude-haiku",
+            llm_calls=50,
+            llm_cost=0.5,
+            health_current="healthy",
+            health_uptime_pct=99.5,
+            top_model="claude-haiku",
         ),
     )
     assert b.stats.llm_calls == 50
@@ -68,6 +70,7 @@ def test_briefing_with_stats():
 
 # ── Formatter tests ──────────────────────────────────────────────────────────
 
+
 def _sample_briefing() -> Briefing:
     return Briefing(
         generated_at="2026-03-01T07:00:00Z",
@@ -75,15 +78,26 @@ def _sample_briefing() -> Briefing:
         headline="Stack healthy, 50 LLM calls, no issues",
         body="All systems operational. Light LLM usage overnight.",
         action_items=[
-            ActionItem(priority="high", action="Fix auth token expiry",
-                       reason="Token expires in 2 hours", command="pass edit api/anthropic"),
-            ActionItem(priority="low", action="Review drift report",
-                       reason="13 items detected, mostly cosmetic"),
+            ActionItem(
+                priority="high",
+                action="Fix auth token expiry",
+                reason="Token expires in 2 hours",
+                command="pass edit api/anthropic",
+            ),
+            ActionItem(
+                priority="low",
+                action="Review drift report",
+                reason="13 items detected, mostly cosmetic",
+            ),
         ],
         stats=BriefingStats(
-            llm_calls=50, llm_cost=0.5, llm_errors=2,
-            health_current="healthy", health_uptime_pct=98.5,
-            drift_items=13, top_model="claude-haiku",
+            llm_calls=50,
+            llm_cost=0.5,
+            llm_errors=2,
+            health_current="healthy",
+            health_uptime_pct=98.5,
+            drift_items=13,
+            top_model="claude-haiku",
         ),
     )
 
@@ -115,7 +129,9 @@ def test_format_briefing_human_action_commands():
 def test_format_briefing_human_no_actions():
     b = Briefing(
         generated_at="2026-03-01T07:00:00Z",
-        hours=24, headline="All nominal", body="Nothing to report.",
+        hours=24,
+        headline="All nominal",
+        body="Nothing to report.",
     )
     output = format_briefing_human(b)
     assert "Action Items" not in output
@@ -146,7 +162,9 @@ def test_format_briefing_md_action_priority_order():
 def test_format_briefing_md_no_uptime_when_negative():
     b = Briefing(
         generated_at="2026-03-01T07:00:00Z",
-        hours=24, headline="New system", body="First run.",
+        hours=24,
+        headline="New system",
+        body="First run.",
         stats=BriefingStats(health_uptime_pct=-1),
     )
     output = format_briefing_md(b)
@@ -156,7 +174,9 @@ def test_format_briefing_md_no_uptime_when_negative():
 def test_format_briefing_md_no_errors_line_when_zero():
     b = Briefing(
         generated_at="2026-03-01T07:00:00Z",
-        hours=24, headline="Clean", body="No errors.",
+        hours=24,
+        headline="Clean",
+        body="No errors.",
         stats=BriefingStats(llm_errors=0),
     )
     output = format_briefing_md(b)
@@ -164,6 +184,7 @@ def test_format_briefing_md_no_errors_line_when_zero():
 
 
 # ── Notification tests ───────────────────────────────────────────────────────
+
 
 @patch("shared.notify.send_notification")
 def test_send_notification_calls_shared_notify(mock_notify):
@@ -186,7 +207,9 @@ def test_send_notification_includes_high_priority_count(mock_notify):
 def test_send_notification_no_body_when_no_high_actions(mock_notify):
     b = Briefing(
         generated_at="2026-03-01T07:00:00Z",
-        hours=24, headline="All good", body="Nothing to report.",
+        hours=24,
+        headline="All good",
+        body="Nothing to report.",
         action_items=[ActionItem(priority="low", action="Review", reason="Cosmetic")],
     )
     send_notification(b)
@@ -207,11 +230,15 @@ def test_send_notification_handles_failure(mock_notify):
 
 def test_briefing_system_prompt_mentions_stalled():
     from agents.briefing import SYSTEM_PROMPT
+
     assert "stalled" in SYSTEM_PROMPT.lower()
-    assert "activation energy" in SYSTEM_PROMPT.lower() or "smallest possible" in SYSTEM_PROMPT.lower()
+    assert (
+        "activation energy" in SYSTEM_PROMPT.lower() or "smallest possible" in SYSTEM_PROMPT.lower()
+    )
 
 
 # ── Pipeline tests (generate_briefing with mocked deps) ────────────────────
+
 
 class _FakeLangfuseData:
     total_generations = 42
@@ -259,6 +286,7 @@ class _FakeBriefingResult:
     )
 
 
+from datetime import UTC
 from unittest.mock import AsyncMock
 
 
@@ -280,8 +308,13 @@ def _make_agent_mock(result=None):
 @patch("agents.briefing.DIGEST_REPORT")
 @patch("shared.operator.get_goals", return_value=[])
 async def test_generate_briefing_pipeline(
-    mock_goals, mock_digest_path, mock_scout_path,
-    mock_agent, mock_fmt_health, mock_run_checks, mock_activity
+    mock_goals,
+    mock_digest_path,
+    mock_scout_path,
+    mock_agent,
+    mock_fmt_health,
+    mock_run_checks,
+    mock_activity,
 ):
     """End-to-end pipeline test with all I/O mocked."""
     from agents.briefing import generate_briefing
@@ -310,8 +343,13 @@ async def test_generate_briefing_pipeline(
 @patch("agents.briefing.DIGEST_REPORT")
 @patch("shared.operator.get_goals", return_value=[])
 async def test_generate_briefing_with_scout_report(
-    mock_goals, mock_digest_path, mock_scout_path,
-    mock_agent, mock_fmt_health, mock_run_checks, mock_activity
+    mock_goals,
+    mock_digest_path,
+    mock_scout_path,
+    mock_agent,
+    mock_fmt_health,
+    mock_run_checks,
+    mock_activity,
 ):
     """Pipeline includes scout data when scout report is recent."""
     from agents.briefing import generate_briefing
@@ -323,8 +361,9 @@ async def test_generate_briefing_with_scout_report(
     mock_digest_path.exists.return_value = False
 
     # Scout report exists and is recent
-    from datetime import datetime, timezone
-    now_ts = datetime.now(timezone.utc).isoformat()[:19] + "Z"
+    from datetime import datetime
+
+    now_ts = datetime.now(UTC).isoformat()[:19] + "Z"
     scout_data = {
         "generated_at": now_ts,
         "recommendations": [
@@ -350,8 +389,13 @@ async def test_generate_briefing_with_scout_report(
 @patch("agents.briefing.DIGEST_REPORT")
 @patch("shared.operator.get_goals", return_value=[])
 async def test_generate_briefing_with_digest(
-    mock_goals, mock_digest_path, mock_scout_path,
-    mock_agent, mock_fmt_health, mock_run_checks, mock_activity
+    mock_goals,
+    mock_digest_path,
+    mock_scout_path,
+    mock_agent,
+    mock_fmt_health,
+    mock_run_checks,
+    mock_activity,
 ):
     """Pipeline includes digest data when present."""
     from agents.briefing import generate_briefing
@@ -372,7 +416,7 @@ async def test_generate_briefing_with_digest(
     mock_digest_path.exists.return_value = True
     mock_digest_path.read_text.return_value = json.dumps(digest_data)
 
-    briefing = await generate_briefing(hours=24)
+    await generate_briefing(hours=24)
     mock_agent.run.assert_called_once()
     prompt = mock_agent.run.call_args[0][0]
     assert "Content Digest" in prompt or "5 new" in prompt
@@ -387,8 +431,13 @@ async def test_generate_briefing_with_digest(
 @patch("agents.briefing.DIGEST_REPORT")
 @patch("shared.operator.get_goals", return_value=[])
 async def test_generate_briefing_llm_failure_graceful(
-    mock_goals, mock_digest_path, mock_scout_path,
-    mock_agent, mock_fmt_health, mock_run_checks, mock_activity
+    mock_goals,
+    mock_digest_path,
+    mock_scout_path,
+    mock_agent,
+    mock_fmt_health,
+    mock_run_checks,
+    mock_activity,
 ):
     """Pipeline handles LLM synthesis failure gracefully."""
     from agents.briefing import generate_briefing
@@ -413,8 +462,13 @@ async def test_generate_briefing_llm_failure_graceful(
 @patch("agents.briefing.DIGEST_REPORT")
 @patch("shared.operator.get_goals")
 async def test_generate_briefing_includes_goals(
-    mock_goals, mock_digest_path, mock_scout_path,
-    mock_agent, mock_fmt_health, mock_run_checks, mock_activity
+    mock_goals,
+    mock_digest_path,
+    mock_scout_path,
+    mock_agent,
+    mock_fmt_health,
+    mock_run_checks,
+    mock_activity,
 ):
     """Pipeline includes operator goals section when goals exist."""
     from agents.briefing import generate_briefing
@@ -429,18 +483,20 @@ async def test_generate_briefing_includes_goals(
         {"name": "Learn Rust", "description": "Systems programming", "status": "active"},
     ]
 
-    briefing = await generate_briefing(hours=24)
+    await generate_briefing(hours=24)
     prompt = mock_agent.run.call_args[0][0]
     assert "Learn Rust" in prompt or "Goals" in prompt
 
 
 # ── Intention-practice gap tests (Task 3) ───────────────────────────────────
 
+
 def test_collect_gaps_from_profile_md(tmp_path, monkeypatch):
     """Gaps are extracted from Flagged for Review section."""
     import agents.briefing as mod
+
     monkeypatch.setattr(mod, "PROFILES_DIR", tmp_path)
-    md = tmp_path / "ryan.md"
+    md = tmp_path / "operator-profile.md"
     md.write_text("""# Profile
 
 ## Flagged for Review
@@ -459,6 +515,7 @@ def test_collect_gaps_from_profile_md(tmp_path, monkeypatch):
 def test_collect_gaps_no_file(tmp_path, monkeypatch):
     """No file means empty gaps."""
     import agents.briefing as mod
+
     monkeypatch.setattr(mod, "PROFILES_DIR", tmp_path)
     gaps = mod._collect_intention_practice_gaps()
     assert gaps == []
@@ -467,8 +524,9 @@ def test_collect_gaps_no_file(tmp_path, monkeypatch):
 def test_collect_gaps_no_section(tmp_path, monkeypatch):
     """File without Flagged for Review section returns empty."""
     import agents.briefing as mod
+
     monkeypatch.setattr(mod, "PROFILES_DIR", tmp_path)
-    md = tmp_path / "ryan.md"
+    md = tmp_path / "operator-profile.md"
     md.write_text("# Profile\n\nJust a normal profile.\n")
     gaps = mod._collect_intention_practice_gaps()
     assert gaps == []
@@ -476,19 +534,22 @@ def test_collect_gaps_no_section(tmp_path, monkeypatch):
 
 # ── Profile health tests (Task 4) ───────────────────────────────────────────
 
+
 def test_collect_profile_health(tmp_path, monkeypatch):
     """Profile health is built from digest JSON."""
-    import agents.briefing as mod
     import json
+
+    import agents.briefing as mod
+
     monkeypatch.setattr(mod, "PROFILES_DIR", tmp_path)
     digest = {
         "total_facts": 3993,
         "dimensions": {
             "technical_skills": {"fact_count": 928, "avg_confidence": 0.9},
             "workflow": {"fact_count": 1585, "avg_confidence": 0.6},
-        }
+        },
     }
-    (tmp_path / "ryan-digest.json").write_text(json.dumps(digest))
+    (tmp_path / "operator-digest.json").write_text(json.dumps(digest))
     health = mod._collect_profile_health()
     assert health is not None
     assert "3993" in health
@@ -498,6 +559,7 @@ def test_collect_profile_health(tmp_path, monkeypatch):
 def test_collect_profile_health_no_file(tmp_path, monkeypatch):
     """No digest file returns None."""
     import agents.briefing as mod
+
     monkeypatch.setattr(mod, "PROFILES_DIR", tmp_path)
     health = mod._collect_profile_health()
     assert health is None
@@ -505,9 +567,9 @@ def test_collect_profile_health_no_file(tmp_path, monkeypatch):
 
 # ── Axiom status tests (Task 6) ─────────────────────────────────────────────
 
+
 def test_collect_axiom_status_includes_probes():
     """Axiom status collector should include probe results."""
-    from agents.briefing import _collect_axiom_status
     status = _collect_axiom_status()
     assert "probe_total" in status
     assert "probe_failures" in status

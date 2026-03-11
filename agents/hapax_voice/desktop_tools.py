@@ -3,6 +3,7 @@
 Exposes Hyprland window management as LLM function-calling tools:
 focus_window, switch_workspace, open_app, confirm_open_app, get_desktop_state.
 """
+
 from __future__ import annotations
 
 import logging
@@ -83,7 +84,13 @@ _get_desktop_state = FunctionSchema(
     required=[],
 )
 
-DESKTOP_TOOL_SCHEMAS = [_focus_window, _switch_workspace, _open_app, _confirm_open_app, _get_desktop_state]
+DESKTOP_TOOL_SCHEMAS = [
+    _focus_window,
+    _switch_workspace,
+    _open_app,
+    _confirm_open_app,
+    _get_desktop_state,
+]
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +121,12 @@ async def handle_open_app(params) -> None:
     workspace = params.arguments.get("workspace")
 
     _pending_open = {"command": command, "workspace": workspace}
-    await params.result_callback({
-        "status": "pending_confirmation",
-        "message": f"Ready to launch: {command}. Say 'confirm' to proceed.",
-    })
+    await params.result_callback(
+        {
+            "status": "pending_confirmation",
+            "message": f"Ready to launch: {command}. Say 'confirm' to proceed.",
+        }
+    )
 
 
 async def handle_confirm_open_app(params) -> None:
@@ -151,8 +160,7 @@ async def handle_get_desktop_state(params) -> None:
         "active_window": _win_dict(active) if active else None,
         "windows": [_win_dict(c) for c in clients],
         "workspaces": [
-            {"id": ws.id, "name": ws.name, "windows": ws.window_count}
-            for ws in workspaces
+            {"id": ws.id, "name": ws.name, "windows": ws.window_count} for ws in workspaces
         ],
     }
     await params.result_callback(result)

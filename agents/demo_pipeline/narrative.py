@@ -1,4 +1,5 @@
 """Narrative framework selection and duration-driven planning constraints."""
+
 from __future__ import annotations
 
 import logging
@@ -9,8 +10,12 @@ import yaml
 log = logging.getLogger(__name__)
 
 STYLE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "presenter-style.yaml"
-VOICE_EXAMPLES_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "voice-examples.yaml"
-VOICE_PROFILE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "voice-profile.yaml"
+VOICE_EXAMPLES_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "profiles" / "voice-examples.yaml"
+)
+VOICE_PROFILE_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "profiles" / "voice-profile.yaml"
+)
 
 
 # ── Narrative Frameworks ──────────────────────────────────────────────────────
@@ -75,11 +80,36 @@ AUDIENCE_FRAMEWORK: dict[str, str] = {
 
 # Duration → planning constraints
 DURATION_TIERS: list[dict] = [
-    {"max_seconds": 180,  "scenes": (3, 5),   "words_per_scene": (100, 150), "depth": "concise but complete narration"},
-    {"max_seconds": 420,  "scenes": (6, 9),   "words_per_scene": (100, 160), "depth": "key points with context"},
-    {"max_seconds": 600,  "scenes": (10, 14), "words_per_scene": (100, 160), "depth": "focused explanations, one concept per scene"},
-    {"max_seconds": 900,  "scenes": (12, 16), "words_per_scene": (120, 180), "depth": "detailed explanations"},
-    {"max_seconds": 1200, "scenes": (14, 18), "words_per_scene": (140, 200), "depth": "full rationale with trade-offs and design decisions"},
+    {
+        "max_seconds": 180,
+        "scenes": (3, 5),
+        "words_per_scene": (100, 150),
+        "depth": "concise but complete narration",
+    },
+    {
+        "max_seconds": 420,
+        "scenes": (6, 9),
+        "words_per_scene": (100, 160),
+        "depth": "key points with context",
+    },
+    {
+        "max_seconds": 600,
+        "scenes": (10, 14),
+        "words_per_scene": (100, 160),
+        "depth": "focused explanations, one concept per scene",
+    },
+    {
+        "max_seconds": 900,
+        "scenes": (12, 16),
+        "words_per_scene": (120, 180),
+        "depth": "detailed explanations",
+    },
+    {
+        "max_seconds": 1200,
+        "scenes": (14, 18),
+        "words_per_scene": (140, 200),
+        "depth": "full rationale with trade-offs and design decisions",
+    },
 ]
 
 
@@ -141,11 +171,17 @@ def format_planning_context(
     words_min, words_max = duration_constraints["words_per_scene"]
     lines.append(f"## Duration Constraints: {minutes:.0f} minutes")
     lines.append(f"Scene count: {scene_min}-{scene_max} scenes")
-    lines.append(f"Narration per scene: {words_min}-{words_max} words (~{words_min // 2.5:.0f}-{words_max // 2.5:.0f} seconds of speech)")
+    lines.append(
+        f"Narration per scene: {words_min}-{words_max} words (~{words_min // 2.5:.0f}-{words_max // 2.5:.0f} seconds of speech)"
+    )
     lines.append(f"Depth: {duration_constraints['depth']}")
     total_words = int(target_seconds * 2.5)
-    lines.append(f"Total narration budget: ~{total_words} words across all scenes (at 150 words/minute)")
-    lines.append(f"CRITICAL: Each scene narration MUST be {words_min}-{words_max} words. Short narrations will fail evaluation.")
+    lines.append(
+        f"Total narration budget: ~{total_words} words across all scenes (at 150 words/minute)"
+    )
+    lines.append(
+        f"CRITICAL: Each scene narration MUST be {words_min}-{words_max} words. Short narrations will fail evaluation."
+    )
     lines.append("")
 
     return "\n".join(lines)

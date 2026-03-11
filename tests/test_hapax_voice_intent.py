@@ -1,7 +1,8 @@
 """Tests for hapax_voice intent router."""
+
 from __future__ import annotations
 
-from agents.hapax_voice.intent_router import IntentResult, classify_intent
+from agents.hapax_voice.intent_router import classify_intent
 
 
 def test_briefing_routes_local() -> None:

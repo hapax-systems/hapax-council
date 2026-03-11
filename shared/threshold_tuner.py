@@ -3,23 +3,25 @@
 Allows LLM-assisted or manual threshold overrides for noisy checks.
 Persists to profiles/health-thresholds.json.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import tempfile
+from datetime import UTC
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from shared.config import PROFILES_DIR
-
 
 THRESHOLDS_FILE = PROFILES_DIR / "health-thresholds.json"
 
 
 class ThresholdOverride(BaseModel):
     """Override for a specific check's threshold or behavior."""
+
     check_name: str
     threshold_value: float | None = None  # e.g. latency ms, budget $
     suppress: bool = False  # suppress notifications entirely
@@ -34,10 +36,7 @@ def load_thresholds(path: Path | None = None) -> dict[str, ThresholdOverride]:
         return {}
     try:
         data = json.loads(path.read_text())
-        return {
-            name: ThresholdOverride.model_validate(entry)
-            for name, entry in data.items()
-        }
+        return {name: ThresholdOverride.model_validate(entry) for name, entry in data.items()}
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -86,9 +85,11 @@ async def tune_thresholds(
         noisy_checks: Checks that flip frequently [{name, current_threshold, failure_rate}].
         history_summary: Summary of recent health history patterns.
     """
+    from datetime import datetime
+
     from pydantic_ai import Agent
+
     from shared.config import get_model
-    from datetime import datetime, timezone
 
     agent = Agent(
         get_model("fast"),
@@ -110,7 +111,7 @@ async def tune_thresholds(
         prompt += f"\n\n## History Context\n{history_summary}"
 
     result = await agent.run(prompt)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     for o in result.output:
         o.updated_at = now
     return result.output

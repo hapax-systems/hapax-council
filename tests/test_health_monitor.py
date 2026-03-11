@@ -2,33 +2,34 @@
 
 All I/O is mocked. No real subprocess calls, HTTP requests, or filesystem access.
 """
+
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agents.health_monitor import (
+    CHECK_REGISTRY,
+    CORE_CONTAINERS,
+    PASS_ENTRIES,
+    REQUIRED_QDRANT_COLLECTIONS,
     CheckResult,
     GroupResult,
     HealthReport,
     Status,
     build_group_result,
-    worst_status,
     format_human,
     quick_check,
     run_checks,
-    CHECK_REGISTRY,
-    CORE_CONTAINERS,
-    REQUIRED_QDRANT_COLLECTIONS,
-    PASS_ENTRIES,
+    worst_status,
 )
 
-
 # ── Schema tests ─────────────────────────────────────────────────────────────
+
 
 class TestStatus:
     def test_values(self):
@@ -55,7 +56,9 @@ class TestStatus:
 class TestCheckResult:
     def test_minimal(self):
         r = CheckResult(
-            name="test.check", group="test", status=Status.HEALTHY,
+            name="test.check",
+            group="test",
+            status=Status.HEALTHY,
             message="ok",
         )
         assert r.name == "test.check"
@@ -65,8 +68,12 @@ class TestCheckResult:
 
     def test_full(self):
         r = CheckResult(
-            name="test.check", group="test", status=Status.FAILED,
-            message="broken", detail="stack trace", remediation="fix it",
+            name="test.check",
+            group="test",
+            status=Status.FAILED,
+            message="broken",
+            detail="stack trace",
+            remediation="fix it",
             duration_ms=42,
         )
         assert r.status == Status.FAILED
@@ -75,7 +82,9 @@ class TestCheckResult:
 
     def test_json_roundtrip(self):
         r = CheckResult(
-            name="test.x", group="test", status=Status.DEGRADED,
+            name="test.x",
+            group="test",
+            status=Status.DEGRADED,
             message="warn",
         )
         data = json.loads(r.model_dump_json())
@@ -131,10 +140,12 @@ class TestHealthReport:
 
 # ── Check function tests (mocked I/O) ───────────────────────────────────────
 
+
 class TestDockerChecks:
     @pytest.mark.asyncio
     async def test_docker_daemon_healthy(self):
         from agents.health_monitor import check_docker_daemon
+
         with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "27.5.0", "")
             results = await check_docker_daemon()
@@ -145,6 +156,7 @@ class TestDockerChecks:
     @pytest.mark.asyncio
     async def test_docker_daemon_failed(self):
         from agents.health_monitor import check_docker_daemon
+
         with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (1, "", "Cannot connect to Docker daemon")
             results = await check_docker_daemon()
@@ -154,6 +166,7 @@ class TestDockerChecks:
     @pytest.mark.asyncio
     async def test_compose_file_exists(self):
         from agents.health_monitor import check_compose_file
+
         with patch("agents.health_monitor.COMPOSE_FILE") as mock_path:
             mock_path.is_file.return_value = True
             mock_path.__str__ = lambda self: "/home/test/llm-stack/docker-compose.yml"
@@ -163,11 +176,18 @@ class TestDockerChecks:
     @pytest.mark.asyncio
     async def test_docker_containers_ndjson(self):
         from agents.health_monitor import check_docker_containers
-        ndjson = "\n".join([
-            json.dumps({"Name": "qdrant", "Service": "qdrant", "State": "running", "Health": "healthy"}),
-            json.dumps({"Name": "ollama", "Service": "ollama", "State": "running", "Health": "healthy"}),
-            json.dumps({"Name": "n8n", "Service": "n8n", "State": "exited", "Health": ""}),
-        ])
+
+        ndjson = "\n".join(
+            [
+                json.dumps(
+                    {"Name": "qdrant", "Service": "qdrant", "State": "running", "Health": "healthy"}
+                ),
+                json.dumps(
+                    {"Name": "ollama", "Service": "ollama", "State": "running", "Health": "healthy"}
+                ),
+                json.dumps({"Name": "n8n", "Service": "n8n", "State": "exited", "Health": ""}),
+            ]
+        )
         with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, ndjson, "")
             results = await check_docker_containers()
@@ -184,9 +204,15 @@ class TestDockerChecks:
     @pytest.mark.asyncio
     async def test_core_container_down_is_failed(self):
         from agents.health_monitor import check_docker_containers
-        ndjson = json.dumps({
-            "Name": "qdrant", "Service": "qdrant", "State": "exited", "Health": "",
-        })
+
+        ndjson = json.dumps(
+            {
+                "Name": "qdrant",
+                "Service": "qdrant",
+                "State": "exited",
+                "Health": "",
+            }
+        )
         with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, ndjson, "")
             results = await check_docker_containers()
@@ -197,6 +223,7 @@ class TestGpuChecks:
     @pytest.mark.asyncio
     async def test_gpu_available(self):
         from agents.health_monitor import check_gpu_available
+
         with patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "570.86.16, NVIDIA GeForce RTX 3090", "")
             results = await check_gpu_available()
@@ -206,8 +233,11 @@ class TestGpuChecks:
     @pytest.mark.asyncio
     async def test_gpu_vram_healthy(self):
         from agents.health_monitor import check_gpu_vram
-        with patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock_smi, \
-             patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock_http:
+
+        with (
+            patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock_smi,
+            patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock_http,
+        ):
             mock_smi.return_value = (0, "4000, 24576, 20576", "")
             mock_http.return_value = (200, '{"models": []}')
             results = await check_gpu_vram()
@@ -217,8 +247,11 @@ class TestGpuChecks:
     @pytest.mark.asyncio
     async def test_gpu_vram_critical(self):
         from agents.health_monitor import check_gpu_vram
-        with patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock_smi, \
-             patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock_http:
+
+        with (
+            patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock_smi,
+            patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock_http,
+        ):
             mock_smi.return_value = (0, "23500, 24576, 1076", "")
             mock_http.return_value = (200, '{"models": [{"name": "qwen3:30b"}]}')
             results = await check_gpu_vram()
@@ -229,6 +262,7 @@ class TestGpuChecks:
     @pytest.mark.asyncio
     async def test_gpu_temp_healthy(self):
         from agents.health_monitor import check_gpu_temperature
+
         with patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "45", "")
             results = await check_gpu_temperature()
@@ -238,6 +272,7 @@ class TestGpuChecks:
     @pytest.mark.asyncio
     async def test_gpu_temp_hot(self):
         from agents.health_monitor import check_gpu_temperature
+
         with patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "85", "")
             results = await check_gpu_temperature()
@@ -248,7 +283,9 @@ class TestSystemdChecks:
     @pytest.mark.asyncio
     async def test_rag_ingest_active(self):
         from agents.health_monitor import check_systemd_services
+
         with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
+
             async def side_effect(cmd, **kwargs):
                 unit = cmd[-1] if cmd else ""
                 if "is-active" in cmd and "rag-ingest" in unit:
@@ -262,6 +299,7 @@ class TestSystemdChecks:
                 if "is-active" in cmd and "midi-route" in unit:
                     return (3, "inactive", "")
                 return (0, "", "")
+
             mock.side_effect = side_effect
             results = await check_systemd_services()
 
@@ -276,6 +314,7 @@ class TestQdrantChecks:
     @pytest.mark.asyncio
     async def test_qdrant_healthy(self):
         from agents.health_monitor import check_qdrant_health
+
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, "ok")
             results = await check_qdrant_health()
@@ -284,22 +323,27 @@ class TestQdrantChecks:
     @pytest.mark.asyncio
     async def test_qdrant_collections_all_present(self):
         from agents.health_monitor import check_qdrant_collections
-        collections_resp = json.dumps({
-            "result": {
-                "collections": [
-                    {"name": "documents"},
-                    {"name": "samples"},
-                    {"name": "claude-memory"},
-                    {"name": "profile-facts"},
-                    {"name": "axiom-precedents"},
-                ]
+
+        collections_resp = json.dumps(
+            {
+                "result": {
+                    "collections": [
+                        {"name": "documents"},
+                        {"name": "samples"},
+                        {"name": "claude-memory"},
+                        {"name": "profile-facts"},
+                        {"name": "axiom-precedents"},
+                    ]
+                }
             }
-        })
+        )
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+
             async def side_effect(url, **kwargs):
                 if "/collections/" in url:
                     return (200, json.dumps({"result": {"points_count": 42}}))
                 return (200, collections_resp)
+
             mock.side_effect = side_effect
             results = await check_qdrant_collections()
         assert all(r.status == Status.HEALTHY for r in results)
@@ -308,14 +352,15 @@ class TestQdrantChecks:
     @pytest.mark.asyncio
     async def test_qdrant_collection_missing(self):
         from agents.health_monitor import check_qdrant_collections
-        collections_resp = json.dumps({
-            "result": {"collections": [{"name": "documents"}]}
-        })
+
+        collections_resp = json.dumps({"result": {"collections": [{"name": "documents"}]}})
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+
             async def side_effect(url, **kwargs):
                 if "/collections/" in url and "documents" in url:
                     return (200, json.dumps({"result": {"points_count": 10}}))
                 return (200, collections_resp)
+
             mock.side_effect = side_effect
             results = await check_qdrant_collections()
 
@@ -332,12 +377,15 @@ class TestProfileChecks:
     @pytest.mark.asyncio
     async def test_profile_files_all_present(self):
         from agents.health_monitor import check_profile_files
+
         with patch("agents.health_monitor.PROFILES_DIR") as mock_dir:
+
             def mock_path(name):
                 p = MagicMock()
                 p.is_file.return_value = True
                 p.read_text.return_value = '{"key": "value"}'
                 return p
+
             mock_dir.__truediv__ = lambda self, name: mock_path(name)
             results = await check_profile_files()
         assert all(r.status == Status.HEALTHY for r in results)
@@ -345,7 +393,8 @@ class TestProfileChecks:
     @pytest.mark.asyncio
     async def test_profile_staleness_recent(self):
         from agents.health_monitor import check_profile_staleness
-        now = datetime.now(timezone.utc)
+
+        now = datetime.now(UTC)
         state = json.dumps({"last_run": now.isoformat()})
         mock_path = MagicMock()
         mock_path.is_file.return_value = True
@@ -359,7 +408,8 @@ class TestProfileChecks:
     @pytest.mark.asyncio
     async def test_profile_staleness_old(self):
         from agents.health_monitor import check_profile_staleness
-        old = datetime.now(timezone.utc) - timedelta(hours=80)
+
+        old = datetime.now(UTC) - timedelta(hours=80)
         state = json.dumps({"last_run": old.isoformat()})
         mock_path = MagicMock()
         mock_path.is_file.return_value = True
@@ -375,6 +425,7 @@ class TestEndpointChecks:
     @pytest.mark.asyncio
     async def test_all_endpoints_up(self):
         from agents.health_monitor import check_service_endpoints
+
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, "ok")
             results = await check_service_endpoints()
@@ -384,11 +435,14 @@ class TestEndpointChecks:
     @pytest.mark.asyncio
     async def test_core_endpoint_down_is_failed(self):
         from agents.health_monitor import check_service_endpoints
+
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+
             async def side_effect(url, **kwargs):
                 if "4000" in url:
                     return (0, "Connection refused")
                 return (200, "ok")
+
             mock.side_effect = side_effect
             results = await check_service_endpoints()
         litellm_r = next(r for r in results if "litellm" in r.name)
@@ -397,11 +451,14 @@ class TestEndpointChecks:
     @pytest.mark.asyncio
     async def test_optional_endpoint_down_is_degraded(self):
         from agents.health_monitor import check_service_endpoints
+
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+
             async def side_effect(url, **kwargs):
                 if "3000" in url:
                     return (0, "Connection refused")
                 return (200, "ok")
+
             mock.side_effect = side_effect
             results = await check_service_endpoints()
         langfuse_r = next(r for r in results if "langfuse" in r.name)
@@ -412,6 +469,7 @@ class TestCredentialChecks:
     @pytest.mark.asyncio
     async def test_pass_store_exists(self):
         from agents.health_monitor import check_pass_store
+
         with patch("agents.health_monitor.PASSWORD_STORE") as mock_path:
             mock_path.is_dir.return_value = True
             mock_path.__str__ = lambda self: "/home/test/.password-store"
@@ -421,14 +479,17 @@ class TestCredentialChecks:
     @pytest.mark.asyncio
     async def test_pass_entries_mixed(self):
         from agents.health_monitor import check_pass_entries
+
         existing = {"api/anthropic", "api/google", "litellm/master-key"}
 
         with patch("agents.health_monitor.PASSWORD_STORE") as mock_store:
+
             def mock_div(self, entry):
                 p = MagicMock()
                 base = entry.replace(".gpg", "")
                 p.is_file.return_value = base in existing
                 return p
+
             mock_store.__truediv__ = mock_div
             results = await check_pass_entries()
 
@@ -442,6 +503,7 @@ class TestDiskChecks:
     @pytest.mark.asyncio
     async def test_disk_healthy(self):
         from agents.health_monitor import check_disk_usage
+
         with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "Use%\n 42%", "")
             results = await check_disk_usage()
@@ -451,6 +513,7 @@ class TestDiskChecks:
     @pytest.mark.asyncio
     async def test_disk_degraded(self):
         from agents.health_monitor import check_disk_usage
+
         with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "Use%\n 90%", "")
             results = await check_disk_usage()
@@ -459,17 +522,19 @@ class TestDiskChecks:
 
 # ── Runner tests ─────────────────────────────────────────────────────────────
 
+
 class TestRunner:
     @pytest.mark.asyncio
     async def test_run_checks_all_groups(self):
         """Verify run_checks returns a valid report with all groups."""
         # Mock all external calls
-        with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock_cmd, \
-             patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock_http, \
-             patch("agents.health_monitor.COMPOSE_FILE") as mock_compose, \
-             patch("agents.health_monitor.PROFILES_DIR") as mock_profiles, \
-             patch("agents.health_monitor.PASSWORD_STORE") as mock_pass:
-
+        with (
+            patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock_cmd,
+            patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock_http,
+            patch("agents.health_monitor.COMPOSE_FILE") as mock_compose,
+            patch("agents.health_monitor.PROFILES_DIR") as mock_profiles,
+            patch("agents.health_monitor.PASSWORD_STORE") as mock_pass,
+        ):
             mock_compose.is_file.return_value = True
             mock_compose.__str__ = lambda self: "/test/docker-compose.yml"
             mock_compose.parent = Path("/test")
@@ -482,10 +547,9 @@ class TestRunner:
             def mock_profile_path(name):
                 p = MagicMock()
                 p.is_file.return_value = True
-                p.read_text.return_value = json.dumps({
-                    "last_run": datetime.now(timezone.utc).isoformat()
-                })
+                p.read_text.return_value = json.dumps({"last_run": datetime.now(UTC).isoformat()})
                 return p
+
             mock_profiles.__truediv__ = lambda self, name: mock_profile_path(name)
             mock_profiles.parent = Path("/test")
 
@@ -494,7 +558,13 @@ class TestRunner:
                 if "docker" in cmd and "info" in cmd:
                     return (0, "27.5.0", "")
                 if "docker" in cmd and "ps" in cmd:
-                    return (0, json.dumps({"Name": "test", "Service": "test", "State": "running", "Health": ""}), "")
+                    return (
+                        0,
+                        json.dumps(
+                            {"Name": "test", "Service": "test", "State": "running", "Health": ""}
+                        ),
+                        "",
+                    )
                 if "nvidia-smi" in cmd[0]:
                     query = cmd[1] if len(cmd) > 1 else ""
                     if "driver_version" in query:
@@ -513,9 +583,13 @@ class TestRunner:
                 if "df" in cmd:
                     return (0, "Use%\n 42%", "")
                 return (0, "", "")
+
             mock_cmd.side_effect = cmd_side_effect
 
-            mock_http.return_value = (200, '{"result": {"collections": [{"name": "documents"}, {"name": "samples"}, {"name": "claude-memory"}]}}')
+            mock_http.return_value = (
+                200,
+                '{"result": {"collections": [{"name": "documents"}, {"name": "samples"}, {"name": "claude-memory"}]}}',
+            )
 
             report = await run_checks()
 
@@ -541,6 +615,7 @@ class TestRunner:
 
 # ── quick_check tests ────────────────────────────────────────────────────────
 
+
 class TestQuickCheck:
     @pytest.mark.asyncio
     async def test_quick_check_all_ok(self):
@@ -553,10 +628,12 @@ class TestQuickCheck:
     @pytest.mark.asyncio
     async def test_quick_check_one_down(self):
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+
             async def side_effect(url, **kwargs):
                 if "4000" in url:
                     return (0, "Connection refused")
                 return (200, "ok")
+
             mock.side_effect = side_effect
             ok, results = await quick_check()
         assert ok is False
@@ -578,6 +655,7 @@ class TestQuickCheck:
 
 # ── Formatter tests ──────────────────────────────────────────────────────────
 
+
 class TestFormatter:
     def test_format_human_basic(self):
         report = HealthReport(
@@ -586,9 +664,12 @@ class TestFormatter:
             overall_status=Status.HEALTHY,
             groups=[
                 GroupResult(
-                    group="test", status=Status.HEALTHY,
+                    group="test",
+                    status=Status.HEALTHY,
                     checks=[
-                        CheckResult(name="test.a", group="test", status=Status.HEALTHY, message="ok"),
+                        CheckResult(
+                            name="test.a", group="test", status=Status.HEALTHY, message="ok"
+                        ),
                     ],
                     healthy_count=1,
                 ),
@@ -609,11 +690,14 @@ class TestFormatter:
             overall_status=Status.FAILED,
             groups=[
                 GroupResult(
-                    group="docker", status=Status.FAILED,
+                    group="docker",
+                    status=Status.FAILED,
                     checks=[
                         CheckResult(
-                            name="docker.qdrant", group="docker",
-                            status=Status.FAILED, message="not running",
+                            name="docker.qdrant",
+                            group="docker",
+                            status=Status.FAILED,
+                            message="not running",
                             remediation="docker compose up -d qdrant",
                         ),
                     ],
@@ -632,18 +716,22 @@ class TestFormatter:
 
 # ── Registry tests ───────────────────────────────────────────────────────────
 
+
 class TestModelChecks:
     @pytest.mark.asyncio
     async def test_ollama_models_all_present(self):
         from agents.health_monitor import check_ollama_models
-        tags_resp = json.dumps({
-            "models": [
-                {"name": "nomic-embed-text-v2-moe:latest"},
-                {"name": "qwen2.5-coder:32b-instruct-q4_K_M"},
-                {"name": "qwen2.5:7b"},
-                {"name": "deepseek-r1:14b"},
-            ]
-        })
+
+        tags_resp = json.dumps(
+            {
+                "models": [
+                    {"name": "nomic-embed-text-v2-moe:latest"},
+                    {"name": "qwen2.5-coder:32b-instruct-q4_K_M"},
+                    {"name": "qwen2.5:7b"},
+                    {"name": "deepseek-r1:14b"},
+                ]
+            }
+        )
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, tags_resp)
             results = await check_ollama_models()
@@ -652,9 +740,8 @@ class TestModelChecks:
     @pytest.mark.asyncio
     async def test_ollama_model_missing(self):
         from agents.health_monitor import check_ollama_models
-        tags_resp = json.dumps({
-            "models": [{"name": "qwen2.5:7b"}]
-        })
+
+        tags_resp = json.dumps({"models": [{"name": "qwen2.5:7b"}]})
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, tags_resp)
             results = await check_ollama_models()
@@ -667,16 +754,24 @@ class TestAuthChecks:
     @pytest.mark.asyncio
     async def test_litellm_auth_no_key(self):
         from agents.health_monitor import check_litellm_auth
-        with patch.dict("os.environ", {"LITELLM_API_KEY": ""}, clear=False), \
-             patch("agents.health_monitor._pass_show", return_value=""):
+
+        with (
+            patch.dict("os.environ", {"LITELLM_API_KEY": ""}, clear=False),
+            patch("agents.health_monitor._pass_show", return_value=""),
+        ):
             results = await check_litellm_auth()
         assert results[0].status == Status.DEGRADED
 
     @pytest.mark.asyncio
     async def test_langfuse_auth_no_keys(self):
         from agents.health_monitor import check_langfuse_auth
-        with patch.dict("os.environ", {"LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": ""}, clear=False), \
-             patch("agents.health_monitor._pass_show", return_value=""):
+
+        with (
+            patch.dict(
+                "os.environ", {"LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": ""}, clear=False
+            ),
+            patch("agents.health_monitor._pass_show", return_value=""),
+        ):
             results = await check_langfuse_auth()
         assert results[0].status == Status.DEGRADED
 
@@ -684,9 +779,23 @@ class TestAuthChecks:
 class TestRegistry:
     def test_all_groups_registered(self):
         expected = {
-            "docker", "gpu", "systemd", "qdrant", "profiles", "endpoints",
-            "credentials", "disk", "models", "auth", "connectivity",
-            "latency", "secrets", "queues", "budget", "capacity", "axioms",
+            "docker",
+            "gpu",
+            "systemd",
+            "qdrant",
+            "profiles",
+            "endpoints",
+            "credentials",
+            "disk",
+            "models",
+            "auth",
+            "connectivity",
+            "latency",
+            "secrets",
+            "queues",
+            "budget",
+            "capacity",
+            "axioms",
             "voice",
         }
         assert expected == set(CHECK_REGISTRY.keys())
@@ -700,14 +809,17 @@ class TestRegistry:
 
 # ── History rotation tests ──────────────────────────────────────────────────
 
+
 class TestRotateHistory:
     def test_rotate_noop_when_missing(self, tmp_path, monkeypatch):
         import agents.health_monitor as hm
+
         monkeypatch.setattr(hm, "HISTORY_FILE", tmp_path / "missing.jsonl")
         hm.rotate_history()
 
     def test_rotate_noop_when_under_limit(self, tmp_path, monkeypatch):
         import agents.health_monitor as hm
+
         hist = tmp_path / "history.jsonl"
         hist.write_text("\n".join(f"line{i}" for i in range(100)) + "\n")
         monkeypatch.setattr(hm, "HISTORY_FILE", hist)
@@ -716,6 +828,7 @@ class TestRotateHistory:
 
     def test_rotate_truncates_when_over_limit(self, tmp_path, monkeypatch):
         import agents.health_monitor as hm
+
         hist = tmp_path / "history.jsonl"
         lines = [f'{{"line": {i}}}' for i in range(12_000)]
         hist.write_text("\n".join(lines) + "\n")
@@ -727,6 +840,7 @@ class TestRotateHistory:
 
     def test_rotate_at_boundary(self, tmp_path, monkeypatch):
         import agents.health_monitor as hm
+
         hist = tmp_path / "history.jsonl"
         lines = [f"line{i}" for i in range(hm.MAX_HISTORY_LINES)]
         hist.write_text("\n".join(lines) + "\n")
@@ -737,12 +851,15 @@ class TestRotateHistory:
 
 # ── Latency checks ──────────────────────────────────────────────────────────
 
+
 class TestLatencyChecks:
     @pytest.mark.asyncio
     async def test_healthy_latency(self):
         from agents.health_monitor import check_service_latency
+
         async def fast_latency(url, timeout=3.0):
             return 2.0  # 2ms — healthy
+
         with patch("agents.health_monitor._http_latency_ms", side_effect=fast_latency):
             results = await check_service_latency()
         assert all(r.status == Status.HEALTHY for r in results)
@@ -751,8 +868,10 @@ class TestLatencyChecks:
     @pytest.mark.asyncio
     async def test_unreachable_service(self):
         from agents.health_monitor import check_service_latency
+
         async def fail_latency(url, timeout=3.0):
             return None  # unreachable
+
         with patch("agents.health_monitor._http_latency_ms", side_effect=fail_latency):
             results = await check_service_latency()
         assert all(r.status == Status.FAILED for r in results)
@@ -760,8 +879,10 @@ class TestLatencyChecks:
     @pytest.mark.asyncio
     async def test_postgres_healthy(self):
         from agents.health_monitor import check_postgres_latency
+
         async def fast_connect(host, port, timeout=3.0):
             return 5.0  # 5ms
+
         with patch("agents.health_monitor._tcp_connect_ms", side_effect=fast_connect):
             results = await check_postgres_latency()
         assert results[0].status == Status.HEALTHY
@@ -769,8 +890,10 @@ class TestLatencyChecks:
     @pytest.mark.asyncio
     async def test_postgres_unreachable(self):
         from agents.health_monitor import check_postgres_latency
+
         async def fail_connect(host, port, timeout=3.0):
             return None
+
         with patch("agents.health_monitor._tcp_connect_ms", side_effect=fail_connect):
             results = await check_postgres_latency()
         assert results[0].status == Status.FAILED
@@ -778,10 +901,12 @@ class TestLatencyChecks:
 
 # ── Secret checks ────────────────────────────────────────────────────────────
 
+
 class TestSecretChecks:
     @pytest.mark.asyncio
     async def test_all_secrets_set(self):
-        from agents.health_monitor import check_env_secrets, REQUIRED_SECRETS
+        from agents.health_monitor import REQUIRED_SECRETS, check_env_secrets
+
         env = {k: "a-real-secret-value-here" for k in REQUIRED_SECRETS}
         with patch.dict("os.environ", env, clear=False):
             results = await check_env_secrets()
@@ -790,8 +915,11 @@ class TestSecretChecks:
     @pytest.mark.asyncio
     async def test_missing_secret(self):
         from agents.health_monitor import check_env_secrets
-        with patch.dict("os.environ", {"LITELLM_API_KEY": ""}, clear=False), \
-             patch("agents.health_monitor._pass_show", return_value=""):
+
+        with (
+            patch.dict("os.environ", {"LITELLM_API_KEY": ""}, clear=False),
+            patch("agents.health_monitor._pass_show", return_value=""),
+        ):
             results = await check_env_secrets()
         litellm = [r for r in results if "litellm_api_key" in r.name]
         assert litellm[0].status == Status.FAILED
@@ -799,6 +927,7 @@ class TestSecretChecks:
     @pytest.mark.asyncio
     async def test_short_secret(self):
         from agents.health_monitor import check_env_secrets
+
         with patch.dict("os.environ", {"LITELLM_API_KEY": "short"}, clear=False):
             results = await check_env_secrets()
         litellm = [r for r in results if "litellm_api_key" in r.name]
@@ -807,10 +936,12 @@ class TestSecretChecks:
 
 # ── Queue checks ─────────────────────────────────────────────────────────────
 
+
 class TestQueueChecks:
     @pytest.mark.asyncio
     async def test_no_retry_queue(self, tmp_path, monkeypatch):
         from agents.health_monitor import check_rag_retry_queue
+
         monkeypatch.setattr("agents.health_monitor.PROFILES_DIR", tmp_path)
         results = await check_rag_retry_queue()
         assert results[0].status == Status.HEALTHY
@@ -818,6 +949,7 @@ class TestQueueChecks:
     @pytest.mark.asyncio
     async def test_large_retry_queue(self, tmp_path, monkeypatch):
         from agents.health_monitor import check_rag_retry_queue
+
         monkeypatch.setattr("agents.health_monitor.RAG_INGEST_STATE_DIR", tmp_path)
         queue = tmp_path / "retry-queue.jsonl"
         queue.write_text("\n".join(f'{{"file": "f{i}"}}' for i in range(60)))
@@ -827,8 +959,10 @@ class TestQueueChecks:
     @pytest.mark.asyncio
     async def test_n8n_responsive(self):
         from agents.health_monitor import check_n8n_executions
+
         async def ok_get(url, timeout=3.0):
             return (200, "ok")
+
         with patch("agents.health_monitor.http_get", side_effect=ok_get):
             results = await check_n8n_executions()
         assert results[0].status == Status.HEALTHY
@@ -836,12 +970,15 @@ class TestQueueChecks:
 
 # ── Budget checks ────────────────────────────────────────────────────────────
 
+
 class TestBudgetChecks:
     @pytest.mark.asyncio
     async def test_under_budget(self):
         from agents.health_monitor import check_daily_spend
+
         async def spend_get(url, timeout=5.0):
             return (200, json.dumps([{"spend": 1.50}]))
+
         with patch("agents.health_monitor.http_get", side_effect=spend_get):
             results = await check_daily_spend()
         assert results[0].status == Status.HEALTHY
@@ -850,8 +987,10 @@ class TestBudgetChecks:
     @pytest.mark.asyncio
     async def test_over_budget(self):
         from agents.health_monitor import check_daily_spend
+
         async def spend_get(url, timeout=5.0):
             return (200, json.dumps([{"spend": 3.00}, {"spend": 4.00}]))
+
         with patch("agents.health_monitor.http_get", side_effect=spend_get):
             results = await check_daily_spend()
         assert results[0].status == Status.DEGRADED
@@ -859,8 +998,10 @@ class TestBudgetChecks:
     @pytest.mark.asyncio
     async def test_spend_endpoint_unavailable(self):
         from agents.health_monitor import check_daily_spend
+
         async def fail_get(url, timeout=5.0):
             return (404, "not found")
+
         with patch("agents.health_monitor.http_get", side_effect=fail_get):
             results = await check_daily_spend()
         assert results[0].status == Status.HEALTHY  # non-blocking

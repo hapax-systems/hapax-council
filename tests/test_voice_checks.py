@@ -2,24 +2,23 @@
 
 All I/O is mocked. No real subprocess calls or filesystem access.
 """
+
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from agents.health_monitor import (
-    CheckResult,
-    Status,
     CHECK_REGISTRY,
+    Status,
     check_voice_services,
     check_voice_socket,
     check_voice_vram_lock,
 )
 
-
 # ── Registration ─────────────────────────────────────────────────────────────
+
 
 def test_voice_group_registered():
     assert "voice" in CHECK_REGISTRY
@@ -27,6 +26,7 @@ def test_voice_group_registered():
 
 
 # ── check_voice_services ────────────────────────────────────────────────────
+
 
 class TestCheckVoiceServices:
     @pytest.mark.asyncio
@@ -46,6 +46,7 @@ class TestCheckVoiceServices:
             if "hapax-voice" in unit:
                 return (3, "inactive", "")
             return (0, "active", "")
+
         mock_cmd.side_effect = side_effect
         results = await check_voice_services()
 
@@ -62,6 +63,7 @@ class TestCheckVoiceServices:
             if "pipewire" in unit:
                 return (3, "inactive", "")
             return (0, "active", "")
+
         mock_cmd.side_effect = side_effect
         results = await check_voice_services()
 
@@ -77,6 +79,7 @@ class TestCheckVoiceServices:
             if "bt-keepalive" in unit:
                 return (3, "inactive", "")
             return (0, "active", "")
+
         mock_cmd.side_effect = side_effect
         results = await check_voice_services()
 
@@ -87,6 +90,7 @@ class TestCheckVoiceServices:
 
 
 # ── check_voice_socket ──────────────────────────────────────────────────────
+
 
 class TestCheckVoiceSocket:
     @pytest.mark.asyncio
@@ -119,6 +123,7 @@ class TestCheckVoiceSocket:
 
 # ── check_voice_vram_lock ───────────────────────────────────────────────────
 
+
 class TestCheckVoiceVramLock:
     @pytest.mark.asyncio
     async def test_no_lock_file(self, tmp_path, monkeypatch):
@@ -133,6 +138,7 @@ class TestCheckVoiceVramLock:
     @pytest.mark.asyncio
     async def test_lock_held_by_alive_process(self, tmp_path, monkeypatch):
         import os
+
         lock = tmp_path / "vram.lock"
         lock.write_text(str(os.getpid()))  # current process is alive
         monkeypatch.setattr("agents.health_monitor.VOICE_VRAM_LOCK", lock)

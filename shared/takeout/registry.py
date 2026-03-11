@@ -4,10 +4,10 @@ Maps Takeout service names to parser modules, paths within the ZIP,
 and default metadata. The registry is the single source of truth for
 which services we support and how to handle them.
 """
+
 from __future__ import annotations
 
 from shared.takeout.models import ServiceConfig
-
 
 SERVICE_REGISTRY: dict[str, ServiceConfig] = {
     # ── Tier 1: High signal, well-structured ──
@@ -75,7 +75,6 @@ SERVICE_REGISTRY: dict[str, ServiceConfig] = {
         modality_defaults=["text", "knowledge", "behavioral"],
         content_type="task",
     ),
-
     # ── Tier 2: High volume, needs care ──
     "gmail": ServiceConfig(
         parser="gmail",
@@ -101,7 +100,6 @@ SERVICE_REGISTRY: dict[str, ServiceConfig] = {
         modality_defaults=["text", "social", "temporal"],
         content_type="chat_message",
     ),
-
     # ── Tier 3: Supplementary signal ──
     "maps": ServiceConfig(
         parser="location",
@@ -167,6 +165,7 @@ def detect_services(zip_names: list[str]) -> dict[str, ServiceConfig]:
                 if any(zn.startswith(prefix) for zn in zip_names):
                     # Return a copy with takeout_path set to the matched path
                     from dataclasses import replace
+
                     found[name] = replace(config, takeout_path=candidate)
                     matched = True
                     break

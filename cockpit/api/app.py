@@ -3,6 +3,7 @@
 Serves data from cockpit/data/ collectors over HTTP.
 Designed to be consumed by the React SPA at cockpit-web/.
 """
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -31,8 +32,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",   # Vite dev server
-        "http://localhost:8051",   # Cockpit API (self-hosted SPA)
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:8051",  # Cockpit API (self-hosted SPA)
         "http://127.0.0.1:5173",
         "http://127.0.0.1:8051",
     ],
@@ -41,17 +42,17 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
-from cockpit.api.routes.data import router as data_router
-from cockpit.api.routes.nudges import router as nudges_router
+from cockpit.api.routes.accommodations import router as accommodations_router
 from cockpit.api.routes.agents import router as agents_router
 from cockpit.api.routes.chat import router as chat_router
-from cockpit.api.routes.profile import router as profile_router
-from cockpit.api.routes.accommodations import router as accommodations_router
 from cockpit.api.routes.copilot import router as copilot_router
-from cockpit.api.routes.demos import router as demos_router
 from cockpit.api.routes.cycle_mode import router as cycle_mode_router
-from cockpit.api.routes.scout import router as scout_router
+from cockpit.api.routes.data import router as data_router
+from cockpit.api.routes.demos import router as demos_router
+from cockpit.api.routes.nudges import router as nudges_router
+from cockpit.api.routes.profile import router as profile_router
 from cockpit.api.routes.query import router as query_router
+from cockpit.api.routes.scout import router as scout_router
 
 app.include_router(data_router)
 app.include_router(nudges_router)
@@ -72,10 +73,11 @@ async def root():
 
 
 from pathlib import Path
+
 SPA_DIR = Path(__file__).parent / "static"
 if SPA_DIR.is_dir():
-    from starlette.staticfiles import StaticFiles
     from starlette.responses import FileResponse
+    from starlette.staticfiles import StaticFiles
 
     @app.get("/app/{path:path}")
     async def spa_catchall(path: str):

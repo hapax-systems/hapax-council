@@ -7,6 +7,7 @@ play() call to first audio sample hitting PipeWire.
 Playback runs in a daemon thread so play() returns immediately
 without blocking the caller's event loop.
 """
+
 from __future__ import annotations
 
 import logging
@@ -65,6 +66,7 @@ class ChimePlayer:
                 # Pre-apply volume scaling so play() has zero overhead
                 if self._volume < 1.0:
                     import numpy as np
+
                     samples = np.frombuffer(raw, dtype=np.int16)
                     raw = (samples * self._volume).astype(np.int16).tobytes()
                 self._buffers[wav_path.stem] = raw

@@ -1,13 +1,13 @@
 """Tests for VRAM management."""
+
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
-import pytest
+from unittest.mock import MagicMock, patch
 
 from agents.demo_pipeline.vram import (
+    ensure_vram_available,
     get_vram_free_mb,
     unload_ollama_models,
-    ensure_vram_available,
 )
 
 

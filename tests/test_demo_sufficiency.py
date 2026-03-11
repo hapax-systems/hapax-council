@@ -1,21 +1,16 @@
 """Tests for the knowledge sufficiency gate."""
+
 from __future__ import annotations
 
-import json
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from agents.demo_models import AudienceDossier
 from agents.demo_pipeline.sufficiency import (
-    KnowledgeCheck,
     SufficiencyResult,
     check_sufficiency,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,18 +32,18 @@ def _make_profiles_dir(tmp_path: Path) -> Path:
     # briefing.md — fresh
     (profiles / "briefing.md").write_text("# Daily Briefing\nAll systems nominal.")
 
-    # ryan-digest.json
-    (profiles / "ryan-digest.json").write_text('{"name": "Ryan"}')
+    # operator-digest.json
+    (profiles / "operator-digest.json").write_text('{"name": "Operator"}')
 
     return profiles
 
 
 def _mock_operator_with_axioms():
-    return {"axioms": {"single_user": "100"}, "name": "Ryan"}
+    return {"axioms": {"single_user": "100"}, "name": "Operator"}
 
 
 def _mock_operator_no_axioms():
-    return {"name": "Ryan"}
+    return {"name": "Operator"}
 
 
 def _mock_qdrant_collection(point_count: int, arch_rag_available: bool = True):
@@ -74,8 +69,8 @@ def _mock_qdrant_collection(point_count: int, arch_rag_available: bool = True):
 
 def _wife_dossier() -> dict[str, AudienceDossier]:
     return {
-        "my wife": AudienceDossier(
-            key="my wife",
+        "my partner": AudienceDossier(
+            key="my partner",
             archetype="family",
             name="Sarah",
             context="Has some experience with the system. Her goal is to understand what I built. No concerns or resistance. She is my spouse with no decision authority. Casual context at home.",
@@ -86,7 +81,7 @@ def _wife_dossier() -> dict[str, AudienceDossier]:
 
 def _run_with_all_passing(
     tmp_path: Path,
-    audience_text: str = "show my wife",
+    audience_text: str = "show my partner",
     archetype: str = "family",
     dossiers: dict[str, AudienceDossier] | None = None,
     health_report: object | None = None,
@@ -107,22 +102,12 @@ def _run_with_all_passing(
     qdrant = _mock_qdrant_collection(point_count)
 
     with (
-        patch(
-            "agents.demo_pipeline.sufficiency._HAPAXROMANA_CLAUDE_MD", claude_md
-        ),
+        patch("agents.demo_pipeline.sufficiency._HAPAXROMANA_CLAUDE_MD", claude_md),
         patch("agents.demo_pipeline.sufficiency.PROFILES_DIR", profiles),
-        patch(
-            "agents.demo_pipeline.sufficiency.get_qdrant", return_value=qdrant
-        ),
-        patch(
-            "agents.demo_pipeline.sufficiency.get_operator", operator_fn
-        ),
-        patch(
-            "agents.demo_pipeline.sufficiency.load_audiences", return_value=dossiers
-        ),
-        patch(
-            "shared.config.embed", return_value=[0.1] * 768
-        ),
+        patch("agents.demo_pipeline.sufficiency.get_qdrant", return_value=qdrant),
+        patch("agents.demo_pipeline.sufficiency.get_operator", operator_fn),
+        patch("agents.demo_pipeline.sufficiency.load_audiences", return_value=dossiers),
+        patch("shared.config.embed", return_value=[0.1] * 768),
     ):
         return check_sufficiency(
             scope="full",
@@ -163,7 +148,7 @@ class TestConfidenceLevels:
 
         # Remove briefing and profile_digest → 5/7
         (profiles / "briefing.md").unlink()
-        (profiles / "ryan-digest.json").unlink()
+        (profiles / "operator-digest.json").unlink()
 
         health_report = SimpleNamespace(healthy_count=75, total_checks=75, failed_count=0)
         qdrant = _mock_qdrant_collection(500)
@@ -201,7 +186,9 @@ class TestConfidenceLevels:
         # architecture_rag fails (no points returned).
         health_report = SimpleNamespace(healthy_count=75, total_checks=75, failed_count=0)
 
-        qdrant = _mock_qdrant_collection(10, arch_rag_available=False)  # < 100 → profile_facts fails
+        qdrant = _mock_qdrant_collection(
+            10, arch_rag_available=False
+        )  # < 100 → profile_facts fails
 
         with (
             patch("agents.demo_pipeline.sufficiency._HAPAXROMANA_CLAUDE_MD", claude_md),
@@ -256,10 +243,10 @@ class TestEnrichmentActions:
 
 class TestAudienceDossier:
     def test_dossier_found(self, tmp_path: Path):
-        """'my wife' in audience text → dossier returned."""
+        """'my partner' in audience text → dossier returned."""
         result = _run_with_all_passing(
             tmp_path,
-            audience_text="show my wife the system",
+            audience_text="show my partner the system",
         )
         assert result.audience_dossier is not None
         assert result.audience_dossier.name == "Sarah"

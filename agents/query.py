@@ -6,6 +6,7 @@ Usage:
     python query.py "boom bap drum patterns" --collection samples --limit 10
     python query.py --stats
 """
+
 import argparse
 import json
 import os
@@ -20,19 +21,23 @@ except ImportError:
 
     def embed(text: str, prefix: str = "search_query") -> list[float]:
         import ollama
+
         prefixed = f"{prefix}: {text}" if prefix else text
         result = ollama.embed(model="nomic-embed-text-v2-moe", input=prefixed)
         return result["embeddings"][0]
+
 
 DEFAULT_COLLECTION = "documents"
 
 
 def search(query_vec: list[float], collection: str, limit: int) -> list[dict]:
-    data = json.dumps({
-        "vector": query_vec,
-        "limit": limit,
-        "with_payload": True,
-    }).encode()
+    data = json.dumps(
+        {
+            "vector": query_vec,
+            "limit": limit,
+            "with_payload": True,
+        }
+    ).encode()
     req = urllib.request.Request(
         f"{QDRANT_URL}/collections/{collection}/points/search",
         data=data,
@@ -71,7 +76,7 @@ def main():
         for name in collections:
             stats = collection_stats(name)
             points = stats.get("points_count", 0)
-            vectors = stats.get("vectors_count", 0)
+            stats.get("vectors_count", 0)
             status = stats.get("status", "unknown")
             print(f"  {name:20s}  {points:>8,} points  status={status}")
         return
@@ -104,7 +109,9 @@ def main():
         chunk_idx = payload.get("chunk_index", "?")
         chunk_count = payload.get("chunk_count", "?")
 
-        print(f"─── Result {i} ─── score={score:.4f} ── {filename} (chunk {chunk_idx}/{chunk_count})")
+        print(
+            f"─── Result {i} ─── score={score:.4f} ── {filename} (chunk {chunk_idx}/{chunk_count})"
+        )
         # Truncate long text for display
         if len(text) > 500:
             print(f"{text[:500]}...")

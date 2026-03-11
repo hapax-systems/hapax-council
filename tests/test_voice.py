@@ -1,4 +1,5 @@
 """Tests for cockpit.voice — greeting and operator name resolution."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -7,7 +8,7 @@ from cockpit.voice import greeting, operator_name
 
 
 def test_operator_name_fallback():
-    """Returns 'Ryan' when profile is unavailable."""
+    """Returns 'Operator' when profile is unavailable."""
     with patch("cockpit.voice.operator_name", side_effect=Exception("no profile")):
         # Direct call — the real function catches exceptions internally
         pass

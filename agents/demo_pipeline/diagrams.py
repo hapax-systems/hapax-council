@@ -1,4 +1,5 @@
 """D2 architecture diagram generation with Gruvbox theme."""
+
 from __future__ import annotations
 
 import logging
@@ -14,12 +15,33 @@ from PIL import Image, ImageDraw
 log = logging.getLogger(__name__)
 
 # Valid D2 shapes — anything else gets stripped
-VALID_D2_SHAPES = frozenset({
-    "rectangle", "square", "circle", "oval", "diamond", "cylinder",
-    "cloud", "person", "page", "hexagon", "package", "queue", "step",
-    "callout", "stored_data", "document", "parallelogram", "text", "code",
-    "class", "sql_table", "image", "sequence_diagram",
-})
+VALID_D2_SHAPES = frozenset(
+    {
+        "rectangle",
+        "square",
+        "circle",
+        "oval",
+        "diamond",
+        "cylinder",
+        "cloud",
+        "person",
+        "page",
+        "hexagon",
+        "package",
+        "queue",
+        "step",
+        "callout",
+        "stored_data",
+        "document",
+        "parallelogram",
+        "text",
+        "code",
+        "class",
+        "sql_table",
+        "image",
+        "sequence_diagram",
+    }
+)
 
 # Gruvbox theme preamble for D2.
 # Theme 200 (dark) provides acceptable dark backgrounds. We set canvas colors
@@ -73,24 +95,29 @@ def _convert_bracket_shapes(d2_source: str) -> str:
     for line in lines:
         stripped = line.strip()
         # Match: id [shape: X]: Label
-        m = re.match(r'^(\s*)([\w-]+)\s*\[shape:\s*(\w+)\]\s*:\s*(.+)$', stripped)
+        m = re.match(r"^(\s*)([\w-]+)\s*\[shape:\s*(\w+)\]\s*:\s*(.+)$", stripped)
         if m:
-            indent, node_id, shape, label = m.group(1), m.group(2), m.group(3).lower(), m.group(4).strip()
+            indent, node_id, shape, label = (
+                m.group(1),
+                m.group(2),
+                m.group(3).lower(),
+                m.group(4).strip(),
+            )
             if shape not in VALID_D2_SHAPES:
                 shape = "rectangle"
             result.append(f'{indent}{node_id}: "{label}" {{')
-            result.append(f'{indent}  shape: {shape}')
-            result.append(f'{indent}}}')
+            result.append(f"{indent}  shape: {shape}")
+            result.append(f"{indent}}}")
             continue
         # Match: id [shape: X] (no label)
-        m2 = re.match(r'^(\s*)([\w-]+)\s*\[shape:\s*(\w+)\]\s*$', stripped)
+        m2 = re.match(r"^(\s*)([\w-]+)\s*\[shape:\s*(\w+)\]\s*$", stripped)
         if m2:
             indent, node_id, shape = m2.group(1), m2.group(2), m2.group(3).lower()
             if shape not in VALID_D2_SHAPES:
                 shape = "rectangle"
-            result.append(f'{indent}{node_id}: {{')
-            result.append(f'{indent}  shape: {shape}')
-            result.append(f'{indent}}}')
+            result.append(f"{indent}{node_id}: {{")
+            result.append(f"{indent}  shape: {shape}")
+            result.append(f"{indent}}}")
             continue
         result.append(line)
     return "\n".join(result)
@@ -114,17 +141,17 @@ def _convert_inline_chain(d2_source: str) -> str:
         return d2_source
 
     # Strip leading title (e.g. "Title: A -> B -> C")
-    title_match = re.match(r'^(.+?):\s*(.+?->.+)$', full)
+    title_match = re.match(r"^(.+?):\s*(.+?->.+)$", full)
     chain_text = title_match.group(2) if title_match else full
 
     # Parse nodes with optional [shape] annotations
     # Pattern: "Node Name [shape]" or just "Node Name"
-    parts = re.split(r'\s*->\s*', chain_text)
+    parts = re.split(r"\s*->\s*", chain_text)
     nodes: list[tuple[str, str]] = []  # (id, label, shape)
 
     for part in parts:
         part = part.strip()
-        shape_match = re.match(r'^(.+?)\s*\[(\w+)\]\s*$', part)
+        shape_match = re.match(r"^(.+?)\s*\[(\w+)\]\s*$", part)
         if shape_match:
             label = shape_match.group(1).strip()
             shape = shape_match.group(2).lower()
@@ -135,7 +162,7 @@ def _convert_inline_chain(d2_source: str) -> str:
             shape = "rectangle"
 
         # Create a clean node ID
-        node_id = re.sub(r'[^a-zA-Z0-9]', '_', label.lower()).strip('_')[:30]
+        node_id = re.sub(r"[^a-zA-Z0-9]", "_", label.lower()).strip("_")[:30]
         nodes.append((node_id, label, shape))
 
     if len(nodes) < 2:
@@ -151,7 +178,7 @@ def _convert_inline_chain(d2_source: str) -> str:
 
     # Add edges
     for i in range(len(nodes) - 1):
-        d2_lines.append(f"{nodes[i][0]} -> {nodes[i+1][0]}")
+        d2_lines.append(f"{nodes[i][0]} -> {nodes[i + 1][0]}")
 
     log.info("Converted inline chain (%d nodes) to valid D2", len(nodes))
     return "\n".join(d2_lines)
@@ -172,7 +199,7 @@ def _expand_semicolons(d2_source: str) -> str:
             continue
 
         # Match: prefix { prop1; prop2; ... }
-        m = re.match(r'^(\s*)(.*?)\{\s*(.+?)\s*\}\s*$', line)
+        m = re.match(r"^(\s*)(.*?)\{\s*(.+?)\s*\}\s*$", line)
         if m:
             indent, prefix, inner = m.groups()
             # Split properties by semicolons
@@ -180,9 +207,9 @@ def _expand_semicolons(d2_source: str) -> str:
             result_lines.append(f"{indent}{prefix}{{")
             for prop in props:
                 # Handle nested braces: style: {fill: #abc}
-                if re.match(r'\w+:\s*\{.+\}', prop):
+                if re.match(r"\w+:\s*\{.+\}", prop):
                     # Expand nested: style: {fill: #abc} -> style block
-                    nm = re.match(r'(\w+):\s*\{(.+)\}', prop)
+                    nm = re.match(r"(\w+):\s*\{(.+)\}", prop)
                     if nm:
                         result_lines.append(f"{indent}  {nm.group(1)}: {{")
                         for sub in nm.group(2).split(";"):
@@ -217,7 +244,7 @@ def _strip_style_blocks(d2_source: str) -> str:
         stripped = line.strip()
 
         # Track style block entry
-        if re.match(r'^\s*style\s*:\s*\{', stripped) or re.match(r'^\s*style\s*\{', stripped):
+        if re.match(r"^\s*style\s*:\s*\{", stripped) or re.match(r"^\s*style\s*\{", stripped):
             in_style_block = True
             depth = 1
             # Check if it's a single-line style: { ... }
@@ -232,7 +259,10 @@ def _strip_style_blocks(d2_source: str) -> str:
             continue
 
         # Strip inline style.X properties
-        if re.match(r'^\s*style\.(fill|stroke|font-color|stroke-dash|border-radius|opacity|font-size|bold|italic|underline|text-transform|3d|multiple|double-border|shadow|animated|font):', stripped):
+        if re.match(
+            r"^\s*style\.(fill|stroke|font-color|stroke-dash|border-radius|opacity|font-size|bold|italic|underline|text-transform|3d|multiple|double-border|shadow|animated|font):",
+            stripped,
+        ):
             continue
 
         result.append(line)
@@ -291,19 +321,26 @@ def sanitize_d2_source(d2_source: str) -> str:
         if near_match:
             val = near_match.group(1).strip()
             # Only constant values like "top-center" are valid in ELK
-            if val not in ("top-left", "top-center", "top-right",
-                           "center-left", "center-right",
-                           "bottom-left", "bottom-center", "bottom-right"):
+            if val not in (
+                "top-left",
+                "top-center",
+                "top-right",
+                "center-left",
+                "center-right",
+                "bottom-left",
+                "bottom-center",
+                "bottom-right",
+            ):
                 log.info("Stripping unsupported D2 'near' reference: %s", val)
                 continue
 
         # Strip incomplete connections: "X ->" or "-> Y" (missing source or destination)
-        if re.match(r'^.*->\s*$', stripped) or re.match(r'^\s*->', stripped):
+        if re.match(r"^.*->\s*$", stripped) or re.match(r"^\s*->", stripped):
             log.info("Stripping incomplete D2 connection: %s", stripped[:60])
             continue
 
         # Strip "map value without key" — standalone colons or values without parent
-        if re.match(r'^\s*:\s', stripped):
+        if re.match(r"^\s*:\s", stripped):
             log.info("Stripping keyless map value: %s", stripped[:60])
             continue
 
@@ -315,7 +352,7 @@ def sanitize_d2_source(d2_source: str) -> str:
 
         # Fix dot-notation in edge references: "Node.property -> Target" → strip the .property
         # D2 interprets dots as attribute access which causes "substitutions must begin on {"
-        dot_edge = re.match(r'^(\s*)(.*?)\.([\w-]+)\s*(->)\s*(.+)$', line)
+        dot_edge = re.match(r"^(\s*)(.*?)\.([\w-]+)\s*(->)\s*(.+)$", line)
         if dot_edge:
             indent = dot_edge.group(1)
             src = dot_edge.group(2).strip()
@@ -331,29 +368,49 @@ def sanitize_d2_source(d2_source: str) -> str:
 
         # Quote unquoted inline labels that contain special chars
         # Pattern: `NodeId: Some Label With Special Chars` (not followed by { and not a keyword)
-        label_match = re.match(
-            r'^(\s*)([\w-]+)\s*:\s*(.+)$', line
-        )
+        label_match = re.match(r"^(\s*)([\w-]+)\s*:\s*(.+)$", line)
         if label_match:
             indent, name, value = label_match.groups()
             value = value.rstrip()
             d2_keywords = (
-                "shape", "style", "label", "direction", "vars", "classes",
-                "d2-config", "theme-id", "dark-theme-id", "layout-engine",
-                "pad", "fill", "stroke", "font-color", "border-radius",
-                "opacity", "near", "icon", "width", "height", "tooltip",
-                "link", "constraint", "source-arrowhead", "target-arrowhead",
+                "shape",
+                "style",
+                "label",
+                "direction",
+                "vars",
+                "classes",
+                "d2-config",
+                "theme-id",
+                "dark-theme-id",
+                "layout-engine",
+                "pad",
+                "fill",
+                "stroke",
+                "font-color",
+                "border-radius",
+                "opacity",
+                "near",
+                "icon",
+                "width",
+                "height",
+                "tooltip",
+                "link",
+                "constraint",
+                "source-arrowhead",
+                "target-arrowhead",
             )
             if name.lower() not in d2_keywords and not value.startswith(('"', "'", "{")):
                 # Handle block-opening labels: `name: Label With:Colon {`
-                block_match = re.match(r'^(.+?)\s*(\{)\s*$', value)
+                block_match = re.match(r"^(.+?)\s*(\{)\s*$", value)
                 if block_match:
                     label_part = block_match.group(1)
-                    if re.search(r'[:()\[\]@#$%^&*+=|<>!?,;/]', label_part) and not label_part.startswith('"'):
+                    if re.search(
+                        r"[:()\[\]@#$%^&*+=|<>!?,;/]", label_part
+                    ) and not label_part.startswith('"'):
                         line = f'{indent}{name}: "{label_part}" {{'
                 elif not value.endswith(("{", "}")):
                     # Regular label (no block opening)
-                    if re.search(r'[:()\[\]@#$%^&*+=|<>!?,;/]', value):
+                    if re.search(r"[:()\[\]@#$%^&*+=|<>!?,;/]", value):
                         line = f'{indent}{name}: "{value}"'
 
         cleaned.append(line)
@@ -375,7 +432,9 @@ def _try_d2_render(d2_source: str, output_path: Path) -> bool:
     try:
         result = subprocess.run(
             ["d2", "--theme", "200", "--pad", "50", str(d2_file), str(output_path)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode != 0:
             log.warning("D2 render failed: %s", result.stderr[:200])
@@ -396,13 +455,13 @@ def _simplify_d2(d2_source: str) -> str:
             continue
 
         # Match edges: A -> B or "Multi Word" -> "Other" (with optional label)
-        edge_match = re.match(r'^(.+?)\s*->\s*(.+?)(?:\s*[:{].*)?$', stripped)
+        edge_match = re.match(r"^(.+?)\s*->\s*(.+?)(?:\s*[:{].*)?$", stripped)
         if edge_match:
             src = edge_match.group(1).strip().strip('"')
             tgt = edge_match.group(2).strip().strip('"')
             # Add nodes if not already known
-            src_id = re.sub(r'[^a-zA-Z0-9]', '_', src.lower()).strip('_')
-            tgt_id = re.sub(r'[^a-zA-Z0-9]', '_', tgt.lower()).strip('_')
+            src_id = re.sub(r"[^a-zA-Z0-9]", "_", src.lower()).strip("_")
+            tgt_id = re.sub(r"[^a-zA-Z0-9]", "_", tgt.lower()).strip("_")
             if src_id not in nodes:
                 nodes[src_id] = src
             if tgt_id not in nodes:
@@ -419,12 +478,11 @@ def _simplify_d2(d2_source: str) -> str:
             continue
 
         # Match node definitions: name: { or "Multi Word Name": { or Multi Word Name {
-        node_match = re.match(r'^([\w][\w\s]*?)\s*(?::\s*)?\{', stripped)
+        node_match = re.match(r"^([\w][\w\s]*?)\s*(?::\s*)?\{", stripped)
         if node_match:
             name = node_match.group(1).strip()
-            name_id = re.sub(r'[^a-zA-Z0-9]', '_', name.lower()).strip('_')
+            name_id = re.sub(r"[^a-zA-Z0-9]", "_", name.lower()).strip("_")
             if name_id not in ("style", "vars", "classes", "direction"):
-                current_node = name_id
                 nodes[name_id] = name.replace("-", " ").replace("_", " ")
             continue
 
@@ -500,7 +558,7 @@ def _extract_nodes_and_edges(d2_source: str) -> tuple[list[str], list[tuple[str,
             continue
 
         # Match node definitions: name: { or name: "label" or label: "text"
-        label_match = re.match(r'^(\w[\w\s]*?):\s*\{', stripped)
+        label_match = re.match(r"^(\w[\w\s]*?):\s*\{", stripped)
         if label_match:
             name = label_match.group(1).strip()
             if name not in ("style", "vars", "classes", "shape"):
@@ -520,11 +578,11 @@ def _fallback_diagram(d2_source: str, output_path: Path, size: tuple[int, int]) 
     """Generate a Pillow diagram showing nodes and connections from D2 source."""
     from agents.demo_pipeline.title_cards import _get_font
 
-    BG = (40, 40, 40)       # #282828
-    FG = (235, 219, 178)    # #ebdbb2
-    ACCENT = (250, 189, 47) # #fabd2f
-    ORANGE = (254, 128, 25) # #fe8019
-    SUBTLE = (168, 153, 132) # #a89984
+    BG = (40, 40, 40)  # #282828
+    FG = (235, 219, 178)  # #ebdbb2
+    ACCENT = (250, 189, 47)  # #fabd2f
+    ORANGE = (254, 128, 25)  # #fe8019
+    SUBTLE = (168, 153, 132)  # #a89984
 
     img = Image.new("RGB", size, BG)
     draw = ImageDraw.Draw(img)
@@ -537,14 +595,20 @@ def _fallback_diagram(d2_source: str, output_path: Path, size: tuple[int, int]) 
 
     if not nodes:
         # Truly empty — show generic diagram placeholder
-        draw.text((size[0] // 2, size[1] // 2), "Architecture Diagram", fill=ACCENT, font=font_title, anchor="mm")
+        draw.text(
+            (size[0] // 2, size[1] // 2),
+            "Architecture Diagram",
+            fill=ACCENT,
+            font=font_title,
+            anchor="mm",
+        )
         img.save(output_path)
         return output_path
 
     # Layout: horizontal flow of boxes with arrows
     margin = 80
     usable_w = size[0] - 2 * margin
-    usable_h = size[1] - 2 * margin
+    size[1] - 2 * margin
 
     # Limit to 8 nodes for readability
     display_nodes = nodes[:8]
@@ -566,7 +630,9 @@ def _fallback_diagram(d2_source: str, output_path: Path, size: tuple[int, int]) 
             # Draw rounded box
             x1, y1 = x - box_w // 2, y - box_h // 2
             x2, y2 = x + box_w // 2, y + box_h // 2
-            draw.rounded_rectangle([x1, y1, x2, y2], radius=12, fill=(60, 56, 54), outline=ORANGE, width=2)
+            draw.rounded_rectangle(
+                [x1, y1, x2, y2], radius=12, fill=(60, 56, 54), outline=ORANGE, width=2
+            )
             label = textwrap.shorten(display_nodes[i], width=20, placeholder="...")
             draw.text((x, y), label, fill=FG, font=font_node, anchor="mm")
 
@@ -577,7 +643,10 @@ def _fallback_diagram(d2_source: str, output_path: Path, size: tuple[int, int]) 
                 arrow_end = next_x - box_w // 2 - 8
                 if arrow_end > arrow_start:
                     draw.line([(arrow_start, y), (arrow_end, y)], fill=SUBTLE, width=2)
-                    draw.polygon([(arrow_end, y), (arrow_end - 10, y - 6), (arrow_end - 10, y + 6)], fill=SUBTLE)
+                    draw.polygon(
+                        [(arrow_end, y), (arrow_end - 10, y - 6), (arrow_end - 10, y + 6)],
+                        fill=SUBTLE,
+                    )
     else:
         # Two-row layout
         top_n = (n + 1) // 2
@@ -600,12 +669,20 @@ def _fallback_diagram(d2_source: str, output_path: Path, size: tuple[int, int]) 
         for i, (x, y) in enumerate(positions):
             x1, y1 = x - box_w // 2, y - box_h // 2
             x2, y2 = x + box_w // 2, y + box_h // 2
-            draw.rounded_rectangle([x1, y1, x2, y2], radius=12, fill=(60, 56, 54), outline=ORANGE, width=2)
+            draw.rounded_rectangle(
+                [x1, y1, x2, y2], radius=12, fill=(60, 56, 54), outline=ORANGE, width=2
+            )
             label = textwrap.shorten(display_nodes[i], width=18, placeholder="...")
             draw.text((x, y), label, fill=FG, font=font_node, anchor="mm")
 
     # Subtitle
-    draw.text((size[0] // 2, size[1] - 40), "System Architecture", fill=SUBTLE, font=font_small, anchor="mm")
+    draw.text(
+        (size[0] // 2, size[1] - 40),
+        "System Architecture",
+        fill=SUBTLE,
+        font=font_small,
+        anchor="mm",
+    )
 
     img.save(output_path)
     return output_path

@@ -1,7 +1,8 @@
 """Tests for FaceDetector."""
-import sys
+
+from unittest.mock import MagicMock, patch
+
 import numpy as np
-from unittest.mock import patch, MagicMock
 
 from agents.hapax_voice.face_detector import FaceDetector
 
@@ -21,6 +22,7 @@ def test_detector_returns_false_on_empty_image():
 
 def test_detector_result_dataclass():
     from agents.hapax_voice.face_detector import FaceResult
+
     r = FaceResult(detected=True, count=2)
     assert r.detected is True
     assert r.count == 2
@@ -36,12 +38,34 @@ def test_detector_from_base64():
     """Detector should accept base64 JPEG input."""
     detector = FaceDetector()
     import base64
+
     # Minimal valid JPEG
-    tiny_jpg = bytes([
-        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46,
-        0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
-        0x00, 0x01, 0x00, 0x00, 0xFF, 0xD9,
-    ])
+    tiny_jpg = bytes(
+        [
+            0xFF,
+            0xD8,
+            0xFF,
+            0xE0,
+            0x00,
+            0x10,
+            0x4A,
+            0x46,
+            0x49,
+            0x46,
+            0x00,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0xFF,
+            0xD9,
+        ]
+    )
     b64 = base64.b64encode(tiny_jpg).decode("ascii")
     result = detector.detect_from_base64(b64)
     assert result.detected is False
@@ -179,8 +203,8 @@ class TestNormalizeColor:
 
         # BGR format: high blue channel value = 20, green = 20, red = 200
         red_tinted = np.zeros((100, 100, 3), dtype=np.uint8)
-        red_tinted[:, :, 0] = 20   # B
-        red_tinted[:, :, 1] = 20   # G
+        red_tinted[:, :, 0] = 20  # B
+        red_tinted[:, :, 1] = 20  # G
         red_tinted[:, :, 2] = 200  # R
 
         result = _normalize_color(red_tinted)
@@ -212,9 +236,7 @@ class TestDetectorEdgeCases:
 
         mock_mp = MagicMock()
         mock_detector_instance = MagicMock()
-        mock_mp.tasks.vision.FaceDetector.create_from_options.return_value = (
-            mock_detector_instance
-        )
+        mock_mp.tasks.vision.FaceDetector.create_from_options.return_value = mock_detector_instance
 
         detector = FaceDetector()
 

@@ -13,12 +13,12 @@ Usage:
     results = store.search("preferred tools", dimension="workflow")
     digest = store.get_digest()
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import uuid
-from pathlib import Path
 
 from shared.config import PROFILES_DIR
 
@@ -38,6 +38,7 @@ class ProfileStore:
     def client(self):
         if self._client is None:
             from shared.config import get_qdrant
+
             self._client = get_qdrant()
         return self._client
 
@@ -59,8 +60,9 @@ class ProfileStore:
         Each fact becomes a point with deterministic ID based on dimension+key.
         Returns the number of points upserted.
         """
-        from shared.config import embed_batch
         from qdrant_client.models import PointStruct
+
+        from shared.config import embed_batch
 
         texts: list[str] = []
         metadata: list[dict] = []
@@ -69,15 +71,17 @@ class ProfileStore:
             for fact in dim.facts:
                 text = f"{fact.dimension}/{fact.key}: {fact.value}"
                 texts.append(text)
-                metadata.append({
-                    "dimension": fact.dimension,
-                    "key": fact.key,
-                    "value": fact.value,
-                    "confidence": fact.confidence,
-                    "source": fact.source,
-                    "text": text,
-                    "profile_version": profile.version,
-                })
+                metadata.append(
+                    {
+                        "dimension": fact.dimension,
+                        "key": fact.key,
+                        "value": fact.value,
+                        "confidence": fact.confidence,
+                        "source": fact.source,
+                        "text": text,
+                        "profile_version": profile.version,
+                    }
+                )
 
         if not texts:
             log.info("No facts to index")
@@ -92,17 +96,19 @@ class ProfileStore:
 
         # Build points with deterministic IDs
         points: list[PointStruct] = []
-        for i, (vec, meta) in enumerate(zip(vectors, metadata)):
-            point_id = str(uuid.uuid5(
-                uuid.NAMESPACE_DNS,
-                f"profile-fact-{meta['dimension']}-{meta['key']}",
-            ))
+        for _i, (vec, meta) in enumerate(zip(vectors, metadata, strict=False)):
+            point_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_DNS,
+                    f"profile-fact-{meta['dimension']}-{meta['key']}",
+                )
+            )
             points.append(PointStruct(id=point_id, vector=vec, payload=meta))
 
         # Upsert in batches of 100
         batch_size = 100
         for start in range(0, len(points), batch_size):
-            batch = points[start:start + batch_size]
+            batch = points[start : start + batch_size]
             self.client.upsert(COLLECTION, batch)
 
         log.info("Indexed %d profile facts into %s", len(points), COLLECTION)
@@ -119,8 +125,11 @@ class ProfileStore:
         offset = None
         while True:
             results = self.client.scroll(
-                COLLECTION, limit=100, offset=offset,
-                with_payload=["dimension", "key"], with_vectors=False,
+                COLLECTION,
+                limit=100,
+                offset=offset,
+                with_payload=["dimension", "key"],
+                with_vectors=False,
             )
             points, next_offset = results
             for pt in points:
@@ -133,6 +142,7 @@ class ProfileStore:
             offset = next_offset
         if stale_ids:
             from qdrant_client.models import PointIdsList
+
             self.client.delete(COLLECTION, points_selector=PointIdsList(points=stale_ids))
             log.info("Removed %d stale profile-facts points", len(stale_ids))
         return len(stale_ids)
@@ -160,10 +170,13 @@ class ProfileStore:
 
         query_filter = None
         if dimension:
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            query_filter = Filter(must=[
-                FieldCondition(key="dimension", match=MatchValue(value=dimension)),
-            ])
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+            query_filter = Filter(
+                must=[
+                    FieldCondition(key="dimension", match=MatchValue(value=dimension)),
+                ]
+            )
 
         results = self.client.query_points(
             COLLECTION,
@@ -188,7 +201,7 @@ class ProfileStore:
 
         Returns None if the digest file doesn't exist.
         """
-        digest_path = PROFILES_DIR / "ryan-digest.json"
+        digest_path = PROFILES_DIR / "operator-digest.json"
         if not digest_path.exists():
             return None
         try:

@@ -2,15 +2,15 @@
 
 All I/O is mocked. No real HTTP requests.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
 from cockpit.data.cost import CostSnapshot, ModelCost, collect_cost
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -22,11 +22,13 @@ def _make_obs_response(items: list[tuple[str, str, float]], total: int | None = 
     """
     obs = []
     for model, start_time, cost in items:
-        obs.append({
-            "model": model,
-            "startTime": start_time,
-            "calculatedTotalCost": cost,
-        })
+        obs.append(
+            {
+                "model": model,
+                "startTime": start_time,
+                "calculatedTotalCost": cost,
+            }
+        )
     return {"data": obs, "meta": {"totalItems": total if total is not None else len(obs)}}
 
 
@@ -80,11 +82,13 @@ def test_collect_cost_empty_window(mock_get):
 @patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
 @patch("cockpit.data.cost.langfuse_get")
 def test_collect_cost_single_day(mock_get):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    mock_get.return_value = _make_obs_response([
-        ("claude-sonnet", f"{today}T10:00:00Z", 0.50),
-        ("claude-sonnet", f"{today}T11:00:00Z", 0.30),
-    ])
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    mock_get.return_value = _make_obs_response(
+        [
+            ("claude-sonnet", f"{today}T10:00:00Z", 0.50),
+            ("claude-sonnet", f"{today}T11:00:00Z", 0.30),
+        ]
+    )
     result = collect_cost()
     assert result.available is True
     assert result.today_cost == pytest.approx(0.80, abs=1e-6)
@@ -95,16 +99,18 @@ def test_collect_cost_single_day(mock_get):
 @patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
 @patch("cockpit.data.cost.langfuse_get")
 def test_collect_cost_multi_day(mock_get):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     today = now.strftime("%Y-%m-%d")
     yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
     two_days_ago = (now - timedelta(days=2)).strftime("%Y-%m-%d")
 
-    mock_get.return_value = _make_obs_response([
-        ("claude-sonnet", f"{today}T10:00:00Z", 1.00),
-        ("claude-haiku", f"{yesterday}T10:00:00Z", 0.50),
-        ("claude-sonnet", f"{two_days_ago}T10:00:00Z", 0.50),
-    ])
+    mock_get.return_value = _make_obs_response(
+        [
+            ("claude-sonnet", f"{today}T10:00:00Z", 1.00),
+            ("claude-haiku", f"{yesterday}T10:00:00Z", 0.50),
+            ("claude-sonnet", f"{two_days_ago}T10:00:00Z", 0.50),
+        ]
+    )
     result = collect_cost()
     assert result.available is True
     assert result.today_cost == pytest.approx(1.00, abs=1e-6)
@@ -116,12 +122,14 @@ def test_collect_cost_multi_day(mock_get):
 @patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
 @patch("cockpit.data.cost.langfuse_get")
 def test_collect_cost_model_grouping(mock_get):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    mock_get.return_value = _make_obs_response([
-        ("claude-sonnet", f"{today}T10:00:00Z", 0.80),
-        ("claude-haiku", f"{today}T11:00:00Z", 0.10),
-        ("claude-sonnet", f"{today}T12:00:00Z", 0.50),
-    ])
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    mock_get.return_value = _make_obs_response(
+        [
+            ("claude-sonnet", f"{today}T10:00:00Z", 0.80),
+            ("claude-haiku", f"{today}T11:00:00Z", 0.10),
+            ("claude-sonnet", f"{today}T12:00:00Z", 0.50),
+        ]
+    )
     result = collect_cost()
     assert len(result.top_models) == 2
     # Sorted descending by cost
@@ -134,11 +142,13 @@ def test_collect_cost_model_grouping(mock_get):
 @patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
 @patch("cockpit.data.cost.langfuse_get")
 def test_collect_cost_skips_zero_cost(mock_get):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    mock_get.return_value = _make_obs_response([
-        ("claude-sonnet", f"{today}T10:00:00Z", 0.50),
-        ("qwen-7b", f"{today}T10:00:00Z", 0.0),
-    ])
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    mock_get.return_value = _make_obs_response(
+        [
+            ("claude-sonnet", f"{today}T10:00:00Z", 0.50),
+            ("qwen-7b", f"{today}T10:00:00Z", 0.0),
+        ]
+    )
     result = collect_cost()
     assert len(result.top_models) == 1
     assert result.top_models[0].model == "claude-sonnet"
@@ -166,7 +176,7 @@ def test_collect_cost_missing_start_time(mock_get):
 @patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
 @patch("cockpit.data.cost.langfuse_get")
 def test_collect_cost_pagination(mock_get):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
 
     page1 = _make_obs_response(
         [("claude-sonnet", f"{today}T10:00:00Z", 0.50)],
@@ -197,7 +207,7 @@ def test_collect_cost_pagination(mock_get):
 @patch("cockpit.data.cost.langfuse_get")
 def test_collect_cost_partial_failure(mock_get):
     """First page succeeds, second fails — partial data preserved."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
 
     page1 = _make_obs_response(
         [("claude-sonnet", f"{today}T10:00:00Z", 0.50)],

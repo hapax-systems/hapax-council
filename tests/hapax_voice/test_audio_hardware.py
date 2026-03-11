@@ -3,6 +3,7 @@
 Run with: pytest tests/hapax_voice/test_audio_hardware.py -v -m hardware
 Requires: PipeWire running, echo_cancel_capture source available.
 """
+
 from __future__ import annotations
 
 import asyncio

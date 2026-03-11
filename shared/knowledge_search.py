@@ -4,20 +4,22 @@ Reusable by query agents, voice tools, or any consumer needing
 semantic search over Qdrant collections and access to knowledge artifacts.
 No pydantic-ai dependency.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from shared.config import embed, get_qdrant
 from shared.ops_db import _load_json
-from shared.config import get_qdrant, embed
 from shared.profile_store import ProfileStore
 
 log = logging.getLogger("shared.knowledge_search")
 
 
 # ── Qdrant Search ────────────────────────────────────────────────────────────
+
 
 def search_documents(
     query: str,
@@ -29,7 +31,7 @@ def search_documents(
 ) -> str:
     """Semantic search over the documents collection."""
     try:
-        from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
+        from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
 
         query_vec = embed(query, prefix="search_query")
         client = get_qdrant()
@@ -44,10 +46,8 @@ def search_documents(
                 FieldCondition(key="content_type", match=MatchValue(value=content_type))
             )
         if days_back:
-            since_ts = (datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp()
-            conditions.append(
-                FieldCondition(key="ingested_at", range=Range(gte=since_ts))
-            )
+            since_ts = (datetime.now(UTC) - timedelta(days=days_back)).timestamp()
+            conditions.append(FieldCondition(key="ingested_at", range=Range(gte=since_ts)))
 
         query_filter = Filter(must=conditions) if conditions else None
 
@@ -136,6 +136,7 @@ def search_memory(query: str, *, limit: int = 5) -> str:
 
 # ── Artifact Reads ───────────────────────────────────────────────────────────
 
+
 def read_briefing(profiles_dir: Path) -> str:
     """Read the latest daily briefing."""
     data = _load_json(profiles_dir / "briefing.json")
@@ -218,11 +219,12 @@ def read_scout_report(profiles_dir: Path) -> str:
         lines.append("Recommendations:")
         for r in recs:
             lines.append(
-                f"  [{r.get('tier', '?')}] {r.get('component', '?')}: "
-                f"{r.get('summary', '')}"
+                f"  [{r.get('tier', '?')}] {r.get('component', '?')}: {r.get('summary', '')}"
             )
             if r.get("migration_effort"):
-                lines.append(f"    Effort: {r['migration_effort']}, Confidence: {r.get('confidence', '?')}")
+                lines.append(
+                    f"    Effort: {r['migration_effort']}, Confidence: {r.get('confidence', '?')}"
+                )
             for f in r.get("findings", []):
                 lines.append(f"    - {f.get('name', '')}: {f.get('description', '')}")
         lines.append("")
@@ -266,4 +268,5 @@ def get_collection_stats() -> str:
     Delegates to shared.ops_live.query_qdrant_stats to avoid duplication.
     """
     from shared.ops_live import query_qdrant_stats
+
     return query_qdrant_stats()

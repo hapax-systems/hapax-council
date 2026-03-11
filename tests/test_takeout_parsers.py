@@ -1,19 +1,27 @@
 """Tests for shared.takeout parsers with synthetic fixtures."""
+
 from __future__ import annotations
 
 import io
 import json
 import zipfile
-from datetime import datetime
-from pathlib import Path
-
-import pytest
+from datetime import UTC, datetime
 
 from shared.takeout.models import ServiceConfig
-from shared.takeout.parsers import activity, chrome, keep, calendar, contacts, tasks, gmail, drive, chat
-
+from shared.takeout.parsers import (
+    activity,
+    calendar,
+    chat,
+    chrome,
+    contacts,
+    drive,
+    gmail,
+    keep,
+    tasks,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def make_zip(files: dict[str, str | bytes]) -> zipfile.ZipFile:
     """Create an in-memory ZIP with the given files."""
@@ -28,6 +36,7 @@ def make_zip(files: dict[str, str | bytes]) -> zipfile.ZipFile:
 
 
 # ── Activity parser ──────────────────────────────────────────────────────────
+
 
 class TestActivityParser:
     SEARCH_CONFIG = ServiceConfig(
@@ -49,21 +58,23 @@ class TestActivityParser:
     )
 
     def test_parse_json_search(self):
-        data = json.dumps([
-            {
-                "header": "Search",
-                "title": "Searched for pydantic ai tutorial",
-                "time": "2025-06-15T10:30:00.000Z",
-                "products": ["Search"],
-            },
-            {
-                "header": "Search",
-                "title": "Searched for MIDI routing linux",
-                "time": "2025-06-15T11:00:00.000Z",
-                "titleUrl": "https://www.google.com/search?q=MIDI+routing+linux",
-                "products": ["Search"],
-            },
-        ])
+        data = json.dumps(
+            [
+                {
+                    "header": "Search",
+                    "title": "Searched for pydantic ai tutorial",
+                    "time": "2025-06-15T10:30:00.000Z",
+                    "products": ["Search"],
+                },
+                {
+                    "header": "Search",
+                    "title": "Searched for MIDI routing linux",
+                    "time": "2025-06-15T11:00:00.000Z",
+                    "titleUrl": "https://www.google.com/search?q=MIDI+routing+linux",
+                    "products": ["Search"],
+                },
+            ]
+        )
         zf = make_zip({"Takeout/My Activity/Search/MyActivity.json": data})
         records = list(activity.parse(zf, self.SEARCH_CONFIG))
         assert len(records) == 2
@@ -73,16 +84,18 @@ class TestActivityParser:
         assert "behavioral" in records[0].modality_tags
 
     def test_parse_json_youtube(self):
-        data = json.dumps([
-            {
-                "header": "YouTube",
-                "title": "Watched SP-404 MK2 tutorial",
-                "time": "2025-06-15T20:00:00Z",
-                "titleUrl": "https://www.youtube.com/watch?v=abc123",
-                "subtitles": [{"name": "MPC Channel"}],
-                "products": ["YouTube"],
-            },
-        ])
+        data = json.dumps(
+            [
+                {
+                    "header": "YouTube",
+                    "title": "Watched SP-404 MK2 tutorial",
+                    "time": "2025-06-15T20:00:00Z",
+                    "titleUrl": "https://www.youtube.com/watch?v=abc123",
+                    "subtitles": [{"name": "MPC Channel"}],
+                    "products": ["YouTube"],
+                },
+            ]
+        )
         zf = make_zip({"Takeout/My Activity/YouTube/MyActivity.json": data})
         records = list(activity.parse(zf, self.YOUTUBE_CONFIG))
         assert len(records) == 1
@@ -109,11 +122,13 @@ class TestActivityParser:
         assert "pydantic" in records[0].text.lower()
 
     def test_empty_entries_skipped(self):
-        data = json.dumps([
-            {"title": ""},
-            {"header": "Search"},  # no title
-            {"title": "Valid entry", "time": "2025-06-15T10:00:00Z"},
-        ])
+        data = json.dumps(
+            [
+                {"title": ""},
+                {"header": "Search"},  # no title
+                {"title": "Valid entry", "time": "2025-06-15T10:00:00Z"},
+            ]
+        )
         zf = make_zip({"Takeout/My Activity/Search/MyActivity.json": data})
         records = list(activity.parse(zf, self.SEARCH_CONFIG))
         assert len(records) == 1
@@ -132,6 +147,7 @@ class TestActivityParser:
 
 # ── Chrome parser ─────────────────────────────────────────────────────────────
 
+
 class TestChromeParser:
     CONFIG = ServiceConfig(
         parser="chrome",
@@ -143,22 +159,24 @@ class TestChromeParser:
     )
 
     def test_parse_history(self):
-        data = json.dumps({
-            "Browser History": [
-                {
-                    "title": "GitHub",
-                    "url": "https://github.com",
-                    "time_usec": 13370000000000000,  # Some Chrome time
-                    "page_transition": "LINK",
-                },
-                {
-                    "title": "Stack Overflow",
-                    "url": "https://stackoverflow.com",
-                    "time_usec": 13370000000000000,
-                    "page_transition": "TYPED",
-                },
-            ]
-        })
+        data = json.dumps(
+            {
+                "Browser History": [
+                    {
+                        "title": "GitHub",
+                        "url": "https://github.com",
+                        "time_usec": 13370000000000000,  # Some Chrome time
+                        "page_transition": "LINK",
+                    },
+                    {
+                        "title": "Stack Overflow",
+                        "url": "https://stackoverflow.com",
+                        "time_usec": 13370000000000000,
+                        "page_transition": "TYPED",
+                    },
+                ]
+            }
+        )
         zf = make_zip({"Takeout/Chrome/BrowserHistory.json": data})
         records = list(chrome.parse(zf, self.CONFIG))
         assert len(records) == 2
@@ -169,13 +187,27 @@ class TestChromeParser:
 
     def test_dedup_by_url(self):
         """Multiple visits to same URL should produce one record with visit count."""
-        data = json.dumps({
-            "Browser History": [
-                {"title": "GitHub", "url": "https://github.com", "time_usec": 13370000000000000},
-                {"title": "GitHub", "url": "https://github.com", "time_usec": 13370001000000000},
-                {"title": "GitHub", "url": "https://github.com", "time_usec": 13370002000000000},
-            ]
-        })
+        data = json.dumps(
+            {
+                "Browser History": [
+                    {
+                        "title": "GitHub",
+                        "url": "https://github.com",
+                        "time_usec": 13370000000000000,
+                    },
+                    {
+                        "title": "GitHub",
+                        "url": "https://github.com",
+                        "time_usec": 13370001000000000,
+                    },
+                    {
+                        "title": "GitHub",
+                        "url": "https://github.com",
+                        "time_usec": 13370002000000000,
+                    },
+                ]
+            }
+        )
         zf = make_zip({"Takeout/Chrome/BrowserHistory.json": data})
         records = list(chrome.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -202,39 +234,42 @@ class TestChromeParser:
 
     def test_history_timestamps_are_utc(self):
         """Chrome timestamps should be timezone-aware UTC."""
-        from datetime import timezone
-        data = json.dumps({
-            "Browser History": [
-                {
-                    "title": "Test",
-                    "url": "https://example.com",
-                    "time_usec": 13370000000000000,
-                    "page_transition": "LINK",
-                },
-            ]
-        })
+        data = json.dumps(
+            {
+                "Browser History": [
+                    {
+                        "title": "Test",
+                        "url": "https://example.com",
+                        "time_usec": 13370000000000000,
+                        "page_transition": "LINK",
+                    },
+                ]
+            }
+        )
         zf = make_zip({"Takeout/Chrome/BrowserHistory.json": data})
         records = list(chrome.parse(zf, self.CONFIG))
         assert len(records) == 1
         ts = records[0].timestamp
         assert ts is not None
         assert ts.tzinfo is not None
-        assert ts.tzinfo == timezone.utc
+        assert ts.tzinfo == UTC
 
     def test_bookmark_timestamps_are_utc(self):
         """Bookmark ADD_DATE timestamps should be timezone-aware UTC."""
-        from datetime import timezone
+
         from shared.takeout.parsers.chrome import _chrome_time_to_datetime
+
         # Test via _chrome_time_to_datetime directly (history path)
         dt = _chrome_time_to_datetime(13370000000000000)
         assert dt is not None
-        assert dt.tzinfo == timezone.utc
+        assert dt.tzinfo == UTC
         # Test bookmark path via fromtimestamp with tz
-        dt2 = datetime.fromtimestamp(1718456400, tz=timezone.utc)
-        assert dt2.tzinfo == timezone.utc
+        dt2 = datetime.fromtimestamp(1718456400, tz=UTC)
+        assert dt2.tzinfo == UTC
 
 
 # ── Keep parser ───────────────────────────────────────────────────────────────
+
 
 class TestKeepParser:
     CONFIG = ServiceConfig(
@@ -247,14 +282,16 @@ class TestKeepParser:
     )
 
     def test_parse_text_note(self):
-        note = json.dumps({
-            "title": "Music Ideas",
-            "textContent": "Try chopping that Madlib sample at 90bpm",
-            "labels": [{"name": "music"}, {"name": "production"}],
-            "userEditedTimestampUsec": 1718456400000000,
-            "isPinned": True,
-            "isTrashed": False,
-        })
+        note = json.dumps(
+            {
+                "title": "Music Ideas",
+                "textContent": "Try chopping that Madlib sample at 90bpm",
+                "labels": [{"name": "music"}, {"name": "production"}],
+                "userEditedTimestampUsec": 1718456400000000,
+                "isPinned": True,
+                "isTrashed": False,
+            }
+        )
         zf = make_zip({"Takeout/Keep/note1.json": note})
         records = list(keep.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -266,15 +303,17 @@ class TestKeepParser:
         assert r.structured_fields.get("pinned") is True
 
     def test_parse_checklist(self):
-        note = json.dumps({
-            "title": "Gear Setup",
-            "textContent": "",
-            "listContent": [
-                {"text": "Connect OXI One MIDI out", "isChecked": True},
-                {"text": "Route SP-404 audio", "isChecked": False},
-            ],
-            "userEditedTimestampUsec": 1718456400000000,
-        })
+        note = json.dumps(
+            {
+                "title": "Gear Setup",
+                "textContent": "",
+                "listContent": [
+                    {"text": "Connect OXI One MIDI out", "isChecked": True},
+                    {"text": "Route SP-404 audio", "isChecked": False},
+                ],
+                "userEditedTimestampUsec": 1718456400000000,
+            }
+        )
         zf = make_zip({"Takeout/Keep/checklist.json": note})
         records = list(keep.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -282,33 +321,39 @@ class TestKeepParser:
         assert "[ ] Route SP-404" in records[0].text
 
     def test_skip_trashed(self):
-        note = json.dumps({
-            "title": "Deleted Note",
-            "textContent": "Gone",
-            "isTrashed": True,
-        })
+        note = json.dumps(
+            {
+                "title": "Deleted Note",
+                "textContent": "Gone",
+                "isTrashed": True,
+            }
+        )
         zf = make_zip({"Takeout/Keep/trashed.json": note})
         records = list(keep.parse(zf, self.CONFIG))
         assert records == []
 
     def test_skip_empty_note(self):
-        note = json.dumps({
-            "title": "",
-            "textContent": "",
-        })
+        note = json.dumps(
+            {
+                "title": "",
+                "textContent": "",
+            }
+        )
         zf = make_zip({"Takeout/Keep/empty.json": note})
         records = list(keep.parse(zf, self.CONFIG))
         assert records == []
 
     def test_note_with_annotations(self):
-        note = json.dumps({
-            "title": "Links",
-            "textContent": "Some useful links",
-            "annotations": [
-                {"url": "https://example.com", "title": "Example"},
-            ],
-            "userEditedTimestampUsec": 1718456400000000,
-        })
+        note = json.dumps(
+            {
+                "title": "Links",
+                "textContent": "Some useful links",
+                "annotations": [
+                    {"url": "https://example.com", "title": "Example"},
+                ],
+                "userEditedTimestampUsec": 1718456400000000,
+            }
+        )
         zf = make_zip({"Takeout/Keep/links.json": note})
         records = list(keep.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -316,6 +361,7 @@ class TestKeepParser:
 
 
 # ── Calendar parser ───────────────────────────────────────────────────────────
+
 
 class TestCalendarParser:
     CONFIG = ServiceConfig(
@@ -412,6 +458,7 @@ END:VCALENDAR"""
 
 # ── Contacts parser ──────────────────────────────────────────────────────────
 
+
 class TestContactsParser:
     CONFIG = ServiceConfig(
         parser="contacts",
@@ -487,6 +534,7 @@ END:VCARD"""
 
 # ── Tasks parser ──────────────────────────────────────────────────────────────
 
+
 class TestTasksParser:
     CONFIG = ServiceConfig(
         parser="tasks",
@@ -498,25 +546,27 @@ class TestTasksParser:
     )
 
     def test_parse_task_list(self):
-        data = json.dumps({
-            "kind": "tasks#taskList",
-            "items": [
-                {
-                    "id": "task1",
-                    "title": "Set up MIDI routing",
-                    "status": "needsAction",
-                    "updated": "2025-06-15T10:00:00Z",
-                    "notes": "OXI One → SP-404 → Digitakt",
-                },
-                {
-                    "id": "task2",
-                    "title": "Sample vinyl records",
-                    "status": "completed",
-                    "updated": "2025-06-14T18:00:00Z",
-                    "due": "2025-06-15",
-                },
-            ]
-        })
+        data = json.dumps(
+            {
+                "kind": "tasks#taskList",
+                "items": [
+                    {
+                        "id": "task1",
+                        "title": "Set up MIDI routing",
+                        "status": "needsAction",
+                        "updated": "2025-06-15T10:00:00Z",
+                        "notes": "OXI One → SP-404 → Digitakt",
+                    },
+                    {
+                        "id": "task2",
+                        "title": "Sample vinyl records",
+                        "status": "completed",
+                        "updated": "2025-06-14T18:00:00Z",
+                        "due": "2025-06-15",
+                    },
+                ],
+            }
+        )
         zf = make_zip({"Takeout/Tasks/tasks.json": data})
         records = list(tasks.parse(zf, self.CONFIG))
         assert len(records) == 2
@@ -525,28 +575,33 @@ class TestTasksParser:
         assert records[1].structured_fields.get("status") == "completed"
 
     def test_skip_empty_title(self):
-        data = json.dumps({
-            "items": [
-                {"id": "t1", "title": ""},
-                {"id": "t2", "title": "Valid task"},
-            ]
-        })
+        data = json.dumps(
+            {
+                "items": [
+                    {"id": "t1", "title": ""},
+                    {"id": "t2", "title": "Valid task"},
+                ]
+            }
+        )
         zf = make_zip({"Takeout/Tasks/tasks.json": data})
         records = list(tasks.parse(zf, self.CONFIG))
         assert len(records) == 1
 
     def test_parse_raw_list(self):
         """Some exports have a raw list instead of {items: [...]}."""
-        data = json.dumps([
-            {"id": "t1", "title": "Task A", "status": "needsAction"},
-            {"id": "t2", "title": "Task B", "status": "completed"},
-        ])
+        data = json.dumps(
+            [
+                {"id": "t1", "title": "Task A", "status": "needsAction"},
+                {"id": "t2", "title": "Task B", "status": "completed"},
+            ]
+        )
         zf = make_zip({"Takeout/Tasks/tasks.json": data})
         records = list(tasks.parse(zf, self.CONFIG))
         assert len(records) == 2
 
 
 # ── Gmail parser ──────────────────────────────────────────────────────────────
+
 
 class TestGmailParser:
     CONFIG = ServiceConfig(
@@ -582,9 +637,11 @@ class TestGmailParser:
         return "\n".join(lines).encode("utf-8")
 
     def test_parse_basic_email(self):
-        mbox = self._make_mbox_content([
-            {"from": "alice@example.com", "subject": "Hello", "body": "Hi there"},
-        ])
+        mbox = self._make_mbox_content(
+            [
+                {"from": "alice@example.com", "subject": "Hello", "body": "Hi there"},
+            ]
+        )
         zf = make_zip({"Takeout/Mail/All mail.mbox": mbox})
         records = list(gmail.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -594,26 +651,31 @@ class TestGmailParser:
         assert "alice@example.com" in r.people
 
     def test_skip_automated_sender(self):
-        mbox = self._make_mbox_content([
-            {"from": "noreply@github.com", "subject": "Notification"},
-            {"from": "alice@example.com", "subject": "Real email"},
-        ])
+        mbox = self._make_mbox_content(
+            [
+                {"from": "noreply@github.com", "subject": "Notification"},
+                {"from": "alice@example.com", "subject": "Real email"},
+            ]
+        )
         zf = make_zip({"Takeout/Mail/All mail.mbox": mbox})
         records = list(gmail.parse(zf, self.CONFIG))
         assert len(records) == 1
         assert "alice@example.com" in records[0].people
 
     def test_multiple_emails(self):
-        mbox = self._make_mbox_content([
-            {"from": "alice@example.com", "subject": "First"},
-            {"from": "bob@example.com", "subject": "Second"},
-        ])
+        mbox = self._make_mbox_content(
+            [
+                {"from": "alice@example.com", "subject": "First"},
+                {"from": "bob@example.com", "subject": "Second"},
+            ]
+        )
         zf = make_zip({"Takeout/Mail/All mail.mbox": mbox})
         records = list(gmail.parse(zf, self.CONFIG))
         assert len(records) == 2
 
 
 # ── Drive parser ──────────────────────────────────────────────────────────────
+
 
 class TestDriveParser:
     CONFIG = ServiceConfig(
@@ -626,9 +688,11 @@ class TestDriveParser:
     )
 
     def test_parse_text_file(self):
-        zf = make_zip({
-            "Takeout/Drive/notes/ideas.md": "# Ideas\n\nSome creative thoughts",
-        })
+        zf = make_zip(
+            {
+                "Takeout/Drive/notes/ideas.md": "# Ideas\n\nSome creative thoughts",
+            }
+        )
         records = list(drive.parse(zf, self.CONFIG))
         assert len(records) == 1
         assert records[0].title == "ideas.md"
@@ -637,32 +701,39 @@ class TestDriveParser:
 
     def test_metadata_only_for_pdf(self):
         # Create a fake PDF (just bytes, won't be read as text)
-        zf = make_zip({
-            "Takeout/Drive/docs/report.pdf": b"%PDF-1.4 fake content",
-        })
+        zf = make_zip(
+            {
+                "Takeout/Drive/docs/report.pdf": b"%PDF-1.4 fake content",
+            }
+        )
         records = list(drive.parse(zf, self.CONFIG))
         assert len(records) == 1
         assert records[0].data_path == "structured"
         assert records[0].structured_fields["extension"] == ".pdf"
 
     def test_skip_images(self):
-        zf = make_zip({
-            "Takeout/Drive/photos/pic.jpg": b"\xff\xd8\xff fake jpeg",
-        })
+        zf = make_zip(
+            {
+                "Takeout/Drive/photos/pic.jpg": b"\xff\xd8\xff fake jpeg",
+            }
+        )
         records = list(drive.parse(zf, self.CONFIG))
         assert records == []
 
     def test_multiple_files(self):
-        zf = make_zip({
-            "Takeout/Drive/notes.txt": "Some notes",
-            "Takeout/Drive/todo.md": "# TODO\n- stuff",
-            "Takeout/Drive/data.csv": "a,b,c\n1,2,3",
-        })
+        zf = make_zip(
+            {
+                "Takeout/Drive/notes.txt": "Some notes",
+                "Takeout/Drive/todo.md": "# TODO\n- stuff",
+                "Takeout/Drive/data.csv": "a,b,c\n1,2,3",
+            }
+        )
         records = list(drive.parse(zf, self.CONFIG))
         assert len(records) == 3
 
 
 # ── Chat parser ───────────────────────────────────────────────────────────────
+
 
 class TestChatParser:
     CONFIG = ServiceConfig(
@@ -675,20 +746,22 @@ class TestChatParser:
     )
 
     def test_parse_messages(self):
-        data = json.dumps({
-            "messages": [
-                {
-                    "creator": {"name": "Alice", "email": "alice@example.com"},
-                    "created_date": "2025-06-15T10:30:00Z",
-                    "text": "Hey, have you tried the new sampler?",
-                },
-                {
-                    "creator": {"name": "Bob"},
-                    "created_date": "2025-06-15T10:31:00Z",
-                    "text": "Yeah, the SP-404 MK2 is amazing!",
-                },
-            ]
-        })
+        data = json.dumps(
+            {
+                "messages": [
+                    {
+                        "creator": {"name": "Alice", "email": "alice@example.com"},
+                        "created_date": "2025-06-15T10:30:00Z",
+                        "text": "Hey, have you tried the new sampler?",
+                    },
+                    {
+                        "creator": {"name": "Bob"},
+                        "created_date": "2025-06-15T10:31:00Z",
+                        "text": "Yeah, the SP-404 MK2 is amazing!",
+                    },
+                ]
+            }
+        )
         zf = make_zip({"Takeout/Google Chat/Groups/Music Producers/messages.json": data})
         records = list(chat.parse(zf, self.CONFIG))
         assert len(records) == 2
@@ -696,28 +769,40 @@ class TestChatParser:
         assert "SP-404" in records[1].text
 
     def test_parse_raw_list(self):
-        data = json.dumps([
-            {"creator": "user1", "text": "Hello", "created_date": "2025-01-01T00:00:00Z"},
-        ])
+        data = json.dumps(
+            [
+                {"creator": "user1", "text": "Hello", "created_date": "2025-01-01T00:00:00Z"},
+            ]
+        )
         zf = make_zip({"Takeout/Google Chat/DMs/chat/messages.json": data})
         records = list(chat.parse(zf, self.CONFIG))
         assert len(records) == 1
 
     def test_skip_empty_messages(self):
-        data = json.dumps({
-            "messages": [
-                {"creator": {"name": "Alice"}, "text": ""},
-                {"creator": {"name": "Bob"}, "text": "Valid message"},
-            ]
-        })
+        data = json.dumps(
+            {
+                "messages": [
+                    {"creator": {"name": "Alice"}, "text": ""},
+                    {"creator": {"name": "Bob"}, "text": "Valid message"},
+                ]
+            }
+        )
         zf = make_zip({"Takeout/Google Chat/Groups/Test/messages.json": data})
         records = list(chat.parse(zf, self.CONFIG))
         assert len(records) == 1
 
     def test_extract_space_name(self):
-        data = json.dumps({"messages": [
-            {"creator": {"name": "Alice"}, "text": "Hello", "created_date": "2025-01-01T00:00:00Z"},
-        ]})
+        data = json.dumps(
+            {
+                "messages": [
+                    {
+                        "creator": {"name": "Alice"},
+                        "text": "Hello",
+                        "created_date": "2025-01-01T00:00:00Z",
+                    },
+                ]
+            }
+        )
         zf = make_zip({"Takeout/Google Chat/Groups/Team Chat/messages.json": data})
         records = list(chat.parse(zf, self.CONFIG))
         assert len(records) == 1
@@ -725,6 +810,7 @@ class TestChatParser:
 
 
 # ── End-to-end processor test ────────────────────────────────────────────────
+
 
 class TestProcessorEndToEnd:
     """Test the processor with a synthetic ZIP containing multiple services."""
@@ -734,19 +820,25 @@ class TestProcessorEndToEnd:
 
         # Build synthetic ZIP
         files = {
-            "Takeout/My Activity/Search/MyActivity.json": json.dumps([
-                {"title": "Searched for SP-404 tips", "time": "2025-06-15T10:00:00Z"},
-            ]),
-            "Takeout/Keep/note1.json": json.dumps({
-                "title": "Beat Ideas",
-                "textContent": "Try 85bpm boom bap with vinyl crackle",
-                "userEditedTimestampUsec": 1718456400000000,
-            }),
-            "Takeout/Tasks/tasks.json": json.dumps({
-                "items": [
-                    {"id": "t1", "title": "Buy new cables", "status": "needsAction"},
-                ],
-            }),
+            "Takeout/My Activity/Search/MyActivity.json": json.dumps(
+                [
+                    {"title": "Searched for SP-404 tips", "time": "2025-06-15T10:00:00Z"},
+                ]
+            ),
+            "Takeout/Keep/note1.json": json.dumps(
+                {
+                    "title": "Beat Ideas",
+                    "textContent": "Try 85bpm boom bap with vinyl crackle",
+                    "userEditedTimestampUsec": 1718456400000000,
+                }
+            ),
+            "Takeout/Tasks/tasks.json": json.dumps(
+                {
+                    "items": [
+                        {"id": "t1", "title": "Buy new cables", "status": "needsAction"},
+                    ],
+                }
+            ),
         }
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -774,11 +866,13 @@ class TestProcessorEndToEnd:
         from shared.takeout.processor import process_takeout
 
         files = {
-            "Takeout/Keep/note.json": json.dumps({
-                "title": "Test",
-                "textContent": "Hello",
-                "userEditedTimestampUsec": 1718456400000000,
-            }),
+            "Takeout/Keep/note.json": json.dumps(
+                {
+                    "title": "Test",
+                    "textContent": "Hello",
+                    "userEditedTimestampUsec": 1718456400000000,
+                }
+            ),
         }
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -803,10 +897,12 @@ class TestProcessorEndToEnd:
         from shared.takeout.processor import process_takeout
 
         files = {
-            "Takeout/My Activity/Search/MyActivity.json": json.dumps([
-                {"title": "Old search", "time": "2024-01-01T10:00:00Z"},
-                {"title": "New search", "time": "2025-06-15T10:00:00Z"},
-            ]),
+            "Takeout/My Activity/Search/MyActivity.json": json.dumps(
+                [
+                    {"title": "Old search", "time": "2024-01-01T10:00:00Z"},
+                    {"title": "New search", "time": "2025-06-15T10:00:00Z"},
+                ]
+            ),
         }
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:

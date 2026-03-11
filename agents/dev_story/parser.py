@@ -1,4 +1,5 @@
 """Streaming JSONL parser for Claude Code session transcripts."""
+
 from __future__ import annotations
 
 import json
@@ -78,7 +79,7 @@ def _resolve_path_segments(segments: list[str]) -> str:
         if _Path(candidate_hyphen).exists() or _Path(candidate_hyphen).parent.is_dir():
             # Check if the hyphenated version leads to a valid path
             hyphen_parent = _Path(candidate_hyphen).parent
-            slash_parent = _Path(candidate_slash).parent
+            _Path(candidate_slash).parent
             # Prefer hyphen if the parent exists and has this entry
             if _Path(candidate_hyphen).is_dir():
                 result_parts[-1] = result_parts[-1] + "-" + seg
@@ -216,7 +217,7 @@ def parse_session(path: Path, project_path: str) -> ParsedSession:
     total_tokens_out = 0
     model_counts: dict[str, int] = {}
 
-    with open(path, "r") as f:
+    with open(path) as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:

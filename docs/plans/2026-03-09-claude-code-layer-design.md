@@ -70,7 +70,7 @@ All in `hapax-system/skills/<name>/SKILL.md`, symlinked to `~/.claude/commands/`
 
 Inspect operator profile. Steps:
 1. Read `profiles/operator.json` — show distilled manifest summary (goals, constraints, patterns)
-2. Read `profiles/ryan.json` — show per-dimension fact counts, average confidence, oldest fact age
+2. Read `profiles/operator-profile.json` — show per-dimension fact counts, average confidence, oldest fact age
 3. If arg provided (dimension name), drill into that dimension's facts
 4. No LLM calls — read and format only
 

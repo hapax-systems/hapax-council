@@ -1,10 +1,9 @@
 """Tests for shared.service_tiers."""
+
 from shared.service_tiers import (
+    TIER_NUDGE_SCORES,
     ServiceTier,
     tier_for_check,
-    TIER_MAP,
-    GROUP_DEFAULTS,
-    TIER_NUDGE_SCORES,
 )
 
 

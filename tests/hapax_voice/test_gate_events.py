@@ -1,4 +1,5 @@
 """Tests for ContextGate event emission."""
+
 from unittest.mock import MagicMock, patch
 
 from agents.hapax_voice.context_gate import ContextGate
@@ -11,9 +12,11 @@ def test_gate_emits_decision_event():
     mock_log = MagicMock()
     gate.set_event_log(mock_log)
 
-    with patch.object(gate, "_check_volume", return_value=(True, "")), \
-         patch.object(gate, "_check_studio", return_value=(True, "")), \
-         patch.object(gate, "_check_ambient", return_value=(True, "")):
+    with (
+        patch.object(gate, "_check_volume", return_value=(True, "")),
+        patch.object(gate, "_check_studio", return_value=(True, "")),
+        patch.object(gate, "_check_ambient", return_value=(True, "")),
+    ):
         result = gate.check()
 
     assert result.eligible is True

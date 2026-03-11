@@ -20,11 +20,11 @@ If the old session loads with interview state:
 /interview end
 ```
 
-This flushes facts to `profiles/ryan.json`. If the session is gone or empty, the facts are already lost — not a disaster, you'll re-explore task_initiation through probes and the next interview.
+This flushes facts to `profiles/operator-profile.json`. If the session is gone or empty, the facts are already lost — not a disaster, you'll re-explore task_initiation through probes and the next interview.
 
 ### 2. Run the profiler
 
-The profiler regenerates `operator.json` (the structured representation agents consume) from `ryan.json` (the raw fact store). Right now, `operator.json` has `"neurocognitive": {}` — empty.
+The profiler regenerates `operator.json` (the structured representation agents consume) from `operator-profile.json` (the raw fact store). Right now, `operator.json` has `"neurocognitive": {}` — empty.
 
 ```bash
 uv run python -m agents.profiler --auto
@@ -142,7 +142,7 @@ This is a deliberate design choice — accommodations should be concrete system 
 
 | File | What it holds |
 |---|---|
-| `profiles/ryan.json` | Raw profile (1000+ facts, 10+ dimensions) |
+| `profiles/operator-profile.json` | Raw profile (1000+ facts, 10+ dimensions) |
 | `profiles/operator.json` | Structured operator context (agents consume this) |
 | `profiles/accommodations.json` | Active/proposed accommodations (created on first confirm) |
 | `profiles/briefing.md` | Latest daily briefing |

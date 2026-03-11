@@ -1,4 +1,5 @@
 """Tests for screen capturer module."""
+
 import base64
 import subprocess
 import time
@@ -32,8 +33,10 @@ def test_capturer_returns_base64_on_success(tmp_path: Path):
             scaled_file.write_bytes(fake_png)
         return mock_result
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run),
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         result = capturer.capture()
@@ -46,8 +49,10 @@ def test_capturer_returns_base64_on_success(tmp_path: Path):
 def test_capturer_returns_none_on_screenshot_failure():
     capturer = ScreenCapturer(cooldown_s=0)
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run") as mock_run, \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch("agents.hapax_voice.screen_capturer.subprocess.run") as mock_run,
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value="/tmp/fake-dir")
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         mock_run.return_value = MagicMock(returncode=1)
@@ -60,8 +65,10 @@ def test_capturer_returns_none_on_no_png_files(tmp_path: Path):
     """If grim succeeds but produces no PNG, return None."""
     capturer = ScreenCapturer(cooldown_s=0)
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run") as mock_run, \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch("agents.hapax_voice.screen_capturer.subprocess.run") as mock_run,
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         mock_run.return_value = MagicMock(returncode=0)
@@ -83,8 +90,10 @@ def test_capturer_falls_back_to_raw_if_convert_fails(tmp_path: Path):
         # Don't create scaled.png — simulates convert failure
         return mock_result
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run),
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         result = capturer.capture()
@@ -98,8 +107,13 @@ def test_capturer_handles_exception_gracefully():
     """Any exception during capture returns None (fail-open)."""
     capturer = ScreenCapturer(cooldown_s=0)
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=OSError("no such command")), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch(
+            "agents.hapax_voice.screen_capturer.subprocess.run",
+            side_effect=OSError("no such command"),
+        ),
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value="/tmp/fake-dir")
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         result = capturer.capture()
@@ -112,8 +126,10 @@ def test_capturer_updates_last_capture_time_on_success(tmp_path: Path):
     capturer = ScreenCapturer(cooldown_s=10)
     assert capturer._last_capture_time == 0.0
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run") as mock_run, \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch("agents.hapax_voice.screen_capturer.subprocess.run") as mock_run,
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         mock_run.return_value = MagicMock(returncode=1)
@@ -129,9 +145,13 @@ def test_capturer_handles_timeout():
     """subprocess.TimeoutExpired from grim returns None."""
     capturer = ScreenCapturer(cooldown_s=0)
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run",
-               side_effect=subprocess.TimeoutExpired(cmd="grim", timeout=10)), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch(
+            "agents.hapax_voice.screen_capturer.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="grim", timeout=10),
+        ),
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value="/tmp/fake-dir")
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         result = capturer.capture()
@@ -143,9 +163,13 @@ def test_capturer_handles_file_not_found():
     """grim binary not installed (FileNotFoundError) returns None."""
     capturer = ScreenCapturer(cooldown_s=0)
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run",
-               side_effect=FileNotFoundError("grim not found")), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch(
+            "agents.hapax_voice.screen_capturer.subprocess.run",
+            side_effect=FileNotFoundError("grim not found"),
+        ),
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value="/tmp/fake-dir")
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         result = capturer.capture()
@@ -170,8 +194,10 @@ def test_capturer_handles_convert_timeout(tmp_path: Path):
             raise subprocess.TimeoutExpired(cmd="convert", timeout=10)
         return MagicMock(returncode=0)
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run),
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         # convert timeout propagates as exception, caught by capture()
@@ -199,8 +225,10 @@ def test_capturer_handles_convert_not_found(tmp_path: Path):
             raise FileNotFoundError("convert not found")
         return MagicMock(returncode=0)
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run),
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         result = capturer.capture()
@@ -214,9 +242,10 @@ def test_capturer_cooldown_updates_on_failure():
     capturer = ScreenCapturer(cooldown_s=10)
     assert capturer._last_capture_time == 0.0
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run",
-               side_effect=OSError("boom")), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=OSError("boom")),
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value="/tmp/fake-dir")
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         result = capturer.capture()
@@ -240,8 +269,10 @@ def test_capturer_handles_empty_png_file(tmp_path: Path):
         # convert won't produce output for empty file
         return MagicMock(returncode=1)
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir:
+    with (
+        patch("agents.hapax_voice.screen_capturer.subprocess.run", side_effect=fake_run),
+        patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory") as mock_tmpdir,
+    ):
         mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
         mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
         result = capturer.capture()
@@ -260,10 +291,16 @@ def test_capturer_tempdir_cleaned_on_exception():
     mock_tmpdir_cm.__enter__ = MagicMock(return_value="/tmp/fake-dir")
     mock_tmpdir_cm.__exit__ = MagicMock(return_value=False)
 
-    with patch("agents.hapax_voice.screen_capturer.subprocess.run",
-               side_effect=RuntimeError("unexpected error")), \
-         patch("agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory",
-               return_value=mock_tmpdir_cm):
+    with (
+        patch(
+            "agents.hapax_voice.screen_capturer.subprocess.run",
+            side_effect=RuntimeError("unexpected error"),
+        ),
+        patch(
+            "agents.hapax_voice.screen_capturer.tempfile.TemporaryDirectory",
+            return_value=mock_tmpdir_cm,
+        ),
+    ):
         result = capturer.capture()
 
     assert result is None

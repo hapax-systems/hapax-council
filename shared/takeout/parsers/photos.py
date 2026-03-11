@@ -6,6 +6,7 @@ Binary image data is skipped entirely.
 Photos Takeout includes JSON metadata files alongside each image:
 - photo.jpg.json → metadata for photo.jpg
 """
+
 from __future__ import annotations
 
 import json
@@ -121,7 +122,9 @@ def _photo_to_record(
     image_media = data.get("imageMediaMetadata", {})
     if image_media:
         if image_media.get("cameraMake"):
-            structured["camera"] = f"{image_media['cameraMake']} {image_media.get('cameraModel', '')}".strip()
+            structured["camera"] = (
+                f"{image_media['cameraMake']} {image_media.get('cameraModel', '')}".strip()
+            )
 
     # Modality tags
     modality_tags = list(config.modality_defaults)

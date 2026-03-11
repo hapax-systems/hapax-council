@@ -3,6 +3,7 @@
 All Google service sync agents use this module for authentication.
 Credentials stored in pass(1): google/client-secret, google/token.
 """
+
 from __future__ import annotations
 
 import json
@@ -47,14 +48,16 @@ def _load_token_from_pass(scopes: list[str]):
 
 def _save_token_to_pass(creds) -> None:
     """Save OAuth token to pass store."""
-    token_data = json.dumps({
-        "token": creds.token,
-        "refresh_token": creds.refresh_token,
-        "token_uri": creds.token_uri,
-        "client_id": creds.client_id,
-        "client_secret": creds.client_secret,
-        "scopes": list(creds.scopes or []),
-    })
+    token_data = json.dumps(
+        {
+            "token": creds.token,
+            "refresh_token": creds.refresh_token,
+            "token_uri": creds.token_uri,
+            "client_id": creds.client_id,
+            "client_secret": creds.client_secret,
+            "scopes": list(creds.scopes or []),
+        }
+    )
     proc = subprocess.run(
         ["pass", "insert", "-m", TOKEN_PASS_KEY],
         input=token_data.encode(),

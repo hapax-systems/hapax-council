@@ -1,4 +1,5 @@
 """Tests for notification lifecycle events."""
+
 from unittest.mock import MagicMock
 
 from agents.hapax_voice.notification_queue import NotificationQueue, VoiceNotification

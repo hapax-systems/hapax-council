@@ -3,6 +3,7 @@
 Discovers agents, timers, services, repos, and MCP servers from the
 filesystem, systemd, and Docker. Zero LLM calls.
 """
+
 from __future__ import annotations
 
 import json
@@ -17,6 +18,7 @@ def discover_agents(agents_dir: Path | None = None) -> list[str]:
     """Discover agent modules by scanning for files with __main__ blocks."""
     if agents_dir is None:
         from shared.config import AI_AGENTS_DIR
+
         agents_dir = AI_AGENTS_DIR / "agents"
 
     if not agents_dir.is_dir():
@@ -28,7 +30,7 @@ def discover_agents(agents_dir: Path | None = None) -> list[str]:
             continue
         try:
             content = py_file.read_text(errors="replace")
-            if '__name__' in content and '__main__' in content:
+            if "__name__" in content and "__main__" in content:
                 name = py_file.stem.replace("_", "-")
                 agents.append(name)
         except OSError:
@@ -41,7 +43,9 @@ def discover_timers() -> list[str]:
     try:
         result = subprocess.run(
             ["systemctl", "--user", "list-unit-files", "*.timer", "--no-legend"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode != 0:
             return []
@@ -60,12 +64,15 @@ def discover_services(compose_dir: Path | None = None) -> list[str]:
     """Discover running Docker Compose services."""
     if compose_dir is None:
         from shared.config import LLM_STACK_DIR
+
         compose_dir = LLM_STACK_DIR
 
     try:
         result = subprocess.run(
             ["docker", "compose", "ps", "--format", "{{.Name}}"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
             cwd=str(compose_dir) if compose_dir.is_dir() else None,
         )
         if result.returncode != 0:
@@ -83,6 +90,7 @@ def discover_repos(projects_dir: Path | None = None) -> list[str]:
     """
     if projects_dir is None:
         from shared.config import HAPAX_PROJECTS_DIR
+
         projects_dir = HAPAX_PROJECTS_DIR
 
     if not projects_dir.is_dir():
@@ -112,6 +120,7 @@ def discover_mcp_servers(config_path: Path | None = None) -> list[str]:
     """Discover configured MCP servers from Claude Code config."""
     if config_path is None:
         from shared.config import CLAUDE_CONFIG_DIR
+
         config_path = CLAUDE_CONFIG_DIR / "mcp_servers.json"
 
     if not config_path.is_file():

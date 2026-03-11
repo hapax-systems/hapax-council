@@ -1,13 +1,12 @@
 """Tests for Porcupine wake word detector."""
-from unittest.mock import MagicMock, patch, PropertyMock
+
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
 from agents.hapax_voice.wake_word_porcupine import (
     PorcupineWakeWord,
-    DETECTION_COOLDOWN_S,
     _load_access_key,
 )
 
@@ -15,9 +14,7 @@ from agents.hapax_voice.wake_word_porcupine import (
 class TestLoadAccessKey:
     @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run")
     def test_returns_key_on_success(self, mock_run):
-        mock_run.return_value = MagicMock(
-            stdout="test-key-123\n", returncode=0
-        )
+        mock_run.return_value = MagicMock(stdout="test-key-123\n", returncode=0)
         assert _load_access_key() == "test-key-123"
 
     @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run")
@@ -30,13 +27,11 @@ class TestLoadAccessKey:
         mock_run.return_value = MagicMock(stdout="key", returncode=1)
         assert _load_access_key() is None
 
-    @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run",
-           side_effect=FileNotFoundError)
+    @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run", side_effect=FileNotFoundError)
     def test_returns_none_when_pass_not_found(self, _):
         assert _load_access_key() is None
 
-    @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run",
-           side_effect=Exception("boom"))
+    @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run", side_effect=Exception("boom"))
     def test_returns_none_on_generic_error(self, _):
         assert _load_access_key() is None
 
@@ -67,8 +62,7 @@ class TestPorcupineWakeWordInit:
 
 
 class TestPorcupineWakeWordLoad:
-    @patch("agents.hapax_voice.wake_word_porcupine._load_access_key",
-           return_value=None)
+    @patch("agents.hapax_voice.wake_word_porcupine._load_access_key", return_value=None)
     def test_load_fails_without_access_key(self, _):
         detector = PorcupineWakeWord()
         detector.model_path = MagicMock(exists=MagicMock(return_value=True))
@@ -80,8 +74,7 @@ class TestPorcupineWakeWordLoad:
         detector.load()
         assert not detector.is_loaded
 
-    @patch("agents.hapax_voice.wake_word_porcupine._load_access_key",
-           return_value="test-key")
+    @patch("agents.hapax_voice.wake_word_porcupine._load_access_key", return_value="test-key")
     def test_load_fails_without_pvporcupine(self, _):
         detector = PorcupineWakeWord()
         detector.model_path = MagicMock(exists=MagicMock(return_value=True))
@@ -89,11 +82,11 @@ class TestPorcupineWakeWordLoad:
         detector.load()
         assert not detector.is_loaded
 
-    @patch("agents.hapax_voice.wake_word_porcupine._load_access_key",
-           return_value="test-key")
+    @patch("agents.hapax_voice.wake_word_porcupine._load_access_key", return_value="test-key")
     @patch("agents.hapax_voice.wake_word_porcupine.pvporcupine", create=True)
     def test_load_success(self, mock_pv, _):
         import sys
+
         mock_module = MagicMock()
         mock_handle = MagicMock()
         mock_handle.frame_length = 512
@@ -201,7 +194,7 @@ class TestDaemonWakeWordSelection:
         from agents.hapax_voice.config import VoiceConfig
 
         cfg = VoiceConfig(wake_word_engine="porcupine")
-        daemon = VoiceDaemon(cfg=cfg)
+        VoiceDaemon(cfg=cfg)
         MockPorc.assert_called_once_with(sensitivity=0.5)
         MockOWW.assert_not_called()
 
@@ -217,6 +210,6 @@ class TestDaemonWakeWordSelection:
         from agents.hapax_voice.config import VoiceConfig
 
         cfg = VoiceConfig(wake_word_engine="oww")
-        daemon = VoiceDaemon(cfg=cfg)
+        VoiceDaemon(cfg=cfg)
         MockOWW.assert_called_once()
         MockPorc.assert_not_called()

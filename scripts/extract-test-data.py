@@ -4,6 +4,7 @@
 Run: uv run python scripts/extract-test-data.py
 Writes to: test-data/
 """
+
 from __future__ import annotations
 
 import json
@@ -193,6 +194,7 @@ def extract_dev_story_empty():
 
     # Import and run the schema DDL
     from agents.dev_story.schema import create_tables
+
     create_tables(conn)
     conn.close()
     print("  dev-story-empty.db: schema only")
@@ -218,21 +220,27 @@ def validate_schema():
     live_conn = sqlite3.connect(str(live))
     test_conn = sqlite3.connect(str(test))
 
-    live_tables = {row[0] for row in live_conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()}
-    test_tables = {row[0] for row in test_conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()}
+    live_tables = {
+        row[0]
+        for row in live_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    test_tables = {
+        row[0]
+        for row in test_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
 
     if live_tables != test_tables:
-        print(f"  WARNING: Table mismatch! Live-only: {live_tables - test_tables}, Test-only: {test_tables - live_tables}")
+        print(
+            f"  WARNING: Table mismatch! Live-only: {live_tables - test_tables}, Test-only: {test_tables - live_tables}"
+        )
 
     for table in live_tables & test_tables:
         live_cols = {row[1] for row in live_conn.execute(f"PRAGMA table_info({table})").fetchall()}
         test_cols = {row[1] for row in test_conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if live_cols != test_cols:
-            print(f"  WARNING: Column mismatch in {table}! Live-only: {live_cols - test_cols}, Test-only: {test_cols - live_cols}")
+            print(
+                f"  WARNING: Column mismatch in {table}! Live-only: {live_cols - test_cols}, Test-only: {test_cols - live_cols}"
+            )
 
     live_conn.close()
     test_conn.close()

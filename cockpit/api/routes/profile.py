@@ -1,9 +1,9 @@
 """Profile endpoints — read/correct operator profile facts."""
+
 from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ log = logging.getLogger("cockpit.api.profile")
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
 from shared.config import COCKPIT_STATE_DIR
+
 PENDING_FACTS_PATH = COCKPIT_STATE_DIR / "pending-facts.jsonl"
 
 
@@ -22,7 +23,8 @@ async def get_dimension(dimension: str):
     import asyncio
 
     def _read():
-        from agents.profiler import load_existing_profile, PROFILE_DIMENSIONS
+        from agents.profiler import PROFILE_DIMENSIONS, load_existing_profile
+
         profile = load_existing_profile()
         if not profile:
             return None
@@ -31,27 +33,39 @@ async def get_dimension(dimension: str):
             # Summary
             dims = []
             for dim in profile.dimensions:
-                dims.append({"name": dim.name, "fact_count": len(dim.facts), "summary": dim.summary or ""})
-            missing = [d for d in PROFILE_DIMENSIONS if d not in {dim.name for dim in profile.dimensions}]
-            return {"dimensions": dims, "missing": missing, "total_facts": sum(d["fact_count"] for d in dims)}
+                dims.append(
+                    {"name": dim.name, "fact_count": len(dim.facts), "summary": dim.summary or ""}
+                )
+            missing = [
+                d for d in PROFILE_DIMENSIONS if d not in {dim.name for dim in profile.dimensions}
+            ]
+            return {
+                "dimensions": dims,
+                "missing": missing,
+                "total_facts": sum(d["fact_count"] for d in dims),
+            }
 
         for dim in profile.dimensions:
             if dim.name == dimension:
                 facts = []
                 for f in dim.facts:
-                    facts.append({
-                        "key": f.key,
-                        "value": f.value,
-                        "confidence": f.confidence,
-                        "source": f.source,
-                    })
+                    facts.append(
+                        {
+                            "key": f.key,
+                            "value": f.value,
+                            "confidence": f.confidence,
+                            "source": f.source,
+                        }
+                    )
                 return {"name": dim.name, "summary": dim.summary or "", "facts": facts}
 
         return None
 
     result = await asyncio.to_thread(_read)
     if result is None:
-        raise HTTPException(status_code=404, detail=f"Dimension '{dimension}' not found or no profile")
+        raise HTTPException(
+            status_code=404, detail=f"Dimension '{dimension}' not found or no profile"
+        )
     return result
 
 
@@ -61,14 +75,19 @@ async def get_profile_summary():
     import asyncio
 
     def _read():
-        from agents.profiler import load_existing_profile, PROFILE_DIMENSIONS
+        from agents.profiler import PROFILE_DIMENSIONS, load_existing_profile
+
         profile = load_existing_profile()
         if not profile:
             return {"dimensions": [], "missing": list(PROFILE_DIMENSIONS), "total_facts": 0}
         dims = []
         for dim in profile.dimensions:
-            dims.append({"name": dim.name, "fact_count": len(dim.facts), "summary": dim.summary or ""})
-        missing = [d for d in PROFILE_DIMENSIONS if d not in {dim.name for dim in profile.dimensions}]
+            dims.append(
+                {"name": dim.name, "fact_count": len(dim.facts), "summary": dim.summary or ""}
+            )
+        missing = [
+            d for d in PROFILE_DIMENSIONS if d not in {dim.name for dim in profile.dimensions}
+        ]
         return {
             "dimensions": dims,
             "missing": missing,
@@ -93,6 +112,7 @@ async def correct_fact(req: CorrectionRequest):
 
     def _apply():
         from agents.profiler import apply_corrections
+
         if req.value.upper() == "DELETE":
             corrections = [{"dimension": req.dimension, "key": req.key, "value": None}]
         else:
@@ -115,6 +135,7 @@ async def delete_fact(req: DeleteFactRequest):
 
     def _delete():
         from agents.profiler import apply_corrections
+
         return apply_corrections([{"dimension": req.dimension, "key": req.key, "value": None}])
 
     result = await asyncio.to_thread(_delete)
@@ -149,20 +170,22 @@ async def flush_pending_facts():
         return {"status": "ok", "flushed": 0}
 
     def _flush():
-        from cockpit.interview import RecordedFact
         from agents.profiler import flush_interview_facts
+        from cockpit.interview import RecordedFact
 
         facts = []
         for line in PENDING_FACTS_PATH.read_text().strip().splitlines():
             try:
                 data = json.loads(line)
-                facts.append(RecordedFact(
-                    dimension=data["dimension"],
-                    key=data["key"],
-                    value=data["value"],
-                    confidence=data.get("confidence", 0.6),
-                    evidence=data.get("evidence", ""),
-                ))
+                facts.append(
+                    RecordedFact(
+                        dimension=data["dimension"],
+                        key=data["key"],
+                        value=data["value"],
+                        confidence=data.get("confidence", 0.6),
+                        evidence=data.get("evidence", ""),
+                    )
+                )
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
 

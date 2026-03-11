@@ -2,51 +2,47 @@
 
 No LLM calls; tests focus on deterministic logic.
 """
+
 import json
-from pathlib import Path
 
 import pytest
 
 from agents.profiler import (
+    PROFILE_DIMENSIONS,
     ChunkExtraction,
+    CurationOp,
+    DimensionCuration,
+    OperatorUpdate,
     ProfileDimension,
     ProfileFact,
     SynthesisOutput,
     UserProfile,
+    apply_curation,
     build_profile,
-    group_facts_by_dimension,
-    merge_facts,
     generate_extraction_prompts,
+    group_facts_by_dimension,
     load_existing_profile,
-    PROFILES_DIR,
-    PROFILE_DIMENSIONS,
+    merge_facts,
 )
 from agents.profiler_sources import (
-    SourceChunk,
+    CHUNK_SIZE,
     DiscoveredSources,
+    SourceChunk,
     _chunk_text,
     _compress_ranges,
     _extract_text_content,
     _short_path,
+    detect_changed_sources,
     discover_sources,
-    list_source_ids,
     get_source_mtimes,
+    list_source_ids,
     load_state,
     read_langfuse,
     save_state,
-    detect_changed_sources,
-    CHUNK_SIZE,
-    STATE_FILE,
 )
-from agents.profiler import (
-    CurationOp,
-    DimensionCuration,
-    OperatorUpdate,
-    apply_curation,
-)
-
 
 # ── Schema tests ─────────────────────────────────────────────────────────────
+
 
 def test_profile_fact_validation():
     fact = ProfileFact(
@@ -89,26 +85,34 @@ def test_chunk_extraction_empty():
 
 def test_chunk_extraction_with_facts():
     fact = ProfileFact(
-        dimension="identity", key="name", value="Ryan",
-        confidence=0.95, source="test", evidence="Name is Ryan",
+        dimension="identity",
+        key="name",
+        value="Operator",
+        confidence=0.95,
+        source="test",
+        evidence="Name is Operator",
     )
     extraction = ChunkExtraction(facts=[fact])
     assert len(extraction.facts) == 1
-    assert extraction.facts[0].value == "Ryan"
+    assert extraction.facts[0].value == "Operator"
 
 
 def test_user_profile_serialization():
     profile = UserProfile(
-        name="Ryan",
+        name="Operator",
         summary="A developer and music producer.",
         dimensions=[
             ProfileDimension(
                 name="identity",
-                summary="Ryan is a developer.",
+                summary="Operator is a developer.",
                 facts=[
                     ProfileFact(
-                        dimension="identity", key="name", value="Ryan",
-                        confidence=0.95, source="test", evidence="name",
+                        dimension="identity",
+                        key="name",
+                        value="Operator",
+                        confidence=0.95,
+                        source="test",
+                        evidence="name",
                     )
                 ],
             )
@@ -120,7 +124,7 @@ def test_user_profile_serialization():
     # Round-trip through JSON
     json_str = profile.model_dump_json()
     restored = UserProfile.model_validate_json(json_str)
-    assert restored.name == "Ryan"
+    assert restored.name == "Operator"
     assert len(restored.dimensions) == 1
     assert restored.dimensions[0].facts[0].key == "name"
 
@@ -134,53 +138,64 @@ def test_profile_dimensions_are_defined():
 
 # ── Fact merging tests ───────────────────────────────────────────────────────
 
+
 def _make_fact(dim: str, key: str, value: str, confidence: float = 0.5) -> ProfileFact:
     return ProfileFact(
-        dimension=dim, key=key, value=value,
-        confidence=confidence, source="test", evidence="test",
+        dimension=dim,
+        key=key,
+        value=value,
+        confidence=confidence,
+        source="test",
+        evidence="test",
     )
 
 
 def test_merge_facts_no_overlap():
-    existing = [_make_fact("identity", "name", "Ryan", 0.9)]
+    existing = [_make_fact("identity", "name", "Operator", 0.9)]
     new = [_make_fact("technical_skills", "language", "Python", 0.8)]
     merged = merge_facts(existing, new)
     assert len(merged) == 2
 
 
 def test_merge_facts_higher_confidence_wins():
-    existing = [_make_fact("identity", "name", "Ryan", 0.7)]
-    new = [_make_fact("identity", "name", "Ryan K.", 0.9)]
+    existing = [_make_fact("identity", "name", "Operator", 0.7)]
+    new = [_make_fact("identity", "name", "Op K.", 0.9)]
     merged = merge_facts(existing, new)
     assert len(merged) == 1
-    assert merged[0].value == "Ryan K."
+    assert merged[0].value == "Op K."
     assert merged[0].confidence == 0.9
 
 
 def test_merge_facts_keeps_existing_if_higher():
-    existing = [_make_fact("identity", "name", "Ryan", 0.95)]
+    existing = [_make_fact("identity", "name", "Operator", 0.95)]
     new = [_make_fact("identity", "name", "R.", 0.3)]
     merged = merge_facts(existing, new)
     assert len(merged) == 1
-    assert merged[0].value == "Ryan"
+    assert merged[0].value == "Operator"
 
 
 def test_merge_facts_empty_existing():
-    new = [_make_fact("identity", "name", "Ryan", 0.9)]
+    new = [_make_fact("identity", "name", "Operator", 0.9)]
     merged = merge_facts([], new)
     assert len(merged) == 1
 
 
 def test_merge_facts_empty_new():
-    existing = [_make_fact("identity", "name", "Ryan", 0.9)]
+    existing = [_make_fact("identity", "name", "Operator", 0.9)]
     merged = merge_facts(existing, [])
     assert len(merged) == 1
 
 
-def _make_sourced_fact(dim: str, key: str, value: str, confidence: float, source: str) -> ProfileFact:
+def _make_sourced_fact(
+    dim: str, key: str, value: str, confidence: float, source: str
+) -> ProfileFact:
     return ProfileFact(
-        dimension=dim, key=key, value=value,
-        confidence=confidence, source=source, evidence="test",
+        dimension=dim,
+        key=key,
+        value=value,
+        confidence=confidence,
+        source=source,
+        evidence="test",
     )
 
 
@@ -222,6 +237,7 @@ def test_merge_both_authority_higher_confidence_wins():
 
 def test_authority_sources_constant():
     from agents.profiler import AUTHORITY_SOURCES
+
     assert "interview" in AUTHORITY_SOURCES
     assert "config" in AUTHORITY_SOURCES
     assert "memory" in AUTHORITY_SOURCES
@@ -231,7 +247,7 @@ def test_authority_sources_constant():
 
 def test_group_facts_by_dimension():
     facts = [
-        _make_fact("identity", "name", "Ryan"),
+        _make_fact("identity", "name", "Operator"),
         _make_fact("identity", "role", "Developer"),
         _make_fact("technical_skills", "language", "Python"),
     ]
@@ -242,6 +258,7 @@ def test_group_facts_by_dimension():
 
 
 # ── Source discovery tests ───────────────────────────────────────────────────
+
 
 def test_discover_sources_finds_config():
     sources = discover_sources()
@@ -270,6 +287,7 @@ def test_list_source_ids():
 
 
 # ── Chunking tests ───────────────────────────────────────────────────────────
+
 
 def test_chunk_text_short():
     chunks = _chunk_text("hello world", "test:source", "test")
@@ -309,9 +327,10 @@ def test_source_chunk_char_count():
 
 # ── Content extraction tests ────────────────────────────────────────────────
 
+
 def test_extract_text_from_string():
     result = _extract_text_content("hello world", "user")
-    assert "[user]: hello world" == result
+    assert result == "[user]: hello world"
 
 
 def test_extract_text_from_list():
@@ -348,8 +367,10 @@ def test_extract_text_empty_list():
 
 # ── Path helper tests ────────────────────────────────────────────────────────
 
+
 def test_short_path_replaces_home():
     from shared.config import HAPAX_HOME
+
     home = HAPAX_HOME
     path = home / "projects" / "test"
     short = _short_path(path)
@@ -358,22 +379,23 @@ def test_short_path_replaces_home():
 
 # ── Build profile test ───────────────────────────────────────────────────────
 
+
 def test_build_profile():
     facts = [
-        _make_fact("identity", "name", "Ryan", 0.95),
+        _make_fact("identity", "name", "Operator", 0.95),
         _make_fact("technical_skills", "language", "Python", 0.9),
     ]
     synthesis = SynthesisOutput(
-        name="Ryan",
+        name="Operator",
         email=None,
         summary="A developer and music producer.",
         dimension_summaries={
-            "identity": "Ryan is a developer and music producer.",
+            "identity": "Operator is a developer and music producer.",
             "technical_skills": "Proficient in Python with type hints.",
         },
     )
     profile = build_profile(facts, synthesis, ["config:test"])
-    assert profile.name == "Ryan"
+    assert profile.name == "Operator"
     assert profile.version == 1
     assert len(profile.dimensions) == 2
     assert profile.sources_processed == ["config:test"]
@@ -381,11 +403,15 @@ def test_build_profile():
 
 def test_build_profile_increments_version():
     existing = UserProfile(
-        name="Ryan", summary="v1", version=3,
-        dimensions=[], sources_processed=["old"],
+        name="Operator",
+        summary="v1",
+        version=3,
+        dimensions=[],
+        sources_processed=["old"],
     )
     synthesis = SynthesisOutput(
-        name="Ryan", summary="v2",
+        name="Operator",
+        summary="v2",
         dimension_summaries={},
     )
     profile = build_profile([], synthesis, ["old", "new"], existing)
@@ -393,6 +419,7 @@ def test_build_profile_increments_version():
 
 
 # ── Extraction prompts test ──────────────────────────────────────────────────
+
 
 def test_generate_extraction_prompts():
     prompts = generate_extraction_prompts()
@@ -406,12 +433,13 @@ def test_generate_extraction_prompts():
 
 # ── Change detection tests ──────────────────────────────────────────────────
 
+
 def test_get_source_mtimes():
     sources = discover_sources()
     mtimes = get_source_mtimes(sources)
     assert len(mtimes) > 0
     # All values should be positive floats (unix timestamps)
-    for sid, mtime in mtimes.items():
+    for _sid, mtime in mtimes.items():
         assert isinstance(mtime, float)
         assert mtime > 0
 
@@ -425,6 +453,7 @@ def test_load_state_missing_file():
 def test_save_and_load_state(tmp_path, monkeypatch):
     """Test state round-trip using a temp directory."""
     import agents.profiler_sources as ps
+
     monkeypatch.setattr(ps, "STATE_DIR", tmp_path)
     monkeypatch.setattr(ps, "STATE_FILE", tmp_path / ".state.json")
 
@@ -440,6 +469,7 @@ def test_save_and_load_state(tmp_path, monkeypatch):
 def test_detect_changed_sources_all_new(tmp_path, monkeypatch):
     """With no prior state, all sources should be reported as new."""
     import agents.profiler_sources as ps
+
     monkeypatch.setattr(ps, "STATE_DIR", tmp_path)
     monkeypatch.setattr(ps, "STATE_FILE", tmp_path / ".state.json")
 
@@ -453,6 +483,7 @@ def test_detect_changed_sources_all_new(tmp_path, monkeypatch):
 def test_detect_changed_sources_nothing_changed(tmp_path, monkeypatch):
     """After saving current mtimes, detect_changed should return empty sets."""
     import agents.profiler_sources as ps
+
     monkeypatch.setattr(ps, "STATE_DIR", tmp_path)
     monkeypatch.setattr(ps, "STATE_FILE", tmp_path / ".state.json")
 
@@ -466,6 +497,7 @@ def test_detect_changed_sources_nothing_changed(tmp_path, monkeypatch):
 
 
 # ── Operator update schema tests ────────────────────────────────────────────
+
 
 def test_operator_update_schema_empty():
     update = OperatorUpdate(
@@ -490,6 +522,7 @@ def test_operator_update_schema_with_data():
 
 # ── Curation tests ──────────────────────────────────────────────────────────
 
+
 def test_curation_op_schema():
     op = CurationOp(
         action="delete",
@@ -512,7 +545,7 @@ def test_dimension_curation_schema():
 
 def test_apply_curation_delete():
     facts = [
-        _make_fact("identity", "name", "Ryan", 0.95),
+        _make_fact("identity", "name", "Operator", 0.95),
         _make_fact("identity", "stale_info", "Old data", 0.3),
     ]
     curation = DimensionCuration(
@@ -624,7 +657,7 @@ def test_apply_curation_flag():
 
 
 def test_apply_curation_noop():
-    facts = [_make_fact("identity", "name", "Ryan", 0.95)]
+    facts = [_make_fact("identity", "name", "Operator", 0.95)]
     curation = DimensionCuration(
         dimension="identity",
         operations=[],
@@ -637,7 +670,7 @@ def test_apply_curation_noop():
 
 def test_apply_curation_delete_missing_key():
     """Deleting a key that doesn't exist should not crash."""
-    facts = [_make_fact("identity", "name", "Ryan", 0.95)]
+    facts = [_make_fact("identity", "name", "Operator", 0.95)]
     curation = DimensionCuration(
         dimension="identity",
         operations=[
@@ -677,14 +710,20 @@ def test_read_langfuse_with_data(mock_get):
     ]
     observations = [
         {
-            "model": "claude-haiku", "metadata": {"model_group": "claude-haiku"},
+            "model": "claude-haiku",
+            "metadata": {"model_group": "claude-haiku"},
             "usage": {"input": 1000, "output": 500},
-            "calculatedTotalCost": 0.01, "latency": 200, "level": "DEFAULT",
+            "calculatedTotalCost": 0.01,
+            "latency": 200,
+            "level": "DEFAULT",
         },
         {
-            "model": "qwen-7b", "metadata": {"model_group": "qwen-7b"},
+            "model": "qwen-7b",
+            "metadata": {"model_group": "qwen-7b"},
             "usage": {"input": 200, "output": 50},
-            "calculatedTotalCost": 0.0, "latency": 100, "level": "DEFAULT",
+            "calculatedTotalCost": 0.0,
+            "latency": 100,
+            "level": "DEFAULT",
         },
     ]
 
@@ -721,13 +760,18 @@ def test_read_langfuse_with_errors(mock_get):
     traces = [{"id": "t1", "name": "test", "timestamp": "2026-02-28T10:00:00Z"}]
     observations = [
         {
-            "model": "gemini-flash", "metadata": {},
-            "usage": {}, "calculatedTotalCost": 0, "latency": 0, "level": "ERROR",
+            "model": "gemini-flash",
+            "metadata": {},
+            "usage": {},
+            "calculatedTotalCost": 0,
+            "latency": 0,
+            "level": "ERROR",
         },
     ]
 
     mock_get.side_effect = lambda path, params=None: (
-        {"data": traces, "meta": {"totalItems": 1}} if "/traces" in path
+        {"data": traces, "meta": {"totalItems": 1}}
+        if "/traces" in path
         else {"data": observations, "meta": {"totalItems": 1}}
     )
 
@@ -752,6 +796,7 @@ def test_list_source_ids_includes_langfuse(mock_check):
 
 
 # ── gap_type tests ──────────────────────────────────────────────────────────
+
 
 def test_curation_op_gap_type_optional():
     """gap_type defaults to None for backward compatibility."""
@@ -825,6 +870,7 @@ def test_operator_update_neurocognitive_default_empty():
 
 # ── Dimension count ──────────────────────────────────────────────────
 
+
 def test_profile_dimensions_count():
     """11 total profile dimensions."""
     assert len(PROFILE_DIMENSIONS) == 11
@@ -833,7 +879,8 @@ def test_profile_dimensions_count():
 def test_profile_dimensions_from_registry():
     """PROFILE_DIMENSIONS is sourced from shared.dimensions registry."""
     from shared.dimensions import get_dimension_names
-    assert PROFILE_DIMENSIONS == get_dimension_names()
+
+    assert get_dimension_names() == PROFILE_DIMENSIONS
 
 
 def test_load_structured_facts_includes_management(tmp_path):
@@ -856,6 +903,7 @@ def test_load_structured_facts_includes_management(tmp_path):
 
     with patch("agents.profiler.PROFILES_DIR", tmp_path):
         from agents.profiler import load_structured_facts
+
         facts = load_structured_facts()
 
     assert len(facts) == 1
@@ -866,8 +914,10 @@ def test_load_structured_facts_includes_management(tmp_path):
 def test_load_structured_facts_empty_when_missing(tmp_path):
     """load_structured_facts returns empty list when no files exist."""
     from unittest.mock import patch
+
     with patch("agents.profiler.PROFILES_DIR", tmp_path):
         from agents.profiler import load_structured_facts
+
         facts = load_structured_facts()
     assert facts == []
 
@@ -875,15 +925,28 @@ def test_load_structured_facts_empty_when_missing(tmp_path):
 def test_profiler_source_cli_accepts_management():
     """--source management is a valid CLI choice."""
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", choices=["config", "transcript", "shell-history", "git", "memory", "llm-export", "takeout", "proton", "management"])
+    parser.add_argument(
+        "--source",
+        choices=[
+            "config",
+            "transcript",
+            "shell-history",
+            "git",
+            "memory",
+            "llm-export",
+            "takeout",
+            "proton",
+            "management",
+        ],
+    )
     args = parser.parse_args(["--source", "management"])
     assert args.source == "management"
 
 
 def test_profiler_sources_discover_management_files(tmp_path):
     """discover_sources finds management files in vault."""
-    import os
     from unittest.mock import patch
 
     people = tmp_path / "10-work" / "people"
@@ -895,6 +958,7 @@ def test_profiler_sources_discover_management_files(tmp_path):
 
     with patch("agents.profiler_sources._VAULT_PATH", tmp_path):
         from agents.profiler_sources import discover_sources
+
         sources = discover_sources()
 
     mgmt_names = [f.name for f in sources.management_files]
@@ -907,6 +971,7 @@ def test_insight_dimension_map_neurocognitive():
     # Access the map from flush_interview_to_profile scope
     # It's defined inline, so we verify the mapping indirectly via the constant
     from cockpit.interview import RecordedInsight
+
     # Verify neurocognitive_pattern is a valid category
     insight = RecordedInsight(
         category="neurocognitive_pattern",
@@ -1000,6 +1065,7 @@ def test_exclude_does_not_affect_non_excluded_types(tmp_path):
 
 # ── Scalability: Chunk cap tests ─────────────────────────────────────────
 
+
 def test_sort_by_mtime(tmp_path):
     """_sort_by_mtime sorts newest first."""
     import time
@@ -1028,8 +1094,8 @@ def test_sort_by_mtime_missing_file(tmp_path):
 
 def test_chunk_cap_limits_output(tmp_path):
     """When files exceed chunk cap, output is limited."""
-    from unittest.mock import patch
     import time
+    from unittest.mock import patch
 
     # Create more files than the config cap (50)
     config_files = []
@@ -1051,9 +1117,9 @@ def test_chunk_cap_limits_output(tmp_path):
 
 def test_chunk_cap_reads_newest_first(tmp_path):
     """Chunk capping reads most recent files first."""
-    from unittest.mock import patch
     import os
     import time
+    from unittest.mock import patch
 
     # Create files with different mtimes
     old_file = tmp_path / "old.md"
@@ -1078,9 +1144,11 @@ def test_chunk_cap_reads_newest_first(tmp_path):
 
 # ── F-3.2: Git error isolation in read_all_sources ────────────────────────
 
+
 def test_read_all_sources_survives_git_failure(tmp_path, caplog):
     """read_all_sources continues after git subprocess failure."""
     import logging
+
     sources = DiscoveredSources(
         git_repos=[tmp_path / "fake-repo"],  # non-existent repo
         config_files=[],
@@ -1095,8 +1163,8 @@ def test_read_all_sources_survives_git_failure(tmp_path, caplog):
 
 from agents.profiler import (
     DEFAULT_EXTRACTION_CONCURRENCY,
-    EARLY_STOP_WINDOW,
     EARLY_STOP_THRESHOLD,
+    EARLY_STOP_WINDOW,
     extract_from_chunks,
 )
 
@@ -1119,7 +1187,6 @@ async def test_extract_from_chunks_empty():
 async def test_extract_from_chunks_with_concurrency(monkeypatch):
     """extract_from_chunks processes chunks concurrently."""
     import asyncio
-    from unittest.mock import AsyncMock
 
     call_count = 0
 
@@ -1128,8 +1195,12 @@ async def test_extract_from_chunks_with_concurrency(monkeypatch):
         call_count += 1
         await asyncio.sleep(0.01)  # Simulate LLM latency
         fact = ProfileFact(
-            dimension="identity", key=f"key_{call_count}", value="val",
-            confidence=0.8, source="test", evidence="test",
+            dimension="identity",
+            key=f"key_{call_count}",
+            value="val",
+            confidence=0.8,
+            source="test",
+            evidence="test",
         )
         return type("Result", (), {"output": ChunkExtraction(facts=[fact])})()
 
@@ -1147,8 +1218,6 @@ async def test_extract_from_chunks_with_concurrency(monkeypatch):
 
 async def test_extract_from_chunks_early_stop(monkeypatch):
     """Early-stop kicks in when chunks stop producing new keys."""
-    import asyncio
-    from unittest.mock import AsyncMock
 
     call_count = 0
 
@@ -1157,8 +1226,12 @@ async def test_extract_from_chunks_early_stop(monkeypatch):
         call_count += 1
         # Always return the same fact — no new keys after first
         fact = ProfileFact(
-            dimension="identity", key="same_key", value="same_val",
-            confidence=0.8, source="test", evidence="test",
+            dimension="identity",
+            key="same_key",
+            value="same_val",
+            confidence=0.8,
+            source="test",
+            evidence="test",
         )
         return type("Result", (), {"output": ChunkExtraction(facts=[fact])})()
 
@@ -1172,8 +1245,10 @@ async def test_extract_from_chunks_early_stop(monkeypatch):
 
     # Pre-seed with the key that will be returned — so all chunks produce 0 new keys
     existing_keys = {("identity", "same_key")}
-    facts = await extract_from_chunks(
-        chunks, concurrency=1, existing_fact_keys=existing_keys,
+    await extract_from_chunks(
+        chunks,
+        concurrency=1,
+        existing_fact_keys=existing_keys,
     )
 
     # Early-stop should have kicked in after EARLY_STOP_WINDOW chunks
@@ -1191,8 +1266,12 @@ async def test_extract_from_chunks_error_handling(monkeypatch):
         if call_count == 2:
             raise RuntimeError("LLM error")
         fact = ProfileFact(
-            dimension="identity", key=f"key_{call_count}", value="val",
-            confidence=0.8, source="test", evidence="test",
+            dimension="identity",
+            key=f"key_{call_count}",
+            value="val",
+            confidence=0.8,
+            source="test",
+            evidence="test",
         )
         return type("Result", (), {"output": ChunkExtraction(facts=[fact])})()
 
@@ -1216,16 +1295,18 @@ async def test_extract_from_chunks_existing_keys_seeded(monkeypatch):
         calls.append(1)
         # Return a fact with a key that's already in existing_keys
         fact = ProfileFact(
-            dimension="identity", key="known_key", value="val",
-            confidence=0.8, source="test", evidence="test",
+            dimension="identity",
+            key="known_key",
+            value="val",
+            confidence=0.8,
+            source="test",
+            evidence="test",
         )
         return type("Result", (), {"output": ChunkExtraction(facts=[fact])})()
 
     monkeypatch.setattr("agents.profiler.extraction_agent.run", mock_run)
 
-    chunks = [
-        SourceChunk(text="chunk", source_id="test:c", source_type="config")
-    ]
+    chunks = [SourceChunk(text="chunk", source_id="test:c", source_type="config")]
     existing_keys = {("identity", "known_key")}
 
     facts = await extract_from_chunks(chunks, existing_fact_keys=existing_keys)
@@ -1235,20 +1316,24 @@ async def test_extract_from_chunks_existing_keys_seeded(monkeypatch):
 
 # ── Scalability: Pipeline wiring tests ────────────────────────────────────
 
+
 def test_bridged_source_types_imported_in_profiler():
     """BRIDGED_SOURCE_TYPES is properly imported in profiler.py."""
     from agents.profiler import BRIDGED_SOURCE_TYPES as profiler_bridged
+
     assert profiler_bridged == BRIDGED_SOURCE_TYPES
 
 
 # ── F-1.2: load_existing_profile logs corruption ─────────────────────────
 
+
 def test_load_existing_profile_corrupt_json(tmp_path, caplog):
     """Corrupt JSON triggers warning log, returns None."""
-    profile_path = tmp_path / "ryan.json"
+    profile_path = tmp_path / "operator-profile.json"
     profile_path.write_text("{not valid json!!!")
     with patch("agents.profiler.PROFILES_DIR", tmp_path):
         import logging
+
         with caplog.at_level(logging.WARNING):
             result = load_existing_profile()
     assert result is None
@@ -1267,7 +1352,7 @@ def test_load_existing_profile_valid(tmp_path):
     profile = UserProfile(
         dimensions=[ProfileDimension(name="identity", facts=[])],
     )
-    profile_path = tmp_path / "ryan.json"
+    profile_path = tmp_path / "operator-profile.json"
     profile_path.write_text(profile.model_dump_json())
     with patch("agents.profiler.PROFILES_DIR", tmp_path):
         result = load_existing_profile()
@@ -1277,8 +1362,9 @@ def test_load_existing_profile_valid(tmp_path):
 
 # ── F-1.1 / F-1.3: regenerate_operator atomic write + corruption recovery ─
 
+from unittest.mock import AsyncMock, MagicMock
+
 from agents.profiler import regenerate_operator
-from unittest.mock import MagicMock, AsyncMock
 
 
 @pytest.mark.asyncio
@@ -1296,13 +1382,17 @@ async def test_regenerate_operator_creates_backup(tmp_path):
     # Mock the agent to return a no-op update
     mock_result = MagicMock()
     mock_result.output = OperatorUpdate(
-        goal_updates={}, new_patterns=[], neurocognitive_updates={},
+        goal_updates={},
+        new_patterns=[],
+        neurocognitive_updates={},
         summary="updated context",
     )
 
-    with patch("agents.profiler.PROFILES_DIR", tmp_path), \
-         patch("agents.profiler.operator_agent") as mock_agent, \
-         patch("agents.profiler._regenerate_operator_md"):
+    with (
+        patch("agents.profiler.PROFILES_DIR", tmp_path),
+        patch("agents.profiler.operator_agent") as mock_agent,
+        patch("agents.profiler._regenerate_operator_md"),
+    ):
         mock_agent.run = AsyncMock(return_value=mock_result)
         await regenerate_operator(UserProfile(dimensions=[]))
 
@@ -1329,15 +1419,20 @@ async def test_regenerate_operator_recovers_from_corrupt_json(tmp_path, caplog):
 
     mock_result = MagicMock()
     mock_result.output = OperatorUpdate(
-        goal_updates={}, new_patterns=[], neurocognitive_updates={},
+        goal_updates={},
+        new_patterns=[],
+        neurocognitive_updates={},
         summary="updated",
     )
 
     import logging
-    with patch("agents.profiler.PROFILES_DIR", tmp_path), \
-         patch("agents.profiler.operator_agent") as mock_agent, \
-         patch("agents.profiler._regenerate_operator_md"), \
-         caplog.at_level(logging.WARNING):
+
+    with (
+        patch("agents.profiler.PROFILES_DIR", tmp_path),
+        patch("agents.profiler.operator_agent") as mock_agent,
+        patch("agents.profiler._regenerate_operator_md"),
+        caplog.at_level(logging.WARNING),
+    ):
         mock_agent.run = AsyncMock(return_value=mock_result)
         await regenerate_operator(UserProfile(dimensions=[]))
 
@@ -1359,16 +1454,21 @@ async def test_regenerate_operator_rejects_tiny_output(tmp_path, caplog):
 
     mock_result = MagicMock()
     mock_result.output = OperatorUpdate(
-        goal_updates={}, new_patterns=[], neurocognitive_updates={},
+        goal_updates={},
+        new_patterns=[],
+        neurocognitive_updates={},
         summary="x",  # This will change the content but result in small output
     )
 
     # Patch json.dumps in the function to return tiny output
     import logging
-    with patch("agents.profiler.PROFILES_DIR", tmp_path), \
-         patch("agents.profiler.operator_agent") as mock_agent, \
-         patch("agents.profiler._regenerate_operator_md"), \
-         caplog.at_level(logging.ERROR):
+
+    with (
+        patch("agents.profiler.PROFILES_DIR", tmp_path),
+        patch("agents.profiler.operator_agent") as mock_agent,
+        patch("agents.profiler._regenerate_operator_md"),
+        caplog.at_level(logging.ERROR),
+    ):
         mock_agent.run = AsyncMock(return_value=mock_result)
         # We need the operator_data to produce small output.
         # The simplest approach: make the file have just enough to parse

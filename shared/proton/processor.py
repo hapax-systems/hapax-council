@@ -6,6 +6,7 @@ Usage:
     uv run python -m shared.proton ~/Downloads/proton-export/mail_*/ --since 2025-01-01
     uv run python -m shared.proton ~/Downloads/proton-export/mail_*/ --resume
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,21 +17,23 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from shared.config import RAG_SOURCES_DIR
 from shared.proton.parser import parse_export
 from shared.takeout.chunker import write_record
 from shared.takeout.progress import ProgressTracker
 
-from shared.config import RAG_SOURCES_DIR
-
 log = logging.getLogger("proton")
 
 DEFAULT_OUTPUT_DIR = RAG_SOURCES_DIR / "proton"
-STRUCTURED_OUTPUT = Path(__file__).resolve().parent.parent.parent / "profiles" / "proton-structured.jsonl"
+STRUCTURED_OUTPUT = (
+    Path(__file__).resolve().parent.parent.parent / "profiles" / "proton-structured.jsonl"
+)
 
 
 @dataclass
 class ProcessResult:
     """Summary of a processing run."""
+
     total_files: int = 0
     records_written: int = 0
     records_skipped: int = 0
@@ -126,9 +129,8 @@ def process_export(
     # Skipped = total files minus records written minus errors
     skipped = max(0, result.total_files - count - len(result.errors))
 
-    if not result.errors:
-        if tracker:
-            tracker.complete_service(service_name, records=count, skipped=skipped)
+    if not result.errors and tracker:
+        tracker.complete_service(service_name, records=count, skipped=skipped)
 
     result.records_written = count
     result.records_skipped = skipped
@@ -140,6 +142,7 @@ def process_export(
     if not dry_run and structured_path.exists():
         try:
             from shared.takeout.profiler_bridge import generate_facts
+
             facts_output = structured_path.parent / "proton-structured-facts.json"
             fact_count = generate_facts(jsonl_path=structured_path, output_path=facts_output)
             if fact_count:
@@ -156,24 +159,36 @@ def main() -> None:
         prog="python -m shared.proton",
     )
     parser.add_argument("export_dir", type=Path, help="Path to the Proton Mail export directory")
-    parser.add_argument("--since", default="",
-                        help="Only include records after this date (ISO format)")
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
-                        help=f"Output directory for markdown files (default: {DEFAULT_OUTPUT_DIR})")
-    parser.add_argument("--structured-output", type=Path, default=STRUCTURED_OUTPUT,
-                        help=f"Path for structured JSONL output (default: {STRUCTURED_OUTPUT})")
-    parser.add_argument("--max-records", type=int, default=0,
-                        help="Maximum records to process (0 = unlimited)")
-    parser.add_argument("--skip-spam", action="store_true", default=True,
-                        help="Skip spam and trash emails (default)")
-    parser.add_argument("--include-spam", action="store_true",
-                        help="Include spam and trash emails")
-    parser.add_argument("--resume", action="store_true",
-                        help="Resume a previously completed run")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show what would be written without writing")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Verbose output")
+    parser.add_argument(
+        "--since", default="", help="Only include records after this date (ISO format)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Output directory for markdown files (default: {DEFAULT_OUTPUT_DIR})",
+    )
+    parser.add_argument(
+        "--structured-output",
+        type=Path,
+        default=STRUCTURED_OUTPUT,
+        help=f"Path for structured JSONL output (default: {STRUCTURED_OUTPUT})",
+    )
+    parser.add_argument(
+        "--max-records", type=int, default=0, help="Maximum records to process (0 = unlimited)"
+    )
+    parser.add_argument(
+        "--skip-spam",
+        action="store_true",
+        default=True,
+        help="Skip spam and trash emails (default)",
+    )
+    parser.add_argument("--include-spam", action="store_true", help="Include spam and trash emails")
+    parser.add_argument("--resume", action="store_true", help="Resume a previously completed run")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be written without writing"
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 

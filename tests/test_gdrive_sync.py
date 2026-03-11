@@ -1,14 +1,12 @@
 """Tests for gdrive_sync — schemas, MIME classification, metadata stubs."""
+
 from __future__ import annotations
 
-import pytest
-
 from agents.gdrive_sync import (
+    EXPORT_MIMES,
+    SIZE_THRESHOLD,
     DriveFile,
     SyncState,
-    EXPORT_MIMES,
-    CONTENT_TYPE_MAP,
-    SIZE_THRESHOLD,
 )
 
 
@@ -41,6 +39,7 @@ def test_size_threshold():
 def test_load_state_empty(tmp_path):
     """Loading state from nonexistent file returns empty SyncState."""
     from agents.gdrive_sync import _load_state
+
     state = _load_state(tmp_path / "state.json")
     assert state.files == {}
     assert state.start_page_token == ""
@@ -49,10 +48,13 @@ def test_load_state_empty(tmp_path):
 def test_save_load_roundtrip(tmp_path):
     """State survives save/load roundtrip."""
     from agents.gdrive_sync import _load_state, _save_state
+
     state_file = tmp_path / "state.json"
     state = SyncState(start_page_token="tok123")
     state.files["abc"] = DriveFile(
-        drive_id="abc", name="test.txt", mime_type="text/plain",
+        drive_id="abc",
+        name="test.txt",
+        mime_type="text/plain",
     )
     _save_state(state, state_file)
     loaded = _load_state(state_file)
@@ -63,6 +65,7 @@ def test_save_load_roundtrip(tmp_path):
 def test_resolve_folder_path():
     """Folder path resolution builds full path from parent chain."""
     from agents.gdrive_sync import _resolve_folder_path
+
     folder_names = {"root": "My Drive", "a": "Projects", "b": "Client X"}
     # b -> a -> root
     folder_parents = {"b": "a", "a": "root"}
@@ -73,6 +76,7 @@ def test_resolve_folder_path():
 def test_resolve_folder_path_no_parent():
     """Folder with no parent returns just its name."""
     from agents.gdrive_sync import _resolve_folder_path
+
     path = _resolve_folder_path("a", {"a": "Orphan"}, {})
     assert path == "Orphan"
 
@@ -82,6 +86,7 @@ def test_resolve_folder_path_no_parent():
 
 def test_classify_document():
     from agents.gdrive_sync import _classify_file
+
     tier, ctype, tags = _classify_file("report.pdf", "application/pdf", 1000)
     assert tier == "document"
     assert ctype == "document"
@@ -90,6 +95,7 @@ def test_classify_document():
 
 def test_classify_large_audio():
     from agents.gdrive_sync import _classify_file
+
     tier, ctype, tags = _classify_file("beat.wav", "audio/wav", 50_000_000)
     assert tier == "metadata_only"
     assert ctype == "audio"
@@ -98,6 +104,7 @@ def test_classify_large_audio():
 
 def test_classify_google_doc():
     from agents.gdrive_sync import _classify_file
+
     tier, ctype, tags = _classify_file("My Doc", "application/vnd.google-apps.document", 0)
     assert tier == "document"
     assert ctype == "document"
@@ -105,6 +112,7 @@ def test_classify_google_doc():
 
 def test_classify_small_image():
     from agents.gdrive_sync import _classify_file
+
     tier, ctype, tags = _classify_file("photo.jpg", "image/jpeg", 2_000_000)
     assert tier == "document"
     assert ctype == "image"
@@ -113,21 +121,25 @@ def test_classify_small_image():
 
 def test_classify_large_unknown():
     from agents.gdrive_sync import _classify_file
+
     tier, ctype, tags = _classify_file("blob.bin", "application/octet-stream", 100_000_000)
     assert tier == "metadata_only"
 
 
 def test_generate_metadata_stub():
     from agents.gdrive_sync import _generate_metadata_stub
-    stub = _generate_metadata_stub(DriveFile(
-        drive_id="abc123",
-        name="drum-break.wav",
-        mime_type="audio/wav",
-        size=52_428_800,
-        modified_time="2026-01-15T10:30:00.000Z",
-        folder_path="My Drive/Samples/Drum Breaks",
-        web_view_link="https://drive.google.com/file/d/abc123/view",
-    ))
+
+    stub = _generate_metadata_stub(
+        DriveFile(
+            drive_id="abc123",
+            name="drum-break.wav",
+            mime_type="audio/wav",
+            size=52_428_800,
+            modified_time="2026-01-15T10:30:00.000Z",
+            folder_path="My Drive/Samples/Drum Breaks",
+            web_view_link="https://drive.google.com/file/d/abc123/view",
+        )
+    )
     assert "platform: google" in stub
     assert "service: drive" in stub
     assert "source_service: gdrive" in stub
@@ -142,8 +154,9 @@ def test_generate_metadata_stub():
 
 def test_ingest_auto_tags_drive_files():
     """Files from rag-sources/gdrive/ get source_service auto-tagged."""
-    from agents.ingest import enrich_payload
     from pathlib import Path
+
+    from agents.ingest import enrich_payload
 
     payload = {
         "source": str(Path.home() / "documents/rag-sources/gdrive/My Drive/Projects/report.pdf"),
@@ -156,8 +169,9 @@ def test_ingest_auto_tags_drive_files():
 
 def test_ingest_auto_tags_calendar_files():
     """Files from rag-sources/gcalendar/ get source_service auto-tagged."""
-    from agents.ingest import enrich_payload
     from pathlib import Path
+
+    from agents.ingest import enrich_payload
 
     payload = {
         "source": str(Path.home() / "documents/rag-sources/gcalendar/2026-03-10-standup.md"),
@@ -181,8 +195,9 @@ def test_ingest_no_auto_tag_other_files():
 
 def test_ingest_frontmatter_overrides_auto_tag():
     """Frontmatter source_service takes precedence over path auto-detection."""
-    from agents.ingest import enrich_payload
     from pathlib import Path
+
+    from agents.ingest import enrich_payload
 
     payload = {
         "source": str(Path.home() / "documents/rag-sources/gdrive/My Drive/report.pdf"),
@@ -195,11 +210,30 @@ def test_ingest_frontmatter_overrides_auto_tag():
 
 def test_generate_profile_facts():
     from agents.gdrive_sync import _generate_profile_facts
+
     state = SyncState()
     state.files = {
-        "1": DriveFile(drive_id="1", name="beat.wav", mime_type="audio/wav", size=50_000_000, folder_path="Samples/Drums"),
-        "2": DriveFile(drive_id="2", name="notes.md", mime_type="text/markdown", size=1000, folder_path="Projects/Track1"),
-        "3": DriveFile(drive_id="3", name="synth.wav", mime_type="audio/wav", size=30_000_000, folder_path="Samples/Synths"),
+        "1": DriveFile(
+            drive_id="1",
+            name="beat.wav",
+            mime_type="audio/wav",
+            size=50_000_000,
+            folder_path="Samples/Drums",
+        ),
+        "2": DriveFile(
+            drive_id="2",
+            name="notes.md",
+            mime_type="text/markdown",
+            size=1000,
+            folder_path="Projects/Track1",
+        ),
+        "3": DriveFile(
+            drive_id="3",
+            name="synth.wav",
+            mime_type="audio/wav",
+            size=30_000_000,
+            folder_path="Samples/Synths",
+        ),
     }
     facts = _generate_profile_facts(state)
     assert len(facts) > 0

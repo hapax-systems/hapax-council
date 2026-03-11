@@ -2,50 +2,58 @@
 
 All I/O is mocked. No real subprocess calls, HTTP requests, or filesystem access.
 """
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agents.introspect import (
     ContainerInfo,
-    SystemdUnit,
-    QdrantCollection,
-    OllamaModel,
-    GpuInfo,
-    LiteLLMRoute,
     DiskInfo,
+    GpuInfo,
     InfrastructureManifest,
-    collect_docker,
-    collect_systemd,
-    collect_qdrant,
-    collect_ollama,
-    collect_gpu,
-    collect_litellm_routes,
+    LiteLLMRoute,
+    OllamaModel,
+    QdrantCollection,
+    SystemdUnit,
     collect_disk,
+    collect_docker,
+    collect_gpu,
+    collect_listening_ports,
+    collect_litellm_routes,
+    collect_ollama,
     collect_pass_entries,
     collect_profile_files,
-    collect_listening_ports,
-    generate_manifest,
+    collect_qdrant,
+    collect_systemd,
     format_summary,
 )
 
-
 # ── Schema tests ─────────────────────────────────────────────────────────────
+
 
 class TestContainerInfo:
     def test_required_fields(self):
-        c = ContainerInfo(name="ollama", service="ollama", image="ollama/ollama", state="running", health="healthy")
+        c = ContainerInfo(
+            name="ollama",
+            service="ollama",
+            image="ollama/ollama",
+            state="running",
+            health="healthy",
+        )
         assert c.name == "ollama"
         assert c.ports == []
 
     def test_with_ports(self):
         c = ContainerInfo(
-            name="qdrant", service="qdrant", image="qdrant/qdrant",
-            state="running", health="healthy",
+            name="qdrant",
+            service="qdrant",
+            image="qdrant/qdrant",
+            state="running",
+            health="healthy",
             ports=["127.0.0.1:6333->6333/tcp"],
         )
         assert len(c.ports) == 1
@@ -53,13 +61,17 @@ class TestContainerInfo:
 
 class TestSystemdUnit:
     def test_required_fields(self):
-        u = SystemdUnit(name="rag-ingest.service", type="service", active="active", enabled="enabled")
+        u = SystemdUnit(
+            name="rag-ingest.service", type="service", active="active", enabled="enabled"
+        )
         assert u.description == ""
 
     def test_with_description(self):
         u = SystemdUnit(
-            name="daily-briefing.timer", type="timer",
-            active="active", enabled="enabled",
+            name="daily-briefing.timer",
+            type="timer",
+            active="active",
+            enabled="enabled",
             description="Daily system briefing",
         )
         assert u.description == "Daily system briefing"
@@ -84,7 +96,9 @@ class TestOllamaModel:
         assert m.modified_at == ""
 
     def test_with_data(self):
-        m = OllamaModel(name="nomic-embed-text", size_bytes=274_000_000, modified_at="2026-01-15T10:00:00Z")
+        m = OllamaModel(
+            name="nomic-embed-text", size_bytes=274_000_000, modified_at="2026-01-15T10:00:00Z"
+        )
         assert m.size_bytes == 274_000_000
 
 
@@ -97,9 +111,13 @@ class TestGpuInfo:
 
     def test_with_data(self):
         g = GpuInfo(
-            name="NVIDIA GeForce RTX 3090", driver="565.57.01",
-            vram_total_mb=24576, vram_used_mb=4200, vram_free_mb=20376,
-            temperature_c=42, loaded_models=["qwen2.5-coder:32b"],
+            name="NVIDIA GeForce RTX 3090",
+            driver="565.57.01",
+            vram_total_mb=24576,
+            vram_used_mb=4200,
+            vram_free_mb=20376,
+            temperature_c=42,
+            loaded_models=["qwen2.5-coder:32b"],
         )
         assert g.vram_free_mb == 20376
         assert len(g.loaded_models) == 1
@@ -140,7 +158,13 @@ class TestInfrastructureManifest:
             os_info="Linux 6.18.7",
             docker_version="27.5.0",
             containers=[
-                ContainerInfo(name="ollama", service="ollama", image="ollama/ollama", state="running", health="healthy"),
+                ContainerInfo(
+                    name="ollama",
+                    service="ollama",
+                    image="ollama/ollama",
+                    state="running",
+                    health="healthy",
+                ),
             ],
             qdrant_collections=[
                 QdrantCollection(name="documents", points_count=100),
@@ -157,6 +181,7 @@ class TestInfrastructureManifest:
 
 # ── Collector tests ──────────────────────────────────────────────────────────
 
+
 class TestCollectDocker:
     @pytest.mark.asyncio
     async def test_success(self):
@@ -164,6 +189,7 @@ class TestCollectDocker:
             '{"Name":"ollama","Service":"ollama","Image":"ollama/ollama","State":"running","Health":"healthy","Publishers":[{"URL":"127.0.0.1","TargetPort":11434,"PublishedPort":11434,"Protocol":"tcp"}]}\n'
             '{"Name":"qdrant","Service":"qdrant","Image":"qdrant/qdrant","State":"running","Health":"healthy","Publishers":[]}\n'
         )
+
         async def mock_run_cmd(cmd):
             if "info" in cmd:
                 return (0, "27.5.0", "")
@@ -194,6 +220,7 @@ class TestCollectDocker:
     @pytest.mark.asyncio
     async def test_malformed_json_lines_skipped(self):
         ndjson = '{"Name":"ok","Service":"ok","Image":"i","State":"running","Health":"","Publishers":[]}\nnot-json\n'
+
         async def mock_run_cmd(cmd):
             if "info" in cmd:
                 return (0, "27.5.0", "")
@@ -212,6 +239,7 @@ class TestCollectSystemd:
         timer_output = "daily-briefing.timer loaded active waiting Daily briefing\n"
 
         call_count = {"n": 0}
+
         async def mock_run_cmd(cmd):
             call_count["n"] += 1
             cmd_str = " ".join(cmd)
@@ -250,21 +278,25 @@ class TestCollectSystemd:
 class TestCollectQdrant:
     @pytest.mark.asyncio
     async def test_success(self):
-        collections_resp = json.dumps({
-            "result": {"collections": [{"name": "documents"}, {"name": "samples"}]}
-        })
-        doc_detail = json.dumps({
-            "result": {
-                "points_count": 150,
-                "config": {"params": {"vectors": {"size": 768, "distance": "Cosine"}}},
+        collections_resp = json.dumps(
+            {"result": {"collections": [{"name": "documents"}, {"name": "samples"}]}}
+        )
+        doc_detail = json.dumps(
+            {
+                "result": {
+                    "points_count": 150,
+                    "config": {"params": {"vectors": {"size": 768, "distance": "Cosine"}}},
+                }
             }
-        })
-        samples_detail = json.dumps({
-            "result": {
-                "points_count": 42,
-                "config": {"params": {"vectors": {"size": 768, "distance": "Cosine"}}},
+        )
+        samples_detail = json.dumps(
+            {
+                "result": {
+                    "points_count": 42,
+                    "config": {"params": {"vectors": {"size": 768, "distance": "Cosine"}}},
+                }
             }
-        })
+        )
 
         async def mock_http_get(url, **kwargs):
             if url.endswith("/collections"):
@@ -297,9 +329,7 @@ class TestCollectQdrant:
     @pytest.mark.asyncio
     async def test_detail_failure_skips_collection(self):
         """When detail fetch returns non-200, that collection is skipped."""
-        collections_resp = json.dumps({
-            "result": {"collections": [{"name": "documents"}]}
-        })
+        collections_resp = json.dumps({"result": {"collections": [{"name": "documents"}]}})
 
         async def mock_http_get(url, **kwargs):
             if url.endswith("/collections"):
@@ -314,9 +344,7 @@ class TestCollectQdrant:
     @pytest.mark.asyncio
     async def test_detail_malformed_json_returns_defaults(self):
         """When detail returns 200 but malformed JSON body, collection gets defaults."""
-        collections_resp = json.dumps({
-            "result": {"collections": [{"name": "documents"}]}
-        })
+        collections_resp = json.dumps({"result": {"collections": [{"name": "documents"}]}})
 
         async def mock_http_get(url, **kwargs):
             if url.endswith("/collections"):
@@ -334,12 +362,22 @@ class TestCollectQdrant:
 class TestCollectOllama:
     @pytest.mark.asyncio
     async def test_success(self):
-        resp = json.dumps({
-            "models": [
-                {"name": "qwen2.5-coder:32b", "size": 20_000_000_000, "modified_at": "2026-01-01T00:00:00Z"},
-                {"name": "nomic-embed-text", "size": 274_000_000, "modified_at": "2026-01-01T00:00:00Z"},
-            ]
-        })
+        resp = json.dumps(
+            {
+                "models": [
+                    {
+                        "name": "qwen2.5-coder:32b",
+                        "size": 20_000_000_000,
+                        "modified_at": "2026-01-01T00:00:00Z",
+                    },
+                    {
+                        "name": "nomic-embed-text",
+                        "size": 274_000_000,
+                        "modified_at": "2026-01-01T00:00:00Z",
+                    },
+                ]
+            }
+        )
 
         async def mock_http_get(url, **kwargs):
             return (200, resp)
@@ -373,8 +411,10 @@ class TestCollectGpu:
         async def mock_http_get(url, **kwargs):
             return (200, ollama_ps)
 
-        with patch("agents.introspect.run_cmd", side_effect=mock_run_cmd), \
-             patch("agents.introspect.http_get", side_effect=mock_http_get):
+        with (
+            patch("agents.introspect.run_cmd", side_effect=mock_run_cmd),
+            patch("agents.introspect.http_get", side_effect=mock_http_get),
+        ):
             gpu = await collect_gpu()
 
         assert gpu is not None
@@ -413,8 +453,10 @@ class TestCollectGpu:
         async def mock_http_get(url, **kwargs):
             return (0, "")
 
-        with patch("agents.introspect.run_cmd", side_effect=mock_run_cmd), \
-             patch("agents.introspect.http_get", side_effect=mock_http_get):
+        with (
+            patch("agents.introspect.run_cmd", side_effect=mock_run_cmd),
+            patch("agents.introspect.http_get", side_effect=mock_http_get),
+        ):
             gpu = await collect_gpu()
 
         assert gpu is not None
@@ -487,7 +529,7 @@ class TestCollectProfileFiles:
         profiles = tmp_path / "profiles"
         profiles.mkdir()
         (profiles / "operator.json").touch()
-        (profiles / "ryan.json").touch()
+        (profiles / "operator-profile.json").touch()
         (profiles / ".state.json").touch()
 
         with patch("agents.introspect.PROFILES_DIR", profiles):
@@ -495,7 +537,7 @@ class TestCollectProfileFiles:
 
         assert ".state.json" in files
         assert "operator.json" in files
-        assert "ryan.json" in files
+        assert "operator-profile.json" in files
 
     def test_no_dir(self, tmp_path):
         with patch("agents.introspect.PROFILES_DIR", tmp_path / "nonexistent"):
@@ -562,8 +604,10 @@ class TestCollectLiteLLMRoutes:
             mock_resp.__exit__ = MagicMock(return_value=False)
             return mock_resp
 
-        with patch.dict("os.environ", {"LITELLM_API_KEY": "sk-test"}), \
-             patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        with (
+            patch.dict("os.environ", {"LITELLM_API_KEY": "sk-test"}),
+            patch("urllib.request.urlopen", side_effect=mock_urlopen),
+        ):
             routes = await collect_litellm_routes()
 
         assert len(routes) == 3
@@ -571,6 +615,7 @@ class TestCollectLiteLLMRoutes:
 
 
 # ── format_summary tests ────────────────────────────────────────────────────
+
 
 class TestFormatSummary:
     def _make_manifest(self, **kwargs) -> InfrastructureManifest:
@@ -594,9 +639,12 @@ class TestFormatSummary:
     def test_with_gpu(self):
         m = self._make_manifest(
             gpu=GpuInfo(
-                name="RTX 3090", driver="565.57.01",
-                vram_total_mb=24576, vram_used_mb=4200,
-                temperature_c=42, loaded_models=["qwen:32b"],
+                name="RTX 3090",
+                driver="565.57.01",
+                vram_total_mb=24576,
+                vram_used_mb=4200,
+                temperature_c=42,
+                loaded_models=["qwen:32b"],
             ),
         )
         output = format_summary(m)
@@ -608,10 +656,19 @@ class TestFormatSummary:
     def test_with_containers(self):
         m = self._make_manifest(
             containers=[
-                ContainerInfo(name="ollama", service="ollama", image="ollama/ollama", state="running", health="healthy"),
                 ContainerInfo(
-                    name="qdrant", service="qdrant", image="qdrant/qdrant",
-                    state="running", health="healthy",
+                    name="ollama",
+                    service="ollama",
+                    image="ollama/ollama",
+                    state="running",
+                    health="healthy",
+                ),
+                ContainerInfo(
+                    name="qdrant",
+                    service="qdrant",
+                    image="qdrant/qdrant",
+                    state="running",
+                    health="healthy",
                     ports=["127.0.0.1:6333->6333/tcp"],
                 ),
             ],
@@ -646,7 +703,9 @@ class TestFormatSummary:
 
     def test_with_disk(self):
         m = self._make_manifest(
-            disk=[DiskInfo(mount="/home", size="500G", used="200G", available="300G", use_percent=40)],
+            disk=[
+                DiskInfo(mount="/home", size="500G", used="200G", available="300G", use_percent=40)
+            ],
         )
         output = format_summary(m)
         assert "200G/500G" in output
@@ -661,10 +720,14 @@ class TestFormatSummary:
     def test_with_systemd(self):
         m = self._make_manifest(
             systemd_units=[
-                SystemdUnit(name="rag-ingest.service", type="service", active="active", enabled="enabled"),
+                SystemdUnit(
+                    name="rag-ingest.service", type="service", active="active", enabled="enabled"
+                ),
             ],
             systemd_timers=[
-                SystemdUnit(name="daily-briefing.timer", type="timer", active="active", enabled="enabled"),
+                SystemdUnit(
+                    name="daily-briefing.timer", type="timer", active="active", enabled="enabled"
+                ),
             ],
         )
         output = format_summary(m)

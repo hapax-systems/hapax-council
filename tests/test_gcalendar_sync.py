@@ -1,12 +1,11 @@
 """Tests for gcalendar_sync — schemas, event formatting, profiler facts."""
-from __future__ import annotations
 
-import pytest
-from datetime import datetime, timezone
+from __future__ import annotations
 
 
 def test_calendar_event_defaults():
     from agents.gcalendar_sync import CalendarEvent
+
     e = CalendarEvent(
         event_id="abc",
         summary="Standup",
@@ -20,6 +19,7 @@ def test_calendar_event_defaults():
 
 def test_calendar_sync_state_empty():
     from agents.gcalendar_sync import CalendarSyncState
+
     s = CalendarSyncState()
     assert s.sync_token == ""
     assert s.events == {}
@@ -27,6 +27,7 @@ def test_calendar_sync_state_empty():
 
 def test_event_duration_minutes():
     from agents.gcalendar_sync import CalendarEvent
+
     e = CalendarEvent(
         event_id="abc",
         summary="Meeting",
@@ -38,6 +39,7 @@ def test_event_duration_minutes():
 
 def test_event_duration_all_day():
     from agents.gcalendar_sync import CalendarEvent
+
     e = CalendarEvent(
         event_id="abc",
         summary="Holiday",
@@ -50,6 +52,7 @@ def test_event_duration_all_day():
 
 def test_format_event_markdown():
     from agents.gcalendar_sync import CalendarEvent, _format_event_markdown
+
     e = CalendarEvent(
         event_id="ev123",
         summary="1:1 with Alice",
@@ -72,6 +75,7 @@ def test_format_event_markdown():
 
 def test_format_event_no_attendees():
     from agents.gcalendar_sync import CalendarEvent, _format_event_markdown
+
     e = CalendarEvent(
         event_id="ev456",
         summary="Focus Time",
@@ -86,18 +90,35 @@ def test_format_event_no_attendees():
 
 def test_generate_calendar_profile_facts():
     from agents.gcalendar_sync import (
-        _generate_profile_facts, CalendarSyncState, CalendarEvent,
+        CalendarEvent,
+        CalendarSyncState,
+        _generate_profile_facts,
     )
+
     state = CalendarSyncState()
     state.events = {
-        "1": CalendarEvent(event_id="1", summary="1:1 with Alice",
-             start="2026-03-10T09:00:00Z", end="2026-03-10T09:30:00Z",
-             attendees=["alice@company.com"], recurring=True),
-        "2": CalendarEvent(event_id="2", summary="Standup",
-             start="2026-03-10T10:00:00Z", end="2026-03-10T10:15:00Z",
-             attendees=["bob@co.com", "carol@co.com"], recurring=True),
-        "3": CalendarEvent(event_id="3", summary="Focus Time",
-             start="2026-03-10T14:00:00Z", end="2026-03-10T16:00:00Z"),
+        "1": CalendarEvent(
+            event_id="1",
+            summary="1:1 with Alice",
+            start="2026-03-10T09:00:00Z",
+            end="2026-03-10T09:30:00Z",
+            attendees=["alice@company.com"],
+            recurring=True,
+        ),
+        "2": CalendarEvent(
+            event_id="2",
+            summary="Standup",
+            start="2026-03-10T10:00:00Z",
+            end="2026-03-10T10:15:00Z",
+            attendees=["bob@co.com", "carol@co.com"],
+            recurring=True,
+        ),
+        "3": CalendarEvent(
+            event_id="3",
+            summary="Focus Time",
+            start="2026-03-10T14:00:00Z",
+            end="2026-03-10T16:00:00Z",
+        ),
     }
     facts = _generate_profile_facts(state)
     assert len(facts) > 0

@@ -1,4 +1,5 @@
 """Tests for demo history listing."""
+
 from __future__ import annotations
 
 import json
@@ -6,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agents.demo_pipeline.history import list_demos, get_demo
+from agents.demo_pipeline.history import get_demo, list_demos
 
 
 class TestListDemos:
@@ -14,8 +15,26 @@ class TestListDemos:
     def demos_dir(self, tmp_path) -> Path:
         """Create fake demo output directories."""
         for name, meta in [
-            ("20260304-120000-system", {"title": "System Demo", "audience": "family", "format": "slides", "scenes": 3, "duration": 20.0}),
-            ("20260304-130000-health", {"title": "Health Demo", "audience": "technical-peer", "format": "video", "scenes": 5, "duration": 35.0}),
+            (
+                "20260304-120000-system",
+                {
+                    "title": "System Demo",
+                    "audience": "family",
+                    "format": "slides",
+                    "scenes": 3,
+                    "duration": 20.0,
+                },
+            ),
+            (
+                "20260304-130000-health",
+                {
+                    "title": "Health Demo",
+                    "audience": "technical-peer",
+                    "format": "video",
+                    "scenes": 5,
+                    "duration": 35.0,
+                },
+            ),
         ]:
             d = tmp_path / name
             d.mkdir()

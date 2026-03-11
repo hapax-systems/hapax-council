@@ -4,6 +4,7 @@ Usage:
     uv run python -m cockpit.api
     uv run python -m cockpit.api --port 8051 --host 127.0.0.1
 """
+
 from __future__ import annotations
 
 import argparse

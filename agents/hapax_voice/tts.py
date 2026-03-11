@@ -1,8 +1,8 @@
 """Tiered TTS abstraction — Piper for short utterances, Kokoro for conversation."""
+
 from __future__ import annotations
 
 import logging
-import struct
 from pathlib import Path
 
 import numpy as np
@@ -63,7 +63,7 @@ class TTSManager:
         except ImportError:
             raise RuntimeError(
                 "piper-tts is not installed. Install with: uv pip install piper-tts"
-            )
+            ) from None
 
         model_path = self.piper_model_path
         if not model_path.exists():
@@ -101,7 +101,7 @@ class TTSManager:
         except ImportError:
             raise RuntimeError(
                 "kokoro is not installed. Install with: uv pip install kokoro"
-            )
+            ) from None
 
         log.info("Loading Kokoro pipeline (voice=%s)...", self.kokoro_voice)
         try:

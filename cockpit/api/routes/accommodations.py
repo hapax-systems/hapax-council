@@ -1,4 +1,5 @@
 """Accommodation endpoints — confirm/disable accommodations."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
@@ -12,7 +13,9 @@ async def confirm_accommodation(accommodation_id: str):
     import asyncio
 
     def _confirm():
-        from cockpit.accommodations import load_accommodations, confirm_accommodation as _confirm_fn
+        from cockpit.accommodations import confirm_accommodation as _confirm_fn
+        from cockpit.accommodations import load_accommodations
+
         accom_set = load_accommodations()
         for a in accom_set.accommodations:
             if a.id == accommodation_id:
@@ -32,7 +35,9 @@ async def disable_accommodation(accommodation_id: str):
     import asyncio
 
     def _disable():
-        from cockpit.accommodations import load_accommodations, disable_accommodation as _disable_fn
+        from cockpit.accommodations import disable_accommodation as _disable_fn
+        from cockpit.accommodations import load_accommodations
+
         accom_set = load_accommodations()
         for a in accom_set.accommodations:
             if a.id == accommodation_id:

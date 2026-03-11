@@ -1,8 +1,9 @@
 """Tests for WorkspaceMonitor event emission (face_result, analysis_complete, analysis_failed)."""
+
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
 from agents.hapax_voice.screen_models import WorkspaceAnalysis
+from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
 
 
 def test_monitor_emits_analysis_complete():
@@ -11,7 +12,9 @@ def test_monitor_emits_analysis_complete():
     mon.set_event_log(mock_log)
 
     analysis = WorkspaceAnalysis(
-        app="VS Code", context="editing", summary="Writing code.",
+        app="VS Code",
+        context="editing",
+        summary="Writing code.",
         operator_present=True,
     )
     mon._emit_analysis_event(analysis, latency_ms=1200, images_sent=3)
@@ -56,7 +59,8 @@ def test_monitor_no_event_without_log():
     # No event_log set — should not raise
     mon._emit_analysis_event(
         WorkspaceAnalysis(app="test", context="", summary=""),
-        latency_ms=100, images_sent=1,
+        latency_ms=100,
+        images_sent=1,
     )
     mon._emit_analysis_failed("err", latency_ms=100)
     mon._emit_face_event(detected=False, count=0, latency_ms=3)

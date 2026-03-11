@@ -1,7 +1,7 @@
 """Tests for agents.demo_pipeline.research — subject matter research stage."""
+
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,9 +11,8 @@ import yaml
 
 from agents.demo_models import AudienceDossier
 from agents.demo_pipeline.research import (
-    AUDIENCE_SOURCES,
-    HAPAXROMANA_DIR,
     _SECTION_HEADERS,
+    AUDIENCE_SOURCES,
     _format_audience_dossier,
     _gather_architecture_rag,
     _gather_audit_findings,
@@ -28,7 +27,6 @@ from agents.demo_pipeline.research import (
     _gather_system_docs,
     gather_research,
 )
-
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -115,7 +113,7 @@ async def test_gather_research_family():
     with (
         patch(
             "agents.demo_pipeline.research._gather_component_registry",
-            side_effect=lambda: (called_sources.append("component_registry") or "components here"),
+            side_effect=lambda: called_sources.append("component_registry") or "components here",
         ),
         patch(
             "agents.health_monitor.run_checks",
@@ -123,22 +121,26 @@ async def test_gather_research_family():
         ),
         patch(
             "agents.demo_pipeline.research._gather_profile_facts_rich",
-            side_effect=lambda scope, audience="": (called_sources.append("profile_facts_rich") or "facts here"),
+            side_effect=lambda scope, audience="": (
+                called_sources.append("profile_facts_rich") or "facts here"
+            ),
         ),
         patch(
             "agents.demo_pipeline.research._gather_briefing_stats",
-            side_effect=lambda: (called_sources.append("briefing_stats") or "stats here"),
+            side_effect=lambda: called_sources.append("briefing_stats") or "stats here",
         ),
         patch(
             "agents.demo_pipeline.research._gather_operator_philosophy",
-            side_effect=lambda: (called_sources.append("operator_philosophy") or "philosophy here"),
+            side_effect=lambda: called_sources.append("operator_philosophy") or "philosophy here",
         ),
         patch(
             "agents.demo_pipeline.research._gather_domain_literature",
-            side_effect=lambda scope: (called_sources.append("domain_literature") or "literature here"),
+            side_effect=lambda scope: (
+                called_sources.append("domain_literature") or "literature here"
+            ),
         ),
     ):
-        result = await gather_research(scope="my system", audience="family")
+        await gather_research(scope="my system", audience="family")
 
     assert "component_registry" in called_sources
     assert "health_summary" in called_sources
@@ -168,7 +170,7 @@ async def test_gather_research_leadership():
     with (
         patch(
             "agents.demo_pipeline.research._gather_component_registry_rich",
-            side_effect=lambda: (called_sources.append("component_registry_rich") or "components"),
+            side_effect=lambda: called_sources.append("component_registry_rich") or "components",
         ),
         patch(
             "agents.health_monitor.run_checks",
@@ -180,46 +182,48 @@ async def test_gather_research_leadership():
         ),
         patch(
             "agents.demo_pipeline.research._gather_langfuse_metrics",
-            side_effect=lambda: (called_sources.append("langfuse_metrics") or "metrics"),
+            side_effect=lambda: called_sources.append("langfuse_metrics") or "metrics",
         ),
         patch(
             "agents.demo_pipeline.research._gather_system_docs",
-            side_effect=lambda summary=False: (called_sources.append("system_docs") or "docs"),
+            side_effect=lambda summary=False: called_sources.append("system_docs") or "docs",
         ),
         patch(
             "agents.demo_pipeline.research._gather_profile_facts_rich",
-            side_effect=lambda scope, audience="": (called_sources.append("profile_facts_rich") or "facts"),
+            side_effect=lambda scope, audience="": (
+                called_sources.append("profile_facts_rich") or "facts"
+            ),
         ),
         patch(
             "agents.demo_pipeline.research._gather_operator_philosophy",
-            side_effect=lambda: (called_sources.append("operator_philosophy") or "philosophy"),
+            side_effect=lambda: called_sources.append("operator_philosophy") or "philosophy",
         ),
         patch(
             "agents.demo_pipeline.research._gather_briefing_stats",
-            side_effect=lambda: (called_sources.append("briefing_stats") or "stats"),
+            side_effect=lambda: called_sources.append("briefing_stats") or "stats",
         ),
         patch(
             "agents.demo_pipeline.research._gather_web_research",
-            side_effect=lambda scope, audience: (called_sources.append("web_research") or "web"),
+            side_effect=lambda scope, audience: called_sources.append("web_research") or "web",
         ),
         patch(
             "agents.demo_pipeline.research._gather_architecture_rag",
-            side_effect=lambda scope: (called_sources.append("architecture_rag") or "arch rag"),
+            side_effect=lambda scope: called_sources.append("architecture_rag") or "arch rag",
         ),
         patch(
             "agents.demo_pipeline.research._gather_design_plans",
-            side_effect=lambda scope: (called_sources.append("design_plans") or "plans"),
+            side_effect=lambda scope: called_sources.append("design_plans") or "plans",
         ),
         patch(
             "agents.demo_pipeline.research._gather_domain_literature",
-            side_effect=lambda scope: (called_sources.append("domain_literature") or "literature"),
+            side_effect=lambda scope: called_sources.append("domain_literature") or "literature",
         ),
         patch(
             "agents.demo_pipeline.research._gather_audit_findings",
-            side_effect=lambda: (called_sources.append("audit_findings") or "audit"),
+            side_effect=lambda: called_sources.append("audit_findings") or "audit",
         ),
     ):
-        result = await gather_research(scope="agent architecture", audience="leadership")
+        await gather_research(scope="agent architecture", audience="leadership")
 
     assert "langfuse_metrics" in called_sources
     assert "web_research" in called_sources
@@ -565,6 +569,7 @@ def test_gather_scout_summary(tmp_path: Path):
 
 def test_gather_profile_facts_rich_deduplicates():
     """Three Qdrant queries with deduped results by (dimension, key)."""
+
     # Build mock points — some share (dimension, key) across queries
     def make_point(dim: str, key: str, fact: str):
         p = MagicMock()
@@ -626,7 +631,7 @@ async def test_gather_research_with_enrichment_actions():
     with (
         patch(
             "agents.demo_pipeline.research._gather_component_registry",
-            side_effect=lambda: (called_sources.append("component_registry") or "components"),
+            side_effect=lambda: called_sources.append("component_registry") or "components",
         ),
         patch(
             "agents.health_monitor.run_checks",
@@ -634,23 +639,25 @@ async def test_gather_research_with_enrichment_actions():
         ),
         patch(
             "agents.demo_pipeline.research._gather_profile_facts_rich",
-            side_effect=lambda scope, audience="": (called_sources.append("profile_facts_rich") or "facts"),
+            side_effect=lambda scope, audience="": (
+                called_sources.append("profile_facts_rich") or "facts"
+            ),
         ),
         patch(
             "agents.demo_pipeline.research._gather_briefing_stats",
-            side_effect=lambda: (called_sources.append("briefing_stats") or "stats"),
+            side_effect=lambda: called_sources.append("briefing_stats") or "stats",
         ),
         patch(
             "agents.demo_pipeline.research._gather_operator_philosophy",
-            side_effect=lambda: (called_sources.append("operator_philosophy") or "philosophy"),
+            side_effect=lambda: called_sources.append("operator_philosophy") or "philosophy",
         ),
         patch(
             "agents.demo_pipeline.research._gather_domain_literature",
-            side_effect=lambda scope: (called_sources.append("domain_literature") or "literature"),
+            side_effect=lambda scope: called_sources.append("domain_literature") or "literature",
         ),
         patch(
             "agents.demo_pipeline.research._gather_scout_summary",
-            side_effect=lambda: (called_sources.append("scout_summary") or "scout"),
+            side_effect=lambda: called_sources.append("scout_summary") or "scout",
         ),
     ):
         result = await gather_research(
@@ -672,7 +679,7 @@ async def test_gather_research_with_dossier():
         return _make_health_report()
 
     dossier = AudienceDossier(
-        key="my wife",
+        key="my partner",
         archetype="family",
         name="Sarah",
         context="Non-technical, curious about the project",
@@ -724,7 +731,10 @@ def test_format_audience_dossier():
         archetype="leadership",
         name="Alex",
         context="VP of Engineering, cares about ROI",
-        calibration={"emphasize": ["cost savings", "reliability"], "skip": ["implementation details"]},
+        calibration={
+            "emphasize": ["cost savings", "reliability"],
+            "skip": ["implementation details"],
+        },
     )
 
     result = _format_audience_dossier(dossier)
@@ -799,6 +809,7 @@ def test_backward_compat_audience_sources():
 
 def test_gather_architecture_rag_filters_by_source():
     """Verify architecture RAG uses source field with MatchText filter."""
+
     def make_point(pid, source, text):
         p = MagicMock()
         p.id = pid
@@ -817,12 +828,24 @@ def test_gather_architecture_rag_filters_by_source():
         result = MagicMock()
         if call_count == 1:
             result.points = [
-                make_point("p1", "/home/user/documents/rag-sources/hapaxromana/CLAUDE.md", "Architecture overview"),
-                make_point("p2", "/home/user/documents/rag-sources/hapaxromana/agent-architecture.md", "Agent tiers"),
+                make_point(
+                    "p1",
+                    "/home/user/documents/rag-sources/hapaxromana/CLAUDE.md",
+                    "Architecture overview",
+                ),
+                make_point(
+                    "p2",
+                    "/home/user/documents/rag-sources/hapaxromana/agent-architecture.md",
+                    "Agent tiers",
+                ),
             ]
         else:
             result.points = [
-                make_point("p1", "/home/user/documents/rag-sources/hapaxromana/CLAUDE.md", "Architecture overview"),  # dupe
+                make_point(
+                    "p1",
+                    "/home/user/documents/rag-sources/hapaxromana/CLAUDE.md",
+                    "Architecture overview",
+                ),  # dupe
             ]
         return result
 
@@ -860,8 +883,12 @@ def test_gather_design_plans_matches_scope(tmp_path: Path):
     plans_dir.mkdir(parents=True)
 
     # Create test plans
-    (plans_dir / "2026-03-04-demo-generator-design.md").write_text("# Demo Generator Design\nDesign details here.")
-    (plans_dir / "2026-03-04-corporate-boundary-design.md").write_text("# Corporate Boundary\nBoundary details.")
+    (plans_dir / "2026-03-04-demo-generator-design.md").write_text(
+        "# Demo Generator Design\nDesign details here."
+    )
+    (plans_dir / "2026-03-04-corporate-boundary-design.md").write_text(
+        "# Corporate Boundary\nBoundary details."
+    )
     (plans_dir / "2026-03-01-old-plan.md").write_text("# Old Plan\nOld stuff.")
 
     with patch("agents.demo_pipeline.research.HAPAXROMANA_DIR", tmp_path):
@@ -906,7 +933,7 @@ def test_gather_domain_literature_loads_corpus(tmp_path: Path):
 
     # Better approach: patch the corpus dir path directly
     import agents.demo_pipeline.research as research_mod
-    original_file = research_mod.__file__
+
     try:
         # Temporarily redirect __file__ parent
         with patch.object(research_mod, "__file__", str(tmp_path / "research.py")):
@@ -924,6 +951,7 @@ def test_gather_domain_literature_loads_corpus(tmp_path: Path):
 def test_gather_domain_literature_missing_dir():
     """Returns empty when corpus directory doesn't exist."""
     import agents.demo_pipeline.research as research_mod
+
     with patch.object(research_mod, "__file__", "/nonexistent/path/research.py"):
         result = _gather_domain_literature("test")
     assert result == ""
@@ -937,6 +965,7 @@ async def test_gather_live_system_state_graceful():
         patch("shared.config.get_qdrant", side_effect=ConnectionError("down")),
     ):
         from agents.demo_pipeline.research import _gather_live_system_state
+
         result = await _gather_live_system_state()
     # Should not raise, returns empty or partial
     assert isinstance(result, str)
@@ -946,7 +975,9 @@ def test_gather_audit_findings(tmp_path: Path):
     """Reads holistic audit file."""
     audit_dir = tmp_path / "docs" / "audit" / "v2"
     audit_dir.mkdir(parents=True)
-    (audit_dir / "10-holistic.md").write_text("# Holistic Audit\n\nKey finding: system is well-integrated.")
+    (audit_dir / "10-holistic.md").write_text(
+        "# Holistic Audit\n\nKey finding: system is well-integrated."
+    )
 
     with patch("agents.demo_pipeline.research.HAPAXROMANA_DIR", tmp_path):
         result = _gather_audit_findings()
@@ -1072,9 +1103,8 @@ class TestWorkflowInResearch:
 
     def test_gather_workflow_patterns_missing_file(self):
         """Returns empty string if registry file is missing."""
-        from agents.demo_pipeline.research import _gather_workflow_patterns
-
         import agents.demo_pipeline.research as mod
+        from agents.demo_pipeline.research import _gather_workflow_patterns
 
         original = mod.WORKFLOW_REGISTRY_PATH
         mod.WORKFLOW_REGISTRY_PATH = Path("/nonexistent/path.yaml")

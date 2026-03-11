@@ -4,9 +4,9 @@ These tests verify that multiple subsystems work together correctly.
 All external services are mocked, but the internal wiring between
 components is real.
 """
+
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -64,6 +64,7 @@ def _events_of_type(tmp_path, event_type: str) -> list[dict]:
 # Test 1: Full analysis pipeline with events
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 async def test_full_analysis_pipeline_with_events(tmp_path):
     """Wire WorkspaceMonitor with real EventLog, mock analyzer + capturer.
@@ -110,6 +111,7 @@ async def test_full_analysis_pipeline_with_events(tmp_path):
 # Test 2: Analysis failure emits failed event
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 async def test_analysis_failure_emits_failed_event(tmp_path):
     """Mock analyzer returns None. Verify analysis_failed event and no cache."""
@@ -140,6 +142,7 @@ async def test_analysis_failure_emits_failed_event(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 3: Proactive routing chain
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.integration
 async def test_proactive_routing_chain(tmp_path):
@@ -191,6 +194,7 @@ async def test_proactive_routing_chain(tmp_path):
 # Test 4: Gate blocks during session
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 def test_gate_blocks_during_session(tmp_path):
     """Open session then check gate. Should block with 'Session active'."""
@@ -216,6 +220,7 @@ def test_gate_blocks_during_session(tmp_path):
 # Test 5: Gate allows when idle and quiet
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 def test_gate_allows_when_idle_and_quiet(tmp_path):
     """Session idle, low volume, no MIDI, ambient disabled. Gate allows."""
@@ -233,6 +238,7 @@ def test_gate_allows_when_idle_and_quiet(tmp_path):
     mock_aconnect_result.stdout = "client 0: 'System' [type=kernel]\n"
 
     with patch("agents.hapax_voice.context_gate.subprocess.run") as mock_run:
+
         def route_subprocess(cmd, **kwargs):
             if cmd[0] == "wpctl":
                 return mock_wpctl_result
@@ -256,6 +262,7 @@ def test_gate_allows_when_idle_and_quiet(tmp_path):
 # Test 6: Presence fusion drives score
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 def test_presence_fusion_drives_gate_context():
     """Record VAD + face events and verify presence score is definitely_present."""
@@ -276,6 +283,7 @@ def test_presence_fusion_drives_gate_context():
 # ---------------------------------------------------------------------------
 # Test 7: Session lifecycle with events
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.integration
 def test_session_lifecycle_with_events(tmp_path):
@@ -300,7 +308,9 @@ def test_session_lifecycle_with_events(tmp_path):
 
     # Close session (mimic daemon pattern)
     duration = time.monotonic() - session._opened_at
-    event_log.emit("session_lifecycle", action="closed", reason="test", duration_s=round(duration, 1))
+    event_log.emit(
+        "session_lifecycle", action="closed", reason="test", duration_s=round(duration, 1)
+    )
     event_log.set_session_id(None)
     session.close(reason="test")
 
@@ -324,6 +334,7 @@ def test_session_lifecycle_with_events(tmp_path):
 # Test 8: Notification lifecycle with events
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 def test_notification_lifecycle_with_events(tmp_path):
     """Enqueue notification, verify queued event. Expire another, verify expired event."""
@@ -332,12 +343,14 @@ def test_notification_lifecycle_with_events(tmp_path):
     queue.set_event_log(event_log)
 
     # Enqueue a notification
-    queue.enqueue(VoiceNotification(
-        title="Test Alert",
-        message="Something happened",
-        priority="normal",
-        source="test",
-    ))
+    queue.enqueue(
+        VoiceNotification(
+            title="Test Alert",
+            message="Something happened",
+            priority="normal",
+            source="test",
+        )
+    )
 
     # Dequeue it (should succeed)
     notification = queue.next()
@@ -374,6 +387,7 @@ def test_notification_lifecycle_with_events(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 9: RAG augmentation failure is non-fatal
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.integration
 async def test_workspace_monitor_rag_augmentation_failure(tmp_path):
@@ -413,6 +427,7 @@ async def test_workspace_monitor_rag_augmentation_failure(tmp_path):
 # Test 10: End-to-end analysis to notification
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 async def test_end_to_end_analysis_to_notification(tmp_path):
     """Full chain: capture -> analyze -> route issue -> notification available.
@@ -428,7 +443,9 @@ async def test_end_to_end_analysis_to_notification(tmp_path):
     analysis = _make_analysis(
         issues=[Issue(severity="error", description="GPU VRAM at 23.5GB", confidence=0.92)],
         gear_state=[
-            GearObservation(device="Digitakt II", powered=True, display_content="Pattern A01", notes=""),
+            GearObservation(
+                device="Digitakt II", powered=True, display_content="Pattern A01", notes=""
+            ),
             GearObservation(device="SP-404MKII", powered=True, display_content="PAD", notes=""),
         ],
     )
@@ -477,9 +494,11 @@ async def test_end_to_end_analysis_to_notification(tmp_path):
 
 # --- Audio pipeline integration ---
 
+
 def _make_audio_frame(n_samples: int = 480) -> bytes:
     """Create a fake PCM frame (480 int16 samples = 960 bytes)."""
     import struct
+
     return struct.pack(f"<{n_samples}h", *([100] * n_samples))
 
 

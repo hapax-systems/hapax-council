@@ -1,5 +1,5 @@
 """Tests for ChimePlayer non-blocking WAV playback."""
-from pathlib import Path
+
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -12,6 +12,7 @@ from agents.hapax_voice.chime_player import ChimePlayer
 def chime_dir(tmp_path):
     """Create a temp dir with test chime WAVs."""
     import wave
+
     for name in ("activation", "deactivation", "error", "completion"):
         samples = np.zeros(4800, dtype=np.int16)  # 100ms at 48kHz
         path = tmp_path / f"{name}.wav"
@@ -63,6 +64,7 @@ class TestChimePlayerPlay:
         player.play("activation")
         # play() launches a daemon thread — give it time to complete
         import time
+
         time.sleep(0.1)
         mock_stream.write.assert_called_once()
 

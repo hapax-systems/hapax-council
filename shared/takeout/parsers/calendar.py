@@ -6,6 +6,7 @@ We parse events into structured records with temporal + social modality.
 Uses regex-based parsing to avoid requiring the `icalendar` library.
 If `icalendar` is available, we use it for better parsing.
 """
+
 from __future__ import annotations
 
 import logging

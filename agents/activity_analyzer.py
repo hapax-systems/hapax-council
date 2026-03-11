@@ -13,6 +13,7 @@ Usage:
     uv run python -m agents.activity_analyzer --hours 48       # Custom time window
     uv run python -m agents.activity_analyzer --synthesize     # LLM-generated summary
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,8 +22,7 @@ import json
 import logging
 import sys
 from collections import Counter
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
@@ -39,6 +39,7 @@ log = logging.getLogger("agents.activity_analyzer")
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class ModelUsage(BaseModel):
     model_group: str
     call_count: int = 0
@@ -51,6 +52,7 @@ class ModelUsage(BaseModel):
 
 class LangfuseActivity(BaseModel):
     """LLM usage from Langfuse traces."""
+
     total_traces: int = 0
     total_generations: int = 0
     total_input_tokens: int = 0
@@ -63,6 +65,7 @@ class LangfuseActivity(BaseModel):
 
 class HealthTrend(BaseModel):
     """Health check trend from history."""
+
     total_runs: int = 0
     healthy_runs: int = 0
     degraded_runs: int = 0
@@ -74,6 +77,7 @@ class HealthTrend(BaseModel):
 
 class DriftTrend(BaseModel):
     """Documentation drift trend."""
+
     reports_count: int = 0
     latest_drift_count: int = 0
     latest_summary: str = ""
@@ -81,6 +85,7 @@ class DriftTrend(BaseModel):
 
 class ServiceEvent(BaseModel):
     """Systemd service event."""
+
     unit: str
     event: str  # started, failed, stopped
     timestamp: str
@@ -88,6 +93,7 @@ class ServiceEvent(BaseModel):
 
 class DigestTrend(BaseModel):
     """Content digest trend."""
+
     reports_count: int = 0
     latest_headline: str = ""
     latest_new_documents: int = 0
@@ -95,6 +101,7 @@ class DigestTrend(BaseModel):
 
 class KnowledgeMaintTrend(BaseModel):
     """Knowledge maintenance trend."""
+
     reports_count: int = 0
     latest_pruned: int = 0
     latest_merged: int = 0
@@ -103,6 +110,7 @@ class KnowledgeMaintTrend(BaseModel):
 
 class DataSourceStatus(BaseModel):
     """Tracks which data sources were available during collection."""
+
     langfuse_available: bool = False
     health_history_found: bool = False
     drift_report_found: bool = False
@@ -111,6 +119,7 @@ class DataSourceStatus(BaseModel):
 
 class ActivityReport(BaseModel):
     """Complete system activity report."""
+
     window_start: str
     window_end: str
     hours: int
@@ -126,8 +135,8 @@ class ActivityReport(BaseModel):
 
 # ── Langfuse collector ───────────────────────────────────────────────────────
 
-from shared.langfuse_client import langfuse_get as _langfuse_api_raw, LANGFUSE_PK
-
+from shared.langfuse_client import LANGFUSE_PK
+from shared.langfuse_client import langfuse_get as _langfuse_api_raw
 
 MAX_PAGES = 20  # Safety limit on Langfuse pagination
 
@@ -151,11 +160,14 @@ def collect_langfuse(since: datetime) -> LangfuseActivity:
         if page > MAX_PAGES:
             log.warning("Langfuse traces pagination limit reached (%d pages)", MAX_PAGES)
             break
-        result = _langfuse_api("/traces", {
-            "fromTimestamp": since.isoformat(),
-            "limit": 100,
-            "page": page,
-        })
+        result = _langfuse_api(
+            "/traces",
+            {
+                "fromTimestamp": since.isoformat(),
+                "limit": 100,
+                "page": page,
+            },
+        )
         traces = result.get("data", [])
         if not traces:
             break
@@ -181,12 +193,15 @@ def collect_langfuse(since: datetime) -> LangfuseActivity:
         if page > MAX_PAGES:
             log.warning("Langfuse observations pagination limit reached (%d pages)", MAX_PAGES)
             break
-        result = _langfuse_api("/observations", {
-            "fromStartTime": since.isoformat(),
-            "type": "GENERATION",
-            "limit": 100,
-            "page": page,
-        })
+        result = _langfuse_api(
+            "/observations",
+            {
+                "fromStartTime": since.isoformat(),
+                "type": "GENERATION",
+                "limit": 100,
+                "page": page,
+            },
+        )
         obs = result.get("data", [])
         if not obs:
             break
@@ -210,8 +225,12 @@ def collect_langfuse(since: datetime) -> LangfuseActivity:
 
         if model_group not in model_stats:
             model_stats[model_group] = {
-                "calls": 0, "input": 0, "output": 0,
-                "cost": 0.0, "latency_sum": 0.0, "errors": 0,
+                "calls": 0,
+                "input": 0,
+                "output": 0,
+                "cost": 0.0,
+                "latency_sum": 0.0,
+                "errors": 0,
             }
 
         s = model_stats[model_group]
@@ -224,15 +243,17 @@ def collect_langfuse(since: datetime) -> LangfuseActivity:
             s["errors"] += 1
 
     for model_group, s in sorted(model_stats.items()):
-        activity.models.append(ModelUsage(
-            model_group=model_group,
-            call_count=s["calls"],
-            total_input_tokens=s["input"],
-            total_output_tokens=s["output"],
-            total_cost=round(s["cost"], 6),
-            avg_latency_ms=round(s["latency_sum"] / s["calls"], 1) if s["calls"] else 0,
-            error_count=s["errors"],
-        ))
+        activity.models.append(
+            ModelUsage(
+                model_group=model_group,
+                call_count=s["calls"],
+                total_input_tokens=s["input"],
+                total_output_tokens=s["output"],
+                total_cost=round(s["cost"], 6),
+                avg_latency_ms=round(s["latency_sum"] / s["calls"], 1) if s["calls"] else 0,
+                error_count=s["errors"],
+            )
+        )
         activity.total_input_tokens += s["input"]
         activity.total_output_tokens += s["output"]
         activity.total_cost += s["cost"]
@@ -373,7 +394,9 @@ def collect_knowledge_maint_trend(since: datetime) -> KnowledgeMaintTrend:
     # History count
     if KNOWLEDGE_MAINT_HISTORY.is_file():
         try:
-            lines = [l for l in KNOWLEDGE_MAINT_HISTORY.read_text().strip().splitlines() if l.strip()]
+            lines = [
+                l for l in KNOWLEDGE_MAINT_HISTORY.read_text().strip().splitlines() if l.strip()
+            ]
             trend.reports_count = len(lines)
         except OSError:
             pass
@@ -383,23 +406,39 @@ def collect_knowledge_maint_trend(since: datetime) -> KnowledgeMaintTrend:
 
 # ── Systemd journal collector ────────────────────────────────────────────────
 
+
 async def collect_service_events(since: datetime) -> list[ServiceEvent]:
     """Query systemd journal for user service events."""
     from agents.health_monitor import run_cmd
 
     since_str = since.strftime("%Y-%m-%d %H:%M:%S")
-    rc, out, _ = await run_cmd([
-        "journalctl", "--user", "--since", since_str,
-        "--output", "json", "--no-pager",
-        "-u", "health-monitor.service",
-        "-u", "profile-update.service",
-        "-u", "rag-ingest.service",
-        "-u", "drift-detector.service",
-        "-u", "manifest-snapshot.service",
-        "-u", "llm-backup.service",
-        "-u", "digest.service",
-        "-u", "knowledge-maint.service",
-    ])
+    rc, out, _ = await run_cmd(
+        [
+            "journalctl",
+            "--user",
+            "--since",
+            since_str,
+            "--output",
+            "json",
+            "--no-pager",
+            "-u",
+            "health-monitor.service",
+            "-u",
+            "profile-update.service",
+            "-u",
+            "rag-ingest.service",
+            "-u",
+            "drift-detector.service",
+            "-u",
+            "manifest-snapshot.service",
+            "-u",
+            "llm-backup.service",
+            "-u",
+            "digest.service",
+            "-u",
+            "knowledge-maint.service",
+        ]
+    )
 
     if rc != 0 or not out:
         return []
@@ -441,9 +480,7 @@ async def collect_service_events(since: datetime) -> list[ServiceEvent]:
             ts = ""
             if ts_us:
                 try:
-                    ts = datetime.fromtimestamp(
-                        int(ts_us) / 1_000_000, tz=timezone.utc
-                    ).isoformat()[:19]
+                    ts = datetime.fromtimestamp(int(ts_us) / 1_000_000, tz=UTC).isoformat()[:19]
                 except (ValueError, OSError):
                     pass
 
@@ -455,6 +492,7 @@ async def collect_service_events(since: datetime) -> list[ServiceEvent]:
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _manifest_age() -> str:
     """Return the timestamp from manifest.json, or empty string."""
@@ -470,9 +508,10 @@ def _manifest_age() -> str:
 
 # ── Main collector ───────────────────────────────────────────────────────────
 
+
 async def generate_activity_report(hours: int = 24) -> ActivityReport:
     """Collect all activity data for the given time window."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     since = now - timedelta(hours=hours)
 
     # Run collectors (Langfuse is sync, others are async or sync)
@@ -508,9 +547,11 @@ async def generate_activity_report(hours: int = 24) -> ActivityReport:
 
 # ── Synthesis (optional LLM call) ───────────────────────────────────────────
 
+
 async def synthesize_report(report: ActivityReport) -> str:
     """Generate a natural language summary of the activity report."""
     from pydantic_ai import Agent
+
     from shared.config import get_model
 
     agent = Agent(
@@ -522,6 +563,7 @@ operator. Focus on: what happened, what's notable, what needs attention.
 Be specific with numbers. Don't explain what the system is — the operator knows.""",
     )
     from shared.axiom_tools import get_axiom_tools
+
     for _tool_fn in get_axiom_tools():
         agent.tool(_tool_fn)
 
@@ -530,6 +572,7 @@ Be specific with numbers. Don't explain what the system is — the operator know
 
 
 # ── Formatter ────────────────────────────────────────────────────────────────
+
 
 def format_human(report: ActivityReport) -> str:
     lines = [
@@ -561,7 +604,9 @@ def format_human(report: ActivityReport) -> str:
     h = report.health
     if h.total_runs > 0:
         lines.append(f"Health: {h.uptime_pct}% uptime ({h.healthy_runs}/{h.total_runs} healthy)")
-        lines.append(f"  Degraded: {h.degraded_runs}  Failed: {h.failed_runs}  Avg check: {h.avg_duration_ms:.0f}ms")
+        lines.append(
+            f"  Degraded: {h.degraded_runs}  Failed: {h.failed_runs}  Avg check: {h.avg_duration_ms:.0f}ms"
+        )
         if h.recurring_issues:
             lines.append(f"  Recurring issues: {', '.join(h.recurring_issues)}")
     else:
@@ -571,7 +616,9 @@ def format_human(report: ActivityReport) -> str:
     # Drift
     d = report.drift
     if d.reports_count > 0:
-        lines.append(f"Drift: {d.latest_drift_count} items in latest report ({d.reports_count} reports total)")
+        lines.append(
+            f"Drift: {d.latest_drift_count} items in latest report ({d.reports_count} reports total)"
+        )
         if d.latest_summary:
             lines.append(f"  {d.latest_summary[:120]}...")
     else:
@@ -622,9 +669,10 @@ def format_human(report: ActivityReport) -> str:
 
     # Active goals context with momentum
     from shared.operator import get_goals
+
     goals = get_goals()[:3]
     if goals:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         lines.append("")
         lines.append("Active Goals:")
         for g in goals:
@@ -655,6 +703,7 @@ def format_human(report: ActivityReport) -> str:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(

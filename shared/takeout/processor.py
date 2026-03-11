@@ -11,6 +11,7 @@ Supports multiple ZIP files (Google Takeout splits large exports across
 multiple archives). Each ZIP is processed sequentially with its own
 progress tracking. Structured facts are generated once after all ZIPs.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,10 +25,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from shared.takeout.chunker import DEFAULT_OUTPUT_DIR, STRUCTURED_OUTPUT, StructuredWriter, write_record
+from shared.takeout.chunker import (
+    DEFAULT_OUTPUT_DIR,
+    STRUCTURED_OUTPUT,
+    StructuredWriter,
+    write_record,
+)
 from shared.takeout.models import ServiceConfig
 from shared.takeout.progress import ProgressTracker
-from shared.takeout.registry import SERVICE_REGISTRY, detect_services
+from shared.takeout.registry import detect_services
 
 log = logging.getLogger("takeout")
 
@@ -35,6 +41,7 @@ log = logging.getLogger("takeout")
 @dataclass
 class ProcessResult:
     """Summary of a processing run."""
+
     services_found: list[str] = field(default_factory=list)
     services_processed: list[str] = field(default_factory=list)
     records_by_service: dict[str, int] = field(default_factory=dict)
@@ -82,9 +89,8 @@ def _purge_service_from_jsonl(structured_path: Path, service_name: str) -> int:
 
     if removed > 0:
         import tempfile
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=structured_path.parent, suffix=".jsonl"
-        )
+
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=structured_path.parent, suffix=".jsonl")
         try:
             with open(tmp_fd, "w", encoding="utf-8") as f:
                 f.writelines(kept_lines)
@@ -92,8 +98,12 @@ def _purge_service_from_jsonl(structured_path: Path, service_name: str) -> int:
         except Exception:
             Path(tmp_path).unlink(missing_ok=True)
             raise
-        log.info("Purged %d records for %s from %s (resume dedup)",
-                 removed, service_name, structured_path.name)
+        log.info(
+            "Purged %d records for %s from %s (resume dedup)",
+            removed,
+            service_name,
+            structured_path.name,
+        )
 
     return removed
 
@@ -161,8 +171,11 @@ def process_takeout(
                 if svc in detected:
                     to_process[svc] = detected[svc]
                 else:
-                    log.warning("Service %r not found in ZIP (available: %s)",
-                                svc, ", ".join(sorted(detected)))
+                    log.warning(
+                        "Service %r not found in ZIP (available: %s)",
+                        svc,
+                        ", ".join(sorted(detected)),
+                    )
         else:
             to_process = detected
 
@@ -176,6 +189,7 @@ def process_takeout(
                         svc_dir = output_dir / svc_name
                         if svc_dir.exists():
                             import shutil
+
                             shutil.rmtree(svc_dir)
                             log.info("Removed %s for clean re-processing", svc_dir)
 
@@ -192,10 +206,14 @@ def process_takeout(
                     result.services_processed.append(svc_name)
                     continue
 
-                log.info("Processing: %s (tier %d, %s)", svc_name, svc_config.tier, svc_config.data_path)
+                log.info(
+                    "Processing: %s (tier %d, %s)", svc_name, svc_config.tier, svc_config.data_path
+                )
 
                 if svc_config.experimental:
-                    log.warning("Parser for %s is experimental and unvalidated against real data", svc_name)
+                    log.warning(
+                        "Parser for %s is experimental and unvalidated against real data", svc_name
+                    )
 
                 if tracker:
                     tracker.start_service(svc_name)
@@ -218,7 +236,9 @@ def process_takeout(
                     for record in parse_fn(zf, svc_config):
                         # Date filter
                         if since_dt and record.timestamp:
-                            if record.timestamp.replace(tzinfo=None) < since_dt.replace(tzinfo=None):
+                            if record.timestamp.replace(tzinfo=None) < since_dt.replace(
+                                tzinfo=None
+                            ):
                                 skipped += 1
                                 continue
 
@@ -254,14 +274,18 @@ def process_takeout(
                 result.records_written += count
                 result.records_skipped += skipped
 
-                log.info("  %d records%s", count,
-                          f" ({skipped} skipped by date filter)" if skipped else "")
+                log.info(
+                    "  %d records%s",
+                    count,
+                    f" ({skipped} skipped by date filter)" if skipped else "",
+                )
 
     # Generate structured facts if we wrote structured data
     # Skipped in batch mode (caller runs once after all ZIPs)
     if not dry_run and not _skip_facts and structured_path.exists():
         try:
             from shared.takeout.profiler_bridge import generate_facts
+
             fact_count = generate_facts(jsonl_path=structured_path)
             if fact_count:
                 log.info("Generated %d structured profile facts", fact_count)
@@ -310,9 +334,7 @@ def process_batch(
                 aggregate.services_found.append(svc)
         aggregate.services_processed.extend(result.services_processed)
         for svc, count in result.records_by_service.items():
-            aggregate.records_by_service[svc] = (
-                aggregate.records_by_service.get(svc, 0) + count
-            )
+            aggregate.records_by_service[svc] = aggregate.records_by_service.get(svc, 0) + count
         aggregate.records_written += result.records_written
         aggregate.records_skipped += result.records_skipped
         aggregate.errors.extend(result.errors)
@@ -323,6 +345,7 @@ def process_batch(
     if not dry_run and structured_path.exists():
         try:
             from shared.takeout.profiler_bridge import generate_facts
+
             fact_count = generate_facts(jsonl_path=structured_path)
             if fact_count:
                 log.info("Generated %d structured profile facts", fact_count)
@@ -363,8 +386,10 @@ def list_services(zip_paths: list[Path]) -> None:
         cfg, source = all_detected[name]
         src = f"  ({source})" if len(zip_paths) > 1 else ""
         exp = "  (experimental)" if cfg.experimental else ""
-        print(f"  {name:15s}  tier={cfg.tier}  path={cfg.data_path:12s}  "
-              f"type={cfg.content_type}{src}{exp}")
+        print(
+            f"  {name:15s}  tier={cfg.tier}  path={cfg.data_path:12s}  "
+            f"type={cfg.content_type}{src}{exp}"
+        )
 
 
 def show_progress(zip_paths: list[Path]) -> None:
@@ -383,11 +408,15 @@ def show_progress(zip_paths: list[Path]) -> None:
             status = info["status"]
             records = info["records"]
             skipped = info.get("skipped", 0)
-            marker = {"completed": "+", "failed": "!", "in_progress": "~", "pending": " "}.get(status, "?")
+            marker = {"completed": "+", "failed": "!", "in_progress": "~", "pending": " "}.get(
+                status, "?"
+            )
             skip_str = f" ({skipped} skipped)" if skipped else ""
             print(f"  [{marker}] {svc:15s}  {status:12s}  {records} records{skip_str}")
 
-    print(f"\n  Completed: {summary['completed']}, Failed: {summary['failed']}, Pending: {summary['pending']}")
+    print(
+        f"\n  Completed: {summary['completed']}, Failed: {summary['failed']}, Pending: {summary['pending']}"
+    )
 
 
 def main() -> None:
@@ -395,28 +424,47 @@ def main() -> None:
         description="Process Google Takeout exports for RAG and profiler ingestion",
         prog="python -m shared.takeout",
     )
-    parser.add_argument("zip_paths", type=Path, nargs="+",
-                        help="Path(s) to Takeout ZIP file(s) — supports multiple ZIPs")
-    parser.add_argument("--list-services", action="store_true",
-                        help="List detected services and exit")
-    parser.add_argument("--progress", action="store_true",
-                        help="Show progress of last run and exit")
-    parser.add_argument("--services", type=str, default="",
-                        help="Comma-separated list of services to process (default: all)")
-    parser.add_argument("--since", default="",
-                        help="Only include records after this date (ISO format)")
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
-                        help=f"Output directory for markdown files (default: {DEFAULT_OUTPUT_DIR})")
-    parser.add_argument("--structured-output", type=Path, default=STRUCTURED_OUTPUT,
-                        help=f"Path for structured JSONL output (default: {STRUCTURED_OUTPUT})")
-    parser.add_argument("--max-records", type=int, default=0,
-                        help="Maximum records per service (0 = unlimited)")
-    parser.add_argument("--resume", action="store_true",
-                        help="Resume a previously interrupted run")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show what would be written without writing")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Verbose output")
+    parser.add_argument(
+        "zip_paths",
+        type=Path,
+        nargs="+",
+        help="Path(s) to Takeout ZIP file(s) — supports multiple ZIPs",
+    )
+    parser.add_argument(
+        "--list-services", action="store_true", help="List detected services and exit"
+    )
+    parser.add_argument(
+        "--progress", action="store_true", help="Show progress of last run and exit"
+    )
+    parser.add_argument(
+        "--services",
+        type=str,
+        default="",
+        help="Comma-separated list of services to process (default: all)",
+    )
+    parser.add_argument(
+        "--since", default="", help="Only include records after this date (ISO format)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Output directory for markdown files (default: {DEFAULT_OUTPUT_DIR})",
+    )
+    parser.add_argument(
+        "--structured-output",
+        type=Path,
+        default=STRUCTURED_OUTPUT,
+        help=f"Path for structured JSONL output (default: {STRUCTURED_OUTPUT})",
+    )
+    parser.add_argument(
+        "--max-records", type=int, default=0, help="Maximum records per service (0 = unlimited)"
+    )
+    parser.add_argument("--resume", action="store_true", help="Resume a previously interrupted run")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be written without writing"
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 
@@ -471,7 +519,9 @@ def main() -> None:
     prefix = "[dry-run] " if args.dry_run else ""
     zip_label = f" across {len(args.zip_paths)} ZIPs" if len(args.zip_paths) > 1 else ""
     print(f"\n{prefix}Results{zip_label}:")
-    print(f"  Services found:     {len(result.services_found)} ({', '.join(result.services_found)})")
+    print(
+        f"  Services found:     {len(result.services_found)} ({', '.join(result.services_found)})"
+    )
     print(f"  Services processed: {len(result.services_processed)}")
     print(f"  Records written:    {result.records_written}")
     if result.records_skipped:

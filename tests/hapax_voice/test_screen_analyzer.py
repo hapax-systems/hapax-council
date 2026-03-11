@@ -13,16 +13,16 @@ async def test_analyzer_returns_screen_analysis():
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = json.dumps({
-        "app": "foot",
-        "context": "Running pytest",
-        "summary": "Terminal showing test output with 3 failures.",
-        "issues": [
-            {"severity": "error", "description": "3 tests failed", "confidence": 0.92}
-        ],
-        "suggestions": ["Check test_pipeline.py for assertion errors"],
-        "keywords": ["pytest", "test failure"],
-    })
+    mock_response.choices[0].message.content = json.dumps(
+        {
+            "app": "foot",
+            "context": "Running pytest",
+            "summary": "Terminal showing test output with 3 failures.",
+            "issues": [{"severity": "error", "description": "3 tests failed", "confidence": 0.92}],
+            "suggestions": ["Check test_pipeline.py for assertion errors"],
+            "keywords": ["pytest", "test failure"],
+        }
+    )
 
     with patch("agents.hapax_voice.screen_analyzer.AsyncOpenAI") as mock_client_cls:
         mock_client = MagicMock()

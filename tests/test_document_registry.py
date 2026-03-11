@@ -1,18 +1,18 @@
 """Tests for shared/document_registry.py — registry loading and validation."""
+
 from __future__ import annotations
 
 import textwrap
 from pathlib import Path
 
 from shared.document_registry import (
-    load_registry,
-    DocumentRegistry,
     Archetype,
-    RepoDeclaration,
     CoverageRule,
+    DocumentRegistry,
     MutualAwarenessRule,
+    RepoDeclaration,
+    load_registry,
 )
-
 
 MINIMAL_YAML = textwrap.dedent("""\
     version: 1

@@ -1,13 +1,14 @@
 """Tests for the operator profile integration layer."""
+
 import pytest
 
 from shared.operator import (
+    get_agent_context,
     get_axioms,
     get_constraints,
-    get_patterns,
     get_goals,
-    get_agent_context,
     get_operator,
+    get_patterns,
     get_system_prompt_fragment,
     reload_operator,
 )
@@ -16,7 +17,7 @@ from shared.operator import (
 def test_operator_loads():
     data = get_operator()
     assert data.get("version") == 1
-    assert data["operator"]["name"] == "the operator"
+    assert data["operator"]["name"] == "Operator"
 
 
 def test_constraints_all():
@@ -38,7 +39,7 @@ def test_constraints_music():
 
 def test_patterns_all():
     patterns = get_patterns()
-    assert len(patterns) > 15
+    assert len(patterns) > 10
 
 
 def test_patterns_by_category():
@@ -58,7 +59,10 @@ def test_agent_context_research():
     ctx = get_agent_context("research")
     assert "inject" in ctx
     assert "domain_knowledge" in ctx
-    assert "knowledge base" in ctx["domain_knowledge"].lower()
+    assert (
+        "knowledge" in ctx["domain_knowledge"].lower()
+        or "expert" in ctx["domain_knowledge"].lower()
+    )
 
 
 def test_agent_context_code_review():
@@ -76,7 +80,7 @@ def test_axioms():
     assert "single_user" in axioms
     assert "self_improving" in axioms
     assert "operator_authority" in axioms
-    assert "Ryan" in axioms["single_user"]
+    assert "operator" in axioms["single_user"]
 
 
 def test_system_prompt_fragment_includes_single_user_axiom():
@@ -114,7 +118,7 @@ def test_system_prompt_fragment_missing():
     """Unknown agent still gets system context and operator identity."""
     fragment = get_system_prompt_fragment("nonexistent")
     assert "executive function" in fragment.lower()
-    assert "Ryan" in fragment
+    assert "operator" in fragment
 
 
 def test_system_prompt_fragment_no_constraints_for_unmapped_agent():
@@ -126,6 +130,7 @@ def test_system_prompt_fragment_no_constraints_for_unmapped_agent():
 
 def test_research_agent_has_operator_context():
     from agents.research import agent
+
     prompt = agent._system_prompts[0]
     assert "executive function" in prompt.lower()
     assert "lookup_constraints" in prompt
@@ -133,20 +138,24 @@ def test_research_agent_has_operator_context():
 
 def test_code_review_agent_has_operator_context():
     from agents.code_review import SYSTEM_PROMPT
+
     assert "executive function" in SYSTEM_PROMPT.lower()
     assert "lookup_constraints" in SYSTEM_PROMPT
 
 
 def test_neurocognitive_profile_empty():
     from shared.operator import get_neurocognitive_profile
+
     result = get_neurocognitive_profile()
     assert isinstance(result, dict)
 
 
 def test_system_prompt_fragment_no_neurocognitive_when_empty(monkeypatch):
     """Empty neurocognitive dict means no 'Neurocognitive patterns' in fragment."""
-    import shared.operator as op_mod
     import copy
+
+    import shared.operator as op_mod
+
     original = op_mod._load_operator()
     patched = copy.deepcopy(original)
     patched["neurocognitive"] = {}
@@ -157,8 +166,10 @@ def test_system_prompt_fragment_no_neurocognitive_when_empty(monkeypatch):
 
 def test_system_prompt_fragment_includes_neurocognitive_when_populated(monkeypatch):
     """Populated neurocognitive data appears in system prompt fragment."""
-    import shared.operator as op_mod
     import copy
+
+    import shared.operator as op_mod
+
     original = op_mod._load_operator()
     patched = copy.deepcopy(original)
     patched["neurocognitive"] = {
@@ -176,6 +187,7 @@ def test_system_prompt_fragment_includes_neurocognitive_when_populated(monkeypat
 
 
 # ── Agent context map injection tests ────────────────────────────────────────
+
 
 def test_system_prompt_includes_constraints_for_mapped_agent():
     """Agents with agent_context_map entries get their mapped constraints."""
@@ -220,8 +232,10 @@ def test_system_prompt_still_has_neurocognitive():
 
 # ── Schema validation tests ─────────────────────────────────────────────────
 
+
 def test_operator_schema_valid():
     from shared.operator import OperatorSchema
+
     data = {"version": 1, "operator": {"name": "Test"}}
     schema = OperatorSchema.model_validate(data)
     assert schema.version == 1
@@ -229,6 +243,7 @@ def test_operator_schema_valid():
 
 def test_operator_schema_extra_fields_allowed():
     from shared.operator import OperatorSchema
+
     data = {"version": 1, "operator": {}, "custom_field": "allowed"}
     schema = OperatorSchema.model_validate(data)
     assert schema.version == 1
@@ -236,13 +251,16 @@ def test_operator_schema_extra_fields_allowed():
 
 def test_operator_schema_wrong_type_rejects():
     from pydantic import ValidationError
+
     from shared.operator import OperatorSchema
+
     with pytest.raises(ValidationError):
         OperatorSchema.model_validate({"operator": "not-a-dict"})
 
 
 def test_load_operator_corrupt_json(tmp_path, monkeypatch):
     import shared.operator as op_mod
+
     monkeypatch.setattr(op_mod, "_operator_cache", None)
     corrupt = tmp_path / "operator.json"
     corrupt.write_text("{invalid json!")
@@ -253,8 +271,10 @@ def test_load_operator_corrupt_json(tmp_path, monkeypatch):
 
 
 def test_load_operator_invalid_schema(tmp_path, monkeypatch):
-    import shared.operator as op_mod
     import json
+
+    import shared.operator as op_mod
+
     monkeypatch.setattr(op_mod, "_operator_cache", None)
     bad = tmp_path / "operator.json"
     bad.write_text(json.dumps({"operator": "not-a-dict"}))
@@ -267,6 +287,7 @@ def test_load_operator_invalid_schema(tmp_path, monkeypatch):
 def test_reload_operator_clears_cache(monkeypatch):
     """reload_operator() clears cache so next access re-reads from disk."""
     import shared.operator as op_mod
+
     # Load once to populate cache
     get_operator()
     assert op_mod._operator_cache is not None

@@ -1,10 +1,9 @@
 """Briefing data collector — parses profiles/briefing.md."""
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
-
 
 from shared.config import PROFILES_DIR
 

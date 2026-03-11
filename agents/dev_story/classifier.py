@@ -1,4 +1,5 @@
 """Session classification across development dimensions."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 @dataclass
 class TagResult:
     """Result of a classification."""
+
     dimension: str
     value: str
     confidence: float
@@ -85,7 +87,7 @@ def classify_env_topology(file_paths: list[str]) -> TagResult:
 
     docker_files = sum(1 for p in file_paths if "docker" in p.lower() or "Dockerfile" in p)
     systemd_files = sum(1 for p in file_paths if "systemd/" in p)
-    top_dirs = {p.split("/")[0] for p in file_paths if "/" in p}
+    {p.split("/")[0] for p in file_paths if "/" in p}
 
     if docker_files > 0:
         return TagResult(dimension="env_topology", value="containerized", confidence=0.8)

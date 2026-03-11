@@ -1,9 +1,10 @@
 """Context gate for determining interrupt eligibility."""
+
 from __future__ import annotations
 
 import logging
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from agents.hapax_voice.session import SessionManager
 

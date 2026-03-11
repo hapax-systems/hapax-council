@@ -1,4 +1,5 @@
 """Voice generation pipeline using Chatterbox TTS API."""
+
 from __future__ import annotations
 
 import logging
@@ -91,7 +92,10 @@ def generate_all_voice_segments(
     def _generate_one(i: int, name: str, text: str) -> tuple[int, Path]:
         output_path = output_dir / f"{name}.wav"
         generate_voice_segment(
-            text, output_path, voice_sample=voice_sample, voice_bytes=voice_bytes,
+            text,
+            output_path,
+            voice_sample=voice_sample,
+            voice_bytes=voice_bytes,
         )
         return i, output_path
 

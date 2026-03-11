@@ -3,6 +3,7 @@
 Scans the Obsidian vault to determine whether required management
 knowledge exists, using frontmatter metadata and file content.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -10,15 +11,11 @@ from pathlib import Path
 
 import yaml
 
-from shared.config import VAULT_PATH
-from shared.vault_utils import parse_frontmatter
-
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-from shared.config import HAPAXROMANA_DIR
+from shared.config import HAPAXROMANA_DIR, VAULT_PATH
+from shared.vault_utils import parse_frontmatter
 
 KNOWLEDGE_MODEL_PATH = HAPAXROMANA_DIR / "knowledge" / "management-sufficiency.yaml"
 DOMAIN_REGISTRY_PATH = HAPAXROMANA_DIR / "domains" / "registry.yaml"
@@ -107,7 +104,7 @@ def _get_body(path: Path) -> str:
         end = text.find("---", 3)
         if end != -1:
             # Skip past the closing --- and any immediate newline
-            return text[end + 3:].strip()
+            return text[end + 3 :].strip()
 
     return text.strip()
 
@@ -179,9 +176,7 @@ def check_field_coverage(
         return False
 
     populated = sum(
-        1
-        for note_path in notes
-        if str(parse_frontmatter(note_path).get(field, "")).strip()
+        1 for note_path in notes if str(parse_frontmatter(note_path).get(field, "")).strip()
     )
     coverage_pct = (populated / len(notes)) * 100
     return coverage_pct >= threshold
@@ -274,16 +269,20 @@ def run_audit(
         satisfied = _run_check(vp, check)
         acq = req.get("acquisition", {})
 
-        gaps.append(KnowledgeGap(
-            requirement_id=req["id"],
-            category=req.get("category", "enrichment"),
-            priority=req.get("priority", PRIORITY_MAP.get(req.get("category", "enrichment"), 35)),
-            description=req.get("description", ""),
-            acquisition_method=acq.get("method", "nudge"),
-            interview_question=acq.get("question"),
-            depends_on=req.get("depends_on", []),
-            satisfied=satisfied,
-        ))
+        gaps.append(
+            KnowledgeGap(
+                requirement_id=req["id"],
+                category=req.get("category", "enrichment"),
+                priority=req.get(
+                    "priority", PRIORITY_MAP.get(req.get("category", "enrichment"), 35)
+                ),
+                description=req.get("description", ""),
+                acquisition_method=acq.get("method", "nudge"),
+                interview_question=acq.get("question"),
+                depends_on=req.get("depends_on", []),
+                satisfied=satisfied,
+            )
+        )
 
     total = len(gaps)
     satisfied_count = sum(1 for g in gaps if g.satisfied)
@@ -326,7 +325,11 @@ def collect_all_domain_gaps(
         if not domain_id or not model_ref:
             continue
 
-        model_path = KNOWLEDGE_DIR / model_ref.split("/", 1)[-1] if "/" in model_ref else KNOWLEDGE_DIR / model_ref
+        model_path = (
+            KNOWLEDGE_DIR / model_ref.split("/", 1)[-1]
+            if "/" in model_ref
+            else KNOWLEDGE_DIR / model_ref
+        )
         if not model_path.is_file():
             continue
 
@@ -364,7 +367,7 @@ def collect_knowledge_gaps(vault_path: Path | None = None) -> SufficiencyReport:
 # ---------------------------------------------------------------------------
 
 
-def gaps_to_nudges(gaps: list[KnowledgeGap], *, domain_id: str = "") -> list["Nudge"]:
+def gaps_to_nudges(gaps: list[KnowledgeGap], *, domain_id: str = "") -> list[Nudge]:
     """Convert unsatisfied knowledge gaps to nudges.
 
     Skips satisfied gaps and gaps whose dependencies are unsatisfied.
@@ -384,8 +387,10 @@ def gaps_to_nudges(gaps: list[KnowledgeGap], *, domain_id: str = "") -> list["Nu
             continue
 
         label = (
-            "high" if gap.category == "foundational"
-            else "medium" if gap.category == "structural"
+            "high"
+            if gap.category == "foundational"
+            else "medium"
+            if gap.category == "structural"
             else "low"
         )
 
@@ -396,15 +401,19 @@ def gaps_to_nudges(gaps: list[KnowledgeGap], *, domain_id: str = "") -> list["Nu
             action = f"Create: {gap.description.strip()}"
             hint = ""
 
-        nudges.append(Nudge(
-            category="knowledge",
-            priority_score=gap.priority,
-            priority_label=label,
-            title=f"Missing: {gap.description.strip()[:80]}",
-            detail=gap.description.strip(),
-            suggested_action=action,
-            command_hint=hint,
-            source_id=f"knowledge:{domain_id}:{gap.requirement_id}" if domain_id else f"knowledge:{gap.requirement_id}",
-        ))
+        nudges.append(
+            Nudge(
+                category="knowledge",
+                priority_score=gap.priority,
+                priority_label=label,
+                title=f"Missing: {gap.description.strip()[:80]}",
+                detail=gap.description.strip(),
+                suggested_action=action,
+                command_hint=hint,
+                source_id=f"knowledge:{domain_id}:{gap.requirement_id}"
+                if domain_id
+                else f"knowledge:{gap.requirement_id}",
+            )
+        )
 
     return nudges

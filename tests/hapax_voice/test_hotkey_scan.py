@@ -1,6 +1,8 @@
 """Tests for document scanner hotkey."""
+
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,7 @@
 """Tests for ContextGate activity mode integration."""
+
 from unittest.mock import MagicMock
+
 from agents.hapax_voice.context_gate import ContextGate
 
 

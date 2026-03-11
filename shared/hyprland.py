@@ -4,6 +4,7 @@ All methods are fail-open: if hyprctl is unavailable (e.g. running in a
 container or on a non-Hyprland system), queries return None/empty and
 dispatches return False. No exceptions escape.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,6 +20,7 @@ _TIMEOUT_S = 5
 @dataclass(frozen=True)
 class WindowInfo:
     """Snapshot of a single Hyprland window."""
+
     address: str
     app_class: str
     title: str
@@ -54,6 +56,7 @@ class WindowInfo:
 @dataclass(frozen=True)
 class WorkspaceInfo:
     """Snapshot of a single Hyprland workspace."""
+
     id: int
     name: str
     window_count: int
@@ -82,7 +85,9 @@ class HyprlandIPC:
         try:
             result = subprocess.run(
                 ["hyprctl", "-j", cmd],
-                capture_output=True, text=True, timeout=_TIMEOUT_S,
+                capture_output=True,
+                text=True,
+                timeout=_TIMEOUT_S,
             )
             if result.returncode != 0:
                 log.debug("hyprctl query %s returned %d", cmd, result.returncode)
@@ -129,7 +134,9 @@ class HyprlandIPC:
             joined = " ; ".join(commands)
             result = subprocess.run(
                 ["hyprctl", "--batch", joined],
-                capture_output=True, text=True, timeout=_TIMEOUT_S,
+                capture_output=True,
+                text=True,
+                timeout=_TIMEOUT_S,
             )
             if result.returncode != 0:
                 log.debug("hyprctl batch returned %d", result.returncode)

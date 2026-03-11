@@ -7,6 +7,7 @@ Usage:
     uv run python -m agents.gdrive_sync --fetch ID    # Download specific file
     uv run python -m agents.gdrive_sync --stats       # Show sync state
 """
+
 from __future__ import annotations
 
 import argparse
@@ -14,7 +15,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -38,9 +39,18 @@ SIZE_THRESHOLD = 25 * 1024 * 1024  # 25 MB
 
 # Google-native export MIME mappings
 EXPORT_MIMES: dict[str, tuple[str, str]] = {
-    "application/vnd.google-apps.document": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"),
-    "application/vnd.google-apps.spreadsheet": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),
-    "application/vnd.google-apps.presentation": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"),
+    "application/vnd.google-apps.document": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".docx",
+    ),
+    "application/vnd.google-apps.spreadsheet": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xlsx",
+    ),
+    "application/vnd.google-apps.presentation": (
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".pptx",
+    ),
     "application/vnd.google-apps.drawing": ("image/png", ".png"),
 }
 
@@ -74,8 +84,10 @@ MODALITY_MAP: dict[str, list[str]] = {
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class DriveFile(BaseModel):
     """Tracked state for a single Drive file."""
+
     drive_id: str
     name: str
     mime_type: str
@@ -92,6 +104,7 @@ class DriveFile(BaseModel):
 
 class SyncState(BaseModel):
     """Persistent sync state across runs."""
+
     start_page_token: str = ""
     files: dict[str, DriveFile] = Field(default_factory=dict)  # drive_id -> DriveFile
     folder_names: dict[str, str] = Field(default_factory=dict)  # folder_id -> name
@@ -103,13 +116,16 @@ class SyncState(BaseModel):
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
+
 def _get_drive_service():
     """Build authenticated Drive API service."""
     from shared.google_auth import build_service
+
     return build_service("drive", "v3", SCOPES)
 
 
 # ── State Management ─────────────────────────────────────────────────────────
+
 
 def _load_state(path: Path = STATE_FILE) -> SyncState:
     """Load sync state from disk."""
@@ -133,22 +149,25 @@ def _log_deletion(f: DriveFile) -> None:
     """Append deletion event to JSONL log for behavioral analysis."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _, ctype, tags = _classify_file(f.name, f.mime_type, f.size)
-    entry = json.dumps({
-        "drive_id": f.drive_id,
-        "name": f.name,
-        "folder_path": f.folder_path,
-        "mime_type": f.mime_type,
-        "content_type": ctype,
-        "size": f.size,
-        "had_local_copy": bool(f.local_path and not f.is_metadata_only),
-        "deleted_at": datetime.now(timezone.utc).isoformat(),
-    })
+    entry = json.dumps(
+        {
+            "drive_id": f.drive_id,
+            "name": f.name,
+            "folder_path": f.folder_path,
+            "mime_type": f.mime_type,
+            "content_type": ctype,
+            "size": f.size,
+            "had_local_copy": bool(f.local_path and not f.is_metadata_only),
+            "deleted_at": datetime.now(UTC).isoformat(),
+        }
+    )
     with open(DELETIONS_LOG, "a", encoding="utf-8") as fh:
         fh.write(entry + "\n")
     log.info("Logged deletion: %s (%s)", f.name, f.folder_path)
 
 
 # ── Folder Resolution ────────────────────────────────────────────────────────
+
 
 def _resolve_folder_path(
     folder_id: str,
@@ -172,8 +191,11 @@ def _resolve_folder_path(
 
 # ── MIME Classification ──────────────────────────────────────────────────────
 
+
 def _classify_file(
-    name: str, mime_type: str, size: int,
+    name: str,
+    mime_type: str,
+    size: int,
 ) -> tuple[str, str, list[str]]:
     """Classify file into tier, content_type, and modality_tags.
 
@@ -234,6 +256,7 @@ def _infer_modality(mime_type: str) -> list[str]:
 
 
 # ── Metadata Stub Generation ─────────────────────────────────────────────────
+
 
 def _generate_metadata_stub(f: DriveFile) -> str:
     """Generate a markdown metadata stub for a binary/large file."""
@@ -301,6 +324,7 @@ file_size: {f.size}
 
 FIELDS = "nextPageToken, files(id, name, mimeType, size, modifiedTime, parents, webViewLink, md5Checksum)"
 
+
 def _full_scan(service, state: SyncState) -> int:
     """Enumerate all Drive files and folders. Returns file count."""
     log.info("Starting full Drive scan...")
@@ -309,12 +333,16 @@ def _full_scan(service, state: SyncState) -> int:
     log.info("Building folder tree...")
     page_token = None
     while True:
-        resp = service.files().list(
-            q="mimeType='application/vnd.google-apps.folder' and trashed=false",
-            fields="nextPageToken, files(id, name, parents)",
-            pageSize=1000,
-            pageToken=page_token,
-        ).execute()
+        resp = (
+            service.files()
+            .list(
+                q="mimeType='application/vnd.google-apps.folder' and trashed=false",
+                fields="nextPageToken, files(id, name, parents)",
+                pageSize=1000,
+                pageToken=page_token,
+            )
+            .execute()
+        )
         for f in resp.get("files", []):
             state.folder_names[f["id"]] = f["name"]
             if f.get("parents"):
@@ -328,16 +356,24 @@ def _full_scan(service, state: SyncState) -> int:
     count = 0
     page_token = None
     while True:
-        resp = service.files().list(
-            q="mimeType!='application/vnd.google-apps.folder' and trashed=false",
-            fields=FIELDS,
-            pageSize=1000,
-            pageToken=page_token,
-        ).execute()
+        resp = (
+            service.files()
+            .list(
+                q="mimeType!='application/vnd.google-apps.folder' and trashed=false",
+                fields=FIELDS,
+                pageSize=1000,
+                pageToken=page_token,
+            )
+            .execute()
+        )
         for f in resp.get("files", []):
             drive_id = f["id"]
             parent_id = f.get("parents", [""])[0] if f.get("parents") else ""
-            folder_path = _resolve_folder_path(parent_id, state.folder_names, state.folder_parents) if parent_id else ""
+            folder_path = (
+                _resolve_folder_path(parent_id, state.folder_names, state.folder_parents)
+                if parent_id
+                else ""
+            )
 
             state.files[drive_id] = DriveFile(
                 drive_id=drive_id,
@@ -377,12 +413,16 @@ def _incremental_sync(service, state: SyncState) -> list[str]:
     page_token = state.start_page_token
 
     while True:
-        resp = service.changes().list(
-            pageToken=page_token,
-            fields="nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, modifiedTime, parents, webViewLink, md5Checksum))",
-            pageSize=1000,
-            includeRemoved=True,
-        ).execute()
+        resp = (
+            service.changes()
+            .list(
+                pageToken=page_token,
+                fields="nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, modifiedTime, parents, webViewLink, md5Checksum))",
+                pageSize=1000,
+                includeRemoved=True,
+            )
+            .execute()
+        )
 
         for change in resp.get("changes", []):
             file_id = change["fileId"]
@@ -410,7 +450,11 @@ def _incremental_sync(service, state: SyncState) -> list[str]:
                 continue
 
             parent_id = f.get("parents", [""])[0] if f.get("parents") else ""
-            folder_path = _resolve_folder_path(parent_id, state.folder_names, state.folder_parents) if parent_id else ""
+            folder_path = (
+                _resolve_folder_path(parent_id, state.folder_names, state.folder_parents)
+                if parent_id
+                else ""
+            )
 
             existing = state.files.get(file_id)
             new_md5 = f.get("md5Checksum", "")
@@ -445,6 +489,7 @@ def _incremental_sync(service, state: SyncState) -> list[str]:
 
 
 # ── File Operations ──────────────────────────────────────────────────────────
+
 
 def _sync_file(service, f: DriveFile, state: SyncState) -> bool:
     """Sync a single file — download, export, or write metadata stub.
@@ -502,8 +547,10 @@ def _download_or_export(service, f: DriveFile, state: SyncState) -> bool:
         safe_name = f.name.replace("/", "_")
         local_path = local_dir / safe_name
         try:
-            from googleapiclient.http import MediaIoBaseDownload
             import io
+
+            from googleapiclient.http import MediaIoBaseDownload
+
             request = service.files().get_media(fileId=f.drive_id)
             buf = io.BytesIO()
             downloader = MediaIoBaseDownload(buf, request)
@@ -528,15 +575,23 @@ def _fetch_single(service, drive_id: str, state: SyncState) -> bool:
     if drive_id not in state.files:
         # Fetch file metadata from API
         try:
-            f_data = service.files().get(
-                fileId=drive_id,
-                fields="id, name, mimeType, size, modifiedTime, parents, webViewLink, md5Checksum",
-            ).execute()
+            f_data = (
+                service.files()
+                .get(
+                    fileId=drive_id,
+                    fields="id, name, mimeType, size, modifiedTime, parents, webViewLink, md5Checksum",
+                )
+                .execute()
+            )
         except Exception as exc:
             log.error("Failed to fetch metadata for %s: %s", drive_id, exc)
             return False
         parent_id = f_data.get("parents", [""])[0] if f_data.get("parents") else ""
-        folder_path = _resolve_folder_path(parent_id, state.folder_names, state.folder_parents) if parent_id else ""
+        folder_path = (
+            _resolve_folder_path(parent_id, state.folder_names, state.folder_parents)
+            if parent_id
+            else ""
+        )
         df = DriveFile(
             drive_id=drive_id,
             name=f_data["name"],
@@ -557,6 +612,7 @@ def _fetch_single(service, drive_id: str, state: SyncState) -> bool:
 
 # ── Profiler Integration ─────────────────────────────────────────────────────
 
+
 def _generate_profile_facts(state: SyncState) -> list[dict]:
     """Generate deterministic profile facts from Drive state."""
     from collections import Counter
@@ -573,7 +629,11 @@ def _generate_profile_facts(state: SyncState) -> list[dict]:
             mime_counts["video"] += 1
         elif f.mime_type.startswith("image/"):
             mime_counts["image"] += 1
-        elif f.mime_type in EXPORT_MIMES or f.mime_type.startswith("text/") or f.mime_type == "application/pdf":
+        elif (
+            f.mime_type in EXPORT_MIMES
+            or f.mime_type.startswith("text/")
+            or f.mime_type == "application/pdf"
+        ):
             mime_counts["documents"] += 1
         else:
             mime_counts["other"] += 1
@@ -592,39 +652,45 @@ def _generate_profile_facts(state: SyncState) -> list[dict]:
     # File type distribution
     if mime_counts:
         total = sum(mime_counts.values())
-        dist = ", ".join(f"{k} ({v/total:.0%})" for k, v in mime_counts.most_common(5))
-        facts.append({
-            "dimension": "information_seeking",
-            "key": "gdrive_file_types",
-            "value": dist,
-            "confidence": 0.95,
-            "source": source,
-            "evidence": f"Distribution across {total} Drive files",
-        })
+        dist = ", ".join(f"{k} ({v / total:.0%})" for k, v in mime_counts.most_common(5))
+        facts.append(
+            {
+                "dimension": "information_seeking",
+                "key": "gdrive_file_types",
+                "value": dist,
+                "confidence": 0.95,
+                "source": source,
+                "evidence": f"Distribution across {total} Drive files",
+            }
+        )
 
     # Active folders
     if folder_counts:
         top_folders = ", ".join(f[0] for f in folder_counts.most_common(10))
-        facts.append({
-            "dimension": "information_seeking",
-            "key": "gdrive_active_folders",
-            "value": top_folders,
-            "confidence": 0.95,
-            "source": source,
-            "evidence": f"Top folders by file count across {sum(folder_counts.values())} files",
-        })
+        facts.append(
+            {
+                "dimension": "information_seeking",
+                "key": "gdrive_active_folders",
+                "value": top_folders,
+                "confidence": 0.95,
+                "source": source,
+                "evidence": f"Top folders by file count across {sum(folder_counts.values())} files",
+            }
+        )
 
     # Total storage
     if total_size:
         gb = total_size / (1024**3)
-        facts.append({
-            "dimension": "tool_usage",
-            "key": "gdrive_storage_usage",
-            "value": f"{gb:.1f} GB across {len(state.files)} files",
-            "confidence": 0.95,
-            "source": source,
-            "evidence": "Computed from Drive API file sizes",
-        })
+        facts.append(
+            {
+                "dimension": "tool_usage",
+                "key": "gdrive_storage_usage",
+                "value": f"{gb:.1f} GB across {len(state.files)} files",
+                "confidence": 0.95,
+                "source": source,
+                "evidence": "Computed from Drive API file sizes",
+            }
+        )
 
     # Deletion patterns (from log)
     if DELETIONS_LOG.exists():
@@ -640,14 +706,16 @@ def _generate_profile_facts(state: SyncState) -> list[dict]:
                 continue
         if del_total:
             dist = ", ".join(f"{k} ({v})" for k, v in del_counts.most_common(5))
-            facts.append({
-                "dimension": "work_patterns",
-                "key": "gdrive_deletion_patterns",
-                "value": f"{del_total} deletions: {dist}",
-                "confidence": 0.95,
-                "source": source,
-                "evidence": f"Accumulated from {del_total} Drive deletion events",
-            })
+            facts.append(
+                {
+                    "dimension": "work_patterns",
+                    "key": "gdrive_deletion_patterns",
+                    "value": f"{del_total} deletions: {dist}",
+                    "confidence": 0.95,
+                    "source": source,
+                    "evidence": f"Accumulated from {del_total} Drive deletion events",
+                }
+            )
 
     return facts
 
@@ -666,6 +734,7 @@ def _write_profile_facts(state: SyncState) -> None:
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 
+
 def _print_stats(state: SyncState) -> None:
     """Print sync statistics."""
     from collections import Counter
@@ -679,26 +748,35 @@ def _print_stats(state: SyncState) -> None:
     total_size = 0
     for f in state.files.values():
         total_size += f.size
-        if f.mime_type.startswith("audio/"): mime_cats["audio"] += 1
-        elif f.mime_type.startswith("video/"): mime_cats["video"] += 1
-        elif f.mime_type.startswith("image/"): mime_cats["image"] += 1
-        else: mime_cats["documents/other"] += 1
+        if f.mime_type.startswith("audio/"):
+            mime_cats["audio"] += 1
+        elif f.mime_type.startswith("video/"):
+            mime_cats["video"] += 1
+        elif f.mime_type.startswith("image/"):
+            mime_cats["image"] += 1
+        else:
+            mime_cats["documents/other"] += 1
 
-    print(f"Google Drive Sync State")
-    print(f"{'='*40}")
+    print("Google Drive Sync State")
+    print(f"{'=' * 40}")
     print(f"Total files:     {total:,}")
     print(f"Downloaded:      {downloaded:,}")
     print(f"Metadata-only:   {meta_only:,}")
     print(f"Pending sync:    {pending:,}")
     print(f"Total size:      {total_size / (1024**3):.1f} GB")
-    print(f"Last full scan:  {datetime.fromtimestamp(state.last_full_scan, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_full_scan else 'never'}")
-    print(f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}")
-    print(f"\nBy type:")
+    print(
+        f"Last full scan:  {datetime.fromtimestamp(state.last_full_scan, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_full_scan else 'never'}"
+    )
+    print(
+        f"Last sync:       {datetime.fromtimestamp(state.last_sync, tz=UTC).strftime('%Y-%m-%d %H:%M UTC') if state.last_sync else 'never'}"
+    )
+    print("\nBy type:")
     for cat, count in mime_cats.most_common():
         print(f"  {cat}: {count:,}")
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
+
 
 def run_auth() -> None:
     """Interactive OAuth consent flow."""
@@ -722,7 +800,7 @@ def run_full_scan() -> None:
     # Sync files
     synced = 0
     errors = 0
-    for drive_id, f in state.files.items():
+    for _drive_id, f in state.files.items():
         if f.synced_at > 0:
             continue
         try:
@@ -805,6 +883,7 @@ def run_stats() -> None:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Google Drive RAG sync")

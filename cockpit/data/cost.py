@@ -1,11 +1,12 @@
 """cockpit.data.cost — LLM cost collector from Langfuse observations."""
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
-from shared.langfuse_client import langfuse_get, LANGFUSE_PK
+from shared.langfuse_client import LANGFUSE_PK, langfuse_get
 
 log = logging.getLogger("cockpit.data.cost")
 
@@ -34,7 +35,7 @@ def collect_cost(lookback_days: int = 7) -> CostSnapshot:
     if not LANGFUSE_PK:
         return CostSnapshot()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     today_str = now.strftime("%Y-%m-%d")
     from_time = (now - timedelta(days=lookback_days)).isoformat()
 

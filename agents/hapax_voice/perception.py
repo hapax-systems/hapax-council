@@ -4,12 +4,14 @@ Fuses audio and visual signals into a single EnvironmentState snapshot
 every fast tick (2-3s). Slow enrichment (10-15s) adds LLM workspace
 analysis and PANNs ambient classification.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from shared.hyprland import WindowInfo
@@ -45,7 +47,7 @@ class EnvironmentState:
     ambient_detailed: str = ""
 
     # Desktop topology (updated by HyprlandEventListener)
-    active_window: "WindowInfo | None" = None
+    active_window: WindowInfo | None = None
     window_count: int = 0
     active_workspace_id: int = 0
 
@@ -138,7 +140,7 @@ class PerceptionEngine:
 
     def update_desktop_state(
         self,
-        active_window: "WindowInfo | None" = None,
+        active_window: WindowInfo | None = None,
         window_count: int = 0,
         active_workspace_id: int = 0,
     ) -> None:

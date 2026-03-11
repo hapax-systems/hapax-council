@@ -1,4 +1,5 @@
 """SQLite schema definition for the dev-story database."""
+
 from __future__ import annotations
 
 import sqlite3

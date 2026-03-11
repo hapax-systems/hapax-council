@@ -6,16 +6,16 @@ profile extraction.
 
 Includes mtime-based change detection for zero-cost incremental updates.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 log = logging.getLogger("profiler")
@@ -28,7 +28,18 @@ CHUNK_SIZE = 4000  # ~1000 tokens per chunk
 # Source types with deterministic profiler bridges — their facts are loaded
 # via load_structured_facts() at zero LLM cost, so they should be excluded
 # from LLM extraction by default.
-BRIDGED_SOURCE_TYPES = {"proton", "takeout", "management", "gcalendar", "gmail", "youtube", "claude-code", "obsidian", "chrome", "ambient-audio"}
+BRIDGED_SOURCE_TYPES = {
+    "proton",
+    "takeout",
+    "management",
+    "gcalendar",
+    "gmail",
+    "youtube",
+    "claude-code",
+    "obsidian",
+    "chrome",
+    "ambient-audio",
+}
 
 # Per-source-type chunk caps. When a source type produces more chunks than
 # its cap, files are sorted by mtime (newest first) and only the most recent
@@ -56,9 +67,14 @@ SOURCE_TYPE_CHUNK_CAPS: dict[str, int] = {
     "ambient-audio": 100,
 }
 from shared.config import (
-    HAPAX_HOME, CLAUDE_CONFIG_DIR, RAG_SOURCES_DIR,
+    CLAUDE_CONFIG_DIR,
+    HAPAX_HOME,
+    RAG_SOURCES_DIR,
+)
+from shared.config import (
     VAULT_PATH as _VAULT_PATH,
 )
+
 HOME = HAPAX_HOME
 CLAUDE_DIR = CLAUDE_CONFIG_DIR
 PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -75,12 +91,14 @@ CONVERSATION_TYPES = {"user", "assistant"}
 
 # ── Data structures ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class SourceChunk:
     """A chunk of text from a data source, ready for LLM extraction."""
+
     text: str
-    source_id: str       # e.g. "config:~/.claude/CLAUDE.md"
-    source_type: str     # config, transcript, shell-history, git, memory
+    source_id: str  # e.g. "config:~/.claude/CLAUDE.md"
+    source_type: str  # config, transcript, shell-history, git, memory
     char_count: int = 0
 
     def __post_init__(self):
@@ -90,6 +108,7 @@ class SourceChunk:
 @dataclass
 class DiscoveredSources:
     """All discovered data sources grouped by type."""
+
     config_files: list[Path] = field(default_factory=list)
     transcript_files: list[Path] = field(default_factory=list)
     shell_history: Path | None = None
@@ -106,6 +125,7 @@ class DiscoveredSources:
 
 
 # ── Discovery ────────────────────────────────────────────────────────────────
+
 
 def discover_sources() -> DiscoveredSources:
     """Scan the filesystem for all available data sources."""
@@ -232,6 +252,7 @@ def list_source_ids(sources: DiscoveredSources) -> list[str]:
 
 # ── Readers ──────────────────────────────────────────────────────────────────
 
+
 def read_config_file(path: Path) -> list[SourceChunk]:
     """Read a config/markdown file and chunk it."""
     try:
@@ -313,7 +334,9 @@ def read_git_info(repo_path: Path) -> list[SourceChunk]:
         # Author info
         result = subprocess.run(
             ["git", "-C", str(repo_path), "log", "--format=%an <%ae>", "-1"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             texts.append(f"Git author: {result.stdout.strip()}")
@@ -321,7 +344,9 @@ def read_git_info(repo_path: Path) -> list[SourceChunk]:
         # Recent commits (last 20)
         result = subprocess.run(
             ["git", "-C", str(repo_path), "log", "--format=%s", "-20"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             texts.append(f"Recent commits in {repo_path.name}:\n{result.stdout.strip()}")
@@ -381,6 +406,7 @@ def read_management_notes(path: Path) -> list[SourceChunk]:
 
 # ── Bulk reader ──────────────────────────────────────────────────────────────
 
+
 def read_all_sources(
     sources: DiscoveredSources,
     *,
@@ -431,9 +457,11 @@ def read_all_sources(
                 remaining = len(sorted_paths) - idx - 1
                 if remaining > 0:
                     log.info(
-                        "Chunk cap reached for %s: %d chunks (cap %d), "
-                        "skipping %d remaining files",
-                        source_type, len(type_chunks), cap, remaining,
+                        "Chunk cap reached for %s: %d chunks (cap %d), skipping %d remaining files",
+                        source_type,
+                        len(type_chunks),
+                        cap,
+                        remaining,
                     )
                 type_chunks = type_chunks[:cap]
                 break
@@ -473,32 +501,29 @@ def read_all_sources(
     if _want("management"):
         _read_capped(sources.management_files, "management", read_management_notes, "management")
 
-    if _want("drift"):
-        if sources.drift_report:
-            sid = f"drift:{_short_path(sources.drift_report)}"
-            if sid not in skip:
-                chunks.extend(read_drift_report(sources.drift_report))
+    if _want("drift") and sources.drift_report:
+        sid = f"drift:{_short_path(sources.drift_report)}"
+        if sid not in skip:
+            chunks.extend(read_drift_report(sources.drift_report))
 
-    if _want("conversation"):
-        if sources.pending_facts:
-            sid = f"conversation:{_short_path(sources.pending_facts)}"
-            if sid not in skip:
-                chunks.extend(read_pending_facts(sources.pending_facts))
+    if _want("conversation") and sources.pending_facts:
+        sid = f"conversation:{_short_path(sources.pending_facts)}"
+        if sid not in skip:
+            chunks.extend(read_pending_facts(sources.pending_facts))
 
-    if _want("decisions"):
-        if sources.decisions_log:
-            sid = f"decisions:{_short_path(sources.decisions_log)}"
-            if sid not in skip:
-                chunks.extend(read_decisions_log(sources.decisions_log))
+    if _want("decisions") and sources.decisions_log:
+        sid = f"decisions:{_short_path(sources.decisions_log)}"
+        if sid not in skip:
+            chunks.extend(read_decisions_log(sources.decisions_log))
 
-    if _want("langfuse"):
-        if sources.langfuse_available and "langfuse:telemetry" not in skip:
-            chunks.extend(read_langfuse())
+    if _want("langfuse") and sources.langfuse_available and "langfuse:telemetry" not in skip:
+        chunks.extend(read_langfuse())
 
     return chunks
 
 
 # ── Drift report reader ──────────────────────────────────────────────────
+
 
 def read_drift_report(path: Path) -> list[SourceChunk]:
     """Read drift-report.json and produce a text chunk for profile extraction."""
@@ -522,6 +547,7 @@ def read_drift_report(path: Path) -> list[SourceChunk]:
 
 
 # ── Pending conversational facts reader ──────────────────────────────────
+
 
 def read_pending_facts(path: Path) -> list[SourceChunk]:
     """Read pending-facts.jsonl and produce text chunks for profile extraction."""
@@ -552,14 +578,17 @@ def read_pending_facts(path: Path) -> list[SourceChunk]:
 
     header = f"Pending conversational observations ({len(lines)} entries):"
     source_id = f"conversation:{_short_path(path)}"
-    return [SourceChunk(
-        text=header + "\n" + "\n".join(lines),
-        source_id=source_id,
-        source_type="conversation",
-    )]
+    return [
+        SourceChunk(
+            text=header + "\n" + "\n".join(lines),
+            source_id=source_id,
+            source_type="conversation",
+        )
+    ]
 
 
 # ── Decisions log reader ──────────────────────────────────────────────────
+
 
 def read_decisions_log(path: Path) -> list[SourceChunk]:
     """Read decisions.jsonl and produce text chunks for behavioral profiling."""
@@ -588,19 +617,25 @@ def read_decisions_log(path: Path) -> list[SourceChunk]:
 
     header = f"Operator decisions ({len(lines)} entries):"
     source_id = f"decisions:{_short_path(path)}"
-    return [SourceChunk(
-        text=header + "\n" + "\n".join(lines),
-        source_id=source_id,
-        source_type="decisions",
-    )]
+    return [
+        SourceChunk(
+            text=header + "\n" + "\n".join(lines),
+            source_id=source_id,
+            source_type="decisions",
+        )
+    ]
 
 
 # ── Langfuse telemetry reader ────────────────────────────────────────────
 
 from shared.langfuse_client import (
-    langfuse_get as _langfuse_get,
-    is_available as _check_langfuse_available,
     LANGFUSE_PK as _LANGFUSE_PK,
+)
+from shared.langfuse_client import (
+    is_available as _check_langfuse_available,
+)
+from shared.langfuse_client import (
+    langfuse_get as _langfuse_get,
 )
 
 LANGFUSE_LOOKBACK_DAYS = 30
@@ -615,7 +650,7 @@ def read_langfuse(lookback_days: int = LANGFUSE_LOOKBACK_DAYS) -> list[SourceChu
     if not _LANGFUSE_PK:
         return []
 
-    since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    since = datetime.now(UTC) - timedelta(days=lookback_days)
 
     # Fetch all traces in window
     MAX_PAGES = 20
@@ -625,11 +660,14 @@ def read_langfuse(lookback_days: int = LANGFUSE_LOOKBACK_DAYS) -> list[SourceChu
         if page > MAX_PAGES:
             log.warning("Langfuse traces pagination limit reached (%d pages)", MAX_PAGES)
             break
-        result = _langfuse_get("/traces", {
-            "fromTimestamp": since.isoformat(),
-            "limit": 100,
-            "page": page,
-        })
+        result = _langfuse_get(
+            "/traces",
+            {
+                "fromTimestamp": since.isoformat(),
+                "limit": 100,
+                "page": page,
+            },
+        )
         traces = result.get("data", [])
         if not traces:
             break
@@ -649,12 +687,15 @@ def read_langfuse(lookback_days: int = LANGFUSE_LOOKBACK_DAYS) -> list[SourceChu
         if page > MAX_PAGES:
             log.warning("Langfuse observations pagination limit reached (%d pages)", MAX_PAGES)
             break
-        result = _langfuse_get("/observations", {
-            "fromStartTime": since.isoformat(),
-            "type": "GENERATION",
-            "limit": 100,
-            "page": page,
-        })
+        result = _langfuse_get(
+            "/observations",
+            {
+                "fromStartTime": since.isoformat(),
+                "type": "GENERATION",
+                "limit": 100,
+                "page": page,
+            },
+        )
         obs = result.get("data", [])
         if not obs:
             break
@@ -693,7 +734,9 @@ def read_langfuse(lookback_days: int = LANGFUSE_LOOKBACK_DAYS) -> list[SourceChu
             model_errors[model] += 1
 
     if model_counts:
-        lines = [f"LLM Model Usage (last {lookback_days} days, {sum(model_counts.values())} total calls, ${total_cost:.4f} total cost):"]
+        lines = [
+            f"LLM Model Usage (last {lookback_days} days, {sum(model_counts.values())} total calls, ${total_cost:.4f} total cost):"
+        ]
         for model, count in model_counts.most_common():
             tokens = model_tokens.get(model, {})
             cost = model_cost[model]
@@ -736,7 +779,7 @@ def read_langfuse(lookback_days: int = LANGFUSE_LOOKBACK_DAYS) -> list[SourceChu
     if hour_counts:
         peak_hours = [str(h) for h, _ in hour_counts.most_common(3)]
         quiet_hours = sorted(set(range(24)) - set(hour_counts.keys()))
-        lines = [f"Usage Cadence:"]
+        lines = ["Usage Cadence:"]
         lines.append(f"  Peak hours (UTC): {', '.join(peak_hours)}")
         if quiet_hours:
             ranges = _compress_ranges(quiet_hours)
@@ -750,10 +793,12 @@ def read_langfuse(lookback_days: int = LANGFUSE_LOOKBACK_DAYS) -> list[SourceChu
     if model_errors:
         total_errors = sum(model_errors.values())
         total_calls = sum(model_counts.values())
-        lines = [f"Error Patterns ({total_errors}/{total_calls} calls failed, {100*total_errors/total_calls:.1f}% error rate):"]
+        lines = [
+            f"Error Patterns ({total_errors}/{total_calls} calls failed, {100 * total_errors / total_calls:.1f}% error rate):"
+        ]
         for model, err_count in model_errors.most_common():
             calls = model_counts[model]
-            lines.append(f"  {model}: {err_count}/{calls} failed ({100*err_count/calls:.0f}%)")
+            lines.append(f"  {model}: {err_count}/{calls} failed ({100 * err_count / calls:.0f}%)")
         sections.append("\n".join(lines))
 
     if not sections:
@@ -798,6 +843,7 @@ def _langfuse_latest_timestamp() -> float | None:
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+
 def _short_path(path: Path) -> str:
     """Shorten a path for display by replacing home dir with ~."""
     try:
@@ -828,11 +874,13 @@ def _extract_text_content(content: str | list, role: str) -> str:
 
 def _sort_by_mtime(paths: list[Path]) -> list[Path]:
     """Sort paths by modification time, newest first. Missing files sort last."""
+
     def _mtime(p: Path) -> float:
         try:
             return p.stat().st_mtime
         except OSError:
             return 0.0
+
     return sorted(paths, key=_mtime, reverse=True)
 
 
@@ -854,22 +902,26 @@ def _chunk_text(text: str, source_id: str, source_type: str) -> list[SourceChunk
     for para in paragraphs:
         para_len = len(para) + 2  # account for separator
         if current_len + para_len > CHUNK_SIZE and current:
-            chunks.append(SourceChunk(
-                text="\n\n".join(current),
-                source_id=source_id,
-                source_type=source_type,
-            ))
+            chunks.append(
+                SourceChunk(
+                    text="\n\n".join(current),
+                    source_id=source_id,
+                    source_type=source_type,
+                )
+            )
             current = []
             current_len = 0
         current.append(para)
         current_len += para_len
 
     if current:
-        chunks.append(SourceChunk(
-            text="\n\n".join(current),
-            source_id=source_id,
-            source_type=source_type,
-        ))
+        chunks.append(
+            SourceChunk(
+                text="\n\n".join(current),
+                source_id=source_id,
+                source_type=source_type,
+            )
+        )
 
     return chunks
 
@@ -877,6 +929,7 @@ def _chunk_text(text: str, source_id: str, source_type: str) -> list[SourceChunk
 # ── Change detection ─────────────────────────────────────────────────────────
 
 from shared.config import PROFILES_DIR as STATE_DIR
+
 STATE_FILE = STATE_DIR / ".state.json"
 
 
@@ -941,7 +994,7 @@ def save_state(
     """Persist run state for future change detection."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     state = {
-        "last_run": datetime.now(timezone.utc).isoformat(),
+        "last_run": datetime.now(UTC).isoformat(),
         "source_mtimes": mtimes,
         "sources_processed": sources_processed,
     }

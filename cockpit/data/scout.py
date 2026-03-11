@@ -1,10 +1,9 @@
 """Scout report data collector."""
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
-
 
 from shared.config import PROFILES_DIR
 

@@ -1,14 +1,14 @@
 """Tests for the custom Pipecat TTS service wrapping TTSManager."""
+
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pipecat.frames.frames import TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame
 
 from agents.hapax_voice.pipecat_tts import KokoroTTSService
 from agents.hapax_voice.tts import KOKORO_SAMPLE_RATE
-from pipecat.frames.frames import TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame
 
 
 @pytest.fixture
@@ -36,9 +36,7 @@ class TestKokoroTTSServiceInit:
 
 class TestKokoroTTSServiceRunTTS:
     @pytest.mark.asyncio
-    async def test_yields_started_audio_stopped(
-        self, mock_tts_manager: MagicMock
-    ) -> None:
+    async def test_yields_started_audio_stopped(self, mock_tts_manager: MagicMock) -> None:
         svc = KokoroTTSService(tts_manager=mock_tts_manager)
 
         frames = []

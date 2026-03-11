@@ -91,7 +91,7 @@ class TestRunQuery:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_query_dispatch.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_query_dispatch.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'cockpit.query_dispatch'`
 
 - [ ] **Step 3: Implement query_dispatch.py**
@@ -224,7 +224,7 @@ async def run_query(agent_type: str, query: str, prior_context: str | None = Non
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_query_dispatch.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_query_dispatch.py -v`
 Expected: All 5 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -338,7 +338,7 @@ class TestQueryRefine:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_query_api.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_query_api.py -v`
 Expected: FAIL with import errors
 
 - [ ] **Step 3: Implement the query route**
@@ -500,7 +500,7 @@ app.include_router(query_router)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_query_api.py tests/test_query_dispatch.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_query_api.py tests/test_query_dispatch.py -v`
 Expected: All tests PASS
 
 - [ ] **Step 6: Commit**
@@ -542,7 +542,7 @@ def test_prompt_includes_diagram_guidance():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/dev_story/test_query_prompt.py -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/dev_story/test_query_prompt.py -v`
 Expected: FAIL — "mermaid" not in prompt
 
 - [ ] **Step 3: Add mermaid section to the system prompt**
@@ -573,7 +573,7 @@ node labels, not abbreviations.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/dev_story/test_query_prompt.py tests/dev_story/ -v`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/dev_story/test_query_prompt.py tests/dev_story/ -v`
 Expected: All tests PASS (new tests + existing 85 tests)
 
 - [ ] **Step 5: Commit**
@@ -1247,7 +1247,7 @@ Expected: Build succeeds
 Start both services and verify:
 ```bash
 # Terminal 1: Backend
-cd ~/projects/ai-agents && docker compose up -d cockpit-api
+cd ~/projects/hapax-council && docker compose up -d cockpit-api
 
 # Terminal 2: Frontend
 cd ~/projects/cockpit-web && pnpm dev

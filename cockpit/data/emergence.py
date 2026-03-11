@@ -6,17 +6,17 @@ overlap. Produces EmergenceCandidates when clusters cross thresholds.
 
 Zero LLM calls for detection. LLM only used for proposal narrative (not here).
 """
+
 from __future__ import annotations
 
 import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shared.config import VAULT_PATH
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -26,14 +26,21 @@ CANDIDATE_MIN_EVENTS = 5
 CANDIDATE_MIN_WEEKS = 2
 CANDIDATE_MIN_KEYWORDS = 3
 from shared.config import COCKPIT_STATE_DIR
+
 BUFFER_PATH = COCKPIT_STATE_DIR / "undomained-activity.jsonl"
 CANDIDATES_PATH = COCKPIT_STATE_DIR / "emergence-candidates.json"
 
 # System folders to ignore (not operator activity)
-SYSTEM_FOLDERS = frozenset({
-    "30-system", "50-templates", "60-archive", "90-attachments",
-    ".obsidian", ".trash",
-})
+SYSTEM_FOLDERS = frozenset(
+    {
+        "30-system",
+        "50-templates",
+        "60-archive",
+        "90-attachments",
+        ".obsidian",
+        ".trash",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +53,7 @@ class UndomainedEvent:
     """A single activity event not attributed to any domain."""
 
     timestamp: str
-    source: str          # "vault" | "langfuse" | "qdrant"
+    source: str  # "vault" | "langfuse" | "qdrant"
     description: str
     keywords: list[str]
     people: list[str] = field(default_factory=list)
@@ -57,9 +64,9 @@ class EmergenceCandidate:
     """A cluster of undomained events that may represent a new domain."""
 
     candidate_id: str
-    label: str                  # suggested domain name
+    label: str  # suggested domain name
     event_count: int
-    week_span: int              # how many distinct weeks
+    week_span: int  # how many distinct weeks
     top_keywords: list[str]
     related_people: list[str]
     overlapping_domains: list[str]
@@ -85,12 +92,52 @@ def _extract_keywords(text: str) -> list[str]:
     """Extract simple keywords from text. No TF-IDF, just word frequency."""
     words = re.findall(r"[a-z]{3,}", text.lower())
     # Remove common stop words
-    stop = {"the", "and", "for", "are", "but", "not", "you", "all",
-            "can", "has", "her", "was", "one", "our", "this", "that",
-            "with", "from", "have", "will", "been", "they", "its",
-            "more", "some", "than", "other", "into", "could", "would",
-            "about", "which", "their", "what", "there", "when", "make",
-            "like", "just", "over", "such", "also", "after", "should"}
+    stop = {
+        "the",
+        "and",
+        "for",
+        "are",
+        "but",
+        "not",
+        "you",
+        "all",
+        "can",
+        "has",
+        "her",
+        "was",
+        "one",
+        "our",
+        "this",
+        "that",
+        "with",
+        "from",
+        "have",
+        "will",
+        "been",
+        "they",
+        "its",
+        "more",
+        "some",
+        "than",
+        "other",
+        "into",
+        "could",
+        "would",
+        "about",
+        "which",
+        "their",
+        "what",
+        "there",
+        "when",
+        "make",
+        "like",
+        "just",
+        "over",
+        "such",
+        "also",
+        "after",
+        "should",
+    }
     return [w for w in words if w not in stop]
 
 
@@ -122,7 +169,7 @@ def collect_undomained_events(
     for sys_folder in SYSTEM_FOLDERS:
         covered_prefixes.add(vp / sys_folder)
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    cutoff = datetime.now(UTC) - timedelta(days=days_back)
     events: list[UndomainedEvent] = []
 
     if not vp.is_dir():
@@ -131,7 +178,7 @@ def collect_undomained_events(
     for md_file in vp.glob("**/*.md"):
         # Check modification time
         try:
-            mtime = datetime.fromtimestamp(md_file.stat().st_mtime, tz=timezone.utc)
+            mtime = datetime.fromtimestamp(md_file.stat().st_mtime, tz=UTC)
         except OSError:
             continue
 
@@ -140,8 +187,7 @@ def collect_undomained_events(
 
         # Check if file is under any domain's paths or system folder
         is_covered = any(
-            md_file == prefix or prefix in md_file.parents
-            for prefix in covered_prefixes
+            md_file == prefix or prefix in md_file.parents for prefix in covered_prefixes
         )
         if is_covered:
             continue
@@ -155,13 +201,15 @@ def collect_undomained_events(
         rel = md_file.relative_to(vp)
         keywords = _extract_keywords(f"{rel.stem} {content}")
 
-        events.append(UndomainedEvent(
-            timestamp=mtime.isoformat()[:19] + "Z",
-            source="vault",
-            description=f"Modified: {rel}",
-            keywords=keywords[:10],  # cap at 10
-            people=[],
-        ))
+        events.append(
+            UndomainedEvent(
+                timestamp=mtime.isoformat()[:19] + "Z",
+                source="vault",
+                description=f"Modified: {rel}",
+                keywords=keywords[:10],  # cap at 10
+                people=[],
+            )
+        )
 
     return events
 
@@ -173,13 +221,11 @@ def _load_domain_paths() -> dict[str, list[str]]:
             DOMAIN_REGISTRY_PATH,
             load_domain_registry,
         )
+
         if not DOMAIN_REGISTRY_PATH.is_file():
             return {}
         registry = load_domain_registry()
-        return {
-            d["id"]: d.get("vault_paths", [])
-            for d in registry.get("domains", [])
-        }
+        return {d["id"]: d.get("vault_paths", []) for d in registry.get("domains", [])}
     except Exception:
         return {}
 
@@ -216,10 +262,7 @@ def cluster_events(
         dominant = {kw for kw, _ in keyword_counter.most_common(CANDIDATE_MIN_KEYWORDS)}
 
     # Group events that share dominant keywords
-    cluster_events_list = [
-        e for e in events
-        if any(kw in dominant for kw in e.keywords)
-    ]
+    cluster_events_list = [e for e in events if any(kw in dominant for kw in e.keywords)]
 
     if len(cluster_events_list) < CANDIDATE_MIN_EVENTS:
         return []
@@ -305,7 +348,7 @@ def collect_emergence(
     vault_path: Path | None = None,
 ) -> EmergenceSnapshot:
     """Collect emergence snapshot — undomained events + active candidates."""
-    now_iso = datetime.now(timezone.utc).isoformat()[:19] + "Z"
+    now_iso = datetime.now(UTC).isoformat()[:19] + "Z"
 
     events = collect_undomained_events(vault_path=vault_path)
     candidates = load_candidates()
@@ -322,7 +365,7 @@ def run_emergence_scan(vault_path: Path | None = None) -> EmergenceSnapshot:
 
     This is the batch operation meant to run weekly (e.g., via knowledge-maint).
     """
-    now_iso = datetime.now(timezone.utc).isoformat()[:19] + "Z"
+    now_iso = datetime.now(UTC).isoformat()[:19] + "Z"
 
     events = collect_undomained_events(vault_path=vault_path)
     candidates = cluster_events(events)

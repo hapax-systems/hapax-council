@@ -1,4 +1,5 @@
 """Screenshot capture pipeline using Playwright."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +8,8 @@ from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
 
 from agents.demo_models import ScreenshotSpec
 
@@ -17,18 +19,26 @@ log = logging.getLogger(__name__)
 # values are unreliable because the LLM guesses element text without DOM
 # inspection. These selectors match text that is always rendered.
 ROUTE_SELECTORS: dict[str, str] = {
-    "/": "text=Action Items",            # NudgeList heading, always present
-    "/chat": "textarea",                 # ChatInput textarea (placeholder not visible to text= selector)
-    "/demos": "text=Demos",              # Page heading (loading detection handles the rest)
+    "/": "text=Action Items",  # NudgeList heading, always present
+    "/chat": "textarea",  # ChatInput textarea (placeholder not visible to text= selector)
+    "/demos": "text=Demos",  # Page heading (loading detection handles the rest)
 }
 
 # Additional known services (not cockpit-web, different ports)
 EXTRA_SERVICE_SELECTORS: dict[str, str] = {
-    "localhost:3080": "textarea",        # Open WebUI — chat textarea
+    "localhost:3080": "textarea",  # Open WebUI — chat textarea
 }
 
 # Text patterns that indicate incomplete page load — retry if detected
-LOADING_INDICATORS = ["Loading demos", "Loading...", "Connecting...", "Connecting", "loading", "Thinking...", "Generating..."]
+LOADING_INDICATORS = [
+    "Loading demos",
+    "Loading...",
+    "Connecting...",
+    "Connecting",
+    "loading",
+    "Thinking...",
+    "Generating...",
+]
 
 # Valid cockpit-web routes. LLM sometimes invents URLs (e.g. localhost:8080).
 VALID_ROUTES = list(ROUTE_SELECTORS.keys())
@@ -88,8 +98,8 @@ def fix_localhost_url(url: str) -> str:
 
 
 def validate_screenshot_specs(
-    specs: list[tuple[str, "ScreenshotSpec"]],
-) -> list[tuple[str, "ScreenshotSpec"]]:
+    specs: list[tuple[str, ScreenshotSpec]],
+) -> list[tuple[str, ScreenshotSpec]]:
     """Validate and fix screenshot URLs.
 
     - Rewrites invalid localhost URLs to the closest valid cockpit-web route.
@@ -114,7 +124,9 @@ def validate_screenshot_specs(
                 # Cycle through chat question variants for different screenshots
                 if path == "/chat":
                     global _chat_variant_index
-                    question = CHAT_QUESTION_VARIANTS[_chat_variant_index % len(CHAT_QUESTION_VARIANTS)]
+                    question = CHAT_QUESTION_VARIANTS[
+                        _chat_variant_index % len(CHAT_QUESTION_VARIANTS)
+                    ]
                     _chat_variant_index += 1
                     # Type but DON'T press Enter — the chat agent uses tool calls
                     # that take 20-45s to complete, so pressing Enter produces
@@ -170,6 +182,7 @@ def _clear_chat_session() -> None:
     """
     try:
         from shared.config import COCKPIT_STATE_DIR
+
         session_file = COCKPIT_STATE_DIR / "chat-session.json"
         if session_file.exists():
             session_file.unlink()
@@ -195,7 +208,7 @@ async def _preflight_check(specs: list[tuple[str, ScreenshotSpec]]) -> None:
                 hint = ""
                 if "localhost:5173" in origin or "localhost:8051" in origin:
                     hint = " If this is cockpit-web, start it with: cd ~/projects/cockpit-web && pnpm dev"
-                raise ConnectionError(f"Cannot reach {origin}.{hint}")
+                raise ConnectionError(f"Cannot reach {origin}.{hint}") from None
 
 
 async def capture_screenshots(
@@ -227,8 +240,10 @@ async def capture_screenshots(
 
                 # Chat pages need fresh context — SPA accumulates messages
                 parsed_url = urlparse(spec.url)
-                is_chat = (parsed_url.path.rstrip("/") == "/chat"
-                           and parsed_url.hostname in ("localhost", "127.0.0.1"))
+                is_chat = parsed_url.path.rstrip("/") == "/chat" and parsed_url.hostname in (
+                    "localhost",
+                    "127.0.0.1",
+                )
                 if is_chat:
                     await page.close()
                     page = await browser.new_page()
@@ -247,7 +262,8 @@ async def capture_screenshots(
                             except PlaywrightTimeoutError:
                                 log.warning(
                                     "Selector %r not found on %s, capturing page as-is",
-                                    selector, spec.url,
+                                    selector,
+                                    spec.url,
                                 )
                                 await asyncio.sleep(2)  # Brief settle time
 
@@ -273,7 +289,11 @@ async def capture_screenshots(
                                 # e.g. "page.waitForTimeout(2000)" → wait 2000
                                 # e.g. "page.click('.btn')" → click .btn
                                 import re as _re
-                                pw_match = _re.match(r"page\.(click|type|fill|waitForTimeout|locator)\((.*)\)", action)
+
+                                pw_match = _re.match(
+                                    r"page\.(click|type|fill|waitForTimeout|locator)\((.*)\)",
+                                    action,
+                                )
                                 if pw_match:
                                     pw_cmd = pw_match.group(1)
                                     pw_arg = pw_match.group(2).strip("'\"")
@@ -328,7 +348,9 @@ async def capture_screenshots(
                                         await asyncio.sleep(1)  # Extra settle
                                         break
                                 else:
-                                    log.warning("Page still shows loading state after 45s post-action wait")
+                                    log.warning(
+                                        "Page still shows loading state after 45s post-action wait"
+                                    )
 
                         filepath = output_dir / f"{name}.png"
 
@@ -341,14 +363,21 @@ async def capture_screenshots(
                             if element:
                                 await element.screenshot(path=str(filepath))
                             else:
-                                log.warning("Selector %s not found, falling back to viewport", spec.capture)
+                                log.warning(
+                                    "Selector %s not found, falling back to viewport", spec.capture
+                                )
                                 await page.screenshot(path=str(filepath))
 
                         break
                     except Exception as e:
                         if attempt == max_retries:
                             raise
-                        log.warning("Screenshot attempt %d failed for %s: %s, retrying...", attempt + 1, name, e)
+                        log.warning(
+                            "Screenshot attempt %d failed for %s: %s, retrying...",
+                            attempt + 1,
+                            name,
+                            e,
+                        )
                         await asyncio.sleep(2)
 
                 paths.append(filepath)

@@ -1,23 +1,25 @@
 """Subject matter research — gathers audience-filtered context for demo planning."""
+
 from __future__ import annotations
 
-import glob as globmod
 import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import yaml
 
 log = logging.getLogger(__name__)
 
 # Root of the hapaxromana architecture spec repo
-HAPAXROMANA_DIR = Path.home() / "projects" / "hapaxromana"
+# HAPAXROMANA_DIR defined below via shared.config import
 
 # Path to canonical workflow definitions
-WORKFLOW_REGISTRY_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "workflow-registry.yaml"
+WORKFLOW_REGISTRY_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "profiles" / "workflow-registry.yaml"
+)
 
 # Audience -> which sources to gather
 AUDIENCE_SOURCES: dict[str, list[str]] = {
@@ -85,6 +87,7 @@ AUDIENCE_SOURCES: dict[str, list[str]] = {
 
 # Path to hapaxromana CLAUDE.md (canonical system docs)
 from shared.config import HAPAXROMANA_DIR
+
 _HAPAXROMANA_CLAUDE_MD = HAPAXROMANA_DIR / "CLAUDE.md"
 
 
@@ -618,7 +621,9 @@ async def _gather_live_system_state() -> str:
             for col in collections:
                 try:
                     info = client.get_collection(col.name)
-                    col_lines.append(f"  {col.name}: {info.points_count or 0} points ({info.status})")
+                    col_lines.append(
+                        f"  {col.name}: {info.points_count or 0} points ({info.status})"
+                    )
                 except Exception:
                     col_lines.append(f"  {col.name}: (unavailable)")
             if col_lines:
@@ -685,7 +690,8 @@ def _gather_major_components() -> str:
         if "## Tier 2 Agents" in content:
             # Count implemented agents
             import re
-            agent_table = content[content.find("### Implemented"):content.find("### Planned")]
+
+            agent_table = content[content.find("### Implemented") : content.find("### Planned")]
             agent_count = len(re.findall(r"^\| `\w+`", agent_table, re.MULTILINE))
             components.append(
                 f"- **Tier 2 Agents**: {agent_count} implemented Pydantic AI agents "
@@ -734,11 +740,14 @@ async def _gather_drift_summary() -> str:
     """Run drift detection and format results for research context."""
     try:
         from agents.drift_detector import detect_drift
+
         report = await detect_drift()
         if not report.drift_items:
             return "No documentation drift detected. Docs match live infrastructure."
         lines = [f"Drift analysis: {len(report.drift_items)} items found"]
-        for item in sorted(report.drift_items, key=lambda d: {"high": 0, "medium": 1, "low": 2}.get(d.severity, 3)):
+        for item in sorted(
+            report.drift_items, key=lambda d: {"high": 0, "medium": 1, "low": 2}.get(d.severity, 3)
+        ):
             lines.append(f"- [{item.severity}] {item.category}: {item.doc_claim} → {item.reality}")
         lines.append(f"\nSummary: {report.summary}")
         return "\n".join(lines)
@@ -801,7 +810,7 @@ def _gather_domain_literature(scope: str, max_chars: int = 6000) -> str:
                 if content.startswith("---"):
                     end = content.find("---", 3)
                     if end > 0:
-                        content = content[end + 3:].strip()
+                        content = content[end + 3 :].strip()
                 remaining = max_chars - total_chars
                 if remaining <= 0:
                     break
@@ -847,11 +856,13 @@ def _gather_workflow_patterns(scope: str) -> str:
         else:
             for wf_id, wf in workflows.items():
                 # Match against workflow id, label, and component names
-                match_text = " ".join([
-                    wf_id.replace("-", " "),
-                    wf.get("label", "").lower(),
-                    " ".join(c.replace("_", " ") for c in wf.get("components", [])),
-                ])
+                match_text = " ".join(
+                    [
+                        wf_id.replace("-", " "),
+                        wf.get("label", "").lower(),
+                        " ".join(c.replace("_", " ") for c in wf.get("components", [])),
+                    ]
+                )
                 match_words = set(re.findall(r"\w+", match_text))
                 if scope_words & match_words:
                     selected.append((wf_id, wf))
@@ -877,7 +888,7 @@ def _gather_workflow_patterns(scope: str) -> str:
 
 
 def _gather_profile_digest_summary(scope: str) -> str:
-    """Load ryan-digest.json via ProfileStore and return overall + scope-relevant summaries."""
+    """Load operator-digest.json via ProfileStore and return overall + scope-relevant summaries."""
     try:
         from shared.profile_store import ProfileStore
 
@@ -901,9 +912,8 @@ def _gather_profile_digest_summary(scope: str) -> str:
         return ""
 
 
-def _format_audience_dossier(dossier: "AudienceDossier") -> str:
+def _format_audience_dossier(dossier: AudienceDossier) -> str:
     """Format dossier as a ## Audience Profile section."""
-    from agents.demo_models import AudienceDossier  # noqa: F811 — type check
 
     lines = [f"**Name**: {dossier.name}"]
     if dossier.context:
@@ -960,7 +970,7 @@ async def gather_research(
     audience: str,
     on_progress: Callable[[str], None] | None = None,
     enrichment_actions: list[str] | None = None,
-    audience_dossier: "AudienceDossier | None" = None,
+    audience_dossier: AudienceDossier | None = None,
 ) -> str:
     """Gather audience-filtered research context for demo planning.
 
@@ -1064,12 +1074,13 @@ async def gather_research(
     if failed:
         log.warning(
             "Research gathered %d/%d sources. Failed: %s",
-            len(succeeded), total, ", ".join(failed),
+            len(succeeded),
+            total,
+            ", ".join(failed),
         )
         if on_progress:
             on_progress(
-                f"Research: {len(succeeded)}/{total} sources gathered. "
-                f"Missing: {', '.join(failed)}"
+                f"Research: {len(succeeded)}/{total} sources gathered. Missing: {', '.join(failed)}"
             )
     else:
         if on_progress:

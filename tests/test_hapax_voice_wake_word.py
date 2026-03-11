@@ -1,4 +1,5 @@
 """Tests for wake word detection wrapper."""
+
 from __future__ import annotations
 
 from agents.hapax_voice.wake_word import WakeWordDetector

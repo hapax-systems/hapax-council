@@ -1,18 +1,19 @@
 """Tests for shared.knowledge_search — Qdrant search & artifact reads."""
+
 from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
 
 from shared.knowledge_search import (
-    search_documents,
-    search_profile,
-    search_memory,
+    get_collection_stats,
+    get_operator_goals,
     read_briefing,
     read_digest,
     read_scout_report,
-    get_operator_goals,
-    get_collection_stats,
+    search_documents,
+    search_memory,
+    search_profile,
 )
 
 
@@ -59,7 +60,13 @@ class TestSearchProfile:
     def test_returns_formatted_facts(self, mock_store_cls):
         mock_store = mock_store_cls.return_value
         mock_store.search.return_value = [
-            {"dimension": "tool_usage", "key": "preferred_editor", "value": "Claude Code", "confidence": 0.9, "score": 0.88},
+            {
+                "dimension": "tool_usage",
+                "key": "preferred_editor",
+                "value": "Claude Code",
+                "confidence": 0.9,
+                "score": 0.88,
+            },
         ]
         result = search_profile("tool preferences")
         assert "tool_usage" in result
@@ -87,17 +94,24 @@ class TestSearchMemory:
         mock_qdrant.return_value.query_points.return_value.points = []
         search_memory("test query")
         call_args = mock_qdrant.return_value.query_points.call_args
-        assert call_args[0][0] == "claude-memory" or call_args.kwargs.get("collection_name") == "claude-memory"
+        assert (
+            call_args[0][0] == "claude-memory"
+            or call_args.kwargs.get("collection_name") == "claude-memory"
+        )
 
 
 class TestReadBriefing:
     def test_reads_briefing_file(self, tmp_path):
         briefing = tmp_path / "briefing.json"
-        briefing.write_text(json.dumps({
-            "generated_at": "2026-03-10T07:00:00Z",
-            "headline": "All systems nominal",
-            "action_items": [{"priority": "high", "action": "Review drift"}],
-        }))
+        briefing.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-03-10T07:00:00Z",
+                    "headline": "All systems nominal",
+                    "action_items": [{"priority": "high", "action": "Review drift"}],
+                }
+            )
+        )
         result = read_briefing(tmp_path)
         assert "All systems nominal" in result
         assert "Review drift" in result
@@ -110,11 +124,15 @@ class TestReadBriefing:
 class TestReadDigest:
     def test_reads_digest_file(self, tmp_path):
         digest = tmp_path / "digest.json"
-        digest.write_text(json.dumps({
-            "generated_at": "2026-03-10T06:45:00Z",
-            "headline": "5 new documents ingested",
-            "notable_items": [{"title": "API design doc", "source": "gdrive"}],
-        }))
+        digest.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-03-10T06:45:00Z",
+                    "headline": "5 new documents ingested",
+                    "notable_items": [{"title": "API design doc", "source": "gdrive"}],
+                }
+            )
+        )
         result = read_digest(tmp_path)
         assert "5 new documents" in result
         assert "API design doc" in result
@@ -127,12 +145,16 @@ class TestReadDigest:
 class TestReadScoutReport:
     def test_reads_scout_file(self, tmp_path):
         scout = tmp_path / "scout-report.json"
-        scout.write_text(json.dumps({
-            "generated_at": "2026-03-05T10:00:00Z",
-            "recommendations": [
-                {"component": "embeddings", "tier": "evaluate", "summary": "Try new model"}
-            ],
-        }))
+        scout.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-03-05T10:00:00Z",
+                    "recommendations": [
+                        {"component": "embeddings", "tier": "evaluate", "summary": "Try new model"}
+                    ],
+                }
+            )
+        )
         result = read_scout_report(tmp_path)
         assert "embeddings" in result
         assert "evaluate" in result
@@ -145,16 +167,20 @@ class TestReadScoutReport:
 class TestGetOperatorGoals:
     def test_reads_goals_from_operator(self, tmp_path):
         operator = tmp_path / "operator.json"
-        operator.write_text(json.dumps({
-            "goals": {
-                "primary": [
-                    {"id": "g1", "name": "Ship cockpit", "status": "active"},
-                ],
-                "secondary": [
-                    {"id": "g2", "name": "Voice daemon stability", "status": "active"},
-                ],
-            },
-        }))
+        operator.write_text(
+            json.dumps(
+                {
+                    "goals": {
+                        "primary": [
+                            {"id": "g1", "name": "Ship cockpit", "status": "active"},
+                        ],
+                        "secondary": [
+                            {"id": "g2", "name": "Voice daemon stability", "status": "active"},
+                        ],
+                    },
+                }
+            )
+        )
         result = get_operator_goals(tmp_path)
         assert "Ship cockpit" in result
         assert "Voice daemon" in result

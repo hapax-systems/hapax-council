@@ -40,9 +40,14 @@ class SystemdCapability(Capability):
         """List all user timers and services via systemctl."""
         rc, stdout, stderr = await run_cmd(
             [
-                "systemctl", "--user", "list-units",
-                "--type=timer,service", "--all",
-                "--no-pager", "--plain", "--no-legend",
+                "systemctl",
+                "--user",
+                "list-units",
+                "--type=timer,service",
+                "--all",
+                "--no-pager",
+                "--plain",
+                "--no-legend",
             ],
             timeout=15.0,
         )
@@ -51,12 +56,14 @@ class SystemdCapability(Capability):
             for line in stdout.strip().splitlines():
                 parts = line.split()
                 if len(parts) >= 4:
-                    units.append({
-                        "unit": parts[0],
-                        "load": parts[1],
-                        "active": parts[2],
-                        "sub": parts[3],
-                    })
+                    units.append(
+                        {
+                            "unit": parts[0],
+                            "load": parts[1],
+                            "active": parts[2],
+                            "sub": parts[3],
+                        }
+                    )
         return ProbeResult(
             capability=self.name,
             raw={"units": units, **({"error": stderr} if rc != 0 else {})},
@@ -70,9 +77,7 @@ class SystemdCapability(Capability):
         """Validate proposal: action must exist and unit_name must be present."""
         if proposal.action_name not in _ACTIONS:
             return False
-        if not proposal.params.get("unit_name"):
-            return False
-        return True
+        return bool(proposal.params.get("unit_name"))
 
     async def execute(self, proposal: FixProposal) -> ExecutionResult:
         """Execute a validated fix proposal."""

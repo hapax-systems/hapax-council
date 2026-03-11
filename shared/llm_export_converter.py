@@ -10,6 +10,7 @@ Usage:
     uv run python -m shared.llm_export_converter --platform gemini takeout.zip --dry-run
     uv run python -m shared.llm_export_converter --platform gemini takeout.zip --since 2025-01-01
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,11 +32,12 @@ DEFAULT_OUTPUT_DIR = RAG_SOURCES_DIR / "llm-conversations"
 
 # ── Data structures ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class Message:
-    role: str                          # "user" | "assistant"
+    role: str  # "user" | "assistant"
     content: str
-    timestamp: str = ""                # ISO 8601 or empty
+    timestamp: str = ""  # ISO 8601 or empty
     attachments: list[str] = field(default_factory=list)  # filenames (Claude)
 
 
@@ -43,7 +45,7 @@ class Message:
 class Conversation:
     id: str
     title: str
-    platform: str                      # "claude" | "gemini"
+    platform: str  # "claude" | "gemini"
     created_at: str
     updated_at: str
     messages: list[Message] = field(default_factory=list)
@@ -58,6 +60,7 @@ class ConvertResult:
 
 
 # ── Filename sanitization ────────────────────────────────────────────────────
+
 
 def sanitize_filename(name: str) -> str:
     """Convert a string to a filesystem-safe filename, truncated to 64 chars."""
@@ -74,6 +77,7 @@ def sanitize_filename(name: str) -> str:
 
 
 # ── Platform parsers ─────────────────────────────────────────────────────────
+
 
 def parse_claude_zip(zip_path: Path) -> list[Conversation]:
     """Parse a Claude.ai data export ZIP.
@@ -120,26 +124,28 @@ def parse_claude_zip(zip_path: Path) -> list[Conversation]:
                 continue
 
             attachment_names = [
-                a.get("file_name", "")
-                for a in msg.get("attachments", [])
-                if a.get("file_name")
+                a.get("file_name", "") for a in msg.get("attachments", []) if a.get("file_name")
             ]
 
-            messages.append(Message(
-                role=role,
-                content=text,
-                timestamp=msg.get("created_at", ""),
-                attachments=attachment_names,
-            ))
+            messages.append(
+                Message(
+                    role=role,
+                    content=text,
+                    timestamp=msg.get("created_at", ""),
+                    attachments=attachment_names,
+                )
+            )
 
-        conversations.append(Conversation(
-            id=conv_id,
-            title=entry.get("name", "") or "Untitled",
-            platform="claude",
-            created_at=entry.get("created_at", ""),
-            updated_at=entry.get("updated_at", ""),
-            messages=messages,
-        ))
+        conversations.append(
+            Conversation(
+                id=conv_id,
+                title=entry.get("name", "") or "Untitled",
+                platform="claude",
+                created_at=entry.get("created_at", ""),
+                updated_at=entry.get("updated_at", ""),
+                messages=messages,
+            )
+        )
 
     return conversations
 
@@ -153,10 +159,7 @@ def parse_gemini_zip(zip_path: Path) -> list[Conversation]:
     conversations: list[Conversation] = []
 
     with zipfile.ZipFile(zip_path) as zf:
-        json_files = [
-            n for n in zf.namelist()
-            if n.endswith(".json") and not n.endswith("/")
-        ]
+        json_files = [n for n in zf.namelist() if n.endswith(".json") and not n.endswith("/")]
 
         for name in sorted(json_files):
             try:
@@ -186,28 +189,31 @@ def parse_gemini_zip(zip_path: Path) -> list[Conversation]:
                     parts = msg["parts"]
                     if isinstance(parts, list):
                         content = " ".join(
-                            p.get("text", "") if isinstance(p, dict) else str(p)
-                            for p in parts
+                            p.get("text", "") if isinstance(p, dict) else str(p) for p in parts
                         ).strip()
 
                 if not content:
                     continue
 
-                messages.append(Message(
-                    role=role,
-                    content=content,
-                    timestamp=msg.get("create_time", msg.get("timestamp", "")),
-                ))
+                messages.append(
+                    Message(
+                        role=role,
+                        content=content,
+                        timestamp=msg.get("create_time", msg.get("timestamp", "")),
+                    )
+                )
 
             title = data.get("title", "") or data.get("name", "") or Path(name).stem
-            conversations.append(Conversation(
-                id=conv_id,
-                title=title,
-                platform="gemini",
-                created_at=data.get("create_time", ""),
-                updated_at=data.get("update_time", data.get("create_time", "")),
-                messages=messages,
-            ))
+            conversations.append(
+                Conversation(
+                    id=conv_id,
+                    title=title,
+                    platform="gemini",
+                    created_at=data.get("create_time", ""),
+                    updated_at=data.get("update_time", data.get("create_time", "")),
+                    messages=messages,
+                )
+            )
 
     return conversations
 
@@ -220,6 +226,7 @@ PARSERS = {
 
 # ── Markdown rendering ──────────────────────────────────────────────────────
 
+
 def conversation_to_markdown(conv: Conversation) -> str:
     """Render a Conversation as markdown with YAML frontmatter."""
     # Escape quotes in title for YAML
@@ -228,7 +235,7 @@ def conversation_to_markdown(conv: Conversation) -> str:
     lines = [
         "---",
         f"platform: {conv.platform}",
-        f'conversation_id: {conv.id}',
+        f"conversation_id: {conv.id}",
         f'title: "{safe_title}"',
         f"created_at: {conv.created_at}",
         f"updated_at: {conv.updated_at}",
@@ -258,6 +265,7 @@ def conversation_to_markdown(conv: Conversation) -> str:
 
 
 # ── Conversion orchestrator ──────────────────────────────────────────────────
+
 
 def convert_export(
     zip_path: Path,
@@ -338,22 +346,29 @@ def convert_export(
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Convert LLM platform data exports to markdown for RAG ingestion",
         prog="python -m shared.llm_export_converter",
     )
     parser.add_argument("zip_path", type=Path, help="Path to the export ZIP file")
-    parser.add_argument("--platform", required=True, choices=list(PARSERS),
-                        help="Source platform")
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
-                        help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
-    parser.add_argument("--since", default="",
-                        help="Only include conversations created after this date (ISO format)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show what would be written without writing")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Verbose output")
+    parser.add_argument("--platform", required=True, choices=list(PARSERS), help="Source platform")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})",
+    )
+    parser.add_argument(
+        "--since",
+        default="",
+        help="Only include conversations created after this date (ISO format)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be written without writing"
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
 

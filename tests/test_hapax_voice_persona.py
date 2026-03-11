@@ -1,4 +1,5 @@
 """Tests for hapax_voice persona module."""
+
 from __future__ import annotations
 
 from agents.hapax_voice.persona import (
@@ -12,7 +13,7 @@ from agents.hapax_voice.persona import (
 def test_system_prompt_contains_hapax_and_ryan() -> None:
     prompt = system_prompt()
     assert "Hapax" in prompt
-    assert "Ryan" in prompt
+    assert "Operator" in prompt
 
 
 def test_guest_prompt_works() -> None:

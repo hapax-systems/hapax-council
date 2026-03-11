@@ -3,9 +3,10 @@
 Usage:
     uv run python scripts/migrate_profile_dimensions.py [--dry-run]
 
-Reads profiles/ryan.json, remaps dimensions, writes updated profile.
+Reads profiles/operator-profile.json, remaps dimensions, writes updated profile.
 Dropped facts (e.g. hardware) go to profiles/migration-review.jsonl.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,13 +15,33 @@ from pathlib import Path
 
 from shared.dimensions import get_dimension_names
 
-
 # ── Key heuristics for dimensions that fan out ────────────────────────────────
 
 _TOOL_KEYS = {"tool", "prefer", "editor", "ide", "cli", "shell", "terminal", "plugin", "extension"}
-_SCHEDULE_KEYS = {"schedule", "cadence", "meeting", "time", "focus", "routine", "session", "daily", "weekly"}
+_SCHEDULE_KEYS = {
+    "schedule",
+    "cadence",
+    "meeting",
+    "time",
+    "focus",
+    "routine",
+    "session",
+    "daily",
+    "weekly",
+}
 _AESTHETIC_KEYS = {"bpm", "aesthetic", "genre", "style", "taste", "vibe", "sound", "texture"}
-_GEAR_KEYS = {"sp404", "mpc", "digitakt", "digitone", "oxi", "rytm", "sampler", "synth", "midi", "daw"}
+_GEAR_KEYS = {
+    "sp404",
+    "mpc",
+    "digitakt",
+    "digitone",
+    "oxi",
+    "rytm",
+    "sampler",
+    "synth",
+    "midi",
+    "daw",
+}
 
 
 def _key_matches(key: str, keywords: set[str]) -> bool:
@@ -108,11 +129,13 @@ def migrate_profile(profile_path: Path) -> dict:
         for fact in dim.get("facts", []):
             new_name = remap_dimension(old_name, fact.get("key", ""))
             if new_name is None:
-                dropped.append({
-                    "old_dimension": old_name,
-                    "fact": fact,
-                    "reason": f"dimension '{old_name}' dropped from taxonomy",
-                })
+                dropped.append(
+                    {
+                        "old_dimension": old_name,
+                        "fact": fact,
+                        "reason": f"dimension '{old_name}' dropped from taxonomy",
+                    }
+                )
                 continue
 
             fact["dimension"] = new_name
@@ -135,7 +158,7 @@ def main():
     from shared.config import PROFILES_DIR
 
     dry_run = "--dry-run" in sys.argv
-    profile_path = PROFILES_DIR / "ryan.json"
+    profile_path = PROFILES_DIR / "operator-profile.json"
 
     if not profile_path.exists():
         print("No profile found at", profile_path)
@@ -155,6 +178,7 @@ def main():
             print(f"Dropped: {len(lines)} facts (see {review_path})")
     else:
         import shutil
+
         backup_path = profile_path.with_suffix(".pre-migration.json")
         shutil.copy2(profile_path, backup_path)
         print(f"Backup: {backup_path}")

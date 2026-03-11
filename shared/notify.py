@@ -12,6 +12,7 @@ Usage:
     send_notification("Stack Healthy", "All 44 checks passed", priority="default")
     send_notification("Health Alert", "3 checks failed", priority="high", tags=["warning"])
 """
+
 from __future__ import annotations
 
 import logging
@@ -49,6 +50,7 @@ _DESKTOP_URGENCY = {
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
+
 def send_notification(
     title: str,
     message: str,
@@ -75,8 +77,9 @@ def send_notification(
 
     # Try ntfy first
     try:
-        delivered = _send_ntfy(title, message, priority=priority, tags=tags,
-                               topic=topic, click_url=click_url)
+        delivered = _send_ntfy(
+            title, message, priority=priority, tags=tags, topic=topic, click_url=click_url
+        )
     except Exception as exc:
         _log.debug("ntfy failed: %s", exc)
 
@@ -110,6 +113,7 @@ def send_webhook(
         True if webhook returned 2xx.
     """
     import json
+
     data = json.dumps(payload).encode()
     req = Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -249,6 +253,7 @@ def send_enriched_notification(
 
 
 # ── Private helpers ──────────────────────────────────────────────────────────
+
 
 def _send_ntfy(
     title: str,

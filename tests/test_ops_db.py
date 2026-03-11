@@ -1,10 +1,8 @@
 """Tests for shared.ops_db — operations SQLite builder."""
+
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
-from unittest.mock import patch
 
 from shared.ops_db import build_ops_db, get_table_schemas, run_sql
 
@@ -13,9 +11,7 @@ class TestBuildOpsDb:
     def test_creates_all_tables(self, tmp_path):
         """An empty profiles dir still creates all 5 tables."""
         conn = build_ops_db(tmp_path)
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = [r[0] for r in cursor.fetchall()]
         assert tables == [
             "digest_runs",
@@ -29,25 +25,29 @@ class TestBuildOpsDb:
     def test_loads_health_history(self, tmp_path):
         history = tmp_path / "health-history.jsonl"
         history.write_text(
-            json.dumps({
-                "timestamp": "2026-03-10T10:00:00+00:00",
-                "status": "healthy",
-                "healthy": 44,
-                "degraded": 0,
-                "failed": 0,
-                "duration_ms": 2500,
-                "failed_checks": [],
-            })
+            json.dumps(
+                {
+                    "timestamp": "2026-03-10T10:00:00+00:00",
+                    "status": "healthy",
+                    "healthy": 44,
+                    "degraded": 0,
+                    "failed": 0,
+                    "duration_ms": 2500,
+                    "failed_checks": [],
+                }
+            )
             + "\n"
-            + json.dumps({
-                "timestamp": "2026-03-10T10:15:00+00:00",
-                "status": "degraded",
-                "healthy": 42,
-                "degraded": 2,
-                "failed": 0,
-                "duration_ms": 3100,
-                "failed_checks": ["docker_ollama", "gpu_vram"],
-            })
+            + json.dumps(
+                {
+                    "timestamp": "2026-03-10T10:15:00+00:00",
+                    "status": "degraded",
+                    "healthy": 42,
+                    "degraded": 2,
+                    "failed": 0,
+                    "duration_ms": 3100,
+                    "failed_checks": ["docker_ollama", "gpu_vram"],
+                }
+            )
             + "\n"
         )
         conn = build_ops_db(tmp_path)
@@ -61,20 +61,24 @@ class TestBuildOpsDb:
 
     def test_loads_drift_report(self, tmp_path):
         report = tmp_path / "drift-report.json"
-        report.write_text(json.dumps({
-            "drift_items": [
+        report.write_text(
+            json.dumps(
                 {
-                    "severity": "high",
-                    "category": "missing_service",
-                    "doc_file": "CLAUDE.md",
-                    "doc_claim": "16 services",
-                    "reality": "18 services",
-                    "suggestion": "Update count",
-                },
-            ],
-            "docs_analyzed": ["CLAUDE.md"],
-            "summary": "1 drift item found",
-        }))
+                    "drift_items": [
+                        {
+                            "severity": "high",
+                            "category": "missing_service",
+                            "doc_file": "CLAUDE.md",
+                            "doc_claim": "16 services",
+                            "reality": "18 services",
+                            "suggestion": "Update count",
+                        },
+                    ],
+                    "docs_analyzed": ["CLAUDE.md"],
+                    "summary": "1 drift item found",
+                }
+            )
+        )
         conn = build_ops_db(tmp_path)
         rows = conn.execute("SELECT COUNT(*) FROM drift_items").fetchone()[0]
         assert rows == 1
@@ -85,12 +89,14 @@ class TestBuildOpsDb:
     def test_loads_drift_history(self, tmp_path):
         history = tmp_path / "drift-history.jsonl"
         history.write_text(
-            json.dumps({
-                "timestamp": "2026-03-09T17:05:02Z",
-                "drift_count": 25,
-                "docs_analyzed": 18,
-                "summary": "1 cross-project boundary drift",
-            })
+            json.dumps(
+                {
+                    "timestamp": "2026-03-09T17:05:02Z",
+                    "drift_count": 25,
+                    "docs_analyzed": 18,
+                    "summary": "1 cross-project boundary drift",
+                }
+            )
             + "\n"
         )
         conn = build_ops_db(tmp_path)
@@ -101,13 +107,15 @@ class TestBuildOpsDb:
     def test_loads_digest_history(self, tmp_path):
         history = tmp_path / "digest-history.jsonl"
         history.write_text(
-            json.dumps({
-                "timestamp": "2026-03-10T06:45:00Z",
-                "hours": 24,
-                "headline": "Test headline",
-                "summary": "Test summary",
-                "new_documents": 15,
-            })
+            json.dumps(
+                {
+                    "timestamp": "2026-03-10T06:45:00Z",
+                    "hours": 24,
+                    "headline": "Test headline",
+                    "summary": "Test summary",
+                    "new_documents": 15,
+                }
+            )
             + "\n"
         )
         conn = build_ops_db(tmp_path)
@@ -118,18 +126,18 @@ class TestBuildOpsDb:
     def test_loads_knowledge_maint_history(self, tmp_path):
         history = tmp_path / "knowledge-maint-history.jsonl"
         history.write_text(
-            json.dumps({
-                "timestamp": "2026-03-09T09:39:00Z",
-                "pruned_count": 12,
-                "merged_count": 3,
-                "duration_ms": 4500,
-            })
+            json.dumps(
+                {
+                    "timestamp": "2026-03-09T09:39:00Z",
+                    "pruned_count": 12,
+                    "merged_count": 3,
+                    "duration_ms": 4500,
+                }
+            )
             + "\n"
         )
         conn = build_ops_db(tmp_path)
-        row = conn.execute(
-            "SELECT pruned_count, merged_count FROM knowledge_maint"
-        ).fetchone()
+        row = conn.execute("SELECT pruned_count, merged_count FROM knowledge_maint").fetchone()
         assert row == (12, 3)
         conn.close()
 
@@ -137,15 +145,17 @@ class TestBuildOpsDb:
         history = tmp_path / "health-history.jsonl"
         history.write_text(
             "not valid json\n"
-            + json.dumps({
-                "timestamp": "2026-03-10T10:00:00+00:00",
-                "status": "healthy",
-                "healthy": 44,
-                "degraded": 0,
-                "failed": 0,
-                "duration_ms": 2500,
-                "failed_checks": [],
-            })
+            + json.dumps(
+                {
+                    "timestamp": "2026-03-10T10:00:00+00:00",
+                    "status": "healthy",
+                    "healthy": 44,
+                    "degraded": 0,
+                    "failed": 0,
+                    "duration_ms": 2500,
+                    "failed_checks": [],
+                }
+            )
             + "\n"
         )
         conn = build_ops_db(tmp_path)
@@ -158,15 +168,17 @@ class TestRunSql:
     def test_select_returns_formatted_table(self, tmp_path):
         history = tmp_path / "health-history.jsonl"
         history.write_text(
-            json.dumps({
-                "timestamp": "2026-03-10T10:00:00+00:00",
-                "status": "healthy",
-                "healthy": 44,
-                "degraded": 0,
-                "failed": 0,
-                "duration_ms": 2500,
-                "failed_checks": [],
-            })
+            json.dumps(
+                {
+                    "timestamp": "2026-03-10T10:00:00+00:00",
+                    "status": "healthy",
+                    "healthy": 44,
+                    "degraded": 0,
+                    "failed": 0,
+                    "duration_ms": 2500,
+                    "failed_checks": [],
+                }
+            )
             + "\n"
         )
         conn = build_ops_db(tmp_path)
@@ -185,15 +197,19 @@ class TestRunSql:
         history = tmp_path / "health-history.jsonl"
         lines = []
         for i in range(150):
-            lines.append(json.dumps({
-                "timestamp": f"2026-03-10T{i:02d}:00:00+00:00",
-                "status": "healthy",
-                "healthy": 44,
-                "degraded": 0,
-                "failed": 0,
-                "duration_ms": 2500,
-                "failed_checks": [],
-            }))
+            lines.append(
+                json.dumps(
+                    {
+                        "timestamp": f"2026-03-10T{i:02d}:00:00+00:00",
+                        "status": "healthy",
+                        "healthy": 44,
+                        "degraded": 0,
+                        "failed": 0,
+                        "duration_ms": 2500,
+                        "failed_checks": [],
+                    }
+                )
+            )
         history.write_text("\n".join(lines) + "\n")
         conn = build_ops_db(tmp_path)
         result = run_sql(conn, "SELECT * FROM health_runs")

@@ -1,7 +1,10 @@
 """Tests for narrative framework selection and planning constraints."""
+
 from agents.demo_pipeline.narrative import (
-    load_style_guide, select_framework, get_duration_constraints,
-    format_planning_context, FRAMEWORKS, AUDIENCE_FRAMEWORK,
+    format_planning_context,
+    get_duration_constraints,
+    load_style_guide,
+    select_framework,
 )
 
 
@@ -26,6 +29,7 @@ class TestSelectFramework:
         fw = select_framework("stranger")
         assert fw["name"] == "Design Rationale"
 
+
 class TestDurationConstraints:
     def test_3_minute_demo(self):
         c = get_duration_constraints(180)
@@ -48,6 +52,7 @@ class TestDurationConstraints:
         c = get_duration_constraints(3600)
         assert c["scenes"] == (14, 18)
 
+
 class TestLoadStyleGuide:
     def test_loads_from_default_path(self):
         guide = load_style_guide()
@@ -58,6 +63,7 @@ class TestLoadStyleGuide:
     def test_missing_file_returns_empty(self, tmp_path):
         guide = load_style_guide(tmp_path / "nonexistent.yaml")
         assert guide == {}
+
 
 class TestFormatPlanningContext:
     def test_contains_all_sections(self):

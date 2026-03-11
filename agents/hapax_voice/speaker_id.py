@@ -1,4 +1,5 @@
 """Speaker identification via embedding cosine similarity."""
+
 from __future__ import annotations
 
 import logging
@@ -15,9 +16,7 @@ _pyannote_inference = None
 _pyannote_load_attempted = False
 
 
-def _make_waveform_dict(
-    audio: np.ndarray, sample_rate: int
-) -> dict:
+def _make_waveform_dict(audio: np.ndarray, sample_rate: int) -> dict:
     """Build the input dict expected by pyannote Inference.
 
     Uses torch tensors when torch is available, falls back to numpy
@@ -81,9 +80,7 @@ class SpeakerIdentifier:
             return SpeakerResult(label="not_ryan", confidence=similarity)
         return SpeakerResult(label="uncertain", confidence=similarity)
 
-    def extract_embedding(
-        self, audio: np.ndarray, sample_rate: int = 16000
-    ) -> np.ndarray | None:
+    def extract_embedding(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray | None:
         """Extract speaker embedding from audio using pyannote.
 
         Args:
@@ -104,17 +101,13 @@ class SpeakerIdentifier:
             _pyannote_load_attempted = True
             token = os.environ.get("HF_TOKEN", "")
             if not token:
-                log.warning(
-                    "HF_TOKEN not set — pyannote embedding model unavailable"
-                )
+                log.warning("HF_TOKEN not set — pyannote embedding model unavailable")
             else:
                 try:
                     import torch
                     from pyannote.audio import Inference, Model
 
-                    model = Model.from_pretrained(
-                        "pyannote/embedding", use_auth_token=token
-                    )
+                    model = Model.from_pretrained("pyannote/embedding", use_auth_token=token)
                     model = model.to(torch.device("cpu"))
                     _pyannote_inference = Inference(
                         model, window="whole", device=torch.device("cpu")
@@ -134,9 +127,7 @@ class SpeakerIdentifier:
         embedding = _pyannote_inference(input_dict)
         return np.array(embedding)
 
-    def identify_audio(
-        self, audio: np.ndarray, sample_rate: int = 16000
-    ) -> SpeakerResult:
+    def identify_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> SpeakerResult:
         """Extract embedding from audio and identify the speaker.
 
         Convenience method combining extract_embedding() and identify().

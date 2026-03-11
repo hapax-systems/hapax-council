@@ -1,9 +1,9 @@
 """Git history extraction via subprocess."""
+
 from __future__ import annotations
 
 import logging
 import subprocess
-from pathlib import Path
 
 from agents.dev_story.models import Commit, CommitFile
 
@@ -52,8 +52,12 @@ def extract_commits(
         Tuple of (commits, commit_files).
     """
     cmd = [
-        "git", "-C", repo_path,
-        "log", "--format=%H|%ai|%s", "--numstat",
+        "git",
+        "-C",
+        repo_path,
+        "log",
+        "--format=%H|%ai|%s",
+        "--numstat",
     ]
     if since:
         cmd.append(f"--since={since}")

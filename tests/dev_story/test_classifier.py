@@ -1,11 +1,12 @@
 """Tests for session dimension classification."""
+
 from __future__ import annotations
 
 from agents.dev_story.classifier import (
-    classify_work_type,
-    classify_interaction_mode,
     classify_env_topology,
+    classify_interaction_mode,
     classify_session_scale,
+    classify_work_type,
 )
 
 

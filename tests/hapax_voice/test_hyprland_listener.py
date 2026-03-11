@@ -1,11 +1,10 @@
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agents.hapax_voice.hyprland_listener import (
-    HyprlandEventListener,
     FocusEvent,
+    HyprlandEventListener,
 )
 
 
@@ -96,7 +95,17 @@ class TestProcessEvent:
         listener.on_focus_changed = callback
 
         mock_win = WindowInfo(
-            "0x1234", "foot", "term", 1, 42, 0, 0, 800, 600, False, False,
+            "0x1234",
+            "foot",
+            "term",
+            1,
+            42,
+            0,
+            0,
+            800,
+            600,
+            False,
+            False,
         )
         with patch.object(listener._ipc, "get_active_window", return_value=mock_win):
             await listener._process_event("activewindowv2", "0x1234")

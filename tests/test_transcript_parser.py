@@ -2,25 +2,24 @@
 
 Stdlib-only. No external dependencies.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from shared.transcript_parser import (
     TranscriptSegment,
-    parse_transcript,
     _detect_format,
-    _parse_vtt,
-    _parse_srt,
     _parse_speaker_labeled,
+    _parse_srt,
+    _parse_vtt,
     format_as_text,
     map_speakers_to_people,
+    parse_transcript,
 )
 
-
 # ── _detect_format ──────────────────────────────────────────────────────────
+
 
 class TestDetectFormat:
     def test_vtt(self):
@@ -39,6 +38,7 @@ class TestDetectFormat:
 
 # ── _parse_vtt ──────────────────────────────────────────────────────────────
 
+
 class TestParseVtt:
     def test_basic(self):
         content = """WEBVTT
@@ -47,13 +47,13 @@ class TestParseVtt:
 <v Alice>Hello, how are you?
 
 00:00:05.000 --> 00:00:10.000
-<v Ryan>Good, let's start."""
+<v Operator>Good, let's start."""
         segments = _parse_vtt(content)
         assert len(segments) == 2
         assert segments[0].speaker == "Alice"
         assert segments[0].text == "Hello, how are you?"
         assert segments[0].start_time == "00:00:00.000"
-        assert segments[1].speaker == "Ryan"
+        assert segments[1].speaker == "Operator"
 
     def test_no_speaker_tags(self):
         content = """WEBVTT
@@ -78,6 +78,7 @@ how are you doing today?"""
 
 
 # ── _parse_srt ──────────────────────────────────────────────────────────────
+
 
 class TestParseSrt:
     def test_basic(self):
@@ -105,6 +106,7 @@ Alice: Hello world"""
 
 # ── _parse_speaker_labeled ──────────────────────────────────────────────────
 
+
 class TestParseSpeakerLabeled:
     def test_basic(self):
         content = "Alice: Hello\nBob: Hi there\nAlice: How are you?"
@@ -126,6 +128,7 @@ class TestParseSpeakerLabeled:
 
 # ── parse_transcript (integration) ──────────────────────────────────────────
 
+
 class TestParseTranscript:
     def test_vtt_file(self, tmp_path: Path):
         vtt = tmp_path / "meeting.vtt"
@@ -140,6 +143,7 @@ class TestParseTranscript:
 
 
 # ── format_as_text ──────────────────────────────────────────────────────────
+
 
 class TestFormatAsText:
     def test_with_speakers(self):
@@ -159,9 +163,11 @@ class TestFormatAsText:
 
 # ── map_speakers_to_people ──────────────────────────────────────────────────
 
+
 class TestMapSpeakers:
     def test_exact_match(self):
         from types import SimpleNamespace
+
         segments = [TranscriptSegment(speaker="Alice Smith", text="hi")]
         people = [SimpleNamespace(name="Alice Smith")]
         mapping = map_speakers_to_people(segments, people)
@@ -169,6 +175,7 @@ class TestMapSpeakers:
 
     def test_first_name_match(self):
         from types import SimpleNamespace
+
         segments = [TranscriptSegment(speaker="Alice", text="hi")]
         people = [SimpleNamespace(name="Alice Smith")]
         mapping = map_speakers_to_people(segments, people)
@@ -176,6 +183,7 @@ class TestMapSpeakers:
 
     def test_no_match_keeps_original(self):
         from types import SimpleNamespace
+
         segments = [TranscriptSegment(speaker="Unknown Person", text="hi")]
         people = [SimpleNamespace(name="Alice Smith")]
         mapping = map_speakers_to_people(segments, people)

@@ -3,6 +3,7 @@
 Provides model aliases, factory functions for LiteLLM-backed models,
 Qdrant client, embedding via Ollama, and canonical path constants.
 """
+
 import logging
 import os
 from pathlib import Path
@@ -10,7 +11,6 @@ from pathlib import Path
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
 from qdrant_client import QdrantClient
-
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -24,8 +24,12 @@ QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
 # ── Canonical paths ─────────────────────────────────────────────────────────
 
 PROFILES_DIR: Path = Path(__file__).resolve().parent.parent / "profiles"
-WORK_VAULT_PATH: Path = Path(os.environ.get("WORK_VAULT_PATH", str(Path.home() / "Documents" / "Work")))
-PERSONAL_VAULT_PATH: Path = Path(os.environ.get("PERSONAL_VAULT_PATH", str(Path.home() / "Documents" / "Personal")))
+WORK_VAULT_PATH: Path = Path(
+    os.environ.get("WORK_VAULT_PATH", str(Path.home() / "Documents" / "Work"))
+)
+PERSONAL_VAULT_PATH: Path = Path(
+    os.environ.get("PERSONAL_VAULT_PATH", str(Path.home() / "Documents" / "Personal"))
+)
 
 # Backwards compat — most agents write to the work vault
 VAULT_PATH: Path = WORK_VAULT_PATH
@@ -76,6 +80,7 @@ EXPECTED_EMBED_DIMENSIONS: int = 768
 
 # ── Factories ────────────────────────────────────────────────────────────────
 
+
 def get_model(alias_or_id: str = "balanced") -> OpenAIChatModel:
     """Create a LiteLLM-backed chat model.
 
@@ -112,6 +117,7 @@ def _get_ollama_client():
     global _ollama_client
     if _ollama_client is None:
         import ollama
+
         _ollama_client = ollama.Client(timeout=120)
     return _ollama_client
 
@@ -137,9 +143,7 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
         raise RuntimeError(f"Embedding failed (model={model_name}): {exc}") from exc
     vec = result["embeddings"][0]
     if len(vec) != EXPECTED_EMBED_DIMENSIONS:
-        raise RuntimeError(
-            f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding, got {len(vec)}"
-        )
+        raise RuntimeError(f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding, got {len(vec)}")
     return vec
 
 

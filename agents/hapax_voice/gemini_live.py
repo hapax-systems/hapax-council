@@ -1,4 +1,5 @@
 """Gemini Live API client for speech-to-speech conversation."""
+
 from __future__ import annotations
 
 import asyncio
@@ -40,13 +41,9 @@ class GeminiLiveSession:
 
     async def connect(self) -> None:
         """Connect to Gemini Live API via WebSocket."""
-        api_key = os.environ.get("GOOGLE_API_KEY", "") or os.environ.get(
-            "GEMINI_API_KEY", ""
-        )
+        api_key = os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
         if not api_key:
-            log.error(
-                "GOOGLE_API_KEY / GEMINI_API_KEY not set — cannot connect to Gemini Live"
-            )
+            log.error("GOOGLE_API_KEY / GEMINI_API_KEY not set — cannot connect to Gemini Live")
             return
 
         try:
@@ -117,9 +114,7 @@ class GeminiLiveSession:
             from google.genai import types  # type: ignore[import-untyped]
 
             await self._session.send_realtime_input(
-                media=types.Blob(
-                    data=audio_chunk, mime_type="audio/pcm;rate=16000"
-                )
+                media=types.Blob(data=audio_chunk, mime_type="audio/pcm;rate=16000")
             )
             log.debug("Sent %d bytes of audio", len(audio_chunk))
         except Exception:
@@ -146,9 +141,7 @@ class GeminiLiveSession:
                 if msg.server_content and msg.server_content.model_turn:
                     for part in msg.server_content.model_turn.parts:
                         if part.inline_data and part.inline_data.data:
-                            await self._receive_queue.put(
-                                part.inline_data.data
-                            )
+                            await self._receive_queue.put(part.inline_data.data)
                 # If the server signals turn complete, we can continue
                 # listening for the next turn.
                 if msg.server_content and msg.server_content.turn_complete:

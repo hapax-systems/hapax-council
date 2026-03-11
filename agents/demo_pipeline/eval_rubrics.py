@@ -1,4 +1,5 @@
 """Evaluation rubrics for demo output quality — structural checks and LLM text evaluation."""
+
 from __future__ import annotations
 
 import json
@@ -38,20 +39,28 @@ def check_files_present(demo_dir: Path) -> DemoEvalDimension:
 
     passed = len(issues) == 0
     return DemoEvalDimension(
-        name="files_present", category="structural",
-        passed=passed, score=1.0 if passed else 0.0, issues=issues,
+        name="files_present",
+        category="structural",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        issues=issues,
     )
 
 
-def check_metadata_correctness(demo_dir: Path, expected_audience: str | None = None) -> DemoEvalDimension:
+def check_metadata_correctness(
+    demo_dir: Path, expected_audience: str | None = None
+) -> DemoEvalDimension:
     """Verify metadata.json has correct values."""
     issues = []
     meta_path = demo_dir / "metadata.json"
 
     if not meta_path.exists():
         return DemoEvalDimension(
-            name="metadata_correctness", category="structural",
-            passed=False, score=0.0, issues=["metadata.json not found"],
+            name="metadata_correctness",
+            category="structural",
+            passed=False,
+            score=0.0,
+            issues=["metadata.json not found"],
         )
 
     meta = json.loads(meta_path.read_text())
@@ -62,13 +71,17 @@ def check_metadata_correctness(demo_dir: Path, expected_audience: str | None = N
         issues.append(f"Missing metadata keys: {missing}")
 
     if expected_audience and meta.get("audience") != expected_audience:
-        issues.append(f"Audience mismatch: expected '{expected_audience}', got '{meta.get('audience')}'")
+        issues.append(
+            f"Audience mismatch: expected '{expected_audience}', got '{meta.get('audience')}'"
+        )
 
     script_path = demo_dir / "script.json"
     if script_path.exists():
         script = json.loads(script_path.read_text())
         if meta.get("scenes") != len(script.get("scenes", [])):
-            issues.append(f"Scene count mismatch: metadata={meta.get('scenes')}, script={len(script.get('scenes', []))}")
+            issues.append(
+                f"Scene count mismatch: metadata={meta.get('scenes')}, script={len(script.get('scenes', []))}"
+            )
 
     duration = meta.get("duration", 0)
     if duration <= 0:
@@ -79,8 +92,11 @@ def check_metadata_correctness(demo_dir: Path, expected_audience: str | None = N
 
     passed = len(issues) == 0
     return DemoEvalDimension(
-        name="metadata_correctness", category="structural",
-        passed=passed, score=max(0.0, 1.0 - len(issues) * 0.25), issues=issues,
+        name="metadata_correctness",
+        category="structural",
+        passed=passed,
+        score=max(0.0, 1.0 - len(issues) * 0.25),
+        issues=issues,
     )
 
 
@@ -91,8 +107,11 @@ def check_html_integrity(demo_dir: Path) -> DemoEvalDimension:
 
     if not html_path.exists():
         return DemoEvalDimension(
-            name="html_integrity", category="structural",
-            passed=False, score=0.0, issues=["demo.html not found"],
+            name="html_integrity",
+            category="structural",
+            passed=False,
+            score=0.0,
+            issues=["demo.html not found"],
         )
 
     html = html_path.read_text()
@@ -116,13 +135,17 @@ def check_html_integrity(demo_dir: Path) -> DemoEvalDimension:
 
     passed = len(issues) == 0
     return DemoEvalDimension(
-        name="html_integrity", category="structural",
-        passed=passed, score=max(0.0, 1.0 - len(issues) * 0.2), issues=issues,
+        name="html_integrity",
+        category="structural",
+        passed=passed,
+        score=max(0.0, 1.0 - len(issues) * 0.2),
+        issues=issues,
     )
 
 
 def run_structural_checks(
-    demo_dir: Path, expected_audience: str | None = None,
+    demo_dir: Path,
+    expected_audience: str | None = None,
 ) -> list[DemoEvalDimension]:
     """Run all deterministic structural checks."""
     return [
@@ -134,8 +157,10 @@ def run_structural_checks(
 
 # ── Text evaluation models ──────────────────────────────────────────────────
 
+
 class DimScore(BaseModel):
     """Score for a single text dimension."""
+
     score: float = Field(ge=0.0, le=1.0)
     passed: bool
     issues: list[str] = Field(default_factory=list)
@@ -144,6 +169,7 @@ class DimScore(BaseModel):
 
 class TextEvalOutput(BaseModel):
     """Structured output from text evaluation LLM."""
+
     voice_consistency: DimScore
     audience_calibration: DimScore
     duration_feasibility: DimScore
@@ -164,7 +190,9 @@ text_eval_agent = Agent(
 
 
 def _build_text_eval_prompt(
-    script_data: dict, style_guide: dict, target_seconds: int,
+    script_data: dict,
+    style_guide: dict,
+    target_seconds: int,
     voice_examples: dict | None = None,
 ) -> str:
     """Build the prompt for text quality evaluation."""
@@ -191,7 +219,7 @@ def _build_text_eval_prompt(
         voice_section = f"""### 1. voice_consistency
 Does the narration sound like these good examples (matter-of-fact, first-person, concrete)?
 
-{chr(10).join(f'Good Example {chr(65+i)}: {ex}' for i, ex in enumerate(good_examples))}
+{chr(10).join(f"Good Example {chr(65 + i)}: {ex}" for i, ex in enumerate(good_examples))}
 
 Does it sound like this BAD example (pitch mode)? If so, it fails:
 "{bad_example}"
@@ -201,33 +229,33 @@ The narration should match the good examples in tone, register, and style."""
         avoid_items = style_guide.get("avoid", [])
         embrace_items = style_guide.get("embrace", [])
         voice_section = f"""### 1. voice_consistency
-Voice should be: {style_guide.get('voice', 'first-person')}
-Cadence should be: {style_guide.get('cadence', 'state-explain-show')}
-Transitions should be: {style_guide.get('transitions', 'functional')}
-MUST AVOID: {'; '.join(avoid_items)}
-SHOULD EMBRACE: {'; '.join(embrace_items)}
-Opening rule: {style_guide.get('opening', '')}
-Closing rule: {style_guide.get('closing', '')}"""
+Voice should be: {style_guide.get("voice", "first-person")}
+Cadence should be: {style_guide.get("cadence", "state-explain-show")}
+Transitions should be: {style_guide.get("transitions", "functional")}
+MUST AVOID: {"; ".join(avoid_items)}
+SHOULD EMBRACE: {"; ".join(embrace_items)}
+Opening rule: {style_guide.get("opening", "")}
+Closing rule: {style_guide.get("closing", "")}"""
 
     return f"""Evaluate this demo script's text quality.
 
 ## Narration Text
 
-Intro: {script_data.get('intro_narration', '')}
+Intro: {script_data.get("intro_narration", "")}
 
 {chr(10).join(narrations)}
 
-Outro: {script_data.get('outro_narration', '')}
+Outro: {script_data.get("outro_narration", "")}
 
 ## Key Points (all scenes)
-{chr(10).join(f'- {kp}' for kp in key_points_all)}
+{chr(10).join(f"- {kp}" for kp in key_points_all)}
 
 ## Evaluation Criteria
 
 {voice_section}
 
 ### 2. audience_calibration
-Target audience: {script_data.get('audience', 'unknown')}
+Target audience: {script_data.get("audience", "unknown")}
 Family audience = no technical jargon, warm, accessible.
 Technical audience = precise terminology, design rationale.
 
@@ -250,29 +278,46 @@ For each dimension: score 0.0-1.0 (0.8+ = pass), list specific issues with evide
 
 
 async def run_text_evaluation(
-    script_data: dict, style_guide: dict, target_seconds: int,
+    script_data: dict,
+    style_guide: dict,
+    target_seconds: int,
     voice_examples: dict | None = None,
 ) -> list[DemoEvalDimension]:
     """Run LLM-based text quality evaluation on script narration."""
-    prompt = _build_text_eval_prompt(script_data, style_guide, target_seconds, voice_examples=voice_examples)
+    prompt = _build_text_eval_prompt(
+        script_data, style_guide, target_seconds, voice_examples=voice_examples
+    )
     result = await text_eval_agent.run(prompt)
     output = result.output
 
     dimensions = []
-    for name in ["voice_consistency", "audience_calibration", "duration_feasibility",
-                  "key_points_quality", "narrative_coherence"]:
+    for name in [
+        "voice_consistency",
+        "audience_calibration",
+        "duration_feasibility",
+        "key_points_quality",
+        "narrative_coherence",
+    ]:
         dim_score: DimScore = getattr(output, name)
-        dimensions.append(DemoEvalDimension(
-            name=name, category="text",
-            passed=dim_score.passed, score=dim_score.score,
-            issues=dim_score.issues, evidence=dim_score.evidence,
-        ))
+        dimensions.append(
+            DemoEvalDimension(
+                name=name,
+                category="text",
+                passed=dim_score.passed,
+                score=dim_score.score,
+                issues=dim_score.issues,
+                evidence=dim_score.evidence,
+            )
+        )
     return dimensions
+
 
 # ── Visual evaluation ───────────────────────────────────────────────────────
 
+
 class VisualEvalOutput(BaseModel):
     """Structured output from visual evaluation LLM."""
+
     visual_clarity: DimScore
     visual_variety: DimScore
     theme_compliance: DimScore
@@ -296,7 +341,8 @@ visual_eval_agent = Agent(
 
 
 def _load_screenshots_as_content(
-    demo_dir: Path, script_data: dict,
+    demo_dir: Path,
+    script_data: dict,
 ) -> list[str | BinaryContent]:
     """Load screenshots and interleave with narration text for the vision prompt."""
     content: list[str | BinaryContent] = []
@@ -306,14 +352,18 @@ def _load_screenshots_as_content(
         pattern = f"{i:02d}-*.png"
         matches = list(screenshots_dir.glob(pattern))
         if not matches:
-            content.append(f"\n--- Scene {i}: {scene['title']} ---\n[Screenshot missing]\nNarration: {scene['narration']}\n")
+            content.append(
+                f"\n--- Scene {i}: {scene['title']} ---\n[Screenshot missing]\nNarration: {scene['narration']}\n"
+            )
             continue
 
         screenshot_path = matches[0]
         image_bytes = screenshot_path.read_bytes()
         image = BinaryContent(data=image_bytes, media_type="image/png")
 
-        content.append(f"\n--- Scene {i}: {scene['title']} ---\nNarration: {scene['narration']}\nKey points: {', '.join(scene.get('key_points', []))}\n")
+        content.append(
+            f"\n--- Scene {i}: {scene['title']} ---\nNarration: {scene['narration']}\nKey points: {', '.join(scene.get('key_points', []))}\n"
+        )
         content.append(image)
 
     return content
@@ -323,7 +373,7 @@ def _build_visual_eval_prompt(script_data: dict) -> str:
     """Build the text portion of the visual evaluation prompt."""
     return f"""Evaluate the visual quality of these demo screenshots.
 
-The demo is titled "{script_data.get('title', 'Unknown')}" for a {script_data.get('audience', 'unknown')} audience.
+The demo is titled "{script_data.get("title", "Unknown")}" for a {script_data.get("audience", "unknown")} audience.
 
 ## Evaluation Criteria
 
@@ -354,7 +404,8 @@ Score each dimension 0.0-1.0 (0.8+ = pass). Cite specific scenes for any issues.
 
 
 async def run_visual_evaluation(
-    demo_dir: Path, script_data: dict,
+    demo_dir: Path,
+    script_data: dict,
 ) -> list[DemoEvalDimension]:
     """Run vision-model evaluation on demo screenshots."""
     screenshot_content = _load_screenshots_as_content(demo_dir, script_data)
@@ -362,10 +413,18 @@ async def run_visual_evaluation(
     if not any(isinstance(c, BinaryContent) for c in screenshot_content):
         return [
             DemoEvalDimension(
-                name=name, category="visual", passed=False, score=0.0,
+                name=name,
+                category="visual",
+                passed=False,
+                score=0.0,
                 issues=["No screenshots available for evaluation"],
             )
-            for name in ["visual_clarity", "visual_variety", "theme_compliance", "visual_narration_alignment"]
+            for name in [
+                "visual_clarity",
+                "visual_variety",
+                "theme_compliance",
+                "visual_narration_alignment",
+            ]
         ]
 
     prompt_text = _build_visual_eval_prompt(script_data)
@@ -375,24 +434,41 @@ async def run_visual_evaluation(
     output = result.output
 
     dimensions = []
-    for name in ["visual_clarity", "visual_variety", "theme_compliance", "visual_narration_alignment"]:
+    for name in [
+        "visual_clarity",
+        "visual_variety",
+        "theme_compliance",
+        "visual_narration_alignment",
+    ]:
         dim_score: DimScore = getattr(output, name)
-        dimensions.append(DemoEvalDimension(
-            name=name, category="visual",
-            passed=dim_score.passed, score=dim_score.score,
-            issues=dim_score.issues, evidence=dim_score.evidence,
-        ))
+        dimensions.append(
+            DemoEvalDimension(
+                name=name,
+                category="visual",
+                passed=dim_score.passed,
+                score=dim_score.score,
+                issues=dim_score.issues,
+                evidence=dim_score.evidence,
+            )
+        )
     return dimensions
 
 
 # ── Diagnosis ───────────────────────────────────────────────────────────────
 
+
 class DiagnosisOutput(BaseModel):
     """LLM diagnosis of evaluation failures."""
+
     root_causes: list[str] = Field(description="Identified root causes for failures")
-    planning_overrides: str = Field(description="Additional instructions to append to the planning prompt on next iteration")
+    planning_overrides: str = Field(
+        description="Additional instructions to append to the planning prompt on next iteration"
+    )
     adjustments_summary: list[str] = Field(description="Human-readable list of what will change")
-    jargon_replacements: dict[str, str] = Field(default_factory=dict, description="Mapping of jargon term -> plain language replacement, if applicable")
+    jargon_replacements: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of jargon term -> plain language replacement, if applicable",
+    )
 
 
 diagnosis_agent = Agent(
@@ -430,7 +506,7 @@ def _build_diagnosis_prompt(
         word_count = len(narration.split())
         visual_type = scene.get("visual_type", "unknown")
         scene_details.append(
-            f"  Scene {i} ({scene.get('title', '?')}): {visual_type}, {word_count} words — \"{narration[:120]}...\""
+            f'  Scene {i} ({scene.get("title", "?")}): {visual_type}, {word_count} words — "{narration[:120]}..."'
         )
     scene_detail_text = "\n".join(scene_details)
 
@@ -449,7 +525,10 @@ def _build_diagnosis_prompt(
             if found_in_scene:
                 jargon_found.append(f"  Scene {i}: {', '.join(found_in_scene)}")
         # Also check intro/outro
-        for label, text in [("Intro", script_data.get("intro_narration", "")), ("Outro", script_data.get("outro_narration", ""))]:
+        for label, text in [
+            ("Intro", script_data.get("intro_narration", "")),
+            ("Outro", script_data.get("outro_narration", "")),
+        ]:
             found = [t for t in forbidden_terms if t.lower() in text.lower()]
             if found:
                 jargon_found.append(f"  {label}: {', '.join(found)}")
@@ -470,10 +549,10 @@ These technical terms were found in narration and MUST be replaced with plain la
 {failing_text}
 
 ## Current Script Summary
-Title: {script_data.get('title', 'Unknown')}
-Audience: {script_data.get('audience', 'unknown')}
-Scenes: {len(script_data.get('scenes', []))}
-Intro: {script_data.get('intro_narration', '')[:200]}
+Title: {script_data.get("title", "Unknown")}
+Audience: {script_data.get("audience", "unknown")}
+Scenes: {len(script_data.get("scenes", []))}
+Intro: {script_data.get("intro_narration", "")[:200]}
 
 ## Per-Scene Analysis
 {scene_detail_text}
@@ -481,8 +560,8 @@ Intro: {script_data.get('intro_narration', '')[:200]}
 Total narration: {total_words} words
 {jargon_section}
 ## Style Guide
-Voice: {style_guide.get('voice', 'first-person')}
-Avoid: {'; '.join(style_guide.get('avoid', []))}
+Voice: {style_guide.get("voice", "first-person")}
+Avoid: {"; ".join(style_guide.get("avoid", []))}
 
 ## Instructions
 1. For EACH failing dimension, identify the specific root cause with scene numbers
@@ -505,6 +584,8 @@ async def diagnose_failures(
     forbidden_terms: list[str] | None = None,
 ) -> DiagnosisOutput:
     """Diagnose evaluation failures and produce planning overrides."""
-    prompt = _build_diagnosis_prompt(eval_dimensions, script_data, style_guide, iteration, forbidden_terms)
+    prompt = _build_diagnosis_prompt(
+        eval_dimensions, script_data, style_guide, iteration, forbidden_terms
+    )
     result = await diagnosis_agent.run(prompt)
     return result.output

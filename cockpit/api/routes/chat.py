@@ -1,4 +1,5 @@
 """Chat endpoints — session management + SSE streaming chat."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +9,6 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -33,6 +33,7 @@ def _get_session(session_id: str) -> ChatSession:
 
 
 # ── Session lifecycle ────────────────────────────────────────────────────
+
 
 class CreateSessionRequest(BaseModel):
     model: str = "balanced"
@@ -92,6 +93,7 @@ async def delete_session(session_id: str):
 
 # ── Model switching ──────────────────────────────────────────────────────
 
+
 class ModelRequest(BaseModel):
     model: str
 
@@ -106,17 +108,20 @@ async def switch_model(session_id: str, req: ModelRequest):
 
 # ── Available models ─────────────────────────────────────────────────────
 
+
 @router.get("/models")
 async def get_models():
     """List available model aliases."""
     try:
         from shared.config import MODELS
+
         return {"models": list(MODELS.keys())}
     except Exception:
         return {"models": ["balanced", "fast", "reasoning", "coding", "local-fast"]}
 
 
 # ── Message history ──────────────────────────────────────────────────────
+
 
 @router.get("/sessions/{session_id}/messages")
 async def get_messages(session_id: str):
@@ -127,6 +132,7 @@ async def get_messages(session_id: str):
 
 
 # ── Send message (SSE streaming) ─────────────────────────────────────────
+
 
 class SendRequest(BaseModel):
     message: str
@@ -156,34 +162,53 @@ async def send_message(session_id: str, req: SendRequest):
         try:
             full_text = await session.send_message(
                 req.message,
-                on_text_delta=lambda text: queue.put_nowait({
-                    "event": "text_delta",
-                    "data": {"content": text},
-                }),
-                on_tool_call=lambda name, args: queue.put_nowait({
-                    "event": "tool_call",
-                    "data": {"name": name, "args": args, "call_id": f"{name}-{uuid.uuid4().hex[:6]}"},
-                }),
+                on_text_delta=lambda text: queue.put_nowait(
+                    {
+                        "event": "text_delta",
+                        "data": {"content": text},
+                    }
+                ),
+                on_tool_call=lambda name, args: queue.put_nowait(
+                    {
+                        "event": "tool_call",
+                        "data": {
+                            "name": name,
+                            "args": args,
+                            "call_id": f"{name}-{uuid.uuid4().hex[:6]}",
+                        },
+                    }
+                ),
             )
-            await queue.put({
-                "event": "done",
-                "data": {
-                    "full_text": full_text,
-                    "turn_tokens": session.last_turn_tokens,
-                    "total_tokens": session.total_tokens,
-                },
-            })
+            await queue.put(
+                {
+                    "event": "done",
+                    "data": {
+                        "full_text": full_text,
+                        "turn_tokens": session.last_turn_tokens,
+                        "total_tokens": session.total_tokens,
+                    },
+                }
+            )
         except asyncio.CancelledError:
-            await queue.put({
-                "event": "done",
-                "data": {"full_text": "", "turn_tokens": 0, "total_tokens": session.total_tokens, "cancelled": True},
-            })
+            await queue.put(
+                {
+                    "event": "done",
+                    "data": {
+                        "full_text": "",
+                        "turn_tokens": 0,
+                        "total_tokens": session.total_tokens,
+                        "cancelled": True,
+                    },
+                }
+            )
         except Exception as e:
             log.exception("Chat generation error: %s", e)
-            await queue.put({
-                "event": "error",
-                "data": {"message": str(e), "recoverable": "rate_limit" in str(e).lower()},
-            })
+            await queue.put(
+                {
+                    "event": "error",
+                    "data": {"message": str(e), "recoverable": "rate_limit" in str(e).lower()},
+                }
+            )
         finally:
             _active_generation.pop(session_id, None)
             await queue.put(None)  # Sentinel
@@ -221,6 +246,7 @@ async def send_message(session_id: str, req: SendRequest):
 
 # ── Stop generation ──────────────────────────────────────────────────────
 
+
 @router.post("/sessions/{session_id}/stop")
 async def stop_generation(session_id: str):
     """Cancel an active generation."""
@@ -233,6 +259,7 @@ async def stop_generation(session_id: str):
 
 # ── Export ────────────────────────────────────────────────────────────────
 
+
 @router.post("/sessions/{session_id}/export")
 async def export_session(session_id: str):
     """Export conversation as markdown."""
@@ -242,6 +269,7 @@ async def export_session(session_id: str):
 
 
 # ── Interview mode ────────────────────────────────────────────────────
+
 
 @router.post("/sessions/{session_id}/interview")
 async def start_interview(session_id: str):
@@ -258,30 +286,42 @@ async def start_interview(session_id: str):
     async def _run():
         try:
             full_text = await session.start_interview(
-                on_text_delta=lambda text: queue.put_nowait({
-                    "event": "text_delta",
-                    "data": {"content": text},
-                }),
-                on_tool_call=lambda name, args: queue.put_nowait({
-                    "event": "tool_call",
-                    "data": {"name": name, "args": args, "call_id": f"{name}-interview"},
-                }),
-                on_plan_ready=lambda: queue.put_nowait({
-                    "event": "plan_ready",
-                    "data": {
-                        "topic_count": len(session.interview_state.plan.topics) if session.interview_state else 0,
-                        "focus": session.interview_state.plan.topics[0].topic if session.interview_state and session.interview_state.plan.topics else "",
-                    },
-                }),
+                on_text_delta=lambda text: queue.put_nowait(
+                    {
+                        "event": "text_delta",
+                        "data": {"content": text},
+                    }
+                ),
+                on_tool_call=lambda name, args: queue.put_nowait(
+                    {
+                        "event": "tool_call",
+                        "data": {"name": name, "args": args, "call_id": f"{name}-interview"},
+                    }
+                ),
+                on_plan_ready=lambda: queue.put_nowait(
+                    {
+                        "event": "plan_ready",
+                        "data": {
+                            "topic_count": len(session.interview_state.plan.topics)
+                            if session.interview_state
+                            else 0,
+                            "focus": session.interview_state.plan.topics[0].topic
+                            if session.interview_state and session.interview_state.plan.topics
+                            else "",
+                        },
+                    }
+                ),
             )
-            await queue.put({
-                "event": "done",
-                "data": {
-                    "full_text": full_text,
-                    "turn_tokens": session.last_turn_tokens,
-                    "total_tokens": session.total_tokens,
-                },
-            })
+            await queue.put(
+                {
+                    "event": "done",
+                    "data": {
+                        "full_text": full_text,
+                        "turn_tokens": session.last_turn_tokens,
+                        "total_tokens": session.total_tokens,
+                    },
+                }
+            )
         except Exception as e:
             log.exception("Interview start error: %s", e)
             await queue.put({"event": "error", "data": {"message": str(e), "recoverable": False}})

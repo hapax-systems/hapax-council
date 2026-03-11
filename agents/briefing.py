@@ -14,6 +14,7 @@ Usage:
     uv run python -m agents.briefing --hours 48       # Custom lookback window
     uv run python -m agents.briefing --notify         # Desktop notification with summary
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,7 +23,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -39,8 +40,9 @@ try:
 except ImportError:
     pass
 
-from agents.activity_analyzer import generate_activity_report, ActivityReport
-from agents.health_monitor import run_checks, format_human as format_health
+from agents.activity_analyzer import generate_activity_report
+from agents.health_monitor import format_human as format_health
+from agents.health_monitor import run_checks
 from shared.config import PROFILES_DIR
 
 SCOUT_REPORT = PROFILES_DIR / "scout-report.json"
@@ -49,8 +51,10 @@ DIGEST_REPORT = PROFILES_DIR / "digest.json"
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+
 class BriefingStats(BaseModel):
     """Key numbers for the briefing."""
+
     llm_calls: int = 0
     llm_cost: float = 0.0
     llm_errors: int = 0
@@ -63,6 +67,7 @@ class BriefingStats(BaseModel):
 
 class ActionItem(BaseModel):
     """A specific recommended action for the operator."""
+
     priority: str = Field(description="high, medium, or low")
     action: str = Field(description="What to do, in imperative form")
     reason: str = Field(description="Why this matters, one sentence")
@@ -71,6 +76,7 @@ class ActionItem(BaseModel):
 
 class Briefing(BaseModel):
     """The synthesized daily briefing."""
+
     generated_at: str = Field(description="ISO timestamp")
     hours: int = Field(description="Lookback window in hours")
     headline: str = Field(description="One-line system status summary")
@@ -115,17 +121,19 @@ briefing_agent = Agent(
 
 # Register on-demand operator context tools
 from shared.context_tools import get_context_tools
+
 for _tool_fn in get_context_tools():
     briefing_agent.tool(_tool_fn)
 
 from shared.axiom_tools import get_axiom_tools
+
 for _tool_fn in get_axiom_tools():
     briefing_agent.tool(_tool_fn)
 
 
 def _collect_intention_practice_gaps() -> list[str]:
     """Extract flagged intention-practice gaps from profile markdown."""
-    profile_md = PROFILES_DIR / "ryan.md"
+    profile_md = PROFILES_DIR / "operator-profile.md"
     if not profile_md.exists():
         return []
     try:
@@ -136,16 +144,18 @@ def _collect_intention_practice_gaps() -> list[str]:
     idx = content.find(marker)
     if idx == -1:
         return []
-    section = content[idx + len(marker):]
+    section = content[idx + len(marker) :]
     next_heading = section.find("\n## ")
     if next_heading != -1:
         section = section[:next_heading]
-    return [line.strip()[2:] for line in section.strip().splitlines() if line.strip().startswith("- ")]
+    return [
+        line.strip()[2:] for line in section.strip().splitlines() if line.strip().startswith("- ")
+    ]
 
 
 def _collect_profile_health() -> str | None:
     """Build profile health summary from digest."""
-    digest_path = PROFILES_DIR / "ryan-digest.json"
+    digest_path = PROFILES_DIR / "operator-digest.json"
     if not digest_path.exists():
         return None
     try:
@@ -156,8 +166,11 @@ def _collect_profile_health() -> str | None:
     dims = digest.get("dimensions", {})
     if not total:
         return None
-    low_conf = [f"{n} ({d.get('avg_confidence', 0):.2f})"
-                for n, d in dims.items() if d.get("avg_confidence", 1.0) < 0.7]
+    low_conf = [
+        f"{n} ({d.get('avg_confidence', 0):.2f})"
+        for n, d in dims.items()
+        if d.get("avg_confidence", 1.0) < 0.7
+    ]
     lines = [f"Profile: {total} facts across {len(dims)} dimensions"]
     if low_conf:
         lines.append(f"Low confidence: {', '.join(low_conf)}")
@@ -174,6 +187,7 @@ def _collect_axiom_status() -> dict:
     }
     try:
         from shared.sufficiency_probes import run_probes
+
         probes = run_probes()
         result["probe_total"] = len(probes)
         failures = [p for p in probes if not p.met]
@@ -183,6 +197,7 @@ def _collect_axiom_status() -> dict:
         pass
     try:
         from shared.axiom_precedents import PrecedentStore
+
         store = PrecedentStore()
         pending = store.get_pending_review(limit=50)
         result["pending_precedents"] = len(pending)
@@ -222,7 +237,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
             # Enforce the 7-day staleness check
             try:
                 scout_dt = datetime.fromisoformat(scout_ts.replace("Z", "+00:00"))
-                scout_stale = (datetime.now(timezone.utc) - scout_dt).days > 7
+                scout_stale = (datetime.now(UTC) - scout_dt).days > 7
             except (ValueError, TypeError):
                 scout_stale = True
             if not scout_stale:
@@ -282,10 +297,11 @@ async def generate_briefing(hours: int = 24) -> Briefing:
 
     # Build goals section with momentum tracking
     from shared.operator import get_goals
+
     goals = get_goals()[:5]
     goals_section = ""
     if goals:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         goal_lines = []
         for g in goals:
             name = g.get("name", g.get("id", ""))
@@ -313,6 +329,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
     try:
         from shared.capacity import forecast_exhaustion
         from shared.health_history import get_recurring_issues, get_uptime_trend
+
         forecasts = forecast_exhaustion()
         warnings = [f for f in forecasts if f.is_warning(threshold_days=14)]
         recurring = get_recurring_issues(days=7)
@@ -321,8 +338,10 @@ async def generate_briefing(hours: int = 24) -> Briefing:
         if warnings:
             parts.append("**Capacity Warnings:**")
             for w in warnings:
-                parts.append(f"- {w.resource}: ~{w.days_to_exhaustion:.0f} days to exhaustion "
-                            f"({w.current_value:.1f}/{w.max_value:.1f})")
+                parts.append(
+                    f"- {w.resource}: ~{w.days_to_exhaustion:.0f} days to exhaustion "
+                    f"({w.current_value:.1f}/{w.max_value:.1f})"
+                )
         if recurring:
             parts.append("**Recurring Failures (7d):**")
             for check, count in recurring[:5]:
@@ -346,9 +365,13 @@ async def generate_briefing(hours: int = 24) -> Briefing:
             parts.append(f"- Sufficiency probes: {passed}/{axiom_status['probe_total']} passing")
             parts.append(f"- Failed: {', '.join(axiom_status['failed_probes'][:5])}")
         else:
-            parts.append(f"- Sufficiency probes: {axiom_status['probe_total']}/{axiom_status['probe_total']} passing")
+            parts.append(
+                f"- Sufficiency probes: {axiom_status['probe_total']}/{axiom_status['probe_total']} passing"
+            )
         if axiom_status["pending_precedents"] > 0:
-            parts.append(f"- {axiom_status['pending_precedents']} agent precedent(s) awaiting operator review")
+            parts.append(
+                f"- {axiom_status['pending_precedents']} agent precedent(s) awaiting operator review"
+            )
         if parts:
             axiom_section = "\n\n## Axiom Governance\n" + "\n".join(parts)
     except Exception:
@@ -371,6 +394,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
     calendar_section = ""
     try:
         from shared.calendar_context import CalendarContext
+
         ctx = CalendarContext()
         today_meetings = ctx.meetings_in_range(days=1)
         week_meetings = ctx.meetings_in_range(days=7)
@@ -396,16 +420,20 @@ async def generate_briefing(hours: int = 24) -> Briefing:
     # Drive activity from Qdrant
     drive_section = ""
     try:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
+
         from shared.config import get_qdrant
-        from qdrant_client.models import Filter, FieldCondition, Range, MatchValue
+
         client = get_qdrant()
         since_ts = time.time() - (hours * 3600)
         results = client.scroll(
             collection_name="documents",
-            scroll_filter=Filter(must=[
-                FieldCondition(key="ingested_at", range=Range(gte=since_ts)),
-                FieldCondition(key="source_service", match=MatchValue(value="gdrive")),
-            ]),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="ingested_at", range=Range(gte=since_ts)),
+                    FieldCondition(key="source_service", match=MatchValue(value="gdrive")),
+                ]
+            ),
             limit=100,
             with_payload=["filename", "gdrive_folder"],
             with_vectors=False,
@@ -428,6 +456,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
         gmail_state_path = Path.home() / ".cache" / "gmail-sync" / "state.json"
         if gmail_state_path.exists():
             from agents.gmail_sync import GmailSyncState
+
             gmail_state = GmailSyncState.model_validate_json(gmail_state_path.read_text())
             unread = sum(1 for e in gmail_state.messages.values() if e.is_unread)
             if unread or gmail_state.messages:
@@ -441,6 +470,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
         cc_state_path = Path.home() / ".cache" / "claude-code-sync" / "state.json"
         if cc_state_path.exists():
             from agents.claude_code_sync import ClaudeCodeSyncState
+
             cc_state = ClaudeCodeSyncState.model_validate_json(cc_state_path.read_text())
             since = time.time() - (hours * 3600)
             recent = [s for s in cc_state.sessions.values() if s.file_mtime > since]
@@ -456,6 +486,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
         obs_state_path = Path.home() / ".cache" / "obsidian-sync" / "state.json"
         if obs_state_path.exists():
             from agents.obsidian_sync import ObsidianSyncState
+
             obs_state = ObsidianSyncState.model_validate_json(obs_state_path.read_text())
             since = time.time() - (hours * 3600)
             recent = [n for n in obs_state.notes.values() if n.mtime > since]
@@ -476,7 +507,9 @@ async def generate_briefing(hours: int = 24) -> Briefing:
             if recent:
                 total_speech = sum(v.get("speech_seconds", 0) for v in recent.values())
                 total_music = sum(v.get("music_seconds", 0) for v in recent.values())
-                total_speakers = max((v.get("speaker_count", 0) for v in recent.values()), default=0)
+                total_speakers = max(
+                    (v.get("speaker_count", 0) for v in recent.values()), default=0
+                )
                 audio_section = (
                     f"\n## Audio Activity\n"
                     f"{len(recent)} recordings processed. "
@@ -497,7 +530,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
 {health_summary}
 ```
 {scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{gaps_section}{profile_section}
-Generate a briefing for this system state. The timestamp is {datetime.now(timezone.utc).isoformat()[:19]}Z.
+Generate a briefing for this system state. The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
 The lookback window is {hours} hours."""
 
     try:
@@ -506,13 +539,13 @@ The lookback window is {hours} hours."""
     except Exception as e:
         log.error("LLM synthesis failed: %s", e)
         briefing = Briefing(
-            generated_at=datetime.now(timezone.utc).isoformat()[:19] + "Z",
+            generated_at=datetime.now(UTC).isoformat()[:19] + "Z",
             hours=hours,
             headline="Briefing unavailable — LLM error",
             body=str(e),
             action_items=[],
         )
-    briefing.generated_at = datetime.now(timezone.utc).isoformat()[:19] + "Z"
+    briefing.generated_at = datetime.now(UTC).isoformat()[:19] + "Z"
     briefing.hours = hours
     briefing.stats = stats
 
@@ -521,10 +554,11 @@ The lookback window is {hours} hours."""
 
 # ── Formatters ───────────────────────────────────────────────────────────────
 
+
 def format_briefing_md(briefing: Briefing) -> str:
     """Format briefing as markdown for file storage."""
     lines = [
-        f"# System Briefing",
+        "# System Briefing",
         f"*Generated {briefing.generated_at} — {briefing.hours}h lookback*",
         "",
         f"## {briefing.headline}",
@@ -552,7 +586,10 @@ def format_briefing_md(briefing: Briefing) -> str:
     if briefing.action_items:
         date_str = briefing.generated_at[:10]
         lines.append("## Action Items")
-        for item in sorted(briefing.action_items, key=lambda a: {"high": 0, "medium": 1, "low": 2}.get(a.priority, 3)):
+        for item in sorted(
+            briefing.action_items,
+            key=lambda a: {"high": 0, "medium": 1, "low": 2}.get(a.priority, 3),
+        ):
             # Tasks plugin priority: highest=🔺, high=⏫, medium=🔼, low=🔽
             pri_emoji = {"high": " ⏫", "medium": " 🔼", "low": " 🔽"}.get(item.priority, "")
             lines.append(f"- [ ] {item.action}{pri_emoji} 📅 {date_str}")
@@ -589,7 +626,10 @@ def format_briefing_human(briefing: Briefing) -> str:
     if briefing.action_items:
         lines.append("")
         lines.append("Action Items:")
-        for item in sorted(briefing.action_items, key=lambda a: {"high": 0, "medium": 1, "low": 2}.get(a.priority, 3)):
+        for item in sorted(
+            briefing.action_items,
+            key=lambda a: {"high": 0, "medium": 1, "low": 2}.get(a.priority, 3),
+        ):
             icon = {"high": "!!", "medium": "! ", "low": ".."}
             lines.append(f"  [{icon.get(item.priority, '??')}] {item.action}")
             if item.command:
@@ -600,9 +640,11 @@ def format_briefing_human(briefing: Briefing) -> str:
 
 # ── Notification ─────────────────────────────────────────────────────────────
 
+
 def send_notification(briefing: Briefing) -> None:
     """Send briefing notification via ntfy + desktop (shared.notify)."""
-    from shared.notify import briefing_uri, send_notification as _notify
+    from shared.notify import briefing_uri
+    from shared.notify import send_notification as _notify
 
     summary = briefing.headline
     body_parts = [summary]
@@ -649,6 +691,7 @@ async def main() -> None:
 
         # Also write to Obsidian vault for Sync
         from shared.vault_writer import write_briefing_to_vault, write_nudges_to_vault
+
         vault_path = write_briefing_to_vault(briefing_md)
         if vault_path:
             print(f"Vault: {vault_path}", file=sys.stderr)
@@ -657,9 +700,15 @@ async def main() -> None:
 
         # Write nudges to vault (consumed by daily note embed)
         from cockpit.data.nudges import collect_nudges
+
         nudges = collect_nudges(max_nudges=15, briefing=briefing)
         nudge_dicts = [
-            {"priority": n.priority_score, "source": n.category, "message": n.title, "action": n.suggested_action}
+            {
+                "priority": n.priority_score,
+                "source": n.category,
+                "message": n.title,
+                "action": n.suggested_action,
+            }
             for n in nudges
         ]
         nudge_path = write_nudges_to_vault(nudge_dicts)

@@ -1,10 +1,10 @@
 """Integration tests for SSE streaming API contract."""
+
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 from httpx import ASGITransport, AsyncClient
 
 from cockpit.api.app import app
@@ -55,8 +55,11 @@ class TestSSEEventContract:
     @patch("cockpit.api.routes.query.classify_query", return_value="dev_story")
     async def test_status_event_has_phase_and_agent(self, mock_classify, mock_run):
         mock_run.return_value = QueryResult(
-            markdown="test", agent_type="dev_story",
-            tokens_in=10, tokens_out=5, elapsed_ms=100,
+            markdown="test",
+            agent_type="dev_story",
+            tokens_in=10,
+            tokens_out=5,
+            elapsed_ms=100,
         )
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/query/run", json={"query": "test"})
@@ -72,8 +75,11 @@ class TestSSEEventContract:
     @patch("cockpit.api.routes.query.classify_query", return_value="dev_story")
     async def test_done_event_has_metadata(self, mock_classify, mock_run):
         mock_run.return_value = QueryResult(
-            markdown="test", agent_type="dev_story",
-            tokens_in=500, tokens_out=200, elapsed_ms=1234,
+            markdown="test",
+            agent_type="dev_story",
+            tokens_in=500,
+            tokens_out=200,
+            elapsed_ms=1234,
         )
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/query/run", json={"query": "test"})
@@ -96,8 +102,11 @@ class TestSSEEventContract:
     @patch("cockpit.api.routes.query.classify_query", return_value="dev_story")
     async def test_empty_markdown_still_completes(self, mock_classify, mock_run):
         mock_run.return_value = QueryResult(
-            markdown="", agent_type="dev_story",
-            tokens_in=50, tokens_out=10, elapsed_ms=200,
+            markdown="",
+            agent_type="dev_story",
+            tokens_in=50,
+            tokens_out=10,
+            elapsed_ms=200,
         )
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/query/run", json={"query": "empty test"})

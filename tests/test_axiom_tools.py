@@ -1,12 +1,13 @@
 # tests/test_axiom_tools.py
 """Tests for shared.axiom_tools."""
+
 import asyncio
 import json
-
-import pytest
 from unittest.mock import MagicMock, patch
 
-from shared.axiom_tools import check_axiom_compliance, record_axiom_decision, get_axiom_tools
+import pytest
+
+from shared.axiom_tools import check_axiom_compliance, get_axiom_tools, record_axiom_decision
 
 
 def _mock_ctx():
@@ -28,8 +29,10 @@ class TestCheckAxiomCompliance:
         mock_precedent.distinguishing_facts = ["Single device"]
         mock_precedent.situation = "Tailscale access"
 
-        with patch("shared.axiom_precedents.PrecedentStore") as MockStore, \
-             patch("shared.axiom_registry.load_axioms") as mock_load:
+        with (
+            patch("shared.axiom_precedents.PrecedentStore") as MockStore,
+            patch("shared.axiom_registry.load_axioms") as mock_load,
+        ):
             mock_axiom = MagicMock()
             mock_axiom.id = "single_user"
             mock_axiom.text = "Single user system."
@@ -37,7 +40,9 @@ class TestCheckAxiomCompliance:
             MockStore.return_value.search.return_value = [mock_precedent]
 
             result = await check_axiom_compliance(
-                ctx, situation="Adding Tailscale VPN", axiom_id="single_user",
+                ctx,
+                situation="Adding Tailscale VPN",
+                axiom_id="single_user",
             )
 
         assert "PRE-001" in result
@@ -47,9 +52,11 @@ class TestCheckAxiomCompliance:
     async def test_returns_axiom_text_when_no_precedents(self):
         ctx = _mock_ctx()
 
-        with patch("shared.axiom_precedents.PrecedentStore") as MockStore, \
-             patch("shared.axiom_registry.load_axioms") as mock_load, \
-             patch("shared.axiom_registry.load_implications") as mock_impl:
+        with (
+            patch("shared.axiom_precedents.PrecedentStore") as MockStore,
+            patch("shared.axiom_registry.load_axioms") as mock_load,
+            patch("shared.axiom_registry.load_implications") as mock_impl,
+        ):
             mock_axiom = MagicMock()
             mock_axiom.id = "single_user"
             mock_axiom.text = "Single user system."
@@ -58,7 +65,8 @@ class TestCheckAxiomCompliance:
             mock_impl.return_value = []
 
             result = await check_axiom_compliance(
-                ctx, situation="Adding multi-tenant DB",
+                ctx,
+                situation="Adding multi-tenant DB",
             )
 
         assert "Single user system" in result
@@ -68,8 +76,10 @@ class TestCheckAxiomCompliance:
     async def test_returns_fallback_when_store_unavailable(self):
         ctx = _mock_ctx()
 
-        with patch("shared.axiom_precedents.PrecedentStore") as MockStore, \
-             patch("shared.axiom_registry.load_axioms") as mock_load:
+        with (
+            patch("shared.axiom_precedents.PrecedentStore") as MockStore,
+            patch("shared.axiom_registry.load_axioms") as mock_load,
+        ):
             mock_axiom = MagicMock()
             mock_axiom.id = "single_user"
             mock_axiom.text = "Single user system."
@@ -79,7 +89,8 @@ class TestCheckAxiomCompliance:
             MockStore.side_effect = ConnectionError("Qdrant down")
 
             result = await check_axiom_compliance(
-                ctx, situation="Any situation",
+                ctx,
+                situation="Any situation",
             )
 
         assert "Precedent database unavailable" in result
@@ -93,7 +104,8 @@ class TestCheckAxiomCompliance:
             mock_load.return_value = []
 
             result = await check_axiom_compliance(
-                ctx, situation="Any situation",
+                ctx,
+                situation="Any situation",
             )
 
         assert "No axioms defined" in result
@@ -108,7 +120,9 @@ class TestCheckAxiomCompliance:
             mock_load.return_value = [mock_axiom]
 
             result = await check_axiom_compliance(
-                ctx, situation="Any situation", axiom_id="nonexistent",
+                ctx,
+                situation="Any situation",
+                axiom_id="nonexistent",
             )
 
         assert "not found" in result
@@ -193,8 +207,10 @@ class TestDomainAwareCompliance:
         domain_axiom.scope = "domain"
         domain_axiom.domain = "management"
 
-        with patch("shared.axiom_registry.load_axioms") as mock_load, \
-             patch("shared.axiom_precedents.PrecedentStore", side_effect=Exception("no qdrant")):
+        with (
+            patch("shared.axiom_registry.load_axioms") as mock_load,
+            patch("shared.axiom_precedents.PrecedentStore", side_effect=Exception("no qdrant")),
+        ):
             mock_load.side_effect = [
                 [const_axiom],
                 [domain_axiom],
@@ -211,8 +227,10 @@ class TestDomainAwareCompliance:
         """Constitutional axioms always present when domain is specified."""
         ctx = _mock_ctx()
 
-        with patch("shared.axiom_registry.load_axioms") as mock_load, \
-             patch("shared.axiom_precedents.PrecedentStore", side_effect=Exception("no qdrant")):
+        with (
+            patch("shared.axiom_registry.load_axioms") as mock_load,
+            patch("shared.axiom_precedents.PrecedentStore", side_effect=Exception("no qdrant")),
+        ):
             const_axiom = MagicMock()
             const_axiom.id = "single_user"
             const_axiom.text = "Single user."
@@ -225,7 +243,7 @@ class TestDomainAwareCompliance:
                 [const_axiom],
                 [],  # no domain axioms
             ]
-            result = await check_axiom_compliance(ctx, "test situation", domain="management")
+            await check_axiom_compliance(ctx, "test situation", domain="management")
 
         assert mock_load.call_count == 2
         calls = mock_load.call_args_list
@@ -245,8 +263,10 @@ class TestUsageTelemetry:
     def test_check_axiom_compliance_logs_usage(self, tmp_path):
         """check_axiom_compliance should log usage to JSONL file."""
         usage_log = tmp_path / "tool-usage.jsonl"
-        with patch("shared.axiom_tools.USAGE_LOG", usage_log), \
-             patch("shared.axiom_registry.load_axioms", return_value=[]):
+        with (
+            patch("shared.axiom_tools.USAGE_LOG", usage_log),
+            patch("shared.axiom_registry.load_axioms", return_value=[]),
+        ):
             ctx = _mock_ctx()
             asyncio.run(check_axiom_compliance(ctx, "test situation"))
         assert usage_log.exists()
@@ -258,13 +278,13 @@ class TestUsageTelemetry:
     def test_record_axiom_decision_logs_usage(self, tmp_path):
         """record_axiom_decision should log usage to JSONL file."""
         usage_log = tmp_path / "tool-usage.jsonl"
-        with patch("shared.axiom_tools.USAGE_LOG", usage_log), \
-             patch("shared.axiom_precedents.PrecedentStore") as MockStore:
+        with (
+            patch("shared.axiom_tools.USAGE_LOG", usage_log),
+            patch("shared.axiom_precedents.PrecedentStore") as MockStore,
+        ):
             MockStore.return_value.record.return_value = "PRE-TEST"
             ctx = _mock_ctx()
-            asyncio.run(record_axiom_decision(
-                ctx, "single_user", "test", "compliant", "testing"
-            ))
+            asyncio.run(record_axiom_decision(ctx, "single_user", "test", "compliant", "testing"))
         assert usage_log.exists()
         lines = usage_log.read_text().strip().split("\n")
         entry = json.loads(lines[0])

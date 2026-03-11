@@ -1,8 +1,6 @@
 """Integration tests for demo quality pipeline."""
-from unittest.mock import patch, MagicMock, AsyncMock
-import pytest
 
-from agents.demo import parse_duration, build_planning_prompt
+from agents.demo import build_planning_prompt, parse_duration
 from agents.demo_models import load_personas
 
 
@@ -10,8 +8,11 @@ class TestBuildPlanningPromptEnriched:
     def test_includes_research_context(self):
         personas = load_personas()
         prompt = build_planning_prompt(
-            "health monitoring", "leadership", personas["leadership"],
-            "## Current Health\nScore: 74/75", "## Style Guide\nVoice: first-person",
+            "health monitoring",
+            "leadership",
+            personas["leadership"],
+            "## Current Health\nScore: 74/75",
+            "## Style Guide\nVoice: first-person",
         )
         assert "74/75" in prompt
         assert "first-person" in prompt
@@ -19,8 +20,11 @@ class TestBuildPlanningPromptEnriched:
     def test_includes_visual_type_guidance(self):
         personas = load_personas()
         prompt = build_planning_prompt(
-            "the system", "family", personas["family"],
-            "research", "planning context",
+            "the system",
+            "family",
+            personas["family"],
+            "research",
+            "planning context",
         )
         assert "screenshot" in prompt
         assert "diagram" in prompt
@@ -29,8 +33,11 @@ class TestBuildPlanningPromptEnriched:
     def test_includes_audience_persona(self):
         personas = load_personas()
         prompt = build_planning_prompt(
-            "agents", "technical-peer", personas["technical-peer"],
-            "research", "planning context",
+            "agents",
+            "technical-peer",
+            personas["technical-peer"],
+            "research",
+            "planning context",
         )
         assert "technical-peer" in prompt
 

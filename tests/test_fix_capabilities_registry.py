@@ -3,10 +3,10 @@
 from typing import Any
 
 from shared.fix_capabilities import (
+    _REGISTRY,
     get_all_capabilities,
     get_capability_for_group,
     register_capability,
-    _REGISTRY,
 )
 from shared.fix_capabilities.base import (
     Action,

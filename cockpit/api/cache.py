@@ -4,6 +4,7 @@ Refreshes data collectors on timers matching the original TUI cadence:
 - Fast (30s): health, GPU, containers, timers
 - Slow (5min): briefing, scout, drift, cost, goals, readiness, nudges
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -110,6 +111,7 @@ class DataCache:
 
         try:
             from cockpit.data.briefing import BriefingData
+
             briefing = self.briefing if isinstance(self.briefing, BriefingData) else None
             self.nudges = collect_nudges(briefing=briefing)
         except Exception as e:
@@ -117,6 +119,7 @@ class DataCache:
 
         try:
             from cockpit.accommodations import load_accommodations
+
             self.accommodations = load_accommodations()
         except Exception as e:
             log.warning("Accommodation load error: %s", e)
@@ -125,7 +128,7 @@ class DataCache:
 # Singleton cache instance
 cache = DataCache()
 
-from shared.cycle_mode import get_cycle_mode, CycleMode
+from shared.cycle_mode import CycleMode, get_cycle_mode
 
 
 def _fast_interval() -> int:
@@ -136,7 +139,7 @@ def _slow_interval() -> int:
     return 120 if get_cycle_mode() == CycleMode.DEV else 300
 
 
-FAST_INTERVAL = 30   # backward-compat
+FAST_INTERVAL = 30  # backward-compat
 SLOW_INTERVAL = 300  # backward-compat
 
 _background_tasks: set[asyncio.Task] = set()

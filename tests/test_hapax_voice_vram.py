@@ -1,4 +1,5 @@
 """Tests for hapax_voice VRAM coordinator."""
+
 from __future__ import annotations
 
 import os
@@ -33,7 +34,7 @@ def test_lock_is_exclusive() -> None:
 
 def test_context_manager() -> None:
     path = _temp_lock_path()
-    with VRAMLock(path=path) as lock:
+    with VRAMLock(path=path):
         assert path.exists()
         assert int(path.read_text().strip()) == os.getpid()
     assert not path.exists()

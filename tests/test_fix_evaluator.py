@@ -2,6 +2,7 @@
 
 No LLM calls; the pydantic-ai agent is fully mocked.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,8 +12,8 @@ import pytest
 from agents.health_monitor import CheckResult, Status
 from shared.fix_capabilities.base import Action, FixProposal, ProbeResult, Safety
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _make_check(
     name: str = "docker_litellm",
@@ -65,6 +66,7 @@ def _make_proposal() -> FixProposal:
 
 
 # ── Tests ────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_returns_fix_proposal():

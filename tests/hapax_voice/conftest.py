@@ -1,7 +1,9 @@
 """Shared fixtures and markers for hapax_voice tests."""
+
 import subprocess
-import pytest
 from pathlib import Path
+
+import pytest
 
 
 def _has_command(cmd: str) -> bool:
@@ -21,6 +23,7 @@ def _has_v4l2_device() -> bool:
 def _has_display() -> bool:
     """Check if a display server is accessible."""
     import os
+
     return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
 
 
@@ -31,11 +34,14 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "hardware" in item.keywords:
             # Check which hardware is needed based on test name
-            if "screen" in item.name and not (_has_command("grim") and _has_display()):
-                item.add_marker(skip_hw)
-            elif "webcam" in item.name and not (_has_v4l2_device() and _has_command("ffmpeg")):
-                item.add_marker(skip_hw)
-            elif "face" in item.name and not _has_v4l2_device():
-                item.add_marker(skip_hw)
-            elif "atspi" in item.name and not _has_display():
+            if (
+                "screen" in item.name
+                and not (_has_command("grim") and _has_display())
+                or "webcam" in item.name
+                and not (_has_v4l2_device() and _has_command("ffmpeg"))
+                or "face" in item.name
+                and not _has_v4l2_device()
+                or "atspi" in item.name
+                and not _has_display()
+            ):
                 item.add_marker(skip_hw)

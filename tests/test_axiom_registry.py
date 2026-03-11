@@ -1,11 +1,13 @@
 # tests/test_axiom_registry.py
 """Tests for shared.axiom_registry."""
+
 import pytest
-from pathlib import Path
 
 from shared.axiom_registry import (
-    Axiom, Implication, SupremacyTension,
-    load_axioms, load_implications, get_axiom, validate_supremacy,
+    get_axiom,
+    load_axioms,
+    load_implications,
+    validate_supremacy,
 )
 
 

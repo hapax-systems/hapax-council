@@ -1,6 +1,8 @@
 """Tests for the dimension migration script."""
+
 import json
-from scripts.migrate_profile_dimensions import remap_dimension, migrate_profile
+
+from scripts.migrate_profile_dimensions import migrate_profile, remap_dimension
 
 
 def test_remap_identity_unchanged():
@@ -80,7 +82,7 @@ def test_remap_obsidian_knowledge():
 
 def test_migrate_profile_remaps_facts(tmp_path):
     profile = {
-        "name": "Ryan",
+        "name": "Operator",
         "summary": "Test",
         "version": 42,
         "updated_at": "2026-03-09",
@@ -90,23 +92,41 @@ def test_migrate_profile_remaps_facts(tmp_path):
                 "name": "workflow",
                 "summary": "Old summary",
                 "facts": [
-                    {"dimension": "workflow", "key": "preferred_editor", "value": "vscode",
-                     "confidence": 0.9, "source": "config", "evidence": "test"},
-                    {"dimension": "workflow", "key": "daily_standup_time", "value": "9am",
-                     "confidence": 0.8, "source": "interview", "evidence": "test"},
+                    {
+                        "dimension": "workflow",
+                        "key": "preferred_editor",
+                        "value": "vscode",
+                        "confidence": 0.9,
+                        "source": "config",
+                        "evidence": "test",
+                    },
+                    {
+                        "dimension": "workflow",
+                        "key": "daily_standup_time",
+                        "value": "9am",
+                        "confidence": 0.8,
+                        "source": "interview",
+                        "evidence": "test",
+                    },
                 ],
             },
             {
                 "name": "hardware",
                 "summary": "Hardware info",
                 "facts": [
-                    {"dimension": "hardware", "key": "gpu_model", "value": "RTX 3090",
-                     "confidence": 1.0, "source": "config", "evidence": "test"},
+                    {
+                        "dimension": "hardware",
+                        "key": "gpu_model",
+                        "value": "RTX 3090",
+                        "confidence": 1.0,
+                        "source": "config",
+                        "evidence": "test",
+                    },
                 ],
             },
         ],
     }
-    input_path = tmp_path / "ryan.json"
+    input_path = tmp_path / "operator-profile.json"
     input_path.write_text(json.dumps(profile))
 
     result = migrate_profile(input_path)

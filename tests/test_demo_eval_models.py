@@ -1,13 +1,13 @@
 """Tests for demo evaluation data models."""
+
 import pytest
+
 from agents.demo_models import DemoEvalDimension, DemoEvalReport, DemoEvalResult
 
 
 class TestDemoEvalDimension:
     def test_basic_creation(self):
-        dim = DemoEvalDimension(
-            name="voice_consistency", category="text", passed=True, score=0.9
-        )
+        dim = DemoEvalDimension(name="voice_consistency", category="text", passed=True, score=0.9)
         assert dim.name == "voice_consistency"
         assert dim.category == "text"
         assert dim.passed is True
@@ -33,9 +33,7 @@ class TestDemoEvalReport:
     def test_passing_report(self):
         dims = [
             DemoEvalDimension(name="style", category="text", passed=True, score=0.9),
-            DemoEvalDimension(
-                name="clarity", category="visual", passed=True, score=0.8
-            ),
+            DemoEvalDimension(name="clarity", category="visual", passed=True, score=0.8),
         ]
         report = DemoEvalReport(
             dimensions=dims,
@@ -66,7 +64,7 @@ class TestDemoEvalResult:
             iteration=1,
         )
         result = DemoEvalResult(
-            scenario="the system for my wife",
+            scenario="the system for my partner",
             passed=True,
             iterations=1,
             final_report=report,
@@ -77,12 +75,8 @@ class TestDemoEvalResult:
         assert result.iterations == 1
 
     def test_with_history(self):
-        r1 = DemoEvalReport(
-            dimensions=[], overall_pass=False, overall_score=0.4, iteration=1
-        )
-        r2 = DemoEvalReport(
-            dimensions=[], overall_pass=True, overall_score=0.85, iteration=2
-        )
+        r1 = DemoEvalReport(dimensions=[], overall_pass=False, overall_score=0.4, iteration=1)
+        r2 = DemoEvalReport(dimensions=[], overall_pass=True, overall_score=0.85, iteration=2)
         result = DemoEvalResult(
             scenario="test",
             passed=True,

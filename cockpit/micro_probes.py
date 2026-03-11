@@ -5,15 +5,15 @@ neurocognitive_profile gaps have highest priority, then other sparse dimensions.
 
 All probes are hardcoded experiential questions, NOT LLM-generated.
 """
+
 from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-
-from shared.cycle_mode import get_cycle_mode, CycleMode
+from shared.cycle_mode import CycleMode, get_cycle_mode
 
 
 def _probe_idle_threshold() -> int:
@@ -31,18 +31,20 @@ PROBE_IDLE_THRESHOLD = 300
 PROBE_COOLDOWN = 600
 
 from shared.config import COCKPIT_STATE_DIR
+
 _STATE_PATH = COCKPIT_STATE_DIR / "probe-state.json"
 
 
 @dataclass
 class MicroProbe:
     """A single micro-probe question."""
+
     dimension: str
     topic: str
     question: str
-    rationale: str          # shown to operator: why this matters
-    follow_up_hint: str     # context for chat agent to continue
-    priority: int           # higher = more urgent
+    rationale: str  # shown to operator: why this matters
+    follow_up_hint: str  # context for chat agent to continue
+    priority: int  # higher = more urgent
 
 
 # ── Probe pool ──────────────────────────────────────────────────────────────
@@ -198,15 +200,14 @@ class MicroProbeEngine:
     def save_state(self) -> None:
         """Persist probe state to disk (atomic write)."""
         import tempfile
+
         _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "asked_topics": sorted(self._asked),
             "last_probe_time": self._last_probe_time,
         }
         content = json.dumps(data, indent=2)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=_STATE_PATH.parent, suffix=".json"
-        )
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=_STATE_PATH.parent, suffix=".json")
         try:
             with open(tmp_fd, "w", encoding="utf-8") as f:
                 f.write(content)

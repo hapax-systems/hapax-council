@@ -1,7 +1,8 @@
 """Tests for system readiness gate."""
-from unittest.mock import patch, MagicMock, AsyncMock
 
-from agents.demo_pipeline.readiness import check_readiness, ReadinessResult
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from agents.demo_pipeline.readiness import ReadinessResult, check_readiness
 
 
 def _make_report(healthy: int = 75, total: int = 75, failed: int = 0, degraded: int = 0):
@@ -23,7 +24,9 @@ class TestReadiness:
         mock_report = _make_report()
 
         with (
-            patch("agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report) as mock_run,
+            patch(
+                "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
+            ) as mock_run,
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock, return_value=0),
             patch("urllib.request.urlopen"),
         ):
@@ -37,7 +40,9 @@ class TestReadiness:
         mock_report = _make_report(healthy=70, total=75, failed=5)
 
         with (
-            patch("agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report),
+            patch(
+                "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
+            ),
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock, return_value=2),
             patch("urllib.request.urlopen"),
         ):
@@ -50,7 +55,9 @@ class TestReadiness:
         mock_report = _make_report(healthy=70, total=75, failed=5)
 
         with (
-            patch("agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report),
+            patch(
+                "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
+            ),
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock) as mock_fixes,
             patch("urllib.request.urlopen"),
         ):
@@ -69,7 +76,9 @@ class TestReadiness:
             return MagicMock()
 
         with (
-            patch("agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report),
+            patch(
+                "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
+            ),
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock, return_value=0),
             patch("urllib.request.urlopen", side_effect=urlopen_side_effect),
         ):
@@ -87,7 +96,9 @@ class TestReadiness:
             return MagicMock()
 
         with (
-            patch("agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report),
+            patch(
+                "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
+            ),
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock, return_value=0),
             patch("urllib.request.urlopen", side_effect=urlopen_side_effect),
         ):
@@ -100,7 +111,9 @@ class TestReadiness:
         mock_report = _make_report()
 
         with (
-            patch("agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report),
+            patch(
+                "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
+            ),
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock, return_value=0),
             patch("urllib.request.urlopen"),
         ):
@@ -117,7 +130,9 @@ class TestReadiness:
             return MagicMock()
 
         with (
-            patch("agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report),
+            patch(
+                "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
+            ),
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock, return_value=0),
             patch("urllib.request.urlopen", side_effect=urlopen_side_effect),
             patch("pathlib.Path.exists", return_value=True),
@@ -131,7 +146,9 @@ class TestReadiness:
         mock_report = _make_report()
 
         with (
-            patch("agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report),
+            patch(
+                "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
+            ),
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock, return_value=0),
             patch("urllib.request.urlopen"),
             patch("pathlib.Path.exists", return_value=False),
@@ -160,7 +177,9 @@ class TestReadiness:
         progress_msgs: list[str] = []
 
         with (
-            patch("agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report),
+            patch(
+                "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
+            ),
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock, return_value=0),
             patch("urllib.request.urlopen"),
         ):

@@ -1,4 +1,5 @@
 """Tests for hapax_voice notification queue."""
+
 from __future__ import annotations
 
 import time

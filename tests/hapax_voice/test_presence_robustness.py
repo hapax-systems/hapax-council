@@ -3,17 +3,14 @@
 Covers audio frame edge cases, VAD window pruning boundaries,
 face decay boundaries, composite score matrix, and transition events.
 """
+
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
-import torch
 
-from agents.hapax_voice.presence import PresenceDetector, SAMPLE_RATE
-
+from agents.hapax_voice.presence import SAMPLE_RATE, PresenceDetector
 
 # ---------------------------------------------------------------------------
 # Audio frame edge cases
@@ -290,7 +287,12 @@ class TestTransitionEvents:
         assert result == "likely_present"
         mock_log.emit.assert_called_once_with(
             "presence_transition",
-            **{"from": "likely_absent", "to": "likely_present", "vad_count": 5, "face_detected": False},
+            **{
+                "from": "likely_absent",
+                "to": "likely_present",
+                "vad_count": 5,
+                "face_detected": False,
+            },
         )
 
     def test_no_transition_event_on_same_score(self):

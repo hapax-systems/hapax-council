@@ -17,7 +17,6 @@ from shared.fix_capabilities.base import (
 )
 from shared.fix_capabilities.pipeline import FixOutcome, PipelineResult, run_fix_pipeline
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -67,9 +66,7 @@ class _MockCap(Capability):
         exec_result: ExecutionResult | None = None,
     ):
         self._validate_result = validate_result
-        self._exec_result = exec_result or ExecutionResult(
-            success=True, message="fixed"
-        )
+        self._exec_result = exec_result or ExecutionResult(success=True, message="fixed")
         self._probe = ProbeResult(capability="mock-cap", raw={"key": "val"})
 
     async def gather_context(self, check):
@@ -174,7 +171,11 @@ async def test_destructive_proposal_notifies_not_executes():
     report = _make_report(_FAILING_CHECK)
     with (
         patch(f"{_PATCH_BASE}.get_capability_for_group", return_value=cap),
-        patch(f"{_PATCH_BASE}.evaluate_check", new_callable=AsyncMock, return_value=_DESTRUCTIVE_PROPOSAL),
+        patch(
+            f"{_PATCH_BASE}.evaluate_check",
+            new_callable=AsyncMock,
+            return_value=_DESTRUCTIVE_PROPOSAL,
+        ),
         patch(f"{_PATCH_BASE}.send_notification") as mock_notify,
     ):
         result = await run_fix_pipeline(report)
@@ -242,9 +243,11 @@ async def test_evaluator_returns_none_skips():
 async def test_gather_context_exception_skips():
     """Exception in gather_context skips the check."""
     cap = _MockCap()
+
     # Monkey-patch the instance method to raise
     async def _raise(check):
         raise RuntimeError("probe failed")
+
     cap.gather_context = _raise
     report = _make_report(_FAILING_CHECK)
     with (

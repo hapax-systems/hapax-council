@@ -1,20 +1,16 @@
 """Tests for cockpit.data.emergence — undomained activity detection."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
 from cockpit.data.emergence import (
-    UndomainedEvent,
-    EmergenceCandidate,
-    EmergenceSnapshot,
-    collect_undomained_events,
-    cluster_events,
     CANDIDATE_MIN_EVENTS,
-    CANDIDATE_MIN_WEEKS,
-    CANDIDATE_MIN_KEYWORDS,
+    EmergenceSnapshot,
+    UndomainedEvent,
+    cluster_events,
+    collect_undomained_events,
 )
 
 
@@ -60,17 +56,19 @@ class TestClustering:
 
     def test_sufficient_cluster(self) -> None:
         """Events meeting threshold produce a candidate."""
-        base = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        base = datetime(2026, 3, 1, tzinfo=UTC)
         events = []
         for i in range(CANDIDATE_MIN_EVENTS + 1):
             day_offset = (i % 3) * 7  # spread across 3 weeks
-            events.append(UndomainedEvent(
-                timestamp=(base + timedelta(days=day_offset, hours=i)).isoformat(),
-                source="vault",
-                description=f"woodworking project {i}",
-                keywords=["woodworking", "project", "tools"],
-                people=[],
-            ))
+            events.append(
+                UndomainedEvent(
+                    timestamp=(base + timedelta(days=day_offset, hours=i)).isoformat(),
+                    source="vault",
+                    description=f"woodworking project {i}",
+                    keywords=["woodworking", "project", "tools"],
+                    people=[],
+                )
+            )
         candidates = cluster_events(events)
         assert len(candidates) >= 1
         assert candidates[0].event_count >= CANDIDATE_MIN_EVENTS

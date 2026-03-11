@@ -1,11 +1,12 @@
 """Tests for WorkspaceAnalyzer (multi-image Gemini Flash)."""
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.workspace_analyzer import WorkspaceAnalyzer
 from agents.hapax_voice.screen_models import WorkspaceAnalysis
+from agents.hapax_voice.workspace_analyzer import WorkspaceAnalyzer
 
 
 @pytest.mark.asyncio
@@ -14,22 +15,28 @@ async def test_analyzer_returns_workspace_analysis():
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = json.dumps({
-        "app": "foot",
-        "context": "Running pytest",
-        "summary": "Terminal showing test output.",
-        "issues": [],
-        "suggestions": [],
-        "keywords": ["pytest"],
-        "operator_present": True,
-        "operator_activity": "typing",
-        "operator_attention": "screen",
-        "gear_state": [
-            {"device": "MPC Live III", "powered": True,
-             "display_content": "Song mode", "notes": ""}
-        ],
-        "workspace_change": False,
-    })
+    mock_response.choices[0].message.content = json.dumps(
+        {
+            "app": "foot",
+            "context": "Running pytest",
+            "summary": "Terminal showing test output.",
+            "issues": [],
+            "suggestions": [],
+            "keywords": ["pytest"],
+            "operator_present": True,
+            "operator_activity": "typing",
+            "operator_attention": "screen",
+            "gear_state": [
+                {
+                    "device": "MPC Live III",
+                    "powered": True,
+                    "display_content": "Song mode",
+                    "notes": "",
+                }
+            ],
+            "workspace_change": False,
+        }
+    )
 
     with patch("agents.hapax_voice.workspace_analyzer.AsyncOpenAI") as mock_cls:
         mock_client = MagicMock()
@@ -57,14 +64,16 @@ async def test_analyzer_works_with_screen_only():
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = json.dumps({
-        "app": "firefox",
-        "context": "Browsing docs",
-        "summary": "Web page.",
-        "issues": [],
-        "suggestions": [],
-        "keywords": [],
-    })
+    mock_response.choices[0].message.content = json.dumps(
+        {
+            "app": "firefox",
+            "context": "Browsing docs",
+            "summary": "Web page.",
+            "issues": [],
+            "suggestions": [],
+            "keywords": [],
+        }
+    )
 
     with patch("agents.hapax_voice.workspace_analyzer.AsyncOpenAI") as mock_cls:
         mock_client = MagicMock()
@@ -96,7 +105,9 @@ def test_analyzer_builds_multi_image_messages():
     """Verify the message array contains labeled images."""
     analyzer = WorkspaceAnalyzer(model="gemini-flash")
     messages = analyzer._build_messages(
-        screen_b64="s", operator_b64="o", hardware_b64="h",
+        screen_b64="s",
+        operator_b64="o",
+        hardware_b64="h",
         extra_context=None,
     )
     user_content = messages[1]["content"]
@@ -113,7 +124,9 @@ def test_analyzer_omits_missing_cameras():
     """Message array should only include provided images."""
     analyzer = WorkspaceAnalyzer(model="gemini-flash")
     messages = analyzer._build_messages(
-        screen_b64="s", operator_b64=None, hardware_b64=None,
+        screen_b64="s",
+        operator_b64=None,
+        hardware_b64=None,
         extra_context=None,
     )
     user_content = messages[1]["content"]
@@ -124,6 +137,7 @@ def test_analyzer_omits_missing_cameras():
 # ---------------------------------------------------------------------------
 # Failure-mode tests
 # ---------------------------------------------------------------------------
+
 
 def _make_mock_response(content: str) -> MagicMock:
     """Create a mock API response with the given content string."""
@@ -169,14 +183,16 @@ async def test_analyzer_handles_empty_response():
 @pytest.mark.asyncio
 async def test_analyzer_strips_markdown_json_fence():
     """API wraps JSON in ```json ... ```. Should parse correctly."""
-    payload = json.dumps({
-        "app": "firefox",
-        "context": "browsing",
-        "summary": "Web page open.",
-        "issues": [],
-        "suggestions": [],
-        "keywords": [],
-    })
+    payload = json.dumps(
+        {
+            "app": "firefox",
+            "context": "browsing",
+            "summary": "Web page open.",
+            "issues": [],
+            "suggestions": [],
+            "keywords": [],
+        }
+    )
     content = f"```json\n{payload}\n```"
     result = await _run_analyze(content)
     assert isinstance(result, WorkspaceAnalysis)
@@ -186,14 +202,16 @@ async def test_analyzer_strips_markdown_json_fence():
 @pytest.mark.asyncio
 async def test_analyzer_strips_markdown_plain_fence():
     """API wraps JSON in ``` ... ``` (no language tag). Should parse correctly."""
-    payload = json.dumps({
-        "app": "foot",
-        "context": "running tests",
-        "summary": "Terminal output.",
-        "issues": [],
-        "suggestions": [],
-        "keywords": [],
-    })
+    payload = json.dumps(
+        {
+            "app": "foot",
+            "context": "running tests",
+            "summary": "Terminal output.",
+            "issues": [],
+            "suggestions": [],
+            "keywords": [],
+        }
+    )
     content = f"```\n{payload}\n```"
     result = await _run_analyze(content)
     assert isinstance(result, WorkspaceAnalysis)
@@ -203,14 +221,16 @@ async def test_analyzer_strips_markdown_plain_fence():
 @pytest.mark.asyncio
 async def test_analyzer_handles_malformed_issue():
     """Issue missing required 'description' field. Issue(**i) raises TypeError → None."""
-    payload = json.dumps({
-        "app": "vscode",
-        "context": "editing",
-        "summary": "Editor open.",
-        "issues": [{"severity": "error", "confidence": 0.9}],  # no description
-        "suggestions": [],
-        "keywords": [],
-    })
+    payload = json.dumps(
+        {
+            "app": "vscode",
+            "context": "editing",
+            "summary": "Editor open.",
+            "issues": [{"severity": "error", "confidence": 0.9}],  # no description
+            "suggestions": [],
+            "keywords": [],
+        }
+    )
     result = await _run_analyze(payload)
     assert result is None
 
@@ -218,15 +238,17 @@ async def test_analyzer_handles_malformed_issue():
 @pytest.mark.asyncio
 async def test_analyzer_handles_null_gear_state():
     """gear_state is null. The `or []` guard should handle it."""
-    payload = json.dumps({
-        "app": "vscode",
-        "context": "editing",
-        "summary": "Editor open.",
-        "issues": [],
-        "suggestions": [],
-        "keywords": [],
-        "gear_state": None,
-    })
+    payload = json.dumps(
+        {
+            "app": "vscode",
+            "context": "editing",
+            "summary": "Editor open.",
+            "issues": [],
+            "suggestions": [],
+            "keywords": [],
+            "gear_state": None,
+        }
+    )
     result = await _run_analyze(payload)
     assert isinstance(result, WorkspaceAnalysis)
     assert result.gear_state == []
@@ -235,16 +257,20 @@ async def test_analyzer_handles_null_gear_state():
 @pytest.mark.asyncio
 async def test_analyzer_handles_gear_state_with_null_item():
     """gear_state contains a null entry. Iterating calls .get() on None → crash → None."""
-    payload = json.dumps({
-        "app": "vscode",
-        "context": "editing",
-        "summary": "Editor open.",
-        "issues": [],
-        "suggestions": [],
-        "keywords": [],
-        "gear_state": [None, {"device": "SP-404", "powered": True,
-                              "display_content": "", "notes": ""}],
-    })
+    payload = json.dumps(
+        {
+            "app": "vscode",
+            "context": "editing",
+            "summary": "Editor open.",
+            "issues": [],
+            "suggestions": [],
+            "keywords": [],
+            "gear_state": [
+                None,
+                {"device": "SP-404", "powered": True, "display_content": "", "notes": ""},
+            ],
+        }
+    )
     result = await _run_analyze(payload)
     assert result is None
 
@@ -252,16 +278,18 @@ async def test_analyzer_handles_gear_state_with_null_item():
 @pytest.mark.asyncio
 async def test_analyzer_handles_extra_unknown_fields():
     """API returns extra fields not in the schema. Should be silently ignored."""
-    payload = json.dumps({
-        "app": "firefox",
-        "context": "browsing",
-        "summary": "Web page.",
-        "issues": [],
-        "suggestions": [],
-        "keywords": [],
-        "mood": "chill",
-        "weather": "sunny",
-    })
+    payload = json.dumps(
+        {
+            "app": "firefox",
+            "context": "browsing",
+            "summary": "Web page.",
+            "issues": [],
+            "suggestions": [],
+            "keywords": [],
+            "mood": "chill",
+            "weather": "sunny",
+        }
+    )
     result = await _run_analyze(payload)
     assert isinstance(result, WorkspaceAnalysis)
     assert result.app == "firefox"
@@ -290,15 +318,23 @@ async def test_analyzer_handles_missing_optional_fields():
 @pytest.mark.asyncio
 async def test_analyzer_handles_issue_with_extra_fields():
     """Issue with extra kwargs. Issue dataclass rejects unknown fields → None."""
-    payload = json.dumps({
-        "app": "vscode",
-        "context": "editing",
-        "summary": "Editor open.",
-        "issues": [{"severity": "error", "description": "build failed",
-                     "confidence": 0.9, "extra": "field"}],
-        "suggestions": [],
-        "keywords": [],
-    })
+    payload = json.dumps(
+        {
+            "app": "vscode",
+            "context": "editing",
+            "summary": "Editor open.",
+            "issues": [
+                {
+                    "severity": "error",
+                    "description": "build failed",
+                    "confidence": 0.9,
+                    "extra": "field",
+                }
+            ],
+            "suggestions": [],
+            "keywords": [],
+        }
+    )
     result = await _run_analyze(payload)
     assert result is None
 

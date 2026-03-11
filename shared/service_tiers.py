@@ -3,6 +3,7 @@
 Tiers control alert severity, nudge priority, and overall status weighting.
 T3 failures alone → DEGRADED (not FAILED) at the report level.
 """
+
 from __future__ import annotations
 
 from enum import IntEnum
@@ -10,10 +11,11 @@ from enum import IntEnum
 
 class ServiceTier(IntEnum):
     """Service criticality tiers — lower number = more critical."""
-    CRITICAL = 0      # Core infrastructure: data loss / total outage if down
-    IMPORTANT = 1     # Key features: significant capability loss if down
-    OBSERVABILITY = 2 # Monitoring/UI: reduced visibility if down
-    OPTIONAL = 3      # Nice-to-have: no operational impact if down
+
+    CRITICAL = 0  # Core infrastructure: data loss / total outage if down
+    IMPORTANT = 1  # Key features: significant capability loss if down
+    OBSERVABILITY = 2  # Monitoring/UI: reduced visibility if down
+    OPTIONAL = 3  # Nice-to-have: no operational impact if down
 
 
 # Map individual check names → tier.
@@ -28,17 +30,14 @@ TIER_MAP: dict[str, ServiceTier] = {
     "endpoints.ollama": ServiceTier.CRITICAL,
     "gpu.available": ServiceTier.CRITICAL,
     "qdrant.health": ServiceTier.CRITICAL,
-
     # T1 — Important
     "docker.langfuse": ServiceTier.IMPORTANT,
     "docker.langfuse-worker": ServiceTier.IMPORTANT,
     "endpoints.langfuse": ServiceTier.IMPORTANT,
-
     # T2 — Observability
     "docker.open-webui": ServiceTier.OBSERVABILITY,
     "connectivity.ntfy": ServiceTier.OBSERVABILITY,
     "connectivity.n8n": ServiceTier.OBSERVABILITY,
-
     # T3 — Optional
     "connectivity.tailscale": ServiceTier.OPTIONAL,
     "connectivity.obsidian": ServiceTier.OPTIONAL,

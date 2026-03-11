@@ -1,23 +1,19 @@
 """Tests for cockpit.micro_probes — micro-probe engine."""
+
 from __future__ import annotations
 
 import json
 import time
 from unittest.mock import patch
 
-import pytest
-
 from cockpit.micro_probes import (
-    MicroProbe,
-    MicroProbeEngine,
-    PROBE_COOLDOWN,
-    PROBE_IDLE_THRESHOLD,
     _PROBE_POOL,
-    _STATE_PATH,
+    PROBE_COOLDOWN,
+    MicroProbeEngine,
 )
 
-
 # ── Probe pool tests ───────────────────────────────────────────────────────
+
 
 def test_probe_pool_has_probes():
     assert len(_PROBE_POOL) >= 12
@@ -39,6 +35,7 @@ def test_probe_pool_unique_topics():
 
 # ── Engine tests ───────────────────────────────────────────────────────────
 
+
 def _engine(asked=None) -> MicroProbeEngine:
     e = MicroProbeEngine()
     e._loaded = True  # Skip disk load
@@ -50,6 +47,7 @@ def _engine(asked=None) -> MicroProbeEngine:
 def _mock_analysis(neurocognitive_gap=True):
     """Create a mock ProfileAnalysis with configurable neurocognitive_gap."""
     from cockpit.interview import ProfileAnalysis
+
     return ProfileAnalysis(
         missing_dimensions=[],
         sparse_dimensions=[],
@@ -127,6 +125,7 @@ def test_get_probe_no_neuro_gap():
 
 # ── State persistence tests ────────────────────────────────────────────────
 
+
 def test_save_and_load_state(tmp_path):
     state_file = tmp_path / "probe-state.json"
     e = _engine(asked=["task_initiation", "energy_cycles"])
@@ -159,6 +158,7 @@ def test_load_state_corrupt_json(tmp_path):
 
 # ── F-4.1: Atomic save_state ──────────────────────────────────────────────
 
+
 def test_save_state_atomic(tmp_path):
     """save_state uses atomic write (no partial files on crash)."""
     state_file = tmp_path / "probe-state.json"
@@ -168,7 +168,6 @@ def test_save_state_atomic(tmp_path):
     with patch("cockpit.micro_probes._STATE_PATH", state_file):
         e.save_state()
     assert state_file.exists()
-    import json
     data = json.loads(state_file.read_text())
     assert "time_perception" in data["asked_topics"]
     # No temp files left behind

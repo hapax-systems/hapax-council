@@ -1,4 +1,5 @@
 """Tests for WorkspaceMonitor deterministic hyprctl context optimization."""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,13 +16,17 @@ class TestDeterministicContext:
 
         mock_clients = [
             WindowInfo("0x1", "foot", "~/projects/ai-agents", 1, 10, 0, 0, 800, 600, False, False),
-            WindowInfo("0x2", "google-chrome", "cockpit-web", 3, 20, 0, 0, 1920, 1080, False, False),
+            WindowInfo(
+                "0x2", "google-chrome", "cockpit-web", 3, 20, 0, 0, 1920, 1080, False, False
+            ),
         ]
 
-        with patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC, \
-             patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener"), \
-             patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"), \
-             patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"):
+        with (
+            patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC,
+            patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener"),
+            patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"),
+            patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"),
+        ):
             mock_ipc = MagicMock()
             mock_ipc.get_clients.return_value = mock_clients
             MockIPC.return_value = mock_ipc
@@ -40,10 +45,12 @@ class TestDeterministicContext:
 
     def test_returns_empty_when_no_clients(self):
         """Returns empty string when hyprctl reports no open windows."""
-        with patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC, \
-             patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener"), \
-             patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"), \
-             patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"):
+        with (
+            patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC,
+            patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener"),
+            patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"),
+            patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"),
+        ):
             mock_ipc = MagicMock()
             mock_ipc.get_clients.return_value = []
             MockIPC.return_value = mock_ipc
@@ -61,10 +68,12 @@ class TestDeterministicContext:
             WindowInfo("0x1", "foot", "bash", 5, 10, 0, 0, 800, 600, False, False),
         ]
 
-        with patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC, \
-             patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener"), \
-             patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"), \
-             patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"):
+        with (
+            patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC,
+            patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener"),
+            patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"),
+            patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"),
+        ):
             mock_ipc = MagicMock()
             mock_ipc.get_clients.return_value = mock_clients
             MockIPC.return_value = mock_ipc

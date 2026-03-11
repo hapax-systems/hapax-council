@@ -1,4 +1,5 @@
 """MP4 chapter marker injection via ffmpeg."""
+
 from __future__ import annotations
 
 import json
@@ -36,8 +37,10 @@ def _get_wav_duration(wav_path: Path) -> float | None:
     ffprobe = _get_ffprobe_path()
     cmd = [
         ffprobe,
-        "-v", "quiet",
-        "-print_format", "json",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
         "-show_format",
         str(wav_path),
     ]
@@ -178,9 +181,7 @@ def inject_chapters(
 
     ffmpeg = get_ffmpeg_path()
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", delete=False, prefix="ffmeta_"
-    ) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, prefix="ffmeta_") as f:
         f.write(metadata_content)
         metadata_path = Path(f.name)
 
@@ -188,10 +189,14 @@ def inject_chapters(
         cmd = [
             ffmpeg,
             "-y",
-            "-i", str(video_path),
-            "-i", str(metadata_path),
-            "-map_metadata", "1",
-            "-codec", "copy",
+            "-i",
+            str(video_path),
+            "-i",
+            str(metadata_path),
+            "-map_metadata",
+            "1",
+            "-codec",
+            "copy",
             str(output_path),
         ]
         log.info("Injecting %d chapters into %s", len(chapters), video_path.name)

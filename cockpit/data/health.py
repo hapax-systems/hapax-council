@@ -1,10 +1,9 @@
 """Health data collectors for the cockpit."""
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
-
 
 from shared.config import PROFILES_DIR
 
@@ -69,7 +68,10 @@ async def collect_live_health() -> HealthSnapshot:
     except Exception as e:
         return HealthSnapshot(
             overall_status="failed",
-            total_checks=0, healthy=0, degraded=0, failed=0,
+            total_checks=0,
+            healthy=0,
+            degraded=0,
+            failed=0,
             duration_ms=0,
             failed_checks=[f"Could not read health history: {e}"],
         )
@@ -88,15 +90,17 @@ def collect_health_history(limit: int = 48) -> HealthHistory:
             continue
         try:
             d = json.loads(line)
-            entries.append(HealthHistoryEntry(
-                timestamp=d.get("timestamp", ""),
-                status=d.get("status", "unknown"),
-                healthy=d.get("healthy", 0),
-                degraded=d.get("degraded", 0),
-                failed=d.get("failed", 0),
-                duration_ms=d.get("duration_ms", 0),
-                failed_checks=d.get("failed_checks", []),
-            ))
+            entries.append(
+                HealthHistoryEntry(
+                    timestamp=d.get("timestamp", ""),
+                    status=d.get("status", "unknown"),
+                    healthy=d.get("healthy", 0),
+                    degraded=d.get("degraded", 0),
+                    failed=d.get("failed", 0),
+                    duration_ms=d.get("duration_ms", 0),
+                    failed_checks=d.get("failed_checks", []),
+                )
+            )
         except (json.JSONDecodeError, KeyError):
             continue
 

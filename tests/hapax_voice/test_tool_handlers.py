@@ -1,4 +1,5 @@
 """Tests for voice tool handler implementations."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,7 +12,11 @@ def mock_qdrant():
     """Mock Qdrant client with query_points returning fake results."""
     client = MagicMock()
     point = MagicMock()
-    point.payload = {"filename": "test.md", "text": "Sample document text", "source_service": "obsidian"}
+    point.payload = {
+        "filename": "test.md",
+        "text": "Sample document text",
+        "source_service": "obsidian",
+    }
     point.score = 0.85
     response = MagicMock()
     response.points = [point]
@@ -40,8 +45,10 @@ class TestSearchDocumentsHandler:
 
         mock_fn_params.arguments = {"query": "meeting notes"}
 
-        with patch("agents.hapax_voice.tools.get_qdrant", return_value=mock_qdrant), \
-             patch("agents.hapax_voice.tools.embed", mock_embed):
+        with (
+            patch("agents.hapax_voice.tools.get_qdrant", return_value=mock_qdrant),
+            patch("agents.hapax_voice.tools.embed", mock_embed),
+        ):
             await handle_search_documents(mock_fn_params)
 
         mock_embed.assert_called_once_with("meeting notes", prefix="search_query")
@@ -57,8 +64,10 @@ class TestSearchDocumentsHandler:
 
         mock_fn_params.arguments = {"query": "budget", "source_filter": "gdrive"}
 
-        with patch("agents.hapax_voice.tools.get_qdrant", return_value=mock_qdrant), \
-             patch("agents.hapax_voice.tools.embed", mock_embed):
+        with (
+            patch("agents.hapax_voice.tools.get_qdrant", return_value=mock_qdrant),
+            patch("agents.hapax_voice.tools.embed", mock_embed),
+        ):
             await handle_search_documents(mock_fn_params)
 
         call_kwargs = mock_qdrant.query_points.call_args
@@ -74,8 +83,10 @@ class TestSearchDocumentsHandler:
         empty_response.points = []
         empty_client.query_points.return_value = empty_response
 
-        with patch("agents.hapax_voice.tools.get_qdrant", return_value=empty_client), \
-             patch("agents.hapax_voice.tools.embed", mock_embed):
+        with (
+            patch("agents.hapax_voice.tools.get_qdrant", return_value=empty_client),
+            patch("agents.hapax_voice.tools.embed", mock_embed),
+        ):
             await handle_search_documents(mock_fn_params)
 
         result = mock_fn_params.result_callback.call_args[0][0]
@@ -87,7 +98,9 @@ class TestSearchDocumentsHandler:
 
         mock_fn_params.arguments = {"query": "test"}
 
-        with patch("agents.hapax_voice.tools.get_qdrant", side_effect=RuntimeError("connection failed")):
+        with patch(
+            "agents.hapax_voice.tools.get_qdrant", side_effect=RuntimeError("connection failed")
+        ):
             await handle_search_documents(mock_fn_params)
 
         result = mock_fn_params.result_callback.call_args[0][0]
@@ -168,8 +181,10 @@ class TestSearchEmailsHandler:
 
         mock_fn_params.arguments = {"query": "invoice from Sarah"}
 
-        with patch("agents.hapax_voice.tools.get_qdrant", return_value=mock_qdrant), \
-             patch("agents.hapax_voice.tools.embed", mock_embed):
+        with (
+            patch("agents.hapax_voice.tools.get_qdrant", return_value=mock_qdrant),
+            patch("agents.hapax_voice.tools.embed", mock_embed),
+        ):
             await handle_search_emails(mock_fn_params)
 
         mock_qdrant.query_points.assert_called_once()
@@ -188,9 +203,7 @@ class TestSearchEmailsHandler:
         mock_users.messages.return_value = mock_messages
         mock_list = MagicMock()
         mock_messages.list.return_value = mock_list
-        mock_list.execute.return_value = {
-            "messages": [{"id": "msg1", "threadId": "t1"}]
-        }
+        mock_list.execute.return_value = {"messages": [{"id": "msg1", "threadId": "t1"}]}
         mock_get = MagicMock()
         mock_messages.get.return_value = mock_get
         mock_get.execute.return_value = {
@@ -221,8 +234,10 @@ class TestSearchEmailsHandler:
         empty_response.points = []
         empty_client.query_points.return_value = empty_response
 
-        with patch("agents.hapax_voice.tools.get_qdrant", return_value=empty_client), \
-             patch("agents.hapax_voice.tools.embed", mock_embed):
+        with (
+            patch("agents.hapax_voice.tools.get_qdrant", return_value=empty_client),
+            patch("agents.hapax_voice.tools.embed", mock_embed),
+        ):
             await handle_search_emails(mock_fn_params)
 
         result = mock_fn_params.result_callback.call_args[0][0]
@@ -232,7 +247,7 @@ class TestSearchEmailsHandler:
 class TestSendSmsHandler:
     @pytest.mark.asyncio
     async def test_prepare_sms_returns_confirmation(self, mock_fn_params):
-        from agents.hapax_voice.tools import handle_send_sms, _pending_sms
+        from agents.hapax_voice.tools import _pending_sms, handle_send_sms
 
         _pending_sms.clear()
         mock_fn_params.arguments = {"recipient": "Wife", "message": "Running late"}
@@ -265,7 +280,7 @@ class TestSendSmsHandler:
 
     @pytest.mark.asyncio
     async def test_phone_number_as_recipient(self, mock_fn_params):
-        from agents.hapax_voice.tools import handle_send_sms, _pending_sms
+        from agents.hapax_voice.tools import _pending_sms, handle_send_sms
 
         _pending_sms.clear()
         mock_fn_params.arguments = {"recipient": "+15559876543", "message": "Hello"}
@@ -284,7 +299,7 @@ class TestSendSmsHandler:
 class TestConfirmSendSmsHandler:
     @pytest.mark.asyncio
     async def test_confirm_sends_sms(self, mock_fn_params):
-        from agents.hapax_voice.tools import handle_confirm_send_sms, _pending_sms
+        from agents.hapax_voice.tools import _pending_sms, handle_confirm_send_sms
 
         _pending_sms.clear()
         _pending_sms["test-123"] = {
@@ -303,9 +318,11 @@ class TestConfirmSendSmsHandler:
         mock_cfg.sms_gateway_user = "user"
         mock_cfg.sms_gateway_pass_key = "sms/pass"
 
-        with patch("agents.hapax_voice.tools.httpx") as mock_httpx, \
-             patch("agents.hapax_voice.tools._voice_config", mock_cfg), \
-             patch("agents.hapax_voice.tools._get_sms_password", return_value="secret"):
+        with (
+            patch("agents.hapax_voice.tools.httpx") as mock_httpx,
+            patch("agents.hapax_voice.tools._voice_config", mock_cfg),
+            patch("agents.hapax_voice.tools._get_sms_password", return_value="secret"),
+        ):
             mock_httpx.post.return_value = mock_response
             await handle_confirm_send_sms(mock_fn_params)
 
@@ -315,7 +332,7 @@ class TestConfirmSendSmsHandler:
 
     @pytest.mark.asyncio
     async def test_invalid_confirmation_id(self, mock_fn_params):
-        from agents.hapax_voice.tools import handle_confirm_send_sms, _pending_sms
+        from agents.hapax_voice.tools import _pending_sms, handle_confirm_send_sms
 
         _pending_sms.clear()
         mock_fn_params.arguments = {"confirmation_id": "nonexistent"}
@@ -342,9 +359,14 @@ class TestAnalyzeSceneHandler:
         mock_screen.capture.return_value = "base64_screen_data"
         mock_screen.reset_cooldown = MagicMock()
 
-        with patch("agents.hapax_voice.tools._webcam_capturer", mock_webcam), \
-             patch("agents.hapax_voice.tools._screen_capturer", mock_screen), \
-             patch("agents.hapax_voice.tools._vision_analyze", return_value="I can see a mixer and two SP-404s"):
+        with (
+            patch("agents.hapax_voice.tools._webcam_capturer", mock_webcam),
+            patch("agents.hapax_voice.tools._screen_capturer", mock_screen),
+            patch(
+                "agents.hapax_voice.tools._vision_analyze",
+                return_value="I can see a mixer and two SP-404s",
+            ),
+        ):
             await handle_analyze_scene(mock_fn_params)
 
         result = mock_fn_params.result_callback.call_args[0][0]
@@ -363,8 +385,10 @@ class TestAnalyzeSceneHandler:
         mock_screen = MagicMock()
         mock_screen.capture.return_value = None
 
-        with patch("agents.hapax_voice.tools._webcam_capturer", mock_webcam), \
-             patch("agents.hapax_voice.tools._screen_capturer", mock_screen):
+        with (
+            patch("agents.hapax_voice.tools._webcam_capturer", mock_webcam),
+            patch("agents.hapax_voice.tools._screen_capturer", mock_screen),
+        ):
             await handle_analyze_scene(mock_fn_params)
 
         result = mock_fn_params.result_callback.call_args[0][0]
@@ -374,15 +398,23 @@ class TestAnalyzeSceneHandler:
     async def test_specific_cameras(self, mock_fn_params):
         from agents.hapax_voice.tools import handle_analyze_scene
 
-        mock_fn_params.arguments = {"cameras": ["hardware"], "question": "How is the mic positioned?"}
+        mock_fn_params.arguments = {
+            "cameras": ["hardware"],
+            "question": "How is the mic positioned?",
+        }
 
         mock_webcam = MagicMock()
         mock_webcam.capture.return_value = "base64_hw_image"
         mock_webcam.reset_cooldown = MagicMock()
 
-        with patch("agents.hapax_voice.tools._webcam_capturer", mock_webcam), \
-             patch("agents.hapax_voice.tools._screen_capturer", None), \
-             patch("agents.hapax_voice.tools._vision_analyze", return_value="The mic is angled at 45 degrees"):
+        with (
+            patch("agents.hapax_voice.tools._webcam_capturer", mock_webcam),
+            patch("agents.hapax_voice.tools._screen_capturer", None),
+            patch(
+                "agents.hapax_voice.tools._vision_analyze",
+                return_value="The mic is angled at 45 degrees",
+            ),
+        ):
             await handle_analyze_scene(mock_fn_params)
 
         # Should only capture hardware camera, not screen
@@ -399,7 +431,12 @@ class TestGetSystemStatusHandler:
         mock_fn_params.arguments = {}
 
         mock_results = [
-            {"name": "docker.daemon", "group": "docker", "status": "healthy", "message": "Docker 27.0"},
+            {
+                "name": "docker.daemon",
+                "group": "docker",
+                "status": "healthy",
+                "message": "Docker 27.0",
+            },
             {"name": "gpu.vram", "group": "gpu", "status": "healthy", "message": "10GB/24GB used"},
         ]
 

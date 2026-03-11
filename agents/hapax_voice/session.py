@@ -1,4 +1,5 @@
 """Voice conversation lifecycle state machine for Hapax Voice."""
+
 from __future__ import annotations
 
 import logging

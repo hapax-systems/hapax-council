@@ -1,12 +1,10 @@
 """Tests for custom persona loading."""
+
 from __future__ import annotations
 
 import yaml
-from pathlib import Path
 
-import pytest
-
-from agents.demo_models import AudiencePersona, load_personas
+from agents.demo_models import load_personas
 
 
 class TestCustomPersona:

@@ -57,7 +57,7 @@ from shared.config import (
 
 **Step 3: Run existing tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_drift_detector.py -q --tb=short`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_drift_detector.py -q --tb=short`
 Expected: All pass (no behavior change, just constants added)
 
 **Step 4: Commit**
@@ -125,7 +125,7 @@ archetypes:
 # ── Repo declarations ────────────────────────────────────────────────
 repos:
   ai-agents:
-    path: ~/projects/ai-agents
+    path: ~/projects/hapax-council
     required_docs:
       - path: CLAUDE.md
         archetype: project-context
@@ -366,7 +366,7 @@ def test_load_registry_invalid_yaml():
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_document_registry.py -q --tb=short`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_document_registry.py -q --tb=short`
 Expected: FAIL — `shared.document_registry` does not exist
 
 **Step 3: Implement shared/document_registry.py**
@@ -510,7 +510,7 @@ def load_registry(
 
 **Step 4: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_document_registry.py -q --tb=short`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_document_registry.py -q --tb=short`
 Expected: All pass
 
 **Step 5: Commit**
@@ -652,7 +652,7 @@ class TestDiscoverMcpServers:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_ci_discovery.py -q --tb=short`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_ci_discovery.py -q --tb=short`
 Expected: FAIL — module does not exist
 
 **Step 3: Implement shared/ci_discovery.py**
@@ -786,7 +786,7 @@ def discover_mcp_servers(config_path: Path | None = None) -> list[str]:
 
 **Step 4: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_ci_discovery.py -q --tb=short`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_ci_discovery.py -q --tb=short`
 Expected: All pass
 
 **Step 5: Commit**
@@ -997,7 +997,7 @@ class TestCheckDocumentRegistryIntegration:
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_registry_checks.py -q --tb=short`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_registry_checks.py -q --tb=short`
 Expected: FAIL — module does not exist
 
 **Step 3: Implement shared/registry_checks.py**
@@ -1287,7 +1287,7 @@ def check_document_registry(
 
 **Step 4: Run tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_registry_checks.py -q --tb=short`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_registry_checks.py -q --tb=short`
 Expected: All pass
 
 **Step 5: Commit**
@@ -1354,7 +1354,7 @@ class TestRegistryIntegration:
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_drift_detector.py::TestRegistryIntegration -q --tb=short`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_drift_detector.py::TestRegistryIntegration -q --tb=short`
 Expected: FAIL — check_document_registry not imported
 
 **Step 3: Wire into detect_drift()**
@@ -1391,7 +1391,7 @@ Add a summary part for registry drift (after the memory_drift summary, around li
 
 **Step 4: Run all drift detector tests**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/test_drift_detector.py -q --tb=short`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/test_drift_detector.py -q --tb=short`
 Expected: All pass
 
 **Step 5: Commit**
@@ -1410,12 +1410,12 @@ git commit -m "feat: wire document registry checks into drift detector"
 
 **Step 1: Run full test suite**
 
-Run: `cd ~/projects/ai-agents && uv run pytest tests/ -q --tb=short --ignore=tests/test_vault_writer.py`
+Run: `cd ~/projects/hapax-council && uv run pytest tests/ -q --tb=short --ignore=tests/test_vault_writer.py`
 Expected: All tests pass (including new registry tests)
 
 **Step 2: Run drift detector manually to verify**
 
-Run: `cd ~/projects/ai-agents && eval "$(<.envrc)" && uv run python -m agents.drift_detector --json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); cats=[i['category'] for i in d['drift_items']]; print(f'Total: {len(d[\"drift_items\"])}'); [print(f'  {c}: {cats.count(c)}') for c in sorted(set(cats))]"`
+Run: `cd ~/projects/hapax-council && eval "$(<.envrc)" && uv run python -m agents.drift_detector --json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); cats=[i['category'] for i in d['drift_items']]; print(f'Total: {len(d[\"drift_items\"])}'); [print(f'  {c}: {cats.count(c)}') for c in sorted(set(cats))]"`
 
 Expected: New categories like `coverage-gap`, `missing-section`, `repo-awareness-gap` should appear alongside existing drift items.
 

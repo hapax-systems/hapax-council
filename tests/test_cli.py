@@ -1,9 +1,9 @@
 """Tests for shared.cli -- common CLI boilerplate."""
+
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel
@@ -17,6 +17,7 @@ class FakeOutput(BaseModel):
 
 
 # -- add_common_args --------------------------------------------------------
+
 
 def test_add_common_args_json():
     parser = argparse.ArgumentParser()
@@ -70,6 +71,7 @@ def test_add_common_args_no_save_without_flag():
 
 # -- handle_output ----------------------------------------------------------
 
+
 def test_handle_output_json(capsys):
     result = FakeOutput()
     args = argparse.Namespace(json=True, save=False, notify=False)
@@ -111,7 +113,8 @@ def test_handle_output_save_with_formatter(tmp_path, capsys):
     save_file = tmp_path / "output.md"
     args = argparse.Namespace(json=False, save=True, notify=False)
     handle_output(
-        result, args,
+        result,
+        args,
         save_path=save_file,
         save_formatter=lambda r: f"# {r.headline}",
     )
@@ -123,7 +126,8 @@ def test_handle_output_notify(mock_notify, capsys):
     result = FakeOutput()
     args = argparse.Namespace(json=False, save=False, notify=True)
     handle_output(
-        result, args,
+        result,
+        args,
         notify_title="Test Agent",
         notify_formatter=lambda r: r.headline,
     )

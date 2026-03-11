@@ -3,9 +3,9 @@
 Tests the session state machine wired into the daemon, verifying
 that state transitions trigger the correct pipeline and event actions.
 """
+
 from __future__ import annotations
 
-import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -49,8 +49,10 @@ class TestSessionOpenClose:
     async def test_hotkey_open_starts_session(self):
         daemon = _make_daemon()
 
-        with patch.object(daemon, "_start_pipeline", new_callable=AsyncMock), \
-             patch("agents.hapax_voice.__main__._screen_flash"):
+        with (
+            patch.object(daemon, "_start_pipeline", new_callable=AsyncMock),
+            patch("agents.hapax_voice.__main__._screen_flash"),
+        ):
             await daemon._handle_hotkey("open")
 
         assert daemon.session.is_active
@@ -61,8 +63,10 @@ class TestSessionOpenClose:
         daemon = _make_daemon()
         daemon.session.open(trigger="test")
 
-        with patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock), \
-             patch("agents.hapax_voice.__main__._screen_flash"):
+        with (
+            patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock),
+            patch("agents.hapax_voice.__main__._screen_flash"),
+        ):
             await daemon._handle_hotkey("close")
 
         assert not daemon.session.is_active
@@ -72,8 +76,10 @@ class TestSessionOpenClose:
     async def test_toggle_opens_when_idle(self):
         daemon = _make_daemon()
 
-        with patch.object(daemon, "_start_pipeline", new_callable=AsyncMock), \
-             patch("agents.hapax_voice.__main__._screen_flash"):
+        with (
+            patch.object(daemon, "_start_pipeline", new_callable=AsyncMock),
+            patch("agents.hapax_voice.__main__._screen_flash"),
+        ):
             await daemon._handle_hotkey("toggle")
 
         assert daemon.session.is_active
@@ -83,8 +89,10 @@ class TestSessionOpenClose:
         daemon = _make_daemon()
         daemon.session.open(trigger="test")
 
-        with patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock), \
-             patch("agents.hapax_voice.__main__._screen_flash"):
+        with (
+            patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock),
+            patch("agents.hapax_voice.__main__._screen_flash"),
+        ):
             await daemon._handle_hotkey("toggle")
 
         assert not daemon.session.is_active
@@ -94,8 +102,10 @@ class TestSessionOpenClose:
         daemon = _make_daemon()
         daemon.session.open(trigger="test")
 
-        with patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock) as mock_stop, \
-             patch("agents.hapax_voice.__main__._screen_flash"):
+        with (
+            patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock) as mock_stop,
+            patch("agents.hapax_voice.__main__._screen_flash"),
+        ):
             await daemon._close_session(reason="test")
 
         mock_stop.assert_called_once()
@@ -105,8 +115,10 @@ class TestSessionOpenClose:
         daemon = _make_daemon()
         daemon.session.open(trigger="test")
 
-        with patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock), \
-             patch("agents.hapax_voice.__main__._screen_flash"):
+        with (
+            patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock),
+            patch("agents.hapax_voice.__main__._screen_flash"),
+        ):
             await daemon._close_session(reason="timeout")
 
         daemon.event_log.emit.assert_any_call(
