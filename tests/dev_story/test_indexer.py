@@ -136,9 +136,10 @@ def test_index_git_inserts_commits(mock_extract):
                 files_changed=1,
                 insertions=5,
                 deletions=0,
+                source_repo=None,
             )
         ],
-        [MagicMock(commit_hash="abc", file_path="foo.py", operation="A")],
+        [MagicMock(commit_hash="abc", file_path="foo.py", operation="A", source_repo=None)],
     )
     index_git(conn, "/tmp/repo")
 
