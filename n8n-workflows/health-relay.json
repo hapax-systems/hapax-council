@@ -1,0 +1,106 @@
+{
+  "name": "Health Relay",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "health-relay",
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-trigger",
+      "name": "Health Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "health-relay"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json.body;\nconst status = data.status || 'unknown';\nconst summary = data.summary || 'No summary';\nconst failed = data.failed || 0;\n\nlet emoji = '';\nlet urgency = '';\n\nswitch (status) {\n  case 'failed':\n    emoji = '\\u26a0\\ufe0f';\n    urgency = 'CRITICAL';\n    break;\n  case 'degraded':\n    emoji = '\\u26a0';\n    urgency = 'WARNING';\n    break;\n  default:\n    emoji = '\\u2139\\ufe0f';\n    urgency = 'INFO';\n}\n\nconst message = `${emoji} *Health ${urgency}*\\n\\nStatus: ${status}\\nSummary: ${summary}\\nFailed checks: ${failed}\\n\\n_Run \\`/health\\` for details_`;\n\nreturn [{ json: { message, status } }];"
+      },
+      "id": "format-alert",
+      "name": "Format Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "telegram-send",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [690, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={\"ok\": true, \"status\": \"{{ $json.status }}\"}"
+      },
+      "id": "respond",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [910, 300]
+    }
+  ],
+  "connections": {
+    "Health Webhook": {
+      "main": [
+        [
+          {
+            "node": "Format Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert": {
+      "main": [
+        [
+          {
+            "node": "Send Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Alert": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "local"
+  },
+  "tags": [
+    {
+      "name": "multi-channel"
+    }
+  ]
+}

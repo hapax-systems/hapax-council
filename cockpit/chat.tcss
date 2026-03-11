@@ -1,0 +1,45 @@
+/* chat.tcss — Chat screen layout */
+
+#chat-body {
+    height: 1fr;
+}
+
+#chat-log {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-gutter: stable;
+}
+
+#streaming-text {
+    height: auto;
+    max-height: 6;
+    padding: 0 1;
+    color: $text 70%;
+    display: none;
+}
+
+#streaming-text.active {
+    display: block;
+}
+
+#chat-status-bar {
+    height: 1;
+    padding: 0 1;
+    color: $text 50%;
+    background: $surface;
+    text-style: italic;
+}
+
+#chat-status-bar.interview-mode {
+    color: $text 80%;
+    background: $primary-darken-3;
+}
+
+#chat-input {
+    dock: bottom;
+    margin: 0 0;
+    height: 3;
+    min-height: 3;
+    max-height: 6;
+    border-top: solid $accent 40%;
+}

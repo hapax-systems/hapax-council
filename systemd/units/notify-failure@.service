@@ -1,0 +1,6 @@
+[Unit]
+Description=Send failure notification for %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/notify-send --urgency=critical --app-name="LLM Stack" --icon=dialog-error "Service Failed: %i" "Check: journalctl --user -u %i --no-pager -n 20"

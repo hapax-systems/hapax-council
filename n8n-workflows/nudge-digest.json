@@ -1,0 +1,80 @@
+{
+  "name": "Nudge Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "triggerAtMinute": 0, "triggerAtHour": 9 },
+            { "triggerAtMinute": 0, "triggerAtHour": 11 },
+            { "triggerAtMinute": 0, "triggerAtHour": 13 },
+            { "triggerAtMinute": 0, "triggerAtHour": 15 },
+            { "triggerAtMinute": 0, "triggerAtHour": 17 },
+            { "triggerAtMinute": 0, "triggerAtHour": 19 },
+            { "triggerAtMinute": 0, "triggerAtHour": 21 },
+            { "triggerAtMinute": 0, "triggerAtHour": 23 }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Every 2h (09-23)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "command": "cat /data/ai-agents/profiles/briefing.md 2>/dev/null || echo 'NO_BRIEFING'"
+      },
+      "id": "read-briefing",
+      "name": "Read Briefing File",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = $input.first().json.stdout;\n\nif (output.includes('NO_BRIEFING') || !output.includes('Action Items')) {\n  return []; // No briefing or no action items — skip\n}\n\n// Extract action items section from briefing.md\nconst lines = output.split('\\n');\nlet inActions = false;\nconst items = [];\n\nfor (const line of lines) {\n  if (line.includes('## Action Items')) {\n    inActions = true;\n    continue;\n  }\n  if (inActions && line.startsWith('## ')) {\n    break; // Next section\n  }\n  if (inActions && line.startsWith('- **')) {\n    items.push(line.replace(/\\*\\*/g, '').trim());\n  }\n}\n\nif (items.length === 0) {\n  return []; // No action items, skip sending\n}\n\n// Only send if there are high-priority items\nconst highPriority = items.filter(i => i.includes('[!!]'));\nif (highPriority.length === 0) {\n  return []; // No high-priority items, skip\n}\n\nconst top = items.slice(0, 3);\nlet message = '*Action Items*\\n\\n';\ntop.forEach(n => message += `${n}\\n`);\n\nif (items.length > 3) {\n  message += `\\n_...and ${items.length - 3} more_`;\n}\n\nreturn [{ json: { message, count: items.length } }];"
+      },
+      "id": "filter-actions",
+      "name": "Filter High-Priority Actions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "telegram-send",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [910, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 2h (09-23)": {
+      "main": [[{ "node": "Read Briefing File", "type": "main", "index": 0 }]]
+    },
+    "Read Briefing File": {
+      "main": [[{ "node": "Filter High-Priority Actions", "type": "main", "index": 0 }]]
+    },
+    "Filter High-Priority Actions": {
+      "main": [[{ "node": "Send Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateCredsSetupCompleted": false, "instanceId": "local" },
+  "tags": [{ "name": "multi-channel" }]
+}

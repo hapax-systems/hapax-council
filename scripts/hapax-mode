@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Cycle mode switcher for hapax agent timers.
+# Usage: hapax-mode [dev|prod]
+#   No argument: print current mode.
+
+MODE_FILE="$HOME/.cache/hapax/cycle-mode"
+OVERRIDES_SRC="$(dirname "$(readlink -f "$0")")/../systemd/overrides/dev"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+
+# Host-side timers only. Sync agents (gdrive, gcalendar, gmail, youtube,
+# claude-code, obsidian, chrome) are containerized — use CYCLE_MODE env var.
+TIMERS=(
+    profile-update
+    digest
+    daily-briefing
+    drift-detector
+    knowledge-maint
+)
+
+current_mode() {
+    if [[ -f "$MODE_FILE" ]]; then
+        cat "$MODE_FILE"
+    else
+        echo "prod"
+    fi
+}
+
+# No argument: print current mode
+if [[ $# -eq 0 ]]; then
+    echo "$(current_mode)"
+    exit 0
+fi
+
+MODE="$1"
+if [[ "$MODE" != "dev" && "$MODE" != "prod" ]]; then
+    echo "Usage: hapax-mode [dev|prod]" >&2
+    exit 1
+fi
+
+# Write mode file
+mkdir -p "$(dirname "$MODE_FILE")"
+echo "$MODE" > "$MODE_FILE"
+
+if [[ "$MODE" == "dev" ]]; then
+    # Install timer overrides
+    for timer in "${TIMERS[@]}"; do
+        drop_in="$SYSTEMD_USER_DIR/${timer}.timer.d"
+        mkdir -p "$drop_in"
+        cp "$OVERRIDES_SRC/${timer}.timer" "$drop_in/override.conf"
+    done
+    echo "Installed dev timer overrides for ${#TIMERS[@]} timers"
+else
+    # Remove timer overrides
+    for timer in "${TIMERS[@]}"; do
+        drop_in="$SYSTEMD_USER_DIR/${timer}.timer.d"
+        rm -rf "$drop_in"
+    done
+    echo "Removed dev timer overrides"
+fi
+
+# Reload systemd and restart affected timers
+systemctl --user daemon-reload
+for timer in "${TIMERS[@]}"; do
+    systemctl --user restart "${timer}.timer" 2>/dev/null || true
+done
+
+# Notify
+if command -v curl &>/dev/null; then
+    curl -s -o /dev/null \
+        -H "Title: Hapax Cycle Mode" \
+        -d "Cycle mode → $MODE" \
+        "http://127.0.0.1:8090/hapax" 2>/dev/null || true
+fi
+
+echo "Cycle mode → $MODE"
+
+# Print active schedules for affected timers
+echo ""
+echo "Active schedules:"
+for timer in "${TIMERS[@]}"; do
+    next=$(systemctl --user show "${timer}.timer" -p NextElapseUSecRealtime --value 2>/dev/null || echo "unknown")
+    printf "  %-24s %s\n" "${timer}" "$next"
+done

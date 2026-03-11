@@ -1,0 +1,24 @@
+[Unit]
+Description=LLM Stack (Docker Compose full profile)
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/hapaxlegomenon/llm-stack
+Environment=HOME=/home/hapaxlegomenon
+Environment=GNUPGHOME=/home/hapaxlegomenon/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapaxlegomenon/.password-store
+Environment=PATH=/home/hapaxlegomenon/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/usr/bin/docker info -f '{{.ServerVersion}}'
+ExecStartPre=/home/hapaxlegomenon/llm-stack/generate-env.sh
+ExecStart=/usr/bin/docker compose --profile full up -d
+ExecStop=/usr/bin/docker compose --profile full down
+ExecStopPost=/bin/rm -f /home/hapaxlegomenon/llm-stack/.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=llm-stack
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

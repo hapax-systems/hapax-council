@@ -1,0 +1,4 @@
+[Timer]
+OnCalendar=
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=5min

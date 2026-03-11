@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agents", "cockpit", "shared"]
+
+[project]
+name = "ai-agents"
+version = "0.3.7"
+description = "Personal agent infrastructure for a single-user LLM-first computing environment"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Core: shared by all agents and containers
+    "httpx>=0.28.0",
+    "ollama>=0.6.1",
+    "pydantic>=2.12.5",
+    "pydantic-ai[litellm]>=1.63.0",
+    "pyyaml>=6.0",
+    "qdrant-client>=1.17.0",
+]
+
+[project.optional-dependencies]
+cockpit-api = [
+    "fastapi>=0.115.0",
+    "jinja2>=3.1",
+    "langfuse>=3.14.5",
+    "sse-starlette>=2.0.0",
+    "uvicorn>=0.34.0",
+    "watchdog>=6.0.0",
+]
+sync-pipeline = [
+    "google-api-python-client>=2.100.0",
+    "google-auth-oauthlib>=1.2.0",
+    "langfuse>=3.14.5",
+]
+audio = [
+    "faster-whisper>=1.1.0",
+    "kokoro>=0.9.0",
+    "mediapipe>=0.10.0",
+    "opencv-python-headless>=4.10.0",
+    "panns-inference>=0.1.1",
+    "pipecat-ai[silero,openai]>=0.0.50",
+    "piper-tts>=1.2.0",
+    "pyannote-audio>=3.3.0",
+    "pvporcupine>=4.0.0",
+    "pyaudio>=0.2.14",
+    "silero-vad>=5.1",
+    "soundfile>=0.13.0",
+    "torchaudio>=2.0.0",
+    # openwakeword: install separately — tflite-runtime requires Python <=3.11
+    # nemo_toolkit[asr]: install separately via `uv pip install 'nemo_toolkit[asr]' 'lightning==2.4.0' --force-reinstall --no-deps`
+    #   - nemo_toolkit pins transformers<4.58 which caps huggingface-hub<1.0
+    #   - pydantic-ai requires huggingface-hub>=1.3.4
+    #   - These are irreconcilable until transformers 5.x drops the hf-hub cap
+    #   - lightning must be pinned to 2.4.0 (nv-one-logger crashes with >=2.5)
+    #   - After install, force pin: uv pip install 'lightning==2.4.0' --force-reinstall --no-deps
+    #   - Use .venv/bin/python (not `uv run`) to avoid re-sync breaking the pin
+]
+host = [
+    # Everything — for local development on the host machine
+    "ai-agents[cockpit-api]",
+    "ai-agents[sync-pipeline]",
+    "ai-agents[audio]",
+    "google-genai>=1.0.0",
+    "matplotlib>=3.9",
+    "moviepy>=2.0.0",
+    "pillow>=11.0.0",
+    "playwright>=1.49.0",
+    "watchdog>=6.0.0",
+]
+
+[project.scripts]
+cockpit = "cockpit.__main__:main"
+cockpit-api = "cockpit.api.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "-m 'not llm'"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks integration tests",
+    "hardware: marks tests needing real hardware (deselect with '-m \"not hardware\"')",
+    "llm: tests requiring live LLM access via LiteLLM (deselect with '-m \"not llm\"')",
+]

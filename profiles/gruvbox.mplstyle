@@ -1,0 +1,43 @@
+# Gruvbox Dark theme for Matplotlib
+# Used by demo pipeline charts
+
+# Figure
+figure.facecolor: "#282828"
+figure.edgecolor: "#282828"
+
+# Axes
+axes.facecolor: "#282828"
+axes.edgecolor: "#ebdbb2"
+axes.labelcolor: "#ebdbb2"
+axes.titlesize: 20
+axes.labelsize: 14
+axes.prop_cycle: cycler(color=["#fe8019", "#fabd2f", "#b8bb26", "#83a598", "#d3869b", "#8ec07c", "#fb4934"])
+
+# Text
+text.color: "#ebdbb2"
+
+# Ticks
+xtick.color: "#a89984"
+ytick.color: "#a89984"
+xtick.labelsize: 12
+ytick.labelsize: 12
+
+# Grid
+grid.color: "#3c3836"
+grid.linewidth: 0.5
+axes.grid: True
+
+# Legend
+legend.facecolor: "#3c3836"
+legend.edgecolor: "#3c3836"
+legend.fontsize: 12
+
+# Lines
+lines.linewidth: 2.5
+
+# Savefig
+savefig.facecolor: "#282828"
+savefig.edgecolor: "#282828"
+savefig.dpi: 150
+savefig.bbox: tight
+savefig.pad_inches: 0.3

@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+profiles/
+tests/
+docs/
+output/
+*.png
+*.mp4
+*.wav
+.envrc
+.env
+.git/
+.playwright-mcp/

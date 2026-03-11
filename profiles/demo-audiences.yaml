@@ -1,0 +1,128 @@
+audiences:
+  my wife:
+    archetype: family
+    name: Alexis
+    context: |
+      Alexis is Ryan's wife. She knows he's been working on this system nonstop
+      for the past week, but has no technical details about what it is or does.
+      She is not technical but is intellectually curious about systems thinking,
+      knowledge flow, partitioning, and agent dynamics at a conceptual level —
+      NOT about specific technologies (Docker, LiteLLM, etc.).
+
+      Her interests in this demo:
+      - The genuine uniqueness of this system in the LLM space
+      - How it helps Ryan with his Autism and ADHD
+      - How it helps Ryan at work
+      - The nuanced knowledge systems that underlie the architecture
+      - Systems design thinking and systems thinking (knowledge flow, partitioning, agent dynamics)
+      - How it helps Ryan connect with and understand people
+      - How it might help Ryan achieve balance in life and achieve his goals more effectively
+
+      Setting: At home in Ryan's office. Casual, personal, intimate.
+      Relationship: Spouse — she cares about Ryan, not the technology.
+    calibration:
+      emphasize:
+        - START with the big picture — what this is as a whole, before any details
+        - life organization, domain balance (work/personal/health/relationships), and achieving goals
+        - connecting with and understanding people — management tools that make him a better partner, father, and leader
+        - executive function accommodation and ADHD/autism support — practical daily impact
+        - knowledge systems and information flow (conceptual, not technical)
+        - the distinction between what LLMs already do (chat, answer questions) and what Ryan built on top (agents, self-monitoring, profile learning, management support) — this helps her understand "his work"
+        - personal growth, family impact, and freeing cognitive energy for relationships
+        - systems thinking and agent dynamics (conceptual)
+        - the Obsidian notes app as "external brain" — agents write briefings and prep docs into it, it syncs across devices, and the system reads back from it to answer questions
+      skip:
+        - specific technology names (Docker, LiteLLM, Qdrant, etc.)
+        - infrastructure details (ports, containers, APIs)
+        - code and implementation specifics
+        - cost metrics, token counts, spending data — too complicated for casual demo
+        - system health scores and uptime numbers — this is background plumbing, not the point
+        - self-healing and maintenance as a feature — it's infrastructure, mention once briefly at most
+      forbidden_terms:
+        - Docker
+        - container
+        - LiteLLM
+        - Qdrant
+        - PostgreSQL
+        - pgvector
+        - Langfuse
+        - Ollama
+        - API
+        - endpoint
+        - microservice
+        - systemd
+        - VRAM
+        - GPU
+        - inference
+        - latency
+        - cost
+        - spending
+        - tokens
+        - uptime
+      never:
+        - explain ADHD or autism to her — she is deeply knowledgeable about both and would find it patronizing
+        - use a teachy or didactic tone about neurodivergence
+        - fabricate specific daily routines or habits
+        - claim reliability ("hasn't given me trouble") — the system is under active development
+        - dwell on system health monitoring or self-healing — mention it once as background reliability, not as a selling point
+        - mention cost, spending, or money — it's too complicated for this context
+
+  chris beron:
+    archetype: leadership
+    name: Chris
+    context: |
+      Chris Beron is an Enterprise Architect (Level 5) at the same company where Ryan
+      is AVP. Chris has extraordinarily broad and deep expertise: Azure Cloud, containerization,
+      security, networking, governance, strategy — seemingly everything. He is brilliant
+      and makes for a very difficult, high-bar audience. Nothing gets past him.
+
+      This is a cold introduction — Chris knows nothing about this system. Ryan looks up
+      to Chris and respects him deeply. This is NOT a pitch. Ryan is seeking honest,
+      critical technical feedback from someone whose judgment he trusts. The goal is for
+      Chris to evaluate the architecture on its merits and provide candid assessment.
+
+      Chris will care about:
+      - Architectural soundness: Is the service topology well-designed? Are boundaries clean?
+      - Security posture: Secrets management, network isolation, attack surface
+      - Containerization patterns: Docker Compose choices, resource management, health checks
+      - Observability: Tracing, logging, metrics — how mature is the telemetry?
+      - Data architecture: Vector DB design, embedding strategy, RAG pipeline patterns, Obsidian vault as bidirectional knowledge layer (vault_writer egress, RAG ingestion, GitDoc git-based sync)
+      - Integration patterns: API gateway, service mesh, model routing, fallback chains
+      - Operational maturity: Automated maintenance, self-healing, deployment patterns
+      - Cost governance: Model selection, local vs cloud tradeoffs, spend tracking
+      - Governance framework: Axiom system, constraint enforcement, drift detection
+      - Scalability considerations: What scales, what doesn't, and why that's fine (single-user)
+
+      Chris will immediately spot:
+      - Any hand-waving or vague claims without architectural backing
+      - Security gaps or questionable trust boundaries
+      - Over-engineering or under-engineering relative to the problem space
+      - Whether design decisions are principled or accidental
+
+      Setting: Professional but collegial. Ryan sharing his personal project with a
+      respected peer whose feedback genuinely matters.
+      Relationship: Ryan (AVP) looks up to Chris (EA LVL5) — seeking peer review, not approval.
+    calibration:
+      emphasize:
+        - service topology and container orchestration
+        - security architecture and threat model
+        - observability and tracing stack
+        - data architecture and vector storage
+        - model routing and cost governance
+        - governance framework and drift detection
+        - self-regulation and autonomous maintenance patterns
+        - agent architecture and orchestration model
+        - operational cadence and scheduling
+        - honest limitations and tradeoffs
+      skip:
+        - personal context and neurodivergence details (mention briefly as motivation, don't dwell)
+        - music production domain
+        - management domain internals (people data, 1:1 prep content)
+        - basic explanations of technologies Chris already knows deeply
+      never:
+        - explain what Docker, Kubernetes, or Azure does — Chris knows more than the system does
+        - pitch or sell — Chris will see through it instantly and lose respect
+        - claim enterprise-grade when it's a single-user personal system
+        - hide limitations — Chris respects honesty about tradeoffs more than polished surfaces
+        - use buzzwords without substance behind them
+        - fabricate performance metrics, uptime stats, or cost numbers

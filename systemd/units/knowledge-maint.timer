@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly knowledge base maintenance on Sunday 04:30
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

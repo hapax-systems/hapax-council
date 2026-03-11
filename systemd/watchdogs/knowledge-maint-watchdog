@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Knowledge base maintenance — prune stale sources and deduplicate vectors
+cd /home/hapaxlegomenon/projects/ai-agents
+eval "$(<.envrc)" 2>/dev/null || true
+
+UV=/home/hapaxlegomenon/.local/bin/uv
+REPORT=$($UV run python -m agents.knowledge_maint --apply --save --json 2>/dev/null)
+
+# Notify via shared.notify if work was done (pass JSON via stdin)
+echo "$REPORT" | $UV run python -c "
+import sys, json
+from shared.notify import send_notification
+r = json.load(sys.stdin)
+pruned = r.get('total_pruned', 0)
+merged = r.get('total_merged', 0)
+warnings = len(r.get('warnings', []))
+total = pruned + merged + warnings
+if total > 0:
+    body = f'Pruned {pruned} stale, merged {merged} duplicates'
+    if warnings > 0:
+        body += f', {warnings} warning(s)'
+    send_notification('Knowledge Maintenance', body, tags=['broom'])
+" 2>/dev/null || true
+
+# Append to history
+echo "$REPORT" >> /home/hapaxlegomenon/projects/ai-agents/profiles/knowledge-maint-history.jsonl 2>/dev/null || true

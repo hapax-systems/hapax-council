@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# health-watchdog — Scheduled health check with auto-remediation and notifications.
+# Runs via systemd timer. Fixes safe issues automatically, notifies on remaining problems.
+# Sends to ntfy (mobile push) + notify-send (desktop) via shared.notify.
+set -euo pipefail
+
+cd /home/hapaxlegomenon/projects/ai-agents
+
+# Load environment
+eval "$(<.envrc)"
+
+UV="/home/hapaxlegomenon/.local/bin/uv"
+
+# Run health check
+REPORT=$($UV run python -m agents.health_monitor --json 2>/dev/null) || true
+
+if [[ -z "$REPORT" ]]; then
+    $UV run python -c "
+from shared.notify import send_notification, nudges_uri
+send_notification('Health Monitor Failed', 'Could not run health check', priority='urgent', tags=['skull'], click_url=nudges_uri())
+" 2>/dev/null || notify-send --urgency=critical --app-name="Health Monitor" --icon=dialog-error \
+        "Health Monitor Failed" "Could not run health check"
+    exit 1
+fi
+
+STATUS=$(echo "$REPORT" | python3 -c "import sys,json; print(json.load(sys.stdin)['overall_status'])")
+
+# If there are failures, run LLM-evaluated fix pipeline
+REPORT2=""
+if [[ "$STATUS" != "healthy" ]]; then
+    $UV run python -m agents.health_monitor --apply 2>/dev/null || true
+
+    # Re-check after fix
+    REPORT2=$($UV run python -m agents.health_monitor --json 2>/dev/null) || true
+    if [[ -n "$REPORT2" ]]; then
+        STATUS2=$(echo "$REPORT2" | python3 -c "import sys,json; print(json.load(sys.stdin)['overall_status'])")
+
+        if [[ "$STATUS2" == "healthy" ]]; then
+            echo "$REPORT" | $UV run python -c "
+import sys, json, os
+from shared.notify import send_notification, nudges_uri
+r = json.load(sys.stdin)
+send_notification('Auto-Fixed', f\"{r['summary']} -> All healthy\nLLM-evaluated fix applied\", tags=['white_check_mark'], click_url=nudges_uri())
+" 2>/dev/null || true
+        fi
+        STATUS="$STATUS2"
+    fi
+fi
+
+# Notify based on final status — pass JSON via stdin to avoid shell injection
+FINAL_REPORT="${REPORT2:-$REPORT}"
+case "$STATUS" in
+    healthy)
+        # Silent on healthy — no notification spam
+        ;;
+    degraded|failed)
+        echo "$FINAL_REPORT" | $UV run python -c "
+import sys, json, os
+from shared.notify import send_notification, send_webhook, nudges_uri
+r = json.load(sys.stdin)
+status = r['overall_status']
+summary = r['summary']
+failed = r['failed_count']
+
+if status == 'failed':
+    send_notification('Stack Failed', f'{summary}\nRun: uv run python -m agents.health_monitor --verbose', priority='high', tags=['rotating_light'], click_url=nudges_uri())
+else:
+    send_notification('Stack Degraded', summary, priority='default', tags=['warning'], click_url=nudges_uri())
+
+webhook = os.environ.get('N8N_HEALTH_WEBHOOK_URL', '')
+if webhook:
+    send_webhook(webhook, {'status': status, 'summary': summary, 'failed': failed})
+" 2>/dev/null || true
+        ;;
+esac
+
+# Append to health history
+HISTORY_FILE="/home/hapaxlegomenon/projects/ai-agents/profiles/health-history.jsonl"
+echo "$FINAL_REPORT" | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+entry = {
+    'timestamp': r['timestamp'],
+    'status': r['overall_status'],
+    'healthy': r['healthy_count'],
+    'degraded': r['degraded_count'],
+    'failed': r['failed_count'],
+    'duration_ms': r['duration_ms'],
+    'failed_checks': [
+        c['name'] for g in r['groups'] for c in g['checks']
+        if c['status'] != 'healthy'
+    ],
+}
+print(json.dumps(entry))
+" >> "$HISTORY_FILE" 2>/dev/null || true
+
+# Atomic rotation — write new, then rename chain
+if [[ -f "$HISTORY_FILE" ]]; then
+    LINE_COUNT=$(wc -l < "$HISTORY_FILE")
+    if [[ $LINE_COUNT -gt 10000 ]]; then
+        cp "$HISTORY_FILE" "${HISTORY_FILE}.new"
+        tail -n 5000 "${HISTORY_FILE}.new" > "${HISTORY_FILE}.trimmed"
+        mv "${HISTORY_FILE}.trimmed" "${HISTORY_FILE}.new"
+        mv -f "${HISTORY_FILE}.new" "$HISTORY_FILE"
+    fi
+fi
+
+# Exit code matches status
+case "$STATUS" in
+    healthy)  exit 0 ;;
+    degraded) exit 1 ;;
+    failed)   exit 2 ;;
+esac

@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly infrastructure manifest snapshot (Sunday 02:30)
+
+[Timer]
+OnCalendar=Sun *-*-* 02:30:00
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

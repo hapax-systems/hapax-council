@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Meeting prep generator — auto-generates 1:1 prep docs for upcoming meetings
+cd /home/hapaxlegomenon/projects/ai-agents
+eval "$(<.envrc)" 2>/dev/null || true
+
+UV=/home/hapaxlegomenon/.local/bin/uv
+REPORT=$($UV run python -m agents.meeting_lifecycle --prepare --save --json 2>/dev/null)
+
+# Notify via shared.notify
+echo "$REPORT" | $UV run python -c "
+import sys, json
+from shared.notify import send_notification
+r = json.load(sys.stdin)
+prepped = r.get('meetings_prepped', 0)
+if prepped > 0:
+    body = f'{prepped} meeting prep doc(s) generated'
+    send_notification('Meeting Prep', body, tags=['calendar'])
+" 2>/dev/null || true

@@ -1,0 +1,35 @@
+[Unit]
+Description=Hapax Voice — persistent voice interaction daemon
+After=pipewire.service pipewire-pulse.service network-online.target
+Requires=pipewire.service
+Wants=pipewire-pulse.service network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=300
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hapaxlegomenon/projects/ai-agents
+# Use .venv/bin/python directly instead of `uv run` because NeMo toolkit
+# requires lightning==2.4.0 (nv-one-logger crash with >=2.5), and `uv run`
+# re-syncs to pyproject.toml which installs lightning 2.6.x.
+# NeMo is installed via `uv pip install` outside pyproject.toml resolution
+# due to huggingface-hub version conflict with pydantic-ai.
+ExecStartPre=/bin/bash -c 'echo "LITELLM_API_KEY=$(pass show litellm/master-key)" > /run/user/1000/hapax-voice.env && echo "LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key)" >> /run/user/1000/hapax-voice.env && echo "LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key)" >> /run/user/1000/hapax-voice.env && chmod 600 /run/user/1000/hapax-voice.env'
+ExecStart=/home/hapaxlegomenon/projects/ai-agents/.venv/bin/python -m agents.hapax_voice
+ExecStopPost=/bin/rm -f /run/user/1000/hapax-voice.env
+Restart=always
+RestartSec=10
+EnvironmentFile=-/run/user/1000/hapax-voice.env
+Environment=PATH=/home/hapaxlegomenon/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapaxlegomenon
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=GNUPGHOME=/home/hapaxlegomenon/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapaxlegomenon/.password-store
+Environment=LITELLM_BASE_URL=http://127.0.0.1:4000
+Environment=LANGFUSE_HOST=http://127.0.0.1:3000
+MemoryMax=8G
+SyslogIdentifier=hapax-voice
+
+[Install]
+WantedBy=default.target

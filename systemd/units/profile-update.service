@@ -1,0 +1,26 @@
+[Unit]
+Description=User Profile Auto-Update (profiler agent)
+After=network.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapaxlegomenon/projects/ai-agents
+Environment=PATH=/home/hapaxlegomenon/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapaxlegomenon
+Environment=GNUPGHOME=/home/hapaxlegomenon/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapaxlegomenon/.password-store
+
+# Load secrets from pass via shell eval — requires GPG agent in user session
+ExecStart=/bin/bash -c '\
+  eval "$(<.envrc)" && \
+  exec /home/hapaxlegomenon/.local/bin/uv run python -m agents.profiler --auto'
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=profile-update
+MemoryMax=4G
+CPUQuota=80%
+
+# Don't restart on failure for a oneshot timer-triggered service
+# The timer will re-trigger on schedule

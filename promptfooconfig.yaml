@@ -1,0 +1,86 @@
+# promptfoo.yaml — Cross-model comparison for research + production tasks
+# Run: npx promptfoo eval && npx promptfoo view
+
+description: "LLM stack model comparison"
+
+providers:
+  - id: anthropic:messages:claude-sonnet-4-5-20250929
+    label: "Claude Sonnet 4.5"
+
+  - id: openai:chat:qwen3-30b-moe
+    label: "Qwen3 30B MoE (local)"
+    config:
+      apiBaseUrl: http://localhost:4000/v1
+      apiKey: ${LITELLM_API_KEY}
+
+  - id: openai:chat:deepseek-r1-14b
+    label: "DeepSeek R1 14B (local)"
+    config:
+      apiBaseUrl: http://localhost:4000/v1
+      apiKey: ${LITELLM_API_KEY}
+
+  - id: openai:chat:qwen3-14b
+    label: "Qwen3 14B (local)"
+    config:
+      apiBaseUrl: http://localhost:4000/v1
+      apiKey: ${LITELLM_API_KEY}
+
+prompts:
+  - |
+    You are a technical research assistant for a music production and software development environment.
+    Answer the following question concisely and accurately.
+
+    Question: {{question}}
+
+tests:
+  # ── Technical knowledge ──
+  - vars:
+      question: "What is the ALSA MIDI subsystem and how does virtual MIDI routing work on Linux?"
+    assert:
+      - type: contains-any
+        value: ["snd-virmidi", "snd_virmidi", "virmidi"]
+      - type: llm-rubric
+        value: "Answer correctly explains virtual MIDI ports and mentions aconnect for routing"
+
+  - vars:
+      question: "Explain the difference between EXL2 and GGUF quantization formats for LLMs."
+    assert:
+      - type: llm-rubric
+        value: "Correctly states EXL2 uses mixed-precision per-layer quantization while GGUF uses more uniform approaches. Mentions ExLlamaV2 for EXL2 and llama.cpp for GGUF."
+
+  - vars:
+      question: "How does a Mixture-of-Experts model like Qwen3-30B-A3B reduce inference cost?"
+    assert:
+      - type: llm-rubric
+        value: "Explains that only a subset of parameters (experts) activate per token, reducing compute while maintaining total parameter count for quality"
+
+  # ── Music production domain ──
+  - vars:
+      question: "How should I structure a boom bap drum pattern in 4/4 time at 90 BPM?"
+    assert:
+      - type: llm-rubric
+        value: "Mentions kick on beats 1 and 3, snare on 2 and 4, discusses hi-hat swing or shuffle"
+
+  - vars:
+      question: "What is the SP-404MKII's preferred audio format for samples?"
+    assert:
+      - type: contains-any
+        value: ["44.1kHz", "44100", "16-bit", "WAV"]
+
+  # ── Reasoning ──
+  - vars:
+      question: "I have 24GB of VRAM. Qwen3-30B-A3B uses ~18GB. Can I run Stable Audio Open (~6GB) simultaneously? Show your reasoning."
+    assert:
+      - type: llm-rubric
+        value: "Correctly identifies that 18+6=24GB is at the limit and explains that KV cache, CUDA overhead, or OS usage would likely cause OOM. Recommends sequential use."
+
+  # ── Code generation ──
+  - vars:
+      question: "Write a Python function that embeds text using Ollama's nomic-embed-text model and upserts it to a Qdrant collection."
+    assert:
+      - type: contains
+        value: "ollama"
+      - type: contains-any
+        value: ["qdrant_client", "QdrantClient"]
+      - type: llm-rubric
+        value: "Code is syntactically correct, uses ollama.embed() or equivalent, and calls qdrant upsert with a PointStruct"

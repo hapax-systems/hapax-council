@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly horizon scan (Wednesday 10:00)
+
+[Timer]
+OnCalendar=Wed *-*-* 10:00:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

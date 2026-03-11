@@ -1,0 +1,1220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<style>
+/* ── Reset & Base ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: #282828;
+  color: #ebdbb2;
+  font-family: system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── App Shell ────────────────────────────────────────────────── */
+#app {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Stage ────────────────────────────────────────────────────── */
+#stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+/* ── Slides ───────────────────────────────────────────────────── */
+.slide {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  opacity: 0;
+  transition: opacity 0.5s ease-in-out;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.slide.active {
+  opacity: 1;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+/* ── Content Slide Layout ─────────────────────────────────────── */
+.slide-image-area {
+  position: relative;
+  flex: 0 0 65%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.slide-image-area img,
+.slide-image-area video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.slide-overlay {
+  flex: 0 0 35%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 2rem 2rem 2rem 1.5rem;
+  background: rgba(60, 56, 54, 0.85);
+  overflow-y: auto;
+}
+
+.slide-overlay h2 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #fabd2f;
+  margin-bottom: 1.2rem;
+  line-height: 1.3;
+}
+
+.slide-overlay ul {
+  list-style: none;
+  padding: 0;
+}
+
+.slide-overlay li {
+  position: relative;
+  padding-left: 1.2rem;
+  margin-bottom: 0.8rem;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: #ebdbb2;
+}
+
+.slide-overlay li::before {
+  content: "\25CF";
+  position: absolute;
+  left: 0;
+  color: #fe8019;
+  font-size: 0.6rem;
+  top: 0.45rem;
+}
+
+/* ── Slide Tables ──────────────────────────────────────────────── */
+.slide-overlay table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.4rem;
+  font-size: 0.95rem;
+}
+
+.slide-overlay th {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  color: #fabd2f;
+  font-weight: 600;
+  border-bottom: 2px solid #504945;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.slide-overlay td {
+  padding: 0.45rem 0.6rem;
+  color: #ebdbb2;
+  border-bottom: 1px solid rgba(80, 73, 69, 0.4);
+  line-height: 1.4;
+}
+
+.slide-overlay tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Title Slide Layout ───────────────────────────────────────── */
+.slide.title-slide {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: #282828;
+}
+
+.slide.title-slide .slide-image-area {
+  position: absolute;
+  inset: 0;
+  flex: none;
+  width: 100%;
+  height: 100%;
+}
+
+.slide.title-slide .slide-image-area img,
+.slide.title-slide .slide-image-area video {
+  opacity: 0.08;
+}
+
+.slide.title-slide .title-content {
+  position: relative;
+  z-index: 2;
+  max-width: 60%;
+  padding: 3rem 4rem;
+}
+
+.slide.title-slide .title-content h1 {
+  font-size: 3rem;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  color: #ebdbb2;
+  margin-bottom: 1.2rem;
+  line-height: 1.15;
+}
+
+.slide.title-slide .title-content .accent-line {
+  width: 80px;
+  height: 3px;
+  background: #fabd2f;
+  margin: 0 auto 1.2rem;
+  border-radius: 2px;
+}
+
+.slide.title-slide .title-content p {
+  font-size: 1.15rem;
+  font-weight: 400;
+  color: #a89984;
+  letter-spacing: 0.04em;
+}
+
+.slide.title-slide .slide-overlay {
+  display: none;
+}
+
+/* ── Narration Subtitle ───────────────────────────────────────── */
+.narration-subtitle {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 80%;
+  padding: 0.4rem 1rem;
+  background: rgba(40, 40, 40, 0.8);
+  border-radius: 4px;
+  font-size: 0.85rem;
+  color: #a89984;
+  text-align: center;
+  line-height: 1.4;
+  z-index: 3;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+body.subtitles-hidden .narration-subtitle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── Click to Start Overlay ───────────────────────────────────── */
+#click-to-start {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(40, 40, 40, 0.92);
+  cursor: pointer;
+}
+
+#click-to-start.visible {
+  display: flex;
+}
+
+#click-to-start .play-icon {
+  width: 80px;
+  height: 80px;
+  border: 3px solid #fabd2f;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1.2rem;
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+#click-to-start:hover .play-icon {
+  transform: scale(1.08);
+  background: rgba(250, 189, 47, 0.1);
+}
+
+#click-to-start .play-icon svg {
+  width: 32px;
+  height: 32px;
+  fill: #fabd2f;
+  margin-left: 4px;
+}
+
+#click-to-start h2 {
+  font-size: 1.3rem;
+  color: #ebdbb2;
+  margin-bottom: 0.4rem;
+}
+
+#click-to-start p {
+  font-size: 0.9rem;
+  color: #a89984;
+}
+
+/* ── Pause Overlay (brief flash) ──────────────────────────────── */
+#pause-indicator {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.8);
+  z-index: 40;
+  width: 64px;
+  height: 64px;
+  background: rgba(40, 40, 40, 0.7);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+#pause-indicator.flash {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+#pause-indicator svg {
+  width: 28px;
+  height: 28px;
+  fill: #ebdbb2;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────── */
+#sidebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 260px;
+  background: #3c3836;
+  z-index: 30;
+  transform: translateX(-100%);
+  transition: transform 0.25s ease;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 4px 0 16px rgba(0,0,0,0.4);
+}
+
+#sidebar.open {
+  transform: translateX(0);
+}
+
+#sidebar-header {
+  padding: 1rem 1rem 0.6rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #928374;
+  border-bottom: 1px solid #504945;
+}
+
+#chapter-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.4rem 0;
+}
+
+.chapter-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #bdae93;
+  border-left: 3px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.chapter-item:hover {
+  background: rgba(80, 73, 69, 0.5);
+}
+
+.chapter-item.active {
+  border-left-color: #fe8019;
+  color: #ebdbb2;
+  background: rgba(80, 73, 69, 0.3);
+}
+
+.chapter-number {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #504945;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #a89984;
+}
+
+.chapter-item.active .chapter-number {
+  background: #fe8019;
+  color: #282828;
+}
+
+.chapter-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playing-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fe8019;
+  opacity: 0;
+}
+
+.chapter-item.playing .playing-dot {
+  opacity: 1;
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* ── Controls Bar ─────────────────────────────────────────────── */
+#controls {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: rgba(40, 40, 40, 0.9);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 0;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+
+#controls.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── Progress Bar ─────────────────────────────────────────────── */
+#progress-container {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  background: #3c3836;
+  cursor: pointer;
+  transition: height 0.15s ease;
+}
+
+#controls:hover #progress-container,
+#progress-container:hover {
+  height: 6px;
+}
+
+#progress-fill {
+  height: 100%;
+  background: #fe8019;
+  width: 0%;
+  transition: width 0.1s linear;
+  pointer-events: none;
+}
+
+/* Scene markers on progress bar */
+.progress-marker {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: rgba(235, 219, 178, 0.2);
+  pointer-events: none;
+}
+
+/* ── Control Buttons ──────────────────────────────────────────── */
+#controls-inner {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.4rem 0.8rem;
+}
+
+.ctrl-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.4rem;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+  color: #ebdbb2;
+}
+
+.ctrl-btn:hover {
+  background: rgba(80, 73, 69, 0.6);
+}
+
+.ctrl-btn:focus-visible {
+  outline: 2px solid #fabd2f;
+  outline-offset: 2px;
+}
+
+.ctrl-btn svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+#time-display {
+  font-size: 0.8rem;
+  color: #a89984;
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.4rem;
+  min-width: 90px;
+}
+
+.spacer { flex: 1; }
+
+#scene-label {
+  font-size: 0.8rem;
+  color: #928374;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
+/* ── Metadata Footer ──────────────────────────────────────────── */
+#metadata {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.8rem;
+  z-index: 10;
+  font-size: 0.7rem;
+  color: #665c54;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+#app:hover #metadata {
+  opacity: 1;
+}
+
+/* ── Responsive ───────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .slide:not(.title-slide) {
+    flex-direction: column;
+  }
+
+  .slide:not(.title-slide) .slide-image-area {
+    flex: 0 0 55%;
+  }
+
+  .slide:not(.title-slide) .slide-overlay {
+    flex: 0 0 45%;
+    padding: 1rem;
+  }
+
+  .slide-overlay h2 {
+    font-size: 1.1rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .slide-overlay li {
+    font-size: 0.9rem;
+  }
+
+  .slide.title-slide .title-content h1 {
+    font-size: 1.6rem;
+  }
+
+  #sidebar {
+    width: 220px;
+  }
+
+  #scene-label {
+    display: none;
+  }
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Stage: all slides rendered here -->
+  <div id="stage">
+    {% for scene in scenes %}
+    <div class="slide{% if scene.is_title_slide %} title-slide{% endif %}"
+         data-index="{{ scene.id }}"
+         data-duration="{{ scene.duration }}"
+         data-has-audio="{{ 'true' if scene.audio_data else 'false' }}">
+
+      <div class="slide-image-area">
+        {% if scene.is_video %}
+        <video src="{{ scene.image_data }}" muted playsinline preload="auto"></video>
+        {% else %}
+        <img src="{{ scene.image_data }}" alt="{{ scene.title }}">
+        {% endif %}
+        {% if scene.narration %}
+        <div class="narration-subtitle">{{ scene.narration }}</div>
+        {% endif %}
+      </div>
+
+      {% if scene.is_title_slide %}
+      <div class="title-content">
+        <h1>{{ scene.title }}</h1>
+        <div class="accent-line"></div>
+        <p>{{ audience }}</p>
+      </div>
+      {% else %}
+      <div class="slide-overlay">
+        <h2>{{ scene.title }}</h2>
+        {% if scene.slide_table %}
+        <table>
+          {% for row in scene.slide_table %}
+          {% if loop.first %}
+          <thead><tr>{% for cell in row %}<th>{{ cell }}</th>{% endfor %}</tr></thead>
+          <tbody>
+          {% else %}
+          <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+          {% endif %}
+          {% endfor %}
+          </tbody>
+        </table>
+        {% elif scene.key_points %}
+        <ul>
+          {% for point in scene.key_points %}
+          <li>{{ point }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Click-to-start overlay (autoplay blocked) -->
+  <div id="click-to-start">
+    <div class="play-icon">
+      <svg viewBox="0 0 24 24"><polygon points="8,5 19,12 8,19"/></svg>
+    </div>
+    <h2>{{ title }}</h2>
+    <p>Click to start presentation</p>
+  </div>
+
+  <!-- Pause indicator (brief flash) -->
+  <div id="pause-indicator">
+    <svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+  </div>
+
+  <!-- Sidebar: chapter list -->
+  <div id="sidebar">
+    <div id="sidebar-header">Chapters</div>
+    <div id="chapter-list">
+      {% for scene in scenes %}
+      <div class="chapter-item" data-index="{{ scene.id }}">
+        <span class="chapter-number">{{ loop.index }}</span>
+        <span class="chapter-title">{{ scene.title }}</span>
+        <span class="playing-dot"></span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Controls bar -->
+  <div id="controls">
+    <div id="progress-container">
+      <div id="progress-fill"></div>
+      {# Scene boundary markers #}
+    </div>
+    <div id="controls-inner">
+      <!-- Sidebar toggle -->
+      <button class="ctrl-btn" id="btn-sidebar" title="Chapters (S)" aria-label="Toggle chapters sidebar">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+      </button>
+      <!-- Previous -->
+      <button class="ctrl-btn" id="btn-prev" title="Previous (Left)" aria-label="Previous scene">
+        <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+      </button>
+      <!-- Play/Pause -->
+      <button class="ctrl-btn" id="btn-play" title="Play/Pause (Space)" aria-label="Play or pause">
+        <svg id="icon-play" viewBox="0 0 24 24"><polygon points="8,5 19,12 8,19"/></svg>
+        <svg id="icon-pause" viewBox="0 0 24 24" style="display:none"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+      </button>
+      <!-- Next -->
+      <button class="ctrl-btn" id="btn-next" title="Next (Right)" aria-label="Next scene">
+        <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>
+      </button>
+      <!-- Time -->
+      <span id="time-display">0:00 / {{ '%d:%02d' | format((total_duration // 60) | int, (total_duration % 60) | int) }}</span>
+      <span class="spacer"></span>
+      <span id="scene-label"></span>
+      <!-- Subtitles toggle -->
+      <button class="ctrl-btn" id="btn-subtitles" title="Subtitles (T)" aria-label="Toggle subtitles">
+        <svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V6h16v12zM6 10h2v2H6zm0 4h8v2H6zm10 0h2v2h-2zm-6-4h8v2h-8z"/></svg>
+      </button>
+      <!-- Fullscreen -->
+      <button class="ctrl-btn" id="btn-fullscreen" title="Fullscreen (F)" aria-label="Toggle fullscreen">
+        <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Metadata -->
+  <div id="metadata">{{ audience }} &middot; Generated {{ generated_at }}</div>
+
+</div>
+
+<script>
+(function() {
+  "use strict";
+
+  /* ── Scene Data ───────────────────────────────────────────── */
+  var scenes = [
+    {% for scene in scenes %}
+    {
+      id: {{ scene.id }},
+      title: {{ scene.title | tojson }},
+      narration: {{ scene.narration | tojson }},
+      duration: {{ scene.duration }},
+      hasAudio: {{ 'true' if scene.audio_data else 'false' }},
+      audioSrc: {{ scene.audio_data | tojson if scene.audio_data else 'null' }},
+      isVideo: {{ 'true' if scene.is_video else 'false' }}
+    }{{ "," if not loop.last }}
+    {% endfor %}
+  ];
+
+  var totalDuration = {{ total_duration }};
+  var sceneCount = scenes.length;
+
+  /* ── State ────────────────────────────────────────────────── */
+  var currentIndex = 0;
+  var isPlaying = false;
+  var sidebarOpen = false;
+  var subtitlesVisible = true;
+  var controlsTimeout = null;
+  var timerInterval = null;
+  var timerElapsed = 0;
+  var pauseFlashTimeout = null;
+  var hasAnyAudio = scenes.some(function(s) { return s.hasAudio; });
+
+  /* ── DOM References ───────────────────────────────────────── */
+  var $stage = document.getElementById("stage");
+  var $clickToStart = document.getElementById("click-to-start");
+  var $pauseIndicator = document.getElementById("pause-indicator");
+  var $sidebar = document.getElementById("sidebar");
+  var $chapterList = document.getElementById("chapter-list");
+  var $controls = document.getElementById("controls");
+  var $progressContainer = document.getElementById("progress-container");
+  var $progressFill = document.getElementById("progress-fill");
+  var $timeDisplay = document.getElementById("time-display");
+  var $sceneLabel = document.getElementById("scene-label");
+  var $btnPlay = document.getElementById("btn-play");
+  var $iconPlay = document.getElementById("icon-play");
+  var $iconPause = document.getElementById("icon-pause");
+  var $btnPrev = document.getElementById("btn-prev");
+  var $btnNext = document.getElementById("btn-next");
+  var $btnSidebar = document.getElementById("btn-sidebar");
+  var $btnFullscreen = document.getElementById("btn-fullscreen");
+  var $btnSubtitles = document.getElementById("btn-subtitles");
+  var $slides = document.querySelectorAll(".slide");
+  var $chapters = document.querySelectorAll(".chapter-item");
+
+  /* ── Audio Elements ───────────────────────────────────────── */
+  var audioElements = [];
+  scenes.forEach(function(scene) {
+    if (scene.hasAudio && scene.audioSrc) {
+      var audio = new Audio();
+      audio.preload = "auto";
+      audio.src = scene.audioSrc;
+      audioElements.push(audio);
+    } else {
+      audioElements.push(null);
+    }
+  });
+
+  /* ── Cumulative Durations (for progress calculation) ──────── */
+  var cumulativeDurations = [];
+  var cumSum = 0;
+  scenes.forEach(function(scene) {
+    cumulativeDurations.push(cumSum);
+    cumSum += scene.duration;
+  });
+
+  /* ── Scene Markers on Progress Bar ────────────────────────── */
+  if (sceneCount > 1) {
+    for (var i = 1; i < sceneCount; i++) {
+      var marker = document.createElement("div");
+      marker.className = "progress-marker";
+      marker.style.left = (cumulativeDurations[i] / totalDuration * 100) + "%";
+      $progressContainer.appendChild(marker);
+    }
+  }
+
+  /* ── Utilities ────────────────────────────────────────────── */
+  function formatTime(seconds) {
+    var s = Math.max(0, Math.floor(seconds));
+    var m = Math.floor(s / 60);
+    s = s % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  function updateTimeDisplay(elapsed) {
+    $timeDisplay.textContent = formatTime(elapsed) + " / " + formatTime(totalDuration);
+  }
+
+  function updateProgress(elapsed) {
+    var pct = totalDuration > 0 ? Math.min(100, (elapsed / totalDuration) * 100) : 0;
+    $progressFill.style.width = pct + "%";
+    updateTimeDisplay(elapsed);
+  }
+
+  function getGlobalElapsed() {
+    return cumulativeDurations[currentIndex] + timerElapsed;
+  }
+
+  /* ── Slide Management ─────────────────────────────────────── */
+  function showSlide(index) {
+    for (var i = 0; i < $slides.length; i++) {
+      $slides[i].classList.toggle("active", i === index);
+      // Pause and reset videos in non-active slides
+      var vid = $slides[i].querySelector("video");
+      if (vid && i !== index) {
+        vid.pause();
+        vid.currentTime = 0;
+      }
+    }
+    // Play video in active slide if it exists
+    var activeVideo = $slides[index].querySelector("video");
+    if (activeVideo && isPlaying) {
+      activeVideo.currentTime = 0;
+      activeVideo.play().catch(function() {});
+    }
+    // Update sidebar
+    for (var j = 0; j < $chapters.length; j++) {
+      $chapters[j].classList.toggle("active", j === index);
+      $chapters[j].classList.toggle("playing", j === index && isPlaying);
+    }
+    // Update scene label
+    $sceneLabel.textContent = scenes[index].title;
+    // Scroll active chapter into view
+    var activeChapter = $chapters[index];
+    if (activeChapter && sidebarOpen) {
+      activeChapter.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
+  /* ── Playback Control ─────────────────────────────────────── */
+  function stopCurrentPlayback() {
+    var audio = audioElements[currentIndex];
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.removeEventListener("ended", onAudioEnded);
+      audio.removeEventListener("timeupdate", onAudioTimeUpdate);
+    }
+    clearTimerInterval();
+    timerElapsed = 0;
+  }
+
+  function clearTimerInterval() {
+    if (timerInterval) {
+      clearInterval(timerInterval);
+      timerInterval = null;
+    }
+  }
+
+  function onAudioEnded() {
+    advanceScene();
+  }
+
+  function onAudioTimeUpdate() {
+    var audio = audioElements[currentIndex];
+    if (audio) {
+      timerElapsed = audio.currentTime;
+      updateProgress(getGlobalElapsed());
+    }
+  }
+
+  function startTimerPlayback(duration) {
+    var startTime = Date.now() - (timerElapsed * 1000);
+    clearTimerInterval();
+    timerInterval = setInterval(function() {
+      timerElapsed = (Date.now() - startTime) / 1000;
+      updateProgress(getGlobalElapsed());
+      if (timerElapsed >= duration) {
+        clearTimerInterval();
+        advanceScene();
+      }
+    }, 100);
+  }
+
+  function playScene(index) {
+    stopCurrentPlayback();
+    currentIndex = index;
+    showSlide(index);
+    timerElapsed = 0;
+    updateProgress(getGlobalElapsed());
+
+    var scene = scenes[index];
+    var audio = audioElements[index];
+
+    if (audio && scene.hasAudio) {
+      audio.currentTime = 0;
+      audio.addEventListener("ended", onAudioEnded);
+      audio.addEventListener("timeupdate", onAudioTimeUpdate);
+      var playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(function() {
+          // Autoplay blocked — show click-to-start
+          showClickToStart();
+        });
+      }
+    } else {
+      // Timer-based advance
+      startTimerPlayback(scene.duration);
+    }
+  }
+
+  function advanceScene() {
+    if (currentIndex < sceneCount - 1) {
+      playScene(currentIndex + 1);
+    } else {
+      // End of presentation
+      setPaused();
+      timerElapsed = scenes[currentIndex].duration;
+      updateProgress(totalDuration);
+    }
+  }
+
+  function setPlaying() {
+    isPlaying = true;
+    $iconPlay.style.display = "none";
+    $iconPause.style.display = "block";
+    for (var j = 0; j < $chapters.length; j++) {
+      $chapters[j].classList.toggle("playing", j === currentIndex);
+    }
+  }
+
+  function setPaused() {
+    isPlaying = false;
+    $iconPlay.style.display = "block";
+    $iconPause.style.display = "none";
+    for (var j = 0; j < $chapters.length; j++) {
+      $chapters[j].classList.remove("playing");
+    }
+  }
+
+  function play() {
+    setPlaying();
+    $clickToStart.classList.remove("visible");
+    playScene(currentIndex);
+  }
+
+  function pause() {
+    setPaused();
+    var audio = audioElements[currentIndex];
+    if (audio && !audio.paused) {
+      audio.pause();
+    }
+    // Pause video in current slide
+    var vid = $slides[currentIndex].querySelector("video");
+    if (vid && !vid.paused) {
+      vid.pause();
+    }
+    clearTimerInterval();
+    flashPauseIndicator();
+  }
+
+  function togglePlayPause() {
+    if (isPlaying) {
+      pause();
+    } else {
+      // If we were paused mid-scene, resume
+      setPlaying();
+      $clickToStart.classList.remove("visible");
+
+      var scene = scenes[currentIndex];
+      var audio = audioElements[currentIndex];
+
+      // Resume video in current slide
+      var resumeVid = $slides[currentIndex].querySelector("video");
+      if (resumeVid && resumeVid.paused) {
+        resumeVid.play().catch(function() {});
+      }
+
+      if (audio && scene.hasAudio) {
+        var playPromise = audio.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(function() {
+            showClickToStart();
+          });
+        }
+        // timeupdate listener already attached from playScene
+      } else {
+        // Resume timer from where we left off
+        startTimerPlayback(scene.duration);
+      }
+    }
+  }
+
+  function goToScene(index) {
+    if (index < 0 || index >= sceneCount) return;
+    var wasPlaying = isPlaying;
+    stopCurrentPlayback();
+    currentIndex = index;
+    timerElapsed = 0;
+
+    if (wasPlaying) {
+      setPlaying();
+      playScene(index);
+    } else {
+      showSlide(index);
+      updateProgress(cumulativeDurations[index]);
+    }
+  }
+
+  function prevScene() {
+    goToScene(currentIndex - 1);
+  }
+
+  function nextScene() {
+    goToScene(currentIndex + 1);
+  }
+
+  /* ── Click-to-Start ───────────────────────────────────────── */
+  function showClickToStart() {
+    setPaused();
+    $clickToStart.classList.add("visible");
+  }
+
+  $clickToStart.addEventListener("click", function() {
+    $clickToStart.classList.remove("visible");
+    play();
+  });
+
+  /* ── Pause Flash ──────────────────────────────────────────── */
+  function flashPauseIndicator() {
+    clearTimeout(pauseFlashTimeout);
+    $pauseIndicator.classList.add("flash");
+    pauseFlashTimeout = setTimeout(function() {
+      $pauseIndicator.classList.remove("flash");
+    }, 600);
+  }
+
+  /* ── Stage Click ──────────────────────────────────────────── */
+  $stage.addEventListener("click", function(e) {
+    // Don't toggle if clicking narration subtitle
+    if (e.target.classList.contains("narration-subtitle")) return;
+    // Close sidebar if open (takes priority over play/pause)
+    if (sidebarOpen) {
+      sidebarOpen = false;
+      $sidebar.classList.remove("open");
+      return;
+    }
+    togglePlayPause();
+  });
+
+  /* ── Sidebar ──────────────────────────────────────────────── */
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen;
+    $sidebar.classList.toggle("open", sidebarOpen);
+  }
+
+  $btnSidebar.addEventListener("click", function(e) {
+    e.stopPropagation();
+    toggleSidebar();
+  });
+
+  // Chapter clicks
+  $chapterList.addEventListener("click", function(e) {
+    var item = e.target.closest(".chapter-item");
+    if (item) {
+      var idx = parseInt(item.getAttribute("data-index"), 10);
+      goToScene(idx);
+    }
+  });
+
+  /* ── Progress Bar Click ───────────────────────────────────── */
+  $progressContainer.addEventListener("click", function(e) {
+    e.stopPropagation();
+    var rect = $progressContainer.getBoundingClientRect();
+    var ratio = (e.clientX - rect.left) / rect.width;
+    var targetTime = ratio * totalDuration;
+
+    // Find which scene this time falls in
+    for (var i = sceneCount - 1; i >= 0; i--) {
+      if (targetTime >= cumulativeDurations[i]) {
+        goToScene(i);
+        break;
+      }
+    }
+  });
+
+  /* ── Controls Auto-Hide ───────────────────────────────────── */
+  function showControls() {
+    $controls.classList.remove("hidden");
+    clearTimeout(controlsTimeout);
+    if (isPlaying) {
+      controlsTimeout = setTimeout(function() {
+        $controls.classList.add("hidden");
+      }, 3000);
+    }
+  }
+
+  document.addEventListener("mousemove", showControls);
+  document.addEventListener("touchstart", showControls);
+
+  /* ── Button Handlers ──────────────────────────────────────── */
+  $btnPlay.addEventListener("click", function(e) {
+    e.stopPropagation();
+    togglePlayPause();
+  });
+
+  $btnPrev.addEventListener("click", function(e) {
+    e.stopPropagation();
+    prevScene();
+  });
+
+  $btnNext.addEventListener("click", function(e) {
+    e.stopPropagation();
+    nextScene();
+  });
+
+  $btnFullscreen.addEventListener("click", function(e) {
+    e.stopPropagation();
+    toggleFullscreen();
+  });
+
+  /* ── Subtitles Toggle ─────────────────────────────────────── */
+  function toggleSubtitles() {
+    subtitlesVisible = !subtitlesVisible;
+    document.body.classList.toggle("subtitles-hidden", !subtitlesVisible);
+    $btnSubtitles.style.opacity = subtitlesVisible ? "1" : "0.4";
+  }
+
+  $btnSubtitles.addEventListener("click", function(e) {
+    e.stopPropagation();
+    toggleSubtitles();
+  });
+
+  /* ── Fullscreen ───────────────────────────────────────────── */
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(function() {});
+    } else {
+      document.exitFullscreen();
+    }
+  }
+
+  /* ── Keyboard ─────────────────────────────────────────────── */
+  document.addEventListener("keydown", function(e) {
+    // Don't capture if typing in an input
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+    switch (e.key) {
+      case "ArrowRight":
+        e.preventDefault();
+        nextScene();
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        prevScene();
+        break;
+      case " ":
+        e.preventDefault();
+        togglePlayPause();
+        break;
+      case "f":
+      case "F":
+        e.preventDefault();
+        toggleFullscreen();
+        break;
+      case "s":
+      case "S":
+        e.preventDefault();
+        toggleSidebar();
+        break;
+      case "t":
+      case "T":
+        e.preventDefault();
+        toggleSubtitles();
+        break;
+      case "Escape":
+        if (sidebarOpen) {
+          e.preventDefault();
+          sidebarOpen = false;
+          $sidebar.classList.remove("open");
+        } else if (document.fullscreenElement) {
+          // Browser handles Escape for fullscreen
+        }
+        break;
+    }
+    showControls();
+  });
+
+  /* ── Initialize ───────────────────────────────────────────── */
+  function init() {
+    // Show first slide
+    showSlide(0);
+    updateProgress(0);
+
+    // If there's audio, try autoplay
+    if (sceneCount === 0) return;
+
+    if (hasAnyAudio && audioElements[0]) {
+      // Try autoplay — if blocked, show overlay
+      var testPlay = audioElements[0].play();
+      if (testPlay !== undefined) {
+        testPlay.then(function() {
+          // Autoplay works — start playing
+          audioElements[0].pause();
+          audioElements[0].currentTime = 0;
+          play();
+        }).catch(function() {
+          // Autoplay blocked
+          showClickToStart();
+        });
+      }
+    } else {
+      // No audio at all — start immediately with timer
+      play();
+    }
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# Sync pipeline — production schedules
+# Matches systemd timer OnCalendar values
+# Logs go to stdout (captured by docker logs)
+
+# Google agents (require pass + gpg for OAuth)
+15 */2 * * *   /app/sync-pipeline/run-agent.sh gdrive_sync
+*/30 * * * *   /app/sync-pipeline/run-agent.sh gcalendar_sync
+5 * * * *      /app/sync-pipeline/run-agent.sh gmail_sync
+30 */6 * * *   /app/sync-pipeline/run-agent.sh youtube_sync
+
+# Local filesystem agents
+15 */2 * * *   /app/sync-pipeline/run-agent.sh claude_code_sync
+10,40 * * * *  /app/sync-pipeline/run-agent.sh obsidian_sync
+20 * * * *     /app/sync-pipeline/run-agent.sh chrome_sync

@@ -1,0 +1,18 @@
+[Unit]
+Description=Infrastructure manifest snapshot — save current system state
+After=network.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapaxlegomenon/projects/ai-agents
+ExecStart=/bin/bash -c 'eval "$(<.envrc)" && /home/hapaxlegomenon/.local/bin/uv run python -m agents.introspect --save'
+Environment=PATH=/home/hapaxlegomenon/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapaxlegomenon
+Environment=GNUPGHOME=/home/hapaxlegomenon/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapaxlegomenon/.password-store
+MemoryMax=512M
+CPUQuota=30%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=manifest-snapshot

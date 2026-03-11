@@ -1,0 +1,18 @@
+[Unit]
+Description=Knowledge base maintenance — prune and deduplicate
+After=network.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapaxlegomenon/projects/ai-agents
+ExecStart=/home/hapaxlegomenon/.local/bin/knowledge-maint-watchdog
+Environment=PATH=/home/hapaxlegomenon/.local/bin:/home/hapaxlegomenon/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapaxlegomenon
+Environment=GNUPGHOME=/home/hapaxlegomenon/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapaxlegomenon/.password-store
+MemoryMax=1G
+CPUQuota=30%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=knowledge-maint

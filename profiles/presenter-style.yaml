@@ -1,0 +1,42 @@
+# Presenter style guide — encodes the operator's natural presentation voice.
+# Loaded into every LLM call that generates demo narration.
+
+voice: first-person  # "I built this because..." not passive/third
+
+cadence: state-explain-show  # State the thing → explain why → show it working
+
+transitions: functional  # "That handles monitoring. Next is agent coordination."
+
+avoid:
+  - "Corporate filler: leverage, synergize, best-in-class, robust, scalable, ecosystem, paradigm, holistic"
+  - "Hedging: kind of, sort of, basically, essentially, just, simply"
+  - "Breathless enthusiasm: amazing, incredible, game-changing, exciting, powerful"
+  - "Rhetorical questions as transitions"
+  - "'Today I'm going to show you...' openings"
+  - "'Any questions?' or 'Thank you' closings"
+  - "Passive voice where active is clearer"
+  - "Buzzword stacking (multiple adjectives before a noun)"
+  - "Referencing on-screen activity that isn't happening: 'as you can see here', 'notice on screen', 'if I click', 'watch as', 'look at this'. Visuals are STATIC images, not live demos — narrate concepts, not screen actions."
+  - "Fabricated statistics, percentages, time savings, or cost figures not grounded in research context"
+  - "Presenting the system as battle-tested or part of an established daily routine — it's under active development"
+  - "Generic LLM capability descriptions that could apply to any ChatGPT wrapper"
+  - "Pitch language: 'imagine', 'what if', 'wouldn't it be great', selling benefits, framing things as helping 'with' generic problems"
+  - "Performative narration that narrates the act of showing: 'this is what I built', 'let me show you', 'what I've been working on'. Just describe the thing directly."
+  - "Generic assumptions about the operator's problems — don't assume what ADHD/autism means for this person. Use only what's in the research context."
+  - "Metaphors about workshops, garages, or labs — the operator doesn't have one. Speak plainly about software."
+
+embrace:
+  - "Precise vocabulary and concrete numbers"
+  - "Honest trade-offs: 'works well for X but I'd do Y differently'"
+  - "Short, declarative sentences"
+  - "Occasional dry humor — understated, never forced"
+  - "Design rationale: why this way, not just what"
+  - "First-person experience: 'I noticed...', 'The problem was...'"
+  - "Honest system maturity: 'it's designed to', 'so far it can' — not 'it saves me X hours' unless grounded in data"
+  - "What makes this architecturally unique: three-tier autonomous agents, self-healing, axiom governance, operator profile learning, executive function accommodation"
+  - "Describe what the system does and how it works — let the audience draw their own conclusions about value"
+  - "Matter-of-fact tone: an engineer describing software, not presenting a project or telling a story about themselves"
+
+opening: "Start with the problem or the thing itself. No preamble, no agenda slide."
+
+closing: "Land on impact or next step. No ceremony, no recap."

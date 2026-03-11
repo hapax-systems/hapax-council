@@ -1,0 +1,140 @@
+/* cockpit.tcss — Operations cockpit layout */
+
+/* Copilot line — cognitive partner observation */
+
+CopilotLine {
+    height: auto;
+    max-height: 3;
+    padding: 0 2;
+    color: $text-muted;
+    text-style: italic;
+}
+
+CopilotLine:focus {
+    background: $accent 10%;
+}
+
+/* Dashboard quick-input */
+
+#dash-input {
+    height: 1;
+    margin: 0 2;
+    border: none;
+    background: transparent;
+    color: $text-muted;
+}
+
+#dash-input:focus {
+    border-bottom: solid $accent 40%;
+    color: $text;
+}
+
+#columns {
+    height: 1fr;
+}
+
+#primary {
+    width: 1fr;
+    height: 100%;
+    overflow-y: auto;
+    padding: 1 1;
+    border: round $accent;
+}
+
+/* Section labels above OptionLists */
+
+.section-label {
+    height: 1;
+    color: $accent;
+    text-style: bold;
+    padding: 0 0;
+    margin: 1 0 0 0;
+    border-bottom: hkey $accent 40%;
+}
+
+.section-label:first-of-type {
+    margin: 0;
+}
+
+/* Action items and agent launcher */
+
+AgentLauncher {
+    margin: 0;
+}
+
+ActionItemsList > .option-list--option-highlighted {
+    background: $accent 40%;
+}
+
+AgentLauncher > .option-list--option-highlighted {
+    background: $accent 40%;
+}
+
+/* Status strip (right sidebar) */
+
+SidebarStatus {
+    width: 32;
+    height: 100%;
+    border: round $accent;
+    padding: 1 1;
+}
+
+SidebarStatus.degraded {
+    border: round $warning;
+    border-title-color: $warning;
+}
+
+SidebarStatus.failed {
+    border: round $error;
+    border-title-color: $error;
+}
+
+/* Sidebar sections */
+
+SidebarSection {
+    height: auto;
+    padding: 0;
+}
+
+SidebarSection:hover {
+    background: $accent 10%;
+}
+
+/* Output pane (docked bottom) */
+
+OutputPane {
+    height: 12;
+    min-height: 6;
+    border: round $accent;
+    border-title-color: $accent;
+    padding: 0 1;
+    dock: bottom;
+}
+
+OutputPane.run-complete {
+    border: round $success;
+    border-title-color: $success;
+}
+
+OutputPane.run-failed {
+    border: round $error;
+    border-title-color: $error;
+}
+
+/* Modal screens */
+
+#config-dialog {
+    width: 70;
+    max-height: 80%;
+    border: round $accent;
+    padding: 1 2;
+    background: $surface;
+}
+
+#detail-dialog {
+    width: 70;
+    max-height: 70%;
+    border: round $accent;
+    padding: 1 2;
+    background: $surface;
+}

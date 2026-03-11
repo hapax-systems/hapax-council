@@ -1,0 +1,41 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+.envrc
+
+# Profile outputs (generated, may contain personal data)
+profiles/*.json
+profiles/*.md
+profiles/*.jsonl
+profiles/*.yaml
+!profiles/presenter-style.yaml
+!profiles/component-registry.yaml
+!profiles/demo-audiences.yaml
+!profiles/workflow-registry.yaml
+profiles/*.bak
+profiles/*.db
+
+# SQLite WAL/SHM files
+*.db-wal
+*.db-shm
+
+# Playwright MCP cache
+.playwright-mcp/
+
+# Demo outputs (generated)
+output/demos/
+.worktrees/
+.venv-ingest/
+
+# Wake word training data (large, generated)
+data/wake-word-training/

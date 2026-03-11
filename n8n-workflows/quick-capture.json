@@ -1,0 +1,249 @@
+{
+  "name": "Quick Capture (Telegram Bot)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"]
+      },
+      "id": "telegram-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "CONFIGURE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $input.first().json.message;\nconst text = msg.text || '';\nconst chatId = msg.chat.id;\n\nlet command = 'note';\nlet payload = text;\n\nif (text.startsWith('/note ')) {\n  command = 'note';\n  payload = text.slice(6).trim();\n} else if (text.startsWith('/ask ')) {\n  command = 'ask';\n  payload = text.slice(5).trim();\n} else if (text.startsWith('/health')) {\n  command = 'health';\n  payload = '';\n} else if (text.startsWith('/goals')) {\n  command = 'goals';\n  payload = '';\n} else if (text.startsWith('/briefing')) {\n  command = 'briefing';\n  payload = '';\n} else {\n  command = 'note';\n  payload = text;\n}\n\nreturn [{ json: { command, payload, chatId: chatId.toString() } }];"
+      },
+      "id": "route-command",
+      "name": "Route Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "outputKey": "note",
+              "conditions": {
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "note", "operator": { "type": "string", "operation": "equals" } }]
+              }
+            },
+            {
+              "outputKey": "ask",
+              "conditions": {
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "ask", "operator": { "type": "string", "operation": "equals" } }]
+              }
+            },
+            {
+              "outputKey": "health",
+              "conditions": {
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "health", "operator": { "type": "string", "operation": "equals" } }]
+              }
+            },
+            {
+              "outputKey": "info",
+              "conditions": {
+                "conditions": [
+                  { "leftValue": "={{ $json.command }}", "rightValue": "goals", "operator": { "type": "string", "operation": "equals" } },
+                  { "leftValue": "={{ $json.command }}", "rightValue": "briefing", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "or"
+              }
+            }
+          ]
+        }
+      },
+      "id": "switch",
+      "name": "Switch on Command",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.first().json.payload;\nconst chatId = $input.first().json.chatId;\nconst now = new Date();\nconst date = now.toISOString().slice(0, 10);\nconst time = now.toISOString().slice(11, 19).replace(/:/g, '');\nconst filename = `capture-${date}-${time}.md`;\nconst content = `---\\nsource: telegram\\ncaptured: ${now.toISOString()}\\n---\\n\\n${payload}\\n`;\n\nreturn [{ json: { content, filename, chatId, reply: `Captured: \"${payload.slice(0, 50)}${payload.length > 50 ? '...' : ''}\"` } }];"
+      },
+      "id": "format-note",
+      "name": "Format Note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 200]
+    },
+    {
+      "parameters": {
+        "filePath": "=/data/rag-sources/captures/{{ $json.filename }}",
+        "fileContent": "={{ $json.content }}"
+      },
+      "id": "write-note",
+      "name": "Write to RAG Sources",
+      "type": "n8n-nodes-base.writeFile",
+      "typeVersion": 1,
+      "position": [1130, 200]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.reply }}"
+      },
+      "id": "reply-note",
+      "name": "Reply (Note)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1350, 200],
+      "credentials": {
+        "telegramApi": { "id": "CONFIGURE_ME", "name": "Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "url": "http://litellm:4000/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.LITELLM_MASTER_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a concise assistant for a technical operator. Keep responses under 200 words. Be direct and precise.\"},\n    {\"role\": \"user\", \"content\": \"{{ $json.payload }}\"}\n  ],\n  \"max_tokens\": 300\n}"
+      },
+      "id": "llm-ask",
+      "name": "Ask LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 350]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Route Command').item.json.chatId }}",
+        "text": "={{ $json.choices[0].message.content }}"
+      },
+      "id": "reply-ask",
+      "name": "Reply (Ask)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1130, 350],
+      "credentials": {
+        "telegramApi": { "id": "CONFIGURE_ME", "name": "Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "command": "tail -1 /data/ai-agents/profiles/health-history.jsonl 2>/dev/null || echo '{\"status\": \"unknown\", \"summary\": \"No health data available\"}'"
+      },
+      "id": "read-health",
+      "name": "Read Last Health Entry",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [910, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.stdout;\nconst chatId = $('Route Command').item.json.chatId;\ntry {\n  const h = JSON.parse(raw);\n  const emoji = h.status === 'healthy' ? '\\u2705' : h.status === 'degraded' ? '\\u26a0\\ufe0f' : '\\u274c';\n  let msg = `${emoji} *Health: ${h.status}*\\n`;\n  msg += `Checks: ${h.healthy}/${h.healthy + h.degraded + h.failed} healthy`;\n  if (h.degraded > 0) msg += `, ${h.degraded} degraded`;\n  if (h.failed > 0) msg += `, ${h.failed} failed`;\n  msg += `\\nTimestamp: ${h.timestamp}`;\n  if (h.failed_checks && h.failed_checks.length > 0) {\n    msg += `\\n\\nFailing: ${h.failed_checks.join(', ')}`;\n  }\n  return [{ json: { text: msg, chatId } }];\n} catch (e) {\n  return [{ json: { text: 'Health status unavailable', chatId } }];\n}"
+      },
+      "id": "format-health",
+      "name": "Format Health",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 500]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "id": "reply-health",
+      "name": "Reply (Health)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1350, 500],
+      "credentials": {
+        "telegramApi": { "id": "CONFIGURE_ME", "name": "Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const command = $input.first().json.command;\nconst chatId = $input.first().json.chatId;\nlet file = command === 'goals' ? '/data/ai-agents/profiles/operator.json' : '/data/ai-agents/profiles/briefing.md';\nreturn [{ json: { command, chatId, file } }];"
+      },
+      "id": "pick-file",
+      "name": "Pick Info File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 650]
+    },
+    {
+      "parameters": {
+        "command": "=cat \"{{ $json.file }}\" 2>/dev/null | head -50 || echo 'File not available'"
+      },
+      "id": "read-info",
+      "name": "Read Info File",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1130, 650]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Route Command').item.json.chatId }}",
+        "text": "={{ $json.stdout.slice(0, 4000) }}"
+      },
+      "id": "reply-info",
+      "name": "Reply (Info)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1350, 650],
+      "credentials": {
+        "telegramApi": { "id": "CONFIGURE_ME", "name": "Telegram Bot" }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{ "node": "Route Command", "type": "main", "index": 0 }]]
+    },
+    "Route Command": {
+      "main": [[{ "node": "Switch on Command", "type": "main", "index": 0 }]]
+    },
+    "Switch on Command": {
+      "main": [
+        [{ "node": "Format Note", "type": "main", "index": 0 }],
+        [{ "node": "Ask LLM", "type": "main", "index": 0 }],
+        [{ "node": "Read Last Health Entry", "type": "main", "index": 0 }],
+        [{ "node": "Pick Info File", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Note": {
+      "main": [[{ "node": "Write to RAG Sources", "type": "main", "index": 0 }]]
+    },
+    "Write to RAG Sources": {
+      "main": [[{ "node": "Reply (Note)", "type": "main", "index": 0 }]]
+    },
+    "Ask LLM": {
+      "main": [[{ "node": "Reply (Ask)", "type": "main", "index": 0 }]]
+    },
+    "Read Last Health Entry": {
+      "main": [[{ "node": "Format Health", "type": "main", "index": 0 }]]
+    },
+    "Format Health": {
+      "main": [[{ "node": "Reply (Health)", "type": "main", "index": 0 }]]
+    },
+    "Pick Info File": {
+      "main": [[{ "node": "Read Info File", "type": "main", "index": 0 }]]
+    },
+    "Read Info File": {
+      "main": [[{ "node": "Reply (Info)", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateCredsSetupCompleted": false, "instanceId": "local" },
+  "tags": [{ "name": "multi-channel" }]
+}

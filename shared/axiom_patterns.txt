@@ -1,0 +1,19 @@
+class User(Manager|Service|Repository|Controller|Model)\b
+class Auth(Manager|Service|Handler)\b
+class (Role|Permission|ACL|RBAC|OAuth|Session)Manager\b
+def (authenticate|authorize|login|logout|register)_user
+def (create|delete|update|list)_users?\b
+def check_permission
+from (django\.contrib\.auth|flask_login|passlib|bcrypt) import
+class (CollaborationManager|SharingService|MultiUserSync)\b
+class MultiTenant
+class Tenant(Manager|Service|Config)\b
+class (ConsentManager|PrivacyPolicy|DataAnonymizer|GDPR)\b
+class (RateLimiter|UserQuota|AbusePrevention)\b
+user_roles\b|role_assignment\b|permission_check\b
+class (AdminPanel|AdminDashboard|UserAdmin)\b
+# Management safety patterns (mg-boundary-001, mg-boundary-002)
+generate_feedback\b
+suggest_.*to_say\b
+class FeedbackGenerator\b
+class CoachingRecommender\b

@@ -1,0 +1,6 @@
+[Timer]
+OnBootSec=
+OnUnitActiveSec=
+OnBootSec=5min
+OnUnitActiveSec=45min
+RandomizedDelaySec=5min

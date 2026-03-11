@@ -1,0 +1,44 @@
+services:
+  cockpit-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.cockpit-api
+    image: hapax-agents-api:latest
+    container_name: hapax-agents-api
+    network_mode: host
+    environment:
+      - LITELLM_BASE_URL=http://127.0.0.1:4000
+      - LITELLM_API_KEY=${LITELLM_API_KEY}
+    volumes:
+      - ./profiles:/app/profiles
+      # Read-only: management data for cockpit collectors
+      - ${HOME}/Documents/Work:/root/Documents/Work:ro
+      - ${HOME}/.cache/cockpit:/root/.cache/cockpit
+      - ${HOME}/.cache/hapax:/root/.cache/hapax:ro
+    restart: unless-stopped
+
+  sync-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.sync-pipeline
+    image: hapax-sync-pipeline:latest
+    container_name: hapax-sync-pipeline
+    init: true
+    network_mode: host
+    environment:
+      - CYCLE_MODE=${CYCLE_MODE:-prod}
+    volumes:
+      # Read-write: state + RAG output
+      - ${HOME}/.cache:/root/.cache
+      - ${HOME}/documents/rag-sources:/root/documents/rag-sources
+      # Read-write: OAuth token refresh
+      - ${HOME}/.password-store:/root/.password-store
+      # Read-write: GPG needs lock files (host agent does the actual crypto)
+      - ${HOME}/.gnupg:/root/.gnupg
+      # GPG agent socket (forwards to host gpg-agent — must be running and unlocked)
+      - /run/user/1000/gnupg/S.gpg-agent:/root/.gnupg/S.gpg-agent
+      # Read-only: data sources
+      - ${HOME}/Documents/Personal:/root/Documents/Personal:ro
+      - ${HOME}/.claude:/root/.claude:ro
+      - ${HOME}/.config/google-chrome:/root/.config/google-chrome:ro
+    restart: unless-stopped

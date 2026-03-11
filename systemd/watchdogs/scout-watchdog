@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# scout-watchdog — Scheduled horizon scanning with notification.
+# Runs via systemd timer. Saves report and notifies on actionable findings.
+set -euo pipefail
+
+cd /home/hapaxlegomenon/projects/ai-agents
+eval "$(<.envrc)"
+
+PROFILES=/home/hapaxlegomenon/projects/ai-agents/profiles
+UV=/home/hapaxlegomenon/.local/bin/uv
+
+# Run horizon scan
+$UV run python -m agents.scout --save --notify 2>/dev/null || {
+    notify-send --urgency=critical --app-name="Scout" --icon=dialog-error \
+        "Scout Failed" "Could not run horizon scan"
+    exit 1
+}
+
+# Append summary to history
+REPORT="$PROFILES/scout-report.json"
+if [[ -f "$REPORT" ]]; then
+    SCANNED=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('components_scanned',0))" < "$REPORT")
+    ADOPT=$(python3 -c "import sys,json; print(len([r for r in json.load(sys.stdin).get('recommendations',[]) if r.get('tier')=='adopt']))" < "$REPORT")
+    EVALUATE=$(python3 -c "import sys,json; print(len([r for r in json.load(sys.stdin).get('recommendations',[]) if r.get('tier')=='evaluate']))" < "$REPORT")
+    TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    echo "{\"timestamp\":\"$TS\",\"components_scanned\":$SCANNED,\"adopt\":$ADOPT,\"evaluate\":$EVALUATE}" \
+        >> "$PROFILES/scout-history.jsonl"
+fi

@@ -1,0 +1,120 @@
+# Canonical workflow definitions for the Hapax system.
+# Used by the demo pipeline to generate accurate D2 diagrams
+# instead of relying on LLM-hallucinated workflow topologies.
+
+workflows:
+  morning-briefing:
+    label: Morning Briefing
+    trigger: daily-briefing.timer at 07:00
+    steps:
+      - digest agent aggregates RAG content (06:45 timer)
+      - briefing agent consumes digest + health + calendar
+      - LLM synthesizes briefing via LiteLLM
+      - vault_writer saves to 30-system/briefings/
+      - ntfy push notification
+    components:
+      - digest
+      - briefing
+      - vault_writer
+      - ntfy
+
+  health-monitoring:
+    label: Health Monitoring
+    trigger: health-monitor.timer every 15min
+    steps:
+      - 75 deterministic checks across 17 groups (zero LLM)
+      - auto-fix for known failures
+      - desktop notification on failures
+      - history logged
+    components:
+      - health_monitor
+      - ntfy
+
+  rag-ingestion:
+    label: RAG Ingestion
+    trigger: always-on watchdog + sync timers
+    steps:
+      - sync agents pull from sources
+      - files land in rag-sources
+      - watchdog detects new files
+      - Docling converts to markdown
+      - nomic-embed-text generates 768d vectors
+      - Qdrant stores in documents collection
+    components:
+      - gdrive_sync
+      - gcalendar_sync
+      - gmail_sync
+      - chrome_sync
+      - obsidian_sync
+      - claude_code_sync
+      - rag-ingest
+      - qdrant
+
+  meeting-prep:
+    label: Meeting Prep
+    trigger: meeting-prep.timer daily 06:30
+    steps:
+      - calendar agent checks today's 1:1s
+      - management_prep loads person notes
+      - Gmail thread context pulled
+      - LLM generates prep doc
+      - vault_writer saves to 10-work/1on1-prep/
+    components:
+      - gcalendar_sync
+      - management_prep
+      - gmail_sync
+      - vault_writer
+
+  profile-update:
+    label: Profile Update
+    trigger: profile-update.timer every 12h
+    steps:
+      - profiler scans new RAG documents
+      - LLM extracts facts across 13 dimensions
+      - dedup against existing profile-facts
+      - upserted to profile-facts collection
+    components:
+      - profiler
+      - qdrant
+
+  demo-generation:
+    label: Demo Generation
+    trigger: on-demand via CLI
+    steps:
+      - readiness gate
+      - sufficiency gate
+      - research gathering
+      - content skeleton planning
+      - voice application
+      - critique loop (max 4)
+      - Playwright screenshots/screencasts
+      - D2 diagrams + Matplotlib charts
+      - Chatterbox TTS voice cloning
+      - MoviePy video assembly
+      - HTML player generation
+    components:
+      - demo
+      - screenshots
+      - screencasts
+      - diagrams
+      - charts
+      - voice
+      - video
+      - html_player
+      - critique
+
+  ambient-audio:
+    label: Ambient Audio
+    trigger: audio-recorder.service always on + audio-processor.timer every 30min
+    steps:
+      - ffmpeg records from Blue Yeti
+      - audio-processor segments by VAD
+      - classifier categorizes
+      - speech transcribed via faster-whisper
+      - speaker diarization
+      - transcripts embedded in Qdrant
+      - raw audio archived to Drive daily
+    components:
+      - audio_processor
+      - qdrant
+      - rclone

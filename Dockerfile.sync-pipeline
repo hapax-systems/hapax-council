@@ -1,0 +1,54 @@
+# ── Stage 1: Build dependencies ─────────────────────────────────────────
+FROM python:3.12-slim AS build
+
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --extra sync-pipeline
+
+# ── Stage 2: Runtime ────────────────────────────────────────────────────
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps: pass+gpg (OAuth token refresh), curl (healthcheck)
+# supercronic: container-native cron (routes output to stdout)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        curl \
+        pass \
+        gpg \
+        gpg-agent \
+        procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://github.com/aptible/supercronic/releases/download/v0.2.33/supercronic-linux-amd64" \
+        -o /usr/local/bin/supercronic \
+    && chmod +x /usr/local/bin/supercronic
+
+# Copy venv from build stage
+COPY --from=build /app/.venv /app/.venv
+
+# Use pre-built venv directly — no uv sync at runtime
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
+
+# Environment defaults (requires --network host)
+ENV CYCLE_MODE=prod \
+    QDRANT_URL=http://127.0.0.1:6333 \
+    LITELLM_BASE_URL=http://127.0.0.1:4000 \
+    OLLAMA_URL=http://127.0.0.1:11434
+
+# Copy application code
+COPY pyproject.toml README.md ./
+COPY agents/ agents/
+COPY shared/ shared/
+COPY sync-pipeline/ sync-pipeline/
+
+RUN chmod +x sync-pipeline/*.sh
+
+HEALTHCHECK --interval=60s --timeout=5s --retries=3 \
+    CMD pgrep supercronic > /dev/null || exit 1
+
+ENTRYPOINT ["/app/sync-pipeline/entrypoint.sh"]

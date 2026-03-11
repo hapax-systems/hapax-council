@@ -1,0 +1,625 @@
+# Component Registry — Scout Agent Input
+#
+# Each component describes something the system depends on.
+# The scout agent reads this file, searches for alternatives/updates,
+# and evaluates whether we should change anything.
+#
+# Fields:
+#   role:         What this component does for us
+#   current:      What we're using now (name + version if known)
+#   provider:     How it runs (docker, ollama, pip, system, saas)
+#   constraints:  Hard requirements that any replacement must satisfy
+#   preferences:  Soft preferences for evaluation (weighted, not mandatory)
+#   search_hints: Queries to seed web search (agent may add its own)
+#   eval_notes:   Context for the LLM evaluator about what matters here
+
+components:
+
+  # ── Models ──────────────────────────────────────────────────────
+
+  embedding-model:
+    role: Text embeddings for RAG retrieval, sample search, and memory
+    current: nomic-embed-text-v2-moe via Ollama
+    provider: ollama
+    constraints:
+      - Must run locally on Ollama (self-hosted, no API dependency)
+      - Must fit in 24GB VRAM alongside other models
+      - 768 dimensions preferred (current Qdrant collections use 768d)
+    preferences:
+      - High MTEB benchmark scores for retrieval
+      - MoE architecture (current model is MoE, good for efficiency)
+      - Matryoshka support for flexible dimensionality
+    search_hints:
+      - "best embedding models for ollama 2026"
+      - "MTEB leaderboard embedding models self-hosted"
+      - "nomic embed text alternatives local"
+    eval_notes: >
+      Changing embedding model requires re-indexing all Qdrant collections
+      (documents, samples, claude-memory). Non-trivial migration cost.
+      Only recommend if improvement is substantial.
+
+  local-llm-coding:
+    role: Local code generation and review (offline, private)
+    current: qwen2.5-coder:32b via Ollama
+    provider: ollama
+    constraints:
+      - Must run on Ollama
+      - Must fit in 24GB VRAM
+      - Must handle code generation, review, refactoring
+    preferences:
+      - High HumanEval / BigCodeBench scores
+      - Good instruction following
+      - Fast inference (quantized acceptable)
+    search_hints:
+      - "best coding LLM for ollama 2026"
+      - "qwen coder alternatives local llm"
+      - "code llm benchmark 24gb vram"
+    eval_notes: >
+      Low migration cost — just pull new model and update MODELS alias.
+      Can evaluate quickly by running existing code-review agent evals.
+
+  local-llm-reasoning:
+    role: Complex reasoning tasks run locally
+    current: deepseek-r1:14b via Ollama
+    provider: ollama
+    constraints:
+      - Must run on Ollama
+      - Must fit in 24GB VRAM
+      - Chain-of-thought / reasoning capability required
+    preferences:
+      - Strong on math, logic, and multi-step reasoning benchmarks
+      - Reasonable inference speed
+    search_hints:
+      - "best reasoning LLM for ollama 2026"
+      - "deepseek r1 alternatives local reasoning"
+      - "open source reasoning models benchmark"
+    eval_notes: >
+      Low migration cost. Model alias swap only.
+
+  local-llm-general:
+    role: Lightweight local tasks (fast, cheap, private)
+    current: qwen2.5:7b via Ollama
+    provider: ollama
+    constraints:
+      - Must run on Ollama
+      - Small footprint (< 8GB VRAM)
+      - Fast inference
+    preferences:
+      - Good instruction following for size class
+      - Broad capability (not specialized)
+    search_hints:
+      - "best small LLM 7b 8b ollama 2026"
+      - "qwen 7b alternatives efficient local"
+    eval_notes: >
+      Very low migration cost. May co-exist with other models in VRAM.
+
+  cloud-llm:
+    role: Cloud LLM providers for agent system prompts and synthesis
+    current: Anthropic Claude (via LiteLLM) + Google Gemini (via LiteLLM)
+    provider: saas
+    constraints:
+      - Must support tool use / function calling
+      - Must support structured output
+      - Must be accessible via OpenAI-compatible API (LiteLLM proxy)
+    preferences:
+      - High reasoning quality
+      - Consistent structured output
+      - Good latency for interactive use
+      - Cost-effective for high-volume background agents
+    search_hints:
+      - "claude vs gemini comparison 2026"
+      - "best cloud LLM for agentic workflows 2026"
+      - "gemini experimental models production readiness"
+    eval_notes: >
+      Gemini models may be in experimental/preview status — flag any that
+      are not GA. Anthropic Claude is the primary provider (balanced, fast
+      aliases). Gemini serves as fallback and is used for cost-sensitive
+      background tasks. Migration cost is low due to LiteLLM abstraction.
+
+  # ── Infrastructure ─────────────────────────────────────────────
+
+  vector-database:
+    role: Vector storage for RAG, sample metadata, agent memory
+    current: Qdrant (Docker, latest)
+    provider: docker
+    constraints:
+      - Must be self-hosted (Docker)
+      - REST API required
+      - Must support filtering, payload storage, batch operations
+    preferences:
+      - Active development and community
+      - Good Python client library
+      - Low resource usage
+      - Hybrid search (vector + keyword) support
+    search_hints:
+      - "qdrant vs alternatives self-hosted vector database 2026"
+      - "best self-hosted vector database comparison"
+    eval_notes: >
+      High migration cost — three collections with established schemas.
+      Qdrant is working well. Only recommend change for significant
+      capability gap (e.g., native hybrid search, better clustering).
+
+  llm-gateway:
+    role: Unified API gateway for all LLM providers, routing, fallbacks, cost tracking
+    current: LiteLLM (Docker)
+    provider: docker
+    constraints:
+      - Must proxy to Anthropic, Google, and Ollama
+      - Must support fallback chains
+      - Must integrate with Langfuse for tracing
+      - Self-hosted (Docker)
+    preferences:
+      - OpenAI-compatible API
+      - Model aliasing and load balancing
+      - Active maintenance
+    search_hints:
+      - "litellm alternatives llm gateway proxy 2026"
+      - "llm api gateway self-hosted comparison"
+    eval_notes: >
+      Medium-high migration cost. All agents, configs, and the .envrc
+      reference LiteLLM. But the OpenAI-compatible API means most code
+      would work unchanged if the replacement also speaks OpenAI format.
+
+  observability:
+    role: LLM call tracing, cost tracking, prompt management
+    current: Langfuse v3 (Docker, web + worker + clickhouse + redis + minio)
+    provider: docker
+    constraints:
+      - Must be self-hosted
+      - Must accept OpenTelemetry traces
+      - Must track per-model costs
+      - Must store prompt versions
+    preferences:
+      - Web UI for exploration
+      - SDK for programmatic access
+      - Low operational overhead
+    search_hints:
+      - "langfuse alternatives llm observability self-hosted 2026"
+      - "llm tracing platform comparison self-hosted"
+    eval_notes: >
+      High migration cost — 5 containers, data in clickhouse, all agents
+      configured for Langfuse, activity-analyzer queries Langfuse API.
+      Only recommend for critical gaps.
+
+  # ── Agent Framework ────────────────────────────────────────────
+
+  agent-framework:
+    role: Framework for building Tier 2 LLM agents
+    current: pydantic-ai 1.63.0
+    provider: pip
+    constraints:
+      - Python-based
+      - Must support tool use / function calling
+      - Must support structured output (Pydantic models)
+      - Must work with LiteLLM (OpenAI-compatible backends)
+    preferences:
+      - Type-safe, good IDE support
+      - Minimal abstraction (close to the metal)
+      - Active development
+      - Good testing story
+    search_hints:
+      - "pydantic ai alternatives python agent framework 2026"
+      - "best python llm agent framework comparison"
+      - "pydantic ai vs langchain vs other frameworks"
+    eval_notes: >
+      Medium migration cost. 8 agents implemented. But agents are simple
+      (mostly single-shot with tools), so migration would be mechanical.
+      The key value of pydantic-ai is structured output + LiteLLM integration.
+
+  # ── Multi-Channel Access ──────────────────────────────────────
+
+  mesh-vpn:
+    role: Secure remote access to localhost services from phone and other devices
+    current: Tailscale (host-installed, free personal plan)
+    provider: system
+    constraints:
+      - WireGuard-based (no custom VPN protocols)
+      - Zero-config NAT traversal (no port forwarding)
+      - Free tier sufficient for personal use
+      - Must support reverse proxy (tailscale serve) for HTTPS
+    preferences:
+      - Mobile app for Android
+      - MagicDNS for friendly hostnames
+      - ACL support for granular access control
+    search_hints:
+      - "tailscale alternatives mesh vpn 2026"
+      - "wireguard mesh vpn self-hosted comparison"
+      - "zero-config vpn for homelab"
+    eval_notes: >
+      Low migration cost. Tailscale is transport-only — changing it
+      doesn't affect any application code. The alternatives would be
+      raw WireGuard, Headscale (self-hosted control plane), or Nebula.
+
+  push-notifications:
+    role: Push notifications to mobile devices
+    current: ntfy (Docker, self-hosted)
+    provider: docker
+    constraints:
+      - Must be self-hosted (no Firebase/Google dependency)
+      - HTTP API for publishing (simple curl/urllib)
+      - Android app available (F-Droid preferred)
+    preferences:
+      - Minimal resource usage
+      - Topic-based subscription
+      - Priority levels
+      - Markdown or rich content support
+    search_hints:
+      - "ntfy alternatives self-hosted push notifications 2026"
+      - "self-hosted push notification server comparison"
+    eval_notes: >
+      Low migration cost. Single publish endpoint used by shared/notify.py.
+      Any HTTP-based push service with similar API would work.
+
+  knowledge-sync:
+    role: Bidirectional sync between Obsidian vault and agent system
+    current: Obsidian Headless Sync (ob-sync CLI, systemd service)
+    provider: system
+    constraints:
+      - Must sync with Obsidian Sync cloud (paid subscription)
+      - Must run headless (no Electron/GUI)
+      - Continuous or near-real-time sync
+    preferences:
+      - Low resource usage
+      - Conflict resolution
+      - Selective folder sync
+    search_hints:
+      - "obsidian sync headless CLI 2026"
+      - "obsidian vault sync linux server"
+    eval_notes: >
+      Medium migration cost. The vault_writer.py module writes to local
+      paths — any sync mechanism that keeps a local copy would work.
+      The constraint is Obsidian Sync compatibility.
+
+  cloud-sync:
+    role: Google Drive content accessible to RAG pipeline
+    current: rclone (systemd timer, 30-min intervals)
+    provider: system
+    constraints:
+      - Must support Google Drive
+      - Selective folder/file type sync
+      - Systemd-friendly (oneshot service)
+    preferences:
+      - Mature, well-tested
+      - Bidirectional sync capability
+      - Rate limit handling
+    search_hints:
+      - "rclone alternatives google drive sync linux 2026"
+      - "google drive linux sync tools comparison"
+    eval_notes: >
+      Low migration cost. rclone is the de facto standard for cloud
+      storage sync on Linux. Very unlikely to need replacement.
+
+  workflow-automation:
+    role: Visual workflow automation for Telegram bot, scheduled tasks, webhooks
+    current: n8n (Docker, 4 workflows)
+    provider: docker
+    constraints:
+      - Must be self-hosted
+      - Must support Telegram trigger + send nodes
+      - Must support webhooks (for health relay)
+      - Must support cron scheduling
+    preferences:
+      - Visual workflow editor
+      - Credential management
+      - Version-controlled workflow export (JSON)
+      - HTTP request node for LiteLLM integration
+    search_hints:
+      - "n8n alternatives self-hosted workflow automation 2026"
+      - "self-hosted automation platform comparison"
+    eval_notes: >
+      Medium migration cost. 4 workflows to recreate. But n8n is
+      well-established and the workflows are simple. Only consider
+      replacing if a significantly better Telegram integration exists.
+
+  # ── Tools ──────────────────────────────────────────────────────
+
+  python-package-manager:
+    role: Python environment and dependency management
+    current: uv
+    provider: system
+    constraints:
+      - Must handle venvs, package install, project management
+      - Must be fast
+      - Must work with pyproject.toml
+    preferences:
+      - Drop-in replacement for pip + venv + pip-tools
+      - Lockfile support
+    search_hints:
+      - "uv python package manager alternatives 2026"
+      - "python dependency management tools comparison"
+    eval_notes: >
+      uv is currently dominant and fast-moving. Low likelihood of
+      replacement, but worth monitoring for fragmentation or new entrants.
+
+  mcp-ecosystem:
+    role: Tool integration layer for Claude Code
+    current: MCP (Model Context Protocol) with multiple servers
+    provider: system
+    constraints:
+      - Must be supported by Claude Code
+    preferences:
+      - Rich server ecosystem
+      - Community-maintained servers for common tools
+      - Stable protocol
+    search_hints:
+      - "MCP model context protocol new servers 2026"
+      - "MCP alternatives tool integration LLM"
+      - "best new MCP servers"
+    eval_notes: >
+      Not about replacing MCP (it's the standard), but tracking
+      new servers that could add capabilities. New useful MCP servers
+      are effectively free upgrades.
+
+  # ── Tier 1 CLI Tools ──────────────────────────────────────────
+
+  cli-llm-pipe:
+    role: Unix pipe interface for sending stdin through LLMs
+    current: mods (Charmbracelet)
+    provider: system
+    constraints:
+      - Must support OpenAI-compatible endpoints (for LiteLLM routing)
+      - Must accept stdin and produce stdout
+    preferences:
+      - Rich terminal output (markdown rendering)
+      - Conversation history
+      - MCP support
+    search_hints:
+      - "charmbracelet mods CLI LLM pipe tool 2026"
+      - "CLI LLM pipe stdin stdout alternatives"
+    eval_notes: >
+      Low migration cost. Shell aliases point at the binary. Replacement
+      just needs to speak OpenAI-compatible API and handle pipes.
+
+  cli-prompt-patterns:
+    role: Curated prompt pattern library for common LLM tasks
+    current: Fabric (Daniel Miessler)
+    provider: system
+    constraints:
+      - Must support OpenAI-compatible endpoints
+      - Must have extensible pattern system
+    preferences:
+      - Large community-maintained pattern library
+      - Pipe-friendly CLI interface
+      - Integration with Simon Willison's llm CLI
+    search_hints:
+      - "danielmiessler fabric prompt patterns alternatives 2026"
+      - "CLI prompt template library LLM"
+    eval_notes: >
+      Low migration cost. Patterns are just markdown prompt templates.
+      The llm-templates-fabric plugin bridges Fabric patterns into llm CLI.
+
+  cli-nl-to-command:
+    role: Natural language to shell command translation
+    current: llm-cmd (Simon Willison llm plugin)
+    provider: pip
+    constraints:
+      - Must display command for review before execution
+      - Must work with llm CLI ecosystem
+    preferences:
+      - Minimal, does one thing well
+      - Inherits model config from llm CLI
+    search_hints:
+      - "llm cmd natural language shell command 2026"
+      - "AI shell command generator CLI"
+    eval_notes: >
+      Very low migration cost. Single llm plugin.
+
+  # ── Tier 1 Editor ──────────────────────────────────────────────
+
+  editor-llm:
+    role: LLM-powered code completion and chat in VS Code
+    current: Continue.dev
+    provider: vscode-extension
+    constraints:
+      - Must support OpenAI-compatible endpoints (for LiteLLM routing)
+      - Must work in VS Code
+    preferences:
+      - Open source
+      - Autocomplete + chat + inline edit
+      - Multiple model support
+      - Context providers
+    search_hints:
+      - "continue dev vs code LLM extension alternatives 2026"
+      - "open source copilot alternative VS Code"
+    eval_notes: >
+      Low migration cost. Extension config only. Changing doesn't affect
+      any project code. The key requirement is LiteLLM routing so all
+      calls are traced in Langfuse.
+
+  # ── Tier 1 Voice ──────────────────────────────────────────────
+
+  voice-stt:
+    role: Push-to-talk speech-to-text for hands-free LLM input
+    current: Voxtype
+    provider: system
+    constraints:
+      - Must work on Wayland
+      - Must run locally (no cloud STT)
+      - Must fit in VRAM alongside Ollama models
+    preferences:
+      - Push-to-talk (not always listening)
+      - Low latency
+      - Whisper-based (community standard)
+    search_hints:
+      - "voxtype speech to text Linux alternatives 2026"
+      - "local STT push to talk Wayland Linux"
+      - "whisper dictation Linux NVIDIA"
+    eval_notes: >
+      Low migration cost. STT outputs text to clipboard/pipe — any
+      replacement with the same interface works. COSMIC key-release
+      event support is the key risk factor.
+
+  # ── Voice ─────────────────────────────────────────────────────
+
+  voice-pipeline:
+    role: Voice AI pipeline framework for real-time audio processing
+    current: pipecat-ai (Daily.co)
+    provider: pip
+    constraints:
+      - Must support local audio I/O (no browser/WebRTC required)
+      - Must handle real-time STT, LLM, TTS pipeline
+      - Must support interruption handling
+    preferences:
+      - Frame-based architecture for composability
+      - Active community and maintenance
+      - Pluggable transport layer
+    search_hints:
+      - "pipecat ai voice pipeline alternatives 2026"
+      - "real-time voice AI framework python"
+      - "speech to speech pipeline framework"
+    eval_notes: >
+      Medium migration cost. Core of Hapax Voice daemon. Pipeline processors
+      are abstracted but framework change would require rewriting pipeline.py
+      and gemini_live.py integration.
+
+  voice-stt-local:
+    role: Local speech-to-text for voice daemon (low latency, GPU)
+    current: nvidia/parakeet-tdt-0.6b-v2 via NeMo
+    provider: pip
+    constraints:
+      - Must run locally on GPU
+      - Must fit in 24GB VRAM alongside other models
+      - Latency < 500ms for interactive use
+    preferences:
+      - High accuracy on conversational English
+      - Small model footprint
+      - Streaming support
+    search_hints:
+      - "parakeet tdt alternatives local STT 2026"
+      - "best local speech to text model GPU 2026"
+      - "nvidia nemo STT alternatives fast"
+    eval_notes: >
+      Low migration cost. STT is behind an abstraction in pipeline.py.
+      Swap model reference and adjust audio format if needed.
+
+  voice-tts-local:
+    role: Local text-to-speech for voice daemon responses
+    current: Kokoro 82M
+    provider: pip
+    constraints:
+      - Must run locally (CPU or GPU)
+      - Must produce natural-sounding speech
+      - Latency < 1s for first audio chunk
+    preferences:
+      - Multiple voice options
+      - Small model size
+      - Streaming synthesis
+    search_hints:
+      - "kokoro tts alternatives local 2026"
+      - "best local text to speech model 2026"
+      - "fast neural TTS python library"
+    eval_notes: >
+      Low migration cost. TTS is behind TTSManager abstraction in tts.py.
+      Piper (CPU tier) is the fallback. Both are easily swappable.
+
+  voice-s2s-cloud:
+    role: Cloud speech-to-speech for high-quality conversational voice
+    current: Gemini 2.5 Flash Native Audio (preview)
+    provider: saas
+    constraints:
+      - Must support WebSocket streaming
+      - Must handle interruptions natively
+      - Must support system instructions
+    preferences:
+      - Low latency (< 500ms)
+      - Natural conversational style
+      - Tool use support
+    search_hints:
+      - "gemini native audio alternatives speech to speech 2026"
+      - "real-time voice AI API comparison"
+      - "speech to speech API low latency"
+    eval_notes: >
+      Medium migration cost. GeminiLiveSession in gemini_live.py is
+      provider-specific. Preview/experimental status — monitor for GA.
+      OpenAI Realtime API is the main alternative.
+
+  voice-wake-word:
+    role: Always-on wake word detection for voice activation
+    current: OpenWakeWord (ONNX)
+    provider: pip
+    constraints:
+      - Must run on CPU only (no GPU required)
+      - Must support custom wake words
+      - Low false positive rate
+    preferences:
+      - Custom model training support
+      - Small memory footprint
+      - ONNX runtime (no TensorFlow dependency)
+    search_hints:
+      - "openwakeword alternatives wake word detection 2026"
+      - "custom wake word detector python"
+      - "always listening keyword detection local"
+    eval_notes: >
+      Low migration cost. WakeWordDetector in wake_word.py is a thin wrapper.
+      Note: tflite-runtime incompatible with Python 3.12; ONNX path preferred.
+
+  voice-ambient-classifier:
+    role: Ambient sound classification for voice daemon context gate
+    current: PANNs (panns-inference, CNN14 pretrained on AudioSet)
+    provider: pip
+    constraints:
+      - Must run on CPU only (no GPU required)
+      - Must classify audio events from AudioSet label set
+      - Must be lazy-loadable (not always in memory)
+    preferences:
+      - Small model footprint (~300MB)
+      - Fast inference on CPU
+      - Broad label coverage (AudioSet 527 classes)
+    search_hints:
+      - "panns inference alternatives audio classification 2026"
+      - "audioset sound classification model python"
+      - "ambient sound event detection local"
+    eval_notes: >
+      Low migration cost. AmbientClassifier in ambient_classifier.py wraps
+      panns-inference behind a simple predict() interface. Model is lazy-loaded
+      on first use and runs on CPU. Any AudioSet-compatible classifier would
+      work as a drop-in replacement.
+
+  voice-workspace-monitor:
+    role: Dual-camera workspace awareness for voice daemon — screen analysis, webcam context, and proactive alerts
+    current: AT-SPI2 + cosmic-screenshot + V4L2 webcams + Gemini Flash (via LiteLLM)
+    provider: system + saas
+    constraints:
+      - Must work on COSMIC/Wayland
+      - Must be fail-open (daemon runs fine without screen or webcam awareness)
+      - Screenshot capture must be ephemeral (never persisted)
+      - Webcam frames must be ephemeral (never persisted)
+      - Proactive alerts must pass full ContextGate checks
+      - Webcam devices enumerated via /dev/v4l/by-id
+    preferences:
+      - Low capture rate (1-3/min during active use)
+      - Conservative proactive threshold (confidence >0.8)
+      - System-aware analysis via static context + RAG
+      - Webcam used for workspace awareness (presence, environment) not surveillance
+    search_hints:
+      - "linux desktop accessibility api screen monitoring"
+      - "vision llm screen analysis api"
+      - "at-spi2 python wayland"
+      - "v4l2 webcam python linux"
+      - "workspace vision dual camera awareness"
+      - "face detection presence sensing local"
+    eval_notes: >
+      Medium migration cost. WorkspaceMonitor composes ChangeDetector, ScreenCapturer,
+      WebcamCapturer, and WorkspaceAnalyzer. AT-SPI is the cheapest change detection signal.
+      cosmic-screenshot is COSMIC-specific — would need replacement on other compositors.
+      Webcam capture uses V4L2 via OpenCV. Gemini Flash is swappable via LiteLLM model
+      alias. Config in VoiceConfig.
+
+  rag-pipeline:
+    role: Document parsing, chunking, and ingestion
+    current: Docling + HybridChunker (custom ingest.py)
+    provider: pip
+    constraints:
+      - Must parse PDF, DOCX, PPTX, HTML, MD, TXT
+      - Must produce quality chunks for embedding
+    preferences:
+      - Good table and layout extraction
+      - Fast processing
+      - Configurable chunk strategy
+    search_hints:
+      - "docling alternatives document parsing 2026"
+      - "best document chunking library python RAG"
+      - "RAG ingestion pipeline tools comparison"
+    eval_notes: >
+      Medium migration cost. Single file (ingest.py) but core to the
+      knowledge pipeline. Test thoroughly before switching.

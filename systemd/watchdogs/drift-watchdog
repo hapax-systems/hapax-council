@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# drift-watchdog — Scheduled drift detection with notification.
+# Runs via systemd timer. Saves report and notifies on drift.
+set -euo pipefail
+
+cd /home/hapaxlegomenon/projects/ai-agents
+eval "$(<.envrc)"
+
+PROFILES=/home/hapaxlegomenon/projects/ai-agents/profiles
+UV=/home/hapaxlegomenon/.local/bin/uv
+
+# Run drift detection
+REPORT=$($UV run python -m agents.drift_detector --json 2>/dev/null) || {
+    $UV run python -c "
+from shared.notify import send_notification
+send_notification('Drift Detector Failed', 'Could not run drift detection', priority='urgent', tags=['skull'])
+" 2>/dev/null || true
+    exit 1
+}
+
+# Save latest report
+echo "$REPORT" > "$PROFILES/drift-report.json"
+
+# Extract summary, append to history, and notify via shared.notify
+echo "$REPORT" | python3 -c "
+import sys, json
+from datetime import datetime, timezone
+r = json.load(sys.stdin)
+count = len(r.get('drift_items', []))
+docs = len(r.get('docs_analyzed', []))
+summary = r.get('summary', '')[:120]
+ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+print(json.dumps({'timestamp': ts, 'drift_count': count, 'docs_analyzed': docs, 'summary': summary}))
+" >> "$PROFILES/drift-history.jsonl" 2>/dev/null || true
+
+# Notify if drift found
+echo "$REPORT" | $UV run python -c "
+import sys, json
+from shared.notify import send_notification
+r = json.load(sys.stdin)
+count = len(r.get('drift_items', []))
+if count > 0:
+    summary = r.get('summary', '')[:120]
+    send_notification(f'Documentation Drift: {count} items', summary, tags=['warning'])
+" 2>/dev/null || true

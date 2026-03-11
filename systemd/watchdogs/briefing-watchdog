@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Daily briefing generator — saves to profiles/briefing.md and sends notification
+cd /home/hapaxlegomenon/projects/ai-agents
+eval "$(<.envrc)" 2>/dev/null || true
+
+UV=/home/hapaxlegomenon/.local/bin/uv
+REPORT=$($UV run python -m agents.briefing --hours 24 --save --json 2>/dev/null)
+
+# Extract headline and high-priority count, then notify via shared.notify
+echo "$REPORT" | $UV run python -c "
+import sys, json
+from shared.notify import send_notification
+r = json.load(sys.stdin)
+headline = r.get('headline', 'Briefing generated')
+high = [a for a in r.get('action_items', []) if a.get('priority') == 'high']
+body = headline
+if high:
+    body += f'\n{len(high)} high-priority action(s) need attention'
+priority = 'high' if high else 'default'
+send_notification('Daily Briefing', body, priority=priority, tags=['clipboard'])
+" 2>/dev/null || true
