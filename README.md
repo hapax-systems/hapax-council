@@ -2,9 +2,9 @@
 
 Externalized executive function infrastructure.
 
-This is a personal operating environment where LLM agents handle the cognitive work that compounds silently: tracking open loops, maintaining context across conversations, surfacing what needs attention, and reacting to changes without requiring the operator to remember to check. These are executive function and context processing tasks — the kind of work that every knowledge worker does constantly and that ADHD and autism make acutely expensive. The developer who built this has both; the system was born from necessity. But the problem it solves — externalizing executive function into infrastructure — is general.
+This is a personal operating environment where LLM agents handle the cognitive work that compounds silently: tracking open loops, maintaining context across conversations, surfacing what needs attention, and reacting to changes without requiring the operator to remember to check. These are executive function and context processing tasks — the kind of work that every knowledge worker does constantly and that ADHD and autism make acutely expensive. The developer who built this has both, which is why it exists. But the problem it solves — externalizing executive function into infrastructure — applies broadly.
 
-It runs on a single workstation for a single person. There is no multi-user mode. That's not a limitation — it's a [constitutional axiom](https://github.com/ryanklee/hapax-constitution).
+It runs on a single workstation for a single person. Single-operator is a [constitutional axiom](https://github.com/ryanklee/hapax-constitution), which means no auth, no roles, and no multi-user code anywhere in the system.
 
 ## What it does
 
@@ -14,7 +14,7 @@ It runs on a single workstation for a single person. There is no multi-user mode
 
 **Sync agents** (7 of them, running on cron in a Docker container) keep the knowledge base current: Google Drive, Calendar, Gmail, YouTube, Chrome history, Obsidian vault, and Claude Code transcripts all flow into Qdrant for RAG retrieval.
 
-**Voice daemon** (`hapax_voice`) provides always-on voice interaction: wake word detection, speaker identification, screen awareness, and Gemini Live conversation — the system is present in the room, not just in a terminal.
+**Voice daemon** (`hapax_voice`) provides always-on voice interaction: wake word detection, speaker identification, screen awareness, and Gemini Live conversation.
 
 **System agents** monitor infrastructure health every 15 minutes, detect documentation drift weekly, prune stale knowledge, and snapshot the infrastructure manifest. When something breaks, they fix what they can and notify about what they can't.
 
@@ -22,10 +22,10 @@ It runs on a single workstation for a single person. There is no multi-user mode
 
 ## The governance model
 
-Every agent operates under constitutional axioms defined in [`axioms/registry.yaml`](axioms/registry.yaml). These aren't guidelines — they're weighted constraints with derived blocking implications enforced by commit hooks:
+Every agent operates under constitutional axioms defined in [`axioms/registry.yaml`](axioms/registry.yaml). Axioms are weighted constraints with derived blocking implications, enforced by commit hooks:
 
-- **single_user** (weight 100) — One operator. No auth, no roles, no collaboration features. Code that implements multi-user patterns is a constitutional violation.
-- **executive_function** (weight 95) — The system exists to externalize executive function. Agents must be zero-config, errors must include next actions, routine work must be automated. If the operator has to remember to do something, the system has failed.
+- **single_user** (weight 100) — One operator. No auth, no roles, no collaboration features.
+- **executive_function** (weight 95) — Agents must be zero-config, errors must include next actions, routine work must be automated.
 - **management_safety** (weight 95) — LLMs prepare, humans deliver. Agents never generate feedback language, coaching recommendations, or evaluations directed at individual team members.
 - **corporate_boundary** (weight 90) — Work data stays in employer-controlled systems. The home system processes personal and management-practice data only.
 
