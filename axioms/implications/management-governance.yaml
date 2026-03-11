@@ -1,0 +1,67 @@
+axiom_id: management_governance
+derived_at: '2026-03-03'
+model: balanced
+derivation_version: 1
+implications:
+- id: mg-boundary-001
+  tier: T0
+  text: Never generate feedback language, performance evaluations, or coaching
+    recommendations directed at individual team members.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: component
+
+- id: mg-boundary-002
+  tier: T0
+  text: Never suggest what the operator should say to a team member or draft
+    language for delivery in people conversations.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: component
+
+- id: mg-cadence-001
+  tier: T1
+  text: 1:1 meeting cadence must be the primary staleness signal for people
+    management, auto-detected from frontmatter date fields.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+
+- id: mg-selfreport-001
+  tier: T1
+  text: Cognitive load assessment must come from operator self-report in
+    frontmatter only, never from LLM inference about a person.
+  enforcement: review
+  canon: textualist
+  mode: compatibility
+  level: component
+
+- id: mg-deterministic-001
+  tier: T1
+  text: Management state collection (people, meetings, coaching, feedback)
+    must be fully deterministic with zero LLM calls.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+
+- id: mg-prep-001
+  tier: T2
+  text: Prep agents focus on signal aggregation and open-loop surfacing,
+    not people recommendations or relationship advice.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: component
+
+- id: mg-bridge-001
+  tier: T1
+  text: Work domain data respects the work/home boundary via the bridge zone.
+    No work-specific PII leaks into personal domain tooling.
+  enforcement: review
+  canon: purposivist
+  mode: compatibility
+  level: component

@@ -1,0 +1,62 @@
+# axioms/registry.yaml — Axiom definitions for the hapaxromana system.
+# Schema: each axiom has id, text, weight (0-100), type (hardcoded|softcoded),
+# created date, status (active|retired), optional supersedes reference,
+# scope (constitutional|domain), and domain (null for constitutional).
+version: 2
+axioms:
+  - id: single_user
+    text: >
+      This system is developed for a single user and by that single user,
+      the operator (Hapax). This will always be the case. All decisions
+      must be made respecting and leveraging that fact.
+    weight: 100
+    type: hardcoded
+    created: "2026-03-03"
+    status: active
+    supersedes: null
+    scope: constitutional
+    domain:
+
+  - id: executive_function
+    text: >
+      This system serves as externalized executive function infrastructure.
+      The operator has ADHD and autism — task initiation, sustained attention,
+      and routine maintenance are genuine cognitive challenges. The system
+      must compensate for these, not add to cognitive load.
+    weight: 95
+    type: hardcoded
+    created: "2026-03-03"
+    status: active
+    supersedes: null
+    scope: constitutional
+    domain:
+
+  - id: management_governance
+    text: >
+      Management tooling aggregates signals and prepares context for the
+      operator's relational work. It never substitutes for human judgment
+      in people decisions. LLMs prepare, humans deliver — the system
+      surfaces patterns and open loops, never generates feedback language,
+      coaching hypotheses, or recommendations about individual team members.
+    weight: 85
+    type: softcoded
+    created: "2026-03-03"
+    status: active
+    supersedes:
+    scope: domain
+    domain: management
+
+  - id: corporate_boundary
+    text: >
+      The Obsidian plugin operates across a corporate network boundary via
+      Obsidian Sync. When running on employer-managed devices, all external
+      API calls must use employer-sanctioned providers (currently: OpenAI,
+      Anthropic). No localhost service dependencies may be assumed. The
+      system must degrade gracefully when home-only services are unreachable.
+    weight: 90
+    type: softcoded
+    created: "2026-03-04"
+    status: active
+    supersedes:
+    scope: domain
+    domain: infrastructure

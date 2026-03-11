@@ -1,0 +1,124 @@
+# Seed precedents demonstrating sufficiency evaluations at all three levels.
+# Mix of sufficient and insufficient decisions across both axioms.
+
+precedents:
+  - id: SEED-SUF-001
+    axiom_id: executive_function
+    situation: health_monitor agent includes remediation field in check results, telling
+      the operator exactly what to do when a check fails.
+    decision: sufficient
+    reasoning: Error messages include specific next actions (ex-err-001). The remediation
+      field provides actionable fix commands, not just failure descriptions.
+    tier: T0
+    distinguishing_facts:
+      - remediation field present on all check results
+      - auto-fix mode uses remediation to attempt self-repair
+    authority: derived
+    created: "2026-03-03"
+
+  - id: SEED-SUF-002
+    axiom_id: executive_function
+    situation: All recurring agents (health_monitor, drift_detector, knowledge_maint,
+      briefing, scout, profiler) have corresponding systemd timers for autonomous scheduling.
+    decision: sufficient
+    reasoning: Routine maintenance runs autonomously on schedules (ex-routine-007, ex-routine-001).
+      Timer count matches recurring agent count. No manual triggering required.
+    tier: T0
+    distinguishing_facts:
+      - 10 systemd timers covering all recurring agents
+      - health-watchdog runs every 15 minutes
+      - failure notifications via notify-failure@.service template
+    authority: derived
+    created: "2026-03-03"
+
+  - id: SEED-SUF-003
+    axiom_id: executive_function
+    situation: briefing agent aggregates health status, drift report, scout findings,
+      action items, and cost data into a single daily view.
+    decision: sufficient
+    reasoning: Minimizes context switching by batching related information (ex-cognitive-009).
+      Operator gets one consolidated view rather than checking 5+ sources.
+    tier: T1
+    distinguishing_facts:
+      - single briefing.md output combines all sources
+      - digest agent runs 15 min before briefing to prepare content
+      - vault_writer pushes to Obsidian for mobile access
+    authority: derived
+    created: "2026-03-03"
+
+  - id: SEED-SUF-004
+    axiom_id: executive_function
+    situation: ntfy push notifications deliver alerts to Android device via shared/notify.py,
+      with desktop notify-send as fallback.
+    decision: sufficient
+    reasoning: Critical alerts delivered through external channels (ex-attention-001).
+      Multi-channel delivery ensures operator sees alerts regardless of location.
+    tier: T0
+    distinguishing_facts:
+      - ntfy container at port 8090
+      - F-Droid ntfy app on Android
+      - n8n health-relay webhook for structured alerts
+    authority: derived
+    created: "2026-03-03"
+
+  - id: SEED-SUF-005
+    axiom_id: executive_function
+    situation: Qdrant profile-facts collection + context tools chain enables agents
+      to automatically surface relevant historical context about the operator.
+    decision: sufficient
+    reasoning: System captures and surfaces historical context without requiring operator
+      recall (ex-memory-010). ProfileStore + semantic search + context_tools provides
+      the full pipeline.
+    tier: T2
+    distinguishing_facts:
+      - profile-facts collection with 768d nomic embeddings
+      - context_tools registered on all LLM agents
+      - profiler runs every 12h to keep facts current
+    authority: derived
+    created: "2026-03-03"
+
+  - id: SEED-SUF-006
+    axiom_id: single_user
+    situation: LiteLLM serves as single API gateway for all model access, eliminating
+      per-user routing, API key management, and multi-tenant model allocation.
+    decision: sufficient
+    reasoning: Single-gateway design leverages single-user assumption for simplicity
+      (su-decision-001). No user-based routing, quotas, or key rotation needed.
+    tier: T1
+    distinguishing_facts:
+      - one master key via pass store
+      - all agents route through localhost:4000
+      - fallback chains configured globally, not per-user
+    authority: derived
+    created: "2026-03-03"
+
+  - id: SEED-SUF-007
+    axiom_id: executive_function
+    situation: RAG ingest pipeline has retry queue with exponential backoff but error
+      messages on final failure only say "max retries exceeded" without suggesting
+      next steps.
+    decision: insufficient
+    reasoning: Final failure message lacks specific next actions (ex-err-001). Should
+      suggest checking the source file format, Qdrant connectivity, or re-queuing manually.
+    tier: T0
+    distinguishing_facts:
+      - retry mechanism itself is good (auto-recovery)
+      - terminal failure message is the gap
+      - remediation should include diagnostic commands
+    authority: derived
+    created: "2026-03-03"
+
+  - id: SEED-SUF-008
+    axiom_id: single_user
+    situation: Cockpit TUI optimizes keybindings and layout for the operator's workflow —
+      r=refresh, c=chat, ?=manual — rather than providing generic discoverable UI.
+    decision: sufficient
+    reasoning: Interface optimized for operator's specific workflows (su-ui-001).
+      Keybindings match muscle memory rather than general usability conventions.
+    tier: T1
+    distinguishing_facts:
+      - single-key shortcuts without modifier keys
+      - Nord theme matching operator aesthetic preference
+      - command palette for discoverability when needed
+    authority: derived
+    created: "2026-03-03"

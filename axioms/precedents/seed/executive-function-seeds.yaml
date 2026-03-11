@@ -1,0 +1,45 @@
+# axioms/precedents/seed/executive-function-seeds.yaml
+axiom_id: executive_function
+precedents:
+  - id: sp-ef-001
+    situation: "Health monitor auto-fix for safe remediations"
+    decision: compliant
+    reasoning: >
+      Auto-fixing known-safe issues (restarting containers, clearing caches)
+      reduces operator cognitive load. The operator doesn't need to manually
+      intervene for routine infrastructure maintenance.
+    tier: T1
+    distinguishing_facts:
+      - "Automated remediation of known-safe issues"
+      - "Reduces task initiation burden"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-ef-002
+    situation: "Nudge system surfacing stale goals"
+    decision: compliant
+    reasoning: >
+      Proactively surfacing stalled work as observation (not judgment) helps
+      with task initiation difficulty. Framing as system design signal rather
+      than operator failing respects neurocognitive profile.
+    tier: T1
+    distinguishing_facts:
+      - "Observational framing, not judgmental"
+      - "Addresses task initiation difficulty"
+    created: "2026-03-03"
+    authority: operator
+
+  - id: sp-ef-003
+    situation: "Adding complex multi-step manual configuration process"
+    decision: violation
+    reasoning: >
+      Multi-step manual processes with no automation increase cognitive load.
+      They require sustained attention and task initiation for each step,
+      both identified challenges. Should be automated or scripted.
+    tier: T1
+    distinguishing_facts:
+      - "Manual multi-step process"
+      - "No automation or scripting path"
+      - "Requires sustained attention"
+    created: "2026-03-03"
+    authority: operator
