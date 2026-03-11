@@ -4,7 +4,7 @@ The deliberative body: a full operational agent platform implementing externaliz
 executive function infrastructure. Reactive cockpit, voice daemon, sync pipeline,
 Claude Code integration — all governed by constitutional axioms.
 
-Built on the architectural pattern defined in [hapax-core](https://github.com/ryanklee/hapax-core).
+Built on the architectural pattern defined in [hapax-constitution](https://github.com/ryanklee/hapax-constitution).
 See [hapax-officium](https://github.com/ryanklee/hapax-officium) for a management domain instantiation.
 
 ## Architecture
