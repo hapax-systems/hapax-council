@@ -542,29 +542,31 @@ def test_gather_operator_philosophy():
 
 
 def test_gather_scout_summary(tmp_path: Path):
-    """Reads and formats scout-report.json evaluations."""
+    """Reads and formats scout-report.json via shared read_scout_report()."""
     scout_data = {
-        "evaluations": [
+        "generated_at": "2026-03-12T10:00:00",
+        "components_scanned": 6,
+        "recommendations": [
             {
+                "tier": "evaluate",
                 "component": "Qdrant",
-                "verdict": "keep",
                 "summary": "Best fit for current scale",
             },
             {
+                "tier": "evaluate",
                 "component": "LiteLLM",
-                "verdict": "keep",
                 "summary": "No viable alternative",
             },
-        ]
+        ],
     }
     (tmp_path / "scout-report.json").write_text(json.dumps(scout_data))
 
     with patch("shared.config.PROFILES_DIR", tmp_path):
         result = _gather_scout_summary()
 
-    assert "**Qdrant**: keep" in result
+    assert "Qdrant" in result
     assert "Best fit for current scale" in result
-    assert "**LiteLLM**: keep" in result
+    assert "LiteLLM" in result
 
 
 def test_gather_profile_facts_rich_deduplicates():

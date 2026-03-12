@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -182,54 +181,36 @@ async def _gather_introspect(partial: bool = False) -> str:
 
 
 def _gather_langfuse_metrics() -> str:
-    """Query Langfuse for model usage and cost metrics."""
-    try:
-        from shared.langfuse_client import langfuse_get
+    """Query Langfuse for model usage and cost metrics.
 
-        # Try daily metrics endpoint
-        data = langfuse_get("/metrics/daily")
-        if not data:
-            # Fallback: get recent trace count
-            traces = langfuse_get("/traces", {"limit": 1})
-            if traces and traces.get("meta", {}).get("totalItems"):
-                return f"Total traces: {traces['meta']['totalItems']}"
+    Delegates to shared.ops_live.query_langfuse_cost().
+    """
+    try:
+        from shared.ops_live import query_langfuse_cost
+
+        result = query_langfuse_cost(days=7)
+        # Return empty string for "not available" messages to match
+        # gather_research's convention (empty = source failed)
+        if "not available" in result.lower() or "no llm generations" in result.lower():
             return ""
-        # Format daily metrics if available
-        lines = []
-        if "data" in data:
-            for entry in data["data"][:7]:  # Last 7 days
-                date = entry.get("date", "?")
-                usage = entry.get("usage", 0)
-                cost = entry.get("totalCost", 0)
-                lines.append(f"  {date}: {usage} calls, ${cost:.4f}")
-        if "meta" in data:
-            total_cost = data["meta"].get("totalCost", 0)
-            lines.append(f"Total cost: ${total_cost:.4f}")
-        return "\n".join(lines) if lines else ""
+        return result
     except Exception:
         log.exception("Failed to gather Langfuse metrics")
         return ""
 
 
 def _gather_qdrant_stats() -> str:
-    """List Qdrant collections with point counts."""
-    try:
-        from shared.config import get_qdrant
+    """List Qdrant collections with point counts.
 
-        client = get_qdrant()
-        collections_response = client.get_collections()
-        collections = collections_response.collections
-        if not collections:
-            return "No collections found."
-        lines = []
-        for col in collections:
-            try:
-                info = client.get_collection(col.name)
-                points = info.points_count or 0
-                lines.append(f"  {col.name}: {points} points")
-            except Exception:
-                lines.append(f"  {col.name}: (unable to get details)")
-        return "\n".join(lines)
+    Delegates to shared.ops_live.query_qdrant_stats().
+    """
+    try:
+        from shared.ops_live import query_qdrant_stats
+
+        result = query_qdrant_stats()
+        if "not available" in result.lower() or "no qdrant" in result.lower():
+            return ""
+        return result
     except Exception:
         log.exception("Failed to gather Qdrant stats")
         return ""
@@ -252,26 +233,17 @@ def _gather_system_docs(summary: bool = False) -> str:
 
 
 def _gather_profile_facts(scope: str) -> str:
-    """Search profile-facts Qdrant collection for facts relevant to scope."""
-    try:
-        from shared.config import embed, get_qdrant
+    """Search profile-facts Qdrant collection for facts relevant to scope.
 
-        client = get_qdrant()
-        vector = embed(f"profile facts about {scope}")
-        results = client.query_points(
-            collection_name="profile-facts",
-            query=vector,
-            limit=10,
-        )
-        if not results.points:
+    Delegates to shared.knowledge_search.search_profile().
+    """
+    try:
+        from shared.knowledge_search import search_profile
+
+        result = search_profile(f"profile facts about {scope}", limit=10)
+        if "no profile facts" in result.lower():
             return ""
-        lines = []
-        for hit in results.points:
-            payload = hit.payload or {}
-            fact = payload.get("fact", payload.get("text", ""))
-            if fact:
-                lines.append(f"- {fact}")
-        return "\n".join(lines)
+        return result
     except Exception:
         log.exception("Failed to gather profile facts")
         return ""
@@ -459,31 +431,18 @@ def _gather_operator_philosophy() -> str:
 
 
 def _gather_scout_summary() -> str:
-    """Read scout-report.json and format component evaluation summaries."""
+    """Read scout-report.json and format component evaluation summaries.
+
+    Delegates to shared.knowledge_search.read_scout_report().
+    """
     try:
         from shared.config import PROFILES_DIR
+        from shared.knowledge_search import read_scout_report
 
-        scout_path = PROFILES_DIR / "scout-report.json"
-        if not scout_path.is_file():
-            log.debug("scout-report.json not found at %s", scout_path)
+        result = read_scout_report(PROFILES_DIR)
+        if "not available" in result.lower():
             return ""
-        data = json.loads(scout_path.read_text())
-        evaluations = data.get("evaluations", data.get("components", []))
-        if not evaluations:
-            return ""
-        lines = []
-        if isinstance(evaluations, list):
-            for ev in evaluations:
-                name = ev.get("component", ev.get("name", "unknown"))
-                verdict = ev.get("verdict", ev.get("status", ""))
-                summary = ev.get("summary", "")
-                lines.append(f"- **{name}**: {verdict} — {summary}")
-        elif isinstance(evaluations, dict):
-            for name, ev in evaluations.items():
-                verdict = ev.get("verdict", ev.get("status", ""))
-                summary = ev.get("summary", "")
-                lines.append(f"- **{name}**: {verdict} — {summary}")
-        return "\n".join(lines)
+        return result
     except Exception:
         log.exception("Failed to gather scout summary")
         return ""
