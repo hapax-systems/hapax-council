@@ -1683,6 +1683,7 @@ name = "hapax-council"
 version = "0.3.7"
 source = { editable = "." }
 dependencies = [
+    { name = "hapax-sdlc" },
     { name = "httpx" },
     { name = "ollama" },
     { name = "opentelemetry-api" },
@@ -1794,6 +1795,7 @@ requires-dist = [
     { name = "hapax-council", extras = ["ci"], marker = "extra == 'host'" },
     { name = "hapax-council", extras = ["cockpit-api"], marker = "extra == 'ci'" },
     { name = "hapax-council", extras = ["sync-pipeline"], marker = "extra == 'ci'" },
+    { name = "hapax-sdlc", git = "https://github.com/ryanklee/hapax-constitution.git" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "jinja2", marker = "extra == 'cockpit-api'", specifier = ">=3.1" },
     { name = "kokoro", marker = "extra == 'audio'", specifier = ">=0.9.0" },
@@ -1839,6 +1841,15 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "ruff", specifier = ">=0.15.0" },
+]
+
+[[package]]
+name = "hapax-sdlc"
+version = "0.1.0"
+source = { git = "https://github.com/ryanklee/hapax-constitution.git#78eb813ae9314497bd77985abdf357319f1c00d4" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [[package]]

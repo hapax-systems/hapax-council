@@ -2,6 +2,9 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["agents", "cockpit", "shared"]
 
@@ -23,6 +26,7 @@ dependencies = [
     "opentelemetry-sdk>=1.39.0",
     "opentelemetry-exporter-otlp-proto-http>=1.39.0",
     "opentelemetry-instrumentation-httpx>=0.50b0",
+    "hapax-sdlc @ git+https://github.com/ryanklee/hapax-constitution.git",
 ]
 
 [project.optional-dependencies]
