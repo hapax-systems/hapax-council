@@ -14,6 +14,10 @@ PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
 SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "")
 
 if PUBLIC_KEY and SECRET_KEY:
+    import base64
+
+    _basic_auth = base64.b64encode(f"{PUBLIC_KEY}:{SECRET_KEY}".encode()).decode()
+
     # Configure OTel exporter to send traces to Langfuse
     os.environ.setdefault(
         "OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -21,7 +25,7 @@ if PUBLIC_KEY and SECRET_KEY:
     )
     os.environ.setdefault(
         "OTEL_EXPORTER_OTLP_HEADERS",
-        f"x-langfuse-public-key={PUBLIC_KEY},x-langfuse-secret-key={SECRET_KEY}",
+        f"Authorization=Basic {_basic_auth}",
     )
     os.environ.setdefault("OTEL_TRACES_EXPORTER", "otlp")
 
@@ -39,8 +43,7 @@ if PUBLIC_KEY and SECRET_KEY:
             OTLPSpanExporter(
                 endpoint=f"{HOST}/api/public/otel/v1/traces",
                 headers={
-                    "x-langfuse-public-key": PUBLIC_KEY,
-                    "x-langfuse-secret-key": SECRET_KEY,
+                    "Authorization": f"Basic {_basic_auth}",
                 },
             )
         )

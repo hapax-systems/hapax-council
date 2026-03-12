@@ -72,6 +72,10 @@ class HealthTrend(BaseModel):
     failed_runs: int = 0
     uptime_pct: float = 0.0
     recurring_issues: list[str] = Field(default_factory=list)
+    recently_resolved: list[str] = Field(
+        default_factory=list,
+        description="Checks that failed in the window but are passing in the latest run",
+    )
     avg_duration_ms: float = 0.0
 
 
@@ -307,6 +311,13 @@ def collect_health_trend(since: datetime) -> HealthTrend:
         for c in e.get("failed_checks", []):
             fail_counts[c] += 1
     trend.recurring_issues = [f"{name} ({count}x)" for name, count in fail_counts.most_common(5)]
+
+    # Identify checks that failed historically but pass in the latest run
+    latest_failures = set(entries[-1].get("failed_checks", [])) if entries else set()
+    all_historical_failures = set(fail_counts.keys())
+    resolved = all_historical_failures - latest_failures
+    if resolved:
+        trend.recently_resolved = sorted(resolved)
 
     return trend
 

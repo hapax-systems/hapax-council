@@ -144,6 +144,9 @@ GUIDELINES:
 - Headline: one sentence, overall system state (e.g., "Stack healthy, 47 LLM calls, no drift")
 - Body: 3-5 sentences covering what happened, what's notable, what needs attention
 - Action items: only include things that NEED doing. Don't suggest routine checks if everything is healthy
+- IMPORTANT: The health trend includes a "recently_resolved" field listing checks that failed
+  historically but are NOW passing. Do NOT create action items for resolved issues. Mention them
+  briefly as "resolved" in the body if notable, but focus actions on current failures only.
 - Use specific numbers (calls, costs, uptime %, error counts)
 - If everything is nominal, say so briefly — don't pad
 - For commands, give the exact shell command (the operator uses fish shell, but POSIX-compatible commands are fine)
