@@ -109,6 +109,7 @@ jobs:
         uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: "--model claude-sonnet-4-6 --max-turns 5 --allowedTools Bash,Read,Edit,Write"
           prompt: |
             The CI pipeline failed on this branch. Fix ONLY lint, typecheck, and format errors.
