@@ -39,6 +39,8 @@ BRIDGED_SOURCE_TYPES = {
     "obsidian",
     "chrome",
     "ambient-audio",
+    "health-connect",
+    "watch",
 }
 
 # Per-source-type chunk caps. When a source type produces more chunks than
@@ -65,6 +67,7 @@ SOURCE_TYPE_CHUNK_CAPS: dict[str, int] = {
     "decisions": 10,
     "langfuse": 10,
     "ambient-audio": 100,
+    "health-connect": 50,
 }
 from shared.config import (
     CLAUDE_CONFIG_DIR,
@@ -402,6 +405,72 @@ def read_management_notes(path: Path) -> list[SourceChunk]:
     text = path.read_text(encoding="utf-8", errors="replace")
     source_id = f"management:{_short_path(path)}"
     return _chunk_text(text, source_id, "management")
+
+
+def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
+    """Extract profile facts from watch state files.
+
+    Reads heartrate.json, hrv.json, activity.json from the watch state directory
+    and produces Observation-authority facts for the energy_and_attention dimension.
+
+    Returns empty list when no watch data is available (graceful degradation).
+    """
+    watch_dir = watch_dir or (HAPAX_HOME / "hapax-state" / "watch")
+    facts: list[dict] = []
+
+    # Heart rate
+    hr_file = watch_dir / "heartrate.json"
+    if hr_file.exists():
+        try:
+            data = json.loads(hr_file.read_text())
+            window = data.get("window_1h", {})
+            current = data.get("current", {})
+            if current.get("bpm"):
+                facts.append({
+                    "key": "health.resting_hr",
+                    "value": current["bpm"],
+                    "dimension": "energy_and_attention",
+                    "authority": "observation",
+                    "source": "watch:pixel_watch_4",
+                })
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # HRV
+    hrv_file = watch_dir / "hrv.json"
+    if hrv_file.exists():
+        try:
+            data = json.loads(hrv_file.read_text())
+            window = data.get("window_1h", {})
+            if window.get("mean"):
+                facts.append({
+                    "key": "health.hrv_baseline",
+                    "value": window["mean"],
+                    "dimension": "energy_and_attention",
+                    "authority": "observation",
+                    "source": "watch:pixel_watch_4",
+                })
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Activity
+    activity_file = watch_dir / "activity.json"
+    if activity_file.exists():
+        try:
+            data = json.loads(activity_file.read_text())
+            active_min = data.get("active_minutes_today")
+            if active_min is not None:
+                facts.append({
+                    "key": "health.active_minutes",
+                    "value": active_min,
+                    "dimension": "energy_and_attention",
+                    "authority": "observation",
+                    "source": "watch:pixel_watch_4",
+                })
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return facts
 
 
 # ── Bulk reader ──────────────────────────────────────────────────────────────

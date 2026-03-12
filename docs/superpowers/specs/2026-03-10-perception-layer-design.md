@@ -182,7 +182,7 @@ Items tracked for future implementation (do not lose):
 ## Other Tracked Items
 
 - Pipecat `OpenAILLMContext` → `LLMContext` migration (deprecation warning)
-- PipeWire echo cancellation routing (PyAudio can't access virtual nodes)
+- PipeWire echo cancellation routing — **DONE** (WebRTC AEC in `echo-cancel.conf`, RNNoise in `noise-suppress.conf`; voice daemon should use `echo-cancel-source` or `noise-suppressed-source` node name, not PyAudio default device)
 - TTSSettings NOT_GIVEN fix in `pipecat_tts.py`
 - Streaming TTS for lower latency
 - Silero VAD threshold tuning

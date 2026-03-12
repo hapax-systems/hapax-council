@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agents.hapax_voice.__main__ import VoiceDaemon
+from agents.hapax_voice.primitives import Event
 from agents.hapax_voice.session import VoiceLifecycle
 
 
@@ -41,55 +42,82 @@ def _make_daemon() -> VoiceDaemon:
     daemon.workspace_monitor = MagicMock()
     daemon.workspace_monitor.webcam_capturer = None
     daemon.workspace_monitor.screen_capturer = None
+    daemon.wake_word_event = Event()
+    daemon.focus_event = Event()
+    daemon._wake_word_signal = asyncio.Event()
 
     return daemon
 
 
 class TestWakeWordOpensSession:
-    """Wake word detection opens a session and starts the pipeline."""
+    """Wake word detection opens a session and starts the pipeline.
 
-    def test_session_opens_on_wake_word(self):
+    After the async refactor, _on_wake_word() sets a signal and
+    _wake_word_processor() handles session setup atomically.
+    """
+
+    def test_wake_word_sets_signal(self):
         daemon = _make_daemon()
-        assert not daemon.session.is_active
+        assert not daemon._wake_word_signal.is_set()
 
         daemon._on_wake_word()
 
-        assert daemon.session.is_active
-        assert daemon.session.trigger == "wake_word"
-        assert daemon.session.session_id is not None
-
-    def test_governor_wake_word_flag_set(self):
-        daemon = _make_daemon()
-        daemon.governor.wake_word_active = False
-
-        daemon._on_wake_word()
-
-        assert daemon.governor.wake_word_active is True
-
-    def test_frame_gate_set_to_process(self):
-        daemon = _make_daemon()
-
-        daemon._on_wake_word()
-
-        daemon._frame_gate.set_directive.assert_called_once_with("process")
-
-    def test_event_log_records_session_open(self):
-        daemon = _make_daemon()
-
-        daemon._on_wake_word()
-
-        daemon.event_log.emit.assert_any_call(
-            "session_lifecycle", action="opened", trigger="wake_word"
-        )
+        assert daemon._wake_word_signal.is_set()
 
     def test_wake_word_noop_if_session_active(self):
         daemon = _make_daemon()
         daemon.session.open(trigger="test")
-        daemon.event_log.reset_mock()
 
         daemon._on_wake_word()
 
-        daemon.event_log.emit.assert_not_called()
+        assert not daemon._wake_word_signal.is_set()
+
+    @pytest.mark.asyncio
+    async def test_processor_opens_session(self):
+        daemon = _make_daemon()
+        daemon._running = True
+        daemon._wake_word_signal.set()
+
+        with patch.object(
+            VoiceDaemon, "_start_pipeline", new_callable=AsyncMock
+        ):
+            task = asyncio.create_task(daemon._wake_word_processor())
+            await asyncio.sleep(0.05)
+            daemon._running = False
+            daemon._wake_word_signal.set()  # unblock to exit
+            await asyncio.sleep(0.01)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert daemon.session.is_active
+        assert daemon.session.trigger == "wake_word"
+
+    @pytest.mark.asyncio
+    async def test_processor_sets_governor_and_gate(self):
+        daemon = _make_daemon()
+        daemon.governor.wake_word_active = False
+        daemon._running = True
+        daemon._wake_word_signal.set()
+
+        with patch.object(
+            VoiceDaemon, "_start_pipeline", new_callable=AsyncMock
+        ):
+            task = asyncio.create_task(daemon._wake_word_processor())
+            await asyncio.sleep(0.05)
+            daemon._running = False
+            daemon._wake_word_signal.set()
+            await asyncio.sleep(0.01)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert daemon.governor.wake_word_active is True
+        daemon._frame_gate.set_directive.assert_called_once_with("process")
 
 
 class TestWakeWordStartsPipeline:
@@ -98,14 +126,22 @@ class TestWakeWordStartsPipeline:
     @pytest.mark.asyncio
     async def test_pipeline_starts_on_wake_word(self):
         daemon = _make_daemon()
+        daemon._running = True
+        daemon._wake_word_signal.set()
 
-        with patch(
-            "agents.hapax_voice.__main__.VoiceDaemon._start_pipeline",
-            new_callable=AsyncMock,
+        with patch.object(
+            VoiceDaemon, "_start_pipeline", new_callable=AsyncMock
         ) as mock_start:
-            daemon._on_wake_word()
-            # _on_wake_word creates a task — let it run
+            task = asyncio.create_task(daemon._wake_word_processor())
             await asyncio.sleep(0.05)
+            daemon._running = False
+            daemon._wake_word_signal.set()
+            await asyncio.sleep(0.01)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
             mock_start.assert_called_once()
 

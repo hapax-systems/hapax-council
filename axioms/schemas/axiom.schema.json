@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/axiom.schema.json",
+  "title": "Axiom",
+  "description": "A constitutional or domain axiom in the hapax governance system.",
+  "type": "object",
+  "required": ["id", "text", "weight", "type", "created", "status", "scope"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Unique identifier (snake_case)."
+    },
+    "text": {
+      "type": "string",
+      "minLength": 10,
+      "description": "Full axiom text."
+    },
+    "weight": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Priority weight (0-100). Higher = stricter enforcement."
+    },
+    "type": {
+      "type": "string",
+      "enum": ["hardcoded", "softcoded"],
+      "description": "hardcoded = cannot be overridden; softcoded = can be refined per domain."
+    },
+    "created": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO 8601 date when the axiom was created."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "retired"],
+      "description": "Lifecycle status."
+    },
+    "supersedes": {
+      "type": ["string", "null"],
+      "description": "ID of the axiom this one replaces, if any."
+    },
+    "scope": {
+      "type": "string",
+      "enum": ["constitutional", "domain"],
+      "description": "constitutional = system-wide; domain = scoped to a specific domain."
+    },
+    "domain": {
+      "type": ["string", "null"],
+      "description": "Domain scope (null for constitutional axioms)."
+    }
+  }
+}
