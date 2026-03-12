@@ -18,114 +18,63 @@ def _mock_ctx():
 
 class TestCheckAxiomCompliance:
     @pytest.mark.asyncio
-    async def test_returns_precedents_when_found(self):
+    async def test_compliant_when_no_violations(self):
         ctx = _mock_ctx()
-        mock_precedent = MagicMock()
-        mock_precedent.id = "PRE-001"
-        mock_precedent.decision = "compliant"
-        mock_precedent.reasoning = "Device auth, not user auth"
-        mock_precedent.tier = "T1"
-        mock_precedent.authority = "operator"
-        mock_precedent.distinguishing_facts = ["Single device"]
-        mock_precedent.situation = "Tailscale access"
-
-        with (
-            patch("shared.axiom_precedents.PrecedentStore") as MockStore,
-            patch("shared.axiom_registry.load_axioms") as mock_load,
-        ):
-            mock_axiom = MagicMock()
-            mock_axiom.id = "single_user"
-            mock_axiom.text = "Single user system."
-            mock_load.return_value = [mock_axiom]
-            MockStore.return_value.search.return_value = [mock_precedent]
-
-            result = await check_axiom_compliance(
-                ctx,
-                situation="Adding Tailscale VPN",
-                axiom_id="single_user",
+        with patch("shared.axiom_enforcement.check_full") as mock_full:
+            mock_full.return_value = MagicMock(
+                compliant=True, violations=(), axiom_ids=(), checked_rules=5
             )
-
-        assert "PRE-001" in result
-        assert "compliant" in result
+            result = await check_axiom_compliance(ctx, situation="Adding Tailscale VPN")
+        assert "Compliant" in result
 
     @pytest.mark.asyncio
-    async def test_returns_axiom_text_when_no_precedents(self):
+    async def test_non_compliant_shows_violations(self):
         ctx = _mock_ctx()
-
-        with (
-            patch("shared.axiom_precedents.PrecedentStore") as MockStore,
-            patch("shared.axiom_registry.load_axioms") as mock_load,
-            patch("shared.axiom_registry.load_implications") as mock_impl,
-        ):
-            mock_axiom = MagicMock()
-            mock_axiom.id = "single_user"
-            mock_axiom.text = "Single user system."
-            mock_load.return_value = [mock_axiom]
-            MockStore.return_value.search.return_value = []
-            mock_impl.return_value = []
-
-            result = await check_axiom_compliance(
-                ctx,
-                situation="Adding multi-tenant DB",
+        with patch("shared.axiom_enforcement.check_full") as mock_full:
+            mock_full.return_value = MagicMock(
+                compliant=False,
+                violations=("[T0] su-auth-001: No auth",),
+                axiom_ids=("single_user",),
+                checked_rules=5,
             )
-
-        assert "Single user system" in result
-        assert "No close precedents" in result
-
-    @pytest.mark.asyncio
-    async def test_returns_fallback_when_store_unavailable(self):
-        ctx = _mock_ctx()
-
-        with (
-            patch("shared.axiom_precedents.PrecedentStore") as MockStore,
-            patch("shared.axiom_registry.load_axioms") as mock_load,
-        ):
-            mock_axiom = MagicMock()
-            mock_axiom.id = "single_user"
-            mock_axiom.text = "Single user system."
-            mock_axiom.weight = 100
-            mock_axiom.type = "hardcoded"
-            mock_load.return_value = [mock_axiom]
-            MockStore.side_effect = ConnectionError("Qdrant down")
-
-            result = await check_axiom_compliance(
-                ctx,
-                situation="Any situation",
-            )
-
-        assert "Precedent database unavailable" in result
+            result = await check_axiom_compliance(ctx, situation="Adding OAuth2")
+        assert "Non-compliant" in result
+        assert "su-auth-001" in result
         assert "single_user" in result
 
     @pytest.mark.asyncio
     async def test_returns_message_when_no_axioms(self):
         ctx = _mock_ctx()
-
-        with patch("shared.axiom_registry.load_axioms") as mock_load:
-            mock_load.return_value = []
-
-            result = await check_axiom_compliance(
-                ctx,
-                situation="Any situation",
+        with patch("shared.axiom_enforcement.check_full") as mock_full:
+            mock_full.return_value = MagicMock(
+                compliant=True, violations=(), axiom_ids=(), checked_rules=0
             )
-
+            result = await check_axiom_compliance(ctx, situation="Any situation")
         assert "No axioms defined" in result
 
     @pytest.mark.asyncio
-    async def test_returns_not_found_for_unknown_axiom_id(self):
+    async def test_delegates_axiom_id(self):
         ctx = _mock_ctx()
-
-        with patch("shared.axiom_registry.load_axioms") as mock_load:
-            mock_axiom = MagicMock()
-            mock_axiom.id = "single_user"
-            mock_load.return_value = [mock_axiom]
-
-            result = await check_axiom_compliance(
-                ctx,
-                situation="Any situation",
-                axiom_id="nonexistent",
+        with patch("shared.axiom_enforcement.check_full") as mock_full:
+            mock_full.return_value = MagicMock(
+                compliant=True, violations=(), axiom_ids=(), checked_rules=3
             )
+            await check_axiom_compliance(ctx, situation="test", axiom_id="single_user")
+        mock_full.assert_called_once_with(
+            "test", axiom_id="single_user", domain=""
+        )
 
-        assert "not found" in result
+    @pytest.mark.asyncio
+    async def test_delegates_domain(self):
+        ctx = _mock_ctx()
+        with patch("shared.axiom_enforcement.check_full") as mock_full:
+            mock_full.return_value = MagicMock(
+                compliant=True, violations=(), axiom_ids=(), checked_rules=3
+            )
+            await check_axiom_compliance(ctx, situation="test", domain="management")
+        mock_full.assert_called_once_with(
+            "test", axiom_id="", domain="management"
+        )
 
 
 class TestRecordAxiomDecision:
@@ -192,63 +141,15 @@ class TestRecordAxiomDecision:
 
 class TestDomainAwareCompliance:
     @pytest.mark.asyncio
-    async def test_check_compliance_domain_filter(self):
-        """domain param includes constitutional + domain axioms."""
+    async def test_check_compliance_domain_passed_through(self):
+        """domain param is passed to check_full."""
         ctx = _mock_ctx()
-        const_axiom = MagicMock()
-        const_axiom.id = "single_user"
-        const_axiom.text = "Single user."
-        const_axiom.scope = "constitutional"
-        const_axiom.domain = None
-
-        domain_axiom = MagicMock()
-        domain_axiom.id = "management_governance"
-        domain_axiom.text = "Management axiom."
-        domain_axiom.scope = "domain"
-        domain_axiom.domain = "management"
-
-        with (
-            patch("shared.axiom_registry.load_axioms") as mock_load,
-            patch("shared.axiom_precedents.PrecedentStore", side_effect=Exception("no qdrant")),
-        ):
-            mock_load.side_effect = [
-                [const_axiom],
-                [domain_axiom],
-            ]
-            result = await check_axiom_compliance(ctx, "test situation", domain="management")
-
-        assert "single_user" in result
-        assert "management_governance" in result
-        assert "[constitutional]" in result
-        assert "[domain:management]" in result
-
-    @pytest.mark.asyncio
-    async def test_check_compliance_domain_includes_constitutional(self):
-        """Constitutional axioms always present when domain is specified."""
-        ctx = _mock_ctx()
-
-        with (
-            patch("shared.axiom_registry.load_axioms") as mock_load,
-            patch("shared.axiom_precedents.PrecedentStore", side_effect=Exception("no qdrant")),
-        ):
-            const_axiom = MagicMock()
-            const_axiom.id = "single_user"
-            const_axiom.text = "Single user."
-            const_axiom.scope = "constitutional"
-            const_axiom.domain = None
-            const_axiom.weight = 100
-            const_axiom.type = "hardcoded"
-
-            mock_load.side_effect = [
-                [const_axiom],
-                [],  # no domain axioms
-            ]
+        with patch("shared.axiom_enforcement.check_full") as mock_full:
+            mock_full.return_value = MagicMock(
+                compliant=True, violations=(), axiom_ids=(), checked_rules=7
+            )
             await check_axiom_compliance(ctx, "test situation", domain="management")
-
-        assert mock_load.call_count == 2
-        calls = mock_load.call_args_list
-        assert calls[0].kwargs.get("scope") == "constitutional"
-        assert calls[1].kwargs.get("domain") == "management"
+        mock_full.assert_called_once_with("test situation", axiom_id="", domain="management")
 
 
 class TestGetAxiomTools:
@@ -265,7 +166,12 @@ class TestUsageTelemetry:
         usage_log = tmp_path / "tool-usage.jsonl"
         with (
             patch("shared.axiom_tools.USAGE_LOG", usage_log),
-            patch("shared.axiom_registry.load_axioms", return_value=[]),
+            patch(
+                "shared.axiom_enforcement.check_full",
+                return_value=MagicMock(
+                    compliant=True, violations=(), axiom_ids=(), checked_rules=0
+                ),
+            ),
         ):
             ctx = _mock_ctx()
             asyncio.run(check_axiom_compliance(ctx, "test situation"))

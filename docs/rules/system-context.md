@@ -83,13 +83,17 @@ For the 7 containerized sync agents, cycle mode is controlled by `CYCLE_MODE=dev
 
 | Alias | Model | Use |
 |-------|-------|-----|
-| fast | claude-haiku | Cheap quick tasks |
+| fast | gemini-2.5-flash | Scheduled agent tasks (briefing, digest, drift) |
 | balanced | claude-sonnet | Default for agents |
-| reasoning | deepseek-r1:14b | Complex reasoning (local) |
-| coding | qwen-coder-32b | Code generation (local) |
-| local-fast | qwen-7b | Lightweight local tasks |
+| local-fast | qwen3:8b | Lightweight local tasks |
+| reasoning | qwen3.5:27b | Complex local reasoning |
+| coding | qwen3.5:27b | Local code generation |
 
-Embedding: nomic-embed-text-v2-moe (768d). Requires `search_query:` / `search_document:` prefixes.
+Cloud models configured in LiteLLM: claude-sonnet-4, claude-opus-4, claude-haiku, gemini-pro (gemini-2.5-pro), gemini-flash (gemini-2.5-flash).
+Local models via Ollama: qwen3:8b, qwen3.5:27b, nomic-embed-text-v2-moe.
+LiteLLM fallback chains: claude-opus→[claude-sonnet, gemini-pro], claude-sonnet→[gemini-pro], claude-haiku→[gemini-flash], gemini-pro→[claude-sonnet], gemini-flash→[claude-haiku], fast→[claude-haiku].
+
+Embedding: nomic-embed-text (768d). Requires `search_query:` / `search_document:` prefixes.
 VRAM: RTX 3090 = 24GB. One large Ollama model at a time.
 
 ## Qdrant Collections
@@ -107,10 +111,10 @@ VRAM: RTX 3090 = 24GB. One large Ollama model at a time.
 |------|---------|
 | ~/llm-stack/ | Docker compose + service configs |
 | ~/projects/hapax-council/ | Agent implementations + cockpit API |
-| ~/projects/hapaxromana/ | Architecture specs + axioms |
-| ~/projects/hapax-system/ | Claude Code skills/rules/hooks |
-| ~/projects/cockpit-web/ | Management dashboard (React SPA) |
-| ~/projects/hapax-vscode/ | VS Code extension (chat, RAG, management) |
+| ~/projects/hapax-constitution/ | Architecture specs + axioms |
+| ~/projects/hapax-council/council-web/ | Management dashboard (React SPA, in-repo) |
+| ~/projects/distro-work/ | OS/distro scripts, diagnostics, restore script |
+| ~/projects/distro-work/docs/hyprland-migration-capabilities.md | Desktop/hardware capabilities reference (design leverage for agents) |
 | ~/Documents/Work/ | Work vault (git-synced) |
 | ~/Documents/Personal/ | Personal vault (local) |
 | ~/Documents/Work/10-work/people/ | Team member notes |

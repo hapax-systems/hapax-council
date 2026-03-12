@@ -67,11 +67,11 @@ HAPAX_VSCODE_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-vscode"
 # ── Model aliases (LiteLLM route names) ─────────────────────────────────────
 
 MODELS: dict[str, str] = {
-    "fast": "claude-haiku",
+    "fast": "gemini-flash",
     "balanced": "claude-sonnet",
-    "reasoning": "deepseek-r1:14b",
-    "coding": "qwen-coder-32b",
-    "local-fast": "qwen-7b",
+    "reasoning": "qwen3.5:27b",
+    "coding": "qwen3.5:27b",
+    "local-fast": "qwen3:8b",
 }
 
 EMBEDDING_MODEL: str = "nomic-embed-text-v2-moe"

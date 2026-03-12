@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/precedent.schema.json",
+  "title": "Precedent",
+  "description": "A recorded governance decision that guides future axiom interpretation.",
+  "type": "object",
+  "required": ["id", "axiom_id", "situation", "decision", "reasoning", "created"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique precedent identifier."
+    },
+    "axiom_id": {
+      "type": "string",
+      "description": "Axiom this precedent interprets."
+    },
+    "implication_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Implications this precedent applies to."
+    },
+    "situation": {
+      "type": "string",
+      "minLength": 10,
+      "description": "Context that triggered the governance decision."
+    },
+    "decision": {
+      "type": "string",
+      "minLength": 5,
+      "description": "What was decided."
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 10,
+      "description": "Why this decision was made."
+    },
+    "created": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO 8601 date of the decision."
+    },
+    "canon_applied": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether this precedent has been applied to the canon (Qdrant vectorized)."
+    },
+    "contract_version": {
+      "type": ["string", "null"],
+      "description": "SchemaVer of the governance contract when this precedent was recorded."
+    }
+  }
+}

@@ -78,7 +78,7 @@ DIMENSIONS: tuple[DimensionDef, ...] = (
         kind="behavioral",
         description="Focus duration, presence patterns, circadian rhythm, productive windows",
         consumers=("nudge_timing", "interview_gating", "notification_priority", "briefing"),
-        primary_sources=("workspace_vision", "audio_processor", "gcalendar_sync"),
+        primary_sources=("workspace_vision", "audio_processor", "gcalendar_sync", "watch"),
     ),
     DimensionDef(
         name="information_seeking",

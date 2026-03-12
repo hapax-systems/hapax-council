@@ -1,4 +1,10 @@
-"""Context gate for determining interrupt eligibility."""
+"""Context gate for determining interrupt eligibility.
+
+Uses VetoChain internally — each check is a Veto in a deny-wins chain.
+Reads from Behaviors (via PerceptionEngine) instead of subprocess calls
+where possible. Falls back to direct subprocess for backends not yet
+registered.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +12,14 @@ import logging
 import subprocess
 from dataclasses import dataclass
 
+from agents.hapax_voice.governance import Veto, VetoChain
+from agents.hapax_voice.primitives import Behavior
 from agents.hapax_voice.session import SessionManager
+
+try:
+    from agents.hapax_voice.watch_signals import is_stress_elevated
+except ImportError:
+    is_stress_elevated = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 
@@ -22,11 +35,17 @@ class GateResult:
 class ContextGate:
     """Layered gate that checks whether voice interrupts are appropriate.
 
-    Checks in order:
+    Checks (as vetoes, deny-wins):
         1. Active session
-        2. Audio volume (wpctl)
-        3. Studio MIDI activity (aconnect)
-        4. Ambient audio classification (PANNs)
+        2. Activity mode (production/meeting/conversation)
+        3. Audio volume (from Behavior or wpctl fallback)
+        4. Studio MIDI activity (from Behavior or aconnect fallback)
+        5. Ambient audio classification (PANNs)
+        6. Stress elevated (watch EDA + HRV signals)
+
+    Prefers reading from Behaviors (set via set_behaviors()) over
+    subprocess calls. When no Behavior is available, falls back to
+    direct subprocess (legacy path).
     """
 
     def __init__(
@@ -44,6 +63,37 @@ class ContextGate:
         self._event_log = None
         self._environment_state = None
 
+        # Behavior references (set by PerceptionEngine backends)
+        self._behaviors: dict[str, Behavior] = {}
+
+        # Denial reasons stored during predicate evaluation
+        self._denial_reasons: dict[str, str] = {}
+
+        # Known fullscreen/meeting apps where interrupts are inappropriate
+        self._fullscreen_block_classes: set[str] = {
+            "zoom",
+            "us.zoom.xos",
+            "microsoft teams",
+            "org.jitsi.jitsi-meet",
+            "discord",
+            "slack huddle",
+        }
+
+        # Build veto chain
+        self._veto_chain: VetoChain[None] = VetoChain(
+            [
+                Veto("session_active", predicate=self._allow_no_session),
+                Veto("activity_mode", predicate=self._allow_activity_mode),
+                Veto("fullscreen_app", predicate=self._allow_fullscreen_app),
+                Veto("volume", predicate=self._allow_volume),
+                Veto("studio_midi", predicate=self._allow_studio),
+            ]
+        )
+        if self.ambient_classification:
+            self._veto_chain.add(Veto("ambient", predicate=self._allow_ambient))
+        if is_stress_elevated is not None:
+            self._veto_chain.add(Veto("stress_elevated", predicate=self._allow_stress))
+
     def set_activity_mode(self, mode: str) -> None:
         self._activity_mode = mode
 
@@ -53,6 +103,14 @@ class ContextGate:
     def set_environment_state(self, state) -> None:
         """Accept latest EnvironmentState from perception engine."""
         self._environment_state = state
+
+    def set_behaviors(self, behaviors: dict[str, Behavior]) -> None:
+        """Set Behavior references from PerceptionEngine backends.
+
+        When set, volume and MIDI checks read from Behaviors instead
+        of calling subprocess directly.
+        """
+        self._behaviors = behaviors
 
     def check(self) -> GateResult:
         """Run layered checks and return eligibility result."""
@@ -67,49 +125,89 @@ class ContextGate:
         return result
 
     def _check_inner(self) -> GateResult:
-        """Internal: run layered checks."""
+        """Evaluate all vetoes and return gate result."""
+        self._denial_reasons.clear()
+        result = self._veto_chain.evaluate(None)
+        if result.allowed:
+            return GateResult(eligible=True)
+        # Use the first denial's reason
+        reason = self._denial_reasons.get(result.denied_by[0], result.denied_by[0])
+        return GateResult(eligible=False, reason=reason)
+
+    # ------------------------------------------------------------------
+    # Veto predicates (True=allow, False=deny)
+    # ------------------------------------------------------------------
+
+    def _allow_no_session(self, _: None) -> bool:
         if self.session.is_active:
-            return GateResult(eligible=False, reason="Session active")
+            self._denial_reasons["session_active"] = "Session active"
+            return False
+        return True
 
-        result = self._check_activity_mode()
-        if not result.eligible:
-            return result
-
-        vol_ok, vol_reason = self._check_volume()
-        if not vol_ok:
-            return GateResult(eligible=False, reason=vol_reason)
-
-        studio_ok, studio_reason = self._check_studio()
-        if not studio_ok:
-            return GateResult(eligible=False, reason=studio_reason)
-
-        if self.ambient_classification:
-            ambient_ok, ambient_reason = self._check_ambient()
-            if not ambient_ok:
-                return GateResult(eligible=False, reason=ambient_reason)
-
-        return GateResult(eligible=True)
-
-    def _check_activity_mode(self) -> GateResult:
+    def _allow_activity_mode(self, _: None) -> bool:
         if self._activity_mode in ("production", "meeting", "conversation"):
-            return GateResult(eligible=False, reason=f"Blocked: {self._activity_mode} mode active")
-        return GateResult(eligible=True, reason="")
+            self._denial_reasons["activity_mode"] = f"Blocked: {self._activity_mode} mode active"
+            return False
+        return True
 
-    def _check_volume(self) -> tuple[bool, str]:
-        """Check if system volume is below threshold."""
-        volume = self._get_sink_volume()
+    def _allow_fullscreen_app(self, _: None) -> bool:
+        b = self._behaviors.get("active_window_class")
+        if b is None:
+            return True  # fail-open: activity_mode catches meetings via slow-tick
+        window_class = str(b.value).lower()
+        if window_class in self._fullscreen_block_classes:
+            self._denial_reasons["fullscreen_app"] = (
+                f"Blocked: fullscreen app '{b.value}'"
+            )
+            return False
+        return True
+
+    def _allow_volume(self, _: None) -> bool:
+        volume = self._read_volume()
         if volume is None:
-            return False, "Volume check unavailable (wpctl failed)"
+            self._denial_reasons["volume"] = "Volume check unavailable"
+            return False
         if volume >= self.volume_threshold:
-            return False, f"Volume too high ({volume:.2f} >= {self.volume_threshold:.2f})"
-        return True, ""
+            self._denial_reasons["volume"] = (
+                f"Volume too high ({volume:.2f} >= {self.volume_threshold:.2f})"
+            )
+            return False
+        return True
 
-    def _get_sink_volume(self) -> float | None:
-        """Get default audio sink volume via wpctl.
+    def _allow_studio(self, _: None) -> bool:
+        midi_active = self._read_midi_active()
+        if midi_active is None:
+            self._denial_reasons["studio_midi"] = "MIDI check unavailable (fail-closed)"
+            return False
+        if midi_active:
+            self._denial_reasons["studio_midi"] = "MIDI connections active"
+            return False
+        return True
 
-        Returns None if wpctl is unavailable or fails, signalling the
-        gate should block (fail-closed).
-        """
+    def _allow_ambient(self, _: None) -> bool:
+        ok, reason = self._check_ambient()
+        if not ok:
+            self._denial_reasons["ambient"] = reason
+            return False
+        return True
+
+    def _allow_stress(self, _: None) -> bool:
+        if is_stress_elevated is not None and is_stress_elevated():
+            self._denial_reasons["stress_elevated"] = "Stress elevated (HRV/EDA)"
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Behavior-first reads with subprocess fallback
+    # ------------------------------------------------------------------
+
+    def _read_volume(self) -> float | None:
+        """Read sink volume from Behavior if available, else subprocess."""
+        b = self._behaviors.get("sink_volume")
+        if b is not None:
+            return b.value
+
+        # Fallback: direct subprocess
         try:
             result = subprocess.run(
                 ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
@@ -117,7 +215,6 @@ class ContextGate:
                 text=True,
                 timeout=5,
             )
-            # Output format: "Volume: 0.50" or "Volume: 0.50 [MUTED]"
             parts = result.stdout.strip().split()
             if len(parts) >= 2:
                 return float(parts[1])
@@ -127,11 +224,13 @@ class ContextGate:
                 self._event_log.emit("subprocess_failed", command="wpctl", error=str(exc))
         return None
 
-    def _check_studio(self) -> tuple[bool, str]:
-        """Check for active MIDI connections indicating studio use.
+    def _read_midi_active(self) -> bool | None:
+        """Read MIDI active state from Behavior if available, else subprocess."""
+        b = self._behaviors.get("midi_active")
+        if b is not None:
+            return b.value
 
-        Fails closed — if aconnect is unavailable, blocks interrupts.
-        """
+        # Fallback: direct subprocess
         try:
             result = subprocess.run(
                 ["aconnect", "-l"],
@@ -141,15 +240,15 @@ class ContextGate:
             )
             for line in result.stdout.splitlines():
                 stripped = line.strip()
-                if stripped.startswith("Connecting To:") or stripped.startswith("Connected From:"):
+                if stripped.startswith(("Connecting To:", "Connected From:")):
                     if "Through" not in stripped:
-                        return False, "MIDI connections active"
+                        return True
+            return False
         except Exception as exc:
             log.warning("Failed to check MIDI connections: %s", exc)
             if self._event_log is not None:
                 self._event_log.emit("subprocess_failed", command="aconnect", error=str(exc))
-            return False, "MIDI check unavailable (aconnect failed)"
-        return True, ""
+        return None
 
     def _check_ambient(self) -> tuple[bool, str]:
         """Check ambient audio for music, speech, or other non-interruptible sounds.
