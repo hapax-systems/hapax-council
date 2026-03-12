@@ -5,12 +5,12 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'eval "$(<$HOME/projects/ai-agents/.envrc)" && exec /home/hapaxlegomenon/Scripts/setup/llm-stack-scripts/llm-stack/scripts/backup.sh'
-WorkingDirectory=/home/hapaxlegomenon/llm-stack
-Environment=PATH=/home/hapaxlegomenon/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapaxlegomenon
-Environment=GNUPGHOME=/home/hapaxlegomenon/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapaxlegomenon/.password-store
+ExecStart=/bin/bash -c 'eval "$(<$HOME/projects/ai-agents/.envrc)" && exec /home/operator/Scripts/setup/llm-stack-scripts/llm-stack/scripts/backup.sh'
+WorkingDirectory=/home/operator/llm-stack
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=GNUPGHOME=/home/operator/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/operator/.password-store
 MemoryMax=1G
 CPUQuota=50%
 SyslogIdentifier=llm-backup

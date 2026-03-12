@@ -56,7 +56,7 @@ class VoiceConfig(BaseModel):
     # Screen monitor
     screen_monitor_enabled: bool = True
     screen_poll_interval_s: float = 2
-    screen_capture_cooldown_s: float = 10
+    screen_capture_cooldown_s: float = 30
     screen_proactive_min_confidence: float = 0.8
     screen_proactive_cooldown_s: float = 300
     screen_recapture_idle_s: float = 60

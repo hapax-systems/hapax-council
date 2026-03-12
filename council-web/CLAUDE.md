@@ -12,9 +12,9 @@ pnpm lint         # ESLint
 pnpm preview      # preview production build
 ```
 
-**Requires the cockpit API backend running at :8051.** Start it from `~/projects/ai-agents/`:
+**Requires the cockpit API backend running at :8051.** Start it from `~/projects/hapax-council/`:
 ```bash
-docker compose up -d cockpit-api    # FastAPI on :8051
+uv run cockpit    # FastAPI on :8051
 ```
 
 Vite proxies `/api` requests to `http://127.0.0.1:8051` in dev mode.
