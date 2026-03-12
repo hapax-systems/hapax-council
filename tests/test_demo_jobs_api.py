@@ -98,6 +98,7 @@ class TestJobEndpoints:
         job_id = resp.json()["job_id"]
         # Wait for task to complete (mock returns immediately)
         import time
+
         time.sleep(0.1)
 
         resp2 = client.delete(f"/api/demos/jobs/{job_id}")

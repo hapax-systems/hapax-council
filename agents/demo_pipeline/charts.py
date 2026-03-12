@@ -1,4 +1,5 @@
 """Re-export from hapax-demo package for backwards compatibility."""
+
 from pathlib import Path
 
 from demo.pipeline import charts as _charts

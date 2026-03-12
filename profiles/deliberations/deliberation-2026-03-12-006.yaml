@@ -1,0 +1,80 @@
+id: deliberation-2026-03-12-006
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: >
+    mg-boundary-001 (domain T0, management_governance) blocks generated feedback
+    language about individuals. ex-prose-001 (constitutional T0, executive_function)
+    requires all LLM-generated text to be direct and informative. Both constrain LLM
+    output but with different intent: one prohibits a content category, the other
+    mandates a style. When a management agent generates output about team context,
+    both implications apply simultaneously.
+  relevant_axioms: [management_governance, executive_function]
+  relevant_implications: [mg-boundary-001, ex-prose-001, mg-prep-001]
+  relevant_precedents: [sp-mgmt-001]
+  accumulated_dissents: []
+
+publius:
+  position: >
+    ex-prose-001 and mg-boundary-001 are complementary, not conflicting. ex-prose-001
+    requires direct, informative prose — no rhetorical pivots, no performative insight.
+    mg-boundary-001 prohibits feedback language about individuals. Both constrain LLM
+    output toward factual, signal-oriented content. A management prep document that
+    says "Alex has submitted 3 PRs this week, down from a 6-week average of 7" is
+    compliant with both: it is direct and informative (ex-prose-001) and does not
+    constitute feedback about Alex (mg-boundary-001) — it is a data point. The
+    constitutional axiom reinforces the domain axiom's purpose. No preemption needed.
+  canon_applied: textualist
+  supporting_precedents: [sp-mgmt-001]
+  proposed_resolution: >
+    Record precedent: ex-prose-001 and mg-boundary-001 are complementary. Direct
+    factual prose about observable signals is compliant with both. No tension exists.
+
+brutus:
+  position: >
+    The complementarity is real in the current implementation, but the boundary is
+    thinner than Publius acknowledges. "Alex has submitted 3 PRs this week, down
+    from a 6-week average of 7" is factual. "Alex's PR output has declined significantly"
+    is also factual and direct (ex-prose-001 compliant) but constitutes an evaluative
+    statement about an individual (mg-boundary-001 violation). The difference is
+    quantitative specificity vs. qualitative characterization. Both are "direct and
+    informative." The tension is not between the implications but within the output
+    space they jointly constrain: ex-prose-001 pushes toward concise characterization
+    (fewer words, more direct); mg-boundary-001 pushes toward raw data (more words,
+    less interpretation). The optimal output is quantitative, which satisfies both.
+    But a future agent optimizing for ex-prose-001 alone might produce qualitative
+    characterizations of individuals that violate mg-boundary-001.
+  canon_applied: purposivist
+  supporting_precedents: [sp-mgmt-001]
+  proposed_resolution: >
+    Record precedent: when both implications apply, management outputs about
+    individuals must use quantitative signals, not qualitative characterizations.
+    "3 PRs, down from average 7" is compliant. "Output has declined" is not.
+
+tension_map:
+  agreement: >
+    Both agents agree the implications are complementary in practice and do not
+    conflict. Both agree the current implementation (management_prep with signal
+    aggregation) is compliant. Both agree the resolution is that management outputs
+    about individuals should be quantitative.
+  disagreement: >
+    Whether the complementarity is robust or fragile. Publius sees no tension.
+    Brutus identifies a narrow region where ex-prose-001's push toward conciseness
+    could produce qualitative characterizations that violate mg-boundary-001. The
+    disagreement is about future risk, not current state.
+  novel_insight: >
+    The two implications jointly constrain management output toward a specific form:
+    quantitative, signal-oriented, individual-referencing but not individual-evaluating.
+    This form is not specified by either implication alone. ex-prose-001 alone permits
+    qualitative characterization ("output declined"). mg-boundary-001 alone permits
+    verbose, indirect prose. The intersection — direct quantitative signals — is
+    an emergent constraint produced by the interaction of a constitutional and domain
+    axiom. This suggests that the governance system should track implication interactions,
+    not just individual implications, because the joint constraint space can be narrower
+    than either axiom's authors anticipated.
+
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+created: 2026-03-12T15:00:00Z
+resolved: null

@@ -1,0 +1,71 @@
+id: deliberation-2026-03-12-004
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: >
+    cb-data-001 (domain T0, corporate_boundary) requires vault data to flow only via
+    git through corporate-approved remotes. su-auth-001 (constitutional T0, single_user)
+    requires removal of all authentication code. Git remote authentication (SSH keys,
+    HTTPS tokens) is authentication infrastructure.
+  relevant_axioms: [corporate_boundary, single_user]
+  relevant_implications: [cb-data-001, su-auth-001]
+  relevant_precedents: [sp-arch-003, sp-arch-004]
+  accumulated_dissents: []
+
+publius:
+  position: >
+    This is the same class of tension as deliberation-003. Git SSH keys and HTTPS
+    tokens are infrastructure credentials that authenticate the operator's machine
+    to a remote service. su-auth-001 targets user-to-system authentication — login
+    flows, session management, role-based access control. Git credential configuration
+    is standard development infrastructure present on every developer's machine. If
+    su-auth-001 were read to prohibit git authentication, the system could not use
+    version control at all, which contradicts the filesystem-as-bus pattern that
+    depends on git for history and audit. The absurdity doctrine applies: a reading
+    of su-auth-001 that prohibits git authentication renders the system's core
+    coordination mechanism inoperable.
+  canon_applied: textualist
+  supporting_precedents: [sp-arch-003]
+  proposed_resolution: >
+    Subsume under the service-auth vs user-auth precedent from deliberation-003.
+    Git credentials are service credentials.
+
+brutus:
+  position: >
+    Publius is correct, and the absurdity doctrine makes this the clearest of the
+    six tensions. There is no purposivist reading of su-auth-001 that prohibits git
+    credentials. The only value of deliberating this tension is to establish it as
+    a subcase of the service-auth precedent from deliberation-003. However, cb-data-001
+    introduces a constraint that su-auth-001 does not anticipate: the corporate-approved
+    remote may require specific credential types (corporate SSO, managed SSH keys)
+    that the operator does not control. If the corporate remote changes its auth
+    requirements, the system must adapt without violating single_user. The precedent
+    should note that service credential configuration is permitted but multi-user
+    credential management (shared keys, team-scoped tokens) is not.
+  canon_applied: absurdity
+  supporting_precedents: [sp-arch-003, sp-arch-004]
+  proposed_resolution: >
+    Record as subcase of service-auth precedent. Add distinguishing fact: credential
+    configuration for corporate remotes is permitted; shared/team-scoped credential
+    management is not.
+
+tension_map:
+  agreement: >
+    Both agents agree this is not a real conflict. The absurdity doctrine resolves it
+    immediately: su-auth-001 cannot prohibit git authentication without destroying
+    the system's coordination mechanism.
+  disagreement: >
+    None on the resolution. Minor disagreement on whether the precedent needs a
+    corporate-credential-specific distinguishing fact.
+  novel_insight: >
+    This tension is a subcase of the user-auth vs service-auth distinction identified
+    in deliberation-003. Resolving deliberation-003 with a class-level precedent
+    automatically resolves this tension. This suggests the deliberation system should
+    detect when a tension is a subcase of a pending deliberation and link them rather
+    than producing independent records.
+
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+created: 2026-03-12T15:00:00Z
+resolved: null

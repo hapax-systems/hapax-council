@@ -1,0 +1,75 @@
+id: deliberation-2026-03-12-002
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: >
+    mg-boundary-002 (domain T0, management_governance) blocks suggesting what the
+    operator should say to a team member. ex-err-001 (constitutional T0, executive_function)
+    requires error messages to include specific next actions. When a management agent's
+    recommended next action involves a conversation with a team member, these could conflict.
+  relevant_axioms: [management_governance, executive_function]
+  relevant_implications: [mg-boundary-002, ex-err-001]
+  relevant_precedents: [sp-mgmt-001]
+  accumulated_dissents: []
+
+publius:
+  position: >
+    ex-err-001 requires next actions in error messages. mg-boundary-002 prohibits
+    drafting language for people conversations. These do not conflict because the
+    required next action is operational ("review prep context for Alex," "schedule
+    1:1 with Jordan"), not conversational ("say X to Alex"). The constitutional axiom
+    demands actionable guidance; the domain axiom constrains the type of action to
+    non-linguistic recommendations. A compliant next action is "run management_prep
+    --person alex-chen before your 1:1 Tuesday." A non-compliant next action would be
+    "tell Alex that his pull request turnaround has been slower lately." The boundary
+    is clear: recommend operational steps, not conversational content.
+  canon_applied: textualist
+  supporting_precedents: [sp-mgmt-001]
+  proposed_resolution: >
+    Record precedent: next actions in management context must recommend operational
+    steps (run agent, review file, schedule meeting), not conversational content.
+
+brutus:
+  position: >
+    The boundary between "operational step" and "conversational content" is less
+    clear than Publius suggests. "Discuss the deployment incident with Jordan" is
+    an operational step (schedule a conversation) but also implicitly suggests a topic
+    for a people conversation. "Review Alex's recent PRs before your 1:1" frames the
+    conversation's content without drafting language. The purposivist reading of
+    mg-boundary-002 blocks the system from shaping what the operator says — but any
+    specific prep recommendation shapes the conversation indirectly. The question is
+    where the line falls between "providing context" (permitted, per sp-mgmt-001) and
+    "suggesting what to say" (blocked). The current text draws the line at language
+    generation, but prep context is a spectrum, not a binary.
+  canon_applied: purposivist
+  supporting_precedents: [sp-mgmt-001]
+  proposed_resolution: >
+    Record precedent with explicit spectrum: naming a topic is permitted, suggesting
+    a framing is borderline, drafting language is blocked. The distinguishing criterion
+    is whether the operator must still choose their own words.
+
+tension_map:
+  agreement: >
+    Both agents agree that recommending operational steps (run an agent, review a file)
+    is compliant with both implications. Both agree that drafting conversational language
+    is non-compliant with mg-boundary-002.
+  disagreement: >
+    Whether topic-level recommendations ("discuss the deployment incident with Jordan")
+    constitute "suggesting what the operator should say." Publius treats this as clearly
+    operational. Brutus identifies a spectrum between context provision and conversation
+    shaping, with topic recommendation in the middle.
+  novel_insight: >
+    The tension reveals that mg-boundary-002 implicitly assumes a binary between
+    "language" and "not language," but management prep operates on a spectrum: raw
+    data → aggregated signals → topic identification → framing suggestion → language
+    drafting. The existing precedent (sp-mgmt-001) permits "signal aggregation" but
+    does not specify where on this spectrum the boundary falls. Topic identification
+    is the gray zone. A precedent should specify: the operator must still choose
+    their own words AND their own framing. The system provides signals and topics;
+    the operator decides how to raise them.
+
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+created: 2026-03-12T15:00:00Z
+resolved: null

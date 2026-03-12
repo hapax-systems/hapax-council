@@ -212,9 +212,7 @@ class TestRunEvalLoop:
             patch("demo.pipeline.lessons.format_lessons_block", return_value=""),
             patch("demo.pipeline.lessons.load_lessons", return_value={}),
             patch("demo.pipeline.lessons.save_lessons"),
-            patch(
-                "demo.pipeline.lessons.extract_lessons", return_value=["Use simple language"]
-            ),
+            patch("demo.pipeline.lessons.extract_lessons", return_value=["Use simple language"]),
             patch("demo.pipeline.lessons.accumulate_lessons", return_value={"family": []}),
         ):
             from agents.demo_eval import run_eval_loop

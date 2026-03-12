@@ -1,0 +1,84 @@
+id: deliberation-2026-03-12-005
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: >
+    cb-degrade-001 (domain T0, corporate_boundary) requires features depending on
+    localhost services to fail silently with informative UI. ex-attention-001
+    (constitutional T0, executive_function) requires critical alerts to be delivered
+    through external channels rather than requiring log monitoring. When a localhost
+    service is unavailable, these obligations appear to conflict: fail silently or alert.
+  relevant_axioms: [corporate_boundary, executive_function]
+  relevant_implications: [cb-degrade-001, ex-attention-001, ex-alert-004]
+  relevant_precedents: [sp-arch-007]
+  accumulated_dissents: []
+
+publius:
+  position: >
+    ex-attention-001 is constitutional (weight 95) and requires proactive alerting for
+    critical conditions. cb-degrade-001 is domain-scoped (weight 90) and requires
+    silent failure. The constitutional axiom should prevail: if a localhost service is
+    down, the operator needs to know. Silent failure violates the executive_function
+    axiom's core purpose — the operator should not need to investigate to discover
+    problems. The correct reading is that cb-degrade-001 applies to the VS Code
+    extension's UX (no error dialogs when the proxy is unreachable at work), while
+    ex-attention-001 applies to the home system's monitoring (alert when services are
+    unexpectedly down). But this scope distinction is not in the text. If cb-degrade-001
+    is read to apply to the home system, it contradicts ex-attention-001. Constitutional
+    preemption should apply: when localhost services fail at home, alert. When they are
+    unreachable at work, fail silently.
+  canon_applied: textualist
+  supporting_precedents: [sp-arch-007]
+  proposed_resolution: >
+    Record precedent: cb-degrade-001 applies to the corporate-network context where
+    localhost services are expected to be unavailable. ex-attention-001 applies to the
+    home-network context where localhost services should be available. The environment
+    determines which implication governs.
+
+brutus:
+  position: >
+    Publius is right that the environment matters, but wrong about the mechanism.
+    Constitutional preemption is too blunt. cb-degrade-001 exists because the VS Code
+    extension runs in a context where localhost is unreachable by design (corporate
+    network, Zscaler boundary). In that context, silent failure is correct — alerting
+    about expected unavailability is noise, which itself violates executive_function
+    (unnecessary cognitive load). At home, localhost should be available, and failure
+    is alertable. The resolution is not "constitutional axiom wins" but "both axioms
+    apply in their respective contexts." This is an omitted-case situation: the
+    implications were derived without specifying which network context they apply to.
+    The precedent should establish environment-aware scoping as a general principle,
+    not just resolve this specific tension.
+  canon_applied: omitted-case
+  supporting_precedents: [sp-arch-007]
+  proposed_resolution: >
+    Record precedent establishing environment-aware implication scoping. cb-degrade-001
+    governs corporate-network behavior; ex-attention-001 governs home-network behavior.
+    Neither preempts the other. The environment context determines which applies.
+
+tension_map:
+  agreement: >
+    Both agents agree the resolution is environment-dependent. At work (corporate
+    network, localhost unreachable by design): fail silently. At home (localhost should
+    be available): alert. Both agree the current implementations handle this correctly
+    in practice.
+  disagreement: >
+    The mechanism of resolution. Publius frames it as constitutional preemption with a
+    scope exception. Brutus frames it as environment-aware scoping where neither axiom
+    preempts the other. The practical outcome is identical; the precedent framing differs.
+    Brutus's framing is more general — it establishes environment-aware scoping as a
+    principle rather than a one-off exception.
+  novel_insight: >
+    The implications were derived without environment context, but the system operates
+    in two distinct environments (home network, corporate network) with different
+    assumptions about service availability. This is not unique to this tension — any
+    implication about localhost services, network access, or service dependencies is
+    implicitly environment-scoped. The precedent should establish that implications
+    whose applicability depends on environment context must specify which environment
+    they govern, or be interpreted via the corporate_boundary axiom's scope when the
+    environment is corporate and via the relevant constitutional axiom when at home.
+
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+created: 2026-03-12T15:00:00Z
+resolved: null

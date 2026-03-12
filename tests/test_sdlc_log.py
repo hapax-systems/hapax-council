@@ -15,7 +15,9 @@ class TestLogSdlcEvent:
     def test_creates_file_and_appends(self, tmp_path):
         log_path = tmp_path / "sdlc-events.jsonl"
 
-        log_sdlc_event("triage", issue_number=42, result={"type": "bug"}, duration_ms=150, log_path=log_path)
+        log_sdlc_event(
+            "triage", issue_number=42, result={"type": "bug"}, duration_ms=150, log_path=log_path
+        )
         log_sdlc_event("review", pr_number=10, result={"verdict": "approve"}, log_path=log_path)
 
         lines = log_path.read_text().strip().splitlines()

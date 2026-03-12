@@ -47,13 +47,15 @@ def _make_behaviors(
 
 def _build_veto_chain() -> VetoChain[FusedContext]:
     """Veto chain: energy must exceed threshold."""
-    return VetoChain([
-        Veto(
-            name="energy_threshold",
-            predicate=lambda ctx: ctx.samples["audio_energy_rms"].value >= 0.3,
-            description="Block when energy is too low for MC interjection",
-        ),
-    ])
+    return VetoChain(
+        [
+            Veto(
+                name="energy_threshold",
+                predicate=lambda ctx: ctx.samples["audio_energy_rms"].value >= 0.3,
+                description="Block when energy is too low for MC interjection",
+            ),
+        ]
+    )
 
 
 class TestBackupMCComposition:
@@ -79,12 +81,14 @@ class TestBackupMCComposition:
                 trigger_source="midi_clock",
                 governance_result=result,
             )
-            schedules.append(Schedule(
-                command=cmd,
-                domain="beat",
-                target_time=target_beat,
-                wall_time=wall_time,
-            ))
+            schedules.append(
+                Schedule(
+                    command=cmd,
+                    domain="beat",
+                    target_time=target_beat,
+                    wall_time=wall_time,
+                )
+            )
 
         fused_event.subscribe(_on_fused)
 
@@ -112,10 +116,12 @@ class TestBackupMCComposition:
             result = veto_chain.evaluate(ctx)
             if not result.allowed:
                 return
-            schedules.append(Schedule(
-                command=Command(action="mc_interjection", trigger_time=ts),
-                domain="beat",
-            ))
+            schedules.append(
+                Schedule(
+                    command=Command(action="mc_interjection", trigger_time=ts),
+                    domain="beat",
+                )
+            )
 
         fused_event.subscribe(_on_fused)
         clock_event.emit(1001.0, 1001.0)
@@ -152,9 +158,11 @@ class TestBackupMCComposition:
         behaviors = _make_behaviors(watermark=stale_wm)
         fused_event = with_latest_from(clock_event, behaviors)
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="audio_energy_rms", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="audio_energy_rms", max_staleness_s=5.0),
+            ]
+        )
 
         results: list[bool] = []
 

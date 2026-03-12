@@ -29,6 +29,7 @@ def pytest_sessionfinish(session, exitstatus):
     except Exception:
         pass
 
+
 # Packages that require optional extras
 _HARDWARE_PACKAGES = ["pipecat", "pyaudio", "torch", "cv2", "pvporcupine"]
 _SYNC_PACKAGES = ["googleapiclient"]

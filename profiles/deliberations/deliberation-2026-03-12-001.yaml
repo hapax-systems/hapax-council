@@ -1,0 +1,78 @@
+id: deliberation-2026-03-12-001
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: >
+    mg-boundary-001 (domain T0, management_governance) blocks all generated feedback
+    language about individuals. ex-err-001 (constitutional T0, executive_function)
+    requires error messages to include specific next actions. When a management agent
+    encounters a person-related error, these obligations appear to conflict.
+  relevant_axioms: [management_governance, executive_function]
+  relevant_implications: [mg-boundary-001, ex-err-001]
+  relevant_precedents: [sp-mgmt-001, sp-arch-007]
+  accumulated_dissents: []
+
+publius:
+  position: >
+    ex-err-001 is constitutional (weight 95) and applies system-wide. Error messages
+    must include next actions regardless of domain context. mg-boundary-001 constrains
+    agent outputs about individuals — it does not and should not constrain the system's
+    error handling infrastructure. An error message like "Failed to load person note
+    for Alex Chen — check data/people/alex-chen.md exists" is a system diagnostic, not
+    feedback about Alex Chen. The constitutional axiom's scope is infrastructure behavior;
+    the domain axiom's scope is management content. No preemption is necessary because
+    the scopes do not overlap. If mg-boundary-001 were read to constrain error messages
+    that mention person names, the absurdity doctrine applies: the axiom's purpose is
+    preventing LLM-generated coaching language, not preventing file-not-found errors
+    from being actionable.
+  canon_applied: textualist
+  supporting_precedents: [sp-arch-007]
+  proposed_resolution: >
+    Record precedent: ex-err-001 and mg-boundary-001 operate in different scopes
+    (infrastructure diagnostics vs. management content output). No preemption needed.
+
+brutus:
+  position: >
+    The tension is less about these two implications and more about the boundary they
+    share. mg-boundary-001's text says "never generate feedback language...directed at
+    individual team members." A strict textualist reading could include error messages
+    that name individuals and suggest actions involving them. Consider: "Alex Chen's 1:1
+    is overdue — run agents.management_prep --person alex-chen to generate prep context."
+    This names an individual and recommends an action related to them. The purposivist
+    reading of mg-boundary-001 distinguishes between operational system messages and
+    management-content outputs, but the text does not make this distinction explicit.
+    The implication should be narrowed to specify that it constrains agent outputs in
+    the management content domain, not system diagnostics. Without narrowing, future
+    agents may over-apply the block and suppress actionable error messages that happen
+    to reference people.
+  canon_applied: purposivist
+  supporting_precedents: [sp-mgmt-001]
+  proposed_resolution: >
+    Narrow mg-boundary-001 scope annotation to "management content outputs" explicitly.
+    Record precedent distinguishing system diagnostics from management content.
+
+tension_map:
+  agreement: >
+    Both agents agree these implications do not conflict in practice. System error
+    messages that reference person names are infrastructure diagnostics, not management
+    feedback. The existing system correctly treats them differently.
+  disagreement: >
+    Whether mg-boundary-001's text is precise enough to prevent future over-application.
+    Publius considers the absurdity doctrine sufficient protection. Brutus argues the
+    implication text should be narrowed to make the scope explicit, preventing agents
+    from suppressing actionable errors that mention people.
+  novel_insight: >
+    The tension reveals an unspecified boundary between "management content" and "system
+    diagnostics." Both scopes can reference the same entities (people) but with different
+    intent. The current implication text does not distinguish these scopes. A future
+    agent with no access to this deliberation record could reasonably read mg-boundary-001
+    as blocking any generated text that names a team member, including error messages.
+    The precedent should specify the distinguishing criterion: whether the text's purpose
+    is to inform the operator about a person (blocked) or to inform the operator about
+    system state that happens to involve a person (permitted).
+
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+created: 2026-03-12T15:00:00Z
+resolved: null

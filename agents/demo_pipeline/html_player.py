@@ -1,4 +1,5 @@
 """Re-export from hapax-demo package for backwards compatibility."""
+
 from demo.pipeline.html_player import *  # noqa: F401, F403
 from demo.pipeline.html_player import (  # noqa: F401
     _make_title_card_background,

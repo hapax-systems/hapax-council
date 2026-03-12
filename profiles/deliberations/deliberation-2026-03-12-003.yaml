@@ -1,0 +1,78 @@
+id: deliberation-2026-03-12-003
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: >
+    cb-llm-001 (domain T0, corporate_boundary) requires the VS Code extension to
+    support direct API calls to sanctioned providers (OpenAI, Anthropic) without
+    requiring a localhost proxy. su-security-001 (constitutional T0, single_user)
+    declares multi-tenant security measures unnecessary. API key management for
+    multiple providers resembles auth infrastructure.
+  relevant_axioms: [corporate_boundary, single_user]
+  relevant_implications: [cb-llm-001, su-security-001, su-auth-001]
+  relevant_precedents: [sp-arch-001]
+  accumulated_dissents: []
+
+publius:
+  position: >
+    su-auth-001 and su-security-001 eliminate user authentication and multi-tenant
+    security. API keys for LLM providers are not user authentication — they are
+    service credentials. The single_user axiom (weight 100) targets the system's
+    relationship with its operator: one user, no roles, no access control between
+    users. A provider API key authenticates the operator to an external service,
+    not a user to the system. The LiteLLM proxy (sp-arch-001) already manages
+    service credentials for one operator. cb-llm-001 extends this to the VS Code
+    extension context where the proxy is unreachable. The constitutional axiom is
+    not implicated because no multi-user credential management exists — one operator,
+    multiple service credentials.
+  canon_applied: textualist
+  supporting_precedents: [sp-arch-001]
+  proposed_resolution: >
+    Record precedent: service credentials (API keys for external providers) are
+    distinct from user authentication. su-auth-001 constrains user-to-system auth,
+    not system-to-service auth.
+
+brutus:
+  position: >
+    Publius is correct that the current implementation is compliant, but the
+    distinction between "user auth" and "service credentials" is not specified in
+    su-auth-001's text, which says "all authentication, authorization, and user
+    management code must be removed or disabled." A credential resolution chain
+    (VS Code settings → env vars → pass store, per cb-key-001) is authentication
+    infrastructure. It authenticates the system to external services. The textualist
+    reading of su-auth-001 could capture this. The purposivist reading correctly
+    distinguishes it. The risk is that su-auth-001's text is broader than its purpose.
+    If a future contributor reads "all authentication code must be removed" literally,
+    they might strip the credential resolver. The implication text should be narrowed
+    to "user authentication" or the precedent must be clear enough to prevent this
+    misreading.
+  canon_applied: purposivist
+  supporting_precedents: [sp-arch-001, sp-arch-003]
+  proposed_resolution: >
+    Either amend su-auth-001 text to "user authentication and authorization" or
+    record a high-authority precedent distinguishing user-auth from service-auth.
+
+tension_map:
+  agreement: >
+    Both agents agree the current implementation is compliant. API keys for external
+    providers are service credentials, not user authentication. No multi-user credential
+    management exists.
+  disagreement: >
+    Whether su-auth-001's text ("all authentication...code") is precise enough to
+    prevent future misapplication. Publius relies on purposivist reading at evaluation
+    time. Brutus argues the text should be narrowed or a precedent must prevent the
+    textualist misreading.
+  novel_insight: >
+    su-auth-001 conflates two distinct authentication domains: user-to-system (the
+    axiom's purpose) and system-to-service (required by corporate_boundary). The
+    implication was derived with only user-to-system in mind, but its text captures
+    both. This is a class of problem that will recur as the system integrates more
+    external services. A precedent that distinguishes "authentication of users" from
+    "authentication to services" would resolve not just this tension but the entire
+    class.
+
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+created: 2026-03-12T15:00:00Z
+resolved: null

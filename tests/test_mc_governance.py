@@ -318,14 +318,18 @@ class TestMCVetoChainProperties:
         from agents.hapax_voice.governance import Veto, VetoChain
 
         ctx = _make_mc_context(energy_rms=energy, vad_confidence=vad)
-        chain_ab = VetoChain([
-            Veto(name="speech", predicate=lambda c: speech_clear(c)),
-            Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
-        ])
-        chain_ba = VetoChain([
-            Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
-            Veto(name="speech", predicate=lambda c: speech_clear(c)),
-        ])
+        chain_ab = VetoChain(
+            [
+                Veto(name="speech", predicate=lambda c: speech_clear(c)),
+                Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
+            ]
+        )
+        chain_ba = VetoChain(
+            [
+                Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
+                Veto(name="speech", predicate=lambda c: speech_clear(c)),
+            ]
+        )
         assert chain_ab.evaluate(ctx).allowed == chain_ba.evaluate(ctx).allowed
 
     @given(st.floats(min_value=0.0, max_value=1.0))
@@ -334,13 +338,17 @@ class TestMCVetoChainProperties:
         from agents.hapax_voice.governance import Veto, VetoChain
 
         ctx = _make_mc_context(energy_rms=energy)
-        base = VetoChain([
-            Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
-        ])
-        extended = VetoChain([
-            Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
-            Veto(name="transport", predicate=transport_active),
-        ])
+        base = VetoChain(
+            [
+                Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
+            ]
+        )
+        extended = VetoChain(
+            [
+                Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
+                Veto(name="transport", predicate=transport_active),
+            ]
+        )
         base_result = base.evaluate(ctx).allowed
         extended_result = extended.evaluate(ctx).allowed
         # extended can only be equal or more restrictive
@@ -356,12 +364,16 @@ class TestMCVetoChainProperties:
         from agents.hapax_voice.governance import Veto, VetoChain
 
         ctx = _make_mc_context(energy_rms=energy, vad_confidence=vad)
-        speech_chain = VetoChain([
-            Veto(name="speech", predicate=lambda c: speech_clear(c)),
-        ])
-        energy_chain = VetoChain([
-            Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
-        ])
+        speech_chain = VetoChain(
+            [
+                Veto(name="speech", predicate=lambda c: speech_clear(c)),
+            ]
+        )
+        energy_chain = VetoChain(
+            [
+                Veto(name="energy", predicate=lambda c: energy_sufficient(c)),
+            ]
+        )
         composed = speech_chain | energy_chain
         composed_result = composed.evaluate(ctx).allowed
         speech_result = speech_chain.evaluate(ctx).allowed
@@ -455,12 +467,12 @@ class TestMCComposeAggregateOfAggregates:
         output.subscribe(lambda ts, val: received.append(val))
 
         now = time.monotonic()
-        trigger.emit(now, now)           # first throw — allowed
+        trigger.emit(now, now)  # first throw — allowed
         trigger.emit(now + 1.0, now + 1.0)  # 1s later — spacing cooldown blocks
 
         assert len(received) == 2
         assert received[0] is not None  # first allowed
-        assert received[1] is None      # second vetoed
+        assert received[1] is None  # second vetoed
 
     def test_schedule_carries_governance_provenance(self):
         behaviors = _make_mc_behaviors(energy_rms=0.9, emotion_arousal=0.8, vad_confidence=0.0)
@@ -496,10 +508,10 @@ class TestMCComposeAggregateOfAggregates:
         trigger.emit(now, now)
         for b in behaviors.values():
             b.update(b.value, now + 5.0)
-        trigger.emit(now + 5.0, now + 5.0)       # past cooldown
+        trigger.emit(now + 5.0, now + 5.0)  # past cooldown
         for b in behaviors.values():
             b.update(b.value, now + 10.0)
-        trigger.emit(now + 10.0, now + 10.0)      # past cooldown
+        trigger.emit(now + 10.0, now + 10.0)  # past cooldown
 
         assert len(received) == 3
         assert all(r is not None for r in received)

@@ -185,10 +185,12 @@ class DemoJobManager:
             job.progress_pct = min(95, int(job._phases_seen / total_phases * 100))
             self._save(job)
             if queue:
-                queue.put_nowait({
-                    "event": "progress",
-                    "data": {"job_id": job.id, "phase": msg, "progress_pct": job.progress_pct},
-                })
+                queue.put_nowait(
+                    {
+                        "event": "progress",
+                        "data": {"job_id": job.id, "phase": msg, "progress_pct": job.progress_pct},
+                    }
+                )
 
         try:
             demo_dir = await generate_demo(
@@ -202,10 +204,12 @@ class DemoJobManager:
             job.completed_at = datetime.now(UTC).isoformat()
             self._save(job)
             if queue:
-                queue.put_nowait({
-                    "event": "done",
-                    "data": {"job_id": job.id, "path": str(demo_dir)},
-                })
+                queue.put_nowait(
+                    {
+                        "event": "done",
+                        "data": {"job_id": job.id, "path": str(demo_dir)},
+                    }
+                )
             log.info("Demo job %s complete: %s", job.id, demo_dir)
 
         except asyncio.CancelledError:
@@ -222,10 +226,12 @@ class DemoJobManager:
             job.completed_at = datetime.now(UTC).isoformat()
             self._save(job)
             if queue:
-                queue.put_nowait({
-                    "event": "error",
-                    "data": {"job_id": job.id, "message": str(e)},
-                })
+                queue.put_nowait(
+                    {
+                        "event": "error",
+                        "data": {"job_id": job.id, "message": str(e)},
+                    }
+                )
             log.error("Demo job %s failed: %s", job.id, e, exc_info=True)
 
     def _cleanup(self, job_id: str) -> None:

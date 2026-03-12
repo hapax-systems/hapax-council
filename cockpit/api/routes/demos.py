@@ -97,7 +97,9 @@ async def cancel_job(job_id: str, request: Request):
         job = manager.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
-        raise HTTPException(status_code=409, detail=f"Job '{job_id}' is not running (status: {job.status})")
+        raise HTTPException(
+            status_code=409, detail=f"Job '{job_id}' is not running (status: {job.status})"
+        )
     return {"cancelled": job_id}
 
 
