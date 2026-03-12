@@ -11,6 +11,24 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+
+def pytest_sessionfinish(session, exitstatus):
+    """Shut down OTel TracerProvider to prevent BatchSpanProcessor flush errors.
+
+    test_otel_bootstrap reloads langfuse_config with mock creds, which creates a
+    BatchSpanProcessor targeting an unreachable host. Without explicit shutdown,
+    the processor tries to flush on exit → noisy ConnectionError in stderr.
+    """
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        provider = trace.get_tracer_provider()
+        if isinstance(provider, TracerProvider):
+            provider.shutdown()
+    except Exception:
+        pass
+
 # Packages that require optional extras
 _HARDWARE_PACKAGES = ["pipecat", "pyaudio", "torch", "cv2", "pvporcupine"]
 _SYNC_PACKAGES = ["googleapiclient"]

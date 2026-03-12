@@ -1,6 +1,6 @@
 # Studio-Aware Unified Perception Layer Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status:** Completed. EnvironmentState, PerceptionEngine, Governor, FrameGate all implemented. The perception layer has since been extended with a general-purpose type system (Behavior/Event/Combinator/VetoChain/FallbackChain/FreshnessGuard/Command/Schedule/TimelineMapping/CadenceGroup) — see the [Perception Primitives Design](../specs/2026-03-11-perception-primitives-design.md).
 
 **Goal:** Build a unified perception layer that fuses audio-visual signals into an EnvironmentState, governs the active Pipecat pipeline via a FrameGate processor, and detects studio conditions (conversation, production) to enforce behavioral constraints.
 

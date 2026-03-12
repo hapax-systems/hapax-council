@@ -1,6 +1,6 @@
 # Studio-Aware Unified Perception Layer — Design Spec
 
-> **Status:** Approved
+> **Status:** Implemented — superseded by [Perception Primitives Design](2026-03-11-perception-primitives-design.md) for the type system layer (Behavior/Event/Combinator/VetoChain/FallbackChain/FreshnessGuard/Command/Schedule/TimelineMapping/CadenceGroup) and [Backup MC North Star](2026-03-11-backup-mc-north-star-design.md) for multi-cadence composition.
 > **Date:** 2026-03-10
 > **Scope:** `agents/hapax_voice/` — perception, governance, and pipeline integration
 

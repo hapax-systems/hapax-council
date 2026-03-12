@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from agents.hapax_voice.activity_mode import classify_activity_mode
 from agents.hapax_voice.audio_input import AudioInputStream
+from agents.hapax_voice.cadence import CadenceGroup
 from agents.hapax_voice.chime_player import ChimePlayer
 from agents.hapax_voice.commands import Command
 from agents.hapax_voice.config import load_config
@@ -203,6 +204,7 @@ class VoiceDaemon:
         self._frame_gate = FrameGate()
 
         self._running = True
+        self._cadence_groups: list[CadenceGroup] = []
         self._background_tasks: list[asyncio.Task] = []
         # Pipeline state (managed per-session)
         self._pipeline_task: asyncio.Task | None = None
@@ -227,6 +229,21 @@ class VoiceDaemon:
         self.notifications.set_event_log(self.event_log)
         self.workspace_monitor.set_event_log(self.event_log)
         self.workspace_monitor.set_tracer(self.tracer)
+
+    # ------------------------------------------------------------------
+    # Multi-cadence dispatch
+    # ------------------------------------------------------------------
+
+    async def _cadence_loop(self, group: CadenceGroup) -> None:
+        """Poll a CadenceGroup at its interval, writing to shared behaviors."""
+        while self._running:
+            try:
+                await asyncio.sleep(group.interval_s)
+                group.poll(self.perception.behaviors)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception("Error in cadence group %s", group.name)
 
     # ------------------------------------------------------------------
     # Perception backend registration
@@ -786,6 +803,9 @@ class VoiceDaemon:
 
         self._background_tasks.append(asyncio.create_task(self._perception_loop()))
         self._background_tasks.append(asyncio.create_task(self._wake_word_processor()))
+
+        for group in self._cadence_groups:
+            self._background_tasks.append(asyncio.create_task(self._cadence_loop(group)))
 
         try:
             while self._running:

@@ -127,6 +127,27 @@ profiles/         Generated operational data (gitignored, only .gitkeep tracked)
 - **`shared/dimensions.py`** — 11 profile dimensions (5 trait, 6 behavioral). Sync agents produce behavioral facts only, validated by `validate_behavioral_write()`
 - **`cockpit/api/routes/`** — ~30 REST endpoints across 7 route groups. CORS for council-web at :5173
 
+## Voice Daemon Perception Type System
+
+The `agents/hapax_voice/` package implements a general-purpose perception-to-actuation pipeline, validated against a north star use case (Backup MC during live studio recording at sub-50ms beat-aligned precision). The type system has three layers:
+
+**Perceptives** (sense):
+- **`primitives.py`** — `Behavior[T]` (continuous value + monotonic watermark), `Event[T]` (discrete pub/sub), `Stamped[T]` (immutable snapshot)
+- **`timeline.py`** — `TimelineMapping` (bijective affine wall-clock ↔ beat-time map), `TransportState`
+- **`cadence.py`** — `CadenceGroup` (backends polled at a shared interval, emits tick Event)
+
+**Detectives** (decide):
+- **`combinator.py`** — `with_latest_from(trigger: Event, behaviors) → Event[FusedContext]`
+- **`governance.py`** — `VetoChain` (deny-wins, order-independent), `FallbackChain` (priority-ordered selection), `FreshnessGuard` (staleness rejection), `FusedContext`
+- **`mc_governance.py`** — MC-specific composition: speech/energy/spacing/transport vetoes, energy×arousal fallback chain, 200ms/3s/500ms freshness requirements, `compose_mc_governance()` wires the full pipeline
+
+**Directives** (act):
+- **`commands.py`** — `Command` (frozen inspectable action with governance provenance), `Schedule` (command bound to time domain with `wall_time` resolved from `TimelineMapping`)
+
+**Perception engine** (`perception.py`): Fuses sensor signals into `EnvironmentState` snapshots. 9 backends registered at startup (5 active: PipeWire, Hyprland, Watch, Health, Circadian; 4 stubs: MIDI clock, audio energy, emotion, energy arc). `tick_event` enables combinator wiring. `CadenceGroup` dispatch wired in daemon for multi-rate polling.
+
+**Testing pattern**: Systematic trinary matrices (below/at/above per threshold), composed into aggregate tests, with Hypothesis property proofs (commutativity, monotonicity, idempotence) at composition boundaries.
+
 ## Containerization
 
 Two containers via `docker-compose.yml` (`--network host`):

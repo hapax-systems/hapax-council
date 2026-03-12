@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_voice.primitives import Behavior, Event
 
 if TYPE_CHECKING:
     from shared.hyprland import WindowInfo
@@ -209,6 +209,9 @@ class PerceptionEngine:
             "face_count": self._b_face_count,
         }
 
+        # Tick event — emitted at end of each tick() for combinator wiring
+        self._tick_event: Event[float] = Event()
+
         # Voice session flag (set by daemon each tick)
         self._in_voice_session: bool = False
 
@@ -221,6 +224,11 @@ class PerceptionEngine:
 
         # Latest state
         self.latest: EnvironmentState | None = None
+
+    @property
+    def tick_event(self) -> Event[float]:
+        """Event emitted at the end of each tick() — usable as a combinator trigger."""
+        return self._tick_event
 
     def _bval(self, name: str, default: float) -> float:
         """Read an optional Behavior value with a safe default."""
@@ -316,6 +324,8 @@ class PerceptionEngine:
                 cb(state)
             except Exception:
                 log.exception("Perception subscriber error")
+
+        self._tick_event.emit(now, now)
 
         return state
 
