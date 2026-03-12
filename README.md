@@ -34,12 +34,17 @@ IDE:           VS Code extension + Claude Code skills and hooks
 
 **Sync pipeline.** Seven agents run on cron in a Docker container, keeping the knowledge base current: Google Drive, Calendar, Gmail, YouTube, Chrome history, Obsidian vault, and Claude Code transcripts flow into Qdrant for RAG retrieval.
 
-**Voice daemon.** Always-on multimodal interaction with a perception engine that fuses audio and visual signals. Fast tick (2–3s): VAD, face detection, gaze tracking. Slow enrichment (10–15s): ambient sound classification, LLM workspace analysis. A governor maps environment state to pipeline directives using two composable primitives:
+**Voice daemon.** Always-on multimodal interaction with a perception engine that fuses audio and visual signals into environment state snapshots. Nine perception backends contribute signals at different cadences — five active (PipeWire audio state, Hyprland desktop topology, smartwatch biometrics, system health, circadian alignment) and four stubs reserving behavior names for future hardware (MIDI clock, audio energy, emotion, energy arc).
 
-- **VetoChain** — constraint composition where any link can deny. A chain of conditions (e.g., "meeting in progress", "operator stressed", "ambient noise too high") is evaluated in order; the first veto wins and the action is blocked. Example: during a meeting, the veto chain blocks voice output.
-- **FallbackChain** — priority-ordered action selection with graceful degradation. Tries the highest-priority action first (e.g., full voice response), falls back to the next (notification), then the next (silent log). If the preferred output mode is unavailable, the chain degrades without failing.
+The perception layer is built on a general-purpose type system designed for the north star use case: acting as backup MC during live studio recording, delivering beat-aligned vocal throws at sub-50ms precision. The type system has three layers:
 
-Both are composable — chains can be nested, and veto and fallback can be combined. The governor evaluates the full tree each tick.
+- **Perceptives** — `Behavior[T]` (continuous value with monotonic freshness watermark, always has a current value), `Event[T]` (discrete occurrence with pub/sub, no history for late subscribers), `TimelineMapping` (bijective affine map between wall-clock and beat time, frozen when transport is stopped). `CadenceGroup` polls backends at a shared interval and emits a tick Event — different signal types update at different rates without coupling.
+
+- **Detectives** — `with_latest_from` (combinator: when a trigger Event fires, sample all Behaviors and emit a `FusedContext`), `VetoChain` (order-independent deny-wins constraint composition — adding a veto can only make the system more restrictive, never less), `FallbackChain` (priority-ordered action selection with graceful degradation to a default), `FreshnessGuard` (rejects decisions made on stale perception data, per-signal staleness limits). VetoChain and FallbackChain support `|` composition with algebraic guarantees (commutativity, associativity, monotonicity, idempotence) verified by property-based tests.
+
+- **Directives** — `Command` (frozen inspectable action carrying full provenance: which Event triggered it, how fresh the data was, which vetoes passed, which candidate was selected), `Schedule` (command bound to a time domain with `wall_time` resolved from TimelineMapping — the gap between description and execution is where governance lives).
+
+The MC governance layer composes these primitives into a domain-specific pipeline: trigger Event → `with_latest_from` → `FreshnessGuard` (energy <200ms, emotion <3s, timeline <500ms) → `VetoChain` (speech detection, energy threshold, spacing cooldown, transport active) → `FallbackChain` (vocal throw at high energy+arousal, ad-lib at moderate, silence at low) → `Schedule`. The compose function produces beat-aligned Schedules with governance provenance carried through every step. What remains is filling in the four stub backends with real hardware integration (ALSA MIDI, real-time FFT, emotion inference) and building the sample bank and playback actuator.
 
 **Analysis.** Content digestion, horizon scanning for component fitness, documentation drift detection and correction, interactive research with RAG context, code review.
 
@@ -117,7 +122,7 @@ Agents require LiteLLM (localhost:4000), Qdrant (localhost:6333), and Ollama (lo
 
 ```
 hapax-council/
-├── agents/           26 agents + 4 agent packages (hapax_voice, demo_pipeline, dev_story, system_ops)
+├── agents/           26 agents + 4 agent packages (hapax_voice/, demo_pipeline/, dev_story/, system_ops/)
 ├── shared/           40 shared modules (config, axioms, profile, frontmatter, context, embedding)
 ├── cockpit/          FastAPI API + 11 data collectors + reactive engine (watcher, rules, executor)
 ├── council-web/      React SPA dashboard

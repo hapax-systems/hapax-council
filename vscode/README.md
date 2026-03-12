@@ -92,6 +92,6 @@ The extension is bundled with esbuild to a single `dist/extension.js`. Runtime d
 
 | Repo | Purpose |
 |------|---------|
-| [hapaxromana](~/projects/hapaxromana/) | Architecture specs, axioms, design authority |
-| [ai-agents](~/projects/ai-agents/) | Tier 2 agent implementations + cockpit API |
-| [cockpit-web](~/projects/cockpit-web/) | Web dashboard (full command center) |
+| [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Axioms, governance architecture, shared SDLC modules |
+| [hapax-council](https://github.com/ryanklee/hapax-council) | Agents, cockpit API, reactive engine, voice daemon |
+| [hapax-officium](https://github.com/ryanklee/hapax-officium) | Management-domain extraction (forkable) |

@@ -1,73 +1,73 @@
-# React + TypeScript + Vite
+# council-web
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React SPA dashboard for the Hapax agent system. Provides health monitoring, agent execution, chat, nudge management, demo viewing, and management oversight in a single-page web interface.
 
-Currently, two official plugins are available:
+## Quick start
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+pnpm install      # install dependencies
+pnpm dev          # dev server on :5173
+pnpm build        # type-check + production build
+pnpm lint         # ESLint
+pnpm preview      # preview production build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Requires the cockpit API backend running at :8051. Start it from the project root:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+uv run cockpit-api    # FastAPI on :8051
 ```
+
+Vite proxies `/api` requests to `http://127.0.0.1:8051` in dev mode.
+
+## Architecture
+
+```
+src/
+  api/            API client, React Query hooks, SSE helpers, TypeScript types
+  components/
+    chat/         Chat UI (messages, input, streaming, tool calls)
+    dashboard/    Agent grid, nudge list, output pane, copilot banner
+    demos/        Demo list and detail views
+    layout/       App layout shell, manual drawer, health toast watcher
+    shared/       Reusable: command palette, error boundary, modals, markdown, toasts
+    sidebar/      15 sidebar panels (health, VRAM, containers, timers, briefing,
+                  goals, scout, cost, drift, management, accommodations, freshness)
+  hooks/          useHealthToasts, useInputHistory, useKeyboardShortcuts, useSSE
+  pages/          DashboardPage, ChatPage, DemosPage
+  utils.ts        Shared utilities
+```
+
+## Routes
+
+| Path | Page | Purpose |
+|------|------|---------|
+| `/` | DashboardPage | Health, agents, nudges, sidebar panels |
+| `/chat` | ChatPage | Streaming chat with cockpit backend |
+| `/demos` | DemosPage | Browse and view generated demos |
+
+## Tech stack
+
+- **React 19** + **TypeScript 5.9** (strict mode)
+- **Vite 7** with `@vitejs/plugin-react`
+- **Tailwind CSS 4** via `@tailwindcss/vite`
+- **TanStack React Query** for server state
+- **React Router 7** (BrowserRouter)
+- **Recharts** for health history charts
+- **Lucide React** for icons
+- **react-markdown** + remark-gfm for markdown rendering
+
+## API layer
+
+All backend calls go through `src/api/client.ts` which hits `/api/*` (proxied to :8051). Types in `src/api/types.ts` mirror the Python dataclasses in `cockpit/data/`. React Query hooks in `src/api/hooks.ts` wrap the client. SSE streaming for chat in `src/api/sse.ts`.
+
+## Conventions
+
+- **pnpm only** — never npm or yarn
+- TypeScript strict mode enforced (`strict: true`, `noUnusedLocals`, `noUnusedParameters`)
+- Tailwind for all styling — no CSS modules or styled-components
+- Functional components only
+- Flat component folders grouped by feature
+- API types must stay in sync with cockpit backend dataclasses
+
+No test runner is currently configured.
