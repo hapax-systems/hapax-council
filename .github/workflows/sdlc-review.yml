@@ -1,0 +1,89 @@
+name: "SDLC: Adversarial Review"
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: sdlc-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Only review agent-authored PRs on agent/* branches.
+    if: >-
+      startsWith(github.event.pull_request.head.ref, 'agent/') &&
+      contains(github.event.pull_request.labels.*.name, 'agent-authored')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra ci
+
+      - name: Run adversarial review
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGFUSE_EXPORT_FILE: /tmp/langfuse-traces.jsonl
+        run: |
+          set -eo pipefail
+          OUTPUT=$(uv run python -m scripts.sdlc_review --pr-number ${{ github.event.pull_request.number }})
+          echo "$OUTPUT"
+
+          VERDICT=$(echo "$OUTPUT" | jq -r '.verdict')
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+
+      - name: Track review round
+        if: steps.review.outputs.verdict == 'request_changes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name')
+          CURRENT_ROUND=0
+          for label in $LABELS; do
+            if [[ "$label" == review-round:* ]]; then
+              CURRENT_ROUND=${label#review-round:}
+              gh pr edit "$PR" --remove-label "$label"
+            fi
+          done
+          NEXT=$((CURRENT_ROUND + 1))
+
+          if [ "$NEXT" -ge 3 ]; then
+            gh pr edit "$PR" --add-label "needs-human"
+            gh pr comment "$PR" --body "## ⚠️ Review Escalation
+
+            This PR has been through $NEXT review rounds without approval. Human review needed."
+          else
+            gh pr edit "$PR" --add-label "review-round:${NEXT}"
+          fi
+
+      - name: Trigger axiom gate on approval
+        if: steps.review.outputs.verdict == 'approve'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          # Submit an approving review to trigger the axiom gate workflow.
+          gh api repos/${{ github.repository }}/pulls/${PR}/reviews \
+            -X POST \
+            -f event=APPROVE \
+            -f body="Adversarial review passed. Triggering axiom compliance gate."
+
+      - name: Upload traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: langfuse-traces-review-${{ github.event.pull_request.number }}
+          path: /tmp/langfuse-traces.jsonl
+          if-no-files-found: ignore

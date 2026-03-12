@@ -54,7 +54,9 @@ class SchemaVer:
         """Parse a SchemaVer string like '1-0-0'."""
         parts = version_str.strip().split("-")
         if len(parts) != 3:
-            raise ValueError(f"Invalid SchemaVer: {version_str!r} (expected MODEL-REVISION-ADDITION)")
+            raise ValueError(
+                f"Invalid SchemaVer: {version_str!r} (expected MODEL-REVISION-ADDITION)"
+            )
         try:
             return cls(model=int(parts[0]), revision=int(parts[1]), addition=int(parts[2]))
         except ValueError as e:

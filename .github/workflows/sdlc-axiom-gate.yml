@@ -1,0 +1,81 @@
+name: "SDLC: Axiom Compliance Gate"
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: sdlc-axiom-gate-${{ github.event.pull_request.number }}
+
+jobs:
+  axiom-gate:
+    # Only run on agent branches when review is approved.
+    if: >-
+      github.event.review.state == 'approved' &&
+      startsWith(github.event.pull_request.head.ref, 'agent/') &&
+      contains(github.event.pull_request.labels.*.name, 'agent-authored')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra ci
+
+      - name: Run axiom compliance gate
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGFUSE_EXPORT_FILE: /tmp/langfuse-traces.jsonl
+        run: |
+          set -eo pipefail
+          OUTPUT=$(uv run python -m scripts.sdlc_axiom_judge --pr-number ${{ github.event.pull_request.number }})
+          echo "$OUTPUT"
+
+          OVERALL=$(echo "$OUTPUT" | jq -r '.overall')
+          echo "overall=$OVERALL" >> "$GITHUB_OUTPUT"
+
+      - name: Mark ready and auto-merge on pass
+        if: steps.gate.outputs.overall == 'pass'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          gh pr edit "$PR" --add-label "sdlc:ready-for-human"
+          gh pr merge "$PR" --auto --squash
+
+      - name: Mark advisory for human review
+        if: steps.gate.outputs.overall == 'advisory'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          gh pr edit "$PR" --add-label "sdlc:ready-for-human" --add-label "axiom:precedent-review"
+
+      - name: Block on T0 violation
+        if: steps.gate.outputs.overall == 'block'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          gh pr edit "$PR" --add-label "axiom:blocked"
+
+          gh api repos/${{ github.repository }}/pulls/${PR}/reviews \
+            -X POST \
+            -f event=REQUEST_CHANGES \
+            -f body="Axiom compliance gate BLOCKED this PR. See gate results above."
+
+      - name: Upload traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: langfuse-traces-axiom-gate-${{ github.event.pull_request.number }}
+          path: /tmp/langfuse-traces.jsonl
+          if-no-files-found: ignore

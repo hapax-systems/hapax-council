@@ -9,14 +9,14 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/hapax/projects/ai-agents
+WorkingDirectory=/home/hapax/projects/hapax-council
 # Use .venv/bin/python directly instead of `uv run` because NeMo toolkit
 # requires lightning==2.4.0 (nv-one-logger crash with >=2.5), and `uv run`
 # re-syncs to pyproject.toml which installs lightning 2.6.x.
 # NeMo is installed via `uv pip install` outside pyproject.toml resolution
 # due to huggingface-hub version conflict with pydantic-ai.
 ExecStartPre=/bin/bash -c 'echo "LITELLM_API_KEY=$(pass show litellm/master-key)" > /run/user/1000/hapax-voice.env && echo "LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key)" >> /run/user/1000/hapax-voice.env && echo "LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key)" >> /run/user/1000/hapax-voice.env && chmod 600 /run/user/1000/hapax-voice.env'
-ExecStart=/home/hapax/projects/ai-agents/.venv/bin/python -m agents.hapax_voice
+ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.hapax_voice
 ExecStopPost=/bin/rm -f /run/user/1000/hapax-voice.env
 Restart=always
 RestartSec=10

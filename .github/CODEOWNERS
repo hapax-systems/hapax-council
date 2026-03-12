@@ -1,0 +1,23 @@
+# Protected paths — always require human review.
+# These paths are excluded from auto-merge regardless of diff size or CI status.
+
+# Oversight systems
+agents/health_monitor.py     @ryanklee
+shared/alert_state.py        @ryanklee
+shared/axiom_enforcement.py  @ryanklee
+shared/axiom_registry.py     @ryanklee
+shared/axiom_tools.py        @ryanklee
+shared/config.py             @ryanklee
+
+# Governance
+axioms/                      @ryanklee
+
+# Hooks and systemd
+hooks/                       @ryanklee
+systemd/                     @ryanklee
+
+# Backup scripts
+hapax-backup-*.sh            @ryanklee
+
+# CI/CD workflows themselves
+.github/                     @ryanklee

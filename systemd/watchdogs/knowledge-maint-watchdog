@@ -2,10 +2,14 @@
 set -euo pipefail
 
 # Knowledge base maintenance — prune stale sources and deduplicate vectors
-cd /home/hapaxlegomenon/projects/ai-agents
-eval "$(<.envrc)" 2>/dev/null || true
+cd /home/hapax/projects/hapax-council
 
-UV=/home/hapaxlegomenon/.local/bin/uv
+# Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
+export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
+export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null || true)
+export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null || true)
+
+UV=/home/hapax/.local/bin/uv
 REPORT=$($UV run python -m agents.knowledge_maint --apply --save --json 2>/dev/null)
 
 # Notify via shared.notify if work was done (pass JSON via stdin)
@@ -25,4 +29,4 @@ if total > 0:
 " 2>/dev/null || true
 
 # Append to history
-echo "$REPORT" >> /home/hapaxlegomenon/projects/ai-agents/profiles/knowledge-maint-history.jsonl 2>/dev/null || true
+echo "$REPORT" >> /home/hapax/projects/hapax-council/profiles/knowledge-maint-history.jsonl 2>/dev/null || true

@@ -1,20 +1,19 @@
 """Tests for Health Connect SQLite parser — extracts daily summaries."""
+
 from __future__ import annotations
 
 import sqlite3
 import tempfile
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from agents.health_connect_parser import (
     extract_zip,
-    parse_health_db,
     format_daily_summary,
+    parse_health_db,
     write_rag_documents,
-    run_parse,
 )
 
 
@@ -110,7 +109,9 @@ class TestWriteRagDocuments:
         days = [_sample_day_data()]
         write_rag_documents(days, tmp_path)
         first_mtime = (tmp_path / "health-2026-03-12.md").stat().st_mtime
-        import time; time.sleep(0.05)
+        import time
+
+        time.sleep(0.05)
         write_rag_documents(days, tmp_path)
         second_mtime = (tmp_path / "health-2026-03-12.md").stat().st_mtime
         assert first_mtime == second_mtime
@@ -118,12 +119,12 @@ class TestWriteRagDocuments:
 
 # ── Fixtures & Helpers ──
 
+
 def _create_test_db() -> bytes:
     """Create a minimal Health Connect SQLite database as bytes."""
-    import io
-    buf = io.BytesIO()
     # We need to write to a temp file because sqlite3 can't write to BytesIO directly
-    import tempfile, os
+    import os
+
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
@@ -158,12 +159,14 @@ def health_db_path(tmp_path):
     # Populate with test data
     base_ts = 1741795200  # epoch for a test date
     for i in range(24):
-        conn.execute("INSERT INTO heart_rate_record VALUES (?, ?, ?)",
-                     (f"hr-{i}", base_ts + i * 3600, 65 + i % 10))
-    conn.execute("INSERT INTO steps_record VALUES ('s1', ?, ?, 8234)",
-                 (base_ts, base_ts + 86400))
-    conn.execute("INSERT INTO sleep_session_record VALUES ('sl1', ?, ?)",
-                 (base_ts - 3600, base_ts + 25200))
+        conn.execute(
+            "INSERT INTO heart_rate_record VALUES (?, ?, ?)",
+            (f"hr-{i}", base_ts + i * 3600, 65 + i % 10),
+        )
+    conn.execute("INSERT INTO steps_record VALUES ('s1', ?, ?, 8234)", (base_ts, base_ts + 86400))
+    conn.execute(
+        "INSERT INTO sleep_session_record VALUES ('sl1', ?, ?)", (base_ts - 3600, base_ts + 25200)
+    )
     conn.commit()
     conn.close()
     return db_path
@@ -181,6 +184,37 @@ def _sample_day_data(date: str = "2026-03-12") -> dict:
     }
 
 
+class TestPhoneSkipLogic:
+    """Skips dates already covered by phone-posted data."""
+
+    def test_skips_phone_posted_dates(self, tmp_path):
+        """Does not overwrite files posted by phone (device: pixel_10)."""
+        # Write a phone-posted file
+        phone_content = "---\ndevice: pixel_10\n---\n# Health\nPhone data"
+        (tmp_path / "health-2026-03-12.md").write_text(phone_content)
+        days = [_sample_day_data()]
+        write_rag_documents(days, tmp_path)
+        # File should still contain phone data
+        content = (tmp_path / "health-2026-03-12.md").read_text()
+        assert "device: pixel_10" in content
+
+    def test_writes_when_no_phone_data(self, tmp_path):
+        """Writes normally when no phone-posted file exists."""
+        days = [_sample_day_data()]
+        write_rag_documents(days, tmp_path)
+        content = (tmp_path / "health-2026-03-12.md").read_text()
+        assert "device: pixel_watch_4" in content
+
+    def test_force_overrides_phone_skip(self, tmp_path):
+        """--force flag overrides phone skip for backfill."""
+        phone_content = "---\ndevice: pixel_10\n---\n# Health\nPhone data"
+        (tmp_path / "health-2026-03-12.md").write_text(phone_content)
+        days = [_sample_day_data()]
+        write_rag_documents(days, tmp_path, force=True)
+        content = (tmp_path / "health-2026-03-12.md").read_text()
+        assert "device: pixel_watch_4" in content
+
+
 class TestRagIntegration:
     """Verify health-connect documents are recognized by ingest pipeline."""
 
@@ -193,9 +227,15 @@ class TestRagIntegration:
         # Stub heavy optional deps so agents.ingest can be imported in test env
         stubs: dict[str, types.ModuleType] = {}
         stub_names = (
-            "watchdog", "watchdog.events", "watchdog.observers",
-            "docling", "docling.document_converter", "docling.chunking",
-            "qdrant_client", "qdrant_client.models", "ollama",
+            "watchdog",
+            "watchdog.events",
+            "watchdog.observers",
+            "docling",
+            "docling.document_converter",
+            "docling.chunking",
+            "qdrant_client",
+            "qdrant_client.models",
+            "ollama",
         )
         for mod_name in stub_names:
             if mod_name not in sys.modules:
@@ -204,7 +244,9 @@ class TestRagIntegration:
                 stubs[mod_name] = mod
 
         # Provide required names on stub modules
-        sys.modules["watchdog.events"].FileSystemEventHandler = type("FileSystemEventHandler", (), {})  # type: ignore[attr-defined]
+        sys.modules["watchdog.events"].FileSystemEventHandler = type(
+            "FileSystemEventHandler", (), {}
+        )  # type: ignore[attr-defined]
         sys.modules["watchdog.observers"].Observer = type("Observer", (), {})  # type: ignore[attr-defined]
 
         try:
@@ -213,7 +255,11 @@ class TestRagIntegration:
                 importlib.reload(sys.modules["agents.ingest"])
             from agents.ingest import enrich_payload
 
-            payload = {"source": str(Path.home() / "documents/rag-sources/health-connect/health-2026-03-12.md")}
+            payload = {
+                "source": str(
+                    Path.home() / "documents/rag-sources/health-connect/health-2026-03-12.md"
+                )
+            }
             result = enrich_payload(payload, {})
             assert result.get("source_service") == "health_connect"
         finally:

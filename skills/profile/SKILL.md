@@ -8,7 +8,7 @@ Show the operator profile summary and dimension breakdown.
 **Default (no args):** Read the distilled manifest and show a summary:
 
 ```bash
-cd ~/projects/ai-agents && jq '{
+cd ~/projects/hapax-council && jq '{
   name: .operator.name,
   goals: [.goals.primary[] | {name, status}],
   patterns: (.patterns | keys),
@@ -20,7 +20,7 @@ cd ~/projects/ai-agents && jq '{
 Then read the full profile and show per-dimension fact counts:
 
 ```bash
-cd ~/projects/ai-agents && uv run python -c "
+cd ~/projects/hapax-council && uv run python -c "
 import json
 p = json.load(open('profiles/operator-profile.json'))
 for dim, facts in sorted(p.get('dimensions', {}).items()):
@@ -34,5 +34,5 @@ for dim, facts in sorted(p.get('dimensions', {}).items()):
 **With `--refresh` flag:** Run the profiler to update:
 
 ```bash
-cd ~/projects/ai-agents && eval "$(<.envrc)" && uv run python -m agents.profiler --auto
+cd ~/projects/hapax-council && LITELLM_API_KEY=$(pass show litellm/master-key) uv run python -m agents.profiler --auto
 ```

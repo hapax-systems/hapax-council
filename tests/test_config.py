@@ -161,7 +161,7 @@ def test_path_constants_derive_correctly():
 
     assert LLM_STACK_DIR == HAPAX_HOME / "llm-stack"
     assert AXIOM_AUDIT_DIR == HAPAX_CACHE_DIR / "axiom-audit"
-    assert AI_AGENTS_DIR == HAPAX_PROJECTS_DIR / "ai-agents"
+    assert AI_AGENTS_DIR == HAPAX_PROJECTS_DIR / "hapax-council"
 
 
 @pytest.mark.skip(

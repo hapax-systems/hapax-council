@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.demo_models import InteractionSpec, InteractionStep
-from agents.demo_pipeline.screencasts import (
+pytest.importorskip("playwright", reason="playwright not installed")
+
+from agents.demo_models import InteractionSpec, InteractionStep  # noqa: E402
+from agents.demo_pipeline.screencasts import (  # noqa: E402
     RECIPES,
     _execute_step,
     record_screencasts,

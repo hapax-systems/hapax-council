@@ -20,15 +20,11 @@ def _make_state(**overrides) -> EnvironmentState:
     defaults = dict(
         timestamp=time.monotonic(),
         speech_detected=False,
-        speech_volume_db=-40.0,
-        ambient_class="quiet",
         vad_confidence=0.0,
         face_count=1,
         operator_present=True,
-        gaze_at_camera=False,
         activity_mode="idle",
         workspace_context="",
-        ambient_detailed="",
         active_window=None,
         window_count=0,
         active_workspace_id=1,
@@ -109,13 +105,16 @@ class TestGovernorWakeWordOverride:
         assert gov.wake_word_active is False
 
     def test_wake_word_only_active_once(self):
-        """Second evaluation without re-setting returns normal directive."""
+        """After wake word + grace period, returns normal directive."""
         gov = PipelineGovernor()
         gov.wake_word_active = True
         state_prod = _make_state(activity_mode="production")
         # First call: override → process
         assert gov.evaluate(state_prod) == "process"
-        # Second call: wake_word_active is False → normal pause
+        # Exhaust grace period (3 ticks)
+        for _ in range(3):
+            assert gov.evaluate(state_prod) == "process"
+        # Grace expired: normal evaluation → pause (production mode)
         assert gov.evaluate(state_prod) == "pause"
 
 

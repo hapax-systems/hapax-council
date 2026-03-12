@@ -4,10 +4,10 @@ Reads JSON state files from ~/hapax-state/watch/ written by the watch-receiver
 service. Provides stress detection (EDA + HRV) and watch connectivity checks
 for the ContextGate veto chain and PresenceDetector.
 """
+
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -17,9 +17,7 @@ from shared.config import HAPAX_HOME
 WATCH_STATE_DIR: Path = HAPAX_HOME / "hapax-state" / "watch"
 
 
-def read_watch_signal(
-    path: Path, max_age_seconds: float = 300
-) -> dict[str, Any] | None:
+def read_watch_signal(path: Path, max_age_seconds: float = 300) -> dict[str, Any] | None:
     """Read a JSON watch state file, returning None if missing or stale.
 
     Args:
@@ -98,11 +96,7 @@ def is_watch_connected(watch_dir: Path | None = None) -> bool:
         return True
 
     # BLE fallback: check Bluetooth proximity
-    bt_nearby = is_watch_bt_nearby(watch_dir=watch_dir)
-    if bt_nearby is True:
-        return True
-
-    return False
+    return is_watch_bt_nearby(watch_dir=watch_dir) is True
 
 
 def send_haptic_tap(device_id: str | None = None, pattern: str = "hapax-presence-check") -> bool:
@@ -116,12 +110,15 @@ def send_haptic_tap(device_id: str | None = None, pattern: str = "hapax-presence
         True if the notification was sent successfully.
     """
     import subprocess
+
     try:
         if device_id is None:
             # Auto-detect first available device
             result = subprocess.run(
                 ["kdeconnect-cli", "--list-available", "--id-only"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode != 0 or not result.stdout.strip():
                 return False
@@ -129,16 +126,16 @@ def send_haptic_tap(device_id: str | None = None, pattern: str = "hapax-presence
 
         result = subprocess.run(
             ["kdeconnect-cli", "--ping-msg", pattern, "--device", device_id],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
 
 
-def is_watch_bt_nearby(
-    bt_mac: str | None = None, watch_dir: Path | None = None
-) -> bool | None:
+def is_watch_bt_nearby(bt_mac: str | None = None, watch_dir: Path | None = None) -> bool | None:
     """Check if the Pixel Watch is nearby via Bluetooth LE.
 
     Complements WiFi connectivity — BLE works even when WiFi is suspended
@@ -176,20 +173,34 @@ def is_watch_bt_nearby(
     try:
         result = subprocess.run(
             ["bluetoothctl", "info", bt_mac],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True,
+            text=True,
+            timeout=3,
         )
         if result.returncode != 0:
             return False
         # "Connected: yes" means active connection
         # "Paired: yes" + RSSI means in range
         output = result.stdout
-        if "Connected: yes" in output:
-            return True
-        if "RSSI:" in output:
-            return True  # In range even if not connected
-        return False
+        return "Connected: yes" in output or "RSSI:" in output
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
+
+
+def is_phone_connected(watch_dir: Path | None = None) -> bool:
+    """Check if the phone is currently connected via heartbeat.
+
+    Reads phone_connection.json, considers stale after 120s.
+
+    Args:
+        watch_dir: Override path to watch state directory.
+
+    Returns:
+        True if phone heartbeat is fresh (within 120s).
+    """
+    watch_dir = watch_dir or WATCH_STATE_DIR
+    conn_data = read_watch_signal(watch_dir / "phone_connection.json", max_age_seconds=120)
+    return conn_data is not None
 
 
 class WatchSignalReader:

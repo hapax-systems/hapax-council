@@ -78,9 +78,7 @@ class TestWakeWordOpensSession:
         daemon._running = True
         daemon._wake_word_signal.set()
 
-        with patch.object(
-            VoiceDaemon, "_start_pipeline", new_callable=AsyncMock
-        ):
+        with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock):
             task = asyncio.create_task(daemon._wake_word_processor())
             await asyncio.sleep(0.05)
             daemon._running = False
@@ -102,9 +100,7 @@ class TestWakeWordOpensSession:
         daemon._running = True
         daemon._wake_word_signal.set()
 
-        with patch.object(
-            VoiceDaemon, "_start_pipeline", new_callable=AsyncMock
-        ):
+        with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock):
             task = asyncio.create_task(daemon._wake_word_processor())
             await asyncio.sleep(0.05)
             daemon._running = False
@@ -129,9 +125,7 @@ class TestWakeWordStartsPipeline:
         daemon._running = True
         daemon._wake_word_signal.set()
 
-        with patch.object(
-            VoiceDaemon, "_start_pipeline", new_callable=AsyncMock
-        ) as mock_start:
+        with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock) as mock_start:
             task = asyncio.create_task(daemon._wake_word_processor())
             await asyncio.sleep(0.05)
             daemon._running = False

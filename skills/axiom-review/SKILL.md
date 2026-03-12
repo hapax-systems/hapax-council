@@ -8,7 +8,7 @@ Review pending axiom precedents that agents have created.
 Run:
 
 ```bash
-cd ~/projects/ai-agents && eval "$(direnv export bash 2>/dev/null)" && uv run python -c "
+cd ~/projects/hapax-council && eval "$(direnv export bash 2>/dev/null)" && uv run python -c "
 import asyncio
 from shared.axiom_precedents import PrecedentStore
 

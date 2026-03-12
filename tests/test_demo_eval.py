@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.demo_models import DemoEvalDimension, DemoEvalReport
+pytest.importorskip("playwright", reason="playwright not installed")
+
+from agents.demo_models import DemoEvalDimension, DemoEvalReport  # noqa: E402
 
 
 class TestEvaluateDemoOutput:

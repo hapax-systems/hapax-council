@@ -35,15 +35,11 @@ def _make_state(**overrides) -> EnvironmentState:
     defaults = dict(
         timestamp=time.monotonic(),
         speech_detected=False,
-        speech_volume_db=-40.0,
-        ambient_class="quiet",
         vad_confidence=0.0,
         face_count=1,
         operator_present=True,
-        gaze_at_camera=False,
         activity_mode="idle",
         workspace_context="",
-        ambient_detailed="",
         active_window=None,
         window_count=0,
         active_workspace_id=0,
@@ -295,9 +291,11 @@ class TestFreshnessComposition:
         ctx = received[0]
 
         # Guard requires a behavior not in engine
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
+            ]
+        )
         result = guard.check(ctx, now)
 
         assert result.fresh_enough is False
@@ -316,19 +314,23 @@ class TestFreshnessComposition:
             min_watermark=now - 100.0,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
 
         assert freshness.fresh_enough is False
         assert len(freshness.violations) == 2
 
         # Wrap as VetoChain predicate
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: guard.check(c, now).fresh_enough),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="freshness", predicate=lambda c: guard.check(c, now).fresh_enough),
+            ]
+        )
         veto_result = chain.evaluate(ctx)
         assert not veto_result.allowed
         assert "freshness" in veto_result.denied_by
@@ -350,9 +352,11 @@ class TestFreshnessComposition:
         trigger.emit(now, "check")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
+            ]
+        )
         result = guard.check(ctx, now)
 
         assert result.fresh_enough is True
@@ -376,19 +380,23 @@ class TestFreshnessComposition:
         ctx = received[0]
 
         # FreshnessGuard: activity_mode must be within 0.0001s (will be stale)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=0.0001),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=0.0001),
+            ]
+        )
         freshness = guard.check(ctx, now + 1.0)
         assert freshness.fresh_enough is False
 
         # Wrap as VetoChain predicate
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(
-                name="freshness_veto",
-                predicate=lambda c: guard.check(c, now + 1.0).fresh_enough,
-            ),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="freshness_veto",
+                    predicate=lambda c: guard.check(c, now + 1.0).fresh_enough,
+                ),
+            ]
+        )
         veto_result = chain.evaluate(ctx)
         assert not veto_result.allowed
 

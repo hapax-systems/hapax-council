@@ -106,3 +106,171 @@ def test_set_behaviors_method():
     behaviors = {"sink_volume": Behavior(0.5, watermark=now)}
     gate.set_behaviors(behaviors)
     assert gate._behaviors["sink_volume"].value == 0.5
+
+
+# ------------------------------------------------------------------
+# Fullscreen app veto (H2: Desktop Behaviors → ContextGate)
+# ------------------------------------------------------------------
+
+
+def _gate_with_window_class(
+    window_class: str | None = None,
+    *,
+    volume: float = 0.3,
+) -> ContextGate:
+    """Create a ContextGate with active_window_class Behavior set."""
+    session = MagicMock()
+    session.is_active = False
+    gate = ContextGate(session=session, ambient_classification=False)
+    gate._activity_mode = "idle"
+
+    import time
+
+    now = time.monotonic()
+    behaviors: dict[str, Behavior] = {
+        "sink_volume": Behavior(volume, watermark=now),
+        "midi_active": Behavior(False, watermark=now),
+    }
+    if window_class is not None:
+        behaviors["active_window_class"] = Behavior(window_class, watermark=now)
+    gate.set_behaviors(behaviors)
+    return gate
+
+
+def test_fullscreen_blocks_zoom():
+    gate = _gate_with_window_class("zoom")
+    result = gate.check()
+    assert result.eligible is False
+    assert "fullscreen" in result.reason.lower() or "zoom" in result.reason.lower()
+
+
+def test_fullscreen_blocks_teams():
+    gate = _gate_with_window_class("microsoft teams")
+    result = gate.check()
+    assert result.eligible is False
+
+
+def test_fullscreen_blocks_discord():
+    gate = _gate_with_window_class("discord")
+    result = gate.check()
+    assert result.eligible is False
+
+
+def test_fullscreen_allows_browser():
+    gate = _gate_with_window_class("firefox")
+    result = gate.check()
+    assert result.eligible is True
+
+
+def test_fullscreen_allows_terminal():
+    gate = _gate_with_window_class("kitty")
+    result = gate.check()
+    assert result.eligible is True
+
+
+def test_fullscreen_failopen_no_behavior():
+    """When active_window_class Behavior is not set, veto passes (fail-open)."""
+    gate = _gate_with_window_class(None)
+    result = gate.check()
+    assert result.eligible is True
+
+
+def test_fullscreen_case_insensitive():
+    gate = _gate_with_window_class("Zoom")
+    result = gate.check()
+    assert result.eligible is False
+
+
+# ------------------------------------------------------------------
+# System health veto
+# ------------------------------------------------------------------
+
+
+def _gate_with_health(status: str | None) -> ContextGate:
+    """Create a ContextGate with system_health_status Behavior."""
+    session = MagicMock()
+    session.is_active = False
+    gate = ContextGate(session=session, ambient_classification=False)
+    gate._activity_mode = "idle"
+
+    import time
+
+    now = time.monotonic()
+    behaviors: dict[str, Behavior] = {
+        "sink_volume": Behavior(0.3, watermark=now),
+        "midi_active": Behavior(False, watermark=now),
+    }
+    if status is not None:
+        behaviors["system_health_status"] = Behavior(status, watermark=now)
+    gate.set_behaviors(behaviors)
+    return gate
+
+
+def test_system_health_healthy_passes():
+    gate = _gate_with_health("healthy")
+    result = gate.check()
+    assert result.eligible is True
+
+
+def test_system_health_degraded_blocks():
+    gate = _gate_with_health("degraded")
+    result = gate.check()
+    assert result.eligible is False
+    assert "system health" in result.reason.lower()
+
+
+def test_system_health_missing_failopen():
+    gate = _gate_with_health(None)
+    result = gate.check()
+    assert result.eligible is True
+
+
+# ------------------------------------------------------------------
+# Watch activity veto
+# ------------------------------------------------------------------
+
+
+def _gate_with_watch_activity(activity: str | None) -> ContextGate:
+    """Create a ContextGate with watch_activity_state Behavior."""
+    session = MagicMock()
+    session.is_active = False
+    gate = ContextGate(session=session, ambient_classification=False)
+    gate._activity_mode = "idle"
+
+    import time
+
+    now = time.monotonic()
+    behaviors: dict[str, Behavior] = {
+        "sink_volume": Behavior(0.3, watermark=now),
+        "midi_active": Behavior(False, watermark=now),
+    }
+    if activity is not None:
+        behaviors["watch_activity_state"] = Behavior(activity, watermark=now)
+    gate.set_behaviors(behaviors)
+    return gate
+
+
+def test_watch_activity_still_passes():
+    gate = _gate_with_watch_activity("still")
+    result = gate.check()
+    assert result.eligible is True
+
+
+def test_watch_activity_exercise_blocks():
+    gate = _gate_with_watch_activity("exercise")
+    result = gate.check()
+    assert result.eligible is False
+    assert "activity" in result.reason.lower()
+
+
+def test_watch_activity_sleep_blocks():
+    gate = _gate_with_watch_activity("sleep")
+    result = gate.check()
+    assert result.eligible is False
+    assert "activity" in result.reason.lower()
+
+
+def test_watch_activity_missing_failopen():
+    gate = _gate_with_watch_activity(None)
+    result = gate.check()
+    assert result.eligible is True

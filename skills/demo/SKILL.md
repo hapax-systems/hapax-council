@@ -12,13 +12,13 @@ Generate a demo from a natural language request. Examples:
 Available formats: `slides` (default), `video` (requires Chatterbox TTS), `markdown-only`.
 
 Prerequisites for video format:
-- Cockpit web running: `cd ~/projects/cockpit-web && pnpm dev`
+- Cockpit web running: `cd ~/projects/hapax-council/council-web && pnpm dev`
 - Chatterbox TTS running: `cd ~/llm-stack && docker compose --profile tts up -d chatterbox`
 
 Run the demo agent:
 
 ```bash
-cd ~/projects/ai-agents && eval "$(<.envrc)" && uv run python -m agents.demo "{user_request}"
+cd ~/projects/hapax-council && LITELLM_API_KEY=$(pass show litellm/master-key) uv run python -m agents.demo "{user_request}"
 ```
 
 After generation, report the output directory and list generated files. If format is video, note the MP4 path. If format is slides, note the PDF path.

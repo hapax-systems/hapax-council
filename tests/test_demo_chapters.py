@@ -7,8 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.demo_models import DemoScene, DemoScript, ScreenshotSpec
-from agents.demo_pipeline.chapters import (
+pytest.importorskip("moviepy", reason="moviepy not installed")
+
+from agents.demo_models import DemoScene, DemoScript, ScreenshotSpec  # noqa: E402
+from agents.demo_pipeline.chapters import (  # noqa: E402
     build_chapter_list_from_script,
     generate_ffmetadata,
     inject_chapters,

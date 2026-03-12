@@ -13,8 +13,6 @@ import subprocess
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from agents.hapax_voice.context_gate import ContextGate
 from agents.hapax_voice.primitives import Behavior
 from agents.hapax_voice.session import SessionManager
@@ -57,10 +55,12 @@ def _make_gate_with_behaviors(
         ambient_classification=ambient_classification,
     )
     now = time.monotonic()
-    gate.set_behaviors({
-        "sink_volume": Behavior(volume, watermark=now),
-        "midi_active": Behavior(midi_active, watermark=now),
-    })
+    gate.set_behaviors(
+        {
+            "sink_volume": Behavior(volume, watermark=now),
+            "midi_active": Behavior(midi_active, watermark=now),
+        }
+    )
     return gate, event_log
 
 
@@ -109,7 +109,7 @@ class TestWpctlFailures:
     def test_wpctl_muted_output(self) -> None:
         """stdout='Volume: 0.50 [MUTED]' -> parses 0.50 correctly."""
         gate, _ = _make_gate(volume_threshold=0.7)
-        vol = gate._read_volume()
+        _vol = gate._read_volume()
         # Without behaviors or mocking, this will try real subprocess
         # Use behaviors instead for a reliable test
         gate2, _ = _make_gate_with_behaviors(volume=0.50, ambient_classification=False)

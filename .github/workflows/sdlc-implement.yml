@@ -1,0 +1,261 @@
+name: "SDLC: Plan + Implement"
+
+on:
+  repository_dispatch:
+    types: [sdlc-plan]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  # Do not cancel mid-implementation.
+  group: sdlc-implement-${{ github.event.client_payload.issue_number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Path A: New implementation from triaged issue.
+  # -----------------------------------------------------------------------
+  plan-and-implement:
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra ci
+
+      - name: Label issue as planning
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.client_payload.issue_number }} --add-label "sdlc:planning"
+
+      - name: Run planning agent
+        id: plan
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGFUSE_EXPORT_FILE: /tmp/langfuse-traces.jsonl
+        run: |
+          set -eo pipefail
+          OUTPUT=$(uv run python -m scripts.sdlc_plan --issue-number ${{ github.event.client_payload.issue_number }})
+          echo "$OUTPUT"
+          echo "plan=$OUTPUT" >> "$GITHUB_OUTPUT"
+
+          # Extract estimated diff lines for branch name slug.
+          LINES=$(echo "$OUTPUT" | jq -r '.estimated_diff_lines')
+          echo "est_lines=$LINES" >> "$GITHUB_OUTPUT"
+
+      - name: Label issue as implementing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE=${{ github.event.client_payload.issue_number }}
+          gh issue edit "$ISSUE" --add-label "sdlc:implementing" --remove-label "sdlc:planning"
+
+      - name: Create branch
+        run: |
+          ISSUE=${{ github.event.client_payload.issue_number }}
+          # Fetch issue title for branch slug.
+          TITLE=$(gh issue view "$ISSUE" --json title --jq '.title' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | head -c 40)
+          BRANCH="agent/issue-${ISSUE}-${TITLE}"
+          git checkout -b "$BRANCH"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run implementation agent
+        uses: anthropics/claude-code-action@5d0cc745cd0cce4c0e9e0b3511de26c3bc285eb5
+        with:
+          model: claude-opus-4-6
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            You are implementing a planned change for hapax-council.
+
+            ## Implementation Plan
+            ${{ steps.plan.outputs.plan }}
+
+            ## Rules
+            1. Follow the plan exactly. Do not add features beyond what is planned.
+            2. Do NOT modify protected paths: axioms/, hooks/, systemd/, shared/config.py,
+               shared/axiom_enforcement.py, shared/alert_state.py, agents/health_monitor.py.
+            3. Write or update tests for all new code paths.
+            4. Run `uv run ruff check .` and `uv run ruff format .` before finishing.
+            5. Run `uv run pytest` to verify tests pass.
+            6. Keep changes minimal and focused.
+          max_turns: 15
+          allowed_tools: "Bash,Read,Edit,Write"
+
+      - name: Commit and push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "claude-code[bot]"
+          git config user.email "claude-code[bot]@users.noreply.github.com"
+
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes — implementation produced no output."
+            ISSUE=${{ github.event.client_payload.issue_number }}
+            gh issue edit "$ISSUE" --add-label "needs-human" --remove-label "sdlc:implementing"
+            gh issue comment "$ISSUE" --body "## ⚠️ Implementation Failed
+
+            The implementation agent produced no changes. Human attention needed."
+            exit 1
+          fi
+
+          ISSUE=${{ github.event.client_payload.issue_number }}
+          git add -A
+          git commit -m "[agent] implement issue #${ISSUE}
+
+          Automated implementation by Claude Code.
+
+          Co-Authored-By: Claude Opus <noreply@anthropic.com>"
+          git push -u origin "$BRANCH"
+
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE=${{ github.event.client_payload.issue_number }}
+          TITLE=$(gh issue view "$ISSUE" --json title --jq '.title')
+
+          gh pr create \
+            --title "[agent] ${TITLE}" \
+            --body "## Summary
+
+          Automated implementation of #${ISSUE}.
+
+          See issue for triage classification and implementation plan.
+
+          ---
+          🤖 Agent-authored PR. Awaiting adversarial review and axiom compliance gate.
+
+          Generated with [Claude Code](https://claude.com/claude-code)" \
+            --label "agent-authored" \
+            --label "sdlc:in-review"
+
+          gh issue edit "$ISSUE" --add-label "sdlc:in-review" --remove-label "sdlc:implementing"
+
+      - name: Upload traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: langfuse-traces-implement-${{ github.event.client_payload.issue_number }}
+          path: /tmp/langfuse-traces.jsonl
+          if-no-files-found: ignore
+
+      - name: Handle failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE=${{ github.event.client_payload.issue_number }}
+          gh issue edit "$ISSUE" --add-label "needs-human" --remove-label "sdlc:implementing" --remove-label "sdlc:planning"
+          gh issue comment "$ISSUE" --body "## ⚠️ Implementation Failed
+
+          See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+
+  # -----------------------------------------------------------------------
+  # Path B: Fix round after review requests changes.
+  # -----------------------------------------------------------------------
+  fix-round:
+    if: >-
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      contains(github.event.pull_request.labels.*.name, 'agent-authored')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 10
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check review round limit
+        id: round
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name')
+          CURRENT_ROUND=0
+          for label in $LABELS; do
+            if [[ "$label" == review-round:* ]]; then
+              CURRENT_ROUND=${label#review-round:}
+            fi
+          done
+          NEXT_ROUND=$((CURRENT_ROUND + 1))
+          echo "round=$NEXT_ROUND" >> "$GITHUB_OUTPUT"
+
+          if [ "$NEXT_ROUND" -gt 2 ]; then
+            echo "exceeded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exceeded=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Escalate if too many rounds
+        if: steps.round.outputs.exceeded == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          gh pr edit "$PR" --add-label "needs-human"
+          gh pr comment "$PR" --body "## ⚠️ Fix Round Limit Exceeded
+
+          This PR has gone through 2+ review rounds without resolution.
+          Human attention is needed."
+
+      - uses: astral-sh/setup-uv@v5
+        if: steps.round.outputs.exceeded == 'false'
+      - run: uv sync --extra ci
+        if: steps.round.outputs.exceeded == 'false'
+
+      - name: Run fixer agent
+        if: steps.round.outputs.exceeded == 'false'
+        uses: anthropics/claude-code-action@5d0cc745cd0cce4c0e9e0b3511de26c3bc285eb5
+        with:
+          model: claude-sonnet-4-6
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            A code reviewer has requested changes on this PR. Fix the issues raised.
+
+            ## Review Comments
+            ${{ github.event.review.body }}
+
+            ## Rules
+            1. Fix ONLY what the reviewer asked for. Do not make other changes.
+            2. Do NOT modify protected paths.
+            3. Run `uv run ruff check .` and `uv run pytest` after fixing.
+            4. Keep changes minimal.
+          max_turns: 8
+          allowed_tools: "Bash,Read,Edit,Write"
+
+      - name: Commit fix
+        if: steps.round.outputs.exceeded == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "claude-code[bot]"
+          git config user.email "claude-code[bot]@users.noreply.github.com"
+          PR=${{ github.event.pull_request.number }}
+          ROUND=${{ steps.round.outputs.round }}
+
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            git add -A
+            git commit -m "[agent] fix review round ${ROUND}
+
+            Co-Authored-By: Claude Sonnet <noreply@anthropic.com>"
+            git push
+            gh pr edit "$PR" --add-label "review-round:${ROUND}"
+          else
+            gh pr comment "$PR" --body "Fixer agent found no changes to make for the review feedback."
+          fi

@@ -18,6 +18,7 @@ try:
     _WATCH_AVAILABLE = True
 except ImportError:
     _WATCH_AVAILABLE = False
+    WATCH_STATE_DIR = Path()  # unused fallback — guarded by _WATCH_AVAILABLE
 
 log = logging.getLogger(__name__)
 
@@ -109,7 +110,9 @@ class PresenceDetector:
         if detected:
             self._last_face_time = time.monotonic()
 
-    def try_watch_presence_check(self, timeout: float = 3.0, poll_interval: float = 0.5) -> bool | None:
+    def try_watch_presence_check(
+        self, timeout: float = 3.0, poll_interval: float = 0.5
+    ) -> bool | None:
         """Attempt presence verification via watch haptic tap.
 
         Sends a haptic tap to the watch and waits for a voice_trigger.json

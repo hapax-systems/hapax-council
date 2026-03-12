@@ -72,7 +72,7 @@ class TestGraceProtectsAgainstMeetingMode:
         # Ticks 1-3: grace period
         for i in range(3):
             result = gov.evaluate(_make_state(activity_mode="meeting"))
-            assert result == "process", f"Grace tick {i+1} should be 'process'"
+            assert result == "process", f"Grace tick {i + 1} should be 'process'"
 
         # Tick 4: grace expired, meeting mode takes effect
         result = gov.evaluate(_make_state(activity_mode="meeting"))
@@ -107,9 +107,7 @@ class TestGraceProtectsAgainstConversationDebounce:
         gov.evaluate(_make_state())  # consume wake word
 
         # Conversation tick during grace — should still process
-        result = gov.evaluate(
-            _make_state(face_count=2, speech_detected=True, vad_confidence=0.9)
-        )
+        result = gov.evaluate(_make_state(face_count=2, speech_detected=True, vad_confidence=0.9))
         assert result == "process"
         assert gov.last_selected.selected_by == "wake_word_grace"
 
@@ -141,9 +139,7 @@ class TestGraceProtectsSession:
         gov.evaluate(_make_state())  # consume wake word
 
         # Absent tick during grace
-        result = gov.evaluate(
-            _make_state(operator_present=False, face_count=0)
-        )
+        result = gov.evaluate(_make_state(operator_present=False, face_count=0))
         assert result == "process"
         assert gov.last_selected.selected_by == "wake_word_grace"
 
@@ -200,14 +196,13 @@ class TestGraceMultiplePerceptionTicks:
         assert gov.evaluate(_make_state(activity_mode="meeting")) == "process"
 
         # Conversation tick
-        assert gov.evaluate(
-            _make_state(face_count=2, speech_detected=True, vad_confidence=0.9)
-        ) == "process"
+        assert (
+            gov.evaluate(_make_state(face_count=2, speech_detected=True, vad_confidence=0.9))
+            == "process"
+        )
 
         # Absent tick
-        assert gov.evaluate(
-            _make_state(operator_present=False, face_count=0)
-        ) == "process"
+        assert gov.evaluate(_make_state(operator_present=False, face_count=0)) == "process"
 
 
 class TestGraceEdgeCases:

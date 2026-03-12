@@ -6,7 +6,7 @@ description: Run retroactive axiom compliance sweep across all code repos. Use w
 Run a retroactive T0 violation sweep across all code repositories.
 
 ```bash
-~/projects/hapax-system/scripts/axiom-sweep.sh
+~/projects/hapax-council/hooks/scripts/axiom-scan.sh
 ```
 
 Review the output. If violations are found:

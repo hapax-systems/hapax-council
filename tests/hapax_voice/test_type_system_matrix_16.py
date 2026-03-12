@@ -33,15 +33,11 @@ def _make_state(**overrides) -> EnvironmentState:
     defaults = dict(
         timestamp=time.monotonic(),
         speech_detected=False,
-        speech_volume_db=-40.0,
-        ambient_class="quiet",
         vad_confidence=0.0,
         face_count=1,
         operator_present=True,
-        gaze_at_camera=False,
         activity_mode="idle",
         workspace_context="",
-        ambient_detailed="",
         active_window=None,
         window_count=0,
         active_workspace_id=0,
@@ -81,9 +77,11 @@ class TestFullSystemConvergence:
         ctx_log: list[FusedContext] = []
         fused.subscribe(lambda ts, ctx: ctx_log.append(ctx))
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
+            ]
+        )
 
         schedules: list[Schedule] = []
 
@@ -125,8 +123,8 @@ class TestFullSystemConvergence:
         actions = [s.command.action for s in schedules]
         assert actions[0] == "process"  # idle
         assert actions[1] == "process"  # still idle
-        assert actions[2] == "pause"    # meeting perturbation
-        assert actions[3] == "pause"    # meeting persists
+        assert actions[2] == "pause"  # meeting perturbation
+        assert actions[3] == "pause"  # meeting persists
         assert actions[4] == "process"  # wake word override
         assert actions[5] == "process"  # steady state restored
 
@@ -140,12 +138,19 @@ class TestFullSystemConvergence:
         gov = PipelineGovernor()
 
         # External freshness chain
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
-        ])
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
+            ]
+        )
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="freshness",
+                    predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough,
+                ),
+            ]
+        )
 
         trigger: Event[str] = Event()
         fused = with_latest_from(trigger, engine.behaviors)
@@ -237,7 +242,8 @@ class TestFullSystemConvergence:
         engine.tick()
         r1 = gov.evaluate(engine.latest)
         cmd1 = Command(
-            action=r1, params={"desc": "idle"},
+            action=r1,
+            params={"desc": "idle"},
             governance_result=gov.last_veto_result,
             selected_by=(gov.last_selected.selected_by if gov.last_selected else "vetoed"),
         )
@@ -247,7 +253,8 @@ class TestFullSystemConvergence:
         engine.tick()
         r2 = gov.evaluate(engine.latest)
         cmd2 = Command(
-            action=r2, params={"desc": "meeting"},
+            action=r2,
+            params={"desc": "meeting"},
             governance_result=gov.last_veto_result,
             selected_by=(gov.last_selected.selected_by if gov.last_selected else "vetoed"),
         )
@@ -257,7 +264,8 @@ class TestFullSystemConvergence:
         engine.tick()
         r3 = gov.evaluate(engine.latest)
         cmd3 = Command(
-            action=r3, params={"desc": "wake_word"},
+            action=r3,
+            params={"desc": "wake_word"},
             governance_result=gov.last_veto_result,
             selected_by=(gov.last_selected.selected_by if gov.last_selected else "vetoed"),
         )
@@ -275,7 +283,8 @@ class TestFullSystemConvergence:
         engine.tick()
         r4 = gov.evaluate(engine.latest)
         cmd4 = Command(
-            action=r4, params={"desc": "absent"},
+            action=r4,
+            params={"desc": "absent"},
             governance_result=gov.last_veto_result,
             selected_by=(gov.last_selected.selected_by if gov.last_selected else "vetoed"),
         )
@@ -286,7 +295,8 @@ class TestFullSystemConvergence:
         engine.tick()
         r5 = gov.evaluate(engine.latest)
         cmd5 = Command(
-            action=r5, params={"desc": "return"},
+            action=r5,
+            params={"desc": "return"},
             governance_result=gov.last_veto_result,
             selected_by=(gov.last_selected.selected_by if gov.last_selected else "vetoed"),
         )
@@ -307,7 +317,13 @@ class TestSteadyStateUnderStress:
         gov = PipelineGovernor()
 
         perturbations = [
-            "idle", "meeting", "idle", "production", "idle", "idle", "idle",
+            "idle",
+            "meeting",
+            "idle",
+            "production",
+            "idle",
+            "idle",
+            "idle",
         ]
         results = []
         for mode in perturbations:
@@ -343,13 +359,16 @@ class TestSteadyStateUnderStress:
         fused.subscribe(lambda ts, c: ctx.append(c))
         trigger.emit(time.monotonic(), "ss")
 
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(
-                name="mode",
-                predicate=lambda c: c.samples["activity_mode"].value
-                not in ("production", "meeting"),
-            ),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="mode",
+                    predicate=lambda c: (
+                        c.samples["activity_mode"].value not in ("production", "meeting")
+                    ),
+                ),
+            ]
+        )
         veto = chain.evaluate(ctx[0])
 
         # Convergence at steady state
@@ -430,9 +449,11 @@ class TestHolisticProvenance:
         fused.subscribe(lambda ts, c: ctx.append(c))
         trigger.emit(time.monotonic(), "final")
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
+            ]
+        )
         freshness = guard.check(ctx[0], time.monotonic())
 
         cmd = Command(
@@ -477,9 +498,11 @@ class TestHolisticProvenance:
         fused.subscribe(lambda ts, c: ctx.append(c))
         trigger.emit(time.monotonic(), "degraded")
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="phantom", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="phantom", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx[0], time.monotonic())
 
         cmd = Command(
@@ -532,12 +555,14 @@ class TestHolisticProvenance:
             gov = PipelineGovernor()
             engine.tick()
             action = gov.evaluate(engine.latest)
-            results.append({
-                "action": action,
-                "allowed": gov.last_veto_result.allowed,
-                "selected_by": gov.last_selected.selected_by if gov.last_selected else None,
-                "denied_by": gov.last_veto_result.denied_by,
-            })
+            results.append(
+                {
+                    "action": action,
+                    "allowed": gov.last_veto_result.allowed,
+                    "selected_by": gov.last_selected.selected_by if gov.last_selected else None,
+                    "denied_by": gov.last_veto_result.denied_by,
+                }
+            )
 
         # All three identical
         assert results[0] == results[1] == results[2]

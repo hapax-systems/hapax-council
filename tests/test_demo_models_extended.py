@@ -1,5 +1,7 @@
 """Tests for extended demo models and duration parsing."""
 
+import pytest
+
 from agents.demo_models import DemoQualityReport, DemoScene, QualityDimension, ScreenshotSpec
 
 
@@ -106,6 +108,14 @@ class TestIllustrationSpec:
         assert skel.visual_type == "illustration"
 
 
+_has_playwright = True
+try:
+    import playwright  # noqa: F401
+except ImportError:
+    _has_playwright = False
+
+
+@pytest.mark.skipif(not _has_playwright, reason="playwright not installed")
 class TestParseDuration:
     def test_minutes(self):
         from agents.demo import parse_duration

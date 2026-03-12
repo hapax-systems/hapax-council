@@ -6,8 +6,6 @@ import re
 import time
 from unittest.mock import MagicMock
 
-import pytest
-
 from agents.hapax_voice.governance import VetoChain
 from shared.capabilities.circuit_breaker import (
     CircuitBreaker,
@@ -17,7 +15,6 @@ from shared.capabilities.circuit_breaker import (
 from shared.capabilities.health_veto import capability_health_veto, compliance_veto
 from shared.capabilities.protocols import HealthStatus
 from shared.capabilities.registry import CapabilityRegistry
-
 
 # ------------------------------------------------------------------
 # Helpers

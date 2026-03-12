@@ -76,6 +76,30 @@ Tests use `unittest.mock` — no pytest fixtures in conftest. Each test file is 
 
 T0 violations are blocked by SDLC hooks. Axiom definitions in `axioms/registry.yaml`, implications in `axioms/implications/`.
 
+## SDLC Pipeline
+
+LLM-driven software development lifecycle. Issues flow through automated stages on GitHub Actions:
+
+```
+Issue opened (labeled "agent-eligible")
+  → Triage (Sonnet): classify type/complexity, check axiom relevance, find similar closed issues
+  → Plan (Sonnet): identify files, acceptance criteria, diff estimate
+  → Implement (Opus on Claude Code): sandboxed agent/* branch, run tests, open PR
+  → Adversarial Review (Sonnet, independent context): up to 3 rounds, then human escalation
+  → Axiom Gate (Haiku): structural checks + semantic LLM judge against 4 axioms
+  → Auto-merge (squash) on pass, block on T0 violation, advisory label on T1+
+```
+
+**Scripts** (`scripts/`): `sdlc_triage.py`, `sdlc_plan.py`, `sdlc_review.py`, `sdlc_axiom_judge.py`. All support `--dry-run`.
+
+**Workflows** (`.github/workflows/`): `sdlc-triage.yml`, `sdlc-implement.yml`, `sdlc-review.yml`, `sdlc-axiom-gate.yml`.
+
+**Observability**: Each stage logs to `profiles/sdlc-events.jsonl` via `shared/sdlc_log.py`, writes audit trail via `shared/audit.py`, and exports Langfuse traces (file-based in CI, live when Tailscale available). Trace IDs correlate events across stages.
+
+**Metrics**: `agents/sdlc_metrics.py` computes pipeline velocity, quality, and latency from the event log. Zero LLM calls.
+
+**Safety**: Agent PRs only on `agent/*` branches with `agent-authored` label. CODEOWNERS protects governance files. Review rounds capped at 3 before human escalation. Different models for author vs reviewer.
+
 ## Project Layout
 
 ```

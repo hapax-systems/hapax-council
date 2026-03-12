@@ -5,11 +5,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from PIL import Image
-from pydantic_ai.messages import BinaryContent
 
-from agents.demo_models import DemoEvalDimension
-from agents.demo_pipeline.eval_rubrics import (
+pytest.importorskip("PIL", reason="Pillow not installed")
+
+from PIL import Image  # noqa: E402
+from pydantic_ai.messages import BinaryContent  # noqa: E402
+
+from agents.demo_models import DemoEvalDimension  # noqa: E402
+from agents.demo_pipeline.eval_rubrics import (  # noqa: E402
     DiagnosisOutput,
     DimScore,
     TextEvalOutput,

@@ -159,3 +159,44 @@ precedents:
       - "Status visible via --retry-status flag"
     created: "2026-03-03"
     authority: operator
+
+  - id: sp-arch-011
+    axiom_id: executive_function
+    situation: "Perception surface: every EnvironmentState field and Behavior must reach a real decision or be removed"
+    decision: compliant
+    reasoning: >
+      Dead perception signals create false confidence in coverage. The operator
+      sees 17 fields on EnvironmentState and assumes comprehensive awareness,
+      but fields without consumers are observability theater. The rule: every
+      signal must have a producer AND a consumer that influences a governance
+      decision (veto, interruptibility, notification gating). Extension points
+      for future hardware (gaze_at_camera, speech_volume_db) are acceptable
+      only when explicitly documented as unimplemented.
+    tier: T1
+    distinguishing_facts:
+      - "Prevents accumulation of dead perception signals"
+      - "Every wired field reaches a real decision (pause, withdraw, block, gate)"
+      - "Extension points must be explicitly marked, not silently defaulted"
+    created: "2026-03-12"
+    authority: operator
+
+  - id: sp-arch-012
+    axiom_id: management_governance
+    situation: "Voice daemon compliance veto pauses pipeline when workspace suggests management-sensitive context"
+    decision: compliant
+    reasoning: >
+      The governor checks active_window title (fast — every focus change) and
+      workspace_context (slow — LLM analysis) against mg-boundary T0 rules.
+      When the operator is viewing performance reviews, coaching notes, or
+      1-on-1 agendas, the daemon pauses to prevent voice generation in
+      management-sensitive contexts. This is precautionary — the axiom constrains
+      output content, and pausing at the workspace level is a coarse safety net,
+      not a content filter. Wake word supremacy still overrides.
+    tier: T0
+    distinguishing_facts:
+      - "Precautionary pause, not content filtering"
+      - "Matches window title (fast) and workspace_context (slow)"
+      - "Wake word supremacy overrides — operator always has final say"
+      - "Fail-open when no signals available"
+    created: "2026-03-12"
+    authority: operator

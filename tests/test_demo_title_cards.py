@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from PIL import Image
+import pytest
 
-from agents.demo_pipeline.title_cards import generate_scene_title, generate_title_card
+pytest.importorskip("PIL", reason="Pillow not installed")
+
+from PIL import Image  # noqa: E402
+
+from agents.demo_pipeline.title_cards import generate_scene_title, generate_title_card  # noqa: E402
 
 
 class TestGenerateTitleCard:

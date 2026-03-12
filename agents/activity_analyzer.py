@@ -72,6 +72,10 @@ class HealthTrend(BaseModel):
     failed_runs: int = 0
     uptime_pct: float = 0.0
     recurring_issues: list[str] = Field(default_factory=list)
+    recently_resolved: list[str] = Field(
+        default_factory=list,
+        description="Checks that failed in the window but are passing in the latest run",
+    )
     avg_duration_ms: float = 0.0
 
 
@@ -108,6 +112,26 @@ class KnowledgeMaintTrend(BaseModel):
     latest_warnings: int = 0
 
 
+class SdlcTrend(BaseModel):
+    """SDLC pipeline activity metrics."""
+
+    total_events: int = 0
+    by_stage: dict[str, int] = Field(default_factory=dict)
+    triage_types: dict[str, int] = Field(default_factory=dict)
+    triage_complexities: dict[str, int] = Field(default_factory=dict)
+    triage_reject_rate: float = 0.0
+    review_approve_rate: float = 0.0
+    gate_pass_rate: float = 0.0
+    avg_duration_ms: float = 0.0
+    axiom_violations_by_tier: dict[str, int] = Field(default_factory=dict)  # {"T0": 2, "T1": 3}
+    top_violated_axioms: dict[str, int] = Field(
+        default_factory=dict
+    )  # {"single_user": 3, "executive_function": 1}
+    triage_reject_reasons: dict[str, int] = Field(
+        default_factory=dict
+    )  # {"too_complex": 2, "protected_paths": 1}
+
+
 class DataSourceStatus(BaseModel):
     """Tracks which data sources were available during collection."""
 
@@ -115,6 +139,7 @@ class DataSourceStatus(BaseModel):
     health_history_found: bool = False
     drift_report_found: bool = False
     manifest_age: str = ""
+    sdlc_events_found: bool = False
 
 
 class ActivityReport(BaseModel):
@@ -128,6 +153,7 @@ class ActivityReport(BaseModel):
     drift: DriftTrend = Field(default_factory=DriftTrend)
     digest: DigestTrend = Field(default_factory=DigestTrend)
     knowledge_maint: KnowledgeMaintTrend = Field(default_factory=KnowledgeMaintTrend)
+    sdlc: SdlcTrend = Field(default_factory=SdlcTrend)
     service_events: list[ServiceEvent] = Field(default_factory=list)
     data_sources: DataSourceStatus = Field(default_factory=DataSourceStatus)
     synthesis: str = ""
@@ -308,6 +334,13 @@ def collect_health_trend(since: datetime) -> HealthTrend:
             fail_counts[c] += 1
     trend.recurring_issues = [f"{name} ({count}x)" for name, count in fail_counts.most_common(5)]
 
+    # Identify checks that failed historically but pass in the latest run
+    latest_failures = set(entries[-1].get("failed_checks", [])) if entries else set()
+    all_historical_failures = set(fail_counts.keys())
+    resolved = all_historical_failures - latest_failures
+    if resolved:
+        trend.recently_resolved = sorted(resolved)
+
     return trend
 
 
@@ -400,6 +433,97 @@ def collect_knowledge_maint_trend(since: datetime) -> KnowledgeMaintTrend:
             trend.reports_count = len(lines)
         except OSError:
             pass
+
+    return trend
+
+
+# ── SDLC pipeline collector ──────────────────────────────────────────────────
+
+
+def collect_sdlc_trend(hours: int) -> SdlcTrend:
+    """Analyze SDLC pipeline event history."""
+    trend = SdlcTrend()
+    sdlc_log = PROFILES_DIR / "sdlc-events.jsonl"
+    if not sdlc_log.is_file():
+        return trend
+
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    entries = []
+    for line in sdlc_log.read_text().strip().splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+            ts = datetime.fromisoformat(entry.get("timestamp", ""))
+            if ts >= since and not entry.get("dry_run", False):
+                entries.append(entry)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    if not entries:
+        return trend
+
+    trend.total_events = len(entries)
+    stage_counts: Counter = Counter()
+    type_counts: Counter = Counter()
+    complexity_counts: Counter = Counter()
+    durations = []
+
+    triage_total = triage_rejected = 0
+    review_total = review_approved = 0
+    gate_total = gate_passed = 0
+    tier_counts: dict[str, int] = {}
+    axiom_counts: dict[str, int] = {}
+    reject_reasons: dict[str, int] = {}
+
+    for e in entries:
+        stage = e.get("stage", "")
+        stage_counts[stage] += 1
+        if d := e.get("duration_ms", 0):
+            durations.append(d)
+
+        result = e.get("result", {})
+        if stage == "triage":
+            triage_total += 1
+            if t := result.get("type"):
+                type_counts[t] += 1
+            if c := result.get("complexity"):
+                complexity_counts[c] += 1
+            if result.get("reject_reason"):
+                triage_rejected += 1
+            if rr := result.get("reject_reason"):
+                reject_reasons[rr] = reject_reasons.get(rr, 0) + 1
+        elif stage == "review":
+            review_total += 1
+            if result.get("verdict") == "approve":
+                review_approved += 1
+        elif stage == "axiom-gate":
+            gate_total += 1
+            if result.get("overall") == "pass":
+                gate_passed += 1
+            # Extract axiom violation details
+            t0 = result.get("t0_violations", 0)
+            t1 = result.get("t1_violations", 0)
+            if t0:
+                tier_counts["T0"] = tier_counts.get("T0", 0) + t0
+            if t1:
+                tier_counts["T1"] = tier_counts.get("T1", 0) + t1
+            for sv in result.get("semantic_violations", []):
+                axiom_id = sv.get("axiom_id", "unknown")
+                axiom_counts[axiom_id] = axiom_counts.get(axiom_id, 0) + 1
+
+    trend.by_stage = dict(stage_counts)
+    trend.triage_types = dict(type_counts)
+    trend.triage_complexities = dict(complexity_counts)
+    trend.avg_duration_ms = round(sum(durations) / len(durations), 1) if durations else 0
+    trend.triage_reject_rate = round(triage_rejected / triage_total * 100, 1) if triage_total else 0
+    trend.review_approve_rate = (
+        round(review_approved / review_total * 100, 1) if review_total else 0
+    )
+    trend.gate_pass_rate = round(gate_passed / gate_total * 100, 1) if gate_total else 0
+    trend.axiom_violations_by_tier = tier_counts
+    trend.top_violated_axioms = axiom_counts
+    trend.triage_reject_reasons = reject_reasons
 
     return trend
 
@@ -522,6 +646,7 @@ async def generate_activity_report(hours: int = 24) -> ActivityReport:
     drift = collect_drift_trend(since)
     digest = collect_digest_trend(since)
     knowledge_maint = collect_knowledge_maint_trend(since)
+    sdlc = collect_sdlc_trend(hours)
 
     # Track data source availability
     ds = DataSourceStatus(
@@ -529,6 +654,7 @@ async def generate_activity_report(hours: int = 24) -> ActivityReport:
         health_history_found=health.total_runs > 0,
         drift_report_found=drift.reports_count > 0,
         manifest_age=_manifest_age(),
+        sdlc_events_found=sdlc.total_events > 0,
     )
 
     return ActivityReport(
@@ -540,6 +666,7 @@ async def generate_activity_report(hours: int = 24) -> ActivityReport:
         drift=drift,
         digest=digest,
         knowledge_maint=knowledge_maint,
+        sdlc=sdlc,
         service_events=service_events,
         data_sources=ds,
     )
@@ -655,6 +782,32 @@ def format_human(report: ActivityReport) -> str:
         lines.append(f"Knowledge Maint: {', '.join(parts) if parts else 'clean'}")
     else:
         lines.append("Knowledge Maint: No reports yet")
+    lines.append("")
+
+    # SDLC Pipeline
+    sc = report.sdlc
+    if sc.total_events > 0:
+        stages = ", ".join(f"{s}: {c}" for s, c in sorted(sc.by_stage.items()))
+        lines.append(f"SDLC Pipeline: {sc.total_events} events ({stages})")
+        rates = []
+        if sc.triage_reject_rate:
+            rates.append(f"triage reject: {sc.triage_reject_rate}%")
+        if sc.review_approve_rate:
+            rates.append(f"review approve: {sc.review_approve_rate}%")
+        if sc.gate_pass_rate:
+            rates.append(f"gate pass: {sc.gate_pass_rate}%")
+        if rates:
+            lines.append(f"  Rates: {', '.join(rates)}")
+        if sc.top_violated_axioms:
+            axioms = ", ".join(f"{k}: {v}" for k, v in sc.top_violated_axioms.items())
+            lines.append(f"  Axiom violations: {axioms}")
+        if sc.triage_reject_reasons:
+            reasons = ", ".join(f"{k}: {v}" for k, v in sc.triage_reject_reasons.items())
+            lines.append(f"  Triage rejections: {reasons}")
+        if sc.avg_duration_ms:
+            lines.append(f"  Avg duration: {sc.avg_duration_ms:.0f}ms")
+    else:
+        lines.append("SDLC Pipeline: No events in window")
     lines.append("")
 
     # Service events

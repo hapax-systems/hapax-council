@@ -726,9 +726,8 @@ class TestModelChecks:
             {
                 "models": [
                     {"name": "nomic-embed-text-v2-moe:latest"},
-                    {"name": "qwen2.5-coder:32b-instruct-q4_K_M"},
-                    {"name": "qwen2.5:7b"},
-                    {"name": "deepseek-r1:14b"},
+                    {"name": "qwen3.5:27b"},
+                    {"name": "qwen3:8b"},
                 ]
             }
         )

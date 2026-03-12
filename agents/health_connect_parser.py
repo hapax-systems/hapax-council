@@ -3,6 +3,7 @@
 Parses Health Connect backup ZIPs (containing SQLite databases) into
 markdown files with YAML frontmatter for the RAG pipeline.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -10,7 +11,7 @@ import hashlib
 import sqlite3
 import zipfile
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.config import RAG_SOURCES_DIR
@@ -44,22 +45,22 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
     conn.row_factory = sqlite3.Row
 
     # Discover which tables exist
-    cursor = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    )
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     existing_tables = {row[0] for row in cursor.fetchall()}
 
-    daily: dict[str, dict] = defaultdict(lambda: {
-        "heart_rates": [],
-        "steps": 0,
-        "sleep_sessions": [],
-    })
+    daily: dict[str, dict] = defaultdict(
+        lambda: {
+            "heart_rates": [],
+            "steps": 0,
+            "sleep_sessions": [],
+        }
+    )
 
     # Heart rate records
     if "heart_rate_record" in existing_tables:
         for row in conn.execute("SELECT time, bpm FROM heart_rate_record"):
             ts, bpm = row
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            dt = datetime.fromtimestamp(ts, tz=UTC)
             date_str = dt.strftime("%Y-%m-%d")
             daily[date_str]["heart_rates"].append(bpm)
 
@@ -67,7 +68,7 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
     if "steps_record" in existing_tables:
         for row in conn.execute("SELECT start_time, count FROM steps_record"):
             ts, count = row
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            dt = datetime.fromtimestamp(ts, tz=UTC)
             date_str = dt.strftime("%Y-%m-%d")
             daily[date_str]["steps"] += count
 
@@ -75,7 +76,7 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
     if "sleep_session_record" in existing_tables:
         for row in conn.execute("SELECT start_time, end_time FROM sleep_session_record"):
             start_ts, end_ts = row
-            daily_date = datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            daily_date = datetime.fromtimestamp(end_ts, tz=UTC).strftime("%Y-%m-%d")
             daily[daily_date]["sleep_sessions"].append((start_ts, end_ts))
 
     conn.close()
@@ -102,8 +103,8 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
         if sessions:
             # Use the first session for simplicity
             start_ts, end_ts = sessions[0]
-            start_dt = datetime.fromtimestamp(start_ts, tz=timezone.utc)
-            end_dt = datetime.fromtimestamp(end_ts, tz=timezone.utc)
+            start_dt = datetime.fromtimestamp(start_ts, tz=UTC)
+            end_dt = datetime.fromtimestamp(end_ts, tz=UTC)
             day_data["sleep_start"] = start_dt.strftime("%H:%M")
             day_data["sleep_end"] = end_dt.strftime("%H:%M")
             day_data["sleep_duration_min"] = round((end_ts - start_ts) / 60)
@@ -172,8 +173,24 @@ def format_daily_summary(day_data: dict) -> str:
     return "\n".join(lines)
 
 
-def write_rag_documents(days: list[dict], output_dir: Path | str) -> None:
-    """Write health-YYYY-MM-DD.md files, skip if content unchanged."""
+def _is_phone_posted(filepath: Path) -> bool:
+    """Check if a health markdown file was posted by the phone (has device: pixel_10)."""
+    if not filepath.exists():
+        return False
+    try:
+        content = filepath.read_text()
+        # Check frontmatter for phone device marker
+        return "device: pixel_10" in content
+    except OSError:
+        return False
+
+
+def write_rag_documents(days: list[dict], output_dir: Path | str, *, force: bool = False) -> None:
+    """Write health-YYYY-MM-DD.md files, skip if content unchanged.
+
+    Skips dates already covered by phone-posted data (device: pixel_10 in
+    frontmatter) unless force=True.
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -181,6 +198,10 @@ def write_rag_documents(days: list[dict], output_dir: Path | str) -> None:
         content = format_daily_summary(day_data)
         filename = f"health-{day_data['date']}.md"
         filepath = output_dir / filename
+
+        # Skip if phone already posted this date (phone data is fresher)
+        if not force and _is_phone_posted(filepath):
+            continue
 
         content_hash = hashlib.sha256(content.encode()).hexdigest()
 
@@ -192,19 +213,22 @@ def write_rag_documents(days: list[dict], output_dir: Path | str) -> None:
         filepath.write_text(content)
 
 
-def run_parse(zip_path: Path | str, output_dir: Path | str | None = None) -> list[dict]:
+def run_parse(
+    zip_path: Path | str, output_dir: Path | str | None = None, *, force: bool = False
+) -> list[dict]:
     """Orchestrate: extract -> parse -> format -> write."""
     zip_path = Path(zip_path)
     out = Path(output_dir) if output_dir else OUTPUT_DIR
 
     import tempfile
+
     with tempfile.TemporaryDirectory() as tmp:
         db_path = extract_zip(zip_path, Path(tmp))
         if db_path is None:
             return []
         days = parse_health_db(db_path)
 
-    write_rag_documents(days, out)
+    write_rag_documents(days, out, force=force)
     return days
 
 
@@ -246,10 +270,15 @@ def main() -> None:
         action="store_true",
         help="Scan gdrive directory for Health Connect zips",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Override skip for phone-covered dates (backfill mode)",
+    )
     args = parser.parse_args()
 
     if args.parse:
-        days = run_parse(args.parse)
+        days = run_parse(args.parse, force=args.force)
         print(f"Wrote {len(days)} daily summaries to {OUTPUT_DIR}")
     elif args.watch:
         _watch()

@@ -60,9 +60,7 @@ class TestCheckAxiomCompliance:
                 compliant=True, violations=(), axiom_ids=(), checked_rules=3
             )
             await check_axiom_compliance(ctx, situation="test", axiom_id="single_user")
-        mock_full.assert_called_once_with(
-            "test", axiom_id="single_user", domain=""
-        )
+        mock_full.assert_called_once_with("test", axiom_id="single_user", domain="")
 
     @pytest.mark.asyncio
     async def test_delegates_domain(self):
@@ -72,9 +70,7 @@ class TestCheckAxiomCompliance:
                 compliant=True, violations=(), axiom_ids=(), checked_rules=3
             )
             await check_axiom_compliance(ctx, situation="test", domain="management")
-        mock_full.assert_called_once_with(
-            "test", axiom_id="", domain="management"
-        )
+        mock_full.assert_called_once_with("test", axiom_id="", domain="management")
 
 
 class TestRecordAxiomDecision:

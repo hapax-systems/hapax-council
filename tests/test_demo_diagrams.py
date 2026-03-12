@@ -5,7 +5,9 @@ from unittest.mock import patch
 
 import pytest
 
-from agents.demo_pipeline.diagrams import (
+pytest.importorskip("PIL", reason="Pillow not installed")
+
+from agents.demo_pipeline.diagrams import (  # noqa: E402
     _convert_inline_chain,
     _expand_semicolons,
     _extract_nodes_and_edges,

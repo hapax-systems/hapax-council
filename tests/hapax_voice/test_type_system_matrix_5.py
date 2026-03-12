@@ -31,15 +31,11 @@ def _make_state(**overrides) -> EnvironmentState:
     defaults = dict(
         timestamp=time.monotonic(),
         speech_detected=False,
-        speech_volume_db=-40.0,
-        ambient_class="quiet",
         vad_confidence=0.0,
         face_count=1,
         operator_present=True,
-        gaze_at_camera=False,
         activity_mode="idle",
         workspace_context="",
-        ambient_detailed="",
         active_window=None,
         window_count=0,
         active_workspace_id=0,
@@ -76,9 +72,11 @@ class TestFullForwardChain:
         trigger.emit(now, "tick")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
+            ]
+        )
         result = guard.check(ctx, now)
         assert result.fresh_enough is True
 
@@ -107,16 +105,20 @@ class TestFullForwardChain:
         trigger.emit(now, "tick")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=0.0001),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=0.0001),
+            ]
+        )
         # Check far in the future to guarantee staleness
         freshness = guard.check(ctx, now + 10.0)
         assert freshness.fresh_enough is False
 
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: guard.check(c, now + 10.0).fresh_enough),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="freshness", predicate=lambda c: guard.check(c, now + 10.0).fresh_enough),
+            ]
+        )
         veto = chain.evaluate(ctx)
         assert not veto.allowed
 
@@ -172,15 +174,19 @@ class TestFullForwardChain:
         trigger.emit(now, "snap")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
         assert "not present" in freshness.violations[0]
 
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="gaze_fresh", predicate=lambda c: guard.check(c, now).fresh_enough),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="gaze_fresh", predicate=lambda c: guard.check(c, now).fresh_enough),
+            ]
+        )
         veto = chain.evaluate(ctx)
 
         cmd = Command(
@@ -221,9 +227,11 @@ class TestGovernorForwardChain:
         assert isinstance(sched.command.params, MappingProxyType)
 
         # Separate freshness check for A5
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
+            ]
+        )
         ctx = FusedContext(trigger_time=time.monotonic(), trigger_value="x", samples={})
         assert "not present" in guard.check(ctx, time.monotonic()).violations[0]
 
@@ -232,14 +240,18 @@ class TestGovernorForwardChain:
         now = time.monotonic()
         gov = PipelineGovernor()
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=1.0),
+            ]
+        )
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={})
-        gov.veto_chain.add(Veto(
-            name="custom_freshness",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="custom_freshness",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="production")
         r = gov.evaluate(state)
@@ -325,17 +337,21 @@ class TestCombinatorToGovernancePipeline:
         trigger.emit(now, "check")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
         assert "not present" in freshness.violations[0]
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="custom_freshness",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="custom_freshness",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="idle")
         r = gov.evaluate(state)
@@ -357,15 +373,19 @@ class TestCombinatorToGovernancePipeline:
         trigger.emit(now, "check")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
+            ]
+        )
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="presence_fresh",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="presence_fresh",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="idle")
         r = gov.evaluate(state)
@@ -374,9 +394,11 @@ class TestCombinatorToGovernancePipeline:
         assert isinstance(ctx.samples, MappingProxyType)
 
         # Separate missing-behavior check
-        guard_m = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
-        ])
+        guard_m = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
+            ]
+        )
         assert "not present" in guard_m.check(ctx, now).violations[0]
 
     def test_combinator_stale_cascades_through_veto_to_governor_pause(self):
@@ -391,17 +413,21 @@ class TestCombinatorToGovernancePipeline:
         trigger.emit(now, "check")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
         assert freshness.fresh_enough is False
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="staleness",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="staleness",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="idle")
         r = gov.evaluate(state)
@@ -430,22 +456,30 @@ class TestCombinatorToGovernancePipeline:
         trigger.emit(now, "check")
         ctx = received[0]
 
-        guard_ok = FreshnessGuard([
-            FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=10.0),
-        ])
-        guard_missing = FreshnessGuard([
-            FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
-        ])
+        guard_ok = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=10.0),
+            ]
+        )
+        guard_missing = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
+            ]
+        )
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="activity_freshness",
-            predicate=lambda _s: guard_ok.check(ctx, now).fresh_enough,
-        ))
-        gov.veto_chain.add(Veto(
-            name="gaze_freshness",
-            predicate=lambda _s: guard_missing.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="activity_freshness",
+                predicate=lambda _s: guard_ok.check(ctx, now).fresh_enough,
+            )
+        )
+        gov.veto_chain.add(
+            Veto(
+                name="gaze_freshness",
+                predicate=lambda _s: guard_missing.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="idle")
         r = gov.evaluate(state)

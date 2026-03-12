@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image
+import pytest
 
-from agents.demo_models import DemoScene, DemoScript, ScreenshotSpec
-from agents.demo_pipeline.html_player import (
+pytest.importorskip("PIL", reason="Pillow not installed")
+
+from PIL import Image  # noqa: E402
+
+from agents.demo_models import DemoScene, DemoScript, ScreenshotSpec  # noqa: E402
+from agents.demo_pipeline.html_player import (  # noqa: E402
     _make_title_card_background,
     _png_to_jpeg_base64,
     generate_html_player,

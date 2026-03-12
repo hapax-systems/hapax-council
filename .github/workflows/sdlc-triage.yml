@@ -1,0 +1,108 @@
+name: "SDLC: Issue Triage"
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: sdlc-triage-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    if: github.event.label.name == 'agent-eligible'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra ci
+
+      - name: Run triage agent
+        id: triage
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGFUSE_EXPORT_FILE: /tmp/langfuse-traces.jsonl
+        run: |
+          set -eo pipefail
+          OUTPUT=$(uv run python -m scripts.sdlc_triage --issue-number ${{ github.event.issue.number }})
+          echo "$OUTPUT"
+
+          # Parse structured output.
+          TYPE=$(echo "$OUTPUT" | jq -r '.type')
+          COMPLEXITY=$(echo "$OUTPUT" | jq -r '.complexity')
+          REJECT=$(echo "$OUTPUT" | jq -r '.reject_reason // empty')
+
+          echo "type=$TYPE" >> "$GITHUB_OUTPUT"
+          echo "complexity=$COMPLEXITY" >> "$GITHUB_OUTPUT"
+          echo "reject=$REJECT" >> "$GITHUB_OUTPUT"
+
+      - name: Handle rejection
+        if: steps.triage.outputs.reject != '' || steps.triage.outputs.complexity == 'L'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REASON="${{ steps.triage.outputs.reject }}"
+          if [ -z "$REASON" ]; then
+            REASON="Complexity is L — requires human implementation."
+          fi
+          gh issue comment ${{ github.event.issue.number }} --body "## 🤖 Triage Result: Not Agent-Eligible
+
+          **Reason:** $REASON
+
+          This issue has been flagged for human attention."
+
+          gh issue edit ${{ github.event.issue.number }} \
+            --add-label "needs-human" \
+            --remove-label "agent-eligible"
+
+      - name: Handle acceptance
+        if: steps.triage.outputs.reject == '' && steps.triage.outputs.complexity != 'L'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} \
+            --add-label "sdlc:triaged" \
+            --add-label "triage:${{ steps.triage.outputs.type }}" \
+            --add-label "complexity:${{ steps.triage.outputs.complexity }}"
+
+          gh issue comment ${{ github.event.issue.number }} --body "## 🤖 Triage Result
+
+          - **Type:** ${{ steps.triage.outputs.type }}
+          - **Complexity:** ${{ steps.triage.outputs.complexity }}
+          - **Status:** Triaged, queued for planning."
+
+      - name: Dispatch planning
+        if: steps.triage.outputs.reject == '' && steps.triage.outputs.complexity != 'L'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/dispatches \
+            -X POST \
+            -f event_type=sdlc-plan \
+            -f 'client_payload={"issue_number": ${{ github.event.issue.number }}}'
+
+      - name: Upload traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: langfuse-traces-triage-${{ github.event.issue.number }}
+          path: /tmp/langfuse-traces.jsonl
+          if-no-files-found: ignore
+
+      - name: Handle error
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} \
+            --add-label "needs-human" \
+            --remove-label "agent-eligible"
+          gh issue comment ${{ github.event.issue.number }} --body "## ⚠️ Triage Failed
+
+          The triage agent encountered an error. See [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."

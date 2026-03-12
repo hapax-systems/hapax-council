@@ -33,15 +33,11 @@ def _make_state(**overrides) -> EnvironmentState:
     defaults = dict(
         timestamp=time.monotonic(),
         speech_detected=False,
-        speech_volume_db=-40.0,
-        ambient_class="quiet",
         vad_confidence=0.0,
         face_count=1,
         operator_present=True,
-        gaze_at_camera=False,
         activity_mode="idle",
         workspace_context="",
-        ambient_detailed="",
         active_window=None,
         window_count=0,
         active_workspace_id=0,
@@ -68,9 +64,11 @@ class TestPerturbationTriggersReconfiguration:
         """T2+T4+T6: Stale sensor detected → veto added → next cycle denied."""
         now = time.monotonic()
         chain: VetoChain[FusedContext] = VetoChain()
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
 
         # Cycle 1: fresh → allowed
         ctx1 = FusedContext(
@@ -93,10 +91,12 @@ class TestPerturbationTriggersReconfiguration:
         assert not freshness.fresh_enough
 
         # Reconfiguration: add freshness veto to chain
-        chain.add(Veto(
-            name="freshness",
-            predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough,
-        ))
+        chain.add(
+            Veto(
+                name="freshness",
+                predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough,
+            )
+        )
 
         # Cycle 2 feedback: stale context now denied by reconfigured chain
         result2 = chain.evaluate(ctx_stale)
@@ -213,18 +213,24 @@ class TestReconfigurationStability:
 
             # Reconfigure: add increasingly restrictive vetoes
             if i == 0:
-                chain.add(Veto(
-                    name="mode",
-                    predicate=lambda c: c.samples["a"].value != "meeting",
-                ))
+                chain.add(
+                    Veto(
+                        name="mode",
+                        predicate=lambda c: c.samples["a"].value != "meeting",
+                    )
+                )
             elif i == 1:
-                guard = FreshnessGuard([
-                    FreshnessRequirement(behavior_name="b", max_staleness_s=5.0),
-                ])
-                chain.add(Veto(
-                    name="fresh",
-                    predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough,
-                ))
+                guard = FreshnessGuard(
+                    [
+                        FreshnessRequirement(behavior_name="b", max_staleness_s=5.0),
+                    ]
+                )
+                chain.add(
+                    Veto(
+                        name="fresh",
+                        predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough,
+                    )
+                )
 
         assert results[0].allowed  # no vetoes yet
         assert not results[1].allowed  # mode veto
@@ -290,15 +296,19 @@ class TestReconfigurationStability:
         )
 
         # Cycle 1: lenient guard → fresh
-        guard1 = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=10.0),
-        ])
+        guard1 = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=10.0),
+            ]
+        )
         assert guard1.check(ctx, now).fresh_enough
 
         # Reconfiguration: tighter guard
-        guard2 = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=1.0),
-        ])
+        guard2 = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=1.0),
+            ]
+        )
         assert not guard2.check(ctx, now).fresh_enough
 
         # Same context, different outcomes based on configuration
@@ -374,10 +384,14 @@ class TestAdaptiveResilience:
         assert not r1.allowed
 
         # Perturbation 2: sensor stale → add freshness veto
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
-        chain.add(Veto(name="fresh", predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough))
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
+        chain.add(
+            Veto(name="fresh", predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough)
+        )
 
         ctx_both_bad = FusedContext(
             trigger_time=now,

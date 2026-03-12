@@ -48,6 +48,17 @@ class EventLog:
             "source_service": "hapax-voice",
             **fields,
         }
+        # Inject OTel trace context if an active span exists
+        try:
+            from opentelemetry import trace
+
+            span = trace.get_current_span()
+            ctx = span.get_span_context()
+            if ctx and ctx.trace_id:
+                event["trace_id"] = format(ctx.trace_id, "032x")
+                event["span_id"] = format(ctx.span_id, "016x")
+        except Exception:
+            pass  # OTel unavailable or no active span — fail open
         try:
             f = self._get_file()
             f.write(json.dumps(event, default=str) + "\n")
