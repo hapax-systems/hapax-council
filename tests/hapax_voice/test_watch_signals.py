@@ -13,6 +13,7 @@ from agents.hapax_voice.watch_signals import (
     read_watch_signal,
     is_stress_elevated,
     is_watch_connected,
+    is_watch_bt_nearby,
     WatchSignalReader,
 )
 from agents.hapax_voice.presence import PresenceDetector
@@ -119,6 +120,91 @@ class TestWatchPresence:
 
     def test_watch_disconnected_when_no_file(self, tmp_path):
         assert is_watch_connected(watch_dir=tmp_path) is False
+
+    @patch("agents.hapax_voice.watch_signals.is_watch_bt_nearby", return_value=True)
+    def test_watch_connected_via_bt_when_wifi_stale(self, mock_bt, tmp_path):
+        """Falls back to BLE when WiFi connection.json is stale."""
+        conn = tmp_path / "connection.json"
+        conn.write_text(json.dumps({
+            "last_seen_epoch": time.time() - 600,
+            "battery_pct": 85,
+        }))
+        old_time = time.time() - 600
+        os.utime(conn, (old_time, old_time))
+        assert is_watch_connected(watch_dir=tmp_path) is True
+        mock_bt.assert_called_once()
+
+    @patch("agents.hapax_voice.watch_signals.is_watch_bt_nearby", return_value=False)
+    def test_watch_disconnected_when_both_fail(self, mock_bt, tmp_path):
+        """Disconnected when both WiFi and BLE fail."""
+        assert is_watch_connected(watch_dir=tmp_path) is False
+
+    @patch("agents.hapax_voice.watch_signals.is_watch_bt_nearby", return_value=None)
+    def test_watch_disconnected_when_bt_unavailable(self, mock_bt, tmp_path):
+        """Disconnected when WiFi stale and BT adapter unavailable."""
+        assert is_watch_connected(watch_dir=tmp_path) is False
+
+
+class TestBluetoothPresence:
+    """BLE proximity detection via bluetoothctl."""
+
+    @patch("subprocess.run")
+    def test_bt_nearby_when_connected(self, mock_run, tmp_path):
+        """Returns True when bluetoothctl shows Connected: yes."""
+        conn = tmp_path / "connection.json"
+        conn.write_text(json.dumps({"bt_mac": "AA:BB:CC:DD:EE:FF"}))
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Device AA:BB:CC:DD:EE:FF\n\tConnected: yes\n\tPaired: yes\n",
+        )
+        result = is_watch_bt_nearby(watch_dir=tmp_path)
+        assert result is True
+
+    @patch("subprocess.run")
+    def test_bt_nearby_when_rssi_present(self, mock_run, tmp_path):
+        """Returns True when device has RSSI (in range but not connected)."""
+        conn = tmp_path / "connection.json"
+        conn.write_text(json.dumps({"bt_mac": "AA:BB:CC:DD:EE:FF"}))
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Device AA:BB:CC:DD:EE:FF\n\tPaired: yes\n\tRSSI: -65\n",
+        )
+        result = is_watch_bt_nearby(watch_dir=tmp_path)
+        assert result is True
+
+    @patch("subprocess.run")
+    def test_bt_not_nearby_when_no_rssi(self, mock_run, tmp_path):
+        """Returns False when device paired but not in range."""
+        conn = tmp_path / "connection.json"
+        conn.write_text(json.dumps({"bt_mac": "AA:BB:CC:DD:EE:FF"}))
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Device AA:BB:CC:DD:EE:FF\n\tPaired: yes\n\tConnected: no\n",
+        )
+        result = is_watch_bt_nearby(watch_dir=tmp_path)
+        assert result is False
+
+    def test_bt_returns_none_when_no_mac(self, tmp_path):
+        """Returns None when no BT MAC configured."""
+        result = is_watch_bt_nearby(watch_dir=tmp_path)
+        assert result is None
+
+    @patch("subprocess.run", side_effect=FileNotFoundError)
+    def test_bt_returns_none_when_no_bluetoothctl(self, mock_run, tmp_path):
+        """Returns None when bluetoothctl not installed."""
+        conn = tmp_path / "connection.json"
+        conn.write_text(json.dumps({"bt_mac": "AA:BB:CC:DD:EE:FF"}))
+        result = is_watch_bt_nearby(watch_dir=tmp_path)
+        assert result is None
+
+    def test_bt_with_explicit_mac(self):
+        """Accepts explicit MAC without needing connection.json."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="Connected: yes\n"
+            )
+            result = is_watch_bt_nearby(bt_mac="AA:BB:CC:DD:EE:FF")
+            assert result is True
 
     @patch("agents.hapax_voice.presence.is_watch_connected", return_value=True)
     def test_watch_presence_confirmed_via_trigger_file(self, mock_conn, tmp_path):

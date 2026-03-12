@@ -79,17 +79,30 @@ def is_stress_elevated(watch_dir: Path | None = None) -> bool:
 
 
 def is_watch_connected(watch_dir: Path | None = None) -> bool:
-    """Check if the watch is currently connected (data received within 60s).
+    """Check if the watch is currently connected via WiFi or Bluetooth.
+
+    Fuses two signals: WiFi (connection.json updated within 60s) and BLE
+    (bluetoothctl shows device connected or in range). Either is sufficient.
 
     Args:
         watch_dir: Override path to watch state directory.
 
     Returns:
-        True if connection.json exists and was updated within 60 seconds.
+        True if watch is reachable via WiFi or Bluetooth.
     """
     watch_dir = watch_dir or WATCH_STATE_DIR
+
+    # WiFi path: connection.json freshness
     conn_data = read_watch_signal(watch_dir / "connection.json", max_age_seconds=60)
-    return conn_data is not None
+    if conn_data is not None:
+        return True
+
+    # BLE fallback: check Bluetooth proximity
+    bt_nearby = is_watch_bt_nearby(watch_dir=watch_dir)
+    if bt_nearby is True:
+        return True
+
+    return False
 
 
 def send_haptic_tap(device_id: str | None = None, pattern: str = "hapax-presence-check") -> bool:
@@ -121,6 +134,62 @@ def send_haptic_tap(device_id: str | None = None, pattern: str = "hapax-presence
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
+
+
+def is_watch_bt_nearby(
+    bt_mac: str | None = None, watch_dir: Path | None = None
+) -> bool | None:
+    """Check if the Pixel Watch is nearby via Bluetooth LE.
+
+    Complements WiFi connectivity — BLE works even when WiFi is suspended
+    on the watch (screen off, idle). Returns None if BT is unavailable or
+    MAC not configured, so callers can fall through to WiFi-based checks.
+
+    The watch BT MAC can be set in connection.json (field "bt_mac") by the
+    Wear OS app during its first WiFi handshake, or hardcoded.
+
+    Args:
+        bt_mac: Bluetooth MAC address to look for. Auto-read from
+            connection.json if not provided.
+        watch_dir: Override path to watch state directory.
+
+    Returns:
+        True if device is connected/paired and reachable, False if BT is
+        available but device not found, None if BT is unavailable.
+    """
+    import subprocess
+
+    watch_dir = watch_dir or WATCH_STATE_DIR
+
+    # Resolve MAC address
+    if bt_mac is None:
+        conn_file = watch_dir / "connection.json"
+        if conn_file.exists():
+            try:
+                data = json.loads(conn_file.read_text())
+                bt_mac = data.get("bt_mac")
+            except (json.JSONDecodeError, OSError):
+                pass
+        if bt_mac is None:
+            return None
+
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "info", bt_mac],
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode != 0:
+            return False
+        # "Connected: yes" means active connection
+        # "Paired: yes" + RSSI means in range
+        output = result.stdout
+        if "Connected: yes" in output:
+            return True
+        if "RSSI:" in output:
+            return True  # In range even if not connected
+        return False
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
 
 
 class WatchSignalReader:
