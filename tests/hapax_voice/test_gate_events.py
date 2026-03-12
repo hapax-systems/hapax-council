@@ -13,7 +13,7 @@ def test_gate_emits_decision_event():
     gate.set_event_log(mock_log)
 
     with (
-        patch.object(gate, "_check_volume", return_value=(True, "")),
+        patch.object(gate, "_get_sink_volume", return_value=0.3),
         patch.object(gate, "_check_studio", return_value=(True, "")),
         patch.object(gate, "_check_ambient", return_value=(True, "")),
     ):
@@ -48,7 +48,7 @@ def test_gate_emits_subprocess_failed_on_wpctl_error():
     gate.set_event_log(mock_log)
 
     with patch("subprocess.run", side_effect=FileNotFoundError("wpctl not found")):
-        gate._check_volume()
+        gate._get_sink_volume()
 
     calls = [c for c in mock_log.emit.call_args_list if c[0][0] == "subprocess_failed"]
     assert len(calls) == 1
