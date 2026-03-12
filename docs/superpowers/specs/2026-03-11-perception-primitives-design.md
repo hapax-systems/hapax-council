@@ -514,6 +514,8 @@ This is the extensibility the current architecture lacks: adding a new trigger d
 
 Each guarantee is a structural consequence of the type system. If the types are respected, the property holds.
 
+**Concurrency assumption:** All guarantees below assume single-threaded cooperative scheduling (asyncio event loop). Behavior updates, Event emissions, VetoChain evaluations, and Command construction all happen on the same thread with no concurrent mutation. This is verified empirically: the voice daemon's threading audit confirms only fire-and-forget I/O threads (audio chime playback, trace flushing) exist, and they do not touch shared state. The guarantees do not hold under preemptive multithreading without additional synchronization. Concurrency interleaving tests (13 deterministic tests simulating cross-await-boundary interleavings) confirm the properties hold under the daemon's actual scheduling model.
+
 ### 6.1 Timing Independence
 
 **Claim:** A fast trigger's response time is bounded by the trigger's own latency, not by any Behavior's update rate.

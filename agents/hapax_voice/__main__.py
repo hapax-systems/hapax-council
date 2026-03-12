@@ -167,6 +167,9 @@ class VoiceDaemon:
             workspace_monitor=self.workspace_monitor,
         )
 
+        # Register perception backends (availability-gated)
+        self._register_perception_backends()
+
         # Perception events (Phase 2 extension points)
         self.wake_word_event: Event[None] = Event()
         self.focus_event: Event[FocusEvent] = Event()
@@ -224,6 +227,47 @@ class VoiceDaemon:
         self.notifications.set_event_log(self.event_log)
         self.workspace_monitor.set_event_log(self.event_log)
         self.workspace_monitor.set_tracer(self.tracer)
+
+    # ------------------------------------------------------------------
+    # Perception backend registration
+    # ------------------------------------------------------------------
+
+    def _register_perception_backends(self) -> None:
+        """Instantiate and register available perception backends."""
+        try:
+            from agents.hapax_voice.backends.pipewire import PipeWireBackend
+
+            self.perception.register_backend(PipeWireBackend())
+        except Exception:
+            log.info("PipeWireBackend not available, skipping")
+
+        try:
+            from agents.hapax_voice.backends.hyprland import HyprlandBackend
+
+            self.perception.register_backend(HyprlandBackend())
+        except Exception:
+            log.info("HyprlandBackend not available, skipping")
+
+        try:
+            from agents.hapax_voice.backends.watch import WatchBackend
+
+            self.perception.register_backend(WatchBackend())
+        except Exception:
+            log.info("WatchBackend not available, skipping")
+
+        try:
+            from agents.hapax_voice.backends.health import HealthBackend
+
+            self.perception.register_backend(HealthBackend())
+        except Exception:
+            log.info("HealthBackend not available, skipping")
+
+        try:
+            from agents.hapax_voice.backends.circadian import CircadianBackend
+
+            self.perception.register_backend(CircadianBackend())
+        except Exception:
+            log.info("CircadianBackend not available, skipping")
 
     # ------------------------------------------------------------------
     # Wake word engine selection
@@ -581,13 +625,31 @@ class VoiceDaemon:
                 if self.session.is_active:
                     continue
 
-                presence = self.presence.score
+                presence = (
+                    self.perception.latest.presence_score
+                    if self.perception.latest
+                    else "likely_absent"
+                )
                 if presence == "likely_absent":
                     continue
 
                 gate_result = self.gate.check()
                 if not gate_result.eligible:
                     log.debug("Proactive delivery blocked: %s", gate_result.reason)
+                    continue
+
+                # Check interruptibility — adjust threshold based on sleep quality
+                latest = self.perception.latest
+                sleep_b = self.perception.behaviors.get("sleep_quality")
+                delivery_threshold = 0.5
+                if sleep_b is not None:
+                    delivery_threshold = 0.5 + 0.3 * (1.0 - sleep_b.value)
+                if latest is not None and latest.interruptibility_score < delivery_threshold:
+                    log.debug(
+                        "Proactive delivery deferred: interruptibility %.2f < %.2f",
+                        latest.interruptibility_score,
+                        delivery_threshold,
+                    )
                     continue
 
                 # Deliver next notification
@@ -615,6 +677,9 @@ class VoiceDaemon:
         while self._running:
             try:
                 await asyncio.sleep(self.cfg.perception_fast_tick_s)
+
+                # Update perception with session state before tick
+                self.perception.set_voice_session_active(self.session.is_active)
 
                 # Fast tick: read sensors, produce EnvironmentState
                 state = self.perception.tick()
@@ -651,8 +716,8 @@ class VoiceDaemon:
                 elif directive == "withdraw" and self.session.is_active:
                     await self._close_session(reason="operator_absent")
 
-                # Update context gate with latest state
-                self.gate.set_environment_state(state)
+                # Update context gate with backend Behaviors
+                self.gate.set_behaviors(self.perception.behaviors)
 
             except asyncio.CancelledError:
                 break
@@ -740,7 +805,10 @@ class VoiceDaemon:
                 if analysis is not None:
                     mode = classify_activity_mode(analysis)
                     self.gate.set_activity_mode(mode)
-                    self.perception.update_slow_fields(activity_mode=mode)
+                    self.perception.update_slow_fields(
+                        activity_mode=mode,
+                        workspace_context=getattr(analysis, "context", ""),
+                    )
         finally:
             # Stop any running pipeline
             await self._stop_pipeline()

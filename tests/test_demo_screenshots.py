@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agents.demo_models import ScreenshotSpec
-from agents.demo_pipeline.screenshots import (
+pytest.importorskip("playwright", reason="playwright not installed")
+
+from agents.demo_models import ScreenshotSpec  # noqa: E402
+from agents.demo_pipeline.screenshots import (  # noqa: E402
     _resolve_selector,
     capture_screenshots,
     validate_screenshot_specs,

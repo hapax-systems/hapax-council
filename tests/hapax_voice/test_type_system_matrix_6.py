@@ -31,15 +31,11 @@ def _make_state(**overrides) -> EnvironmentState:
     defaults = dict(
         timestamp=time.monotonic(),
         speech_detected=False,
-        speech_volume_db=-40.0,
-        ambient_class="quiet",
         vad_confidence=0.0,
         face_count=1,
         operator_present=True,
-        gaze_at_camera=False,
         activity_mode="idle",
         workspace_context="",
-        ambient_detailed="",
         active_window=None,
         window_count=0,
         active_workspace_id=0,
@@ -71,10 +67,12 @@ class TestBehaviorPerturbation:
         received: list[FusedContext] = []
         fused.subscribe(lambda ts, ctx: received.append(ctx))
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="mode", max_staleness_s=10.0),
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="mode", max_staleness_s=10.0),
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
+            ]
+        )
 
         # Pre-perturbation
         trigger.emit(now, "snap1")
@@ -115,12 +113,16 @@ class TestBehaviorPerturbation:
         received: list[FusedContext] = []
         fused.subscribe(lambda ts, ctx: received.append(ctx))
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
-        ])
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="presence_fresh", predicate=lambda c: guard.check(c, now).fresh_enough),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
+            ]
+        )
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="presence_fresh", predicate=lambda c: guard.check(c, now).fresh_enough),
+            ]
+        )
 
         # Pre-perturbation: stale
         trigger.emit(now, "snap1")
@@ -137,9 +139,11 @@ class TestBehaviorPerturbation:
         assert isinstance(received[0].samples, MappingProxyType)
 
         # Missing behavior check
-        guard_m = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
-        ])
+        guard_m = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
+            ]
+        )
         assert "not present" in guard_m.check(received[0], now).violations[0]
 
     def test_slow_tick_perturbation_cascades_to_governor_decision(self):
@@ -228,28 +232,56 @@ class TestFreshnessPerturbation:
         )
 
         # Loose threshold: passes
-        guard_loose = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
-        ])
+        guard_loose = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
+            ]
+        )
         f_loose = guard_loose.check(ctx, now)
 
-        chain_loose: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: FreshnessGuard([
-                FreshnessRequirement("sensor", 5.0),
-            ]).check(c, now).fresh_enough),
-        ])
+        chain_loose: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="freshness",
+                    predicate=lambda c: (
+                        FreshnessGuard(
+                            [
+                                FreshnessRequirement("sensor", 5.0),
+                            ]
+                        )
+                        .check(c, now)
+                        .fresh_enough
+                    ),
+                ),
+            ]
+        )
         v_loose = chain_loose.evaluate(ctx)
-        cmd_loose = Command(action="process" if v_loose.allowed else "pause", params={"threshold": 5.0})
+        cmd_loose = Command(
+            action="process" if v_loose.allowed else "pause", params={"threshold": 5.0}
+        )
 
         # Tight threshold: fails
-        chain_tight: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: FreshnessGuard([
-                FreshnessRequirement("sensor", 1.0),
-            ]).check(c, now).fresh_enough),
-        ])
+        chain_tight: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="freshness",
+                    predicate=lambda c: (
+                        FreshnessGuard(
+                            [
+                                FreshnessRequirement("sensor", 1.0),
+                            ]
+                        )
+                        .check(c, now)
+                        .fresh_enough
+                    ),
+                ),
+            ]
+        )
         v_tight = chain_tight.evaluate(ctx)
-        cmd_tight = Command(action="process" if v_tight.allowed else "pause", params={"threshold": 1.0})
+        cmd_tight = Command(
+            action="process" if v_tight.allowed else "pause", params={"threshold": 1.0}
+        )
 
         assert cmd_loose.action == "process"
         assert cmd_tight.action == "pause"
@@ -276,13 +308,17 @@ class TestFreshnessPerturbation:
         assert r1 == "process"
 
         # Perturbation: add freshness veto with missing behavior
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=5.0),
-        ])
-        gov.veto_chain.add(Veto(
-            name="fresh_check",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=5.0),
+            ]
+        )
+        gov.veto_chain.add(
+            Veto(
+                name="fresh_check",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
         r2 = gov.evaluate(state)
         cmd2 = Command(action=r2, params={"step": 2}, governance_result=gov.last_veto_result)
 
@@ -296,9 +332,11 @@ class TestFreshnessPerturbation:
         """S1, S2, S3, S4 + A1, A4, A5: Removing behavior flips freshness→veto."""
         now = time.monotonic()
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
+            ]
+        )
 
         # Context with operator_present
         ctx1 = FusedContext(
@@ -307,9 +345,11 @@ class TestFreshnessPerturbation:
             samples={"operator_present": Stamped(value=True, watermark=now)},
             min_watermark=now,
         )
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="presence", predicate=lambda c: guard.check(c, now).fresh_enough),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="presence", predicate=lambda c: guard.check(c, now).fresh_enough),
+            ]
+        )
         r1 = chain.evaluate(ctx1)
         assert r1.allowed is True
 
@@ -339,10 +379,12 @@ class TestFreshnessPerturbation:
         trigger.emit(now, "snap")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
+            ]
+        )
 
         # Check at now+4: fresh
         f1 = guard.check(ctx, now + 4.0)
@@ -396,9 +438,11 @@ class TestGovernorStatePerturbation:
         assert isinstance(cmd2.params, MappingProxyType)
 
         # Freshness with missing behavior
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
+            ]
+        )
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={})
         assert "not present" in guard.check(ctx, now).violations[0]
 

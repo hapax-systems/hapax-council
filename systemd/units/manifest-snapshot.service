@@ -5,7 +5,7 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/ai-agents
+WorkingDirectory=/home/hapax/projects/hapax-council
 ExecStart=/bin/bash -c 'eval "$(<.envrc)" && /home/hapax/.local/bin/uv run python -m agents.introspect --save'
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax

@@ -6,7 +6,11 @@ import struct
 import wave
 from pathlib import Path
 
-from agents.demo_pipeline.audio_convert import (
+import pytest
+
+imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg", reason="imageio_ffmpeg not installed")
+
+from agents.demo_pipeline.audio_convert import (  # noqa: E402
     convert_all_wav_to_mp3,
     get_ffmpeg_path,
     wav_to_mp3,

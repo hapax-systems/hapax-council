@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+pytest.importorskip("playwright", reason="playwright not installed")
+
 
 class TestDemoTracing:
     def test_tracer_created(self):

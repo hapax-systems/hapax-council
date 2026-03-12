@@ -1,0 +1,49 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip auto-fix commits to avoid review-of-a-fix loops
+    if: >-
+      !contains(github.event.pull_request.head.ref, '[auto-fix]') &&
+      !contains(github.event.head_commit.message || '', '[auto-fix]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: "--model claude-sonnet-4-6 --max-turns 5 --allowedTools Read,Glob,Grep"
+          prompt: |
+            Review this pull request for:
+
+            1. **Bugs**: Logic errors, off-by-one, missing error handling, race conditions.
+            2. **Security**: Hardcoded secrets, injection vectors, unsafe deserialization.
+            3. **Axiom compliance**: Violations of the 4 constitutional axioms (single_user,
+               executive_function, corporate_boundary, management_governance).
+               See axioms/registry.yaml for definitions.
+            4. **Type safety**: Mismatched types, missing annotations on public functions.
+
+            Rules:
+            - Only post comments for HIGH or MEDIUM priority findings.
+            - Do NOT post nitpick, style, or formatting comments (Ruff handles those).
+            - Do NOT approve the PR. Post review comments only.
+            - Be concise. One sentence per finding, with a suggested fix if non-obvious.
+            - If the PR looks clean, post a single summary comment saying so.

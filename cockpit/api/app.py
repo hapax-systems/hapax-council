@@ -42,6 +42,22 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
+# OTel: extract incoming trace context + create server spans
+try:
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    FastAPIInstrumentor.instrument_app(app)
+except Exception:
+    pass  # OTel instrumentation is optional
+
+# Prometheus metrics: request count, latency histograms, error rates
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+
+    Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+except Exception:
+    pass  # Prometheus is optional
+
 from cockpit.api.routes.accommodations import router as accommodations_router
 from cockpit.api.routes.agents import router as agents_router
 from cockpit.api.routes.chat import router as chat_router

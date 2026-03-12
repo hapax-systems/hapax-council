@@ -170,7 +170,7 @@ class TestBehaviorWithPerceptionEngine:
         presence.face_count = 0
         engine = PerceptionEngine(presence=presence, workspace_monitor=MagicMock())
         assert isinstance(engine.behaviors, dict)
-        assert len(engine.behaviors) == 10
+        assert len(engine.behaviors) == 8
 
     def test_tick_updates_fast_behaviors(self):
         from agents.hapax_voice.perception import PerceptionEngine
@@ -245,11 +245,10 @@ class TestBehaviorWithPerceptionEngine:
         presence.face_detected = True
         presence.face_count = 1
         engine = PerceptionEngine(presence=presence, workspace_monitor=MagicMock())
-        engine.update_slow_fields(activity_mode="coding", ambient_class="keyboard")
+        engine.update_slow_fields(activity_mode="coding")
         state = engine.tick()
         assert state.vad_confidence == engine.behaviors["vad_confidence"].value
         assert state.activity_mode == engine.behaviors["activity_mode"].value
-        assert state.ambient_class == engine.behaviors["ambient_class"].value
 
 
 # ------------------------------------------------------------------

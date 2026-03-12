@@ -407,32 +407,107 @@ def read_management_notes(path: Path) -> list[SourceChunk]:
     return _chunk_text(text, source_id, "management")
 
 
+def read_phone_health_summary(watch_dir: Path) -> list[dict]:
+    """Extract profile facts from phone_health_summary.json.
+
+    Returns facts with source "phone:pixel_10" for daily totals
+    (steps, active_minutes, sleep, resting HR).
+    """
+    summary_file = watch_dir / "phone_health_summary.json"
+    if not summary_file.exists():
+        return []
+    try:
+        data = json.loads(summary_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    # Only use today's data
+    from datetime import date as _date
+
+    if data.get("date") != _date.today().isoformat():
+        return []
+
+    facts: list[dict] = []
+    source = "phone:pixel_10"
+
+    if data.get("resting_hr") is not None:
+        facts.append(
+            {
+                "key": "health.resting_hr",
+                "value": data["resting_hr"],
+                "dimension": "energy_and_attention",
+                "authority": "observation",
+                "source": source,
+            }
+        )
+    if data.get("steps") is not None:
+        facts.append(
+            {
+                "key": "health.steps",
+                "value": data["steps"],
+                "dimension": "energy_and_attention",
+                "authority": "observation",
+                "source": source,
+            }
+        )
+    if data.get("active_minutes") is not None:
+        facts.append(
+            {
+                "key": "health.active_minutes",
+                "value": data["active_minutes"],
+                "dimension": "energy_and_attention",
+                "authority": "observation",
+                "source": source,
+            }
+        )
+    if data.get("sleep_duration_min") is not None:
+        facts.append(
+            {
+                "key": "health.sleep_duration",
+                "value": data["sleep_duration_min"],
+                "dimension": "energy_and_attention",
+                "authority": "observation",
+                "source": source,
+            }
+        )
+    return facts
+
+
 def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
     """Extract profile facts from watch state files.
 
     Reads heartrate.json, hrv.json, activity.json from the watch state directory
     and produces Observation-authority facts for the energy_and_attention dimension.
 
+    Prefers phone daily aggregates (phone_health_summary.json) when available
+    for daily totals (steps, active_minutes, sleep). Falls back to watch data.
+
     Returns empty list when no watch data is available (graceful degradation).
     """
     watch_dir = watch_dir or (HAPAX_HOME / "hapax-state" / "watch")
     facts: list[dict] = []
 
-    # Heart rate
+    # Check phone summary first for daily totals
+    phone_facts = read_phone_health_summary(watch_dir)
+    phone_keys = {f["key"] for f in phone_facts}
+    facts.extend(phone_facts)
+
+    # Heart rate — use watch for real-time, phone for resting
     hr_file = watch_dir / "heartrate.json"
-    if hr_file.exists():
+    if hr_file.exists() and "health.resting_hr" not in phone_keys:
         try:
             data = json.loads(hr_file.read_text())
-            window = data.get("window_1h", {})
             current = data.get("current", {})
             if current.get("bpm"):
-                facts.append({
-                    "key": "health.resting_hr",
-                    "value": current["bpm"],
-                    "dimension": "energy_and_attention",
-                    "authority": "observation",
-                    "source": "watch:pixel_watch_4",
-                })
+                facts.append(
+                    {
+                        "key": "health.resting_hr",
+                        "value": current["bpm"],
+                        "dimension": "energy_and_attention",
+                        "authority": "observation",
+                        "source": "watch:pixel_watch_4",
+                    }
+                )
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -443,30 +518,34 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
             data = json.loads(hrv_file.read_text())
             window = data.get("window_1h", {})
             if window.get("mean"):
-                facts.append({
-                    "key": "health.hrv_baseline",
-                    "value": window["mean"],
-                    "dimension": "energy_and_attention",
-                    "authority": "observation",
-                    "source": "watch:pixel_watch_4",
-                })
+                facts.append(
+                    {
+                        "key": "health.hrv_baseline",
+                        "value": window["mean"],
+                        "dimension": "energy_and_attention",
+                        "authority": "observation",
+                        "source": "watch:pixel_watch_4",
+                    }
+                )
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Activity
+    # Activity — only from watch if phone didn't provide
     activity_file = watch_dir / "activity.json"
-    if activity_file.exists():
+    if activity_file.exists() and "health.active_minutes" not in phone_keys:
         try:
             data = json.loads(activity_file.read_text())
             active_min = data.get("active_minutes_today")
             if active_min is not None:
-                facts.append({
-                    "key": "health.active_minutes",
-                    "value": active_min,
-                    "dimension": "energy_and_attention",
-                    "authority": "observation",
-                    "source": "watch:pixel_watch_4",
-                })
+                facts.append(
+                    {
+                        "key": "health.active_minutes",
+                        "value": active_min,
+                        "dimension": "energy_and_attention",
+                        "authority": "observation",
+                        "source": "watch:pixel_watch_4",
+                    }
+                )
         except (json.JSONDecodeError, OSError):
             pass
 

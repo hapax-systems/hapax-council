@@ -1,0 +1,37 @@
+name: "SDLC: Codebase Map"
+
+on:
+  schedule:
+    # Nightly at 04:00 UTC.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra ci
+
+      - name: Generate codebase map
+        run: uv run python scripts/generate_codebase_map.py --output codebase-map.json
+
+      - name: Commit if changed
+        run: |
+          git config user.name "claude-code[bot]"
+          git config user.email "claude-code[bot]@users.noreply.github.com"
+          if ! git diff --quiet codebase-map.json 2>/dev/null; then
+            git add codebase-map.json
+            git commit -m "chore: update codebase map [skip ci]"
+            git push
+          else
+            echo "No changes to codebase map."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

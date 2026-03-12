@@ -2,7 +2,11 @@
 
 import json
 
-from agents.demo_pipeline.charts import MPLSTYLE_PATH, _normalize_chart_spec, render_chart
+import pytest
+
+pytest.importorskip("matplotlib", reason="matplotlib not installed")
+
+from agents.demo_pipeline.charts import MPLSTYLE_PATH, _normalize_chart_spec, render_chart  # noqa: E402, I001
 
 
 class TestCharts:

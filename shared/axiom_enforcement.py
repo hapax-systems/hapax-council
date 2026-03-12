@@ -52,8 +52,132 @@ class ComplianceResult:
     path: str = ""  # "fast" or "full"
 
 
+# Stopwords excluded from keyword extraction.
+_STOPWORDS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "not",
+        "is",
+        "are",
+        "be",
+        "been",
+        "being",
+        "was",
+        "were",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "may",
+        "might",
+        "can",
+        "could",
+        "must",
+        "do",
+        "does",
+        "did",
+        "has",
+        "have",
+        "had",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "to",
+        "of",
+        "from",
+        "with",
+        "as",
+        "that",
+        "this",
+        "it",
+        "its",
+        "than",
+        "also",
+        "all",
+        "any",
+        "each",
+        "every",
+        "no",
+        "nor",
+        "so",
+        "if",
+        "but",
+        "since",
+        "because",
+        "when",
+        "while",
+        "where",
+        "how",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "there",
+        "here",
+        "then",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "only",
+        "just",
+        "about",
+        "up",
+        "out",
+        "into",
+        "over",
+        "after",
+        "before",
+        "between",
+        "through",
+        "during",
+        "without",
+        "under",
+        "above",
+        "below",
+        "these",
+        "those",
+        "their",
+        "them",
+        "they",
+        "he",
+        "she",
+        "his",
+        "her",
+    ]
+)
+
+
+def _extract_keywords(text: str, min_length: int = 4) -> list[str]:
+    """Extract meaningful keywords from implication text for pattern matching.
+
+    Splits on non-alphanumeric chars, removes stopwords and short words,
+    returns unique keywords in order of appearance.
+    """
+    words = re.findall(r"[a-z][a-z_-]+", text.lower())
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for w in words:
+        if len(w) >= min_length and w not in _STOPWORDS and w not in seen:
+            seen.add(w)
+            keywords.append(w)
+    return keywords
+
+
 def compile_rules(implications: list) -> list[ComplianceRule]:
     """Compile Implication objects into ComplianceRules for fast-path evaluation.
+
+    Extracts semantic keywords from implication text and builds regex patterns
+    that match when multiple keywords co-occur in a situation description.
+    A rule triggers when at least 2 keywords from the implication match.
 
     Args:
         implications: list of axiom_registry.Implication objects.
@@ -62,9 +186,23 @@ def compile_rules(implications: list) -> list[ComplianceRule]:
     for impl in implications:
         if impl.tier != "T0" or impl.enforcement != "block":
             continue
-        # Use implication text as a literal match pattern
+        keywords = _extract_keywords(impl.text)
+        if len(keywords) < 2:
+            log.warning(
+                "Implication %s has too few keywords (%d), skipping",
+                impl.id,
+                len(keywords),
+            )
+            continue
+        # Build a pattern that matches when any 2+ keywords appear in the text.
+        # Uses lookaheads for order-independent matching.
+        keyword_alts = "|".join(re.escape(k) for k in keywords)
+        # Match if text contains at least 2 of the keywords.
+        # Strategy: find first keyword, then require another keyword somewhere.
         try:
-            pattern = re.compile(re.escape(impl.id), re.IGNORECASE)
+            pattern = re.compile(
+                rf"(?i)(?:.*?(?:{keyword_alts})){{2,}}",
+            )
         except re.error:
             log.warning("Invalid pattern for implication %s, skipping", impl.id)
             continue
@@ -163,9 +301,7 @@ def check_full(
             precedents = store.search(axiom.id, situation, limit=3)
             for p in precedents:
                 if p.decision == "violation":
-                    precedent_violations.append(
-                        f"Precedent {p.id}: {p.situation} -> {p.decision}"
-                    )
+                    precedent_violations.append(f"Precedent {p.id}: {p.situation} -> {p.decision}")
                     if p.axiom_id not in precedent_axioms:
                         precedent_axioms.append(p.axiom_id)
     except Exception as e:

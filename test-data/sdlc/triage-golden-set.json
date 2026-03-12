@@ -1,0 +1,75 @@
+{
+  "description": "Golden set for triage agent evaluation. Each entry has a human-assigned type and complexity.",
+  "issues": [
+    {
+      "number": 1,
+      "title": "Fix typo in briefing agent docstring",
+      "body": "Line 42 of agents/briefing.py has 'recieve' instead of 'receive'.",
+      "expected_type": "chore",
+      "expected_complexity": "S"
+    },
+    {
+      "number": 2,
+      "title": "Add phone battery fact to profiler",
+      "body": "The profiler should read phone_connection.json and emit a battery_pct fact when the phone is connected.",
+      "expected_type": "feature",
+      "expected_complexity": "S"
+    },
+    {
+      "number": 3,
+      "title": "Scout agent crashes on empty Qdrant collection",
+      "body": "When the 'documents' collection is empty, scout.py throws a KeyError on line 87. Stack trace attached.",
+      "expected_type": "bug",
+      "expected_complexity": "S"
+    },
+    {
+      "number": 4,
+      "title": "Refactor voice perception to use strategy pattern",
+      "body": "The perception module has grown to 600+ lines with multiple if/elif chains. Refactor to use a strategy pattern for each input modality (wake word, voice command, gesture).",
+      "expected_type": "feature",
+      "expected_complexity": "M"
+    },
+    {
+      "number": 5,
+      "title": "Redesign the axiom governance system",
+      "body": "The current axiom system needs a complete overhaul to support multi-domain governance with hierarchical scoping.",
+      "expected_type": "feature",
+      "expected_complexity": "L"
+    },
+    {
+      "number": 6,
+      "title": "Update pytest fixtures for watch receiver tests",
+      "body": "Several watch receiver tests share fixture setup. Extract to conftest.py.",
+      "expected_type": "chore",
+      "expected_complexity": "S"
+    },
+    {
+      "number": 7,
+      "title": "Health monitor reports wrong check count",
+      "body": "Health monitor says 80/80 but there are actually 82 checks registered after the phone connectivity addition.",
+      "expected_type": "bug",
+      "expected_complexity": "S"
+    },
+    {
+      "number": 8,
+      "title": "Add drift detection for voice daemon config",
+      "body": "The drift detector should compare hapax-voice systemd unit configuration against the documented expected state in docs/voice-subsystem.md.",
+      "expected_type": "feature",
+      "expected_complexity": "M"
+    },
+    {
+      "number": 9,
+      "title": "Bump pydantic-ai to 1.65",
+      "body": "New release fixes async context manager leak. Update pyproject.toml and verify tests pass.",
+      "expected_type": "chore",
+      "expected_complexity": "S"
+    },
+    {
+      "number": 10,
+      "title": "Migrate from LiteLLM proxy to direct Anthropic SDK",
+      "body": "Remove the LiteLLM dependency and call Anthropic API directly from all agents. This touches every agent file and shared/config.py.",
+      "expected_type": "feature",
+      "expected_complexity": "L"
+    }
+  ]
+}

@@ -8,7 +8,7 @@ Check axiom compliance of the current project.
 Run:
 
 ```bash
-cd ~/projects/ai-agents && eval "$(direnv export bash 2>/dev/null)" && uv run python -c "
+cd ~/projects/hapax-council && eval "$(direnv export bash 2>/dev/null)" && uv run python -c "
 import asyncio
 from shared.axiom_registry import load_axioms, load_implications, validate_supremacy
 from shared.axiom_precedents import PrecedentStore

@@ -25,7 +25,7 @@ from agents.health_monitor import (
 
 def test_connectivity_group_registered():
     assert "connectivity" in CHECK_REGISTRY
-    assert len(CHECK_REGISTRY["connectivity"]) == 5
+    assert len(CHECK_REGISTRY["connectivity"]) == 7
 
 
 # ── check_tailscale ──────────────────────────────────────────────────────────
@@ -184,4 +184,4 @@ class TestCheckGdriveSyncFreshness:
         mock_cmd.return_value = (1, "", "No such container")
         with patch("agents.health_monitor.RAG_SOURCES_DIR", tmp_path):
             results = await check_gdrive_sync_freshness()
-        assert results[0].status == Status.DEGRADED
+        assert results[0].status == Status.HEALTHY

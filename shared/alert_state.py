@@ -1,163 +1,174 @@
-"""Alert deduplication and escalation tracking.
+"""shared/alert_state.py — Alert state machine for health-watchdog.
 
-Prevents notification spam by tracking consecutive failures per check and only
-notifying on state transitions (OK→FIRING) or escalation thresholds.
+Provides deduplication, escalation, grouping, and recovery notifications
+for health check results. State persists in a JSON file.
 
-Persists state to ~/.cache/health-watchdog/alert-state.json.
+Usage (from health-watchdog):
+    from shared.alert_state import process_report
+    actions = process_report(report_dict, state_path="profiles/alert-state.json")
+    for action in actions:
+        send_notification(action["title"], action["message"], priority=action["priority"], tags=action["tags"])
 """
 
 from __future__ import annotations
 
 import json
-import os
-import tempfile
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from enum import StrEnum
+import logging
+import time
 from pathlib import Path
 
+_log = logging.getLogger(__name__)
 
-class AlertPhase(StrEnum):
-    OK = "ok"
-    FIRING = "firing"
-    ACKNOWLEDGED = "acknowledged"
+# Dedup window: don't re-alert same check+status within this many seconds
+DEDUP_WINDOW_S = 30 * 60  # 30 minutes
+
+# Escalation thresholds (in consecutive failure cycles)
+DEGRADED_ESCALATION_CYCLES = 4  # degraded >1h (4 × 15min) → high priority
+T0_URGENT_CYCLES = 2  # T0 failed >30min (2 × 15min) → urgent priority
+
+# T0 (critical) check groups — failures here escalate faster
+T0_GROUPS = {"docker", "gpu", "litellm", "langfuse", "qdrant", "postgres"}
 
 
-@dataclass
-class CheckAlertState:
-    """Tracking state for a single check's alert lifecycle."""
+def process_report(
+    report: dict,
+    state_path: str | Path = "profiles/alert-state.json",
+) -> list[dict]:
+    """Process a health report and return a list of alert actions.
 
-    phase: AlertPhase = AlertPhase.OK
-    consecutive_failures: int = 0
-    last_notified_at: str = ""
-    escalation_level: int = 0  # index into ESCALATION_THRESHOLDS
-    first_failure_at: str = ""
+    Each action is a dict with keys: title, message, priority, tags.
+    The caller is responsible for sending notifications.
 
-    def to_dict(self) -> dict:
-        return {
-            "phase": self.phase.value,
-            "consecutive_failures": self.consecutive_failures,
-            "last_notified_at": self.last_notified_at,
-            "escalation_level": self.escalation_level,
-            "first_failure_at": self.first_failure_at,
+    Args:
+        report: Parsed JSON health report with groups/checks structure.
+        state_path: Path to the persistent state JSON file.
+
+    Returns:
+        List of alert action dicts to send as notifications.
+    """
+    state_path = Path(state_path)
+    state = _load_state(state_path)
+    now = time.time()
+    actions: list[dict] = []
+
+    # Collect current check statuses
+    current_checks: dict[str, dict] = {}
+    for group in report.get("groups", []):
+        group_name = group.get("name", "unknown")
+        for check in group.get("checks", []):
+            check_name = check.get("name", "unknown")
+            check_status = check.get("status", "unknown")
+            current_checks[check_name] = {
+                "status": check_status,
+                "group": group_name,
+                "message": check.get("message", ""),
+            }
+
+    # Process each check
+    failed_by_group: dict[str, list[str]] = {}
+
+    for check_name, check_info in current_checks.items():
+        status = check_info["status"]
+        group = check_info["group"]
+        prev = state.get(check_name, {})
+
+        if status == "healthy":
+            # Recovery: was previously alerted and now healthy
+            if prev.get("alerted") and prev.get("status") != "healthy":
+                actions.append(
+                    {
+                        "title": "Recovered",
+                        "message": f"{check_name} is healthy again",
+                        "priority": "default",
+                        "tags": ["white_check_mark"],
+                    }
+                )
+            state[check_name] = {"status": "healthy", "since": now, "cycles": 0, "alerted": False}
+            continue
+
+        # Failed or degraded
+        if prev.get("status") == status:
+            cycles = prev.get("cycles", 0) + 1
+        else:
+            cycles = 1
+
+        last_alert_time = prev.get("last_alert_time", 0)
+        is_t0 = group.lower() in T0_GROUPS
+
+        # Determine priority
+        if status == "failed" and is_t0 and cycles >= T0_URGENT_CYCLES:
+            priority = "urgent"
+        elif cycles >= DEGRADED_ESCALATION_CYCLES or status == "failed":
+            priority = "high"
+        else:
+            priority = "default"
+
+        # Dedup: skip if same status was alerted within window
+        should_alert = True
+        if prev.get("alerted") and prev.get("alert_status") == status:
+            if (now - last_alert_time) < DEDUP_WINDOW_S:
+                # But still alert on escalation (priority change)
+                if priority == prev.get("alert_priority"):
+                    should_alert = False
+
+        if should_alert:
+            failed_by_group.setdefault(group, []).append(
+                f"{check_name}: {check_info['message'] or status}"
+            )
+
+        state[check_name] = {
+            "status": status,
+            "since": prev.get("since", now) if prev.get("status") == status else now,
+            "cycles": cycles,
+            "alerted": should_alert or prev.get("alerted", False),
+            "alert_status": status if should_alert else prev.get("alert_status"),
+            "alert_priority": priority if should_alert else prev.get("alert_priority"),
+            "last_alert_time": now if should_alert else last_alert_time,
         }
 
-    @classmethod
-    def from_dict(cls, d: dict) -> CheckAlertState:
-        return cls(
-            phase=AlertPhase(d.get("phase", "ok")),
-            consecutive_failures=d.get("consecutive_failures", 0),
-            last_notified_at=d.get("last_notified_at", ""),
-            escalation_level=d.get("escalation_level", 0),
-            first_failure_at=d.get("first_failure_at", ""),
+    # Group failures into per-group notifications
+    for group, check_messages in failed_by_group.items():
+        is_t0 = group.lower() in T0_GROUPS
+        # Use highest priority from checks in this group
+        group_priority = "default"
+        for check_name in current_checks:
+            cs = state.get(check_name, {})
+            if cs.get("alert_priority") == "urgent":
+                group_priority = "urgent"
+                break
+            if cs.get("alert_priority") == "high" and group_priority != "urgent":
+                group_priority = "high"
+
+        tag = "rotating_light" if group_priority in ("urgent", "high") else "warning"
+        actions.append(
+            {
+                "title": f"Health: {group}",
+                "message": "\n".join(check_messages),
+                "priority": group_priority,
+                "tags": [tag],
+            }
         )
 
+    _save_state(state_path, state)
+    return actions
 
-# Consecutive failure counts that trigger re-notification (escalation).
-ESCALATION_THRESHOLDS = [1, 4, 12]
+
+def _load_state(path: Path) -> dict:
+    """Load alert state from JSON file, returning empty dict on any error."""
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _log.warning("Corrupt alert state file %s, resetting: %s", path, exc)
+    return {}
 
 
-class AlertStateTracker:
-    """Track alert state across health check runs with dedup and escalation."""
-
-    def __init__(self, state_path: Path | None = None):
-        from shared.config import HEALTH_STATE_DIR
-
-        self.state_path = state_path or (HEALTH_STATE_DIR / "alert-state.json")
-        self._states: dict[str, CheckAlertState] = {}
-        self._load()
-
-    def _load(self) -> None:
-        if not self.state_path.exists():
-            return
-        try:
-            data = json.loads(self.state_path.read_text())
-            for name, d in data.items():
-                self._states[name] = CheckAlertState.from_dict(d)
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    def save(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {name: s.to_dict() for name, s in self._states.items()}
-        # Atomic write
-        fd, tmp = tempfile.mkstemp(dir=str(self.state_path.parent), suffix=".json")
-        try:
-            with open(fd, "w") as f:
-                json.dump(data, f, indent=2)
-            os.replace(tmp, self.state_path)
-        except Exception:
-            Path(tmp).unlink(missing_ok=True)
-            raise
-
-    def update(self, check_name: str, is_healthy: bool) -> tuple[bool, str]:
-        """Update state for a check. Returns (should_notify, priority).
-
-        priority is one of: "high", "default", "low", or "" (no notification).
-        """
-        now = datetime.now(UTC).isoformat()
-        state = self._states.get(check_name, CheckAlertState())
-
-        if is_healthy:
-            if state.phase in (AlertPhase.FIRING, AlertPhase.ACKNOWLEDGED):
-                # Recovery — notify once
-                state.phase = AlertPhase.OK
-                state.consecutive_failures = 0
-                state.escalation_level = 0
-                state.first_failure_at = ""
-                self._states[check_name] = state
-                return (True, "low")  # recovery notification
-            # Already OK
-            state.phase = AlertPhase.OK
-            state.consecutive_failures = 0
-            self._states[check_name] = state
-            return (False, "")
-
-        # Failure path
-        state.consecutive_failures += 1
-        if not state.first_failure_at:
-            state.first_failure_at = now
-
-        if state.phase == AlertPhase.OK:
-            # New failure — always notify
-            state.phase = AlertPhase.FIRING
-            state.escalation_level = 0
-            state.last_notified_at = now
-            self._states[check_name] = state
-            return (True, "high")
-
-        # Already firing — check escalation thresholds
-        next_level = state.escalation_level + 1
-        if (
-            next_level < len(ESCALATION_THRESHOLDS)
-            and state.consecutive_failures >= ESCALATION_THRESHOLDS[next_level]
-        ):
-            state.escalation_level = next_level
-            state.last_notified_at = now
-            self._states[check_name] = state
-            return (True, "high")
-
-        # Still firing but below next escalation threshold — suppress
-        self._states[check_name] = state
-        return (False, "")
-
-    def acknowledge(self, check_name: str) -> bool:
-        """Acknowledge an alert (suppress further escalation until recovery)."""
-        state = self._states.get(check_name)
-        if state and state.phase == AlertPhase.FIRING:
-            state.phase = AlertPhase.ACKNOWLEDGED
-            return True
-        return False
-
-    def get_state(self, check_name: str) -> CheckAlertState:
-        return self._states.get(check_name, CheckAlertState())
-
-    def get_firing(self) -> dict[str, CheckAlertState]:
-        """Return all checks currently in FIRING state."""
-        return {
-            name: state for name, state in self._states.items() if state.phase == AlertPhase.FIRING
-        }
-
-    def reset(self) -> None:
-        """Clear all tracked state."""
-        self._states.clear()
+def _save_state(path: Path, state: dict) -> None:
+    """Atomically save alert state to JSON file."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        tmp.rename(path)
+    except Exception as exc:
+        _log.warning("Failed to save alert state: %s", exc)

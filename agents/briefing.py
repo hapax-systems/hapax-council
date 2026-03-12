@@ -74,7 +74,6 @@ def should_deliver_briefing(
 
     now = datetime.now()
     hour = current_hour if current_hour is not None else now.hour
-    minute = current_minute if current_minute is not None else now.minute
 
     # Hard deadline: deliver at 09:00 regardless
     if hour >= 9:
@@ -93,11 +92,7 @@ def should_deliver_briefing(
     state = data.get("state", "UNKNOWN")
 
     # STILL likely means asleep before 09:00
-    if state == "STILL":
-        return False
-
-    # Any active state: deliver
-    return True
+    return state != "STILL"
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -149,9 +144,12 @@ GUIDELINES:
 - Headline: one sentence, overall system state (e.g., "Stack healthy, 47 LLM calls, no drift")
 - Body: 3-5 sentences covering what happened, what's notable, what needs attention
 - Action items: only include things that NEED doing. Don't suggest routine checks if everything is healthy
+- IMPORTANT: The health trend includes a "recently_resolved" field listing checks that failed
+  historically but are NOW passing. Do NOT create action items for resolved issues. Mention them
+  briefly as "resolved" in the body if notable, but focus actions on current failures only.
 - Use specific numbers (calls, costs, uptime %, error counts)
 - If everything is nominal, say so briefly — don't pad
-- For commands, give the exact shell command (the operator uses bash)
+- For commands, give the exact shell command (the operator uses fish shell, but POSIX-compatible commands are fine)
 - Priority levels: high = needs attention today, medium = this week, low = when convenient
 - If a Scout Report section is present, surface any "adopt" or "evaluate" recommendations as action items
 - If a Content Digest section is present, briefly note notable new content and any suggested triage actions
@@ -162,6 +160,7 @@ GUIDELINES:
   more than completeness.
 - If intention-practice gaps are present, note them compassionately. Frame as observation,
   not judgment. Suggest the smallest possible action to re-engage.
+- If an SDLC Pipeline Status section is present, note active pipeline items and their stages. Highlight axiom-blocked PRs as action items. Note review rounds >= 2 as potential escalation risks.
 """
 
 briefing_agent = Agent(
@@ -570,6 +569,18 @@ async def generate_briefing(hours: int = 24) -> Briefing:
     except (ImportError, Exception) as exc:
         log.debug("Audio context unavailable: %s", exc)
 
+    # SDLC pipeline status
+    sdlc_section = ""
+    try:
+        from shared.sdlc_status import collect_sdlc_status, format_sdlc_section
+
+        sdlc = collect_sdlc_status(hours=hours)
+        sdlc_section = format_sdlc_section(sdlc)
+        if sdlc_section:
+            sdlc_section = "\n" + sdlc_section
+    except Exception as exc:
+        log.debug("SDLC status unavailable: %s", exc)
+
     # Synthesize via LLM
     prompt = f"""## Activity Report ({hours}h window)
 ```json
@@ -580,7 +591,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
 ```
 {health_summary}
 ```
-{scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{gaps_section}{profile_section}
+{scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{sdlc_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{gaps_section}{profile_section}
 Generate a briefing for this system state. The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
 The lookback window is {hours} hours."""
 

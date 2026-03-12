@@ -4,12 +4,14 @@
 # Sends to ntfy (mobile push) + notify-send (desktop) via shared.notify.
 set -euo pipefail
 
-cd /home/hapaxlegomenon/projects/ai-agents
+cd /home/hapax/projects/hapax-council
 
-# Load environment
-eval "$(<.envrc)"
+# Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
+export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
+export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null || true)
+export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null || true)
 
-UV="/home/hapaxlegomenon/.local/bin/uv"
+UV="/home/hapax/.local/bin/uv"
 
 # Run health check
 REPORT=$($UV run python -m agents.health_monitor --json 2>/dev/null) || true
@@ -75,7 +77,7 @@ if webhook:
 esac
 
 # Append to health history
-HISTORY_FILE="/home/hapaxlegomenon/projects/ai-agents/profiles/health-history.jsonl"
+HISTORY_FILE="/home/hapax/projects/hapax-council/profiles/health-history.jsonl"
 echo "$FINAL_REPORT" | python3 -c "
 import sys, json
 r = json.load(sys.stdin)

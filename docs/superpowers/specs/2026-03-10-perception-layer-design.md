@@ -72,7 +72,7 @@ Translates `EnvironmentState` into pipeline directives:
 | Conversation detected (face_count > 1 + speech) | `pause` | FrameGate drops audio frames; pipeline frozen |
 | Production/recording mode | `pause` | Same as above |
 | Operator absent (no face for >60s) | `withdraw` | Session closes gracefully |
-| Wake word detected | `process` | Always overrides pause |
+| Wake word detected | `process` | Always overrides pause; 3-tick grace period prevents subsequent perception ticks from overriding |
 
 ### FrameGate
 
@@ -128,7 +128,7 @@ Effects:
 
 ### Resume Signals (priority order)
 
-1. **Wake word** — always works, immediate resume regardless of environment state
+1. **Wake word** — always works, immediate resume regardless of environment state. Processed by an async coroutine that awaits pipeline start directly (not `create_task`), making session open + pipeline start atomic from asyncio's perspective. Governor grace period (3 ticks, ~7.5s) prevents meeting/conversation/absence modes from overriding the wake word intent during startup
 2. **Gaze + environment clear** — operator looks at camera AND face_count == 1 AND no conversation speech for >5s
 3. **Environment clear with delay** — face_count returns to 1, no conversation speech for >15s, auto-resume
 

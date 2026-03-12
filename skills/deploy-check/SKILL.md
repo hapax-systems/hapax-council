@@ -8,8 +8,8 @@ description: Pre-push readiness verification. Use before pushing code, when the 
 Run these checks before pushing to remote:
 
 1. **Uncommitted changes**: `git status` — flag any unstaged or untracked files
-2. **Tests pass**: `cd ~/projects/ai-agents && uv run pytest --tb=short -q`
-3. **Health check**: `cd ~/projects/ai-agents && uv run python -m agents.health_monitor`
+2. **Tests pass**: `cd ~/projects/hapax-council && uv run pytest --tb=short -q`
+3. **Health check**: `cd ~/projects/hapax-council && uv run python -m agents.health_monitor`
 4. **Axiom compliance of branch diff**:
    ```bash
    BASE=$(git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null)

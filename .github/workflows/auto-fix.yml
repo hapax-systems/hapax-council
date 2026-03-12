@@ -1,0 +1,153 @@
+name: Auto-Fix CI Failures
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+  id-token: write
+
+concurrency:
+  group: auto-fix-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  auto-fix:
+    # Only run when:
+    # 1. CI failed (not success or cancelled)
+    # 2. Not on main branch
+    # 3. The triggering commit was NOT already an auto-fix
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch != 'main' &&
+      !contains(github.event.workflow_run.head_commit.message, '[auto-fix]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          fetch-depth: 20
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Circuit breaker: count existing [auto-fix] commits on this branch.
+      # If 3 or more, stop — something needs human attention.
+      - name: Check auto-fix attempt count
+        id: guard
+        run: |
+          COUNT=$(git log --oneline --grep='\[auto-fix\]' origin/main..HEAD | wc -l)
+          echo "auto_fix_count=$COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$COUNT" -ge 3 ]; then
+            echo "::warning::Auto-fix limit reached ($COUNT attempts). Labeling for human review."
+            echo "should_fix=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_fix=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # If too many attempts, label the PR and stop
+      - name: Label PR for human review
+        if: steps.guard.outputs.should_fix == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=$(gh pr list --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr edit "$PR_NUMBER" --add-label "needs-human"
+          fi
+
+      # Download the CI run logs to determine failure type
+      - name: Download CI logs
+        if: steps.guard.outputs.should_fix == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run view ${{ github.event.workflow_run.id }} --log-failed > /tmp/ci-failure.log 2>&1 || true
+
+      # Determine if the failure is in scope (lint/typecheck/format only)
+      - name: Check failure scope
+        if: steps.guard.outputs.should_fix == 'true'
+        id: scope
+        run: |
+          LOG="/tmp/ci-failure.log"
+          FIXABLE=false
+
+          # Check for ruff (lint/format) or pyright (typecheck) failures
+          if grep -qE '(ruff check|ruff format|pyright)' "$LOG" 2>/dev/null; then
+            # But NOT test failures or build failures
+            if ! grep -qE '(FAILED tests/|pytest|pnpm build|pnpm lint)' "$LOG" 2>/dev/null; then
+              FIXABLE=true
+            fi
+          fi
+
+          echo "fixable=$FIXABLE" >> "$GITHUB_OUTPUT"
+          echo "Failure fixable by auto-fix: $FIXABLE"
+
+      # Label and stop if failure is out of scope
+      - name: Label unfixable PR
+        if: steps.guard.outputs.should_fix == 'true' && steps.scope.outputs.fixable == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=$(gh pr list --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr edit "$PR_NUMBER" --add-label "needs-human"
+          fi
+
+      - uses: astral-sh/setup-uv@v5
+        if: steps.guard.outputs.should_fix == 'true' && steps.scope.outputs.fixable == 'true'
+
+      - name: Install dependencies
+        if: steps.guard.outputs.should_fix == 'true' && steps.scope.outputs.fixable == 'true'
+        run: uv sync --extra ci
+
+      - name: Run Claude Code auto-fix
+        if: steps.guard.outputs.should_fix == 'true' && steps.scope.outputs.fixable == 'true'
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: "--model claude-sonnet-4-6 --max-turns 5 --allowedTools Bash,Read,Edit,Write"
+          prompt: |
+            The CI pipeline failed on this branch. Fix ONLY lint, typecheck, and format errors.
+
+            Steps:
+            1. Run `uv run ruff check .` and fix any lint errors with `uv run ruff check --fix .`
+            2. Run `uv run ruff format .` to fix formatting
+            3. Run `uv run pyright` and fix any type errors
+            4. Do NOT change test files, test logic, or behavior
+            5. Do NOT change any files in: axioms/, hooks/, systemd/, shared/config.py,
+               shared/axiom_enforcement.py, shared/alert_state.py, agents/health_monitor.py
+            6. Make minimal changes — fix only what is broken
+
+            After fixing, verify all three pass:
+            - `uv run ruff check .`
+            - `uv run ruff format --check .`
+            - `uv run pyright`
+
+      # Commit and push the fix
+      - name: Commit auto-fix
+        if: steps.guard.outputs.should_fix == 'true' && steps.scope.outputs.fixable == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "claude-code[bot]"
+          git config user.email "claude-code[bot]@users.noreply.github.com"
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes to commit — Claude could not fix the issue."
+            PR_NUMBER=$(gh pr list --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
+            if [ -n "$PR_NUMBER" ]; then
+              gh pr edit "$PR_NUMBER" --add-label "needs-human"
+            fi
+          else
+            git add -A
+            git commit -m "[auto-fix] resolve lint/typecheck/format errors
+
+          Automated fix by Claude Code. See CI logs for details.
+
+          Co-Authored-By: Claude Sonnet <noreply@anthropic.com>"
+            git push
+          fi

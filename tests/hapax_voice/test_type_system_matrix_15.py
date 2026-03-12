@@ -32,15 +32,11 @@ def _make_state(**overrides) -> EnvironmentState:
     defaults = dict(
         timestamp=time.monotonic(),
         speech_detected=False,
-        speech_volume_db=-40.0,
-        ambient_class="quiet",
         vad_confidence=0.0,
         face_count=1,
         operator_present=True,
-        gaze_at_camera=False,
         activity_mode="idle",
         workspace_context="",
-        ambient_detailed="",
         active_window=None,
         window_count=0,
         active_workspace_id=0,
@@ -131,25 +127,31 @@ class TestProvenanceThroughReconfiguration:
         )
 
         # Config 1: lenient → passes
-        guard1 = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=10.0),
-        ])
+        guard1 = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=10.0),
+            ]
+        )
         r1 = guard1.check(ctx, now)
         assert r1.fresh_enough
         assert len(r1.violations) == 0
 
         # Reconfig: strict → fails
-        guard2 = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=1.0),
-        ])
+        guard2 = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=1.0),
+            ]
+        )
         r2 = guard2.check(ctx, now)
         assert not r2.fresh_enough
         assert "sensor:" in r2.violations[0]
 
         # Reconfig: require missing behavior
-        guard3 = FreshnessGuard([
-            FreshnessRequirement(behavior_name="phantom", max_staleness_s=1.0),
-        ])
+        guard3 = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="phantom", max_staleness_s=1.0),
+            ]
+        )
         r3 = guard3.check(ctx, now)
         assert "not present" in r3.violations[0]
 
@@ -195,11 +197,13 @@ class TestEvolutionAcrossCycles:
                 min_watermark=now,
             )
             result = chain.evaluate(ctx)
-            commands.append(Command(
-                action="pause" if not result.allowed else "process",
-                params={"cycle": i},
-                governance_result=result,
-            ))
+            commands.append(
+                Command(
+                    action="pause" if not result.allowed else "process",
+                    params={"cycle": i},
+                    governance_result=result,
+                )
+            )
             # Evolve: add veto after each cycle
             chain.add(Veto(name=f"veto_{i}", predicate=lambda _: False))
 
@@ -301,8 +305,8 @@ class TestEvolutionAcrossCycles:
 
         assert result0 == ("pause", False)  # production → veto
         assert result1 == ("process", True)  # wake word override
-        assert result2 == ("pause", False)   # production → veto again
-        assert result3 == ("process", True)   # wake word override again
+        assert result2 == ("pause", False)  # production → veto again
+        assert result3 == ("process", True)  # wake word override again
 
 
 class TestAccountableEndToEnd:
@@ -352,20 +356,22 @@ class TestAccountableEndToEnd:
 
         configs = [
             FreshnessGuard([FreshnessRequirement("sensor", 10.0)]),  # lenient
-            FreshnessGuard([FreshnessRequirement("sensor", 1.0)]),   # strict
+            FreshnessGuard([FreshnessRequirement("sensor", 1.0)]),  # strict
             FreshnessGuard([FreshnessRequirement("phantom", 1.0)]),  # missing
         ]
 
         commands: list[Command] = []
         for i, guard in enumerate(configs):
             result = guard.check(ctx, now)
-            commands.append(Command(
-                action="process" if result.fresh_enough else "pause",
-                params={
-                    "config": i,
-                    "violations": list(result.violations),
-                },
-            ))
+            commands.append(
+                Command(
+                    action="process" if result.fresh_enough else "pause",
+                    params={
+                        "config": i,
+                        "violations": list(result.violations),
+                    },
+                )
+            )
 
         assert commands[0].action == "process"
         assert commands[1].action == "pause"
@@ -388,11 +394,13 @@ class TestAccountableEndToEnd:
                 min_watermark=now,
             )
             result = chain.evaluate(ctx)
-            commands.append(Command(
-                action="process" if result.allowed else "pause",
-                params={"cycle": i, "denied_count": len(result.denied_by)},
-                governance_result=result,
-            ))
+            commands.append(
+                Command(
+                    action="process" if result.allowed else "pause",
+                    params={"cycle": i, "denied_count": len(result.denied_by)},
+                    governance_result=result,
+                )
+            )
             if i < 3:
                 chain.add(Veto(name=f"v{i}", predicate=lambda _: False))
 

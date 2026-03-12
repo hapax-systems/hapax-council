@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from agents.demo_pipeline.title_cards import generate_title_card
+pytest.importorskip("PIL", reason="Pillow not installed")
+
+from agents.demo_pipeline.title_cards import generate_title_card  # noqa: E402
 
 
 class TestAssembleVideo:

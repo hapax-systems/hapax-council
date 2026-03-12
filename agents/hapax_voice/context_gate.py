@@ -17,9 +17,9 @@ from agents.hapax_voice.primitives import Behavior
 from agents.hapax_voice.session import SessionManager
 
 try:
-    from agents.hapax_voice.watch_signals import is_stress_elevated
+    from agents.hapax_voice.watch_signals import is_stress_elevated as _is_stress_elevated_fallback
 except ImportError:
-    is_stress_elevated = None  # type: ignore[assignment]
+    _is_stress_elevated_fallback = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +61,6 @@ class ContextGate:
         self.ambient_block_threshold = ambient_block_threshold
         self._activity_mode: str = "unknown"
         self._event_log = None
-        self._environment_state = None
 
         # Behavior references (set by PerceptionEngine backends)
         self._behaviors: dict[str, Behavior] = {}
@@ -91,18 +90,18 @@ class ContextGate:
         )
         if self.ambient_classification:
             self._veto_chain.add(Veto("ambient", predicate=self._allow_ambient))
-        if is_stress_elevated is not None:
-            self._veto_chain.add(Veto("stress_elevated", predicate=self._allow_stress))
+        # Stress veto: reads from WatchBackend Behavior, falls back to direct call
+        self._veto_chain.add(Veto("stress_elevated", predicate=self._allow_stress))
+        # System health veto: blocks on degraded/failed
+        self._veto_chain.add(Veto("system_health", predicate=self._allow_system_health))
+        # Watch activity veto: blocks on exercise/sleep
+        self._veto_chain.add(Veto("watch_activity", predicate=self._allow_watch_activity))
 
     def set_activity_mode(self, mode: str) -> None:
         self._activity_mode = mode
 
     def set_event_log(self, event_log) -> None:
         self._event_log = event_log
-
-    def set_environment_state(self, state) -> None:
-        """Accept latest EnvironmentState from perception engine."""
-        self._environment_state = state
 
     def set_behaviors(self, behaviors: dict[str, Behavior]) -> None:
         """Set Behavior references from PerceptionEngine backends.
@@ -156,9 +155,7 @@ class ContextGate:
             return True  # fail-open: activity_mode catches meetings via slow-tick
         window_class = str(b.value).lower()
         if window_class in self._fullscreen_block_classes:
-            self._denial_reasons["fullscreen_app"] = (
-                f"Blocked: fullscreen app '{b.value}'"
-            )
+            self._denial_reasons["fullscreen_app"] = f"Blocked: fullscreen app '{b.value}'"
             return False
         return True
 
@@ -192,8 +189,36 @@ class ContextGate:
         return True
 
     def _allow_stress(self, _: None) -> bool:
-        if is_stress_elevated is not None and is_stress_elevated():
+        """Check stress from Behavior (WatchBackend), fall back to direct call."""
+        b = self._behaviors.get("stress_elevated")
+        if b is not None:
+            if b.value:
+                self._denial_reasons["stress_elevated"] = "Stress elevated (HRV/EDA)"
+                return False
+            return True
+        # Fallback: direct call when WatchBackend not registered
+        if _is_stress_elevated_fallback is not None and _is_stress_elevated_fallback():
             self._denial_reasons["stress_elevated"] = "Stress elevated (HRV/EDA)"
+            return False
+        return True
+
+    def _allow_system_health(self, _: None) -> bool:
+        """Block on degraded or failed system health."""
+        b = self._behaviors.get("system_health_status")
+        if b is None:
+            return True  # fail-open when backend not registered
+        if b.value in ("degraded", "failed"):
+            self._denial_reasons["system_health"] = f"System health: {b.value}"
+            return False
+        return True
+
+    def _allow_watch_activity(self, _: None) -> bool:
+        """Block when operator is exercising or sleeping."""
+        b = self._behaviors.get("watch_activity_state")
+        if b is None:
+            return True  # fail-open
+        if b.value in ("exercise", "sleep"):
+            self._denial_reasons["watch_activity"] = f"Operator activity: {b.value}"
             return False
         return True
 
