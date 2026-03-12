@@ -28,7 +28,7 @@ class TestDiagrams:
     def test_render_d2_fallback_no_d2(self, tmp_path):
         """When D2 not installed, generates fallback Pillow image."""
         output = tmp_path / "diagram.png"
-        with patch("agents.demo_pipeline.diagrams.is_d2_available", return_value=False):
+        with patch("demo.pipeline.diagrams.is_d2_available", return_value=False):
             result = render_d2("A -> B -> C", output)
         assert result.exists()
         assert result.stat().st_size > 0
@@ -43,7 +43,7 @@ class TestDiagrams:
         """Verify theme is prepended (check via mock subprocess)."""
         output = tmp_path / "diagram.png"
         with (
-            patch("agents.demo_pipeline.diagrams.is_d2_available", return_value=True),
+            patch("demo.pipeline.diagrams.is_d2_available", return_value=True),
             patch("subprocess.run") as mock_run,
             patch("tempfile.NamedTemporaryFile") as mock_tmp,
         ):

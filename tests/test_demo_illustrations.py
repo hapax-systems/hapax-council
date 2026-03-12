@@ -52,7 +52,7 @@ class TestGenerateIllustrations:
         paths = await generate_illustrations([], tmp_path)
         assert paths == []
 
-    @patch("agents.demo_pipeline.illustrations._generate_single", new_callable=AsyncMock)
+    @patch("demo.pipeline.illustrations._generate_single", new_callable=AsyncMock)
     async def test_calls_generate_for_each_spec(self, mock_gen, tmp_path):
         from agents.demo_pipeline.illustrations import generate_illustrations
 
@@ -68,7 +68,7 @@ class TestGenerateIllustrations:
         assert mock_gen.call_count == 2
         assert len(paths) == 2
 
-    @patch("agents.demo_pipeline.illustrations._generate_single", new_callable=AsyncMock)
+    @patch("demo.pipeline.illustrations._generate_single", new_callable=AsyncMock)
     async def test_fallback_on_failure(self, mock_gen, tmp_path):
         from agents.demo_pipeline.illustrations import generate_illustrations
 
@@ -79,7 +79,7 @@ class TestGenerateIllustrations:
         assert len(paths) == 1
         assert paths[0] is None
 
-    @patch("agents.demo_pipeline.illustrations._generate_single", new_callable=AsyncMock)
+    @patch("demo.pipeline.illustrations._generate_single", new_callable=AsyncMock)
     async def test_progress_callback(self, mock_gen, tmp_path):
         from agents.demo_pipeline.illustrations import generate_illustrations
 

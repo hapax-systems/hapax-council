@@ -176,7 +176,7 @@ class TestSaveDossier:
         target = tmp_path / "audiences.yaml"
         dossier = _make_dossier()
 
-        with patch("agents.demo_pipeline.dossier.os.replace", wraps=os.replace) as mock_replace:
+        with patch("demo.pipeline.dossier.os.replace", wraps=os.replace) as mock_replace:
             save_dossier(dossier, path=target)
             mock_replace.assert_called_once()
             # First arg is temp file, second is target

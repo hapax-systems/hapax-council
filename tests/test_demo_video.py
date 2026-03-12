@@ -72,7 +72,7 @@ class TestAssembleVideo:
 
         from agents.demo_pipeline.video import _title_clip
 
-        with patch("agents.demo_pipeline.video.AudioFileClip") as mock_audio_cls:
+        with patch("demo.pipeline.video.AudioFileClip") as mock_audio_cls:
             mock_audio = MagicMock()
             mock_audio.duration = 7.5
             mock_audio_cls.return_value = mock_audio

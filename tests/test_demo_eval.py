@@ -58,8 +58,8 @@ class TestEvaluateDemoOutput:
                 new_callable=AsyncMock,
                 return_value=visual_dims,
             ),
-            patch("agents.demo_pipeline.narrative.load_style_guide", return_value={}),
-            patch("agents.demo_pipeline.narrative.load_voice_examples", return_value={}),
+            patch("demo.pipeline.narrative.load_style_guide", return_value={}),
+            patch("demo.pipeline.narrative.load_voice_examples", return_value={}),
         ):
             from agents.demo_eval import evaluate_demo_output
 
@@ -105,8 +105,8 @@ class TestEvaluateDemoOutput:
                 new_callable=AsyncMock,
                 return_value=visual_dims,
             ),
-            patch("agents.demo_pipeline.narrative.load_style_guide", return_value={}),
-            patch("agents.demo_pipeline.narrative.load_voice_examples", return_value={}),
+            patch("demo.pipeline.narrative.load_style_guide", return_value={}),
+            patch("demo.pipeline.narrative.load_voice_examples", return_value={}),
         ):
             from agents.demo_eval import evaluate_demo_output
 
@@ -144,9 +144,9 @@ class TestRunEvalLoop:
             patch("agents.demo.resolve_audience", return_value=("family", "")),
             patch("agents.demo_models.load_personas", return_value={"family": MagicMock()}),
             patch("agents.demo.parse_duration", return_value=180),
-            patch("agents.demo_pipeline.narrative.load_style_guide", return_value={}),
-            patch("agents.demo_pipeline.lessons.load_lessons_for_archetype", return_value=[]),
-            patch("agents.demo_pipeline.lessons.format_lessons_block", return_value=""),
+            patch("demo.pipeline.narrative.load_style_guide", return_value={}),
+            patch("demo.pipeline.lessons.load_lessons_for_archetype", return_value=[]),
+            patch("demo.pipeline.lessons.format_lessons_block", return_value=""),
         ):
             from agents.demo_eval import run_eval_loop
 
@@ -207,15 +207,15 @@ class TestRunEvalLoop:
             patch("agents.demo.resolve_audience", return_value=("family", "")),
             patch("agents.demo_models.load_personas", return_value={"family": MagicMock()}),
             patch("agents.demo.parse_duration", return_value=180),
-            patch("agents.demo_pipeline.narrative.load_style_guide", return_value={}),
-            patch("agents.demo_pipeline.lessons.load_lessons_for_archetype", return_value=[]),
-            patch("agents.demo_pipeline.lessons.format_lessons_block", return_value=""),
-            patch("agents.demo_pipeline.lessons.load_lessons", return_value={}),
-            patch("agents.demo_pipeline.lessons.save_lessons"),
+            patch("demo.pipeline.narrative.load_style_guide", return_value={}),
+            patch("demo.pipeline.lessons.load_lessons_for_archetype", return_value=[]),
+            patch("demo.pipeline.lessons.format_lessons_block", return_value=""),
+            patch("demo.pipeline.lessons.load_lessons", return_value={}),
+            patch("demo.pipeline.lessons.save_lessons"),
             patch(
-                "agents.demo_pipeline.lessons.extract_lessons", return_value=["Use simple language"]
+                "demo.pipeline.lessons.extract_lessons", return_value=["Use simple language"]
             ),
-            patch("agents.demo_pipeline.lessons.accumulate_lessons", return_value={"family": []}),
+            patch("demo.pipeline.lessons.accumulate_lessons", return_value={"family": []}),
         ):
             from agents.demo_eval import run_eval_loop
 

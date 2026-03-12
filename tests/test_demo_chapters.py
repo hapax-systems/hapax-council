@@ -138,7 +138,7 @@ class TestBuildChapterList:
         # Outro uses TITLE_DURATION (3.0)
         assert chapters[2][2] - chapters[2][1] == pytest.approx(3.0)
 
-    @patch("agents.demo_pipeline.chapters._get_wav_duration")
+    @patch("demo.pipeline.chapters._get_wav_duration")
     def test_with_audio_durations(self, mock_dur: MagicMock) -> None:
         """When audio files exist, their durations are used."""
         script = _make_script(num_scenes=1, duration_hint=5.0)
@@ -170,7 +170,7 @@ class TestBuildChapterList:
 class TestInjectChapters:
     """Tests for inject_chapters."""
 
-    @patch("agents.demo_pipeline.chapters.get_ffmpeg_path")
+    @patch("demo.pipeline.chapters.get_ffmpeg_path")
     @patch("subprocess.run")
     def test_smoke(self, mock_run: MagicMock, mock_ffmpeg: MagicMock, tmp_path: Path) -> None:
         """Mock subprocess.run, verify ffmpeg called with correct args."""
@@ -203,7 +203,7 @@ class TestInjectChapters:
         assert "copy" in cmd
         assert str(output) in cmd
 
-    @patch("agents.demo_pipeline.chapters.get_ffmpeg_path")
+    @patch("demo.pipeline.chapters.get_ffmpeg_path")
     @patch("subprocess.run")
     def test_in_place_replacement(
         self, mock_run: MagicMock, mock_ffmpeg: MagicMock, tmp_path: Path
@@ -230,7 +230,7 @@ class TestInjectChapters:
         # Temp chaptered file should be cleaned up (renamed to original)
         assert not chaptered.exists()
 
-    @patch("agents.demo_pipeline.chapters.get_ffmpeg_path")
+    @patch("demo.pipeline.chapters.get_ffmpeg_path")
     @patch("subprocess.run")
     def test_ffmpeg_failure_raises(
         self, mock_run: MagicMock, mock_ffmpeg: MagicMock, tmp_path: Path

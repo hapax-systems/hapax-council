@@ -26,7 +26,7 @@ dependencies = [
     "opentelemetry-sdk>=1.39.0",
     "opentelemetry-exporter-otlp-proto-http>=1.39.0",
     "opentelemetry-instrumentation-httpx>=0.50b0",
-    "hapax-sdlc @ git+https://github.com/ryanklee/hapax-constitution.git",
+    "hapax-sdlc[demo] @ git+https://github.com/ryanklee/hapax-constitution.git",
 ]
 
 [project.optional-dependencies]

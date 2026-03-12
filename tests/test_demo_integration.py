@@ -49,8 +49,8 @@ class TestDemoIntegration:
             outro_narration="That is the system. Pretty cool, right?",
         )
 
-    @patch("agents.demo_pipeline.screenshots._preflight_check", new_callable=AsyncMock)
-    @patch("agents.demo_pipeline.screenshots.async_playwright")
+    @patch("demo.pipeline.screenshots._preflight_check", new_callable=AsyncMock)
+    @patch("demo.pipeline.screenshots.async_playwright")
     async def test_full_pipeline_mocked(self, mock_pw, mock_preflight, mock_script, tmp_path):
         """Test screenshot capture + slide render with mocked browser."""
         from agents.demo_pipeline.screenshots import capture_screenshots
@@ -100,8 +100,8 @@ class TestDemoIntegration:
             script_json.write_text(mock_script.model_dump_json(indent=2))
         assert script_json.exists()
 
-    @patch("agents.demo_pipeline.screenshots._preflight_check", new_callable=AsyncMock)
-    @patch("agents.demo_pipeline.screenshots.async_playwright")
+    @patch("demo.pipeline.screenshots._preflight_check", new_callable=AsyncMock)
+    @patch("demo.pipeline.screenshots.async_playwright")
     @patch("agents.demo.voice_agent")
     @patch("agents.demo.content_agent")
     async def test_generate_demo_orchestration(

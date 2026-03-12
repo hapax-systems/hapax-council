@@ -187,9 +187,9 @@ class TestExecuteStep:
 
 
 class TestRecordScreencasts:
-    @patch("agents.demo_pipeline.screencasts._preflight_check", new_callable=AsyncMock)
-    @patch("agents.demo_pipeline.screencasts.async_playwright")
-    @patch("agents.demo_pipeline.screencasts._webm_to_mp4")
+    @patch("demo.pipeline.screencasts._preflight_check", new_callable=AsyncMock)
+    @patch("demo.pipeline.screencasts.async_playwright")
+    @patch("demo.pipeline.screencasts._webm_to_mp4")
     async def test_records_screencasts(self, mock_convert, mock_pw, mock_preflight, tmp_path):
         mock_page = AsyncMock()
         mock_video = AsyncMock()
@@ -234,9 +234,9 @@ class TestRecordScreencasts:
         paths = await record_screencasts([], tmp_path)
         assert paths == []
 
-    @patch("agents.demo_pipeline.screencasts._preflight_check", new_callable=AsyncMock)
-    @patch("agents.demo_pipeline.screencasts.async_playwright")
-    @patch("agents.demo_pipeline.screencasts._webm_to_mp4")
+    @patch("demo.pipeline.screencasts._preflight_check", new_callable=AsyncMock)
+    @patch("demo.pipeline.screencasts.async_playwright")
+    @patch("demo.pipeline.screencasts._webm_to_mp4")
     async def test_resolves_recipe(self, mock_convert, mock_pw, mock_preflight, tmp_path):
         mock_page = AsyncMock()
         mock_video = AsyncMock()
