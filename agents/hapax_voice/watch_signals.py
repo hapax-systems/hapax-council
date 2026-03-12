@@ -7,7 +7,6 @@ for the ContextGate veto chain and PresenceDetector.
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -98,11 +97,7 @@ def is_watch_connected(watch_dir: Path | None = None) -> bool:
         return True
 
     # BLE fallback: check Bluetooth proximity
-    bt_nearby = is_watch_bt_nearby(watch_dir=watch_dir)
-    if bt_nearby is True:
-        return True
-
-    return False
+    return is_watch_bt_nearby(watch_dir=watch_dir) is True
 
 
 def send_haptic_tap(device_id: str | None = None, pattern: str = "hapax-presence-check") -> bool:
@@ -183,11 +178,7 @@ def is_watch_bt_nearby(
         # "Connected: yes" means active connection
         # "Paired: yes" + RSSI means in range
         output = result.stdout
-        if "Connected: yes" in output:
-            return True
-        if "RSSI:" in output:
-            return True  # In range even if not connected
-        return False
+        return "Connected: yes" in output or "RSSI:" in output
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
 

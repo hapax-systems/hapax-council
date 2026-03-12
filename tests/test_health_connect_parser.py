@@ -5,16 +5,14 @@ import sqlite3
 import tempfile
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from agents.health_connect_parser import (
     extract_zip,
-    parse_health_db,
     format_daily_summary,
+    parse_health_db,
     write_rag_documents,
-    run_parse,
 )
 
 
@@ -110,7 +108,8 @@ class TestWriteRagDocuments:
         days = [_sample_day_data()]
         write_rag_documents(days, tmp_path)
         first_mtime = (tmp_path / "health-2026-03-12.md").stat().st_mtime
-        import time; time.sleep(0.05)
+        import time
+        time.sleep(0.05)
         write_rag_documents(days, tmp_path)
         second_mtime = (tmp_path / "health-2026-03-12.md").stat().st_mtime
         assert first_mtime == second_mtime
@@ -120,10 +119,8 @@ class TestWriteRagDocuments:
 
 def _create_test_db() -> bytes:
     """Create a minimal Health Connect SQLite database as bytes."""
-    import io
-    buf = io.BytesIO()
     # We need to write to a temp file because sqlite3 can't write to BytesIO directly
-    import tempfile, os
+    import os
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:

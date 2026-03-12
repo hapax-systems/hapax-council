@@ -74,7 +74,6 @@ def should_deliver_briefing(
 
     now = datetime.now()
     hour = current_hour if current_hour is not None else now.hour
-    minute = current_minute if current_minute is not None else now.minute
 
     # Hard deadline: deliver at 09:00 regardless
     if hour >= 9:
@@ -93,11 +92,7 @@ def should_deliver_briefing(
     state = data.get("state", "UNKNOWN")
 
     # STILL likely means asleep before 09:00
-    if state == "STILL":
-        return False
-
-    # Any active state: deliver
-    return True
+    return state != "STILL"
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────

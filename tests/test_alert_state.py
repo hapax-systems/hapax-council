@@ -6,8 +6,6 @@ import json
 import time
 from pathlib import Path
 
-import pytest
-
 from shared.alert_state import (
     DEDUP_WINDOW_S,
     DEGRADED_ESCALATION_CYCLES,
@@ -104,7 +102,7 @@ class TestEscalation:
             {"name": "disk-space", "status": "degraded", "message": "85% full", "group": "system"},
         ])
 
-        for i in range(DEGRADED_ESCALATION_CYCLES):
+        for _i in range(DEGRADED_ESCALATION_CYCLES):
             if state_file.exists():
                 state = json.loads(state_file.read_text())
                 for k in state:
@@ -122,7 +120,7 @@ class TestEscalation:
             {"name": "litellm-health", "status": "failed", "message": "timeout", "group": "litellm"},
         ])
 
-        for i in range(T0_URGENT_CYCLES):
+        for _i in range(T0_URGENT_CYCLES):
             if state_file.exists():
                 state = json.loads(state_file.read_text())
                 for k in state:
