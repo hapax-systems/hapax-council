@@ -160,6 +160,7 @@ GUIDELINES:
   more than completeness.
 - If intention-practice gaps are present, note them compassionately. Frame as observation,
   not judgment. Suggest the smallest possible action to re-engage.
+- If an SDLC Pipeline Status section is present, note active pipeline items and their stages. Highlight axiom-blocked PRs as action items. Note review rounds >= 2 as potential escalation risks.
 """
 
 briefing_agent = Agent(
@@ -568,6 +569,18 @@ async def generate_briefing(hours: int = 24) -> Briefing:
     except (ImportError, Exception) as exc:
         log.debug("Audio context unavailable: %s", exc)
 
+    # SDLC pipeline status
+    sdlc_section = ""
+    try:
+        from shared.sdlc_status import collect_sdlc_status, format_sdlc_section
+
+        sdlc = collect_sdlc_status(hours=hours)
+        sdlc_section = format_sdlc_section(sdlc)
+        if sdlc_section:
+            sdlc_section = "\n" + sdlc_section
+    except Exception as exc:
+        log.debug("SDLC status unavailable: %s", exc)
+
     # Synthesize via LLM
     prompt = f"""## Activity Report ({hours}h window)
 ```json
@@ -578,7 +591,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
 ```
 {health_summary}
 ```
-{scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{gaps_section}{profile_section}
+{scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{sdlc_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{gaps_section}{profile_section}
 Generate a briefing for this system state. The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
 The lookback window is {hours} hours."""
 

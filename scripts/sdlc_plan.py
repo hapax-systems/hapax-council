@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -186,11 +187,29 @@ def run_plan(issue_number: int, *, dry_run: bool = False, post_comment: bool = T
 {context}
 """
 
+    model = os.environ.get("SDLC_PLAN_MODEL", "claude-sonnet-4-6")
+    t0 = time.monotonic()
+
     trace_id = f"sdlc-plan-{issue_number}"
     with TraceContext("planning", trace_id, issue_number=issue_number) as span:
         result = _call_llm(system_prompt, user_prompt, dry_run=dry_run)
-        span.model = os.environ.get("SDLC_PLAN_MODEL", "claude-sonnet-4-6")
+        span.model = model
         span.output_text = result.model_dump_json()
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+
+    try:
+        from shared.sdlc_log import log_sdlc_event
+        log_sdlc_event(
+            "plan",
+            issue_number=issue_number,
+            result={"files_count": len(result.files_to_modify), "estimated_diff_lines": result.estimated_diff_lines},
+            duration_ms=duration_ms,
+            model_used=model,
+            dry_run=dry_run,
+        )
+    except Exception:
+        pass
 
     if post_comment and not dry_run:
         files_list = "\n".join(

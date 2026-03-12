@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -163,14 +164,32 @@ def run_review(pr_number: int, *, dry_run: bool = False) -> ReviewResult:
 ```
 """
 
+    model = os.environ.get("SDLC_REVIEW_MODEL", "claude-sonnet-4-6")
+    t0 = time.monotonic()
+
     trace_id = f"sdlc-review-{pr_number}"
     with TraceContext("review", trace_id, pr_number=pr_number) as span:
         result = _call_llm(system_prompt, user_prompt, dry_run=dry_run)
-        span.model = os.environ.get("SDLC_REVIEW_MODEL", "claude-sonnet-4-6")
+        span.model = model
         span.output_text = result.model_dump_json()
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
 
     if not dry_run:
         _post_review_results(pr_number, result)
+
+    try:
+        from shared.sdlc_log import log_sdlc_event
+        log_sdlc_event(
+            "review",
+            pr_number=pr_number,
+            result={"verdict": result.verdict, "findings_count": len(result.findings)},
+            duration_ms=duration_ms,
+            model_used=model,
+            dry_run=dry_run,
+        )
+    except Exception:
+        pass
 
     return result
 

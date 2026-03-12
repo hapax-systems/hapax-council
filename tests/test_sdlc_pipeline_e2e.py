@@ -62,6 +62,27 @@ class TestDryRunOutputFormats:
         json.loads(result.model_dump_json())
 
 
+class TestSimilarClosedIssues:
+    def test_skip_github_returns_empty(self):
+        from scripts.sdlc_triage import find_similar_closed
+        result = find_similar_closed("Fix typo", "There is a typo", skip_github=True)
+        assert result == []
+
+    def test_extract_keywords(self):
+        from scripts.sdlc_triage import _extract_search_keywords
+        kw = _extract_search_keywords("Fix broken webhook handler", "The webhook times out")
+        assert "webhook" in kw
+        assert "the" not in kw
+        assert len(kw) <= 5
+
+    @patch("scripts.sdlc_triage.fetch_issue")
+    def test_triage_with_skip_similar(self, mock_fetch):
+        from shared.sdlc_github import Issue
+        mock_fetch.return_value = Issue(number=1, title="Fix typo", body="Typo in README")
+        result = run_triage(1, dry_run=True, skip_similar=True)
+        assert isinstance(result, TriageResult)
+
+
 class TestDryRunPipelineSequence:
     """Verify the pipeline stages produce compatible outputs."""
 

@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -217,6 +218,9 @@ def run_axiom_gate(pr_number: int, *, dry_run: bool = False) -> AxiomGateResult:
 
     axioms = load_axioms(scope="constitutional")
 
+    model = os.environ.get("SDLC_JUDGE_MODEL", "claude-haiku-4-5-20251001")
+    t0 = time.monotonic()
+
     # 1. Structural checks.
     structural = _check_structural(changed_files, diff, pr_title, complexity)
 
@@ -230,7 +234,7 @@ def run_axiom_gate(pr_number: int, *, dry_run: bool = False) -> AxiomGateResult:
     trace_id = f"sdlc-axiom-gate-{pr_number}"
     with TraceContext("axiom-gate", trace_id, pr_number=pr_number) as span:
         semantic = _call_judge(judge_prompt, diff, dry_run=dry_run)
-        span.model = os.environ.get("SDLC_JUDGE_MODEL", "claude-haiku-4-5-20251001")
+        span.model = model
         span.output_text = json.dumps([v.model_dump() for v in semantic])
 
     # 3. Precedent check via existing enforcement module.
@@ -270,6 +274,21 @@ def run_axiom_gate(pr_number: int, *, dry_run: bool = False) -> AxiomGateResult:
         overall=overall,
         summary=_build_summary(structural, semantic, precedent_violations, overall),
     )
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+
+    try:
+        from shared.sdlc_log import log_sdlc_event
+        log_sdlc_event(
+            "axiom-gate",
+            pr_number=pr_number,
+            result={"overall": result.overall, "structural_passed": result.structural.passed},
+            duration_ms=duration_ms,
+            model_used=model,
+            dry_run=dry_run,
+        )
+    except Exception:
+        pass
 
     if not dry_run:
         _post_gate_results(pr_number, result)

@@ -85,6 +85,30 @@ def remove_issue_label(number: int, label: str) -> None:
         pass  # label wasn't there
 
 
+def search_closed_issues(query: str, limit: int = 5) -> list[dict]:
+    """Search closed issues/PRs matching query keywords.
+
+    Returns list of dicts with number, title, labels, state.
+    """
+    raw = _run_gh(
+        "issue", "list",
+        "--state", "closed",
+        "--search", query,
+        "--limit", str(limit),
+        "--json", "number,title,labels,state",
+    )
+    items = json.loads(raw)
+    return [
+        {
+            "number": item["number"],
+            "title": item["title"],
+            "labels": [lb["name"] for lb in item.get("labels", [])],
+            "state": item.get("state", "CLOSED"),
+        }
+        for item in items
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Pull request operations
 # ---------------------------------------------------------------------------

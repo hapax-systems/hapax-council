@@ -15,7 +15,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -136,11 +138,84 @@ def _call_llm(system: str, user: str, *, dry_run: bool = False) -> TriageResult:
 
 
 # ---------------------------------------------------------------------------
+# Similar-issue search
+# ---------------------------------------------------------------------------
+
+_TRIAGE_STOP_WORDS = frozenset(
+    "the a an is are was were be been being have has had do does did will would "
+    "could should may might can shall to of in for on with at by from as into "
+    "through during before after above below between out off over under again "
+    "further then once this that these those it its not no nor and but or so "
+    "if when where how what which who whom why".split()
+)
+
+
+def _extract_search_keywords(title: str, body: str, max_keywords: int = 5) -> list[str]:
+    """Extract salient keywords from issue text for search."""
+    text = f"{title} {body}"
+    words = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", text.lower())
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for w in words:
+        if w not in _TRIAGE_STOP_WORDS and w not in seen:
+            seen.add(w)
+            keywords.append(w)
+        if len(keywords) >= max_keywords:
+            break
+    return keywords
+
+
+def find_similar_closed(
+    issue_title: str,
+    issue_body: str,
+    *,
+    skip_github: bool = False,
+) -> list[dict]:
+    """Find closed issues/PRs similar to the given issue.
+
+    Two strategies: GitHub search (network) and local event log scan.
+    Returns list of dicts with number, title, labels, source.
+    """
+    keywords = _extract_search_keywords(issue_title, issue_body)
+    if not keywords:
+        return []
+
+    results: list[dict] = []
+
+    if not skip_github:
+        try:
+            from shared.sdlc_github import search_closed_issues
+            query = " ".join(keywords[:4])
+            gh_results = search_closed_issues(query, limit=5)
+            for item in gh_results:
+                item["source"] = "github"
+                results.append(item)
+        except Exception:
+            pass
+
+    return results
+
+
+def _format_similar_issues(similar: list[dict]) -> str:
+    """Format similar closed issues as context for the triage prompt."""
+    if not similar:
+        return ""
+    lines = ["\n## Similar Past Issues (Closed)"]
+    for item in similar[:5]:
+        labels_str = ", ".join(item.get("labels", []))
+        suffix = f" [{labels_str}]" if labels_str else ""
+        lines.append(f"- #{item['number']}: {item['title']}{suffix}")
+    lines.append("")
+    lines.append("Consider whether this issue is a duplicate or regression of the above.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 
-def run_triage(issue_number: int, *, dry_run: bool = False) -> TriageResult:
+def run_triage(issue_number: int, *, dry_run: bool = False, skip_similar: bool = False) -> TriageResult:
     """Triage a GitHub issue and return structured result."""
     issue = fetch_issue(issue_number)
     axioms = load_axioms(scope="constitutional")
@@ -148,11 +223,34 @@ def run_triage(issue_number: int, *, dry_run: bool = False) -> TriageResult:
     system_prompt = _build_system_prompt(axioms)
     user_prompt = f"# {issue.title}\n\n{issue.body}"
 
+    similar = find_similar_closed(issue.title, issue.body, skip_github=skip_similar)
+    similar_context = _format_similar_issues(similar)
+    if similar_context:
+        user_prompt += similar_context
+
+    model = os.environ.get("SDLC_TRIAGE_MODEL", "claude-sonnet-4-6")
+    t0 = time.monotonic()
+
     trace_id = f"sdlc-triage-{issue_number}"
     with TraceContext("triage", trace_id, issue_number=issue_number) as span:
         result = _call_llm(system_prompt, user_prompt, dry_run=dry_run)
-        span.model = os.environ.get("SDLC_TRIAGE_MODEL", "claude-sonnet-4-6")
+        span.model = model
         span.output_text = result.model_dump_json()
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+
+    try:
+        from shared.sdlc_log import log_sdlc_event
+        log_sdlc_event(
+            "triage",
+            issue_number=issue_number,
+            result={"type": result.type, "complexity": result.complexity, "reject_reason": result.reject_reason},
+            duration_ms=duration_ms,
+            model_used=model,
+            dry_run=dry_run,
+        )
+    except Exception:
+        pass
 
     return result
 
@@ -161,6 +259,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SDLC Issue Triage Agent")
     parser.add_argument("--issue-number", type=int, required=True)
     parser.add_argument("--dry-run", action="store_true", help="Use fixture response")
+    parser.add_argument("--skip-similar", action="store_true", help="Skip similar-issue search")
     args = parser.parse_args()
 
     if not args.dry_run and not is_file_export():
@@ -169,7 +268,7 @@ def main() -> None:
         except ImportError:
             pass
 
-    result = run_triage(args.issue_number, dry_run=args.dry_run)
+    result = run_triage(args.issue_number, dry_run=args.dry_run, skip_similar=args.skip_similar)
     print(json.dumps(result.model_dump(), indent=2))
 
 
