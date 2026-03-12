@@ -150,9 +150,11 @@ class TestEventLifecycleAndFanOut:
         assert "operator_present" in ctx.samples
 
         # FreshnessGuard on nonexistent sensor
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nonexistent_sensor", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nonexistent_sensor", max_staleness_s=5.0),
+            ]
+        )
         result = guard.check(ctx, time.monotonic())
         assert result.fresh_enough is False
         assert "not present" in result.violations[0]
@@ -181,9 +183,11 @@ class TestEventLifecycleAndFanOut:
         assert isinstance(ctx.samples, MappingProxyType)
 
         # Missing behavior
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="gaze_model", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="gaze_model", max_staleness_s=5.0),
+            ]
+        )
         result = guard.check(ctx, time.monotonic())
         assert result.fresh_enough is False
         assert "not present" in result.violations[0]
@@ -199,12 +203,16 @@ class TestFallbackChainFreshnessComposition:
         """S3, S4, A1, A5: FallbackChain candidates delegate to FreshnessGuard checks."""
         now = time.monotonic()
 
-        hi_guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="vad_confidence", max_staleness_s=1.0),
-        ])
-        lo_guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
-        ])
+        hi_guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="vad_confidence", max_staleness_s=1.0),
+            ]
+        )
+        lo_guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
+            ]
+        )
 
         chain: FallbackChain[FusedContext, str] = FallbackChain(
             candidates=[
@@ -260,10 +268,12 @@ class TestFallbackChainFreshnessComposition:
         assert chain.select(ctx_empty).selected_by == "default"
 
         # Verify missing-behavior violations
-        combined_guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="vad_confidence", max_staleness_s=1.0),
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
-        ])
+        combined_guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="vad_confidence", max_staleness_s=1.0),
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
+            ]
+        )
         result = combined_guard.check(ctx_empty, now)
         assert result.fresh_enough is False
         assert len(result.violations) == 2
@@ -319,19 +329,25 @@ class TestFallbackChainFreshnessComposition:
         """S2, S3, S4, A1, A5: VetoChain.add() makes system more restrictive."""
         now = time.monotonic()
 
-        guard_activity = FreshnessGuard([
-            FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=5.0),
-        ])
-        guard_gaze = FreshnessGuard([
-            FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
-        ])
+        guard_activity = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="activity_mode", max_staleness_s=5.0),
+            ]
+        )
+        guard_gaze = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
+            ]
+        )
 
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(
-                name="activity_freshness",
-                predicate=lambda c: guard_activity.check(c, now).fresh_enough,
-            ),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="activity_freshness",
+                    predicate=lambda c: guard_activity.check(c, now).fresh_enough,
+                ),
+            ]
+        )
 
         # Build context with fresh activity_mode but no gaze_confidence
         trigger: Event[str] = Event()
@@ -348,10 +364,12 @@ class TestFallbackChainFreshnessComposition:
         assert result1.allowed is True
 
         # Dynamically add gaze freshness veto
-        chain.add(Veto(
-            name="gaze_freshness",
-            predicate=lambda c: guard_gaze.check(c, now).fresh_enough,
-        ))
+        chain.add(
+            Veto(
+                name="gaze_freshness",
+                predicate=lambda c: guard_gaze.check(c, now).fresh_enough,
+            )
+        )
 
         # Now denied — gaze_confidence missing
         result2 = chain.evaluate(ctx)
@@ -457,17 +475,21 @@ class TestGovernorStateTransitions:
             min_watermark=now,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
+            ]
+        )
 
         # Closure over the context for the veto predicate
         freshness_ctx = {"current": ctx_fresh}
 
-        gov.veto_chain.add(Veto(
-            name="ambient_freshness",
-            predicate=lambda _state: guard.check(freshness_ctx["current"], now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="ambient_freshness",
+                predicate=lambda _state: guard.check(freshness_ctx["current"], now).fresh_enough,
+            )
+        )
 
         # With fresh context → governor allows (idle mode passes built-in vetoes)
         state = _make_state(activity_mode="idle")
@@ -493,9 +515,11 @@ class TestGovernorStateTransitions:
         assert isinstance(ctx_stale.samples, MappingProxyType)
 
         # Missing-key check
-        guard_missing = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=1.0),
-        ])
+        guard_missing = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=1.0),
+            ]
+        )
         missing_result = guard_missing.check(ctx_stale, now)
         assert "not present" in missing_result.violations[0]
 

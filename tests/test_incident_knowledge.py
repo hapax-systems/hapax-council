@@ -103,9 +103,7 @@ class TestBestFix:
 
     def test_best_fix_for_check(self):
         kb = _make_kb()
-        fix = kb.best_fix_for(
-            "connectivity.qdrant", "failed", "connection refused"
-        )
+        fix = kb.best_fix_for("connectivity.qdrant", "failed", "connection refused")
         assert fix is not None
         assert fix.action == "docker_compose_up"
 

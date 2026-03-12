@@ -423,6 +423,7 @@ def read_phone_health_summary(watch_dir: Path) -> list[dict]:
 
     # Only use today's data
     from datetime import date as _date
+
     if data.get("date") != _date.today().isoformat():
         return []
 
@@ -430,37 +431,45 @@ def read_phone_health_summary(watch_dir: Path) -> list[dict]:
     source = "phone:pixel_10"
 
     if data.get("resting_hr") is not None:
-        facts.append({
-            "key": "health.resting_hr",
-            "value": data["resting_hr"],
-            "dimension": "energy_and_attention",
-            "authority": "observation",
-            "source": source,
-        })
+        facts.append(
+            {
+                "key": "health.resting_hr",
+                "value": data["resting_hr"],
+                "dimension": "energy_and_attention",
+                "authority": "observation",
+                "source": source,
+            }
+        )
     if data.get("steps") is not None:
-        facts.append({
-            "key": "health.steps",
-            "value": data["steps"],
-            "dimension": "energy_and_attention",
-            "authority": "observation",
-            "source": source,
-        })
+        facts.append(
+            {
+                "key": "health.steps",
+                "value": data["steps"],
+                "dimension": "energy_and_attention",
+                "authority": "observation",
+                "source": source,
+            }
+        )
     if data.get("active_minutes") is not None:
-        facts.append({
-            "key": "health.active_minutes",
-            "value": data["active_minutes"],
-            "dimension": "energy_and_attention",
-            "authority": "observation",
-            "source": source,
-        })
+        facts.append(
+            {
+                "key": "health.active_minutes",
+                "value": data["active_minutes"],
+                "dimension": "energy_and_attention",
+                "authority": "observation",
+                "source": source,
+            }
+        )
     if data.get("sleep_duration_min") is not None:
-        facts.append({
-            "key": "health.sleep_duration",
-            "value": data["sleep_duration_min"],
-            "dimension": "energy_and_attention",
-            "authority": "observation",
-            "source": source,
-        })
+        facts.append(
+            {
+                "key": "health.sleep_duration",
+                "value": data["sleep_duration_min"],
+                "dimension": "energy_and_attention",
+                "authority": "observation",
+                "source": source,
+            }
+        )
     return facts
 
 
@@ -490,13 +499,15 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
             data = json.loads(hr_file.read_text())
             current = data.get("current", {})
             if current.get("bpm"):
-                facts.append({
-                    "key": "health.resting_hr",
-                    "value": current["bpm"],
-                    "dimension": "energy_and_attention",
-                    "authority": "observation",
-                    "source": "watch:pixel_watch_4",
-                })
+                facts.append(
+                    {
+                        "key": "health.resting_hr",
+                        "value": current["bpm"],
+                        "dimension": "energy_and_attention",
+                        "authority": "observation",
+                        "source": "watch:pixel_watch_4",
+                    }
+                )
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -507,13 +518,15 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
             data = json.loads(hrv_file.read_text())
             window = data.get("window_1h", {})
             if window.get("mean"):
-                facts.append({
-                    "key": "health.hrv_baseline",
-                    "value": window["mean"],
-                    "dimension": "energy_and_attention",
-                    "authority": "observation",
-                    "source": "watch:pixel_watch_4",
-                })
+                facts.append(
+                    {
+                        "key": "health.hrv_baseline",
+                        "value": window["mean"],
+                        "dimension": "energy_and_attention",
+                        "authority": "observation",
+                        "source": "watch:pixel_watch_4",
+                    }
+                )
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -524,13 +537,15 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
             data = json.loads(activity_file.read_text())
             active_min = data.get("active_minutes_today")
             if active_min is not None:
-                facts.append({
-                    "key": "health.active_minutes",
-                    "value": active_min,
-                    "dimension": "energy_and_attention",
-                    "authority": "observation",
-                    "source": "watch:pixel_watch_4",
-                })
+                facts.append(
+                    {
+                        "key": "health.active_minutes",
+                        "value": active_min,
+                        "dimension": "energy_and_attention",
+                        "authority": "observation",
+                        "source": "watch:pixel_watch_4",
+                    }
+                )
         except (json.JSONDecodeError, OSError):
             pass
 

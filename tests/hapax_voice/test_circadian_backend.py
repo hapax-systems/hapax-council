@@ -22,14 +22,18 @@ class TestCircadianBackend:
 
     def test_peak_hour(self, tmp_path):
         path = tmp_path / "operator-profile.json"
-        path.write_text(json.dumps({
-            "facts": [
+        path.write_text(
+            json.dumps(
                 {
-                    "dimension": "energy_and_attention",
-                    "text": "Peak productivity at 9am, 10am, 11am",
-                },
-            ],
-        }))
+                    "facts": [
+                        {
+                            "dimension": "energy_and_attention",
+                            "text": "Peak productivity at 9am, 10am, 11am",
+                        },
+                    ],
+                }
+            )
+        )
         backend = CircadianBackend(profile_path=path)
         mock_dt = datetime(2026, 3, 12, 10, 0)
         with patch("agents.hapax_voice.backends.circadian.datetime") as mock_datetime:
@@ -40,14 +44,18 @@ class TestCircadianBackend:
 
     def test_transition_hour(self, tmp_path):
         path = tmp_path / "operator-profile.json"
-        path.write_text(json.dumps({
-            "facts": [
+        path.write_text(
+            json.dumps(
                 {
-                    "dimension": "energy_and_attention",
-                    "text": "Peak productivity hours are 9am to 11am",
-                },
-            ],
-        }))
+                    "facts": [
+                        {
+                            "dimension": "energy_and_attention",
+                            "text": "Peak productivity hours are 9am to 11am",
+                        },
+                    ],
+                }
+            )
+        )
         backend = CircadianBackend(profile_path=path)
         # 8am is adjacent to peak 9am → transition
         mock_dt = datetime(2026, 3, 12, 8, 0)
@@ -59,14 +67,18 @@ class TestCircadianBackend:
 
     def test_non_productive_hour(self, tmp_path):
         path = tmp_path / "operator-profile.json"
-        path.write_text(json.dumps({
-            "facts": [
+        path.write_text(
+            json.dumps(
                 {
-                    "dimension": "energy_and_attention",
-                    "text": "Peak productivity hours are 9am to 11am",
-                },
-            ],
-        }))
+                    "facts": [
+                        {
+                            "dimension": "energy_and_attention",
+                            "text": "Peak productivity hours are 9am to 11am",
+                        },
+                    ],
+                }
+            )
+        )
         backend = CircadianBackend(profile_path=path)
         # 3pm is far from peak
         mock_dt = datetime(2026, 3, 12, 15, 0)

@@ -48,10 +48,12 @@ def test_metrics_endpoint_returns_prometheus(client):
     resp = client.get("/metrics")
     # If prometheus-fastapi-instrumentator is installed, this should work
     if resp.status_code == 200:
-        assert "text/plain" in resp.headers.get("content-type", "") or \
-               "text/plain" in resp.text[:100] or \
-               "http_request" in resp.text or \
-               "HELP" in resp.text
+        assert (
+            "text/plain" in resp.headers.get("content-type", "")
+            or "text/plain" in resp.text[:100]
+            or "http_request" in resp.text
+            or "HELP" in resp.text
+        )
     else:
         # If prometheus is not installed, the try/except in app.py means
         # /metrics won't exist — that's OK, skip

@@ -80,13 +80,16 @@ class TestDualPathForwardConvergence:
         trigger.emit(time.monotonic(), "tick")
         ctx = received[0]
 
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(
-                name="activity_mode",
-                predicate=lambda c: c.samples["activity_mode"].value
-                not in ("production", "meeting"),
-            ),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="activity_mode",
+                    predicate=lambda c: (
+                        c.samples["activity_mode"].value not in ("production", "meeting")
+                    ),
+                ),
+            ]
+        )
         veto_b = chain.evaluate(ctx)
 
         # Convergence: both paths agree
@@ -109,18 +112,22 @@ class TestDualPathForwardConvergence:
         )
 
         # Path A: freshness
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
 
         # Path B: veto chain
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(
-                name="activity_check",
-                predicate=lambda c: c.samples["activity_mode"].value != "meeting",
-            ),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="activity_check",
+                    predicate=lambda c: c.samples["activity_mode"].value != "meeting",
+                ),
+            ]
+        )
         veto = chain.evaluate(ctx)
 
         # Convergence: both paths allow
@@ -206,21 +213,30 @@ class TestProvenanceAcrossConvergentPaths:
         )
 
         # Path A: activity veto
-        chain_a: VetoChain[FusedContext] = VetoChain([
-            Veto(
-                name="activity",
-                predicate=lambda c: c.samples["activity_mode"].value != "meeting",
-            ),
-        ])
+        chain_a: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="activity",
+                    predicate=lambda c: c.samples["activity_mode"].value != "meeting",
+                ),
+            ]
+        )
         veto_a = chain_a.evaluate(ctx)
 
         # Path B: freshness veto
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
-        chain_b: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
+        chain_b: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="freshness",
+                    predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough,
+                ),
+            ]
+        )
         veto_b = chain_b.evaluate(ctx)
 
         # Convergence: merge denials into Command
@@ -261,12 +277,14 @@ class TestProvenanceAcrossConvergentPaths:
         state = _make_state(activity_mode="idle")
 
         # Path A: VetoChain
-        chain: VetoChain[EnvironmentState] = VetoChain([
-            Veto(
-                name="mode_check",
-                predicate=lambda s: s.activity_mode not in ("production", "meeting"),
-            ),
-        ])
+        chain: VetoChain[EnvironmentState] = VetoChain(
+            [
+                Veto(
+                    name="mode_check",
+                    predicate=lambda s: s.activity_mode not in ("production", "meeting"),
+                ),
+            ]
+        )
         veto = chain.evaluate(state)
 
         # Path B: FallbackChain
@@ -362,9 +380,11 @@ class TestCoherentSystemOutput:
             min_watermark=now - 100.0,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
 
         # Same guard, two contexts → coherent about which is stale
         fresh_result = guard.check(ctx_fresh, now)
@@ -427,9 +447,11 @@ class TestCoherentSystemOutput:
         trigger.emit(time.monotonic(), "tick")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
+            ]
+        )
         freshness = guard.check(ctx, time.monotonic())
 
         # Both paths → Commands → Schedules

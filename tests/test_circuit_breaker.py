@@ -53,9 +53,7 @@ class TestCircuitBreaker:
         assert cb2.remaining_attempts("test.check") == 1
 
     def test_window_expiry(self, tmp_path: Path):
-        cb = CircuitBreaker(
-            max_attempts=1, window_seconds=1, state_path=tmp_path / "cb.json"
-        )
+        cb = CircuitBreaker(max_attempts=1, window_seconds=1, state_path=tmp_path / "cb.json")
         cb.record_attempt("test.check")
         assert cb.is_tripped("test.check")
 

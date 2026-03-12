@@ -1,4 +1,5 @@
 """Tests for watch signal reading and stress detection."""
+
 from __future__ import annotations
 
 import json
@@ -22,11 +23,15 @@ class TestReadWatchSignal:
     def test_reads_valid_file(self, tmp_path):
         """Returns parsed JSON for a valid, fresh file."""
         f = tmp_path / "heartrate.json"
-        f.write_text(json.dumps({
-            "current": {"bpm": 72},
-            "updated_at": "2026-03-12T14:30:00-05:00",
-            "window_1h": {"min": 58, "max": 95, "mean": 71, "readings": 120},
-        }))
+        f.write_text(
+            json.dumps(
+                {
+                    "current": {"bpm": 72},
+                    "updated_at": "2026-03-12T14:30:00-05:00",
+                    "window_1h": {"min": 58, "max": 95, "mean": 71, "readings": 120},
+                }
+            )
+        )
         result = read_watch_signal(f, max_age_seconds=300)
         assert result is not None
         assert result["current"]["bpm"] == 72
@@ -52,41 +57,61 @@ class TestStressDetection:
     def test_elevated_when_hrv_dropped(self, tmp_path):
         """Stress elevated when HRV dropped >30% from 1h mean."""
         hrv = tmp_path / "hrv.json"
-        hrv.write_text(json.dumps({
-            "current": {"rmssd_ms": 20},
-            "window_1h": {"mean": 45},
-            "updated_at": "2026-03-12T14:30:00-05:00",
-        }))
+        hrv.write_text(
+            json.dumps(
+                {
+                    "current": {"rmssd_ms": 20},
+                    "window_1h": {"mean": 45},
+                    "updated_at": "2026-03-12T14:30:00-05:00",
+                }
+            )
+        )
         assert is_stress_elevated(watch_dir=tmp_path) is True
 
     def test_not_elevated_normal_hrv(self, tmp_path):
         """Stress not elevated with normal HRV."""
         hrv = tmp_path / "hrv.json"
-        hrv.write_text(json.dumps({
-            "current": {"rmssd_ms": 42},
-            "window_1h": {"mean": 45},
-            "updated_at": "2026-03-12T14:30:00-05:00",
-        }))
+        hrv.write_text(
+            json.dumps(
+                {
+                    "current": {"rmssd_ms": 42},
+                    "window_1h": {"mean": 45},
+                    "updated_at": "2026-03-12T14:30:00-05:00",
+                }
+            )
+        )
         eda = tmp_path / "eda.json"
-        eda.write_text(json.dumps({
-            "current": {"eda_event": False},
-            "updated_at": "2026-03-12T14:30:00-05:00",
-        }))
+        eda.write_text(
+            json.dumps(
+                {
+                    "current": {"eda_event": False},
+                    "updated_at": "2026-03-12T14:30:00-05:00",
+                }
+            )
+        )
         assert is_stress_elevated(watch_dir=tmp_path) is False
 
     def test_elevated_when_eda_spike(self, tmp_path):
         """Stress elevated on EDA spike event."""
         eda = tmp_path / "eda.json"
-        eda.write_text(json.dumps({
-            "current": {"eda_event": True, "duration_seconds": 180},
-            "updated_at": "2026-03-12T14:30:00-05:00",
-        }))
+        eda.write_text(
+            json.dumps(
+                {
+                    "current": {"eda_event": True, "duration_seconds": 180},
+                    "updated_at": "2026-03-12T14:30:00-05:00",
+                }
+            )
+        )
         hrv = tmp_path / "hrv.json"
-        hrv.write_text(json.dumps({
-            "current": {"rmssd_ms": 40},
-            "window_1h": {"mean": 45},
-            "updated_at": "2026-03-12T14:30:00-05:00",
-        }))
+        hrv.write_text(
+            json.dumps(
+                {
+                    "current": {"rmssd_ms": 40},
+                    "window_1h": {"mean": 45},
+                    "updated_at": "2026-03-12T14:30:00-05:00",
+                }
+            )
+        )
         assert is_stress_elevated(watch_dir=tmp_path) is True
 
     def test_not_elevated_when_no_watch_data(self, tmp_path):
@@ -99,18 +124,26 @@ class TestWatchPresence:
 
     def test_watch_connected_when_fresh_data(self, tmp_path):
         conn = tmp_path / "connection.json"
-        conn.write_text(json.dumps({
-            "last_seen_epoch": time.time(),
-            "battery_pct": 85,
-        }))
+        conn.write_text(
+            json.dumps(
+                {
+                    "last_seen_epoch": time.time(),
+                    "battery_pct": 85,
+                }
+            )
+        )
         assert is_watch_connected(watch_dir=tmp_path) is True
 
     def test_watch_disconnected_when_stale(self, tmp_path):
         conn = tmp_path / "connection.json"
-        conn.write_text(json.dumps({
-            "last_seen_epoch": time.time() - 600,
-            "battery_pct": 85,
-        }))
+        conn.write_text(
+            json.dumps(
+                {
+                    "last_seen_epoch": time.time() - 600,
+                    "battery_pct": 85,
+                }
+            )
+        )
         old_time = time.time() - 600
         os.utime(conn, (old_time, old_time))
         assert is_watch_connected(watch_dir=tmp_path) is False
@@ -122,10 +155,14 @@ class TestWatchPresence:
     def test_watch_connected_via_bt_when_wifi_stale(self, mock_bt, tmp_path):
         """Falls back to BLE when WiFi connection.json is stale."""
         conn = tmp_path / "connection.json"
-        conn.write_text(json.dumps({
-            "last_seen_epoch": time.time() - 600,
-            "battery_pct": 85,
-        }))
+        conn.write_text(
+            json.dumps(
+                {
+                    "last_seen_epoch": time.time() - 600,
+                    "battery_pct": 85,
+                }
+            )
+        )
         old_time = time.time() - 600
         os.utime(conn, (old_time, old_time))
         assert is_watch_connected(watch_dir=tmp_path) is True
@@ -148,21 +185,29 @@ class TestPhoneConnected:
     def test_connected_when_fresh(self, tmp_path):
         """Returns True when phone_connection.json is fresh."""
         conn = tmp_path / "phone_connection.json"
-        conn.write_text(json.dumps({
-            "last_seen_epoch": time.time(),
-            "device_id": "pixel10",
-            "battery_pct": 85,
-        }))
+        conn.write_text(
+            json.dumps(
+                {
+                    "last_seen_epoch": time.time(),
+                    "device_id": "pixel10",
+                    "battery_pct": 85,
+                }
+            )
+        )
         assert is_phone_connected(watch_dir=tmp_path) is True
 
     def test_disconnected_when_stale(self, tmp_path):
         """Returns False when phone_connection.json is stale (>120s)."""
         conn = tmp_path / "phone_connection.json"
-        conn.write_text(json.dumps({
-            "last_seen_epoch": time.time() - 300,
-            "device_id": "pixel10",
-            "battery_pct": 85,
-        }))
+        conn.write_text(
+            json.dumps(
+                {
+                    "last_seen_epoch": time.time() - 300,
+                    "device_id": "pixel10",
+                    "battery_pct": 85,
+                }
+            )
+        )
         old_time = time.time() - 300
         os.utime(conn, (old_time, old_time))
         assert is_phone_connected(watch_dir=tmp_path) is False
@@ -227,9 +272,7 @@ class TestBluetoothPresence:
     def test_bt_with_explicit_mac(self):
         """Accepts explicit MAC without needing connection.json."""
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="Connected: yes\n"
-            )
+            mock_run.return_value = MagicMock(returncode=0, stdout="Connected: yes\n")
             result = is_watch_bt_nearby(bt_mac="AA:BB:CC:DD:EE:FF")
             assert result is True
 
@@ -244,7 +287,9 @@ class TestBluetoothPresence:
             trigger.write_text(json.dumps({"source": "watch", "ts": time.time()}))
             return True
 
-        with patch("agents.hapax_voice.presence.send_haptic_tap", side_effect=write_trigger_on_tap) as mock_tap:
+        with patch(
+            "agents.hapax_voice.presence.send_haptic_tap", side_effect=write_trigger_on_tap
+        ) as mock_tap:
             with patch("agents.hapax_voice.presence.WATCH_STATE_DIR", tmp_path):
                 result = detector.try_watch_presence_check(timeout=0.5, poll_interval=0.1)
         assert result is True

@@ -74,8 +74,7 @@ class SoakManager:
         """Return entries currently in soak period."""
         now = time.time()
         return [
-            e for e in self._entries
-            if not e.completed and not e.reverted and now < e.soak_until
+            e for e in self._entries if not e.completed and not e.reverted and now < e.soak_until
         ]
 
     def record_health_check(self, healthy: bool) -> list[SoakEntry]:
@@ -123,7 +122,6 @@ class SoakManager:
         """Remove old completed/reverted entries."""
         cutoff = time.time() - max_age_days * 86400
         self._entries = [
-            e for e in self._entries
-            if not (e.completed or e.reverted) or e.merged_at > cutoff
+            e for e in self._entries if not (e.completed or e.reverted) or e.merged_at > cutoff
         ]
         self._save()

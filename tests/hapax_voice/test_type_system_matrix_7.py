@@ -79,9 +79,11 @@ class TestDualContextConvergence:
             min_watermark=now - 50.0,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
+            ]
+        )
         violations_a = guard.check(ctx_a, now).violations
         violations_b = guard.check(ctx_b, now).violations
 
@@ -114,17 +116,29 @@ class TestDualContextConvergence:
             min_watermark=now - 100.0,
         )
 
-        guard_fresh = FreshnessGuard([
-            FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
-        ])
-        guard_stale = FreshnessGuard([
-            FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
-        ])
+        guard_fresh = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
+            ]
+        )
+        guard_stale = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
+            ]
+        )
 
-        chain: VetoChain[object] = VetoChain([
-            Veto(name="path_a", predicate=lambda _: guard_fresh.check(ctx_fresh, now).fresh_enough),
-            Veto(name="path_b", predicate=lambda _: guard_stale.check(ctx_stale, now).fresh_enough),
-        ])
+        chain: VetoChain[object] = VetoChain(
+            [
+                Veto(
+                    name="path_a",
+                    predicate=lambda _: guard_fresh.check(ctx_fresh, now).fresh_enough,
+                ),
+                Veto(
+                    name="path_b",
+                    predicate=lambda _: guard_stale.check(ctx_stale, now).fresh_enough,
+                ),
+            ]
+        )
         veto = chain.evaluate(None)
 
         assert veto.allowed is False
@@ -157,22 +171,30 @@ class TestDualContextConvergence:
             min_watermark=now,
         )
 
-        guard_engine = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
-        ])
-        guard_manual = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing_field", max_staleness_s=5.0),
-        ])
+        guard_engine = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
+            ]
+        )
+        guard_manual = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing_field", max_staleness_s=5.0),
+            ]
+        )
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="engine_fresh",
-            predicate=lambda _s: guard_engine.check(ctx_engine, now).fresh_enough,
-        ))
-        gov.veto_chain.add(Veto(
-            name="manual_fresh",
-            predicate=lambda _s: guard_manual.check(ctx_manual, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="engine_fresh",
+                predicate=lambda _s: guard_engine.check(ctx_engine, now).fresh_enough,
+            )
+        )
+        gov.veto_chain.add(
+            Veto(
+                name="manual_fresh",
+                predicate=lambda _s: guard_manual.check(ctx_manual, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="idle")
         r = gov.evaluate(state)
@@ -194,9 +216,11 @@ class TestDualContextConvergence:
             min_watermark=now,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="vad", max_staleness_s=10.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="vad", max_staleness_s=10.0),
+            ]
+        )
 
         # Chain 1: action selection based on freshness
         action_chain: FallbackChain[FusedContext, str] = FallbackChain(
@@ -226,9 +250,11 @@ class TestDualContextConvergence:
         mode_sel = mode_chain.select(ctx)
 
         # Also check missing behavior
-        guard_m = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
-        ])
+        guard_m = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
+            ]
+        )
 
         cmd = Command(
             action=action_sel.action,
@@ -259,16 +285,20 @@ class TestVetoConvergence:
             min_watermark=now - 100.0,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
+            ]
+        )
 
         gov = PipelineGovernor()
         # Source A: freshness denial
-        gov.veto_chain.add(Veto(
-            name="freshness_deny",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="freshness_deny",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="production")
         r = gov.evaluate(state)
@@ -297,17 +327,26 @@ class TestVetoConvergence:
         trigger.emit(now, "snap")
         ctx = received[0]
 
-        guard_stale = FreshnessGuard([
-            FreshnessRequirement(behavior_name="vad_confidence", max_staleness_s=5.0),
-        ])
-        guard_missing = FreshnessGuard([
-            FreshnessRequirement(behavior_name="gaze_model", max_staleness_s=5.0),
-        ])
+        guard_stale = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="vad_confidence", max_staleness_s=5.0),
+            ]
+        )
+        guard_missing = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="gaze_model", max_staleness_s=5.0),
+            ]
+        )
 
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="stale_vad", predicate=lambda c: guard_stale.check(c, now).fresh_enough),
-            Veto(name="missing_gaze", predicate=lambda c: guard_missing.check(c, now).fresh_enough),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="stale_vad", predicate=lambda c: guard_stale.check(c, now).fresh_enough),
+                Veto(
+                    name="missing_gaze",
+                    predicate=lambda c: guard_missing.check(c, now).fresh_enough,
+                ),
+            ]
+        )
         veto = chain.evaluate(ctx)
 
         assert not veto.allowed
@@ -315,7 +354,9 @@ class TestVetoConvergence:
         assert "missing_gaze" in veto.denied_by
         assert "not present" in guard_missing.check(ctx, now).violations[0]
 
-        cmd = Command(action="pause", params={"denials": list(veto.denied_by)}, governance_result=veto)
+        cmd = Command(
+            action="pause", params={"denials": list(veto.denied_by)}, governance_result=veto
+        )
         assert isinstance(cmd.params, MappingProxyType)
         assert isinstance(ctx.samples, MappingProxyType)
 
@@ -323,17 +364,24 @@ class TestVetoConvergence:
         """S4, S5, S6, S3 + A2, A3, A5: Built-in + custom freshness veto converge."""
         now = time.monotonic()
         ctx = FusedContext(
-            trigger_time=now, trigger_value="x", samples={}, min_watermark=now,
+            trigger_time=now,
+            trigger_value="x",
+            samples={},
+            min_watermark=now,
         )
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
+            ]
+        )
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="custom_freshness",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="custom_freshness",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="production")
         r = gov.evaluate(state)
@@ -374,9 +422,11 @@ class TestVetoConvergence:
         assert "operator_present" in ctx.samples
 
         # Missing behavior
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=1.0),
+            ]
+        )
         assert "not present" in guard.check(ctx, now).violations[0]
 
 
@@ -430,9 +480,11 @@ class TestMergedPipelineOutputs:
         trigger.emit(now, "snap")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=1.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
 
         # Path B: governor
@@ -466,9 +518,11 @@ class TestMergedPipelineOutputs:
 
         # Path B: freshness check with missing behavior
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={}, min_watermark=now)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
 
         # Converge at Schedule

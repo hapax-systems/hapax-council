@@ -60,9 +60,7 @@ class IncidentKnowledgeBase(BaseModel):
     last_updated: str = ""
     patterns: list[IncidentPattern] = Field(default_factory=list)
 
-    def find_matching(
-        self, check: str, status: str, message: str
-    ) -> list[IncidentPattern]:
+    def find_matching(self, check: str, status: str, message: str) -> list[IncidentPattern]:
         """Find patterns whose failure_signature matches the given check failure."""
         matches = []
         for pattern in self.patterns:
@@ -110,9 +108,7 @@ def load_knowledge_base(path: Path = DEFAULT_KB_PATH) -> IncidentKnowledgeBase:
         return IncidentKnowledgeBase()
 
 
-def save_knowledge_base(
-    kb: IncidentKnowledgeBase, path: Path = DEFAULT_KB_PATH
-) -> None:
+def save_knowledge_base(kb: IncidentKnowledgeBase, path: Path = DEFAULT_KB_PATH) -> None:
     """Save the knowledge base to YAML atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")

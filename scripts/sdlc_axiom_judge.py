@@ -109,9 +109,7 @@ def _check_structural(
     diff_lines = len(diff.splitlines())
     limit = DIFF_LIMITS.get(complexity, 1500)
     if diff_lines > limit:
-        violations.append(
-            f"Diff size ({diff_lines} lines) exceeds {complexity} limit ({limit})"
-        )
+        violations.append(f"Diff size ({diff_lines} lines) exceeds {complexity} limit ({limit})")
 
     # Commit message format (check PR title as proxy).
     if not COMMIT_MSG_RE.match(pr_title) and not pr_title.startswith("[agent]"):
@@ -129,12 +127,9 @@ def _build_judge_prompt(axioms: list, implications_by_axiom: dict) -> str:
     sections = []
     for axiom in axioms:
         impls = implications_by_axiom.get(axiom.id, [])
-        impl_text = "\n".join(
-            f"  - [{i.tier}] {i.text}" for i in impls[:5]
-        )
+        impl_text = "\n".join(f"  - [{i.tier}] {i.text}" for i in impls[:5])
         sections.append(
-            f"### Axiom: {axiom.id}\n{axiom.text.strip()}\n\n"
-            f"Key implications:\n{impl_text}"
+            f"### Axiom: {axiom.id}\n{axiom.text.strip()}\n\nKey implications:\n{impl_text}"
         )
 
     return f"""\
@@ -251,13 +246,9 @@ def run_axiom_gate(pr_number: int, *, dry_run: bool = False) -> AxiomGateResult:
             pass  # Precedent store may not be available.
 
     # 4. Determine overall result.
-    has_t0_violation = any(
-        not v.compliant and v.tier_violated == "T0" for v in semantic
-    )
+    has_t0_violation = any(not v.compliant and v.tier_violated == "T0" for v in semantic)
     has_structural_failure = not structural.passed
-    has_advisory = any(
-        not v.compliant and v.tier_violated != "T0" for v in semantic
-    )
+    has_advisory = any(not v.compliant and v.tier_violated != "T0" for v in semantic)
 
     if has_t0_violation or has_structural_failure:
         overall: Literal["pass", "block", "advisory"] = "block"
@@ -279,21 +270,31 @@ def run_axiom_gate(pr_number: int, *, dry_run: bool = False) -> AxiomGateResult:
 
     try:
         from shared.sdlc_log import log_sdlc_event
+
         log_sdlc_event(
             "axiom-gate",
             pr_number=pr_number,
             result={
                 "overall": result.overall,
                 "structural_passed": result.structural.passed,
-                "structural_violations": [v for v in result.structural.violations] if result.structural.violations else [],
+                "structural_violations": [v for v in result.structural.violations]
+                if result.structural.violations
+                else [],
                 "semantic_violations": [
                     {"axiom_id": v.axiom_id, "tier": v.tier_violated, "compliant": v.compliant}
-                    for v in result.semantic if not v.compliant
+                    for v in result.semantic
+                    if not v.compliant
                 ],
-                "t0_violations": sum(1 for v in result.semantic if not v.compliant and v.tier_violated == "T0"),
-                "t1_violations": sum(1 for v in result.semantic if not v.compliant and v.tier_violated == "T1"),
+                "t0_violations": sum(
+                    1 for v in result.semantic if not v.compliant and v.tier_violated == "T0"
+                ),
+                "t1_violations": sum(
+                    1 for v in result.semantic if not v.compliant and v.tier_violated == "T1"
+                ),
                 "precedent_compliant": result.precedent_compliant,
-                "precedent_violations": result.precedent_violations if hasattr(result, 'precedent_violations') else [],
+                "precedent_violations": result.precedent_violations
+                if hasattr(result, "precedent_violations")
+                else [],
             },
             duration_ms=duration_ms,
             model_used=model,
@@ -305,6 +306,7 @@ def run_axiom_gate(pr_number: int, *, dry_run: bool = False) -> AxiomGateResult:
 
     try:
         from shared.audit import log_audit
+
         log_audit(
             action="sdlc_axiom_gate",
             actor="sdlc_pipeline",
@@ -312,7 +314,9 @@ def run_axiom_gate(pr_number: int, *, dry_run: bool = False) -> AxiomGateResult:
             outcome=result.overall,
             pr_number=pr_number,
             metadata={
-                "t0_violations": sum(1 for v in result.semantic if not v.compliant and v.tier_violated == "T0"),
+                "t0_violations": sum(
+                    1 for v in result.semantic if not v.compliant and v.tier_violated == "T0"
+                ),
                 "structural_passed": result.structural.passed,
             },
         )

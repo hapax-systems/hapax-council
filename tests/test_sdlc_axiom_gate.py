@@ -155,14 +155,10 @@ class TestCommitMessageFormat:
 
     def test_agent_prefix_allowed(self):
         # Agent PRs use [agent] prefix — allowed by structural check.
-        result = _check_structural(
-            ["agents/scout.py"], "diff", "[agent] fix something"
-        )
+        result = _check_structural(["agents/scout.py"], "diff", "[agent] fix something")
         # Should not fail on title format.
         assert not any("conventional commits" in v.lower() for v in result.violations)
 
     def test_random_title_fails(self):
-        result = _check_structural(
-            ["agents/scout.py"], "diff", "yolo deploy friday"
-        )
+        result = _check_structural(["agents/scout.py"], "diff", "yolo deploy friday")
         assert any("conventional commits" in v.lower() for v in result.violations)

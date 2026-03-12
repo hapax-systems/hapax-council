@@ -57,7 +57,9 @@ class TrendComparison(BaseModel):
     current_period_events: int = 0
     prior_period_events: int = 0
     velocity_change_pct: float | None = None
-    direction: str = "insufficient_data"  # "increasing" | "decreasing" | "stable" | "insufficient_data"
+    direction: str = (
+        "insufficient_data"  # "increasing" | "decreasing" | "stable" | "insufficient_data"
+    )
 
 
 class Anomaly(BaseModel):
@@ -265,39 +267,43 @@ def detect_anomalies(events: list[dict], quality: QualityMetrics) -> list[Anomal
     # High review rounds
     review_events = [e for e in events if e.get("stage") == "review"]
     if len(review_events) >= 3:
-        findings_counts = [
-            e.get("result", {}).get("findings_count", 0) for e in review_events
-        ]
+        findings_counts = [e.get("result", {}).get("findings_count", 0) for e in review_events]
         avg_findings = mean(findings_counts) if findings_counts else 0
         for e in review_events:
             fc = e.get("result", {}).get("findings_count", 0)
             if avg_findings > 0 and fc > avg_findings * 3:
-                anomalies.append(Anomaly(
-                    metric="review_findings",
-                    description=f"PR #{e.get('pr_number', '?')} had {fc} findings (avg {avg_findings:.1f})",
-                    value=fc,
-                    threshold=avg_findings * 3,
-                ))
+                anomalies.append(
+                    Anomaly(
+                        metric="review_findings",
+                        description=f"PR #{e.get('pr_number', '?')} had {fc} findings (avg {avg_findings:.1f})",
+                        value=fc,
+                        threshold=avg_findings * 3,
+                    )
+                )
 
     # Repeated axiom violations
     if quality.top_violated_axioms:
         for axiom_id, count in quality.top_violated_axioms.items():
             if count >= 3:
-                anomalies.append(Anomaly(
-                    metric="axiom_repeat_violation",
-                    description=f"Axiom '{axiom_id}' violated {count} times in window",
-                    value=float(count),
-                    threshold=3.0,
-                ))
+                anomalies.append(
+                    Anomaly(
+                        metric="axiom_repeat_violation",
+                        description=f"Axiom '{axiom_id}' violated {count} times in window",
+                        value=float(count),
+                        threshold=3.0,
+                    )
+                )
 
     # High axiom block rate
     if quality.axiom_gate_pass_rate > 0 and quality.axiom_gate_pass_rate < 50:
-        anomalies.append(Anomaly(
-            metric="axiom_gate_pass_rate",
-            description=f"Axiom gate pass rate is {quality.axiom_gate_pass_rate}% (below 50%)",
-            value=quality.axiom_gate_pass_rate,
-            threshold=50.0,
-        ))
+        anomalies.append(
+            Anomaly(
+                metric="axiom_gate_pass_rate",
+                description=f"Axiom gate pass rate is {quality.axiom_gate_pass_rate}% (below 50%)",
+                value=quality.axiom_gate_pass_rate,
+                threshold=50.0,
+            )
+        )
 
     return anomalies
 
@@ -356,13 +362,15 @@ def format_markdown(report: SDLCMetricsReport) -> str:
         types = ", ".join(f"{v} {k}" for k, v in report.velocity.triage_types.items())
         lines.append(f"- Triage types: {types}")
 
-    lines.extend([
-        "",
-        "## Quality",
-        f"- Triage reject rate: {report.quality.triage_reject_rate}%",
-        f"- Review approve rate: {report.quality.review_approve_rate}%",
-        f"- Axiom gate pass rate: {report.quality.axiom_gate_pass_rate}%",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Quality",
+            f"- Triage reject rate: {report.quality.triage_reject_rate}%",
+            f"- Review approve rate: {report.quality.review_approve_rate}%",
+            f"- Axiom gate pass rate: {report.quality.axiom_gate_pass_rate}%",
+        ]
+    )
 
     if report.quality.axiom_violations_by_tier:
         tiers = ", ".join(f"{k}: {v}" for k, v in report.quality.axiom_violations_by_tier.items())
@@ -371,23 +379,27 @@ def format_markdown(report: SDLCMetricsReport) -> str:
         axioms = ", ".join(f"{k}: {v}" for k, v in report.quality.top_violated_axioms.items())
         lines.append(f"- Top violated axioms: {axioms}")
 
-    lines.extend([
-        "",
-        "## Latency",
-        f"- Avg duration: {report.latency.avg_duration_ms:.0f}ms",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Latency",
+            f"- Avg duration: {report.latency.avg_duration_ms:.0f}ms",
+        ]
+    )
     if report.latency.by_stage_avg_ms:
         for stage, avg in report.latency.by_stage_avg_ms.items():
             max_ms = report.latency.by_stage_max_ms.get(stage, 0)
             lines.append(f"  - {stage}: avg {avg:.0f}ms, max {max_ms}ms")
 
-    lines.extend([
-        "",
-        "## Trends",
-        f"- Current period: {report.trends.current_period_events} events",
-        f"- Prior period: {report.trends.prior_period_events} events",
-        f"- Direction: {report.trends.direction}",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Trends",
+            f"- Current period: {report.trends.current_period_events} events",
+            f"- Prior period: {report.trends.prior_period_events} events",
+            f"- Direction: {report.trends.direction}",
+        ]
+    )
     if report.trends.velocity_change_pct is not None:
         lines.append(f"- Change: {report.trends.velocity_change_pct:+.1f}%")
 
@@ -396,13 +408,15 @@ def format_markdown(report: SDLCMetricsReport) -> str:
         for a in report.anomalies:
             lines.append(f"- [{a.metric}] {a.description}")
 
-    lines.extend([
-        "",
-        "## Data Sources",
-        f"- SDLC log: {'exists' if report.data_sources.sdlc_log_exists else 'missing'}"
-        f" ({report.data_sources.sdlc_log_lines} lines)",
-        f"- GitHub: {'reachable' if report.data_sources.github_reachable else 'unreachable'}",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Data Sources",
+            f"- SDLC log: {'exists' if report.data_sources.sdlc_log_exists else 'missing'}"
+            f" ({report.data_sources.sdlc_log_lines} lines)",
+            f"- GitHub: {'reachable' if report.data_sources.github_reachable else 'unreachable'}",
+        ]
+    )
 
     return "\n".join(lines) + "\n"
 

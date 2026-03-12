@@ -364,9 +364,11 @@ class TestFullPipelineUseCases:
         trigger.emit(time.monotonic(), "tick")
 
         ctx = received[0]
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
+            ]
+        )
         freshness = guard.check(ctx, time.monotonic())
 
         cmd = Command(
@@ -398,16 +400,20 @@ class TestFullPipelineUseCases:
             min_watermark=now - 100.0,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="gaze_confidence", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
 
         # Wrap as veto chain predicate (real use-case pattern)
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: guard.check(c, now).fresh_enough),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="freshness", predicate=lambda c: guard.check(c, now).fresh_enough),
+            ]
+        )
         veto = chain.evaluate(ctx)
 
         cmd = Command(

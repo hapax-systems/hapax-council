@@ -124,8 +124,12 @@ class SdlcTrend(BaseModel):
     gate_pass_rate: float = 0.0
     avg_duration_ms: float = 0.0
     axiom_violations_by_tier: dict[str, int] = Field(default_factory=dict)  # {"T0": 2, "T1": 3}
-    top_violated_axioms: dict[str, int] = Field(default_factory=dict)  # {"single_user": 3, "executive_function": 1}
-    triage_reject_reasons: dict[str, int] = Field(default_factory=dict)  # {"too_complex": 2, "protected_paths": 1}
+    top_violated_axioms: dict[str, int] = Field(
+        default_factory=dict
+    )  # {"single_user": 3, "executive_function": 1}
+    triage_reject_reasons: dict[str, int] = Field(
+        default_factory=dict
+    )  # {"too_complex": 2, "protected_paths": 1}
 
 
 class DataSourceStatus(BaseModel):

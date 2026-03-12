@@ -23,8 +23,8 @@ _log = logging.getLogger(__name__)
 DEDUP_WINDOW_S = 30 * 60  # 30 minutes
 
 # Escalation thresholds (in consecutive failure cycles)
-DEGRADED_ESCALATION_CYCLES = 4   # degraded >1h (4 × 15min) → high priority
-T0_URGENT_CYCLES = 2             # T0 failed >30min (2 × 15min) → urgent priority
+DEGRADED_ESCALATION_CYCLES = 4  # degraded >1h (4 × 15min) → high priority
+T0_URGENT_CYCLES = 2  # T0 failed >30min (2 × 15min) → urgent priority
 
 # T0 (critical) check groups — failures here escalate faster
 T0_GROUPS = {"docker", "gpu", "litellm", "langfuse", "qdrant", "postgres"}
@@ -75,12 +75,14 @@ def process_report(
         if status == "healthy":
             # Recovery: was previously alerted and now healthy
             if prev.get("alerted") and prev.get("status") != "healthy":
-                actions.append({
-                    "title": "Recovered",
-                    "message": f"{check_name} is healthy again",
-                    "priority": "default",
-                    "tags": ["white_check_mark"],
-                })
+                actions.append(
+                    {
+                        "title": "Recovered",
+                        "message": f"{check_name} is healthy again",
+                        "priority": "default",
+                        "tags": ["white_check_mark"],
+                    }
+                )
             state[check_name] = {"status": "healthy", "since": now, "cycles": 0, "alerted": False}
             continue
 
@@ -138,12 +140,14 @@ def process_report(
                 group_priority = "high"
 
         tag = "rotating_light" if group_priority in ("urgent", "high") else "warning"
-        actions.append({
-            "title": f"Health: {group}",
-            "message": "\n".join(check_messages),
-            "priority": group_priority,
-            "tags": [tag],
-        })
+        actions.append(
+            {
+                "title": f"Health: {group}",
+                "message": "\n".join(check_messages),
+                "priority": group_priority,
+                "tags": [tag],
+            }
+        )
 
     _save_state(state_path, state)
     return actions

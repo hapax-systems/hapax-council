@@ -25,8 +25,11 @@ class TestDryRunOutputFormats:
     @patch("scripts.sdlc_triage.fetch_issue")
     def test_triage_output_format(self, mock_fetch):
         from shared.sdlc_github import Issue
+
         mock_fetch.return_value = Issue(
-            number=1, title="Fix typo", body="There is a typo in README",
+            number=1,
+            title="Fix typo",
+            body="There is a typo in README",
         )
         result = run_triage(1, dry_run=True)
         assert isinstance(result, TriageResult)
@@ -39,8 +42,11 @@ class TestDryRunOutputFormats:
     @patch("scripts.sdlc_plan.post_issue_comment")
     def test_plan_output_format(self, mock_comment, mock_fetch):
         from shared.sdlc_github import Issue
+
         mock_fetch.return_value = Issue(
-            number=1, title="Fix typo", body="There is a typo",
+            number=1,
+            title="Fix typo",
+            body="There is a typo",
         )
         result = run_plan(1, dry_run=True, post_comment=False)
         assert isinstance(result, PlanResult)
@@ -65,11 +71,13 @@ class TestDryRunOutputFormats:
 class TestSimilarClosedIssues:
     def test_skip_github_returns_empty(self):
         from scripts.sdlc_triage import find_similar_closed
+
         result = find_similar_closed("Fix typo", "There is a typo", skip_github=True)
         assert result == []
 
     def test_extract_keywords(self):
         from scripts.sdlc_triage import _extract_search_keywords
+
         kw = _extract_search_keywords("Fix broken webhook handler", "The webhook times out")
         assert "webhook" in kw
         assert "the" not in kw
@@ -78,6 +86,7 @@ class TestSimilarClosedIssues:
     @patch("scripts.sdlc_triage.fetch_issue")
     def test_triage_with_skip_similar(self, mock_fetch):
         from shared.sdlc_github import Issue
+
         mock_fetch.return_value = Issue(number=1, title="Fix typo", body="Typo in README")
         result = run_triage(1, dry_run=True, skip_similar=True)
         assert isinstance(result, TriageResult)
@@ -91,6 +100,7 @@ class TestDryRunPipelineSequence:
     @patch("scripts.sdlc_plan.post_issue_comment")
     def test_triage_then_plan(self, mock_comment, mock_plan_fetch, mock_triage_fetch):
         from shared.sdlc_github import Issue
+
         issue = Issue(number=1, title="Fix typo", body="Fix the typo in scout.py")
         mock_triage_fetch.return_value = issue
         mock_plan_fetch.return_value = issue

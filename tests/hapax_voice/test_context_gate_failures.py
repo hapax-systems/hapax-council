@@ -55,10 +55,12 @@ def _make_gate_with_behaviors(
         ambient_classification=ambient_classification,
     )
     now = time.monotonic()
-    gate.set_behaviors({
-        "sink_volume": Behavior(volume, watermark=now),
-        "midi_active": Behavior(midi_active, watermark=now),
-    })
+    gate.set_behaviors(
+        {
+            "sink_volume": Behavior(volume, watermark=now),
+            "midi_active": Behavior(midi_active, watermark=now),
+        }
+    )
     return gate, event_log
 
 

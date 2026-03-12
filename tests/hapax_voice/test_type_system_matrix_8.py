@@ -91,18 +91,22 @@ class TestVetoReconfigurationInvariants:
         """S4, S5, S3 + A1, A3, A5: Wake word overrides regardless of veto count."""
         now = time.monotonic()
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={}, min_watermark=now)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
+            ]
+        )
 
         gov = PipelineGovernor()
         # Add 3 denying vetoes
         for i in range(3):
             gov.veto_chain.add(Veto(name=f"deny_{i}", predicate=lambda _s: False))
-        gov.veto_chain.add(Veto(
-            name="freshness",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="freshness",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="idle")
 
@@ -127,15 +131,19 @@ class TestVetoReconfigurationInvariants:
         now = time.monotonic()
         gov = PipelineGovernor()
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={}, min_watermark=now)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
+            ]
+        )
 
         # One denier
-        gov.veto_chain.add(Veto(
-            name="freshness_deny",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="freshness_deny",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="idle")
         r1 = gov.evaluate(state)
@@ -177,7 +185,9 @@ class TestVetoReconfigurationInvariants:
         gov.evaluate(state)
         assert len(gov.last_veto_result.denied_by) == 5
 
-        cmd = Command(action="pause", params={"total_vetoes": 5}, governance_result=gov.last_veto_result)
+        cmd = Command(
+            action="pause", params={"total_vetoes": 5}, governance_result=gov.last_veto_result
+        )
         assert isinstance(cmd.params, MappingProxyType)
 
 
@@ -239,19 +249,23 @@ class TestFreshnessReconfigurationInvariants:
 
         # Add present+fresh requirement → still process
         g1 = FreshnessGuard([FreshnessRequirement("operator_present", 10.0)])
-        gov.veto_chain.add(Veto(
-            name="presence_fresh",
-            predicate=lambda _s: g1.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="presence_fresh",
+                predicate=lambda _s: g1.check(ctx, now).fresh_enough,
+            )
+        )
         r2 = gov.evaluate(state)
         assert r2 == "process"
 
         # Add missing requirement → pause
         g2 = FreshnessGuard([FreshnessRequirement("missing_sensor", 5.0)])
-        gov.veto_chain.add(Veto(
-            name="missing_fresh",
-            predicate=lambda _s: g2.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="missing_fresh",
+                predicate=lambda _s: g2.check(ctx, now).fresh_enough,
+            )
+        )
         r3 = gov.evaluate(state)
         assert r3 == "pause"
 
@@ -270,10 +284,12 @@ class TestFreshnessReconfigurationInvariants:
         trigger.emit(now, "snap")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
+            ]
+        )
 
         t1 = now + 2.0
         t2 = now + 4.0
@@ -310,15 +326,19 @@ class TestFreshnessReconfigurationInvariants:
         )
 
         guard_state = {"ctx": ctx_fresh}
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="ambient", max_staleness_s=10.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="ambient", max_staleness_s=10.0),
+            ]
+        )
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="ambient_fresh",
-            predicate=lambda _s: guard.check(guard_state["ctx"], now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="ambient_fresh",
+                predicate=lambda _s: guard.check(guard_state["ctx"], now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="idle")
 
@@ -349,9 +369,16 @@ class TestFreshnessReconfigurationInvariants:
         assert cmd3.action == "process"
         assert cmd3.selected_by == "wake_word_override"
         assert isinstance(cmd2.params, MappingProxyType)
-        assert "not present" in FreshnessGuard([
-            FreshnessRequirement("ambient", 10.0),
-        ]).check(ctx_missing, now).violations[0]
+        assert (
+            "not present"
+            in FreshnessGuard(
+                [
+                    FreshnessRequirement("ambient", 10.0),
+                ]
+            )
+            .check(ctx_missing, now)
+            .violations[0]
+        )
 
 
 # ── Class 3: Wake Word Reconfiguration Invariants ───────────────────────────
@@ -398,15 +425,19 @@ class TestWakeWordReconfigurationInvariants:
         """S5, S6, S3, S4 + A2, A3, A5: Wake word clears conversation; custom veto survives."""
         now = time.monotonic()
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={}, min_watermark=now)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
+            ]
+        )
 
         gov = PipelineGovernor(conversation_debounce_s=0.0)
-        gov.veto_chain.add(Veto(
-            name="custom_freshness",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="custom_freshness",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         # Drive into conversation pause
         conv_state = _make_state(activity_mode="idle", face_count=2, speech_detected=True)
@@ -430,7 +461,9 @@ class TestWakeWordReconfigurationInvariants:
         assert "custom_freshness" in gov.last_veto_result.denied_by
         assert "conversation_debounce" not in gov.last_veto_result.denied_by
 
-        cmd = Command(action=r2, params={"step": "after_wake"}, governance_result=gov.last_veto_result)
+        cmd = Command(
+            action=r2, params={"step": "after_wake"}, governance_result=gov.last_veto_result
+        )
         assert isinstance(cmd.params, MappingProxyType)
         assert "not present" in guard.check(ctx, now).violations[0]
 
@@ -458,7 +491,9 @@ class TestWakeWordReconfigurationInvariants:
         assert gov.last_veto_result.allowed is True
         assert gov.last_selected.selected_by == "wake_word_override"
 
-        cmd = Command(action="process", params={"obs": True}, governance_result=gov.last_veto_result)
+        cmd = Command(
+            action="process", params={"obs": True}, governance_result=gov.last_veto_result
+        )
         assert isinstance(cmd.params, MappingProxyType)
 
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={"a": Stamped(1, now)})

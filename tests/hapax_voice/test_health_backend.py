@@ -84,11 +84,13 @@ class TestHealthBackend:
         gate = ContextGate(session=session, ambient_classification=False)
         gate._activity_mode = "idle"
         now = time.monotonic()
-        gate.set_behaviors({
-            "sink_volume": Behavior(0.3, watermark=now),
-            "midi_active": Behavior(False, watermark=now),
-            "system_health_status": behaviors["system_health_status"],
-        })
+        gate.set_behaviors(
+            {
+                "sink_volume": Behavior(0.3, watermark=now),
+                "midi_active": Behavior(False, watermark=now),
+                "system_health_status": behaviors["system_health_status"],
+            }
+        )
         result = gate.check()
         assert result.eligible is False
         assert "system health" in result.reason.lower()
@@ -111,11 +113,13 @@ class TestHealthBackend:
         gate = ContextGate(session=session, ambient_classification=False)
         gate._activity_mode = "idle"
         now = time.monotonic()
-        gate.set_behaviors({
-            "sink_volume": Behavior(0.3, watermark=now),
-            "midi_active": Behavior(False, watermark=now),
-            "system_health_status": behaviors["system_health_status"],
-        })
+        gate.set_behaviors(
+            {
+                "sink_volume": Behavior(0.3, watermark=now),
+                "midi_active": Behavior(False, watermark=now),
+                "system_health_status": behaviors["system_health_status"],
+            }
+        )
         result = gate.check()
         assert result.eligible is False
         assert "degraded" in result.reason.lower()

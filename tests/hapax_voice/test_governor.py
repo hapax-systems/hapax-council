@@ -166,9 +166,17 @@ class TestComplianceWindowTitle:
         from shared.hyprland import WindowInfo
 
         win = WindowInfo(
-            address="0x1", app_class="firefox", title="Q1 Performance Review - Google Docs",
-            workspace_id=1, pid=1, x=0, y=0, width=1920, height=1080,
-            floating=False, fullscreen=False,
+            address="0x1",
+            app_class="firefox",
+            title="Q1 Performance Review - Google Docs",
+            workspace_id=1,
+            pid=1,
+            x=0,
+            y=0,
+            width=1920,
+            height=1080,
+            floating=False,
+            fullscreen=False,
         )
         gov = PipelineGovernor()
         state = _make_state(active_window=win)
@@ -178,9 +186,17 @@ class TestComplianceWindowTitle:
         from shared.hyprland import WindowInfo
 
         win = WindowInfo(
-            address="0x1", app_class="obsidian", title="1-on-1 Agenda - Ryan",
-            workspace_id=1, pid=1, x=0, y=0, width=1920, height=1080,
-            floating=False, fullscreen=False,
+            address="0x1",
+            app_class="obsidian",
+            title="1-on-1 Agenda - Ryan",
+            workspace_id=1,
+            pid=1,
+            x=0,
+            y=0,
+            width=1920,
+            height=1080,
+            floating=False,
+            fullscreen=False,
         )
         gov = PipelineGovernor()
         state = _make_state(active_window=win)
@@ -190,9 +206,17 @@ class TestComplianceWindowTitle:
         from shared.hyprland import WindowInfo
 
         win = WindowInfo(
-            address="0x1", app_class="kitty", title="nvim - perception.py",
-            workspace_id=1, pid=1, x=0, y=0, width=1920, height=1080,
-            floating=False, fullscreen=False,
+            address="0x1",
+            app_class="kitty",
+            title="nvim - perception.py",
+            workspace_id=1,
+            pid=1,
+            x=0,
+            y=0,
+            width=1920,
+            height=1080,
+            floating=False,
+            fullscreen=False,
         )
         gov = PipelineGovernor()
         state = _make_state(active_window=win)
@@ -203,9 +227,17 @@ class TestComplianceWindowTitle:
         from shared.hyprland import WindowInfo
 
         win = WindowInfo(
-            address="0x1", app_class="firefox", title="Coaching Notes - Team",
-            workspace_id=1, pid=1, x=0, y=0, width=1920, height=1080,
-            floating=False, fullscreen=False,
+            address="0x1",
+            app_class="firefox",
+            title="Coaching Notes - Team",
+            workspace_id=1,
+            pid=1,
+            x=0,
+            y=0,
+            width=1920,
+            height=1080,
+            floating=False,
+            fullscreen=False,
         )
         gov = PipelineGovernor()
         state = _make_state(active_window=win, workspace_context="")

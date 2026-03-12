@@ -74,17 +74,23 @@ class TestSinglePathDegradation:
         )
 
         # Path A: freshness — missing sensor behavior
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
         assert not freshness.fresh_enough
         assert any("not present" in v for v in freshness.violations)
 
         # Path B: veto — activity_mode check succeeds
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="mode", predicate=lambda c: c.samples["activity_mode"].value != "meeting"),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="mode", predicate=lambda c: c.samples["activity_mode"].value != "meeting"
+                ),
+            ]
+        )
         veto = chain.evaluate(ctx)
         assert veto.allowed
 
@@ -113,9 +119,11 @@ class TestSinglePathDegradation:
         assert ctx.min_watermark == now - 100.0
 
         # Degradation: freshness guard catches the stale path
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="stale", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="stale", max_staleness_s=5.0),
+            ]
+        )
         result = guard.check(ctx, now)
         assert not result.fresh_enough
         assert isinstance(ctx.samples, MappingProxyType)
@@ -125,9 +133,14 @@ class TestSinglePathDegradation:
         state = _make_state(activity_mode="meeting")
 
         # Path A: VetoChain denies
-        chain: VetoChain[EnvironmentState] = VetoChain([
-            Veto(name="mode", predicate=lambda s: s.activity_mode not in ("production", "meeting")),
-        ])
+        chain: VetoChain[EnvironmentState] = VetoChain(
+            [
+                Veto(
+                    name="mode",
+                    predicate=lambda s: s.activity_mode not in ("production", "meeting"),
+                ),
+            ]
+        )
         veto = chain.evaluate(state)
         assert not veto.allowed
 
@@ -162,19 +175,28 @@ class TestSinglePathDegradation:
         )
 
         # Chain A: passes
-        chain_a: VetoChain[FusedContext] = VetoChain([
-            Veto(name="mode_ok", predicate=lambda c: c.samples["mode"].value != "meeting"),
-        ])
+        chain_a: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="mode_ok", predicate=lambda c: c.samples["mode"].value != "meeting"),
+            ]
+        )
         veto_a = chain_a.evaluate(ctx)
         assert veto_a.allowed
 
         # Chain B: fails (staleness)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
-        chain_b: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
+        chain_b: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="freshness",
+                    predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough,
+                ),
+            ]
+        )
         veto_b = chain_b.evaluate(ctx)
         assert not veto_b.allowed
 
@@ -195,9 +217,11 @@ class TestRecoveryFromDegradation:
         now = time.monotonic()
         b = Behavior("data", watermark=now - 100.0)
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sig", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sig", max_staleness_s=5.0),
+            ]
+        )
 
         # Degraded: stale
         trigger: Event[str] = Event()
@@ -218,9 +242,11 @@ class TestRecoveryFromDegradation:
     def test_missing_behavior_added_recovers_freshness(self):
         """T2+T3+T4: Missing behavior → guard fails → behavior added → guard passes."""
         now = time.monotonic()
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
 
         # Degraded: missing behavior
         ctx_missing = FusedContext(
@@ -308,9 +334,11 @@ class TestGracefulDegradationInFullPipeline:
 
         trigger: Event[str] = Event()
         fused = with_latest_from(trigger, engine.behaviors)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
+            ]
+        )
 
         received: list[FusedContext] = []
         fused.subscribe(lambda ts, ctx: received.append(ctx))
@@ -346,25 +374,31 @@ class TestGracefulDegradationInFullPipeline:
         # Normal
         engine.tick()
         r1 = gov.evaluate(engine.latest)
-        schedules.append(Schedule(
-            command=Command(action=r1, params={"phase": "normal"}),
-        ))
+        schedules.append(
+            Schedule(
+                command=Command(action=r1, params={"phase": "normal"}),
+            )
+        )
 
         # Degraded: production mode
         engine.update_slow_fields(activity_mode="production")
         engine.tick()
         r2 = gov.evaluate(engine.latest)
-        schedules.append(Schedule(
-            command=Command(action=r2, params={"phase": "degraded"}),
-        ))
+        schedules.append(
+            Schedule(
+                command=Command(action=r2, params={"phase": "degraded"}),
+            )
+        )
 
         # Recovered
         engine.update_slow_fields(activity_mode="idle")
         engine.tick()
         r3 = gov.evaluate(engine.latest)
-        schedules.append(Schedule(
-            command=Command(action=r3, params={"phase": "recovered"}),
-        ))
+        schedules.append(
+            Schedule(
+                command=Command(action=r3, params={"phase": "recovered"}),
+            )
+        )
 
         assert schedules[0].command.action == "process"
         assert schedules[1].command.action == "pause"
@@ -408,9 +442,14 @@ class TestGracefulDegradationInFullPipeline:
 
         # Path A: veto denies (meeting)
         state = _make_state(activity_mode="meeting")
-        chain: VetoChain[EnvironmentState] = VetoChain([
-            Veto(name="mode", predicate=lambda s: s.activity_mode not in ("production", "meeting")),
-        ])
+        chain: VetoChain[EnvironmentState] = VetoChain(
+            [
+                Veto(
+                    name="mode",
+                    predicate=lambda s: s.activity_mode not in ("production", "meeting"),
+                ),
+            ]
+        )
         veto = chain.evaluate(state)
 
         # Path B: freshness denies (stale context)
@@ -420,15 +459,15 @@ class TestGracefulDegradationInFullPipeline:
             samples={"sensor": Stamped(value="ok", watermark=now - 100.0)},
             min_watermark=now - 100.0,
         )
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
 
         # Both degraded → Command with full provenance
-        all_denials = list(veto.denied_by) + [
-            f"freshness:{v}" for v in freshness.violations
-        ]
+        all_denials = list(veto.denied_by) + [f"freshness:{v}" for v in freshness.violations]
         cmd = Command(
             action="pause",
             params={"denials": all_denials},

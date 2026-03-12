@@ -42,7 +42,7 @@ def test_trace_id_present_with_active_span(event_log, tmp_path):
     assert "trace_id" in event
     assert "span_id" in event
     assert len(event["trace_id"]) == 32  # 128-bit hex
-    assert len(event["span_id"]) == 16   # 64-bit hex
+    assert len(event["span_id"]) == 16  # 64-bit hex
     assert event["foo"] == "bar"
     assert event["type"] == "test_event"
 

@@ -156,7 +156,7 @@ def run_review(pr_number: int, *, dry_run: bool = False) -> ReviewResult:
     system_prompt = _build_system_prompt(axioms)
     user_prompt = f"""\
 ## Changed Files
-{chr(10).join(f'- `{f}`' for f in changed_files)}
+{chr(10).join(f"- `{f}`" for f in changed_files)}
 
 ## Diff
 ```diff
@@ -180,16 +180,25 @@ def run_review(pr_number: int, *, dry_run: bool = False) -> ReviewResult:
 
     try:
         from shared.sdlc_log import log_sdlc_event
+
         log_sdlc_event(
             "review",
             pr_number=pr_number,
             result={
                 "verdict": result.verdict,
                 "findings_count": len(result.findings),
-                "high_findings": sum(1 for f in result.findings if getattr(f, 'severity', '') == "HIGH"),
-                "medium_findings": sum(1 for f in result.findings if getattr(f, 'severity', '') == "MEDIUM"),
+                "high_findings": sum(
+                    1 for f in result.findings if getattr(f, "severity", "") == "HIGH"
+                ),
+                "medium_findings": sum(
+                    1 for f in result.findings if getattr(f, "severity", "") == "MEDIUM"
+                ),
                 "axiom_concerns_count": len(result.axiom_concerns),
-                "axiom_concerns": [{"axiom_id": c.axiom_id, "severity": c.severity} for c in result.axiom_concerns][:5] if result.axiom_concerns else [],
+                "axiom_concerns": [
+                    {"axiom_id": c.axiom_id, "severity": c.severity} for c in result.axiom_concerns
+                ][:5]
+                if result.axiom_concerns
+                else [],
             },
             duration_ms=duration_ms,
             model_used=model,
@@ -201,6 +210,7 @@ def run_review(pr_number: int, *, dry_run: bool = False) -> ReviewResult:
 
     try:
         from shared.audit import log_audit
+
         log_audit(
             action="sdlc_review",
             actor="sdlc_pipeline",

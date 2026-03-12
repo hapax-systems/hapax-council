@@ -1453,44 +1453,52 @@ async def check_watch_connected() -> list[CheckResult]:
     t = time.monotonic()
     conn_file = WATCH_STATE_DIR / "connection.json"
     if not conn_file.exists():
-        return [CheckResult(
-            name="connectivity.watch",
-            group="connectivity",
-            status=Status.HEALTHY,
-            message="not configured",
-            duration_ms=_timed(t),
-            tier=3,
-        )]
+        return [
+            CheckResult(
+                name="connectivity.watch",
+                group="connectivity",
+                status=Status.HEALTHY,
+                message="not configured",
+                duration_ms=_timed(t),
+                tier=3,
+            )
+        ]
     try:
         data = json.loads(conn_file.read_text())
     except (json.JSONDecodeError, OSError):
-        return [CheckResult(
-            name="connectivity.watch",
-            group="connectivity",
-            status=Status.DEGRADED,
-            message="connection.json unreadable",
-            duration_ms=_timed(t),
-            tier=3,
-        )]
+        return [
+            CheckResult(
+                name="connectivity.watch",
+                group="connectivity",
+                status=Status.DEGRADED,
+                message="connection.json unreadable",
+                duration_ms=_timed(t),
+                tier=3,
+            )
+        ]
     age = time.time() - data.get("last_seen_epoch", 0)
     battery = data.get("battery_pct", "?")
     if age > 300:
-        return [CheckResult(
+        return [
+            CheckResult(
+                name="connectivity.watch",
+                group="connectivity",
+                status=Status.DEGRADED,
+                message=f"Watch last seen {age / 60:.0f}m ago (battery {battery}%)",
+                duration_ms=_timed(t),
+                tier=3,
+            )
+        ]
+    return [
+        CheckResult(
             name="connectivity.watch",
             group="connectivity",
-            status=Status.DEGRADED,
-            message=f"Watch last seen {age/60:.0f}m ago (battery {battery}%)",
+            status=Status.HEALTHY,
+            message=f"Watch connected, battery {battery}%",
             duration_ms=_timed(t),
             tier=3,
-        )]
-    return [CheckResult(
-        name="connectivity.watch",
-        group="connectivity",
-        status=Status.HEALTHY,
-        message=f"Watch connected, battery {battery}%",
-        duration_ms=_timed(t),
-        tier=3,
-    )]
+        )
+    ]
 
 
 @check_group("connectivity")
@@ -1499,44 +1507,52 @@ async def check_phone_connected() -> list[CheckResult]:
     t = time.monotonic()
     conn_file = WATCH_STATE_DIR / "phone_connection.json"
     if not conn_file.exists():
-        return [CheckResult(
-            name="connectivity.phone",
-            group="connectivity",
-            status=Status.HEALTHY,
-            message="not configured",
-            duration_ms=_timed(t),
-            tier=3,
-        )]
+        return [
+            CheckResult(
+                name="connectivity.phone",
+                group="connectivity",
+                status=Status.HEALTHY,
+                message="not configured",
+                duration_ms=_timed(t),
+                tier=3,
+            )
+        ]
     try:
         data = json.loads(conn_file.read_text())
     except (json.JSONDecodeError, OSError):
-        return [CheckResult(
-            name="connectivity.phone",
-            group="connectivity",
-            status=Status.DEGRADED,
-            message="phone_connection.json unreadable",
-            duration_ms=_timed(t),
-            tier=3,
-        )]
+        return [
+            CheckResult(
+                name="connectivity.phone",
+                group="connectivity",
+                status=Status.DEGRADED,
+                message="phone_connection.json unreadable",
+                duration_ms=_timed(t),
+                tier=3,
+            )
+        ]
     age = time.time() - data.get("last_seen_epoch", 0)
     battery = data.get("battery_pct", "?")
     if age > 300:
-        return [CheckResult(
+        return [
+            CheckResult(
+                name="connectivity.phone",
+                group="connectivity",
+                status=Status.DEGRADED,
+                message=f"Phone last seen {age / 60:.0f}m ago (battery {battery}%)",
+                duration_ms=_timed(t),
+                tier=3,
+            )
+        ]
+    return [
+        CheckResult(
             name="connectivity.phone",
             group="connectivity",
-            status=Status.DEGRADED,
-            message=f"Phone last seen {age/60:.0f}m ago (battery {battery}%)",
+            status=Status.HEALTHY,
+            message=f"Phone connected, battery {battery}%",
             duration_ms=_timed(t),
             tier=3,
-        )]
-    return [CheckResult(
-        name="connectivity.phone",
-        group="connectivity",
-        status=Status.HEALTHY,
-        message=f"Phone connected, battery {battery}%",
-        duration_ms=_timed(t),
-        tier=3,
-    )]
+        )
+    ]
 
 
 # ── Latency checks ──────────────────────────────────────────────────────────

@@ -41,14 +41,10 @@ class CapabilityRegistry:
         """
         if capability_type in self._entries:
             existing = self._entries[capability_type].name
-            raise ValueError(
-                f"Capability '{capability_type}' already registered by '{existing}'"
-            )
+            raise ValueError(f"Capability '{capability_type}' already registered by '{existing}'")
         name = getattr(adapter, "name", type(adapter).__name__)
         if not hasattr(adapter, "available") or not hasattr(adapter, "health"):
-            raise TypeError(
-                f"Adapter {name} must implement available() and health() methods"
-            )
+            raise TypeError(f"Adapter {name} must implement available() and health() methods")
         self._entries[capability_type] = RegistryEntry(
             capability_type=capability_type,
             adapter=adapter,

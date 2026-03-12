@@ -200,12 +200,15 @@ def run_plan(issue_number: int, *, dry_run: bool = False, post_comment: bool = T
 
     try:
         from shared.sdlc_log import log_sdlc_event
+
         log_sdlc_event(
             "plan",
             issue_number=issue_number,
             result={
                 "files_count": len(result.files_to_modify),
-                "files": [{"path": f.path, "change_type": f.change_type} for f in result.files_to_modify][:10],
+                "files": [
+                    {"path": f.path, "change_type": f.change_type} for f in result.files_to_modify
+                ][:10],
                 "criteria_count": len(result.acceptance_criteria),
                 "estimated_diff_lines": result.estimated_diff_lines,
             },
@@ -219,21 +222,24 @@ def run_plan(issue_number: int, *, dry_run: bool = False, post_comment: bool = T
 
     try:
         from shared.audit import log_audit
+
         log_audit(
             action="sdlc_plan",
             actor="sdlc_pipeline",
             check_name=f"plan-issue-{issue_number}",
             outcome="completed",
             duration_ms=duration_ms,
-            metadata={"files_count": len(result.files_to_modify), "estimated_diff_lines": result.estimated_diff_lines},
+            metadata={
+                "files_count": len(result.files_to_modify),
+                "estimated_diff_lines": result.estimated_diff_lines,
+            },
         )
     except Exception:
         pass
 
     if post_comment and not dry_run:
         files_list = "\n".join(
-            f"- `{f.path}` ({f.change_type}): {f.reason}"
-            for f in result.files_to_modify
+            f"- `{f.path}` ({f.change_type}): {f.reason}" for f in result.files_to_modify
         )
         criteria_list = "\n".join(f"- [ ] {c}" for c in result.acceptance_criteria)
         comment = f"""\

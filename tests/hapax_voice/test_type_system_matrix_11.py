@@ -351,12 +351,19 @@ class TestFullDaemonLifecycle:
         b_sensor = Behavior("ok", watermark=time.monotonic())
         trigger: Event[str] = Event()
         fused = with_latest_from(trigger, {"sensor": b_sensor})
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-        ])
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+            ]
+        )
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="freshness",
+                    predicate=lambda c: guard.check(c, time.monotonic()).fresh_enough,
+                ),
+            ]
+        )
 
         contexts: list[FusedContext] = []
         fused.subscribe(lambda ts, ctx: contexts.append(ctx))

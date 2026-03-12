@@ -77,12 +77,16 @@ class TestCommutativity:
             min_watermark=now - 100.0,
         )
 
-        guard_x = FreshnessGuard([
-            FreshnessRequirement(behavior_name="x", max_staleness_s=5.0),
-        ])
-        guard_y = FreshnessGuard([
-            FreshnessRequirement(behavior_name="y", max_staleness_s=5.0),
-        ])
+        guard_x = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="x", max_staleness_s=5.0),
+            ]
+        )
+        guard_y = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="y", max_staleness_s=5.0),
+            ]
+        )
 
         veto_a = Veto(name="x_fresh", predicate=lambda c: guard_x.check(c, now).fresh_enough)
         veto_b = Veto(name="y_fresh", predicate=lambda c: guard_y.check(c, now).fresh_enough)
@@ -195,12 +199,16 @@ class TestIdempotency:
             min_watermark=now - 10.0,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
-        ])
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="staleness", predicate=lambda c: guard.check(c, now).fresh_enough),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
+            ]
+        )
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="staleness", predicate=lambda c: guard.check(c, now).fresh_enough),
+            ]
+        )
 
         results = [chain.evaluate(ctx) for _ in range(3)]
         assert all(r.allowed == results[0].allowed for r in results)
@@ -215,11 +223,13 @@ class TestIdempotency:
         results = []
         for _ in range(3):
             r = gov.evaluate(state)
-            results.append((
-                r,
-                gov.last_veto_result.allowed,
-                gov.last_selected.selected_by,
-            ))
+            results.append(
+                (
+                    r,
+                    gov.last_veto_result.allowed,
+                    gov.last_selected.selected_by,
+                )
+            )
 
         assert all(r == results[0] for r in results)
 
@@ -244,10 +254,12 @@ class TestIdempotency:
         trigger.emit(now, "snap")
         ctx = received[0]
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
-            FreshnessRequirement(behavior_name="missing_key", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=10.0),
+                FreshnessRequirement(behavior_name="missing_key", max_staleness_s=5.0),
+            ]
+        )
 
         results = [guard.check(ctx, now) for _ in range(3)]
         assert all(r.fresh_enough == results[0].fresh_enough for r in results)
@@ -346,9 +358,11 @@ class TestBoundaryConditions:
         assert "operator_present" in ctx.samples
 
         # Adding one missing requirement changes outcome
-        guard_with_req = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=1.0),
-        ])
+        guard_with_req = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=1.0),
+            ]
+        )
         result2 = guard_with_req.check(ctx, now)
         assert result2.fresh_enough is False
         assert "not present" in result2.violations[0]
@@ -368,9 +382,11 @@ class TestBoundaryConditions:
             min_watermark=now - threshold,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="signal", max_staleness_s=threshold),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="signal", max_staleness_s=threshold),
+            ]
+        )
 
         # staleness == threshold, guard uses > (not >=), so exactly at threshold passes
         result_exact = guard.check(ctx_exact, now)

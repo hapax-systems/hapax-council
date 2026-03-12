@@ -3,6 +3,7 @@
 Parses Health Connect backup ZIPs (containing SQLite databases) into
 markdown files with YAML frontmatter for the RAG pipeline.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,16 +45,16 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
     conn.row_factory = sqlite3.Row
 
     # Discover which tables exist
-    cursor = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    )
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     existing_tables = {row[0] for row in cursor.fetchall()}
 
-    daily: dict[str, dict] = defaultdict(lambda: {
-        "heart_rates": [],
-        "steps": 0,
-        "sleep_sessions": [],
-    })
+    daily: dict[str, dict] = defaultdict(
+        lambda: {
+            "heart_rates": [],
+            "steps": 0,
+            "sleep_sessions": [],
+        }
+    )
 
     # Heart rate records
     if "heart_rate_record" in existing_tables:
@@ -212,12 +213,15 @@ def write_rag_documents(days: list[dict], output_dir: Path | str, *, force: bool
         filepath.write_text(content)
 
 
-def run_parse(zip_path: Path | str, output_dir: Path | str | None = None, *, force: bool = False) -> list[dict]:
+def run_parse(
+    zip_path: Path | str, output_dir: Path | str | None = None, *, force: bool = False
+) -> list[dict]:
     """Orchestrate: extract -> parse -> format -> write."""
     zip_path = Path(zip_path)
     out = Path(output_dir) if output_dir else OUTPUT_DIR
 
     import tempfile
+
     with tempfile.TemporaryDirectory() as tmp:
         db_path = extract_zip(zip_path, Path(tmp))
         if db_path is None:

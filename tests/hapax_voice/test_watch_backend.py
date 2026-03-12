@@ -87,10 +87,13 @@ class TestWatchBackendContribute:
 
     def test_hrv_drop_triggers_stress(self, tmp_path):
         watch_dir = tmp_path / "watch"
-        _write_json(watch_dir / "hrv.json", {
-            "current": {"rmssd_ms": 20.0, "heart_rate_bpm": 90},
-            "window_1h": {"mean": 50.0},
-        })
+        _write_json(
+            watch_dir / "hrv.json",
+            {
+                "current": {"rmssd_ms": 20.0, "heart_rate_bpm": 90},
+                "window_1h": {"mean": 50.0},
+            },
+        )
         backend = WatchBackend(watch_dir=watch_dir, cache_ttl=0)
         behaviors: dict[str, Behavior] = {}
         backend.contribute(behaviors)
@@ -100,11 +103,14 @@ class TestWatchBackendContribute:
     def test_sleep_from_phone_summary(self, tmp_path):
         watch_dir = tmp_path / "watch"
         watch_dir.mkdir(parents=True, exist_ok=True)
-        _write_json(watch_dir / "phone_health_summary.json", {
-            "sleep_duration_min": 300,
-            "deep_min": 40,
-            "rem_min": 30,
-        })
+        _write_json(
+            watch_dir / "phone_health_summary.json",
+            {
+                "sleep_duration_min": 300,
+                "deep_min": 40,
+                "rem_min": 30,
+            },
+        )
         backend = WatchBackend(watch_dir=watch_dir, cache_ttl=0)
         behaviors: dict[str, Behavior] = {}
         backend.contribute(behaviors)

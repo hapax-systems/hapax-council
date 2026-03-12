@@ -66,11 +66,14 @@ class TestWatermarkProvenance:
         b_mode = Behavior("idle", watermark=30.0)
 
         trigger: Event[str] = Event()
-        fused = with_latest_from(trigger, {
-            "operator_present": b_op,
-            "vad_confidence": b_vad,
-            "activity_mode": b_mode,
-        })
+        fused = with_latest_from(
+            trigger,
+            {
+                "operator_present": b_op,
+                "vad_confidence": b_vad,
+                "activity_mode": b_mode,
+            },
+        )
         received: list[FusedContext] = []
         fused.subscribe(lambda ts, ctx: received.append(ctx))
 
@@ -81,9 +84,11 @@ class TestWatermarkProvenance:
         assert ctx.min_watermark == 10.0
         assert ctx.get_sample("operator_present").watermark == 10.0
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=30.0),
+            ]
+        )
         assert guard.check(ctx, 35.0).fresh_enough is True
 
         cmd = Command(
@@ -153,9 +158,11 @@ class TestWatermarkProvenance:
         assert isinstance(ctx.samples, MappingProxyType)
 
         # Missing behavior check
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nope", max_staleness_s=1.0),
+            ]
+        )
         assert "not present" in guard.check(ctx, time.monotonic()).violations[0]
 
     def test_watermark_provenance_survives_schedule_wrapping(self):
@@ -199,15 +206,19 @@ class TestGovernanceProvenance:
         """S4, S5, S6 + A2, A3, A5: Each veto name traces to denied_by in Schedule."""
         now = time.monotonic()
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={}, min_watermark=now)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
+            ]
+        )
 
         gov = PipelineGovernor(conversation_debounce_s=0.0)
-        gov.veto_chain.add(Veto(
-            name="freshness_check",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="freshness_check",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(
             activity_mode="production",
@@ -221,7 +232,9 @@ class TestGovernanceProvenance:
         denied = set(gov.last_veto_result.denied_by)
         assert denied == {"activity_mode", "conversation_debounce", "freshness_check"}
 
-        cmd = Command(action="pause", params={"denied": list(denied)}, governance_result=gov.last_veto_result)
+        cmd = Command(
+            action="pause", params={"denied": list(denied)}, governance_result=gov.last_veto_result
+        )
         sched = Schedule(command=cmd)
         assert set(sched.command.governance_result.denied_by) == denied
         assert isinstance(sched.command.params, MappingProxyType)
@@ -253,15 +266,19 @@ class TestGovernanceProvenance:
         """S5, S6, S4 + A2, A3, A5: Wake word provenance traces to Schedule."""
         now = time.monotonic()
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={}, min_watermark=now)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
+            ]
+        )
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="custom",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="custom",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         gov.wake_word_active = True
         state = _make_state(activity_mode="production")
@@ -380,16 +397,20 @@ class TestEndToEndProvenance:
             min_watermark=now - 100.0,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
+            ]
+        )
         freshness = guard.check(ctx, now)
         violation_texts = list(freshness.violations)
 
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: guard.check(c, now).fresh_enough),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="freshness", predicate=lambda c: guard.check(c, now).fresh_enough),
+            ]
+        )
         veto = chain.evaluate(ctx)
 
         gov = PipelineGovernor()
@@ -425,9 +446,11 @@ class TestEndToEndProvenance:
         assert "operator_present" in ctx.samples
         assert isinstance(ctx.samples, MappingProxyType)
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=1.0),
+            ]
+        )
         assert "not present" in guard.check(ctx, time.monotonic()).violations[0]
 
     def test_multi_hop_watermark_provenance_behavior_to_guard_to_command(self):
@@ -441,17 +464,23 @@ class TestEndToEndProvenance:
             min_watermark=100.0,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="sensor", max_staleness_s=3.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="sensor", max_staleness_s=3.0),
+            ]
+        )
         freshness = guard.check(ctx, 105.0)
         assert freshness.fresh_enough is False
         # staleness = 105 - 100 = 5.0s
         assert any("5.0" in v for v in freshness.violations)
 
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness_check", predicate=lambda c: guard.check(c, 105.0).fresh_enough),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(
+                    name="freshness_check", predicate=lambda c: guard.check(c, 105.0).fresh_enough
+                ),
+            ]
+        )
         veto = chain.evaluate(ctx)
         assert "freshness_check" in veto.denied_by
 

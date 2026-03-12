@@ -7,6 +7,7 @@ document, atomically replaced via tmp + rename.
 Usage:
     uvicorn agents.watch_receiver:app --host 0.0.0.0 --port 8042
 """
+
 from __future__ import annotations
 
 import json
@@ -40,6 +41,7 @@ def _get_watch_state_dir() -> Path:
 
 
 # ── Pydantic models ─────────────────────────────────────────────────────
+
 
 class SensorReading(BaseModel):
     type: str
@@ -88,12 +90,11 @@ class VoiceTriggerPayload(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+
 def _atomic_write(path: Path, data: dict[str, Any]) -> None:
     """Write JSON atomically via tmp file + rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".tmp", prefix=f".{path.stem}_"
-    )
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=f".{path.stem}_")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
@@ -109,9 +110,7 @@ def _atomic_write(path: Path, data: dict[str, Any]) -> None:
 def _atomic_write_text(path: Path, text: str) -> None:
     """Write text atomically via tmp file + rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".tmp", prefix=f".{path.stem}_"
-    )
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=f".{path.stem}_")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
@@ -146,21 +145,25 @@ def _window_stats(window: deque[tuple[float, float]]) -> dict[str, Any]:
 
 # ── Handlers ─────────────────────────────────────────────────────────────
 
+
 def _handle_heart_rate(reading: SensorReading, now: float, source: str = "pixel_watch_4") -> None:
     """Process heart rate reading, update rolling window, write file."""
     if reading.bpm is None:
         return
     _prune_window(_hr_window, now)
     _hr_window.append((now, reading.bpm))
-    _atomic_write(_get_watch_state_dir() / "heartrate.json", {
-        "source": source,
-        "updated_at": datetime.now(UTC).isoformat(),
-        "current": {
-            "bpm": reading.bpm,
-            "confidence": reading.confidence or "UNKNOWN",
+    _atomic_write(
+        _get_watch_state_dir() / "heartrate.json",
+        {
+            "source": source,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "current": {
+                "bpm": reading.bpm,
+                "confidence": reading.confidence or "UNKNOWN",
+            },
+            "window_1h": _window_stats(_hr_window),
         },
-        "window_1h": _window_stats(_hr_window),
-    })
+    )
 
 
 def _handle_hrv(reading: SensorReading, now: float, source: str = "pixel_watch_4") -> None:
@@ -169,42 +172,54 @@ def _handle_hrv(reading: SensorReading, now: float, source: str = "pixel_watch_4
         return
     _prune_window(_hrv_window, now)
     _hrv_window.append((now, reading.rmssd_ms))
-    _atomic_write(_get_watch_state_dir() / "hrv.json", {
-        "source": source,
-        "updated_at": datetime.now(UTC).isoformat(),
-        "current": {"rmssd_ms": reading.rmssd_ms},
-        "window_1h": _window_stats(_hrv_window),
-    })
+    _atomic_write(
+        _get_watch_state_dir() / "hrv.json",
+        {
+            "source": source,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "current": {"rmssd_ms": reading.rmssd_ms},
+            "window_1h": _window_stats(_hrv_window),
+        },
+    )
 
 
 def _handle_eda(reading: SensorReading, source: str = "pixel_watch_4") -> None:
     """Process EDA reading."""
-    _atomic_write(_get_watch_state_dir() / "eda.json", {
-        "source": source,
-        "updated_at": datetime.now(UTC).isoformat(),
-        "current": {
-            "eda_event": reading.eda_event or False,
-            "duration_seconds": reading.duration_seconds or 0,
+    _atomic_write(
+        _get_watch_state_dir() / "eda.json",
+        {
+            "source": source,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "current": {
+                "eda_event": reading.eda_event or False,
+                "duration_seconds": reading.duration_seconds or 0,
+            },
         },
-    })
+    )
 
 
 def _handle_skin_temp(reading: SensorReading, source: str = "pixel_watch_4") -> None:
     """Process skin temperature reading."""
-    _atomic_write(_get_watch_state_dir() / "skin_temp.json", {
-        "source": source,
-        "updated_at": datetime.now(UTC).isoformat(),
-        "current": {"temp_c": reading.temp_c},
-    })
+    _atomic_write(
+        _get_watch_state_dir() / "skin_temp.json",
+        {
+            "source": source,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "current": {"temp_c": reading.temp_c},
+        },
+    )
 
 
 def _handle_activity(reading: SensorReading, source: str = "pixel_watch_4") -> None:
     """Process activity state reading."""
-    _atomic_write(_get_watch_state_dir() / "activity.json", {
-        "source": source,
-        "updated_at": datetime.now(UTC).isoformat(),
-        "state": reading.state or "UNKNOWN",
-    })
+    _atomic_write(
+        _get_watch_state_dir() / "activity.json",
+        {
+            "source": source,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "state": reading.state or "UNKNOWN",
+        },
+    )
 
 
 _HANDLERS: dict[str, Any] = {
@@ -219,14 +234,18 @@ _HANDLERS: dict[str, Any] = {
 def _update_connection(payload: SensorPayload) -> None:
     """Update connection file on every POST. Phone writes phone_connection.json."""
     filename = "phone_connection.json" if payload.device_id == "pixel10" else "connection.json"
-    _atomic_write(_get_watch_state_dir() / filename, {
-        "last_seen_epoch": time.time(),
-        "device_id": payload.device_id,
-        "battery_pct": payload.battery_pct,
-    })
+    _atomic_write(
+        _get_watch_state_dir() / filename,
+        {
+            "last_seen_epoch": time.time(),
+            "device_id": payload.device_id,
+            "battery_pct": payload.battery_pct,
+        },
+    )
 
 
 # ── App factory ──────────────────────────────────────────────────────────
+
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
@@ -266,11 +285,19 @@ def create_app() -> FastAPI:
         # Write RAG markdown using health_connect_parser formatter
         from agents.health_connect_parser import format_daily_summary
 
-        day_data = {k: v for k, v in payload.model_dump().items() if v is not None and k != "device_id"}
+        day_data = {
+            k: v for k, v in payload.model_dump().items() if v is not None and k != "device_id"
+        }
         md_content = format_daily_summary(day_data)
         # Override device in frontmatter to reflect phone source
-        md_content = md_content.replace("device: pixel_watch_4", f"device: {DEVICE_NAMES.get(payload.device_id, payload.device_id)}")
-        md_content = md_content.replace("source_device: pixel_watch_4", f"source_device: {DEVICE_NAMES.get(payload.device_id, payload.device_id)}")
+        md_content = md_content.replace(
+            "device: pixel_watch_4",
+            f"device: {DEVICE_NAMES.get(payload.device_id, payload.device_id)}",
+        )
+        md_content = md_content.replace(
+            "source_device: pixel_watch_4",
+            f"source_device: {DEVICE_NAMES.get(payload.device_id, payload.device_id)}",
+        )
         rag_dir = HAPAX_HOME / "documents" / "rag-sources" / "health-connect"
         rag_dir.mkdir(parents=True, exist_ok=True)
         rag_file = rag_dir / f"health-{payload.date}.md"
@@ -281,10 +308,13 @@ def create_app() -> FastAPI:
     async def voice_trigger(payload: VoiceTriggerPayload) -> dict[str, str]:
         if payload.device_id not in ALLOWED_DEVICE_IDS:
             raise HTTPException(status_code=403, detail="Unknown device")
-        _atomic_write(_get_watch_state_dir() / "voice_trigger.json", {
-            "triggered_at": datetime.now(UTC).isoformat(),
-            "device_id": payload.device_id,
-        })
+        _atomic_write(
+            _get_watch_state_dir() / "voice_trigger.json",
+            {
+                "triggered_at": datetime.now(UTC).isoformat(),
+                "device_id": payload.device_id,
+            },
+        )
         return {"status": "ok"}
 
     return _app
@@ -295,4 +325,5 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("agents.watch_receiver:app", host="0.0.0.0", port=8042, reload=True)

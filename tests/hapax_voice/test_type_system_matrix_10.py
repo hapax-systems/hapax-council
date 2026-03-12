@@ -94,15 +94,19 @@ class TestDaemonLoopSimulation:
         """S5, S6, S4 + A2, A3, A5: Production → wake word override → back to production."""
         now = time.monotonic()
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={}, min_watermark=now)
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=1.0),
+            ]
+        )
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="custom_fresh",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="custom_fresh",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="production")
 
@@ -186,12 +190,16 @@ class TestDaemonLoopSimulation:
         received: list[FusedContext] = []
         fused.subscribe(lambda ts, ctx: received.append(ctx))
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
-        ])
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="fresh", predicate=lambda c: guard.check(c, chain_now[0]).fresh_enough),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
+            ]
+        )
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="fresh", predicate=lambda c: guard.check(c, chain_now[0]).fresh_enough),
+            ]
+        )
 
         # Cycle 1: fresh (check at now+1)
         chain_now = [now + 1.0]
@@ -294,10 +302,12 @@ class TestFeedbackStateAccumulation:
         received: list[FusedContext] = []
         fused.subscribe(lambda ts, ctx: received.append(ctx))
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="val", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
+            ]
+        )
 
         # Cycle 1: check at 101 → val fresh (1s < 5s), but missing fails
         trigger.emit(101.0, "c1")
@@ -423,10 +433,12 @@ class TestCyclicPipelineIntegrity:
         guard = FreshnessGuard([FreshnessRequirement("missing", 1.0)])
 
         gov = PipelineGovernor()
-        gov.veto_chain.add(Veto(
-            name="fresh_check",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="fresh_check",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(activity_mode="production")
 
@@ -456,10 +468,7 @@ class TestCyclicPipelineIntegrity:
         assert r4 == "process"
         assert gov.wake_word_active is False
 
-        cmds = [
-            Command(action=r, params={"cycle": i})
-            for i, r in enumerate([r1, r2, r3, r4], 1)
-        ]
+        cmds = [Command(action=r, params={"cycle": i}) for i, r in enumerate([r1, r2, r3, r4], 1)]
         assert [c.action for c in cmds] == ["process", "pause", "pause", "process"]
         assert all(isinstance(c.params, MappingProxyType) for c in cmds)
         assert "not present" in guard.check(ctx, now).violations[0]

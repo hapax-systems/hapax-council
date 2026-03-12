@@ -26,6 +26,7 @@ CACHE_TTL_SECONDS = 900  # 15 minutes
 @dataclass
 class PipelineItem:
     """An issue or PR in the SDLC pipeline."""
+
     number: int
     title: str
     kind: str  # "issue" or "pr"
@@ -36,6 +37,7 @@ class PipelineItem:
 @dataclass
 class SdlcStatus:
     """Complete SDLC pipeline status."""
+
     pipeline_items: list[PipelineItem] = field(default_factory=list)
     recent_events: int = 0
     github_available: bool = True
@@ -94,36 +96,70 @@ def _fetch_github_items() -> tuple[list[PipelineItem], bool]:
     try:
         # Fetch open PRs with agent-authored label
         raw = subprocess.run(
-            ["gh", "pr", "list", "--label", "agent-authored", "--state", "open",
-             "--json", "number,title,labels", "--limit", "50"],
-            capture_output=True, text=True, timeout=30,
+            [
+                "gh",
+                "pr",
+                "list",
+                "--label",
+                "agent-authored",
+                "--state",
+                "open",
+                "--json",
+                "number,title,labels",
+                "--limit",
+                "50",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if raw.returncode == 0 and raw.stdout.strip():
             for pr in json.loads(raw.stdout):
-                label_names = [lb["name"] if isinstance(lb, dict) else lb for lb in pr.get("labels", [])]
-                items.append(PipelineItem(
-                    number=pr["number"],
-                    title=pr["title"],
-                    kind="pr",
-                    stage=_derive_stage(label_names),
-                    review_round=_extract_review_round(label_names),
-                ))
+                label_names = [
+                    lb["name"] if isinstance(lb, dict) else lb for lb in pr.get("labels", [])
+                ]
+                items.append(
+                    PipelineItem(
+                        number=pr["number"],
+                        title=pr["title"],
+                        kind="pr",
+                        stage=_derive_stage(label_names),
+                        review_round=_extract_review_round(label_names),
+                    )
+                )
 
         # Fetch open issues with SDLC labels
         raw = subprocess.run(
-            ["gh", "issue", "list", "--label", "agent-eligible",
-             "--state", "open", "--json", "number,title,labels", "--limit", "50"],
-            capture_output=True, text=True, timeout=30,
+            [
+                "gh",
+                "issue",
+                "list",
+                "--label",
+                "agent-eligible",
+                "--state",
+                "open",
+                "--json",
+                "number,title,labels",
+                "--limit",
+                "50",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if raw.returncode == 0 and raw.stdout.strip():
             for issue in json.loads(raw.stdout):
-                label_names = [lb["name"] if isinstance(lb, dict) else lb for lb in issue.get("labels", [])]
-                items.append(PipelineItem(
-                    number=issue["number"],
-                    title=issue["title"],
-                    kind="issue",
-                    stage=_derive_stage(label_names),
-                ))
+                label_names = [
+                    lb["name"] if isinstance(lb, dict) else lb for lb in issue.get("labels", [])
+                ]
+                items.append(
+                    PipelineItem(
+                        number=issue["number"],
+                        title=issue["title"],
+                        kind="issue",
+                        stage=_derive_stage(label_names),
+                    )
+                )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         _log.debug("GitHub fetch failed: %s", exc)
         return [], False
@@ -131,8 +167,18 @@ def _fetch_github_items() -> tuple[list[PipelineItem], bool]:
     # Write cache
     try:
         GITHUB_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        cache_data = {"items": [{"number": i.number, "title": i.title, "kind": i.kind,
-                                  "stage": i.stage, "review_round": i.review_round} for i in items]}
+        cache_data = {
+            "items": [
+                {
+                    "number": i.number,
+                    "title": i.title,
+                    "kind": i.kind,
+                    "stage": i.stage,
+                    "review_round": i.review_round,
+                }
+                for i in items
+            ]
+        }
         GITHUB_CACHE.write_text(json.dumps(cache_data))
     except OSError:
         pass

@@ -54,7 +54,105 @@ class ComplianceResult:
 
 # Stopwords excluded from keyword extraction.
 _STOPWORDS = frozenset(
-    ["a", "an", "the", "and", "or", "not", "is", "are", "be", "been", "being", "was", "were", "will", "would", "shall", "should", "may", "might", "can", "could", "must", "do", "does", "did", "has", "have", "had", "in", "on", "at", "by", "for", "to", "of", "from", "with", "as", "that", "this", "it", "its", "than", "also", "all", "any", "each", "every", "no", "nor", "so", "if", "but", "since", "because", "when", "while", "where", "how", "what", "which", "who", "whom", "whose", "there", "here", "then", "more", "most", "other", "some", "such", "only", "just", "about", "up", "out", "into", "over", "after", "before", "between", "through", "during", "without", "under", "above", "below", "these", "those", "their", "them", "they", "he", "she", "his", "her"]
+    [
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "not",
+        "is",
+        "are",
+        "be",
+        "been",
+        "being",
+        "was",
+        "were",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "may",
+        "might",
+        "can",
+        "could",
+        "must",
+        "do",
+        "does",
+        "did",
+        "has",
+        "have",
+        "had",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "to",
+        "of",
+        "from",
+        "with",
+        "as",
+        "that",
+        "this",
+        "it",
+        "its",
+        "than",
+        "also",
+        "all",
+        "any",
+        "each",
+        "every",
+        "no",
+        "nor",
+        "so",
+        "if",
+        "but",
+        "since",
+        "because",
+        "when",
+        "while",
+        "where",
+        "how",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "there",
+        "here",
+        "then",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "only",
+        "just",
+        "about",
+        "up",
+        "out",
+        "into",
+        "over",
+        "after",
+        "before",
+        "between",
+        "through",
+        "during",
+        "without",
+        "under",
+        "above",
+        "below",
+        "these",
+        "those",
+        "their",
+        "them",
+        "they",
+        "he",
+        "she",
+        "his",
+        "her",
+    ]
 )
 
 
@@ -92,7 +190,8 @@ def compile_rules(implications: list) -> list[ComplianceRule]:
         if len(keywords) < 2:
             log.warning(
                 "Implication %s has too few keywords (%d), skipping",
-                impl.id, len(keywords),
+                impl.id,
+                len(keywords),
             )
             continue
         # Build a pattern that matches when any 2+ keywords appear in the text.
@@ -202,9 +301,7 @@ def check_full(
             precedents = store.search(axiom.id, situation, limit=3)
             for p in precedents:
                 if p.decision == "violation":
-                    precedent_violations.append(
-                        f"Precedent {p.id}: {p.situation} -> {p.decision}"
-                    )
+                    precedent_violations.append(f"Precedent {p.id}: {p.situation} -> {p.decision}")
                     if p.axiom_id not in precedent_axioms:
                         precedent_axioms.append(p.axiom_id)
     except Exception as e:

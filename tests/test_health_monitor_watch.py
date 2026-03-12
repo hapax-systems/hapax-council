@@ -1,4 +1,5 @@
 """Tests for watch and phone connectivity health checks."""
+
 from __future__ import annotations
 
 import json
@@ -16,11 +17,16 @@ class TestWatchConnectivityCheck:
     @pytest.mark.asyncio
     async def test_healthy_when_connected(self, tmp_path):
         from agents.health_monitor import check_watch_connected
+
         conn = tmp_path / "connection.json"
-        conn.write_text(json.dumps({
-            "last_seen_epoch": time.time(),
-            "battery_pct": 78,
-        }))
+        conn.write_text(
+            json.dumps(
+                {
+                    "last_seen_epoch": time.time(),
+                    "battery_pct": 78,
+                }
+            )
+        )
         with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
             results = await check_watch_connected()
         assert len(results) == 1
@@ -30,11 +36,16 @@ class TestWatchConnectivityCheck:
     @pytest.mark.asyncio
     async def test_degraded_when_stale(self, tmp_path):
         from agents.health_monitor import check_watch_connected
+
         conn = tmp_path / "connection.json"
-        conn.write_text(json.dumps({
-            "last_seen_epoch": time.time() - 600,
-            "battery_pct": 78,
-        }))
+        conn.write_text(
+            json.dumps(
+                {
+                    "last_seen_epoch": time.time() - 600,
+                    "battery_pct": 78,
+                }
+            )
+        )
         with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
             results = await check_watch_connected()
         assert results[0].status == Status.DEGRADED
@@ -43,6 +54,7 @@ class TestWatchConnectivityCheck:
     @pytest.mark.asyncio
     async def test_skip_when_not_configured(self, tmp_path):
         from agents.health_monitor import check_watch_connected
+
         with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
             results = await check_watch_connected()
         assert results[0].status == Status.HEALTHY
@@ -55,11 +67,16 @@ class TestPhoneConnectivityCheck:
     @pytest.mark.asyncio
     async def test_healthy_when_connected(self, tmp_path):
         from agents.health_monitor import check_phone_connected
+
         conn = tmp_path / "phone_connection.json"
-        conn.write_text(json.dumps({
-            "last_seen_epoch": time.time(),
-            "battery_pct": 85,
-        }))
+        conn.write_text(
+            json.dumps(
+                {
+                    "last_seen_epoch": time.time(),
+                    "battery_pct": 85,
+                }
+            )
+        )
         with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
             results = await check_phone_connected()
         assert len(results) == 1
@@ -69,11 +86,16 @@ class TestPhoneConnectivityCheck:
     @pytest.mark.asyncio
     async def test_degraded_when_stale(self, tmp_path):
         from agents.health_monitor import check_phone_connected
+
         conn = tmp_path / "phone_connection.json"
-        conn.write_text(json.dumps({
-            "last_seen_epoch": time.time() - 600,
-            "battery_pct": 85,
-        }))
+        conn.write_text(
+            json.dumps(
+                {
+                    "last_seen_epoch": time.time() - 600,
+                    "battery_pct": 85,
+                }
+            )
+        )
         with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
             results = await check_phone_connected()
         assert results[0].status == Status.DEGRADED
@@ -82,6 +104,7 @@ class TestPhoneConnectivityCheck:
     @pytest.mark.asyncio
     async def test_not_configured_when_no_file(self, tmp_path):
         from agents.health_monitor import check_phone_connected
+
         with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
             results = await check_phone_connected()
         assert results[0].status == Status.HEALTHY

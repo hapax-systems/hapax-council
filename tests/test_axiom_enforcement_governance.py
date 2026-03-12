@@ -40,12 +40,16 @@ class TestSingleUserAxisBlocking:
 
     def test_blocks_multi_user_collaboration_features(self):
         rules = _get_all_t0_rules()
-        result = check_fast("adding features for user collaboration and sharing between users", rules=rules)
+        result = check_fast(
+            "adding features for user collaboration and sharing between users", rules=rules
+        )
         assert not result.compliant, "Should block multi-user collaboration"
 
     def test_blocks_privacy_consent_mechanisms(self):
         rules = _get_all_t0_rules()
-        result = check_fast("adding privacy controls and data anonymization with consent mechanisms", rules=rules)
+        result = check_fast(
+            "adding privacy controls and data anonymization with consent mechanisms", rules=rules
+        )
         assert not result.compliant, "Should block unnecessary privacy controls"
 
 
@@ -54,12 +58,16 @@ class TestExecutiveFunctionBlocking:
 
     def test_blocks_manual_recurring_tasks(self):
         rules = _get_all_t0_rules()
-        result = check_fast("requiring manual triggering for recurring maintenance tasks", rules=rules)
+        result = check_fast(
+            "requiring manual triggering for recurring maintenance tasks", rules=rules
+        )
         assert not result.compliant, "Should block manual triggering of recurring tasks"
 
     def test_blocks_unhelpful_errors(self):
         rules = _get_all_t0_rules()
-        result = check_fast("error messages that only describe what went wrong without next actions", rules=rules)
+        result = check_fast(
+            "error messages that only describe what went wrong without next actions", rules=rules
+        )
         assert not result.compliant, "Should block unhelpful error messages"
 
 
@@ -86,22 +94,27 @@ class TestOversightFileProtection:
 
     def test_axiom_enforcement_is_never_modify(self):
         from shared.modification_classifier import ModificationClass, classify_path
+
         assert classify_path("shared/axiom_enforcement.py") == ModificationClass.NEVER_MODIFY
 
     def test_health_monitor_is_never_modify(self):
         from shared.modification_classifier import ModificationClass, classify_path
+
         assert classify_path("agents/health_monitor.py") == ModificationClass.NEVER_MODIFY
 
     def test_alert_state_is_never_modify(self):
         from shared.modification_classifier import ModificationClass, classify_path
+
         assert classify_path("shared/alert_state.py") == ModificationClass.NEVER_MODIFY
 
     def test_axiom_registry_is_never_modify(self):
         from shared.modification_classifier import ModificationClass, classify_path
+
         assert classify_path("shared/axiom_registry.py") == ModificationClass.NEVER_MODIFY
 
     def test_github_workflows_are_never_modify(self):
         from shared.modification_classifier import ModificationClass, classify_path
+
         assert classify_path(".github/workflows/ci.yml") == ModificationClass.NEVER_MODIFY
 
 

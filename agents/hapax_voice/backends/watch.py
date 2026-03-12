@@ -78,14 +78,16 @@ class WatchBackend:
 
     @property
     def provides(self) -> frozenset[str]:
-        return frozenset({
-            "heart_rate_bpm",
-            "hrv_rmssd_ms",
-            "stress_elevated",
-            "physiological_load",
-            "watch_activity_state",
-            "sleep_quality",
-        })
+        return frozenset(
+            {
+                "heart_rate_bpm",
+                "hrv_rmssd_ms",
+                "stress_elevated",
+                "physiological_load",
+                "watch_activity_state",
+                "sleep_quality",
+            }
+        )
 
     @property
     def tier(self) -> PerceptionTier:

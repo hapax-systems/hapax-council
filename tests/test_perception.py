@@ -252,9 +252,15 @@ class TestEnvironmentStateNewFields:
 
 class TestComputeInterruptibility:
     def test_not_present(self):
-        assert compute_interruptibility(
-            vad_confidence=0.0, activity_mode="idle", in_voice_session=False, operator_present=False
-        ) == 0.0
+        assert (
+            compute_interruptibility(
+                vad_confidence=0.0,
+                activity_mode="idle",
+                in_voice_session=False,
+                operator_present=False,
+            )
+            == 0.0
+        )
 
     def test_in_voice_session(self):
         score = compute_interruptibility(
@@ -298,47 +304,64 @@ class TestPhysiologicalFactors:
 
     def test_physiological_load_reduces_score(self):
         score = compute_interruptibility(
-            vad_confidence=0.0, activity_mode="idle", in_voice_session=False,
-            operator_present=True, physiological_load=1.0,
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
+            operator_present=True,
+            physiological_load=1.0,
         )
         # 1.0 - 0.3*1.0 = 0.7
         assert score == pytest.approx(0.7)
 
     def test_circadian_peak_no_penalty(self):
         score = compute_interruptibility(
-            vad_confidence=0.0, activity_mode="idle", in_voice_session=False,
-            operator_present=True, circadian_alignment=0.1,
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
+            operator_present=True,
+            circadian_alignment=0.1,
         )
         assert score == pytest.approx(1.0)
 
     def test_circadian_non_productive_penalty(self):
         score = compute_interruptibility(
-            vad_confidence=0.0, activity_mode="idle", in_voice_session=False,
-            operator_present=True, circadian_alignment=0.8,
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
+            operator_present=True,
+            circadian_alignment=0.8,
         )
         # 1.0 - 0.5*(0.8-0.1) = 1.0 - 0.35 = 0.65
         assert score == pytest.approx(0.65)
 
     def test_system_health_degraded_penalty(self):
         score = compute_interruptibility(
-            vad_confidence=0.0, activity_mode="idle", in_voice_session=False,
-            operator_present=True, system_health_ratio=0.5,
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
+            operator_present=True,
+            system_health_ratio=0.5,
         )
         # 1.0 - 0.5*(1.0-0.5) = 1.0 - 0.25 = 0.75
         assert score == pytest.approx(0.75)
 
     def test_system_health_healthy_no_penalty(self):
         score = compute_interruptibility(
-            vad_confidence=0.0, activity_mode="idle", in_voice_session=False,
-            operator_present=True, system_health_ratio=1.0,
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
+            operator_present=True,
+            system_health_ratio=1.0,
         )
         assert score == pytest.approx(1.0)
 
     def test_all_factors_stack(self):
         score = compute_interruptibility(
-            vad_confidence=0.0, activity_mode="idle", in_voice_session=False,
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
             operator_present=True,
-            physiological_load=0.5,   # -0.15
+            physiological_load=0.5,  # -0.15
             circadian_alignment=0.5,  # -0.20
             system_health_ratio=0.5,  # -0.25
         )
@@ -403,9 +426,7 @@ class TestBackendTickIntegration:
             def contribute(self, behaviors: dict[str, Behavior]) -> None:
                 raise RuntimeError("broken sensor")
 
-        engine.register_backend(
-            FailingBackend(name="broken", provides=frozenset({"bad_signal"}))
-        )
+        engine.register_backend(FailingBackend(name="broken", provides=frozenset({"bad_signal"})))
         # Should not raise
         state = engine.tick()
         assert state is not None
@@ -422,12 +443,8 @@ class TestBackendTickIntegration:
             def contribute(self, behaviors: dict[str, Behavior]) -> None:
                 call_counts[self.name] += 1
 
-        engine.register_backend(
-            CountingBackend(name="a", provides=frozenset({"sig_a"}))
-        )
-        engine.register_backend(
-            CountingBackend(name="b", provides=frozenset({"sig_b"}))
-        )
+        engine.register_backend(CountingBackend(name="a", provides=frozenset({"sig_a"})))
+        engine.register_backend(CountingBackend(name="b", provides=frozenset({"sig_b"})))
 
         engine.tick()
         engine.tick()

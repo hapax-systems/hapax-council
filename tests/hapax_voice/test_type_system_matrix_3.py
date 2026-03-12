@@ -114,9 +114,11 @@ class TestExceptionIsolation:
         def _thrower(_ts, _ctx):
             raise RuntimeError("boom")
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="nonexistent", max_staleness_s=5.0),
+            ]
+        )
 
         def _checker(_ts, ctx):
             result = guard.check(ctx, time.monotonic())
@@ -191,10 +193,12 @@ class TestMonotonicSafety:
         r1 = gov.evaluate(state)
         assert r1 == "process"
 
-        gov.veto_chain.add(Veto(
-            name="always_deny",
-            predicate=lambda _s: False,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="always_deny",
+                predicate=lambda _s: False,
+            )
+        )
 
         r2 = gov.evaluate(state)
         assert r2 == "pause"
@@ -285,10 +289,12 @@ class TestDenyWinsExhaustive:
         gov = PipelineGovernor(conversation_debounce_s=0.0)
 
         # Add a custom veto
-        gov.veto_chain.add(Veto(
-            name="custom_deny",
-            predicate=lambda _s: False,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="custom_deny",
+                predicate=lambda _s: False,
+            )
+        )
 
         # State that triggers conversation debounce (built-in veto)
         # AND has production activity_mode (built-in veto)
@@ -322,21 +328,25 @@ class TestDenyWinsExhaustive:
             min_watermark=now - 300.0,
         )
 
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="a", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="b", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="c", max_staleness_s=5.0),
-            FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="a", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="b", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="c", max_staleness_s=5.0),
+                FreshnessRequirement(behavior_name="missing", max_staleness_s=5.0),
+            ]
+        )
         result = guard.check(ctx, now)
 
         assert result.fresh_enough is False
         assert len(result.violations) == 4
         assert any("not present" in v for v in result.violations)
 
-        chain: VetoChain[FusedContext] = VetoChain([
-            Veto(name="freshness", predicate=lambda c: guard.check(c, now).fresh_enough),
-        ])
+        chain: VetoChain[FusedContext] = VetoChain(
+            [
+                Veto(name="freshness", predicate=lambda c: guard.check(c, now).fresh_enough),
+            ]
+        )
         veto_result = chain.evaluate(ctx)
         assert not veto_result.allowed
         assert "freshness" in veto_result.denied_by
@@ -378,19 +388,23 @@ class TestDenyWinsExhaustive:
         gov = PipelineGovernor(conversation_debounce_s=0.0)
 
         # Add custom freshness veto
-        guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=1.0),
-        ])
+        guard = FreshnessGuard(
+            [
+                FreshnessRequirement(behavior_name="missing_sensor", max_staleness_s=1.0),
+            ]
+        )
         ctx = FusedContext(
             trigger_time=now,
             trigger_value="tick",
             samples={},
             min_watermark=now,
         )
-        gov.veto_chain.add(Veto(
-            name="freshness_check",
-            predicate=lambda _s: guard.check(ctx, now).fresh_enough,
-        ))
+        gov.veto_chain.add(
+            Veto(
+                name="freshness_check",
+                predicate=lambda _s: guard.check(ctx, now).fresh_enough,
+            )
+        )
 
         state = _make_state(
             activity_mode="production",

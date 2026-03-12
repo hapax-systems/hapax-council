@@ -1,4 +1,5 @@
 """Tests for Health Connect SQLite parser — extracts daily summaries."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -109,6 +110,7 @@ class TestWriteRagDocuments:
         write_rag_documents(days, tmp_path)
         first_mtime = (tmp_path / "health-2026-03-12.md").stat().st_mtime
         import time
+
         time.sleep(0.05)
         write_rag_documents(days, tmp_path)
         second_mtime = (tmp_path / "health-2026-03-12.md").stat().st_mtime
@@ -117,10 +119,12 @@ class TestWriteRagDocuments:
 
 # ── Fixtures & Helpers ──
 
+
 def _create_test_db() -> bytes:
     """Create a minimal Health Connect SQLite database as bytes."""
     # We need to write to a temp file because sqlite3 can't write to BytesIO directly
     import os
+
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
@@ -155,12 +159,14 @@ def health_db_path(tmp_path):
     # Populate with test data
     base_ts = 1741795200  # epoch for a test date
     for i in range(24):
-        conn.execute("INSERT INTO heart_rate_record VALUES (?, ?, ?)",
-                     (f"hr-{i}", base_ts + i * 3600, 65 + i % 10))
-    conn.execute("INSERT INTO steps_record VALUES ('s1', ?, ?, 8234)",
-                 (base_ts, base_ts + 86400))
-    conn.execute("INSERT INTO sleep_session_record VALUES ('sl1', ?, ?)",
-                 (base_ts - 3600, base_ts + 25200))
+        conn.execute(
+            "INSERT INTO heart_rate_record VALUES (?, ?, ?)",
+            (f"hr-{i}", base_ts + i * 3600, 65 + i % 10),
+        )
+    conn.execute("INSERT INTO steps_record VALUES ('s1', ?, ?, 8234)", (base_ts, base_ts + 86400))
+    conn.execute(
+        "INSERT INTO sleep_session_record VALUES ('sl1', ?, ?)", (base_ts - 3600, base_ts + 25200)
+    )
     conn.commit()
     conn.close()
     return db_path
@@ -221,9 +227,15 @@ class TestRagIntegration:
         # Stub heavy optional deps so agents.ingest can be imported in test env
         stubs: dict[str, types.ModuleType] = {}
         stub_names = (
-            "watchdog", "watchdog.events", "watchdog.observers",
-            "docling", "docling.document_converter", "docling.chunking",
-            "qdrant_client", "qdrant_client.models", "ollama",
+            "watchdog",
+            "watchdog.events",
+            "watchdog.observers",
+            "docling",
+            "docling.document_converter",
+            "docling.chunking",
+            "qdrant_client",
+            "qdrant_client.models",
+            "ollama",
         )
         for mod_name in stub_names:
             if mod_name not in sys.modules:
@@ -232,7 +244,9 @@ class TestRagIntegration:
                 stubs[mod_name] = mod
 
         # Provide required names on stub modules
-        sys.modules["watchdog.events"].FileSystemEventHandler = type("FileSystemEventHandler", (), {})  # type: ignore[attr-defined]
+        sys.modules["watchdog.events"].FileSystemEventHandler = type(
+            "FileSystemEventHandler", (), {}
+        )  # type: ignore[attr-defined]
         sys.modules["watchdog.observers"].Observer = type("Observer", (), {})  # type: ignore[attr-defined]
 
         try:
@@ -241,7 +255,11 @@ class TestRagIntegration:
                 importlib.reload(sys.modules["agents.ingest"])
             from agents.ingest import enrich_payload
 
-            payload = {"source": str(Path.home() / "documents/rag-sources/health-connect/health-2026-03-12.md")}
+            payload = {
+                "source": str(
+                    Path.home() / "documents/rag-sources/health-connect/health-2026-03-12.md"
+                )
+            }
             result = enrich_payload(payload, {})
             assert result.get("source_service") == "health_connect"
         finally:

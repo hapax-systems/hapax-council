@@ -15,16 +15,25 @@ from unittest import mock
 def test_env_vars_set_with_creds():
     """When LANGFUSE creds are set, OTEL env vars should be configured."""
     # Clear any existing OTEL env vars first
-    for key in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_TRACES_EXPORTER"):
+    for key in (
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_TRACES_EXPORTER",
+    ):
         os.environ.pop(key, None)
 
-    with mock.patch.dict(os.environ, {
-        "LANGFUSE_PUBLIC_KEY": "pk-test-123",
-        "LANGFUSE_SECRET_KEY": "sk-test-456",
-        "LANGFUSE_HOST": "http://langfuse:3000",
-    }, clear=False):
+    with mock.patch.dict(
+        os.environ,
+        {
+            "LANGFUSE_PUBLIC_KEY": "pk-test-123",
+            "LANGFUSE_SECRET_KEY": "sk-test-456",
+            "LANGFUSE_HOST": "http://langfuse:3000",
+        },
+        clear=False,
+    ):
         # Remove cached values so module re-reads env
         import shared.langfuse_config as mod
+
         importlib.reload(mod)
 
         assert mod.PUBLIC_KEY == "pk-test-123"
@@ -34,14 +43,23 @@ def test_env_vars_set_with_creds():
 
 def test_no_env_vars_without_creds():
     """Without credentials, OTEL env vars should not be set by the module."""
-    for key in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_TRACES_EXPORTER"):
+    for key in (
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_TRACES_EXPORTER",
+    ):
         os.environ.pop(key, None)
 
-    with mock.patch.dict(os.environ, {
-        "LANGFUSE_PUBLIC_KEY": "",
-        "LANGFUSE_SECRET_KEY": "",
-    }, clear=False):
+    with mock.patch.dict(
+        os.environ,
+        {
+            "LANGFUSE_PUBLIC_KEY": "",
+            "LANGFUSE_SECRET_KEY": "",
+        },
+        clear=False,
+    ):
         import shared.langfuse_config as mod
+
         importlib.reload(mod)
 
         # Module should not have set these
