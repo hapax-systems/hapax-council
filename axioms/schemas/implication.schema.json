@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/implication.schema.json",
+  "title": "Implication",
+  "description": "A concrete requirement derived from an axiom.",
+  "type": "object",
+  "required": ["id", "axiom_id", "text", "tier", "category"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z]{2}-[a-z]+-\\d{3}$",
+      "description": "Implication ID (e.g., su-decision-001)."
+    },
+    "axiom_id": {
+      "type": "string",
+      "description": "Parent axiom ID."
+    },
+    "text": {
+      "type": "string",
+      "minLength": 10,
+      "description": "Full implication text."
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["T0", "T1", "T2"],
+      "description": "Enforcement tier. T0 = blocked by tooling, T1 = flagged in review, T2 = advisory."
+    },
+    "category": {
+      "type": "string",
+      "description": "Functional category (e.g., decision, memory, routine, alert)."
+    },
+    "sufficiency_probe": {
+      "type": ["string", "null"],
+      "description": "ID of the sufficiency probe that validates this implication."
+    }
+  }
+}

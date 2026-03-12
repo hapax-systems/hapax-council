@@ -1,6 +1,9 @@
 """Context gate for determining interrupt eligibility.
 
 Uses VetoChain internally — each check is a Veto in a deny-wins chain.
+Reads from Behaviors (via PerceptionEngine) instead of subprocess calls
+where possible. Falls back to direct subprocess for backends not yet
+registered.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ import subprocess
 from dataclasses import dataclass
 
 from agents.hapax_voice.governance import Veto, VetoChain
+from agents.hapax_voice.primitives import Behavior
 from agents.hapax_voice.session import SessionManager
 
 log = logging.getLogger(__name__)
@@ -29,9 +33,13 @@ class ContextGate:
     Checks (as vetoes, deny-wins):
         1. Active session
         2. Activity mode (production/meeting/conversation)
-        3. Audio volume (wpctl)
-        4. Studio MIDI activity (aconnect)
+        3. Audio volume (from Behavior or wpctl fallback)
+        4. Studio MIDI activity (from Behavior or aconnect fallback)
         5. Ambient audio classification (PANNs)
+
+    Prefers reading from Behaviors (set via set_behaviors()) over
+    subprocess calls. When no Behavior is available, falls back to
+    direct subprocess (legacy path).
     """
 
     def __init__(
@@ -48,6 +56,9 @@ class ContextGate:
         self._activity_mode: str = "unknown"
         self._event_log = None
         self._environment_state = None
+
+        # Behavior references (set by PerceptionEngine backends)
+        self._behaviors: dict[str, Behavior] = {}
 
         # Denial reasons stored during predicate evaluation
         self._denial_reasons: dict[str, str] = {}
@@ -73,6 +84,14 @@ class ContextGate:
     def set_environment_state(self, state) -> None:
         """Accept latest EnvironmentState from perception engine."""
         self._environment_state = state
+
+    def set_behaviors(self, behaviors: dict[str, Behavior]) -> None:
+        """Set Behavior references from PerceptionEngine backends.
+
+        When set, volume and MIDI checks read from Behaviors instead
+        of calling subprocess directly.
+        """
+        self._behaviors = behaviors
 
     def check(self) -> GateResult:
         """Run layered checks and return eligibility result."""
@@ -113,9 +132,9 @@ class ContextGate:
         return True
 
     def _allow_volume(self, _: None) -> bool:
-        volume = self._get_sink_volume()
+        volume = self._read_volume()
         if volume is None:
-            self._denial_reasons["volume"] = "Volume check unavailable (wpctl failed)"
+            self._denial_reasons["volume"] = "Volume check unavailable"
             return False
         if volume >= self.volume_threshold:
             self._denial_reasons["volume"] = (
@@ -125,9 +144,12 @@ class ContextGate:
         return True
 
     def _allow_studio(self, _: None) -> bool:
-        ok, reason = self._check_studio()
-        if not ok:
-            self._denial_reasons["studio_midi"] = reason
+        midi_active = self._read_midi_active()
+        if midi_active is None:
+            self._denial_reasons["studio_midi"] = "MIDI check unavailable (fail-closed)"
+            return False
+        if midi_active:
+            self._denial_reasons["studio_midi"] = "MIDI connections active"
             return False
         return True
 
@@ -139,15 +161,16 @@ class ContextGate:
         return True
 
     # ------------------------------------------------------------------
-    # Underlying checks (preserved from original implementation)
+    # Behavior-first reads with subprocess fallback
     # ------------------------------------------------------------------
 
-    def _get_sink_volume(self) -> float | None:
-        """Get default audio sink volume via wpctl.
+    def _read_volume(self) -> float | None:
+        """Read sink volume from Behavior if available, else subprocess."""
+        b = self._behaviors.get("sink_volume")
+        if b is not None:
+            return b.value
 
-        Returns None if wpctl is unavailable or fails, signalling the
-        gate should block (fail-closed).
-        """
+        # Fallback: direct subprocess
         try:
             result = subprocess.run(
                 ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
@@ -155,7 +178,6 @@ class ContextGate:
                 text=True,
                 timeout=5,
             )
-            # Output format: "Volume: 0.50" or "Volume: 0.50 [MUTED]"
             parts = result.stdout.strip().split()
             if len(parts) >= 2:
                 return float(parts[1])
@@ -165,11 +187,13 @@ class ContextGate:
                 self._event_log.emit("subprocess_failed", command="wpctl", error=str(exc))
         return None
 
-    def _check_studio(self) -> tuple[bool, str]:
-        """Check for active MIDI connections indicating studio use.
+    def _read_midi_active(self) -> bool | None:
+        """Read MIDI active state from Behavior if available, else subprocess."""
+        b = self._behaviors.get("midi_active")
+        if b is not None:
+            return b.value
 
-        Fails closed — if aconnect is unavailable, blocks interrupts.
-        """
+        # Fallback: direct subprocess
         try:
             result = subprocess.run(
                 ["aconnect", "-l"],
@@ -179,15 +203,15 @@ class ContextGate:
             )
             for line in result.stdout.splitlines():
                 stripped = line.strip()
-                if stripped.startswith("Connecting To:") or stripped.startswith("Connected From:"):
+                if stripped.startswith(("Connecting To:", "Connected From:")):
                     if "Through" not in stripped:
-                        return False, "MIDI connections active"
+                        return True
+            return False
         except Exception as exc:
             log.warning("Failed to check MIDI connections: %s", exc)
             if self._event_log is not None:
                 self._event_log.emit("subprocess_failed", command="aconnect", error=str(exc))
-            return False, "MIDI check unavailable (aconnect failed)"
-        return True, ""
+        return None
 
     def _check_ambient(self) -> tuple[bool, str]:
         """Check ambient audio for music, speech, or other non-interruptible sounds.
