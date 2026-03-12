@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+
+try:
+    from .watch_signals import WATCH_STATE_DIR, is_watch_connected, send_haptic_tap
+
+    _WATCH_AVAILABLE = True
+except ImportError:
+    _WATCH_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +108,54 @@ class PresenceDetector:
         self._face_count = count if detected else 0
         if detected:
             self._last_face_time = time.monotonic()
+
+    def try_watch_presence_check(self, timeout: float = 3.0, poll_interval: float = 0.5) -> bool | None:
+        """Attempt presence verification via watch haptic tap.
+
+        Sends a haptic tap to the watch and waits for a voice_trigger.json
+        response file. Returns True if confirmed, None if watch unavailable
+        or timed out (caller should fall back to audio chime).
+
+        Args:
+            timeout: Seconds to wait for trigger file response.
+            poll_interval: Seconds between file existence checks.
+
+        Returns:
+            True if presence confirmed via watch, None to fall through.
+        """
+        if not _WATCH_AVAILABLE:
+            return None
+
+        if not is_watch_connected():
+            log.debug("Watch not connected, skipping haptic presence check")
+            return None
+
+        trigger_path = WATCH_STATE_DIR / "voice_trigger.json"
+
+        # Record time before sending haptic so we only accept fresh triggers
+        sent_time = time.time()
+
+        if not send_haptic_tap():
+            log.debug("Failed to send haptic tap, falling through to audio chime")
+            return None
+
+        log.info("Haptic tap sent, waiting for watch trigger response")
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if trigger_path.exists():
+                try:
+                    mtime = trigger_path.stat().st_mtime
+                    if mtime >= sent_time:
+                        data = json.loads(trigger_path.read_text())
+                        log.info("Watch presence confirmed via trigger file: %s", data)
+                        return True
+                except (json.JSONDecodeError, OSError):
+                    pass
+            time.sleep(poll_interval)
+
+        log.debug("Watch presence check timed out after %.1fs", timeout)
+        return None
 
     @property
     def face_detected(self) -> bool:

@@ -7,11 +7,11 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=/home/hapaxlegomenon/projects/ai-agents
-Environment=PATH=/home/hapaxlegomenon/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/operator/projects/ai-agents
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Uses .venv-ingest (isolated from main .venv due to docling/pydantic-ai
 # huggingface-hub version conflict). Create with: make setup-ingest-venv
-ExecStart=/home/hapaxlegomenon/projects/ai-agents/.venv-ingest/bin/python -m agents.ingest
+ExecStart=/home/operator/projects/ai-agents/.venv-ingest/bin/python -m agents.ingest
 Restart=on-failure
 RestartSec=15
 StandardOutput=journal

@@ -40,7 +40,7 @@ components:
 
   local-llm-coding:
     role: Local code generation and review (offline, private)
-    current: qwen2.5-coder:32b via Ollama
+    current: qwen3.5:27b via Ollama
     provider: ollama
     constraints:
       - Must run on Ollama
@@ -60,7 +60,7 @@ components:
 
   local-llm-reasoning:
     role: Complex reasoning tasks run locally
-    current: deepseek-r1:14b via Ollama
+    current: qwen3.5:27b via Ollama
     provider: ollama
     constraints:
       - Must run on Ollama

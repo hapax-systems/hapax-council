@@ -387,7 +387,7 @@ def _build_usage_map() -> dict[str, str]:
             model_counts[model] = model_counts.get(model, 0) + 1
 
         for model, count in sorted(model_counts.items(), key=lambda x: -x[1])[:5]:
-            if "ollama" in model.lower() or model in ("qwen-coder-32b", "qwen-7b", "nomic-embed"):
+            if "ollama" in model.lower() or model in ("qwen3.5:27b", "qwen3:8b", "nomic-embed"):
                 usage_map.setdefault("ollama", f"Serving local models, {count}+ calls in 7 days")
             if "embed" in model.lower():
                 usage_map.setdefault("embedding-model", f"{count} embedding calls in 7 days")

@@ -1,111 +1,116 @@
-# CLAUDE.md — ai-agents
+# CLAUDE.md
 
-Single source of truth for all Hapax Python code: 26 agents, cockpit API, shared modules, and container definitions. Runs on a single-user LLM-first workstation.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Running Agents
+Externalized executive function infrastructure. LLM agents handle cognitive work (tracking open loops, maintaining context, surfacing what needs attention) for a single operator on a single workstation. Single-operator is a constitutional axiom — no auth, no roles, no multi-user code anywhere.
+
+## Commands
 
 ```bash
-cd ~/projects/ai-agents && eval "$(<.envrc)"
-uv run python -m agents.<name> [flags]
+# Setup
+uv sync                                       # install deps (never pip)
+
+# Run agents
+uv run python -m agents.<name> [flags]        # e.g. agents.health_monitor --history
+uv run python -m agents.management_prep --person "Name" --team-snapshot
+
+# Cockpit API
+uv run cockpit-api                            # FastAPI on :8051
+
+# Tests (all mocked, no LLM/infra needed)
+uv run pytest tests/ -q                       # full suite
+uv run pytest tests/test_scout.py -q          # single file
+uv run pytest tests/test_scout.py::TestScout::test_run -q  # single test
+
+# Lint and format
+uv run ruff check .                           # lint (ruff.toml config)
+uv run ruff format .                          # format
+uv run ruff check --fix .                     # auto-fix
+
+# Type checking
+uv run pyright                                # basic mode, covers agents/ shared/ cockpit/
+
+# Containers
+docker compose up -d                          # both cockpit-api + sync-pipeline
+docker compose up -d cockpit-api              # just API
 ```
 
-All agents are stateless per-invocation. Persistent state lives in Qdrant or `profiles/`.
+## Architecture
+
+**Filesystem-as-bus**: Agents read/write markdown files with YAML frontmatter on disk. A reactive engine (inotify) watches for changes and cascades downstream work automatically.
+
+**Three tiers**:
+- **Tier 1** — Interactive interfaces (council-web React SPA at :5173, VS Code extension)
+- **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000)
+- **Tier 3** — Deterministic agents (sync, health, maintenance — no LLM calls)
+
+**Reactive engine** (`cockpit/engine/`): inotify watcher → 12 rules evaluate → phased execution (deterministic first, then LLM work semaphore-bounded at max 2 concurrent).
+
+**Infrastructure**: Qdrant (vector DB, 4 collections: claude-memory, profile-facts, documents, axiom-precedents), LiteLLM (API gateway → Anthropic/Gemini/Ollama), Ollama (local RTX 3090), PostgreSQL, Langfuse (LLM observability), ntfy (push notifications).
 
 ## Key Conventions
 
 - **Python 3.12+**, managed with `uv`. Never pip.
 - **Type hints mandatory.** Pydantic models for structured data.
-- **All LLM calls through LiteLLM** at localhost:4000. Never direct to providers.
+- **All LLM calls through LiteLLM** at localhost:4000 via `shared.config.get_model()`. Never direct to providers.
 - **Secrets via `pass` + `direnv`**. Never hardcoded. `.envrc` is gitignored.
 - **Conventional commits.** Feature branches from `main`.
 - **pydantic-ai 1.63.0**: uses `output_type` (not `result_type`) and `result.output` (not `result.data`).
 - **Safety:** LLMs prepare, humans deliver. Never generate feedback language or coaching recommendations about individual team members.
+- **Ruff config**: line-length 100, isort with first-party = `agents`, `shared`, `cockpit`.
 
 ## Testing
 
-```bash
-uv run pytest tests/ -q    # 1524 tests, all mocked, no LLM calls
-```
+Tests use `unittest.mock` — no pytest fixtures in conftest. Each test file is self-contained. `asyncio_mode = "auto"` in pytest config. Tests marked `llm` are excluded by default (`addopts = "-m 'not llm'"`). Other markers: `slow`, `integration`, `hardware`.
 
-Tests use `unittest.mock` — no pytest fixtures in conftest. Each test file is self-contained. `asyncio_mode = "auto"` in pytest config.
+## Axiom Governance
+
+4 constitutional axioms enforced via `shared/axiom_*.py` and commit hooks in `hooks/`:
+
+| Axiom | Weight | Constraint |
+|-------|--------|------------|
+| single_user | 100 | One operator. No auth, roles, or collaboration features. |
+| executive_function | 95 | Zero-config agents, errors include next actions, routine work automated. |
+| corporate_boundary | 90 | Work data stays in employer systems. Home system = personal + management-practice only. |
+| management_governance | 85 | LLMs prepare, humans deliver. No generated feedback/coaching about individuals. |
+
+T0 violations are blocked by SDLC hooks. Axiom definitions in `axioms/registry.yaml`, implications in `axioms/implications/`.
 
 ## Project Layout
 
 ```
-agents/               26 agents (10 LLM-driven + 11 deterministic + voice daemon + demo pipeline)
-  management_*.py     3 management agents (briefing, profiler, activity)
-  *_sync.py           7 RAG sync agents (gdrive, gcalendar, gmail, youtube, claude_code, obsidian, chrome)
-  audio_processor.py  Audio processing pipeline (VAD, classification, transcription)
-  digest.py           Content/knowledge digest
-  scout.py            Horizon scanning
-  drift_detector.py   Documentation drift detection
-  knowledge_maint.py  Qdrant hygiene
-  introspect.py       Infrastructure manifest
-  ingest.py           Document ingestion
-  demo.py             Audience-tailored demos
-  system_check.py     Health checks
-cockpit/              FastAPI API server (:8051) + data collectors + reactive engine
-  api/                REST server with ~30 endpoints across 7 route groups
-  data/               Data collectors (nudges, OKRs, incidents, etc.)
-  engine/             Reactive engine (watcher, 12 rules, executor, delivery)
-shared/               35 utility modules
-  config.py           Model aliases, LiteLLM/Qdrant clients, embedding, DATA_DIR
-  google_auth.py      Shared Google OAuth2 (Drive, Calendar, Gmail, YouTube)
-  vault_writer.py     Vault egress (briefings, digests, nudges, goals)
-  axiom_*.py          Axiom governance engine
-  frontmatter.py      Canonical frontmatter parser (never duplicate)
-tests/                1524+ tests across 70+ files
-profiles/             Persistent state (gitignored)
-systemd/              Timer and service unit files
-sync-pipeline/        Crontab, entrypoint, and run wrapper for containerized sync
+agents/           Agents + agent packages (voice, demo_pipeline, dev_story, system_ops)
+cockpit/          FastAPI API (:8051) + data collectors + reactive engine
+shared/           35+ utility modules (config, axioms, profile, frontmatter, context)
+council-web/      React SPA dashboard (pnpm, Vite, :5173) — see council-web/CLAUDE.md
+vscode/           VS Code extension (chat, RAG, management commands) — see vscode/CLAUDE.md
+skills/           15 Claude Code skills (slash commands)
+hooks/            Claude Code hooks (axiom scanning, session context)
+axioms/           Governance axioms (registry + implications + precedents)
+systemd/          Timer and service unit files
+docker/           Dockerfiles + docker-compose
+tests/            Test suite (70+ files)
+docs/             Design docs, rules reference, onboarding (docs/first-run.md)
+profiles/         Generated operational data (gitignored, only .gitkeep tracked)
 ```
+
+## Key Modules
+
+- **`shared/config.py`** — Model aliases (`fast`/`balanced`/`local-fast`), LiteLLM/Qdrant clients, embedding, `DATA_DIR`
+- **`shared/cycle_mode.py`** — Reads `~/.cache/hapax/cycle-mode`. Agents call `get_cycle_mode()` to adjust thresholds. CLI: `hapax-mode dev|prod`
+- **`shared/notify.py`** — `send_notification()` for ntfy + desktop. Topic: `hapax-alerts`
+- **`shared/frontmatter.py`** — Canonical frontmatter parser (never duplicate this)
+- **`shared/dimensions.py`** — 11 profile dimensions (5 trait, 6 behavioral). Sync agents produce behavioral facts only, validated by `validate_behavioral_write()`
+- **`cockpit/api/routes/`** — ~30 REST endpoints across 7 route groups. CORS for council-web at :5173
 
 ## Containerization
 
-Two containers managed via `docker-compose.yml`, both using `--network host`:
+Two containers via `docker-compose.yml` (`--network host`):
+- **cockpit-api** — FastAPI (:8051), `--extra cockpit-api`
+- **sync-pipeline** — 7 RAG sync agents on cron, `--extra sync-pipeline`. Requires GPG agent socket + password store mounts for Google OAuth.
 
-- `Dockerfile.cockpit-api` — FastAPI cockpit API (:8051), `--extra cockpit-api` (~675MB)
-- `Dockerfile.sync-pipeline` — 7 RAG sync agents on cron, `--extra sync-pipeline` (~838MB)
-
-audio_processor stays on host (requires GPU/CUDA).
-
-```bash
-# Build and start both
-docker compose up -d
-
-# Just cockpit API
-docker compose up -d cockpit-api
-
-# Just sync pipeline
-docker compose up -d sync-pipeline
-
-# Switch cycle mode
-CYCLE_MODE=dev docker compose up -d sync-pipeline
-```
-
-The sync-pipeline requires GPG agent socket + password store mounts for Google OAuth.
+`audio_processor` stays on host (requires GPU/CUDA).
 
 ## Ingest Agent
 
 `agents/ingest.py` auto-detects `source_service` from `rag-sources` path patterns when not set by frontmatter. Recognized patterns: `gdrive`, `gcalendar`, `gmail`, `youtube`, `takeout`, `proton`, `claude-code`, `obsidian`, `chrome`, `ambient-audio`.
-
-## Axiom Governance
-
-4 axioms enforced via `shared/axiom_*.py`: single_user (100), executive_function (95), corporate_boundary (90), management_governance (85). See `~/projects/hapaxromana/axioms/` for definitions. T0 violations are blocked by SDLC hooks.
-
-## Profiles Directory
-
-`profiles/` contains generated operational data. All `*.json`, `*.md`, `*.jsonl`, `*.yaml`, and `*.bak` files are gitignored. Only `.gitkeep` is tracked.
-
-## Project Memory
-
-Stable patterns confirmed across multiple sessions:
-
-- **pydantic-ai 1.63.0**: Uses `output_type` (not `result_type`) and `result.output` (not `result.data`)
-- **Tests**: Use `unittest.mock` — no pytest fixtures in conftest. Each test file is self-contained. Currently 1524+ tests.
-- **Profile facts**: JSONL format with fields: `dimension`, `key`, `value`, `confidence`, `source`, `evidence`. 11 dimensions defined in `shared/dimensions.py` (5 trait, 6 behavioral).
-- **Sync agents**: All sync agent `_generate_profile_facts()` methods produce behavioral dimension facts only. Validated by `shared.dimensions.validate_behavioral_write()`.
-- **Cockpit API**: FastAPI at `:8051` with routers in `cockpit/api/routes/`. CORS configured for cockpit-web at `:5173`.
-- **Cycle modes**: `shared/cycle_mode.py` reads `~/.cache/hapax/cycle-mode`. Agents call `get_cycle_mode()` at invocation to adjust thresholds. CLI: `hapax-mode dev|prod`.
-- **LLM calls**: All Tier 2 agent LLM calls route through LiteLLM at `:4000` via `shared.config.get_model()`. Never direct to providers.
-- **Notifications**: Use `shared.notify.send_notification()` for ntfy + desktop. Topic: `hapax-alerts`.

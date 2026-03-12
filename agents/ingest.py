@@ -398,6 +398,7 @@ def enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
             "rag-sources/obsidian": "obsidian",
             "rag-sources/chrome": "chrome",
             "rag-sources/audio": "ambient-audio",
+            "rag-sources/health-connect": "health_connect",
         }
         for pattern, service in _SERVICE_PATH_PATTERNS.items():
             if pattern in source_path:

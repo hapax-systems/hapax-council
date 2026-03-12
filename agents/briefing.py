@@ -49,6 +49,57 @@ SCOUT_REPORT = PROFILES_DIR / "scout-report.json"
 DIGEST_REPORT = PROFILES_DIR / "digest.json"
 
 
+def should_deliver_briefing(
+    watch_dir: Path | None = None,
+    current_hour: int | None = None,
+    current_minute: int | None = None,
+) -> bool:
+    """Check if the briefing should be delivered based on watch activity state.
+
+    Defers delivery if operator appears still (asleep). Hard deadline at 09:00.
+    Degrades gracefully to immediate delivery when no watch data available.
+
+    Args:
+        watch_dir: Override path to watch state directory.
+        current_hour: Override current hour (for testing).
+        current_minute: Override current minute (for testing).
+
+    Returns:
+        True if the briefing should be delivered now.
+    """
+    import json
+    from datetime import datetime
+
+    watch_dir = watch_dir or Path.home() / "hapax-state" / "watch"
+
+    now = datetime.now()
+    hour = current_hour if current_hour is not None else now.hour
+    minute = current_minute if current_minute is not None else now.minute
+
+    # Hard deadline: deliver at 09:00 regardless
+    if hour >= 9:
+        return True
+
+    # Read activity state
+    activity_file = watch_dir / "activity.json"
+    if not activity_file.exists():
+        return True  # graceful degradation
+
+    try:
+        data = json.loads(activity_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return True  # graceful degradation
+
+    state = data.get("state", "UNKNOWN")
+
+    # STILL likely means asleep before 09:00
+    if state == "STILL":
+        return False
+
+    # Any active state: deliver
+    return True
+
+
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
 

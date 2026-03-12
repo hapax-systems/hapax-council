@@ -5,11 +5,11 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapaxlegomenon/.local/bin/scout-watchdog
-Environment=PATH=/home/hapaxlegomenon/.local/bin:/home/hapaxlegomenon/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapaxlegomenon
-Environment=GNUPGHOME=/home/hapaxlegomenon/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapaxlegomenon/.password-store
+ExecStart=/home/operator/.local/bin/scout-watchdog
+Environment=PATH=/home/operator/.local/bin:/home/operator/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=GNUPGHOME=/home/operator/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/operator/.password-store
 MemoryMax=512M
 CPUQuota=50%
 StandardOutput=journal

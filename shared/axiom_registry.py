@@ -34,6 +34,33 @@ AXIOMS_PATH: Path = Path(
 )
 
 
+@dataclass(frozen=True)
+class SchemaVer:
+    """Schema version using SchemaVer convention: MODEL-REVISION-ADDITION.
+
+    MODEL: breaking change. REVISION: backward-compatible change.
+    ADDITION: new optional fields.
+    """
+
+    model: int
+    revision: int
+    addition: int
+
+    def __str__(self) -> str:
+        return f"{self.model}-{self.revision}-{self.addition}"
+
+    @classmethod
+    def parse(cls, version_str: str) -> SchemaVer:
+        """Parse a SchemaVer string like '1-0-0'."""
+        parts = version_str.strip().split("-")
+        if len(parts) != 3:
+            raise ValueError(f"Invalid SchemaVer: {version_str!r} (expected MODEL-REVISION-ADDITION)")
+        try:
+            return cls(model=int(parts[0]), revision=int(parts[1]), addition=int(parts[2]))
+        except ValueError as e:
+            raise ValueError(f"Invalid SchemaVer components: {version_str!r}") from e
+
+
 @dataclass
 class Axiom:
     id: str
@@ -57,6 +84,21 @@ class Implication:
     canon: str  # interpretive strategy used
     mode: str = "compatibility"  # "compatibility" | "sufficiency"
     level: str = "component"  # "component" | "subsystem" | "system"
+
+
+def load_schema_version(*, path: Path = AXIOMS_PATH) -> SchemaVer | None:
+    """Load the schema_version from registry.yaml. Returns None if not present."""
+    registry_file = path / "registry.yaml"
+    if not registry_file.exists():
+        return None
+    try:
+        data = yaml.safe_load(registry_file.read_text())
+    except Exception:
+        return None
+    sv = data.get("schema_version")
+    if sv is None:
+        return None
+    return SchemaVer.parse(str(sv))
 
 
 def load_axioms(*, path: Path = AXIOMS_PATH, scope: str = "", domain: str = "") -> list[Axiom]:

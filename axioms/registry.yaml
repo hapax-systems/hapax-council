@@ -3,6 +3,7 @@
 # created date, status (active|retired), optional supersedes reference,
 # scope (constitutional|domain), and domain (null for constitutional).
 version: 2
+schema_version: "1-0-0"
 axioms:
   - id: single_user
     text: >
