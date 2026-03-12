@@ -388,3 +388,48 @@ class TestWiringProperties:
             assert alias["audio_energy_rms"] is behaviors[qualify("audio_energy_rms", energy_src)]
         if "emotion_arousal" in alias:
             assert alias["emotion_arousal"] is behaviors[qualify("emotion_arousal", emotion_src)]
+
+
+# ===========================================================================
+# Activity backend wiring
+# ===========================================================================
+
+
+class TestActivityWiring:
+    def test_activity_backend_type_exists(self):
+        assert BackendType.ACTIVITY.value == "activity"
+
+    def test_activity_binding_optional(self):
+        """GovernanceBinding works without activity_source (backward compat)."""
+        binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="face_cam")
+        assert binding.activity_source is None
+
+    def test_activity_alias_resolves(self):
+        """When activity_source is set, bare 'activity_level' resolves to qualified."""
+        behaviors = {
+            **_make_qualified_behaviors(),
+            "activity_level:overhead_gear": Behavior(0.55, watermark=100.0),
+        }
+        binding = GovernanceBinding(
+            energy_source="monitor_mix",
+            emotion_source="face_cam",
+            activity_source="overhead_gear",
+        )
+        alias = build_behavior_alias(behaviors, binding)
+        assert "activity_level" in alias
+        assert alias["activity_level"].value == 0.55
+
+    def test_activity_aggregate_max_across_sources(self):
+        behaviors = {
+            "activity_level:overhead_gear": Behavior(0.3, watermark=100.0),
+            "activity_level:side_cam": Behavior(0.8, watermark=100.0),
+        }
+        result = aggregate_max(behaviors, "activity_level")
+        assert result.value == 0.8
+
+    def test_backward_compat_no_activity_source(self):
+        """No activity_source → alias doesn't include activity_level."""
+        behaviors = _make_qualified_behaviors()
+        binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="face_cam")
+        alias = build_behavior_alias(behaviors, binding)
+        assert "activity_level" not in alias

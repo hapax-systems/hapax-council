@@ -33,6 +33,7 @@ class BackendType(Enum):
     ENERGY_ARC = "energy_arc"
     STREAM_HEALTH = "stream_health"
     MIDI_CLOCK = "midi_clock"
+    ACTIVITY = "activity"
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ class GovernanceBinding:
 
     energy_source: str  # source_id for audio energy
     emotion_source: str  # source_id for emotion
+    activity_source: str | None = None  # source_id for activity (optional)
     unqualified: tuple[str, ...] = ("vad_confidence", "timeline_mapping")
 
 
@@ -134,6 +136,14 @@ def build_behavior_alias(
         qualified = qualify(base, binding.emotion_source)
         if qualified in behaviors:
             alias[base] = behaviors[qualified]
+
+    # Activity signals (optional)
+    if binding.activity_source:
+        activity_bases = ("activity_level",)
+        for base in activity_bases:
+            qualified = qualify(base, binding.activity_source)
+            if qualified in behaviors:
+                alias[base] = behaviors[qualified]
 
     # Unqualified signals — pass through directly
     for name in binding.unqualified:
