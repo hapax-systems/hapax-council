@@ -57,7 +57,7 @@ RAG_INGEST_STATE_DIR: Path = HAPAX_CACHE_DIR / "rag-ingest"
 TAKEOUT_STATE_DIR: Path = HAPAX_CACHE_DIR / "takeout-ingest"
 
 # Project directories (for agents that reference other repos)
-AI_AGENTS_DIR: Path = HAPAX_PROJECTS_DIR / "ai-agents"
+AI_AGENTS_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-council"
 HAPAXROMANA_DIR: Path = HAPAX_PROJECTS_DIR / "hapaxromana"
 OBSIDIAN_HAPAX_DIR: Path = HAPAX_PROJECTS_DIR / "obsidian-hapax"
 COCKPIT_WEB_DIR: Path = HAPAX_PROJECTS_DIR / "cockpit-web"

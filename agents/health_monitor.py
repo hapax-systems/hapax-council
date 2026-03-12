@@ -333,97 +333,17 @@ async def check_docker_containers() -> list[CheckResult]:
 
 @check_group("docker")
 async def check_agents_containers() -> list[CheckResult]:
-    """Check ai-agents containers (cockpit-api, sync-pipeline)."""
+    """Agents migrated from Docker to systemd user services."""
     t = time.monotonic()
-    if not AGENTS_COMPOSE_FILE.exists():
-        return [
-            CheckResult(
-                name="docker.agents_compose",
-                group="docker",
-                status=Status.DEGRADED,
-                message=f"Compose file missing: {AGENTS_COMPOSE_FILE}",
-                duration_ms=_timed(t),
-            )
-        ]
-
-    rc, out, err = await run_cmd(
-        [
-            "docker",
-            "compose",
-            "-f",
-            str(AGENTS_COMPOSE_FILE),
-            "ps",
-            "--format",
-            "json",
-        ]
-    )
-    if rc != 0:
-        return [
-            CheckResult(
-                name="docker.agents_containers",
-                group="docker",
-                status=Status.DEGRADED,
-                message="agents docker compose ps failed",
-                detail=err or out,
-                duration_ms=_timed(t),
-            )
-        ]
-
-    results: list[CheckResult] = []
-    for line in (out or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            container = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        service = container.get("Service", container.get("Name", "unknown"))
-        state = container.get("State", "unknown").lower()
-        health = container.get("Health", "").lower()
-        running = state == "running"
-
-        if running and health in ("healthy", ""):
-            status = Status.HEALTHY
-            msg = f"running ({health})" if health else "running"
-        elif running and health in ("unhealthy", "starting"):
-            status = Status.DEGRADED
-            msg = f"running ({health})"
-        else:
-            status = Status.DEGRADED
-            msg = f"not running ({state})"
-
-        remediation = None
-        if not running:
-            remediation = (
-                f"cd {AGENTS_COMPOSE_FILE.parent} && docker compose up -d {shlex.quote(service)}"
-            )
-
-        results.append(
-            CheckResult(
-                name=f"docker.{service}",
-                group="docker",
-                status=status,
-                message=msg,
-                remediation=remediation,
-                duration_ms=_timed(t),
-            )
+    return [
+        CheckResult(
+            name="docker.agents_compose",
+            group="docker",
+            status=Status.HEALTHY,
+            message="agents run as systemd user services (not Docker)",
+            duration_ms=_timed(t),
         )
-
-    if not results:
-        return [
-            CheckResult(
-                name="docker.agents_containers",
-                group="docker",
-                status=Status.DEGRADED,
-                message="No agents containers found",
-                remediation=f"cd {AGENTS_COMPOSE_FILE.parent} && docker compose up -d",
-                duration_ms=_timed(t),
-            )
-        ]
-
-    return results
+    ]
 
 
 # ── GPU checks ───────────────────────────────────────────────────────────────
@@ -847,8 +767,7 @@ async def check_profile_files() -> list[CheckResult]:
     t = time.monotonic()
     files = {
         ".state.json": Status.FAILED,
-        "operator.json": Status.FAILED,
-        "operator-profile.json": Status.DEGRADED,
+        "operator-profile.json": Status.FAILED,
     }
     results: list[CheckResult] = []
 
@@ -979,7 +898,7 @@ async def check_service_endpoints() -> list[CheckResult]:
         ("endpoints.litellm", "http://localhost:4000/health/liveliness", True),
         ("endpoints.ollama", "http://localhost:11434/api/tags", True),
         ("endpoints.langfuse", "http://localhost:3000/", False),
-        ("endpoints.open-webui", "http://localhost:3080/health", False),
+        ("endpoints.open-webui", "http://localhost:8080/health", False),
     ]
 
     async def _check_one(name: str, url: str, is_core: bool) -> CheckResult:
@@ -1501,28 +1420,21 @@ async def check_gdrive_sync_freshness() -> list[CheckResult]:
             )
         ]
 
-    # Check sync-pipeline container is running (gdrive_sync runs inside it)
-    rc, out, err = await run_cmd(
-        [
-            "docker",
-            "inspect",
-            "--format",
-            "{{.State.Status}}",
-            "hapax-sync-pipeline",
-        ]
-    )
-    container_running = out.strip() == "running"
-    if not container_running:
-        return [
-            CheckResult(
-                name="connectivity.gdrive-sync",
-                group="connectivity",
-                status=Status.DEGRADED,
-                message="sync-pipeline container not running (gdrive_sync runs inside it)",
-                remediation=f"cd {AGENTS_COMPOSE_FILE.parent} && docker compose up -d sync-pipeline",
-                duration_ms=_timed(t),
-            )
-        ]
+    # Check gdrive sync state freshness (runs as systemd timer or manual)
+    state_file = Path.home() / ".cache" / "gdrive-sync" / "state.json"
+    if state_file.exists():
+        age_hours = (time.time() - state_file.stat().st_mtime) / 3600
+        if age_hours > 24:
+            return [
+                CheckResult(
+                    name="connectivity.gdrive-sync",
+                    group="connectivity",
+                    status=Status.DEGRADED,
+                    message=f"gdrive sync state is {age_hours:.0f}h old",
+                    remediation="cd ~/projects/hapax-council && uv run python -m agents.gdrive_sync --auto",
+                    duration_ms=_timed(t),
+                )
+            ]
 
     return [
         CheckResult(
@@ -1576,6 +1488,52 @@ async def check_watch_connected() -> list[CheckResult]:
         group="connectivity",
         status=Status.HEALTHY,
         message=f"Watch connected, battery {battery}%",
+        duration_ms=_timed(t),
+        tier=3,
+    )]
+
+
+@check_group("connectivity")
+async def check_phone_connected() -> list[CheckResult]:
+    """Check if Pixel 10 phone is sending heartbeats (non-critical, tier 3)."""
+    t = time.monotonic()
+    conn_file = WATCH_STATE_DIR / "phone_connection.json"
+    if not conn_file.exists():
+        return [CheckResult(
+            name="connectivity.phone",
+            group="connectivity",
+            status=Status.HEALTHY,
+            message="not configured",
+            duration_ms=_timed(t),
+            tier=3,
+        )]
+    try:
+        data = json.loads(conn_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return [CheckResult(
+            name="connectivity.phone",
+            group="connectivity",
+            status=Status.DEGRADED,
+            message="phone_connection.json unreadable",
+            duration_ms=_timed(t),
+            tier=3,
+        )]
+    age = time.time() - data.get("last_seen_epoch", 0)
+    battery = data.get("battery_pct", "?")
+    if age > 300:
+        return [CheckResult(
+            name="connectivity.phone",
+            group="connectivity",
+            status=Status.DEGRADED,
+            message=f"Phone last seen {age/60:.0f}m ago (battery {battery}%)",
+            duration_ms=_timed(t),
+            tier=3,
+        )]
+    return [CheckResult(
+        name="connectivity.phone",
+        group="connectivity",
+        status=Status.HEALTHY,
+        message=f"Phone connected, battery {battery}%",
         duration_ms=_timed(t),
         tier=3,
     )]
@@ -2545,7 +2503,6 @@ async def check_voice_services() -> list[CheckResult]:
     """Check hapax-voice.service and its dependencies are active."""
     services = [
         ("hapax-voice.service", True, "systemctl --user restart hapax-voice"),
-        ("bt-keepalive.service", False, "systemctl --user restart bt-keepalive"),
         ("pipewire.service", True, "systemctl --user restart pipewire"),
     ]
     results: list[CheckResult] = []
@@ -2779,7 +2736,7 @@ async def quick_check(
         "qdrant": "http://localhost:6333/healthz",
         "ollama": "http://localhost:11434/api/tags",
         "langfuse": "http://localhost:3000/",
-        "open-webui": "http://localhost:3080/health",
+        "open-webui": "http://localhost:8080/health",
     }
 
     targets = required_services or ["litellm", "qdrant"]

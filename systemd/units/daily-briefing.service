@@ -5,7 +5,7 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/ai-agents
+WorkingDirectory=/home/hapax/projects/hapax-council
 ExecStart=/home/hapax/.local/bin/briefing-watchdog
 Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # session-context.sh — SessionStart hook for hapax-system plugin
 # Injects system state summary into Claude Code context.
-# Replaces: ai-agents SessionStart hook + global compact hook.
+# Injects system state summary into Claude Code context at session start.
 
 echo '## System Context'
 
 # Axiom status
 AXIOM_COUNT="4"
 AXIOM_NAMES="single_user, executive_function, corporate_boundary, management_governance"
-if [ -d "$HOME/projects/ai-agents" ]; then
-  RESULT="$(cd "$HOME/projects/ai-agents" && python3 -c "
+if [ -d "$HOME/projects/hapax-council" ]; then
+  RESULT="$(cd "$HOME/projects/hapax-council" && python3 -c "
 import sys; sys.path.insert(0, '.')
 from shared.axiom_registry import load_axioms
 axs=load_axioms()
@@ -28,7 +28,7 @@ LAST_COMMIT="$(git log --oneline -1 2>/dev/null || echo 'N/A')"
 echo "Branch: $BRANCH | Last commit: $LAST_COMMIT"
 
 # Health summary (from latest health-history.jsonl entry)
-HEALTH_FILE="$HOME/projects/ai-agents/profiles/health-history.jsonl"
+HEALTH_FILE="$HOME/projects/hapax-council/profiles/health-history.jsonl"
 if [ -f "$HEALTH_FILE" ]; then
   LATEST="$(tail -1 "$HEALTH_FILE" 2>/dev/null || true)"
   if [ -n "$LATEST" ]; then
@@ -41,7 +41,7 @@ if [ -f "$HEALTH_FILE" ]; then
 fi
 
 # Drift summary (from latest drift-report.json)
-DRIFT_REPORT="$HOME/projects/ai-agents/profiles/drift-report.json"
+DRIFT_REPORT="$HOME/projects/hapax-council/profiles/drift-report.json"
 if [ -f "$DRIFT_REPORT" ]; then
   DRIFT_LINE="$(jq -r '
     (.drift_items | length) as $total |
@@ -68,7 +68,7 @@ if [ -n "$GPU" ]; then
 fi
 
 # Operator profile summary (from distilled manifest)
-PROFILE="$HOME/projects/ai-agents/profiles/operator.json"
+PROFILE="$HOME/projects/hapax-council/profiles/operator.json"
 if [ -f "$PROFILE" ]; then
   PROFILE_LINE="$(jq -r '
     (.goals.primary | map(select(.status == "active")) | length) as $goals |
@@ -122,7 +122,7 @@ if [ -n "$LAST_SWEEP" ]; then
 fi
 
 # Scout recommendations (actionable items from latest horizon scan)
-SCOUT_REPORT="$HOME/projects/ai-agents/profiles/scout-report.json"
+SCOUT_REPORT="$HOME/projects/hapax-council/profiles/scout-report.json"
 if [ -f "$SCOUT_REPORT" ]; then
   SCOUT_LINE="$(jq -r '
     (.generated_at // "") as $ts |
