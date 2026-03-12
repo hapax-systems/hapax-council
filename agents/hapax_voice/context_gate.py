@@ -16,6 +16,11 @@ from agents.hapax_voice.governance import Veto, VetoChain
 from agents.hapax_voice.primitives import Behavior
 from agents.hapax_voice.session import SessionManager
 
+try:
+    from agents.hapax_voice.watch_signals import is_stress_elevated
+except ImportError:
+    is_stress_elevated = None  # type: ignore[assignment]
+
 log = logging.getLogger(__name__)
 
 
@@ -36,6 +41,7 @@ class ContextGate:
         3. Audio volume (from Behavior or wpctl fallback)
         4. Studio MIDI activity (from Behavior or aconnect fallback)
         5. Ambient audio classification (PANNs)
+        6. Stress elevated (watch EDA + HRV signals)
 
     Prefers reading from Behaviors (set via set_behaviors()) over
     subprocess calls. When no Behavior is available, falls back to
@@ -63,17 +69,30 @@ class ContextGate:
         # Denial reasons stored during predicate evaluation
         self._denial_reasons: dict[str, str] = {}
 
+        # Known fullscreen/meeting apps where interrupts are inappropriate
+        self._fullscreen_block_classes: set[str] = {
+            "zoom",
+            "us.zoom.xos",
+            "microsoft teams",
+            "org.jitsi.jitsi-meet",
+            "discord",
+            "slack huddle",
+        }
+
         # Build veto chain
         self._veto_chain: VetoChain[None] = VetoChain(
             [
                 Veto("session_active", predicate=self._allow_no_session),
                 Veto("activity_mode", predicate=self._allow_activity_mode),
+                Veto("fullscreen_app", predicate=self._allow_fullscreen_app),
                 Veto("volume", predicate=self._allow_volume),
                 Veto("studio_midi", predicate=self._allow_studio),
             ]
         )
         if self.ambient_classification:
             self._veto_chain.add(Veto("ambient", predicate=self._allow_ambient))
+        if is_stress_elevated is not None:
+            self._veto_chain.add(Veto("stress_elevated", predicate=self._allow_stress))
 
     def set_activity_mode(self, mode: str) -> None:
         self._activity_mode = mode
@@ -131,6 +150,18 @@ class ContextGate:
             return False
         return True
 
+    def _allow_fullscreen_app(self, _: None) -> bool:
+        b = self._behaviors.get("active_window_class")
+        if b is None:
+            return True  # fail-open: activity_mode catches meetings via slow-tick
+        window_class = str(b.value).lower()
+        if window_class in self._fullscreen_block_classes:
+            self._denial_reasons["fullscreen_app"] = (
+                f"Blocked: fullscreen app '{b.value}'"
+            )
+            return False
+        return True
+
     def _allow_volume(self, _: None) -> bool:
         volume = self._read_volume()
         if volume is None:
@@ -157,6 +188,12 @@ class ContextGate:
         ok, reason = self._check_ambient()
         if not ok:
             self._denial_reasons["ambient"] = reason
+            return False
+        return True
+
+    def _allow_stress(self, _: None) -> bool:
+        if is_stress_elevated is not None and is_stress_elevated():
+            self._denial_reasons["stress_elevated"] = "Stress elevated (HRV/EDA)"
             return False
         return True
 
