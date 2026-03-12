@@ -35,15 +35,11 @@ def _make_state(**overrides) -> EnvironmentState:
     defaults = dict(
         timestamp=time.monotonic(),
         speech_detected=False,
-        speech_volume_db=-40.0,
-        ambient_class="quiet",
         vad_confidence=0.0,
         face_count=1,
         operator_present=True,
-        gaze_at_camera=False,
         activity_mode="idle",
         workspace_context="",
-        ambient_detailed="",
         active_window=None,
         window_count=0,
         active_workspace_id=0,
@@ -451,19 +447,18 @@ class TestGovernorStateTransitions:
         now = time.monotonic()
         gov = PipelineGovernor()
 
-        # Build a FusedContext with fresh ambient_detailed
+        # Build a FusedContext with fresh operator_present
         ctx_fresh = FusedContext(
             trigger_time=now,
             trigger_value="tick",
             samples={
-                "ambient_detailed": Stamped(value="quiet_room", watermark=now),
                 "operator_present": Stamped(value=True, watermark=now),
             },
             min_watermark=now,
         )
 
         guard = FreshnessGuard([
-            FreshnessRequirement(behavior_name="ambient_detailed", max_staleness_s=5.0),
+            FreshnessRequirement(behavior_name="operator_present", max_staleness_s=5.0),
         ])
 
         # Closure over the context for the veto predicate
@@ -484,7 +479,7 @@ class TestGovernorStateTransitions:
             trigger_time=now,
             trigger_value="tick",
             samples={
-                "ambient_detailed": Stamped(value="quiet_room", watermark=now - 100.0),
+                "operator_present": Stamped(value=True, watermark=now - 100.0),
             },
             min_watermark=now - 100.0,
         )

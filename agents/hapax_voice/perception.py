@@ -2,7 +2,7 @@
 
 Fuses audio and visual signals into a single EnvironmentState snapshot
 every fast tick (2-3s). Slow enrichment (10-15s) adds LLM workspace
-analysis and PANNs ambient classification.
+analysis.
 """
 
 from __future__ import annotations
@@ -110,27 +110,26 @@ class EnvironmentState:
     """Immutable snapshot of the fused audio-visual environment.
 
     Produced by PerceptionEngine every fast tick. Slow-tick fields
-    (activity_mode, workspace_context, ambient_detailed) are carried
-    forward from the last slow enrichment.
+    (activity_mode, workspace_context) are carried forward from the
+    last slow enrichment.
     """
 
     timestamp: float
 
     # Audio signals (fast tick)
     speech_detected: bool = False
-    speech_volume_db: float = -60.0
-    ambient_class: str = "silence"
     vad_confidence: float = 0.0
 
     # Visual signals (fast tick)
     face_count: int = 0
     operator_present: bool = False
-    gaze_at_camera: bool = False
+
+    # Presence (fast tick, from PresenceDetector)
+    presence_score: str = "likely_absent"
 
     # Enriched signals (slow tick, carried forward)
     activity_mode: str = "unknown"
     workspace_context: str = ""
-    ambient_detailed: str = ""
 
     # Desktop topology (updated by HyprlandEventListener)
     active_window: WindowInfo | None = None
@@ -153,8 +152,8 @@ class EnvironmentState:
 class PerceptionEngine:
     """Produces EnvironmentState snapshots by fusing sensor signals.
 
-    Fast tick (called every ~2.5s): reads VAD, face detection, gaze.
-    Slow enrichment (called every ~12s): runs PANNs, workspace analysis.
+    Fast tick (called every ~2.5s): reads VAD, face detection, presence.
+    Slow enrichment (called every ~12s): runs workspace analysis.
     Slow fields are carried forward between slow ticks.
 
     The engine does not own its own async loop — the daemon calls tick()
@@ -174,8 +173,6 @@ class PerceptionEngine:
         # Slow-tick Behaviors (replacing plain fields)
         self._b_activity_mode: Behavior[str] = Behavior("unknown")
         self._b_workspace_context: Behavior[str] = Behavior("")
-        self._b_ambient_detailed: Behavior[str] = Behavior("")
-        self._b_ambient_class: Behavior[str] = Behavior("silence")
 
         # Desktop Behaviors (replacing plain fields)
         self._b_active_window: Behavior[WindowInfo | None] = Behavior(None)
@@ -191,8 +188,6 @@ class PerceptionEngine:
         self.behaviors: dict[str, Behavior] = {
             "activity_mode": self._b_activity_mode,
             "workspace_context": self._b_workspace_context,
-            "ambient_detailed": self._b_ambient_detailed,
-            "ambient_class": self._b_ambient_class,
             "active_window": self._b_active_window,
             "window_count": self._b_window_count,
             "active_workspace_id": self._b_active_workspace_id,
@@ -275,17 +270,17 @@ class PerceptionEngine:
             window_count=self._b_window_count.value,
         )
 
+        presence_score = getattr(self._presence, "score", "likely_absent")
+
         state = EnvironmentState(
             timestamp=now,
             speech_detected=vad_conf >= self._vad_speech_threshold,
             vad_confidence=self._b_vad_confidence.value,
-            ambient_class=self._b_ambient_class.value,
             face_count=self._b_face_count.value,
             operator_present=self._b_operator_present.value,
-            gaze_at_camera=False,  # b-path: proper gaze model
+            presence_score=presence_score,
             activity_mode=self._b_activity_mode.value,
             workspace_context=self._b_workspace_context.value,
-            ambient_detailed=self._b_ambient_detailed.value,
             active_window=self._b_active_window.value,
             window_count=self._b_window_count.value,
             active_workspace_id=self._b_active_workspace_id.value,
@@ -324,8 +319,6 @@ class PerceptionEngine:
         self,
         activity_mode: str | None = None,
         workspace_context: str | None = None,
-        ambient_class: str | None = None,
-        ambient_detailed: str | None = None,
     ) -> None:
         """Update carried-forward fields from slow-tick enrichment."""
         now = time.monotonic()
@@ -333,7 +326,3 @@ class PerceptionEngine:
             self._b_activity_mode.update(activity_mode, now)
         if workspace_context is not None:
             self._b_workspace_context.update(workspace_context, now)
-        if ambient_class is not None:
-            self._b_ambient_class.update(ambient_class, now)
-        if ambient_detailed is not None:
-            self._b_ambient_detailed.update(ambient_detailed, now)

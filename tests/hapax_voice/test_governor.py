@@ -215,3 +215,12 @@ class TestComplianceWindowTitle:
         gov = PipelineGovernor()
         state = _make_state(active_window=None, workspace_context="")
         assert gov.evaluate(state) == "process"
+
+
+class TestWorkspaceContextComplianceVeto:
+    """workspace_context containing management-sensitive content triggers veto."""
+
+    def test_one_on_one_feedback_in_workspace_context_pauses(self):
+        gov = PipelineGovernor()
+        state = _make_state(workspace_context="1-on-1 feedback session with direct report")
+        assert gov.evaluate(state) == "pause"

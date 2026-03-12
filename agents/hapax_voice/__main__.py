@@ -604,7 +604,11 @@ class VoiceDaemon:
                 if self.session.is_active:
                     continue
 
-                presence = self.presence.score
+                presence = (
+                    self.perception.latest.presence_score
+                    if self.perception.latest
+                    else "likely_absent"
+                )
                 if presence == "likely_absent":
                     continue
 
@@ -776,7 +780,10 @@ class VoiceDaemon:
                 if analysis is not None:
                     mode = classify_activity_mode(analysis)
                     self.gate.set_activity_mode(mode)
-                    self.perception.update_slow_fields(activity_mode=mode)
+                    self.perception.update_slow_fields(
+                        activity_mode=mode,
+                        workspace_context=getattr(analysis, "context", ""),
+                    )
         finally:
             # Stop any running pipeline
             await self._stop_pipeline()

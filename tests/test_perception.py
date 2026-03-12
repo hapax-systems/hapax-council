@@ -23,10 +23,9 @@ def test_environment_state_defaults():
     assert state.speech_detected is False
     assert state.face_count == 0
     assert state.operator_present is False
-    assert state.gaze_at_camera is False
     assert state.conversation_detected is False
     assert state.activity_mode == "unknown"
-    assert state.ambient_class == "silence"
+    assert state.presence_score == "likely_absent"
     assert state.directive == "process"
 
 
@@ -99,7 +98,7 @@ def test_engine_produces_state():
 
 
 def test_engine_detects_speech():
-    """High VAD confidence → speech_detected."""
+    """High VAD confidence -> speech_detected."""
     presence = _make_mock_presence(latest_vad_confidence=0.85)
     engine = PerceptionEngine(
         presence=presence,
@@ -116,10 +115,9 @@ def test_engine_carries_forward_slow_fields():
         presence=_make_mock_presence(),
         workspace_monitor=_make_mock_workspace_monitor(),
     )
-    engine.update_slow_fields(activity_mode="coding", ambient_detailed="keyboard_typing")
+    engine.update_slow_fields(activity_mode="coding")
     state = engine.tick()
     assert state.activity_mode == "coding"
-    assert state.ambient_detailed == "keyboard_typing"
 
 
 def test_engine_notifies_subscribers():
@@ -133,16 +131,6 @@ def test_engine_notifies_subscribers():
     engine.tick()
     assert len(received) == 1
     assert isinstance(received[0], EnvironmentState)
-
-
-def test_engine_gaze_defaults_false():
-    """Gaze detection defaults to False (b-path: proper model later)."""
-    engine = PerceptionEngine(
-        presence=_make_mock_presence(),
-        workspace_monitor=_make_mock_workspace_monitor(),
-    )
-    state = engine.tick()
-    assert state.gaze_at_camera is False
 
 
 # ------------------------------------------------------------------
@@ -449,3 +437,119 @@ class TestSessionInterruptibility:
         engine.update_desktop_state(window_count=10)
         state = engine.tick()
         assert state.interruptibility_score == 0.3  # 1.0 - 0.5 - 0.2
+
+
+# ------------------------------------------------------------------
+# Part B: workspace_context wiring
+# ------------------------------------------------------------------
+
+
+class TestWorkspaceContextWiring:
+    """Prove update_slow_fields populates workspace_context on state."""
+
+    def test_update_slow_fields_sets_workspace_context(self):
+        engine = PerceptionEngine(
+            presence=_make_mock_presence(),
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        engine.update_slow_fields(workspace_context="reviewing code")
+        state = engine.tick()
+        assert state.workspace_context == "reviewing code"
+
+    def test_no_update_workspace_context_stays_empty(self):
+        engine = PerceptionEngine(
+            presence=_make_mock_presence(),
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        state = engine.tick()
+        assert state.workspace_context == ""
+
+
+# ------------------------------------------------------------------
+# Part C: presence_score on EnvironmentState
+# ------------------------------------------------------------------
+
+
+class TestPresenceScore:
+    """Prove presence_score is populated from PresenceDetector."""
+
+    def test_default_presence_score(self):
+        state = EnvironmentState(timestamp=time.monotonic())
+        assert state.presence_score == "likely_absent"
+
+    def test_presence_score_from_detector(self):
+        presence = _make_mock_presence(score="definitely_present")
+        engine = PerceptionEngine(
+            presence=presence,
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        state = engine.tick()
+        assert state.presence_score == "definitely_present"
+
+    def test_presence_score_divergence_from_operator_present(self):
+        """presence_score can diverge from operator_present (VAD persists after face decay)."""
+        presence = _make_mock_presence(
+            score="likely_present",
+            face_detected=False,
+            face_count=0,
+        )
+        engine = PerceptionEngine(
+            presence=presence,
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        state = engine.tick()
+        assert state.presence_score == "likely_present"
+        assert state.operator_present is False
+
+    def test_presence_score_uncertain_interruptibility(self):
+        """Uncertain presence still allows interruptibility computation."""
+        presence = _make_mock_presence(
+            score="uncertain",
+            face_detected=True,
+            face_count=1,
+        )
+        engine = PerceptionEngine(
+            presence=presence,
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        state = engine.tick()
+        assert state.presence_score == "uncertain"
+        assert state.interruptibility_score > 0.0
+
+    def test_tick_populates_presence_score(self):
+        """Engine tick() reads presence_score from presence detector."""
+        presence = _make_mock_presence(score="likely_present")
+        engine = PerceptionEngine(
+            presence=presence,
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        state = engine.tick()
+        assert state.presence_score == "likely_present"
+        assert engine.latest is not None
+        assert engine.latest.presence_score == "likely_present"
+
+
+# ------------------------------------------------------------------
+# Part D: HyprlandBackend provides only active_window_class
+# ------------------------------------------------------------------
+
+
+class TestHyprlandBackendStripped:
+    """Prove HyprlandBackend only provides active_window_class."""
+
+    def test_provides_only_active_window_class(self):
+        from agents.hapax_voice.backends.hyprland import HyprlandBackend
+
+        backend = HyprlandBackend()
+        assert backend.provides == frozenset({"active_window_class"})
+
+    def test_no_removed_behaviors_after_registration(self):
+        from agents.hapax_voice.backends.hyprland import HyprlandBackend
+
+        backend = HyprlandBackend()
+        behaviors: dict[str, Behavior] = {}
+        # Simulate contribute without hyprctl (will fail gracefully)
+        backend.contribute(behaviors)
+        assert "active_window_title" not in behaviors
+        assert "workspace_id" not in behaviors
+        assert "desktop_window_count" not in behaviors

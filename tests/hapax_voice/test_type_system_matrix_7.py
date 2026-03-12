@@ -33,15 +33,11 @@ def _make_state(**overrides) -> EnvironmentState:
     defaults = dict(
         timestamp=time.monotonic(),
         speech_detected=False,
-        speech_volume_db=-40.0,
-        ambient_class="quiet",
         vad_confidence=0.0,
         face_count=1,
         operator_present=True,
-        gaze_at_camera=False,
         activity_mode="idle",
         workspace_context="",
-        ambient_detailed="",
         active_window=None,
         window_count=0,
         active_workspace_id=0,
@@ -358,7 +354,7 @@ class TestVetoConvergence:
         """S7, S1, S2, S3 + A1, A4, A5: Fast and slow behaviors converge in one FusedContext."""
         engine = _make_engine(face_detected=True, face_count=1, vad=0.7)
         engine.tick()
-        engine.update_slow_fields(activity_mode="meeting", ambient_detailed="voices")
+        engine.update_slow_fields(activity_mode="meeting")
 
         trigger: Event[str] = Event()
         fused = with_latest_from(trigger, engine.behaviors)
@@ -373,7 +369,6 @@ class TestVetoConvergence:
         assert ctx.get_sample("operator_present").value is True
         # Slow behavior
         assert ctx.get_sample("activity_mode").value == "meeting"
-        assert ctx.get_sample("ambient_detailed").value == "voices"
 
         assert isinstance(ctx.samples, MappingProxyType)
         assert "operator_present" in ctx.samples
