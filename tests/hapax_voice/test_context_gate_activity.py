@@ -32,4 +32,4 @@ def test_gate_allows_during_coding():
     gate._activity_mode = "coding"
     # Should pass the activity check (may fail on other checks like volume)
     # Just verify activity mode doesn't block
-    assert gate._check_activity_mode().eligible is True
+    assert gate._allow_activity_mode(None) is True

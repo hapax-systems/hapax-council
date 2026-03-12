@@ -5,11 +5,11 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapaxlegomenon/.local/bin/drift-watchdog
-Environment=PATH=/home/hapaxlegomenon/.local/bin:/home/hapaxlegomenon/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapaxlegomenon
-Environment=GNUPGHOME=/home/hapaxlegomenon/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapaxlegomenon/.password-store
+ExecStart=/home/hapax/.local/bin/drift-watchdog
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
 MemoryMax=512M
 CPUQuota=50%
 StandardOutput=journal

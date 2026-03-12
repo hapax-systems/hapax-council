@@ -9,14 +9,17 @@ import signal
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agents.hapax_voice.activity_mode import classify_activity_mode
 from agents.hapax_voice.audio_input import AudioInputStream
 from agents.hapax_voice.chime_player import ChimePlayer
+from agents.hapax_voice.commands import Command
 from agents.hapax_voice.config import load_config
 from agents.hapax_voice.context_gate import ContextGate
 from agents.hapax_voice.event_log import EventLog
 from agents.hapax_voice.frame_gate import FrameGate
+from agents.hapax_voice.governance import VetoResult
 from agents.hapax_voice.governor import PipelineGovernor
 from agents.hapax_voice.hotkey import HotkeyServer
 from agents.hapax_voice.notification_queue import NotificationQueue
@@ -24,7 +27,11 @@ from agents.hapax_voice.ntfy_listener import subscribe_ntfy
 from agents.hapax_voice.perception import PerceptionEngine
 from agents.hapax_voice.persona import format_notification, session_end_message
 from agents.hapax_voice.presence import PresenceDetector
+from agents.hapax_voice.primitives import Event
 from agents.hapax_voice.screen_models import CameraConfig
+
+if TYPE_CHECKING:
+    from agents.hapax_voice.hyprland_listener import FocusEvent
 from agents.hapax_voice.session import SessionManager
 from agents.hapax_voice.tracing import VoiceTracer
 from agents.hapax_voice.tts import TTSManager
@@ -33,6 +40,8 @@ from agents.hapax_voice.wake_word_porcupine import PorcupineWakeWord
 from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
 
 log = logging.getLogger("hapax_voice")
+
+_DEFAULT_VETO_RESULT = VetoResult(allowed=True)
 
 
 def _screen_flash(kind: str = "activation") -> None:
@@ -158,6 +167,10 @@ class VoiceDaemon:
             workspace_monitor=self.workspace_monitor,
         )
 
+        # Perception events (Phase 2 extension points)
+        self.wake_word_event: Event[None] = Event()
+        self.focus_event: Event[FocusEvent] = Event()
+
         # Wire Hyprland desktop state into perception
         listener = self.workspace_monitor.listener
         if listener is not None:
@@ -172,6 +185,7 @@ class VoiceDaemon:
                     window_count=len(clients),
                     active_workspace_id=event.workspace_id,
                 )
+                self.focus_event.emit(time.monotonic(), event)
                 # Chain to workspace monitor's capture trigger
                 if orig_cb is not None:
                     orig_cb(event)
@@ -190,6 +204,10 @@ class VoiceDaemon:
         # Pipeline state (managed per-session)
         self._pipeline_task: asyncio.Task | None = None
         self._gemini_session = None
+
+        # Wake word async signaling — sync callback sets event,
+        # coroutine awaits it and atomically starts the pipeline
+        self._wake_word_signal = asyncio.Event()
 
         # Observability
         events_dir = Path.home() / ".local" / "share" / "hapax-voice"
@@ -425,8 +443,30 @@ class VoiceDaemon:
             _screen_flash(kind)
 
     def _on_wake_word(self) -> None:
-        """Called when wake word is detected."""
+        """Called synchronously from audio loop when wake word is detected.
+
+        Minimal handler: emits event and signals the async processor.
+        All state mutations and pipeline start happen in _wake_word_processor()
+        to prevent logical races with the perception loop.
+        """
+        self.wake_word_event.emit(time.monotonic(), None)
         if not self.session.is_active:
+            self._wake_word_signal.set()
+
+    async def _wake_word_processor(self) -> None:
+        """Await wake word signal, then atomically set up session + pipeline.
+
+        By awaiting _start_pipeline() directly (not create_task), the perception
+        loop cannot tick until the pipeline is ready. The state mutations and
+        pipeline start are atomic from asyncio's perspective.
+        """
+        while self._running:
+            await self._wake_word_signal.wait()
+            self._wake_word_signal.clear()
+
+            if self.session.is_active:
+                continue
+
             self._acknowledge("activation")
             self.governor.wake_word_active = True
             self._frame_gate.set_directive("process")
@@ -434,7 +474,7 @@ class VoiceDaemon:
             log.info("Session opened via wake word")
             self.event_log.set_session_id(self.session.session_id)
             self.event_log.emit("session_lifecycle", action="opened", trigger="wake_word")
-            asyncio.get_event_loop().create_task(self._start_pipeline())
+            await self._start_pipeline()
 
     async def _handle_hotkey(self, cmd: str) -> None:
         if cmd == "toggle":
@@ -582,8 +622,26 @@ class VoiceDaemon:
                 # Governor: evaluate state → directive
                 directive = self.governor.evaluate(state)
 
-                # Apply directive to FrameGate
-                self._frame_gate.set_directive(directive)
+                # Build typed Command with full provenance
+                command = Command(
+                    action=directive,
+                    trigger_time=state.timestamp,
+                    trigger_source="perception_tick",
+                    min_watermark=self.perception.min_watermark,
+                    governance_result=(
+                        self.governor.last_veto_result
+                        if self.governor.last_veto_result is not None
+                        else _DEFAULT_VETO_RESULT
+                    ),
+                    selected_by=(
+                        self.governor.last_selected.selected_by
+                        if self.governor.last_selected is not None
+                        else "default"
+                    ),
+                )
+
+                # Apply Command to FrameGate (typed, with provenance)
+                self._frame_gate.apply_command(command)
 
                 # Apply directive to session
                 if directive == "pause" and self.session.is_active and not self.session.is_paused:
@@ -662,6 +720,7 @@ class VoiceDaemon:
             self._background_tasks.append(asyncio.create_task(self._audio_loop()))
 
         self._background_tasks.append(asyncio.create_task(self._perception_loop()))
+        self._background_tasks.append(asyncio.create_task(self._wake_word_processor()))
 
         try:
             while self._running:

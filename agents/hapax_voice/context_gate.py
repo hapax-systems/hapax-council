@@ -1,4 +1,7 @@
-"""Context gate for determining interrupt eligibility."""
+"""Context gate for determining interrupt eligibility.
+
+Uses VetoChain internally — each check is a Veto in a deny-wins chain.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +9,7 @@ import logging
 import subprocess
 from dataclasses import dataclass
 
+from agents.hapax_voice.governance import Veto, VetoChain
 from agents.hapax_voice.session import SessionManager
 
 log = logging.getLogger(__name__)
@@ -22,11 +26,12 @@ class GateResult:
 class ContextGate:
     """Layered gate that checks whether voice interrupts are appropriate.
 
-    Checks in order:
+    Checks (as vetoes, deny-wins):
         1. Active session
-        2. Audio volume (wpctl)
-        3. Studio MIDI activity (aconnect)
-        4. Ambient audio classification (PANNs)
+        2. Activity mode (production/meeting/conversation)
+        3. Audio volume (wpctl)
+        4. Studio MIDI activity (aconnect)
+        5. Ambient audio classification (PANNs)
     """
 
     def __init__(
@@ -43,6 +48,21 @@ class ContextGate:
         self._activity_mode: str = "unknown"
         self._event_log = None
         self._environment_state = None
+
+        # Denial reasons stored during predicate evaluation
+        self._denial_reasons: dict[str, str] = {}
+
+        # Build veto chain
+        self._veto_chain: VetoChain[None] = VetoChain(
+            [
+                Veto("session_active", predicate=self._allow_no_session),
+                Veto("activity_mode", predicate=self._allow_activity_mode),
+                Veto("volume", predicate=self._allow_volume),
+                Veto("studio_midi", predicate=self._allow_studio),
+            ]
+        )
+        if self.ambient_classification:
+            self._veto_chain.add(Veto("ambient", predicate=self._allow_ambient))
 
     def set_activity_mode(self, mode: str) -> None:
         self._activity_mode = mode
@@ -67,42 +87,60 @@ class ContextGate:
         return result
 
     def _check_inner(self) -> GateResult:
-        """Internal: run layered checks."""
+        """Evaluate all vetoes and return gate result."""
+        self._denial_reasons.clear()
+        result = self._veto_chain.evaluate(None)
+        if result.allowed:
+            return GateResult(eligible=True)
+        # Use the first denial's reason
+        reason = self._denial_reasons.get(result.denied_by[0], result.denied_by[0])
+        return GateResult(eligible=False, reason=reason)
+
+    # ------------------------------------------------------------------
+    # Veto predicates (True=allow, False=deny)
+    # ------------------------------------------------------------------
+
+    def _allow_no_session(self, _: None) -> bool:
         if self.session.is_active:
-            return GateResult(eligible=False, reason="Session active")
+            self._denial_reasons["session_active"] = "Session active"
+            return False
+        return True
 
-        result = self._check_activity_mode()
-        if not result.eligible:
-            return result
-
-        vol_ok, vol_reason = self._check_volume()
-        if not vol_ok:
-            return GateResult(eligible=False, reason=vol_reason)
-
-        studio_ok, studio_reason = self._check_studio()
-        if not studio_ok:
-            return GateResult(eligible=False, reason=studio_reason)
-
-        if self.ambient_classification:
-            ambient_ok, ambient_reason = self._check_ambient()
-            if not ambient_ok:
-                return GateResult(eligible=False, reason=ambient_reason)
-
-        return GateResult(eligible=True)
-
-    def _check_activity_mode(self) -> GateResult:
+    def _allow_activity_mode(self, _: None) -> bool:
         if self._activity_mode in ("production", "meeting", "conversation"):
-            return GateResult(eligible=False, reason=f"Blocked: {self._activity_mode} mode active")
-        return GateResult(eligible=True, reason="")
+            self._denial_reasons["activity_mode"] = f"Blocked: {self._activity_mode} mode active"
+            return False
+        return True
 
-    def _check_volume(self) -> tuple[bool, str]:
-        """Check if system volume is below threshold."""
+    def _allow_volume(self, _: None) -> bool:
         volume = self._get_sink_volume()
         if volume is None:
-            return False, "Volume check unavailable (wpctl failed)"
+            self._denial_reasons["volume"] = "Volume check unavailable (wpctl failed)"
+            return False
         if volume >= self.volume_threshold:
-            return False, f"Volume too high ({volume:.2f} >= {self.volume_threshold:.2f})"
-        return True, ""
+            self._denial_reasons["volume"] = (
+                f"Volume too high ({volume:.2f} >= {self.volume_threshold:.2f})"
+            )
+            return False
+        return True
+
+    def _allow_studio(self, _: None) -> bool:
+        ok, reason = self._check_studio()
+        if not ok:
+            self._denial_reasons["studio_midi"] = reason
+            return False
+        return True
+
+    def _allow_ambient(self, _: None) -> bool:
+        ok, reason = self._check_ambient()
+        if not ok:
+            self._denial_reasons["ambient"] = reason
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Underlying checks (preserved from original implementation)
+    # ------------------------------------------------------------------
 
     def _get_sink_volume(self) -> float | None:
         """Get default audio sink volume via wpctl.

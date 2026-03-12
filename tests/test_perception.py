@@ -116,8 +116,7 @@ def test_engine_carries_forward_slow_fields():
         presence=_make_mock_presence(),
         workspace_monitor=_make_mock_workspace_monitor(),
     )
-    engine._slow_activity_mode = "coding"
-    engine._slow_ambient_detailed = "keyboard_typing"
+    engine.update_slow_fields(activity_mode="coding", ambient_detailed="keyboard_typing")
     state = engine.tick()
     assert state.activity_mode == "coding"
     assert state.ambient_detailed == "keyboard_typing"

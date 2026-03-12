@@ -6,7 +6,7 @@ ConditionPathExists=/proc/asound/card0
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/home/hapaxlegomenon/.local/bin/midi-route
+ExecStart=/home/hapax/.local/bin/midi-route
 ExecStop=/usr/bin/aconnect -x
 
 # Retry if hardware not yet enumerated

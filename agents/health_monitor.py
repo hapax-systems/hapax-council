@@ -1131,9 +1131,8 @@ async def check_disk_usage() -> list[CheckResult]:
 
 EXPECTED_OLLAMA_MODELS = [
     "nomic-embed-text-v2-moe",
-    "qwen2.5-coder:32b-instruct-q4_K_M",
-    "qwen2.5:7b",
-    "deepseek-r1:14b",
+    "qwen3.5:27b",
+    "qwen3:8b",
 ]
 
 
