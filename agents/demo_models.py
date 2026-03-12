@@ -1,5 +1,7 @@
 """Re-export from hapax-demo package for backwards compatibility."""
 
+from pathlib import Path
+
 from demo.models import *  # noqa: F401, F403
 from demo.models import (  # noqa: F401 — explicit for type checkers
     AudienceDossier,
@@ -22,7 +24,6 @@ from demo.models import (  # noqa: F401 — explicit for type checkers
     load_audiences,
     load_personas,
 )
-from pathlib import Path
 
 # Backwards-compatible path constants — configure the package on import
 _profiles = Path(__file__).resolve().parent.parent / "profiles"
