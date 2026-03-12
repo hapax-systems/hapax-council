@@ -13,7 +13,6 @@ from shared.axiom_enforcement import (
 )
 from shared.axiom_registry import SchemaVer, load_schema_version
 
-
 # ------------------------------------------------------------------
 # SchemaVer
 # ------------------------------------------------------------------

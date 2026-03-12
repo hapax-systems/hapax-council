@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -154,7 +154,7 @@ def _handle_heart_rate(reading: SensorReading, now: float, source: str = "pixel_
     _hr_window.append((now, reading.bpm))
     _atomic_write(_get_watch_state_dir() / "heartrate.json", {
         "source": source,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "current": {
             "bpm": reading.bpm,
             "confidence": reading.confidence or "UNKNOWN",
@@ -171,7 +171,7 @@ def _handle_hrv(reading: SensorReading, now: float, source: str = "pixel_watch_4
     _hrv_window.append((now, reading.rmssd_ms))
     _atomic_write(_get_watch_state_dir() / "hrv.json", {
         "source": source,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "current": {"rmssd_ms": reading.rmssd_ms},
         "window_1h": _window_stats(_hrv_window),
     })
@@ -181,7 +181,7 @@ def _handle_eda(reading: SensorReading, source: str = "pixel_watch_4") -> None:
     """Process EDA reading."""
     _atomic_write(_get_watch_state_dir() / "eda.json", {
         "source": source,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "current": {
             "eda_event": reading.eda_event or False,
             "duration_seconds": reading.duration_seconds or 0,
@@ -193,7 +193,7 @@ def _handle_skin_temp(reading: SensorReading, source: str = "pixel_watch_4") -> 
     """Process skin temperature reading."""
     _atomic_write(_get_watch_state_dir() / "skin_temp.json", {
         "source": source,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "current": {"temp_c": reading.temp_c},
     })
 
@@ -202,7 +202,7 @@ def _handle_activity(reading: SensorReading, source: str = "pixel_watch_4") -> N
     """Process activity state reading."""
     _atomic_write(_get_watch_state_dir() / "activity.json", {
         "source": source,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "state": reading.state or "UNKNOWN",
     })
 
@@ -260,7 +260,7 @@ def create_app() -> FastAPI:
         # Write phone_health_summary.json atomically
         summary_data = payload.model_dump()
         summary_data["source"] = DEVICE_NAMES.get(payload.device_id, payload.device_id)
-        summary_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        summary_data["updated_at"] = datetime.now(UTC).isoformat()
         _atomic_write(_get_watch_state_dir() / "phone_health_summary.json", summary_data)
 
         # Write RAG markdown using health_connect_parser formatter
@@ -270,7 +270,7 @@ def create_app() -> FastAPI:
         md_content = format_daily_summary(day_data)
         # Override device in frontmatter to reflect phone source
         md_content = md_content.replace("device: pixel_watch_4", f"device: {DEVICE_NAMES.get(payload.device_id, payload.device_id)}")
-        md_content = md_content.replace(f"source_device: pixel_watch_4", f"source_device: {DEVICE_NAMES.get(payload.device_id, payload.device_id)}")
+        md_content = md_content.replace("source_device: pixel_watch_4", f"source_device: {DEVICE_NAMES.get(payload.device_id, payload.device_id)}")
         rag_dir = HAPAX_HOME / "documents" / "rag-sources" / "health-connect"
         rag_dir.mkdir(parents=True, exist_ok=True)
         rag_file = rag_dir / f"health-{payload.date}.md"
@@ -282,7 +282,7 @@ def create_app() -> FastAPI:
         if payload.device_id not in ALLOWED_DEVICE_IDS:
             raise HTTPException(status_code=403, detail="Unknown device")
         _atomic_write(_get_watch_state_dir() / "voice_trigger.json", {
-            "triggered_at": datetime.now(timezone.utc).isoformat(),
+            "triggered_at": datetime.now(UTC).isoformat(),
             "device_id": payload.device_id,
         })
         return {"status": "ok"}

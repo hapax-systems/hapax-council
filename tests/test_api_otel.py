@@ -18,8 +18,9 @@ def client():
         patch("cockpit.api.cache.start_refresh_loop", new_callable=AsyncMock),
         patch("cockpit.api.sessions.agent_run_manager", shutdown=AsyncMock()),
     ):
-        from cockpit.api.app import app
         from starlette.testclient import TestClient
+
+        from cockpit.api.app import app
 
         with TestClient(app, raise_server_exceptions=False) as c:
             yield c

@@ -11,8 +11,6 @@ import importlib
 import os
 from unittest import mock
 
-import pytest
-
 
 def test_env_vars_set_with_creds():
     """When LANGFUSE creds are set, OTEL env vars should be configured."""

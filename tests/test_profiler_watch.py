@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
 import pytest
 
@@ -49,6 +48,7 @@ class TestPhoneSummaryPreference:
     def test_phone_summary_preferred(self, watch_state_dir):
         """Phone facts used for daily totals when phone summary exists."""
         from datetime import date
+
         from agents.profiler_sources import read_watch_facts
         (watch_state_dir / "phone_health_summary.json").write_text(json.dumps({
             "date": date.today().isoformat(),
@@ -75,6 +75,7 @@ class TestPhoneSummaryPreference:
     def test_phone_steps_fact(self, watch_state_dir):
         """Phone summary produces steps fact."""
         from datetime import date
+
         from agents.profiler_sources import read_watch_facts
         (watch_state_dir / "phone_health_summary.json").write_text(json.dumps({
             "date": date.today().isoformat(),

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from shared.dimensions import DimensionDef
 from shared.operator_schema import (
     OperatorSchema,
@@ -14,7 +12,6 @@ from shared.operator_schema import (
     StalenessConfig,
     StalenessModel,
 )
-
 
 # ------------------------------------------------------------------
 # StalenessModel

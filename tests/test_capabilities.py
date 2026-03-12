@@ -7,21 +7,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from shared.capabilities.protocols import (
-    AudioCapability,
-    CompletionCapability,
     DesktopCapability,
     DesktopResult,
     EmbeddingCapability,
     EmbeddingResult,
     HealthStatus,
-    NotificationCapability,
-    StorageCapability,
-    TTSCapability,
-    TranscriptionCapability,
-    VectorSearchCapability,
 )
 from shared.capabilities.registry import CapabilityRegistry
-
 
 # ------------------------------------------------------------------
 # Stub adapters for testing

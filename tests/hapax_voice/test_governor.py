@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import time
 
-from agents.hapax_voice.governor import PipelineGovernor, _RUNTIME_COMPLIANCE_RULES
+from agents.hapax_voice.governor import _RUNTIME_COMPLIANCE_RULES, PipelineGovernor
 from agents.hapax_voice.perception import EnvironmentState
-from shared.axiom_enforcement import ComplianceRule, check_fast
+from shared.axiom_enforcement import check_fast
 
 
 def _make_state(**overrides) -> EnvironmentState:

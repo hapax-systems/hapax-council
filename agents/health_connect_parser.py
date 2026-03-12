@@ -10,7 +10,7 @@ import hashlib
 import sqlite3
 import zipfile
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.config import RAG_SOURCES_DIR
@@ -59,7 +59,7 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
     if "heart_rate_record" in existing_tables:
         for row in conn.execute("SELECT time, bpm FROM heart_rate_record"):
             ts, bpm = row
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            dt = datetime.fromtimestamp(ts, tz=UTC)
             date_str = dt.strftime("%Y-%m-%d")
             daily[date_str]["heart_rates"].append(bpm)
 
@@ -67,7 +67,7 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
     if "steps_record" in existing_tables:
         for row in conn.execute("SELECT start_time, count FROM steps_record"):
             ts, count = row
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            dt = datetime.fromtimestamp(ts, tz=UTC)
             date_str = dt.strftime("%Y-%m-%d")
             daily[date_str]["steps"] += count
 
@@ -75,7 +75,7 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
     if "sleep_session_record" in existing_tables:
         for row in conn.execute("SELECT start_time, end_time FROM sleep_session_record"):
             start_ts, end_ts = row
-            daily_date = datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            daily_date = datetime.fromtimestamp(end_ts, tz=UTC).strftime("%Y-%m-%d")
             daily[daily_date]["sleep_sessions"].append((start_ts, end_ts))
 
     conn.close()
@@ -102,8 +102,8 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
         if sessions:
             # Use the first session for simplicity
             start_ts, end_ts = sessions[0]
-            start_dt = datetime.fromtimestamp(start_ts, tz=timezone.utc)
-            end_dt = datetime.fromtimestamp(end_ts, tz=timezone.utc)
+            start_dt = datetime.fromtimestamp(start_ts, tz=UTC)
+            end_dt = datetime.fromtimestamp(end_ts, tz=UTC)
             day_data["sleep_start"] = start_dt.strftime("%H:%M")
             day_data["sleep_end"] = end_dt.strftime("%H:%M")
             day_data["sleep_duration_min"] = round((end_ts - start_ts) / 60)

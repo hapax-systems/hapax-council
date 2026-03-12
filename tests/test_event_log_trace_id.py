@@ -30,7 +30,6 @@ def _read_last_event(tmp_path: Path) -> dict:
 
 def test_trace_id_present_with_active_span(event_log, tmp_path):
     """When an OTel span is active, trace_id and span_id should appear in the event."""
-    from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
 
     provider = TracerProvider()

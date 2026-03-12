@@ -96,9 +96,7 @@ def process_report(
         # Determine priority
         if status == "failed" and is_t0 and cycles >= T0_URGENT_CYCLES:
             priority = "urgent"
-        elif cycles >= DEGRADED_ESCALATION_CYCLES:
-            priority = "high"
-        elif status == "failed":
+        elif cycles >= DEGRADED_ESCALATION_CYCLES or status == "failed":
             priority = "high"
         else:
             priority = "default"

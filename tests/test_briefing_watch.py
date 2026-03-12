@@ -2,13 +2,6 @@
 from __future__ import annotations
 
 import json
-import time
-from pathlib import Path
-from unittest.mock import patch, AsyncMock
-
-import pytest
-
-from agents.hapax_voice.watch_signals import read_watch_signal
 
 
 class TestActivityGating:

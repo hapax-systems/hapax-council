@@ -4,20 +4,16 @@ from __future__ import annotations
 import json
 import os
 import time
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-import pytest
-
-from agents.hapax_voice.watch_signals import (
-    read_watch_signal,
-    is_stress_elevated,
-    is_watch_connected,
-    is_watch_bt_nearby,
-    is_phone_connected,
-    WatchSignalReader,
-)
 from agents.hapax_voice.presence import PresenceDetector
+from agents.hapax_voice.watch_signals import (
+    is_phone_connected,
+    is_stress_elevated,
+    is_watch_bt_nearby,
+    is_watch_connected,
+    read_watch_signal,
+)
 
 
 class TestReadWatchSignal:
