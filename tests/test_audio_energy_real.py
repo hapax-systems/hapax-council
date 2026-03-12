@@ -52,17 +52,19 @@ def _pw_dump_json(nodes: list[dict]) -> bytes:
     """Build pw-dump JSON output from a list of node specs."""
     objects = []
     for n in nodes:
-        objects.append({
-            "id": n["id"],
-            "type": "PipeWire:Interface:Node",
-            "info": {
-                "props": {
-                    "node.name": n.get("name", ""),
-                    "node.description": n.get("description", ""),
-                    "media.class": n.get("media_class", "Audio/Source"),
+        objects.append(
+            {
+                "id": n["id"],
+                "type": "PipeWire:Interface:Node",
+                "info": {
+                    "props": {
+                        "node.name": n.get("name", ""),
+                        "node.description": n.get("description", ""),
+                        "media.class": n.get("media_class", "Audio/Source"),
+                    },
                 },
-            },
-        })
+            }
+        )
     return json.dumps(objects).encode()
 
 
@@ -84,9 +86,11 @@ class TestDiscoverNode:
     def test_find_by_node_name(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout=_pw_dump_json([
-                {"id": 42, "name": "alsa_input.usb-Roland_SP404"},
-            ]),
+            stdout=_pw_dump_json(
+                [
+                    {"id": 42, "name": "alsa_input.usb-Roland_SP404"},
+                ]
+            ),
         )
         assert discover_node("alsa_input.usb-Roland_SP404") == 42
 
@@ -94,9 +98,11 @@ class TestDiscoverNode:
     def test_find_by_description_substring(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout=_pw_dump_json([
-                {"id": 99, "name": "alsa_input.hw", "description": "SP-404 MKII Input"},
-            ]),
+            stdout=_pw_dump_json(
+                [
+                    {"id": 99, "name": "alsa_input.hw", "description": "SP-404 MKII Input"},
+                ]
+            ),
         )
         assert discover_node("SP-404") == 99
 
@@ -222,13 +228,17 @@ class TestAudioEnergyBackendAvailability:
         assert b.available() is False
 
     @patch("agents.hapax_voice.backends.audio_energy.discover_node", return_value=None)
-    @patch("agents.hapax_voice.backends.audio_energy.shutil.which", return_value="/usr/bin/pw-record")
+    @patch(
+        "agents.hapax_voice.backends.audio_energy.shutil.which", return_value="/usr/bin/pw-record"
+    )
     def test_node_not_found_unavailable(self, mock_which, mock_discover):
         b = AudioEnergyBackend("monitor_mix", target="nonexistent")
         assert b.available() is False
 
     @patch("agents.hapax_voice.backends.audio_energy.discover_node", return_value=42)
-    @patch("agents.hapax_voice.backends.audio_energy.shutil.which", return_value="/usr/bin/pw-record")
+    @patch(
+        "agents.hapax_voice.backends.audio_energy.shutil.which", return_value="/usr/bin/pw-record"
+    )
     def test_all_present_available(self, mock_which, mock_discover):
         b = AudioEnergyBackend("monitor_mix", target="42")
         assert b.available() is True
@@ -293,7 +303,9 @@ class TestAudioEnergyBackendLifecycle:
         assert b._reader is None
 
     @patch("agents.hapax_voice.backends.audio_energy.discover_node", return_value=42)
-    @patch("agents.hapax_voice.backends.audio_energy.shutil.which", return_value="/usr/bin/pw-record")
+    @patch(
+        "agents.hapax_voice.backends.audio_energy.shutil.which", return_value="/usr/bin/pw-record"
+    )
     def test_stop_cleans_up(self, mock_which, mock_discover):
         b = AudioEnergyBackend("monitor_mix", target="42")
         b.available()  # sets _node_id
@@ -319,10 +331,12 @@ class TestAudioEnergyBackendParameterization:
     def test_with_source_id_qualifies(self):
         b = AudioEnergyBackend("monitor_mix")
         assert b.name == "audio_energy:monitor_mix"
-        assert b.provides == frozenset({
-            "audio_energy_rms:monitor_mix",
-            "audio_onset:monitor_mix",
-        })
+        assert b.provides == frozenset(
+            {
+                "audio_energy_rms:monitor_mix",
+                "audio_onset:monitor_mix",
+            }
+        )
 
 
 # ===========================================================================

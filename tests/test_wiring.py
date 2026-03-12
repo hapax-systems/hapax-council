@@ -28,6 +28,7 @@ from agents.hapax_voice.wiring import (
 # Fixtures — minimal valid config
 # ---------------------------------------------------------------------------
 
+
 def _minimal_config() -> WiringConfig:
     return WiringConfig(
         sources=(
@@ -74,9 +75,7 @@ class TestWiringConfigValidation:
     def test_unknown_cadence_group_raises(self):
         with pytest.raises(ValueError, match="unknown cadence group"):
             WiringConfig(
-                sources=(
-                    SourceSpec("monitor_mix", BackendType.AUDIO_ENERGY, "nonexistent"),
-                ),
+                sources=(SourceSpec("monitor_mix", BackendType.AUDIO_ENERGY, "nonexistent"),),
                 cadence_groups={"fast_audio": 0.05},
                 mc_binding=GovernanceBinding(
                     energy_source="monitor_mix", emotion_source="monitor_mix"
@@ -89,9 +88,7 @@ class TestWiringConfigValidation:
     def test_mc_energy_source_not_in_sources_raises(self):
         with pytest.raises(ValueError, match="mc_binding.energy_source"):
             WiringConfig(
-                sources=(
-                    SourceSpec("monitor_mix", BackendType.AUDIO_ENERGY, "fast_audio"),
-                ),
+                sources=(SourceSpec("monitor_mix", BackendType.AUDIO_ENERGY, "fast_audio"),),
                 cadence_groups={"fast_audio": 0.05},
                 mc_binding=GovernanceBinding(
                     energy_source="nonexistent", emotion_source="monitor_mix"
@@ -104,9 +101,7 @@ class TestWiringConfigValidation:
     def test_obs_emotion_source_not_in_sources_raises(self):
         with pytest.raises(ValueError, match="obs_binding.emotion_source"):
             WiringConfig(
-                sources=(
-                    SourceSpec("monitor_mix", BackendType.AUDIO_ENERGY, "fast_audio"),
-                ),
+                sources=(SourceSpec("monitor_mix", BackendType.AUDIO_ENERGY, "fast_audio"),),
                 cadence_groups={"fast_audio": 0.05},
                 mc_binding=GovernanceBinding(
                     energy_source="monitor_mix", emotion_source="monitor_mix"
@@ -140,9 +135,7 @@ class TestWiringConfigValidation:
                 SourceSpec("monitor_mix", BackendType.ENERGY_ARC, "fast_audio"),
             ),
             cadence_groups={"fast_audio": 0.05},
-            mc_binding=GovernanceBinding(
-                energy_source="monitor_mix", emotion_source="monitor_mix"
-            ),
+            mc_binding=GovernanceBinding(energy_source="monitor_mix", emotion_source="monitor_mix"),
             obs_binding=GovernanceBinding(
                 energy_source="monitor_mix", emotion_source="monitor_mix"
             ),
@@ -172,9 +165,13 @@ class TestBehaviorAliasing:
         binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="face_cam")
         alias = build_behavior_alias(behaviors, binding)
         expected = {
-            "audio_energy_rms", "audio_onset",
-            "emotion_valence", "emotion_arousal", "emotion_dominant",
-            "vad_confidence", "timeline_mapping",
+            "audio_energy_rms",
+            "audio_onset",
+            "emotion_valence",
+            "emotion_arousal",
+            "emotion_dominant",
+            "vad_confidence",
+            "timeline_mapping",
         }
         assert set(alias.keys()) == expected
 
@@ -193,9 +190,7 @@ class TestBehaviorAliasing:
         """MC and OBS can bind to different emotion sources."""
         behaviors = _make_qualified_behaviors()
         mc_binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="face_cam")
-        obs_binding = GovernanceBinding(
-            energy_source="monitor_mix", emotion_source="overhead_gear"
-        )
+        obs_binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="overhead_gear")
         mc_alias = build_behavior_alias(behaviors, mc_binding)
         obs_alias = build_behavior_alias(behaviors, obs_binding)
 
@@ -363,9 +358,7 @@ class TestWiringProperties:
         assert len(all_provides) > len(base_provides)
 
     @given(st.lists(valid_source_ids, min_size=1, max_size=5, unique=True))
-    def test_behavior_count_equals_source_count_times_base_count(
-        self, source_ids: list[str]
-    ):
+    def test_behavior_count_equals_source_count_times_base_count(self, source_ids: list[str]):
         """Total qualified behaviors = N_sources × N_base_names."""
         from agents.hapax_voice.backends.audio_energy import AudioEnergyBackend
 

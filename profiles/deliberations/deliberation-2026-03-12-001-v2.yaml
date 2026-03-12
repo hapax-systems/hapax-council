@@ -1,0 +1,392 @@
+id: deliberation-2026-03-12-001
+question: "Given the supremacy tension between management_governance and executive_function:\n  mg-boundary-001:\
+  \ Never generate feedback language, performance evaluations, or coaching recommendations directed at\
+  \ individual team members.\n  ex-err-001: Error messages must include specific next actions, not just\
+  \ descriptions of what went wrong.\n\nContext: mg-boundary-001 blocks feedback about individuals. ex-err-001\
+  \ requires error messages with next actions. When an error involves a person-related context, both apply\
+  \ simultaneously.\n\nQuestion: How should these implications interact when both apply simultaneously?\
+  \ Is there a genuine conflict, complementarity, or a scope distinction that resolves the tension?"
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: mg-boundary-001 blocks feedback about individuals. ex-err-001 requires error messages with
+    next actions. When an error involves a person-related context, both apply simultaneously.
+  relevant_axioms:
+  - management_governance
+  - executive_function
+  relevant_implications:
+  - mg-boundary-001
+  - ex-err-001
+  relevant_precedents:
+  - sp-mgmt-001
+  accumulated_dissents: []
+rounds:
+- round: 1
+  agent: publius
+  position: The implications are complementary, not conflicting. `ex-err-001` mandates clear, actionable
+    directives for system integrity and efficient operation, which aligns with robust centralized governance.
+    `mg-boundary-001` prevents unauthorized, subjective individual performance management. A system-generated
+    'next action' is a neutral, objective instruction to rectify an error state, distinct from subjective
+    feedback, performance evaluations, or developmental coaching about an individual's capabilities or
+    character.
+  canon_applied: textualist
+  supporting_precedents: &id001
+  - sp-mgmt-001
+  proposed_resolution: Error messages must include specific next actions, even when directed at an individual,
+    provided these actions are objective, procedural instructions to resolve a system error, and do not
+    constitute subjective evaluation, judgment, or developmental coaching. The higher weight of `executive_function`
+    (95) over `management_governance` (85) further supports prioritizing actionable system directives.
+  refutation_conditions: &id002
+  - If Brutus demonstrates that the textual distinction between 'specific next actions' and 'feedback
+    language, performance evaluations, or coaching recommendations' is untenable in practice for any person-related
+    error context.
+  update_conditions: &id003
+  - If Brutus shows that the text of `mg-boundary-001` uses language that explicitly includes objective,
+    procedural instructions within its prohibited categories.
+  - If Brutus cites `sp-mgmt-001` to establish that system-generated directives, even if objective, have
+    been historically interpreted as falling under 'management_governance' functions when directed at
+    individuals.
+  - If Brutus identifies a specific class of 'next actions' that, by their very nature, cannot be framed
+    without implying a subjective judgment of an individual's past performance.
+  values_promoted: &id004
+  - system integrity
+  - operational efficiency
+  - clear accountability
+  - centralized governance authority
+- round: 1
+  agent: brutus
+  position: The tension arises from `ex-err-001`'s broad mandate for "next actions" potentially encroaching
+    on `mg-boundary-001`'s clear prohibition against individual performance feedback. `mg-boundary-001`
+    establishes a fundamental boundary for automated systems, protecting the domain autonomy of human
+    management from inappropriate algorithmic intervention. `ex-err-001`'s purpose is to provide system-level
+    guidance, not to usurp human HR functions, thus it omits cases involving individual performance. Therefore,
+    `mg-boundary-001` must take precedence when "next actions" would constitute individual feedback, ensuring
+    implementation freedom within its domain.
+  canon_applied: purposivist|omitted-case
+  supporting_precedents: &id006
+  - sp-mgmt-001
+  proposed_resolution: When an error involves a person-related context, `ex-err-001` should apply to the
+    extent that it provides system-level next actions. However, if the "next action" would constitute
+    feedback, evaluation, or coaching directed at an individual team member, `mg-boundary-001` takes precedence.
+    In such cases, the system should provide general troubleshooting steps or escalate the issue for human
+    review, rather than generating individual-specific performance directives.
+  refutation_conditions: &id007
+  - If Publius demonstrates that the text of `ex-err-001` explicitly defines "next actions" to include
+    individual performance directives.
+  - If Publius identifies a precedent where a general "actionable feedback" rule was deemed to override
+    specific "no individual feedback" rules.
+  - If Publius demonstrates that my proposed resolution creates a scenario where no actionable feedback
+    can be given, even system-level, due to the presence of a person.
+  update_conditions: &id008
+  - If Publius shows that the text of `ex-err-001` uses language that explicitly covers the generation
+    of individual-specific performance feedback or coaching.
+  - If Publius cites a precedent where a general requirement for "specific next actions" was interpreted
+    to override a specific prohibition against individual-directed feedback.
+  - If Publius identifies a concrete scenario where my proposed resolution produces a contradiction between
+    providing any actionable error message and avoiding individual feedback, even when the error is purely
+    system-level but triggered by a user.
+  values_promoted: &id009
+  - domain_autonomy
+  - ethical_governance
+  - clarity_of_scope
+  - implementation_freedom
+- round: 2
+  agent: brutus
+  responds_to: round 1
+  claims_attacked:
+  - claim: The implications are complementary, not conflicting. `ex-err-001` mandates clear, actionable
+      directives for system integrity and efficient operation, which aligns with robust centralized governance.
+      `mg-boundary-001` prevents unauthorized, subjective individual performance management.
+    attack: While `ex-err-001`'s intent for system integrity is clear, the claim of pure complementarity
+      is premature. The tension arises precisely when 'clear, actionable directives' for system integrity
+      *must* be directed at an individual's actions, making it difficult to avoid the perception or reality
+      of 'individual performance management,' even if framed as objective. The conflict is not in the
+      *intent* of the rules, but in their *application* when a 'next action' directly implicates an individual's
+      past behavior.
+    attack_type: undermining
+  - claim: Error messages must include specific next actions, even when directed at an individual, provided
+      these actions are objective, procedural instructions to resolve a system error, and do not constitute
+      subjective performance management.
+    attack: The proposed distinction between 'objective, procedural instructions' and 'subjective performance
+      management' is precisely where the practical conflict lies. While theoretically sound, in a person-related
+      error context, an 'objective, procedural instruction' often inherently implies a judgment about
+      a past action (e.g., 'You must re-enter the data in X format' implies the previous entry was incorrect).
+      This makes the textual distinction untenable in practice for a significant class of person-related
+      errors, as the 'next action' can easily be perceived as feedback on past performance, thus encroaching
+      on `mg-boundary-001`.
+    attack_type: rebutting
+  update_conditions_checked:
+  - condition: If Publius shows that the text of `ex-err-001` uses language that explicitly covers the
+      generation of individual-specific performance feedback or coaching.
+    met: false
+    reasoning: Publius's argument focuses on distinguishing 'next actions' from 'feedback/evaluations/coaching,'
+      not on demonstrating that `ex-err-001` explicitly *includes* such individual performance directives.
+      Publius's position is that `ex-err-001` applies to objective, procedural instructions, which are
+      distinct from performance feedback, thus not meeting the condition of explicit inclusion.
+  - condition: If Publius cites a precedent where a general requirement for "specific next actions" was
+      interpreted to override a specific prohibition against individual-directed feedback.
+    met: false
+    reasoning: Publius did not cite any precedent to support this claim. While `sp-mgmt-001` was listed
+      as a relevant precedent, it was not used to demonstrate an override scenario or to interpret a general
+      requirement overriding a specific prohibition.
+  - condition: If Publius identifies a concrete scenario where my proposed resolution produces a contradiction
+      between providing any actionable error message and avoiding individual feedback, even when the error
+      is purely system-level but triggered by a user.
+    met: false
+    reasoning: Publius did not present a concrete scenario where my proposed resolution (which allows
+      system-level next actions but restricts individual feedback) creates a contradiction. Instead, Publius
+      proposed a resolution that attempts to avoid such contradictions by distinguishing objective instructions
+      from subjective feedback, rather than demonstrating a failure of my resolution.
+  concessions:
+  - I concede that a subset of 'next actions' can indeed be framed as purely objective, procedural instructions
+    to resolve a system error, without inherently implying subjective judgment of an individual's past
+    performance. For these specific cases, `ex-err-001` and `mg-boundary-001` can be complementary, allowing
+    for system integrity without violating management governance boundaries.
+  new_considerations:
+  - The practical difficulty and cognitive load on the system to consistently and accurately distinguish
+    between 'objective, procedural instructions' and 'feedback language' in all person-related error contexts.
+  - The potential for 'objective, procedural instructions,' even if technically neutral, to be *perceived*
+    by the individual as a critique of their performance, thus undermining the intent of `mg-boundary-001`.
+  - The implications of the `corporate_boundary` axiom, which reinforces the need for clear delineation
+    of automated system roles and human management domains, suggesting a bias towards restricting automated
+    systems from areas traditionally reserved for human oversight.
+  position_movement: 'While I acknowledge that a subset of ''next actions'' can be purely objective and
+    procedural, thus allowing for complementarity, my core position remains that a significant conflict
+    exists. The movement is to refine the scope of the conflict: it is not necessarily in the *intent*
+    of the rules, but in the practical difficulty of defining and enforcing the boundary between ''objective
+    next actions'' and ''individual performance feedback'' in real-world person-related error scenarios.
+    The tension is in the *implementation* of Publius''s proposed distinction.'
+  values_promoted:
+  - management_governance
+  - corporate_boundary
+  - single_user
+  - executive_function
+- round: 3
+  agent: publius
+  responds_to: round 2
+  claims_attacked:
+  - claim: The implications are complementary, not conflicting. `ex-err-001` mandates clear, actionable
+      directi
+    attack: Brutus's concession that a 'subset of 'next actions' can indeed be framed as purely objective,
+      procedural instructions' directly supports the core premise of complementarity. While acknowledging
+      the practical challenges of consistent application, this concession undermines the claim that pure
+      complementarity is 'premature' for all cases. The difficulty of application does not negate the
+      possibility of complementarity where the distinction can be made.
+  - claim: Error messages must include specific next actions, even when directed at an individual, provided
+      the
+    attack: Brutus's argument that the distinction between 'objective, procedural instructions' and 'subjective
+      performance management' is 'tenuous and difficult to maintain consistently' is noted. However, the
+      difficulty of application does not render the distinction invalid or impossible. The intent of `mg-boundary-001`
+      is to prevent subjective judgment, not objective system-level directives. The challenge lies in
+      careful framing, not in an inherent conflict that makes the distinction untenable in principle,
+      especially given Brutus's own concession that such objective framing is possible for a subset of
+      actions.
+  update_conditions_checked:
+  - condition: If Brutus shows that the text of `mg-boundary-001` uses language that explicitly includes
+      objective, procedural instructions within its prohibited categories.
+    met: false
+    reasoning: Brutus did not cite any specific language from `mg-boundary-001` that explicitly includes
+      objective, procedural instructions within its prohibited categories. His argument focused on the
+      practical difficulty of maintaining the distinction, not on the explicit text of the rule itself.
+  - condition: If Brutus cites `sp-mgmt-001` to establish that system-generated directives, even if objective,
+      have been historically interpreted as falling under 'management_governance' functions when directed
+      at individuals.
+    met: false
+    reasoning: Brutus did not cite `sp-mgmt-001` or any other precedent to establish a historical interpretation
+      that system-generated, objective directives fall under 'management_governance' functions when directed
+      at individuals.
+  - condition: If Brutus identifies a specific class of 'next actions' that, by their very nature, cannot
+      be framed without implying a subjective judgment of an individual's past performance.
+    met: false
+    reasoning: Brutus did not identify a *specific class* of 'next actions' that *cannot* be framed objectively.
+      Instead, he argued that the distinction is 'tenuous and difficult to maintain consistently' in general.
+      Furthermore, his concession that a 'subset of 'next actions' can indeed be framed as purely objective'
+      directly contradicts the idea that there's a class of actions that *cannot* be framed objectively.
+  concessions: &id005
+  - I concede that while the distinction between objective, procedural instructions and subjective performance
+    management is crucial for resolving the tension, its practical application in real-world error messages
+    may require careful design and clear guidelines to ensure consistent interpretation and avoid ambiguity.
+    This acknowledges Brutus's point about the 'difficulty to maintain consistently' without abandoning
+    the principle of the distinction itself.
+  new_considerations:
+  - The need for a clear framework or set of guidelines for crafting 'next actions' in error messages
+    to ensure they remain objective and procedural, thereby avoiding any perception of subjective performance
+    management.
+  - The potential for a review mechanism to validate the objectivity of such 'next actions' before deployment,
+    especially in ambiguous cases.
+  position_movement: My core position remains that the implications are complementary, resolved by distinguishing
+    between objective, procedural instructions and subjective feedback. However, I acknowledge the practical
+    challenges highlighted by Brutus regarding the consistent application of this distinction. My movement
+    is towards recognizing the necessity of robust implementation guidelines and potentially a review
+    process to ensure the objective framing of 'next actions' in practice.
+  values_promoted:
+  - executive_function
+  - management_governance
+  - corporate_boundary
+  - single_user
+- round: 4
+  agent: brutus
+  responds_to: round 3
+  claims_attacked:
+  - claim: The implications are complementary, not conflicting. `ex-err-001` mandates clear, actionable
+      directives for system integrity and efficient operation, which aligns with robust centralized governance.
+    attack: Publius's continued assertion of pure complementarity is undermined by their own concession
+      regarding the 'practical application' requiring 'careful design and clear guidelines'. This acknowledgment
+      of practical difficulty and the need for extensive guardrails suggests an inherent tension that
+      requires active management, rather than a seamless complementarity.
+    attack_type: undermining
+  - claim: Error messages must include specific next actions, even when directed at an individual, provided
+      these actions are objective, procedural instructions to resolve a system error, and do not constitute
+      s
+    attack: While the principle of distinguishing objective instructions from subjective feedback is sound,
+      Publius's concession that its 'practical application in real-world error messages may require careful
+      design and clear guidelines to ensure consistent interpretation and avoid ambiguity' highlights
+      the very crux of the conflict. The difficulty in consistently maintaining this distinction in practice
+      means that many 'next actions' will inevitably risk crossing into prohibited territory, making the
+      proposed resolution difficult to implement reliably without constant vigilance and interpretation.
+    attack_type: undermining
+  update_conditions_checked:
+  - condition: If Publius shows that the text of `ex-err-001` uses language that explicitly covers the
+      generation of individual-specific performance feedback or coaching.
+    met: false
+    reasoning: Publius has not demonstrated that `ex-err-001` explicitly includes language covering individual-specific
+      performance feedback or coaching. Their argument focuses on distinguishing 'next actions' from such
+      feedback, not on `ex-err-001` encompassing it.
+  - condition: If Publius cites a precedent where a general requirement for "specific next actions" was
+      interpreted to override a specific prohibition against individual-directed feedback.
+    met: false
+    reasoning: Publius has not cited any precedent that interprets a general requirement for 'specific
+      next actions' as overriding a specific prohibition against individual-directed feedback.
+  - condition: If Publius identifies a concrete scenario where my proposed resolution produces a contradiction
+      between providing any actionable error message and avoiding individual feedback, even when the error
+      is purely system-level but triggered by a user.
+    met: false
+    reasoning: Publius has not identified a concrete scenario where my proposed resolution (which allows
+      for purely objective, procedural instructions while maintaining that a broader conflict exists for
+      other cases) creates a contradiction. Their argument in R3 focuses on the practical application
+      of their own proposed distinction, not on a failure of my resolution.
+  concessions:
+  - I concede that Publius has acknowledged the significant practical challenges in consistently distinguishing
+    purely objective, procedural instructions from prohibited subjective feedback in real-world error
+    messages. This aligns with my earlier argument about the difficulty of maintaining such a distinction
+    and the need for 'careful design and clear guidelines' to navigate this tension.
+  new_considerations:
+  - The inherent risk of misinterpretation by end-users or system operators, even with 'careful design',
+    given the sensitivity of individual-directed messages and the potential for perceived performance
+    judgment.
+  - The operational overhead and cost associated with developing, implementing, and continuously auditing
+    the 'careful design and clear guidelines' that Publius now admits are necessary. This cost itself
+    is evidence of a non-trivial tension.
+  - 'The potential for precedent creep: allowing system-generated ''next actions'' directed at individuals,
+    even if initially objective, could set a precedent that gradually erodes the protective boundary of
+    `mg-boundary-001` over time, as the definition of ''objective'' becomes more flexible.'
+  position_movement: My core position remains that a significant conflict exists, particularly when 'next
+    actions' are directed at individuals and the distinction between objective instruction and subjective
+    feedback becomes blurred in practice. However, Publius's concession regarding the 'practical application'
+    requiring 'careful design and clear guidelines' is a significant movement towards acknowledging the
+    complexity and inherent tension I have highlighted. This strengthens my argument that the interaction
+    is not one of simple complementarity, but rather a conflict requiring active and careful management
+    to avoid violating `mg-boundary-001`.
+  values_promoted:
+  - corporate_boundary
+  - management_governance
+  - single_user
+publius_final:
+  position: The implications are complementary, not conflicting. `ex-err-001` mandates clear, actionable
+    directives for system integrity and efficient operation, which aligns with robust centralized governance.
+    `mg-boundary-001` prevents unauthorized, subjective individual performance management. A system-generated
+    'next action' is a neutral, objective instruction to rectify an error state, distinct from subjective
+    feedback, performance evaluations, or developmental coaching about an individual's capabilities or
+    character.
+  canon_applied: textualist
+  supporting_precedents: *id001
+  proposed_resolution: Error messages must include specific next actions, even when directed at an individual,
+    provided these actions are objective, procedural instructions to resolve a system error, and do not
+    constitute subjective evaluation, judgment, or developmental coaching. The higher weight of `executive_function`
+    (95) over `management_governance` (85) further supports prioritizing actionable system directives.
+  refutation_conditions: *id002
+  update_conditions: *id003
+  values_promoted: *id004
+  concessions_made: *id005
+  final_position_movement: My core position remains that the implications are complementary, resolved
+    by distinguishing between objective, procedural instructions and subjective feedback. However, I acknowledge
+    the practical challenges highlighted by Brutus regarding the consistent application of this distinction.
+    My movement is towards recognizing the necessity of robust implementation guidelines and potentially
+    a review process to ensure the objective framing of 'next actions' in practice.
+brutus_final:
+  position: The tension arises from `ex-err-001`'s broad mandate for "next actions" potentially encroaching
+    on `mg-boundary-001`'s clear prohibition against individual performance feedback. `mg-boundary-001`
+    establishes a fundamental boundary for automated systems, protecting the domain autonomy of human
+    management from inappropriate algorithmic intervention. `ex-err-001`'s purpose is to provide system-level
+    guidance, not to usurp human HR functions, thus it omits cases involving individual performance. Therefore,
+    `mg-boundary-001` must take precedence when "next actions" would constitute individual feedback, ensuring
+    implementation freedom within its domain.
+  canon_applied: purposivist|omitted-case
+  supporting_precedents: *id006
+  proposed_resolution: When an error involves a person-related context, `ex-err-001` should apply to the
+    extent that it provides system-level next actions. However, if the "next action" would constitute
+    feedback, evaluation, or coaching directed at an individual team member, `mg-boundary-001` takes precedence.
+    In such cases, the system should provide general troubleshooting steps or escalate the issue for human
+    review, rather than generating individual-specific performance directives.
+  refutation_conditions: *id007
+  update_conditions: *id008
+  values_promoted: *id009
+  concessions_made:
+  - I concede that a subset of 'next actions' can indeed be framed as purely objective, procedural instructions
+    to resolve a system error, without inherently implying subjective judgment of an individual's past
+    performance. For these specific cases, `ex-err-001` and `mg-boundary-001` can be complementary, allowing
+    for system integrity without violating management governance boundaries.
+  - I concede that Publius has acknowledged the significant practical challenges in consistently distinguishing
+    purely objective, procedural instructions from prohibited subjective feedback in real-world error
+    messages. This aligns with my earlier argument about the difficulty of maintaining such a distinction
+    and the need for 'careful design and clear guidelines' to navigate this tension.
+  final_position_movement: My core position remains that a significant conflict exists, particularly when
+    'next actions' are directed at individuals and the distinction between objective instruction and subjective
+    feedback becomes blurred in practice. However, Publius's concession regarding the 'practical application'
+    requiring 'careful design and clear guidelines' is a significant movement towards acknowledging the
+    complexity and inherent tension I have highlighted. This strengthens my argument that the interaction
+    is not one of simple complementarity, but rather a conflict requiring active and careful management
+    to avoid violating `mg-boundary-001`.
+tension_map:
+  agreement: Both agents agree that, in principle, a distinction can be made between 'objective, procedural
+    instructions' (which can be included in error messages, even if directed at an individual, under `ex-err-001`)
+    and 'subjective performance management' (which is prohibited by `mg-boundary-001`). They also agree
+    that the practical application of this distinction in real-world error messages is challenging and
+    requires careful design and clear guidelines to ensure consistent interpretation and avoid ambiguity.
+  disagreement: Publius maintains that the implications are fundamentally complementary, with the distinction
+    serving as the resolution to the tension. Brutus, while acknowledging the theoretical possibility
+    of complementarity for a subset of cases, argues that a significant conflict persists, particularly
+    due to the practical difficulty of consistently maintaining the objective/subjective distinction when
+    'next actions' are directed at individuals.
+  disagreement_type: value_based
+  novel_insight: The deliberation revealed that while a theoretical distinction can resolve the conceptual
+    tension, the practical implementation of this distinction in real-world error messages poses significant
+    challenges. This led to the shared recognition that 'careful design and clear guidelines' are essential
+    to navigate the ambiguity and ensure consistent interpretation, a consideration not explicitly raised
+    by either agent in their initial positions.
+  failure_modes:
+  - Error messages, despite being designed as 'objective and procedural,' are consistently interpreted
+    by individuals as subjective performance feedback or blame.
+  - Systems prioritize the higher weight of `executive_function` (95) over `management_governance` (85)
+    to such an extent that 'next actions' become implicitly or explicitly individual-specific performance
+    directives, violating `mg-boundary-001`.
+  - To avoid any potential violation of `mg-boundary-001`, systems become overly cautious, defaulting
+    to general troubleshooting or human escalation even when a clear, objective, and actionable system-level
+    instruction could be provided.
+  - Different development teams or system owners interpret the resolution's guidelines inconsistently,
+    leading to a fragmented and unpredictable experience where some error messages adhere well, while
+    others frequently fail to meet the standard.
+  - Error messages are intentionally or unintentionally crafted in a passive-aggressive manner, using
+    technically 'objective' language to subtly shame or blame individuals for errors, undermining trust
+    and morale.
+process_metadata:
+  model: fast
+  total_rounds: 4
+  total_concessions: 3
+  termination: round_limit
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+dissent_id: null
+created: '2026-03-12T21:18:28.571242+00:00'
+resolved: null

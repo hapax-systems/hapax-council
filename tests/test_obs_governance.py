@@ -364,14 +364,18 @@ class TestOBSVetoChainProperties:
         from agents.hapax_voice.governance import Veto, VetoChain
 
         ctx = _make_obs_context(stream_bitrate=bitrate, stream_encoding_lag=lag)
-        chain_ab = VetoChain([
-            Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
-            Veto(name="encoding", predicate=lambda c: encoding_capacity_available(c)),
-        ])
-        chain_ba = VetoChain([
-            Veto(name="encoding", predicate=lambda c: encoding_capacity_available(c)),
-            Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
-        ])
+        chain_ab = VetoChain(
+            [
+                Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
+                Veto(name="encoding", predicate=lambda c: encoding_capacity_available(c)),
+            ]
+        )
+        chain_ba = VetoChain(
+            [
+                Veto(name="encoding", predicate=lambda c: encoding_capacity_available(c)),
+                Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
+            ]
+        )
         assert chain_ab.evaluate(ctx).allowed == chain_ba.evaluate(ctx).allowed
 
     @given(st.floats(min_value=0.0, max_value=10000.0))
@@ -380,13 +384,17 @@ class TestOBSVetoChainProperties:
         from agents.hapax_voice.governance import Veto, VetoChain
 
         ctx = _make_obs_context(stream_bitrate=bitrate)
-        base = VetoChain([
-            Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
-        ])
-        extended = VetoChain([
-            Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
-            Veto(name="transport", predicate=transport_active),
-        ])
+        base = VetoChain(
+            [
+                Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
+            ]
+        )
+        extended = VetoChain(
+            [
+                Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
+                Veto(name="transport", predicate=transport_active),
+            ]
+        )
         base_result = base.evaluate(ctx).allowed
         extended_result = extended.evaluate(ctx).allowed
         if extended_result:
@@ -401,12 +409,16 @@ class TestOBSVetoChainProperties:
         from agents.hapax_voice.governance import Veto, VetoChain
 
         ctx = _make_obs_context(stream_bitrate=bitrate, stream_encoding_lag=lag)
-        health_chain = VetoChain([
-            Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
-        ])
-        encoding_chain = VetoChain([
-            Veto(name="encoding", predicate=lambda c: encoding_capacity_available(c)),
-        ])
+        health_chain = VetoChain(
+            [
+                Veto(name="health", predicate=lambda c: stream_health_sufficient(c)),
+            ]
+        )
+        encoding_chain = VetoChain(
+            [
+                Veto(name="encoding", predicate=lambda c: encoding_capacity_available(c)),
+            ]
+        )
         composed = health_chain | encoding_chain
         composed_result = composed.evaluate(ctx).allowed
         health_result = health_chain.evaluate(ctx).allowed
@@ -420,7 +432,9 @@ class TestOBSVetoChainProperties:
     )
     def test_idempotence(self, bitrate: float, lag: float, transport: TransportState):
         """chain | chain produces same allowed/denied outcome as chain alone."""
-        ctx = _make_obs_context(stream_bitrate=bitrate, stream_encoding_lag=lag, transport=transport)
+        ctx = _make_obs_context(
+            stream_bitrate=bitrate, stream_encoding_lag=lag, transport=transport
+        )
         chain = build_obs_veto_chain()
         doubled = chain | chain
         assert chain.evaluate(ctx).allowed == doubled.evaluate(ctx).allowed
@@ -488,7 +502,9 @@ class TestOBSComposeAggregateOfAggregates:
         assert result is None
 
     def test_high_encoding_lag_vetoes_command(self):
-        behaviors = _make_obs_behaviors(energy_rms=0.9, emotion_arousal=0.8, stream_encoding_lag=200.0)
+        behaviors = _make_obs_behaviors(
+            energy_rms=0.9, emotion_arousal=0.8, stream_encoding_lag=200.0
+        )
         result = self._fire(behaviors)
         assert result is None
 
@@ -515,12 +531,12 @@ class TestOBSComposeAggregateOfAggregates:
         output.subscribe(lambda ts, val: received.append(val))
 
         now = time.monotonic()
-        trigger.emit(now, now)               # first switch — allowed
-        trigger.emit(now + 2.0, now + 2.0)   # 2s later — dwell cooldown blocks
+        trigger.emit(now, now)  # first switch — allowed
+        trigger.emit(now + 2.0, now + 2.0)  # 2s later — dwell cooldown blocks
 
         assert len(received) == 2
         assert received[0] is not None  # first allowed
-        assert received[1] is None      # second vetoed
+        assert received[1] is None  # second vetoed
 
     def test_command_carries_governance_provenance(self):
         behaviors = _make_obs_behaviors(energy_rms=0.9, emotion_arousal=0.8)
@@ -555,10 +571,10 @@ class TestOBSComposeAggregateOfAggregates:
         trigger.emit(now, now)
         for b in behaviors.values():
             b.update(b.value, now + 6.0)
-        trigger.emit(now + 6.0, now + 6.0)       # past dwell time
+        trigger.emit(now + 6.0, now + 6.0)  # past dwell time
         for b in behaviors.values():
             b.update(b.value, now + 12.0)
-        trigger.emit(now + 12.0, now + 12.0)      # past dwell time
+        trigger.emit(now + 12.0, now + 12.0)  # past dwell time
 
         assert len(received) == 3
         assert all(r is not None for r in received)

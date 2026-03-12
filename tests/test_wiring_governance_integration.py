@@ -84,9 +84,7 @@ def _wire_obs(
 ) -> tuple[Event[float], Event[Command | None]]:
     """Wire OBS governance through the aliasing layer. Returns (trigger, output)."""
     b = binding or GovernanceBinding(energy_source="monitor_mix", emotion_source="face_cam")
-    stream_behaviors = {
-        k: v for k, v in all_behaviors.items() if k.startswith("stream_")
-    }
+    stream_behaviors = {k: v for k, v in all_behaviors.items() if k.startswith("stream_")}
     alias = build_behavior_alias(all_behaviors, b, stream_behaviors=stream_behaviors)
     trigger: Event[float] = Event()
     output = compose_obs_governance(trigger, alias)
@@ -111,9 +109,7 @@ def _fire(trigger: Event, output: Event, trigger_time: float | None = None):
 class TestMCGovernanceWithMultiSource:
     def test_monitor_mix_high_energy_produces_vocal_throw(self):
         """High energy on monitor_mix (MC-bound source) → vocal throw."""
-        behaviors = _make_multi_source_behaviors(
-            monitor_mix_energy=0.9, face_cam_arousal=0.8
-        )
+        behaviors = _make_multi_source_behaviors(monitor_mix_energy=0.9, face_cam_arousal=0.8)
         trigger, output = _wire_mc(behaviors)
         result = _fire(trigger, output)
         assert result is not None
@@ -123,7 +119,7 @@ class TestMCGovernanceWithMultiSource:
         """High energy on oxi_one but low on monitor_mix → MC sees low energy → vetoed."""
         behaviors = _make_multi_source_behaviors(
             monitor_mix_energy=0.1,  # below MC threshold
-            oxi_one_energy=0.9,     # irrelevant to MC
+            oxi_one_energy=0.9,  # irrelevant to MC
             face_cam_arousal=0.8,
         )
         trigger, output = _wire_mc(behaviors)
@@ -146,8 +142,8 @@ class TestMCGovernanceWithMultiSource:
         """High arousal on overhead but low on face_cam → MC sees low arousal → ad_lib not vocal_throw."""
         behaviors = _make_multi_source_behaviors(
             monitor_mix_energy=0.9,
-            face_cam_arousal=0.1,        # below vocal_throw threshold
-            overhead_gear_arousal=0.9,   # irrelevant to MC
+            face_cam_arousal=0.1,  # below vocal_throw threshold
+            overhead_gear_arousal=0.9,  # irrelevant to MC
         )
         trigger, output = _wire_mc(behaviors)
         result = _fire(trigger, output)
@@ -169,9 +165,7 @@ class TestMCGovernanceWithMultiSource:
 
 class TestOBSGovernanceWithMultiSource:
     def test_monitor_mix_peak_energy_produces_rapid_cut(self):
-        behaviors = _make_multi_source_behaviors(
-            monitor_mix_energy=0.9, face_cam_arousal=0.8
-        )
+        behaviors = _make_multi_source_behaviors(monitor_mix_energy=0.9, face_cam_arousal=0.8)
         trigger, output = _wire_obs(behaviors)
         result = _fire(trigger, output)
         assert result is not None
@@ -179,9 +173,7 @@ class TestOBSGovernanceWithMultiSource:
 
     def test_face_cam_arousal_drives_scene_selection(self):
         """Low arousal + moderate energy → gear_closeup (not face_cam scene)."""
-        behaviors = _make_multi_source_behaviors(
-            monitor_mix_energy=0.4, face_cam_arousal=0.1
-        )
+        behaviors = _make_multi_source_behaviors(monitor_mix_energy=0.4, face_cam_arousal=0.1)
         trigger, output = _wire_obs(behaviors)
         result = _fire(trigger, output)
         assert result is not None
@@ -191,7 +183,7 @@ class TestOBSGovernanceWithMultiSource:
         """When OBS is wired to aggregate_max, any instrument peaking triggers response."""
         behaviors = _make_multi_source_behaviors(
             monitor_mix_energy=0.3,  # low
-            oxi_one_energy=0.9,      # high
+            oxi_one_energy=0.9,  # high
             face_cam_arousal=0.8,
         )
         # Create aggregate behavior from all audio sources
@@ -228,8 +220,8 @@ class TestCrossDomainIsolationWithMultiSource:
         """MC wired to face_cam, OBS wired to overhead_gear — different arousal readings."""
         behaviors = _make_multi_source_behaviors(
             monitor_mix_energy=0.9,
-            face_cam_arousal=0.1,        # low — MC sees low
-            overhead_gear_arousal=0.8,   # high — OBS sees high
+            face_cam_arousal=0.1,  # low — MC sees low
+            overhead_gear_arousal=0.8,  # high — OBS sees high
         )
         mc_binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="face_cam")
         obs_binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="overhead_gear")
@@ -250,9 +242,7 @@ class TestCrossDomainIsolationWithMultiSource:
 
     def test_mc_and_obs_share_timeline_without_interference(self):
         """Both chains use the same unqualified timeline_mapping."""
-        behaviors = _make_multi_source_behaviors(
-            monitor_mix_energy=0.9, face_cam_arousal=0.8
-        )
+        behaviors = _make_multi_source_behaviors(monitor_mix_energy=0.9, face_cam_arousal=0.8)
         mc_binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="face_cam")
         obs_binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="face_cam")
 
@@ -270,7 +260,9 @@ class TestCrossDomainIsolationWithMultiSource:
 
         # Build behaviors with face_cam already stale at creation time
         mapping = TimelineMapping(
-            reference_time=now - 10.0, reference_beat=0.0, tempo=120.0,
+            reference_time=now - 10.0,
+            reference_beat=0.0,
+            tempo=120.0,
             transport=TransportState.PLAYING,
         )
         behaviors = {
@@ -300,9 +292,7 @@ class TestCrossDomainIsolationWithMultiSource:
         mc_trigger, mc_output = _wire_mc(behaviors, mc_binding)
 
         # OBS bound to overhead_gear (which is fresh)
-        obs_binding = GovernanceBinding(
-            energy_source="monitor_mix", emotion_source="overhead_gear"
-        )
+        obs_binding = GovernanceBinding(energy_source="monitor_mix", emotion_source="overhead_gear")
         obs_trigger, obs_output = _wire_obs(behaviors, obs_binding)
 
         mc_result = _fire(mc_trigger, mc_output, trigger_time=now)

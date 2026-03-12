@@ -202,9 +202,7 @@ class TestSourceNamingProperties:
         assert is_qualified(qualify(base, source)) is True
 
     @given(valid_base_names, valid_source_ids, valid_source_ids)
-    def test_different_sources_produce_different_names(
-        self, base: str, s1: str, s2: str
-    ):
+    def test_different_sources_produce_different_names(self, base: str, s1: str, s2: str):
         """qualify(base, s1) != qualify(base, s2) when s1 != s2."""
         if s1 != s2:
             assert qualify(base, s1) != qualify(base, s2)

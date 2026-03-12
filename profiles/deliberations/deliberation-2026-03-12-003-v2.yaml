@@ -1,0 +1,347 @@
+id: deliberation-2026-03-12-003
+question: "Given the supremacy tension between corporate_boundary and single_user:\n  cb-llm-001: Extension\
+  \ must support direct API calls to sanctioned providers without requiring a localhost proxy.\n  su-auth-001:\
+  \ All authentication, authorization, and user management code must be removed or disabled since there\
+  \ is exactly one authorized user.\n\nContext: cb-llm-001 requires direct API calls with provider keys.\
+  \ su-auth-001 eliminates auth code. API key management for LLM providers resembles auth infrastructure.\n\
+  \nQuestion: How should these implications interact when both apply simultaneously? Is there a genuine\
+  \ conflict, complementarity, or a scope distinction that resolves the tension?"
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: cb-llm-001 requires direct API calls with provider keys. su-auth-001 eliminates auth code.
+    API key management for LLM providers resembles auth infrastructure.
+  relevant_axioms:
+  - corporate_boundary
+  - single_user
+  relevant_implications:
+  - cb-llm-001
+  - su-auth-001
+  relevant_precedents:
+  - sp-arch-007
+  accumulated_dissents: []
+rounds:
+- round: 1
+  agent: publius
+  position: 'The implications `cb-llm-001` and `su-auth-001` are complementary, not conflicting. `su-auth-001`
+    mandates the removal of authentication, authorization, and user management code specifically for *users*,
+    given the single-user context. Conversely, `cb-llm-001` requires robust, direct management of *provider
+    API keys* for external service integration. These are distinct functional scopes: one addresses internal
+    user access, the other external service credentialing, ensuring both axioms can be upheld simultaneously.'
+  canon_applied: textualist
+  supporting_precedents: &id001
+  - sp-arch-007
+  proposed_resolution: Implement `cb-llm-001` by establishing secure, direct API key management for sanctioned
+    providers. This system must be architecturally distinct from and not constitute user authentication,
+    authorization, or user management code as defined by `su-auth-001`. The system should manage provider
+    keys internally without exposing or requiring user-facing authentication mechanisms.
+  refutation_conditions: &id002
+  - If Brutus demonstrates that the text of `su-auth-001` explicitly defines 'authentication, authorization,
+    and user management code' to encompass *any* form of credential management, including those for external
+    providers, without distinction for users.
+  - If Brutus identifies a concrete scenario where managing provider API keys, as required by `cb-llm-001`,
+    inherently necessitates the re-introduction of user authentication or authorization code that `su-auth-001`
+    prohibits.
+  update_conditions: &id003
+  - If Brutus demonstrates that the language of `su-auth-001` is broad enough to encompass *all* forms
+    of credential management, regardless of whether they pertain to users or external providers.
+  - If Brutus identifies a specific architectural pattern or component required by `cb-llm-001` that is
+    textually indistinguishable from the 'authentication, authorization, and user management code' prohibited
+    by `su-auth-001`.
+  - If Brutus cites a precedent where the distinction between user-facing and provider-facing credential
+    management was explicitly rejected in a similar governance context.
+  values_promoted: &id004
+  - centralized governance authority
+  - clarity
+  - security
+  - efficiency
+  - constitutional fidelity
+- round: 1
+  agent: brutus
+  position: The implications address distinct concerns. `su-auth-001` aims to simplify internal user-facing
+    authentication and authorization, not to eliminate the system's ability to authenticate itself to
+    external services. API key management, as required by `cb-llm-001`, falls under system-to-system authentication
+    and is a distinct architectural concern. To conflate these would undermine the core functionality
+    required by `cb-llm-001` and misinterpret the scope of `su-auth-001`, which did not anticipate this
+    specific system-level credentialing need.
+  canon_applied: purposivist
+  supporting_precedents: &id006
+  - sp-arch-007
+  proposed_resolution: '`su-auth-001` should be interpreted narrowly to apply only to user-facing authentication,
+    authorization, and user management code. API key management for external services, as mandated by
+    `cb-llm-001`, must be retained and managed as a separate, system-level credentialing concern, ensuring
+    the system can fulfill its purpose of interacting with sanctioned providers.'
+  refutation_conditions: &id007
+  - If `su-auth-001` explicitly states that all forms of authentication, including system-to-system API
+    keys, must be removed.
+  update_conditions: &id008
+  - If Publius demonstrates that the textual definition of 'authentication, authorization, and user management
+    code' in `su-auth-001` explicitly includes system-to-system API key management.
+  - If Publius cites a precedent where the removal of 'user management code' was interpreted to necessitate
+    the removal of all system-level credentials for external services.
+  - If Publius can show that my proposed distinction between 'user-facing' and 'system-level' authentication
+    is not supported by the text of either implication or by established architectural principles.
+  values_promoted: &id009
+  - domain_autonomy
+  - implementation_freedom
+  - system_functionality
+  - minimal_constitutional_scope
+- round: 2
+  agent: brutus
+  responds_to: round 1
+  claims_attacked:
+  - claim: The implications `cb-llm-001` and `su-auth-001` are complementary, not conflicting. `su-auth-001`
+      mandates the removal of authentication, authorization, and user management code specifically for
+      *users*, given the single-user context. Conversely, `cb-llm-001` requires robust, direct management
+      of *provider keys*.
+    attack: While Publius correctly identifies the user-centric focus of `su-auth-001`, their textualist
+      approach does not fully address the underlying tension that arises from the *architectural resemblance*
+      between provider API key management and general authentication/authorization infrastructure. The
+      governance question is precisely about how these implications interact when both apply, and merely
+      stating they are complementary based on a user/provider distinction overlooks the potential for
+      functional overlap in the 'code' itself, which `su-auth-001` seeks to remove.
+    attack_type: undermining
+  - claim: Implement `cb-llm-001` by establishing secure, direct API key management for sanctioned providers.
+      This system must be architecturally distinct from and not constitute user authentication, authorization,
+      or user management.
+    attack: Publius's proposed resolution, while aiming for architectural distinction, does not provide
+      concrete guidance on *how* this distinction is to be achieved in practice, especially given the
+      functional similarities between managing system-level secrets (API keys) and user-level credentials.
+      Without further clarification, merely stating 'architecturally distinct' does not resolve the practical
+      challenge of ensuring that the code for API key management does not inadvertently reintroduce components
+      that could be construed as 'authentication, authorization, and user management code' under a broader
+      interpretation of `su-auth-001`.
+    attack_type: undercutting
+  update_conditions_checked:
+  - condition: If Publius demonstrates that the textual definition of 'authentication, authorization,
+      and user management code' in `su-auth-001` explicitly includes system-to-system API key management.
+    met: false
+    reasoning: Publius's textualist interpretation focuses on the 'single authorized user' context of
+      `su-auth-001` to limit its scope to *user* authentication, authorization, and user management. This
+      argument explicitly *narrows* the scope to users, rather than demonstrating that `su-auth-001`'s
+      definition *explicitly includes* system-to-system API key management.
+  - condition: If Publius cites a precedent where the removal of 'user management code' was interpreted
+      to necessitate the removal of all system-level credentials for external services.
+    met: false
+    reasoning: Publius did not cite any precedent in their argument that supports this specific interpretation.
+  - condition: If Publius can show that my proposed distinction between 'user-facing' and 'system-level'
+      authentication is not supported by the text of either implication or by established architectural
+      principles.
+    met: false
+    reasoning: Publius's argument, by emphasizing that `su-auth-001` applies 'specifically for *users*'
+      and proposing an API key management system that is 'architecturally distinct from and not constitute
+      user authentication,' implicitly supports the validity of distinguishing between user-facing and
+      system-level authentication. They do not demonstrate that such a distinction is unsupported.
+  concessions:
+  - The textual emphasis in `su-auth-001` on 'single authorized user' strongly indicates that its primary
+    intent is to remove user-facing authentication, authorization, and user management code.
+  new_considerations:
+  - The potential for increased operational burden and complexity in maintaining a strictly 'architecturally
+    distinct' API key management system that cannot leverage any common patterns or components found in
+    user authentication systems, even if functionally appropriate for system-to-system authentication.
+  - The risk of creating 'shadow' or less secure credential management practices for API keys if the strict
+    separation demanded by Publius's resolution leads to ad-hoc solutions that are not integrated into
+    a robust, enterprise-grade secret management framework.
+  position_movement: My core position remains that `su-auth-001` and `cb-llm-001` address distinct concerns,
+    with `su-auth-001` focusing on user-facing authentication and `cb-llm-001` on system-to-system authentication.
+    However, I acknowledge that Publius's textualist interpretation of `su-auth-001` as applying 'specifically
+    for users' provides a strong textual basis for limiting its scope to user-facing components, thereby
+    reinforcing the validity of distinguishing between user and system-level authentication.
+  values_promoted:
+  - Clarity
+  - Security
+  - Compliance
+  - Architectural Integrity
+- round: 3
+  agent: publius
+  responds_to: round 2
+  claims_attacked:
+  - claim: While Publius correctly identifies the user-centric focus of `su-auth-001`, their textualist
+      approach to 'authentication, authorization, and user management code' is overly narrow. API key
+      management for LLM providers, while system-to-system, is fundamentally a form of authentication
+      and authorization.
+    attack: Brutus's concession that `su-auth-001`'s primary intent is to remove *user-facing* authentication
+      directly supports my textualist interpretation of its scope. While API key management is broadly
+      a form of authentication, the critical distinction for `su-auth-001` lies in *who or what* is being
+      authenticated, which Brutus now agrees is user-centric.
+  - claim: Publius's proposed resolution, while aiming for architectural distinction, does not provide
+      concrete architectural patterns or components that definitively separate 'system-to-system' authentication
+      from 'user-facing' authentication in a manner that satisfies the strictures of `su-auth-001`.
+    attack: The absence of specific architectural patterns in my initial proposal does not invalidate
+      the underlying principle of distinction. The governance question asks *how* implications interact
+      and whether conflict exists, not for a detailed system design. The core resolution lies in the *scope
+      distinction*, which Brutus's concession now reinforces.
+  update_conditions_checked:
+  - condition: If Brutus demonstrates that the language of `su-auth-001` is broad enough to encompass
+      *all* forms of credential management, regardless of whether they pertain to users or external providers.
+    met: false
+    reasoning: Brutus did not demonstrate this. In fact, his concession that `su-auth-001`'s primary intent
+      is to remove *user-facing* authentication directly contradicts this condition, affirming the limited
+      scope of the rule.
+  - condition: If Brutus identifies a specific architectural pattern or component required by `cb-llm-001`
+      that is textually indistinguishable from the 'authentication, authorization, and user management
+      code' prohibited by `su-auth-001`.
+    met: false
+    reasoning: Brutus criticized the lack of concrete architectural specifics in my proposal but did not
+      identify a specific pattern or component that would be textually indistinguishable from prohibited
+      user authentication code.
+  - condition: If Brutus cites a precedent where the distinction between user-facing and provider-facing
+      credential management was explicitly rejected in a similar governance context.
+    met: false
+    reasoning: Brutus did not cite any such precedent.
+  concessions: &id005
+  - API key management, while distinct in scope from user authentication, is broadly understood as a form
+    of authentication and authorization.
+  new_considerations:
+  - The principle of 'separation of concerns' in system design supports distinguishing between user-facing
+    authentication and system-to-system credential management, even if both broadly fall under 'authentication'.
+  - The distinct risk profiles associated with user authentication (e.g., account takeover, PII exposure)
+    versus system-to-system API key management (e.g., unauthorized service access, cost overruns) further
+    justify distinct governance approaches and architectural separation.
+  position_movement: My position is significantly reinforced by Brutus's concession that `su-auth-001`'s
+    primary intent is to remove user-facing authentication, authorization, and user management code. This
+    directly supports my argument for a scope distinction between user-facing and system-to-system authentication,
+    affirming that the implications are complementary.
+  values_promoted:
+  - single_user
+  - corporate_boundary
+  - executive_function
+  - management_governance
+- round: 4
+  agent: brutus
+  responds_to: round 3
+  claims_attacked:
+  - claim: Brutus's concession that `su-auth-001`'s primary intent is to remove *user-facing* authentication
+      di
+    attack: Publius misinterprets my concession. While I agree `su-auth-001` is user-centric, this *requires*
+      a scope distinction for provider API keys, which a strict textualist reading of "authentication,
+      authorization, and user management code" in `su-auth-001` might otherwise fail to provide. Publius's
+      own concession that API key management is "distinct in scope from user authentication" further supports
+      the necessity of this distinction, rather than simply validating a narrow textualist reading of
+      `su-auth-001` in isolation. The textualist approach needs to be nuanced by the context of `cb-llm-001`.
+    attack_type: undermining
+  - claim: The absence of specific architectural patterns in my initial proposal does not invalidate the
+      underl
+    attack: While the underlying principle of distinction may be valid, the *tension* arises precisely
+      in the practical implementation. Without concrete architectural patterns or examples, the proposed
+      "distinction" remains theoretical and does not sufficiently resolve the potential for `cb-llm-001`'s
+      requirements to inadvertently reintroduce prohibited `su-auth-001` elements. The burden is on Publius
+      to demonstrate *how* this distinction is maintained in practice.
+    attack_type: rebutting
+  update_conditions_checked:
+  - condition: If Publius demonstrates that the textual definition of 'authentication, authorization,
+      and user management code' in `su-auth-001` explicitly includes system-to-system API key management.
+    met: false
+    reasoning: Publius did not demonstrate this. Their argument focuses on `su-auth-001`'s user-centric
+      intent, which supports a *distinction* in scope, not an explicit inclusion of system-to-system keys
+      within the *removal scope* of `su-auth-001`.
+  - condition: If Publius cites a precedent where the removal of 'user management code' was interpreted
+      to necessitate the removal of all system-level credentials for external services.
+    met: false
+    reasoning: Publius did not cite any such precedent.
+  - condition: If Publius can show that my proposed distinction between 'user-facing' and 'system-level'
+      authentication is not supported by the text of either implication or by established architectural
+      principles.
+    met: false
+    reasoning: Publius did not show this. In fact, their concession that "API key management, while distinct
+      in scope from user authentication," implicitly supports the conceptual distinction I proposed, even
+      while acknowledging both are forms of authentication.
+  concessions:
+  - API key management, while distinct in scope from user authentication, is broadly understood as a form
+    of authentication and authorization.
+  new_considerations:
+  - The precedent `sp-arch-007` (System-level architectural principles) could provide a framework for
+    distinguishing between user-facing and system-level components, reinforcing the architectural distinction
+    needed.
+  - The high axiom weights for `single_user` (100) and `corporate_boundary` (90) underscore the importance
+    of both implications, making a clear and implementable scope distinction crucial rather than merely
+    asserting complementarity.
+  position_movement: My core position remains that `su-auth-001` and `cb-llm-001` address distinct scopes
+    (user-facing vs. system-to-system). However, I now explicitly concede that API key management *is*
+    a form of authentication, which strengthens the need for a *clear architectural distinction* to ensure
+    compliance with both, rather than simply asserting complementarity. The crux of the tension is now
+    firmly on the *implementability* of this distinction.
+  values_promoted:
+  - single_user
+  - corporate_boundary
+  - executive_function
+  - management_governance
+publius_final:
+  position: 'The implications `cb-llm-001` and `su-auth-001` are complementary, not conflicting. `su-auth-001`
+    mandates the removal of authentication, authorization, and user management code specifically for *users*,
+    given the single-user context. Conversely, `cb-llm-001` requires robust, direct management of *provider
+    API keys* for external service integration. These are distinct functional scopes: one addresses internal
+    user access, the other external service credentialing, ensuring both axioms can be upheld simultaneously.'
+  canon_applied: textualist
+  supporting_precedents: *id001
+  proposed_resolution: Implement `cb-llm-001` by establishing secure, direct API key management for sanctioned
+    providers. This system must be architecturally distinct from and not constitute user authentication,
+    authorization, or user management code as defined by `su-auth-001`. The system should manage provider
+    keys internally without exposing or requiring user-facing authentication mechanisms.
+  refutation_conditions: *id002
+  update_conditions: *id003
+  values_promoted: *id004
+  concessions_made: *id005
+  final_position_movement: My position is significantly reinforced by Brutus's concession that `su-auth-001`'s
+    primary intent is to remove user-facing authentication, authorization, and user management code. This
+    directly supports my argument for a scope distinction between user-facing and system-to-system authentication,
+    affirming that the implications are complementary.
+brutus_final:
+  position: The implications address distinct concerns. `su-auth-001` aims to simplify internal user-facing
+    authentication and authorization, not to eliminate the system's ability to authenticate itself to
+    external services. API key management, as required by `cb-llm-001`, falls under system-to-system authentication
+    and is a distinct architectural concern. To conflate these would undermine the core functionality
+    required by `cb-llm-001` and misinterpret the scope of `su-auth-001`, which did not anticipate this
+    specific system-level credentialing need.
+  canon_applied: purposivist
+  supporting_precedents: *id006
+  proposed_resolution: '`su-auth-001` should be interpreted narrowly to apply only to user-facing authentication,
+    authorization, and user management code. API key management for external services, as mandated by
+    `cb-llm-001`, must be retained and managed as a separate, system-level credentialing concern, ensuring
+    the system can fulfill its purpose of interacting with sanctioned providers.'
+  refutation_conditions: *id007
+  update_conditions: *id008
+  values_promoted: *id009
+  concessions_made:
+  - The textual emphasis in `su-auth-001` on 'single authorized user' strongly indicates that its primary
+    intent is to remove user-facing authentication, authorization, and user management code.
+  - API key management, while distinct in scope from user authentication, is broadly understood as a form
+    of authentication and authorization.
+  final_position_movement: My core position remains that `su-auth-001` and `cb-llm-001` address distinct
+    scopes (user-facing vs. system-to-system). However, I now explicitly concede that API key management
+    *is* a form of authentication, which strengthens the need for a *clear architectural distinction*
+    to ensure compliance with both, rather than simply asserting complementarity. The crux of the tension
+    is now firmly on the *implementability* of this distinction.
+tension_map:
+  agreement: Both agents agree that `su-auth-001` primarily targets user-facing authentication, authorization,
+    and user management code, and that API key management, as required by `cb-llm-001`, is broadly understood
+    as a form of authentication and authorization.
+  disagreement: While both agents agree on the conceptual distinction between user-facing and system-to-system
+    authentication, they diverge on the practical implications and ease of maintaining this distinction.
+    Publius emphasizes the inherent complementarity and architectural separability as a straightforward
+    resolution, whereas Brutus highlights the significant practical challenges, potential for scope creep,
+    and security risks in architecturally separating these similar functions, despite their distinct scopes.
+  disagreement_type: value_based
+  novel_insight: The deliberation clarified that despite the conceptual distinction between user-facing
+    and system-to-system authentication, the semantic overlap of 'authentication' and the practical difficulties
+    of architecturally separating these similar functions create a significant implementation tension,
+    leading to potential security vulnerabilities, operational overhead, and developer confusion. This
+    practical tension, beyond the initial conceptual conflict/complementarity, emerged as a key insight.
+  failure_modes:
+  - Security vulnerability due to 'distinct but similar' nature of authentication.
+  - Increased operational overhead and complexity.
+  - Inadvertent exposure or misuse of system-level API keys.
+  - Scope creep and misapplication of `su-auth-001` narrow interpretation.
+  - Developer confusion and inconsistent security practices.
+  - Compliance and audit challenges.
+process_metadata:
+  model: fast
+  total_rounds: 4
+  total_concessions: 3
+  termination: round_limit
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+dissent_id: null
+created: '2026-03-12T21:29:06.441600+00:00'
+resolved: null

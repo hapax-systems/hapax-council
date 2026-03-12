@@ -37,10 +37,12 @@ class TestAudioEnergyBackendParameterization:
 
     def test_with_source_id_qualifies_provides(self):
         b = AudioEnergyBackend("monitor_mix")
-        assert b.provides == frozenset({
-            "audio_energy_rms:monitor_mix",
-            "audio_onset:monitor_mix",
-        })
+        assert b.provides == frozenset(
+            {
+                "audio_energy_rms:monitor_mix",
+                "audio_onset:monitor_mix",
+            }
+        )
 
     def test_invalid_source_id_raises(self):
         with pytest.raises(ValueError, match="lowercase"):
@@ -68,11 +70,13 @@ class TestEmotionBackendParameterization:
     def test_no_source_id_backward_compatible(self):
         b = EmotionBackend()
         assert b.name == "emotion"
-        assert b.provides == frozenset({
-            "emotion_valence",
-            "emotion_arousal",
-            "emotion_dominant",
-        })
+        assert b.provides == frozenset(
+            {
+                "emotion_valence",
+                "emotion_arousal",
+                "emotion_dominant",
+            }
+        )
 
     def test_with_source_id_qualifies_name(self):
         b = EmotionBackend("face_cam")
@@ -80,11 +84,13 @@ class TestEmotionBackendParameterization:
 
     def test_with_source_id_qualifies_provides(self):
         b = EmotionBackend("face_cam")
-        assert b.provides == frozenset({
-            "emotion_valence:face_cam",
-            "emotion_arousal:face_cam",
-            "emotion_dominant:face_cam",
-        })
+        assert b.provides == frozenset(
+            {
+                "emotion_valence:face_cam",
+                "emotion_arousal:face_cam",
+                "emotion_dominant:face_cam",
+            }
+        )
 
     def test_invalid_source_id_raises(self):
         with pytest.raises(ValueError, match="lowercase"):
@@ -116,10 +122,12 @@ class TestEnergyArcBackendParameterization:
 
     def test_with_source_id_qualifies_provides(self):
         b = EnergyArcBackend("monitor_mix")
-        assert b.provides == frozenset({
-            "energy_arc_phase:monitor_mix",
-            "energy_arc_intensity:monitor_mix",
-        })
+        assert b.provides == frozenset(
+            {
+                "energy_arc_phase:monitor_mix",
+                "energy_arc_intensity:monitor_mix",
+            }
+        )
 
     def test_invalid_source_id_raises(self):
         with pytest.raises(ValueError, match="lowercase"):
@@ -165,9 +173,7 @@ class TestParameterizedBackendRegistration:
 
 class TestParameterizedBackendProperties:
     @given(valid_source_ids, valid_source_ids)
-    def test_different_source_ids_produce_disjoint_audio_provides(
-        self, s1: str, s2: str
-    ):
+    def test_different_source_ids_produce_disjoint_audio_provides(self, s1: str, s2: str):
         """For any two distinct source_ids, provides sets are disjoint."""
         if s1 != s2:
             a = AudioEnergyBackend(s1)
@@ -175,9 +181,7 @@ class TestParameterizedBackendProperties:
             assert a.provides.isdisjoint(b.provides)
 
     @given(valid_source_ids, valid_source_ids)
-    def test_different_source_ids_produce_disjoint_emotion_provides(
-        self, s1: str, s2: str
-    ):
+    def test_different_source_ids_produce_disjoint_emotion_provides(self, s1: str, s2: str):
         """For any two distinct source_ids, provides sets are disjoint."""
         if s1 != s2:
             a = EmotionBackend(s1)

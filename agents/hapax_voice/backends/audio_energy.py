@@ -115,10 +115,14 @@ class _AudioReader:
         self._process = subprocess.Popen(
             [
                 "pw-record",
-                "--target", str(self._node_id),
-                "--format", "f32",
-                "--rate", str(SAMPLE_RATE),
-                "--channels", str(CHANNELS),
+                "--target",
+                str(self._node_id),
+                "--format",
+                "f32",
+                "--rate",
+                str(SAMPLE_RATE),
+                "--channels",
+                str(CHANNELS),
                 "-",  # stdout
             ],
             stdout=subprocess.PIPE,
