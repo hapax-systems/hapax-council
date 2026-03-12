@@ -11,7 +11,8 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from enum import Enum
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agents.hapax_voice.primitives import Behavior
 
@@ -19,6 +20,84 @@ if TYPE_CHECKING:
     from shared.hyprland import WindowInfo
 
 log = logging.getLogger(__name__)
+
+
+class PerceptionTier(Enum):
+    """Processing tier for a perception backend."""
+
+    FAST = "fast"  # <10ms, every fast tick
+    SLOW = "slow"  # >100ms or I/O, every slow tick
+    EVENT = "event"  # async event-driven (e.g., Hyprland IPC)
+
+
+@runtime_checkable
+class PerceptionBackend(Protocol):
+    """Interface for pluggable perception backends.
+
+    Each backend provides a set of named Behaviors and declares its tier.
+    Backends are registered on PerceptionEngine; conflicts on `provides`
+    names are rejected at registration time.
+    """
+
+    @property
+    def name(self) -> str:
+        """Unique backend identifier."""
+        ...
+
+    @property
+    def provides(self) -> frozenset[str]:
+        """Set of Behavior names this backend contributes."""
+        ...
+
+    @property
+    def tier(self) -> PerceptionTier:
+        """Processing tier (fast/slow/event)."""
+        ...
+
+    def available(self) -> bool:
+        """Return True if the backend's dependencies are met at runtime."""
+        ...
+
+    def contribute(self, behaviors: dict[str, Behavior]) -> None:
+        """Update the given behaviors dict with fresh readings."""
+        ...
+
+    def start(self) -> None:
+        """Lifecycle hook: called when the engine starts."""
+        ...
+
+    def stop(self) -> None:
+        """Lifecycle hook: called when the engine stops."""
+        ...
+
+
+def compute_interruptibility(
+    *,
+    vad_confidence: float,
+    activity_mode: str,
+    in_voice_session: bool,
+    operator_present: bool,
+) -> float:
+    """Compute an interruptibility score from perception signals.
+
+    Returns a float in [0.0, 1.0] where 1.0 = fully interruptible.
+    """
+    if not operator_present:
+        return 0.0
+    if in_voice_session:
+        return 0.1
+
+    score = 1.0
+
+    # Active speech reduces interruptibility
+    if vad_confidence > 0.5:
+        score -= 0.4 * vad_confidence
+
+    # Production activity reduces interruptibility
+    activity_penalties = {"production": 0.5, "meeting": 0.6, "coding": 0.3}
+    score -= activity_penalties.get(activity_mode, 0.0)
+
+    return max(0.0, min(1.0, score))
 
 
 @dataclass(frozen=True)
@@ -52,6 +131,10 @@ class EnvironmentState:
     active_window: WindowInfo | None = None
     window_count: int = 0
     active_workspace_id: int = 0
+
+    # Voice session state
+    in_voice_session: bool = False
+    interruptibility_score: float = 1.0
 
     # Directive (set by Governor after creation)
     directive: str = "process"
@@ -113,6 +196,10 @@ class PerceptionEngine:
             "face_count": self._b_face_count,
         }
 
+        # Backend registry
+        self._backends: dict[str, PerceptionBackend] = {}
+        self._provided_by: dict[str, str] = {}  # behavior_name → backend_name
+
         # Subscribers
         self._subscribers: list[Callable[[EnvironmentState], None]] = []
 
@@ -122,6 +209,28 @@ class PerceptionEngine:
     def subscribe(self, callback: Callable[[EnvironmentState], None]) -> None:
         """Register a callback for each new EnvironmentState."""
         self._subscribers.append(callback)
+
+    def register_backend(self, backend: PerceptionBackend) -> None:
+        """Register a perception backend. Raises ValueError on name or provides conflicts."""
+        if backend.name in self._backends:
+            raise ValueError(f"Backend already registered: {backend.name}")
+        conflicts = backend.provides & frozenset(self._provided_by)
+        if conflicts:
+            owners = {name: self._provided_by[name] for name in conflicts}
+            raise ValueError(f"Behavior name conflicts: {owners}")
+        if not backend.available():
+            log.warning("Backend %s not available, skipping registration", backend.name)
+            return
+        self._backends[backend.name] = backend
+        for name in backend.provides:
+            self._provided_by[name] = backend.name
+        backend.start()
+        log.info("Registered perception backend: %s (provides: %s)", backend.name, backend.provides)
+
+    @property
+    def registered_backends(self) -> dict[str, PerceptionBackend]:
+        """Return a copy of registered backends."""
+        return dict(self._backends)
 
     def tick(self) -> EnvironmentState:
         """Produce a fast-tick EnvironmentState from current sensor readings.

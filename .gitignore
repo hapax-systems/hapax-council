@@ -39,3 +39,4 @@ output/demos/
 
 # Wake word training data (large, generated)
 data/wake-word-training/
+.hypothesis/
