@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from agents.hapax_voice.governance import (
     Candidate,
@@ -12,8 +14,10 @@ from agents.hapax_voice.governance import (
     FreshnessGuard,
     FreshnessRequirement,
     FusedContext,
+    GatedResult,
     Veto,
     VetoChain,
+    VetoResult,
 )
 from agents.hapax_voice.primitives import Stamped
 
@@ -147,6 +151,151 @@ class TestVetoChain:
         v = Veto("no_multi_user", predicate=lambda _: True, axiom="single_user")
         assert v.axiom == "single_user"
 
+    def test_description_field(self):
+        v = Veto("test", predicate=lambda _: True, description="Blocks multi-user access")
+        assert v.description == "Blocks multi-user access"
+
+    def test_description_default_empty(self):
+        v = Veto("test", predicate=lambda _: True)
+        assert v.description == ""
+
+    def test_axiom_ids_on_veto_result(self):
+        chain: VetoChain[int] = VetoChain(
+            [
+                Veto("a", predicate=lambda x: x > 0, axiom="single_user"),
+                Veto("b", predicate=lambda x: x > 0, axiom="exec_fn"),
+                Veto("c", predicate=lambda x: x > 0),  # no axiom
+            ]
+        )
+        result = chain.evaluate(-1)
+        assert result.allowed is False
+        assert set(result.axiom_ids) == {"single_user", "exec_fn"}
+
+    def test_axiom_ids_empty_when_allowed(self):
+        chain: VetoChain[int] = VetoChain(
+            [Veto("a", predicate=lambda x: x > 0, axiom="single_user")]
+        )
+        result = chain.evaluate(5)
+        assert result.axiom_ids == ()
+
+    def test_or_composition(self):
+        chain_a: VetoChain[int] = VetoChain([Veto("positive", predicate=lambda x: x > 0)])
+        chain_b: VetoChain[int] = VetoChain([Veto("small", predicate=lambda x: x < 100)])
+        combined = chain_a | chain_b
+        assert len(combined.vetoes) == 2
+        assert combined.evaluate(50).allowed is True
+        assert combined.evaluate(-1).allowed is False
+        assert combined.evaluate(200).allowed is False
+
+    def test_or_does_not_mutate(self):
+        chain_a: VetoChain[int] = VetoChain([Veto("a", predicate=lambda _: True)])
+        chain_b: VetoChain[int] = VetoChain([Veto("b", predicate=lambda _: True)])
+        _ = chain_a | chain_b
+        assert len(chain_a.vetoes) == 1
+        assert len(chain_b.vetoes) == 1
+
+    def test_gate_allowed(self):
+        chain: VetoChain[int] = VetoChain([Veto("positive", predicate=lambda x: x > 0)])
+        gated = chain.gate(5, "payload")
+        assert isinstance(gated, GatedResult)
+        assert gated.value == "payload"
+        assert gated.veto_result.allowed is True
+
+    def test_gate_denied(self):
+        chain: VetoChain[int] = VetoChain([Veto("positive", predicate=lambda x: x > 0)])
+        gated = chain.gate(-1, "payload")
+        assert gated.value is None
+        assert gated.veto_result.allowed is False
+        assert "positive" in gated.veto_result.denied_by
+
+
+# ------------------------------------------------------------------
+# VetoChain property-based tests (Hypothesis)
+# ------------------------------------------------------------------
+
+
+def _make_threshold_veto(name: str, threshold: int) -> Veto[int]:
+    """Helper: veto that allows values > threshold."""
+    return Veto(name, predicate=lambda x, t=threshold: x > t)
+
+
+class TestVetoChainProperties:
+    """Hypothesis property-based tests for VetoChain algebraic properties."""
+
+    @given(st.integers(min_value=-1000, max_value=1000))
+    def test_or_associativity(self, val: int):
+        """(a | b) | c ≡ a | (b | c) in evaluation outcome."""
+        a: VetoChain[int] = VetoChain([_make_threshold_veto("a", 0)])
+        b: VetoChain[int] = VetoChain([_make_threshold_veto("b", 10)])
+        c: VetoChain[int] = VetoChain([_make_threshold_veto("c", -10)])
+        left = (a | b) | c
+        right = a | (b | c)
+        assert left.evaluate(val).allowed == right.evaluate(val).allowed
+
+    @given(st.integers(min_value=-1000, max_value=1000))
+    def test_or_identity(self, val: int):
+        """a | empty ≡ a in evaluation outcome."""
+        a: VetoChain[int] = VetoChain([_make_threshold_veto("a", 0)])
+        empty: VetoChain[int] = VetoChain()
+        combined = a | empty
+        assert combined.evaluate(val).allowed == a.evaluate(val).allowed
+
+    @given(st.integers(min_value=-1000, max_value=1000))
+    def test_or_monotonic(self, val: int):
+        """Composing chains can only restrict, never relax."""
+        a: VetoChain[int] = VetoChain([_make_threshold_veto("a", 0)])
+        b: VetoChain[int] = VetoChain([_make_threshold_veto("b", 50)])
+        combined = a | b
+        # If combined allows, each component must also allow
+        if combined.evaluate(val).allowed:
+            assert a.evaluate(val).allowed
+            assert b.evaluate(val).allowed
+
+    @given(
+        st.integers(min_value=-100, max_value=100),
+        st.integers(min_value=-100, max_value=100),
+    )
+    def test_closure(self, threshold_a: int, threshold_b: int):
+        """| always produces a valid VetoChain."""
+        a: VetoChain[int] = VetoChain([_make_threshold_veto("a", threshold_a)])
+        b: VetoChain[int] = VetoChain([_make_threshold_veto("b", threshold_b)])
+        combined = a | b
+        assert isinstance(combined, VetoChain)
+        # Must be evaluable without error
+        result = combined.evaluate(0)
+        assert isinstance(result, VetoResult)
+
+    @given(st.integers(min_value=-1000, max_value=1000))
+    def test_idempotence(self, val: int):
+        """a | a ≡ a in evaluation outcome (just redundant denials)."""
+        a: VetoChain[int] = VetoChain([_make_threshold_veto("a", 0)])
+        doubled = a | a
+        assert doubled.evaluate(val).allowed == a.evaluate(val).allowed
+
+
+# ------------------------------------------------------------------
+# FallbackChain property-based tests (Hypothesis)
+# ------------------------------------------------------------------
+
+
+class TestFallbackChainProperties:
+    @given(st.integers(min_value=-1000, max_value=1000))
+    def test_or_preserves_priority(self, val: int):
+        """a | b: self's candidates evaluate before other's."""
+        a: FallbackChain[int, str] = FallbackChain(
+            [Candidate("high", predicate=lambda x: x > 100, action="high")],
+            default="a_default",
+        )
+        b: FallbackChain[int, str] = FallbackChain(
+            [Candidate("low", predicate=lambda x: x > 0, action="low")],
+            default="b_default",
+        )
+        combined = a | b
+        result = combined.select(val)
+        # If 'high' matches, it must be selected (it comes first)
+        if val > 100:
+            assert result.selected_by == "high"
+
 
 # ------------------------------------------------------------------
 # FallbackChain
@@ -207,6 +356,31 @@ class TestFallbackChain:
             assert chain.select(75).action == "a"
             assert chain.select(25).action == "b"
             assert chain.select(5).action == "c"
+
+    def test_or_composition(self):
+        chain_a: FallbackChain[int, str] = FallbackChain(
+            [Candidate("high", predicate=lambda x: x > 100, action="high")],
+            default="a_default",
+        )
+        chain_b: FallbackChain[int, str] = FallbackChain(
+            [Candidate("low", predicate=lambda x: x > 0, action="low")],
+            default="b_default",
+        )
+        combined = chain_a | chain_b
+        assert combined.select(200).action == "high"
+        assert combined.select(50).action == "low"
+        assert combined.select(-1).action == "a_default"  # self's default wins
+
+    def test_or_does_not_mutate(self):
+        chain_a: FallbackChain[int, str] = FallbackChain(
+            [Candidate("a", predicate=lambda _: True, action="a")], default="d"
+        )
+        chain_b: FallbackChain[int, str] = FallbackChain(
+            [Candidate("b", predicate=lambda _: True, action="b")], default="d"
+        )
+        _ = chain_a | chain_b
+        assert len(chain_a.candidates) == 1
+        assert len(chain_b.candidates) == 1
 
 
 # ------------------------------------------------------------------

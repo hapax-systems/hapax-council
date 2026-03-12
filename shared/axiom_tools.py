@@ -46,6 +46,7 @@ async def check_axiom_compliance(
 ) -> str:
     """Check if a decision complies with system axioms.
 
+    Thin Pydantic AI wrapper over shared.axiom_enforcement.check_full().
     Searches the precedent database for similar prior decisions. Returns
     relevant precedents with reasoning and distinguishing facts. If no
     close precedent exists, returns axiom text and derived implications.
@@ -57,80 +58,22 @@ async def check_axiom_compliance(
             Constitutional axioms are always included (supremacy clause).
     """
     _log_tool_usage("check_axiom_compliance")
-    from shared.axiom_precedents import PrecedentStore
-    from shared.axiom_registry import load_axioms, load_implications
+    from shared.axiom_enforcement import check_full
 
-    if domain:
-        # Supremacy: constitutional always applies, plus the specified domain
-        axioms = load_axioms(scope="constitutional") + load_axioms(domain=domain)
-    else:
-        axioms = load_axioms()
+    result = check_full(situation, axiom_id=axiom_id, domain=domain)
 
-    if not axioms:
+    if result.checked_rules == 0 and not result.violations:
         return "No axioms defined in registry."
 
-    if axiom_id:
-        axioms = [a for a in axioms if a.id == axiom_id]
-        if not axioms:
-            return f"Axiom '{axiom_id}' not found or not active."
+    if result.compliant:
+        return f"Compliant. Checked {result.checked_rules} rules across axioms."
 
-    try:
-        store = PrecedentStore()
-    except Exception as e:
-        log.warning("Could not connect to precedent store: %s", e)
-        lines = ["Precedent database unavailable. Axiom text for reference:"]
-        for axiom in axioms:
-            scope_label = (
-                f"[{axiom.scope}]"
-                if axiom.scope == "constitutional"
-                else f"[domain:{axiom.domain}]"
-            )
-            lines.append(
-                f"\n**{axiom.id}** {scope_label} (weight={axiom.weight}, type={axiom.type}):"
-            )
-            lines.append(axiom.text.strip())
-        return "\n".join(lines)
-
-    sections = []
-    for axiom in axioms:
-        precedents = store.search(axiom.id, situation, limit=3)
-
-        scope_label = (
-            f"[{axiom.scope}]" if axiom.scope == "constitutional" else f"[domain:{axiom.domain}]"
-        )
-
-        if precedents:
-            lines = [
-                f"**Axiom: {axiom.id}** {scope_label} — {len(precedents)} relevant precedent(s):"
-            ]
-            for p in precedents:
-                lines.append(f"\n  [{p.id}] ({p.authority} authority, {p.tier})")
-                lines.append(f"  Situation: {p.situation}")
-                lines.append(f"  Decision: {p.decision}")
-                lines.append(f"  Reasoning: {p.reasoning}")
-                if p.distinguishing_facts:
-                    lines.append(f"  Distinguishing facts: {', '.join(p.distinguishing_facts)}")
-            sections.append("\n".join(lines))
-        else:
-            implications = load_implications(axiom.id)
-            lines = [f"**Axiom: {axiom.id}** {scope_label} — No close precedents found."]
-            lines.append(f"Axiom text: {axiom.text.strip()}")
-            if implications:
-                compat = [i for i in implications if i.mode == "compatibility"]
-                suff = [i for i in implications if i.mode == "sufficiency"]
-                if compat:
-                    lines.append("Compatibility requirements (must not violate):")
-                    for impl in compat:
-                        lines.append(f"  [{impl.tier}] {impl.text}")
-                if suff:
-                    lines.append("Sufficiency requirements (must actively support):")
-                    for impl in suff:
-                        lines.append(f"  [{impl.tier}/{impl.level}] {impl.text}")
-            else:
-                lines.append("No derived implications available.")
-            sections.append("\n".join(lines))
-
-    return "\n\n".join(sections)
+    lines = [f"Non-compliant ({len(result.violations)} violation(s)):"]
+    for v in result.violations:
+        lines.append(f"  - {v}")
+    if result.axiom_ids:
+        lines.append(f"Axioms involved: {', '.join(result.axiom_ids)}")
+    return "\n".join(lines)
 
 
 async def record_axiom_decision(

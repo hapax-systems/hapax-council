@@ -143,3 +143,163 @@ def test_engine_gaze_defaults_false():
     )
     state = engine.tick()
     assert state.gaze_at_camera is False
+
+
+# ------------------------------------------------------------------
+# PerceptionBackend Protocol + Registration (Batch 3)
+# ------------------------------------------------------------------
+
+from agents.hapax_voice.perception import (
+    PerceptionBackend,
+    PerceptionTier,
+    compute_interruptibility,
+)
+from agents.hapax_voice.primitives import Behavior
+
+
+class StubBackend:
+    """A minimal PerceptionBackend implementation for testing."""
+
+    def __init__(
+        self,
+        name: str = "stub",
+        provides: frozenset[str] | None = None,
+        tier: PerceptionTier = PerceptionTier.FAST,
+        is_available: bool = True,
+    ):
+        self._name = name
+        self._provides = provides or frozenset({"stub_signal"})
+        self._tier = tier
+        self._is_available = is_available
+        self.started = False
+        self.stopped = False
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def provides(self) -> frozenset[str]:
+        return self._provides
+
+    @property
+    def tier(self) -> PerceptionTier:
+        return self._tier
+
+    def available(self) -> bool:
+        return self._is_available
+
+    def contribute(self, behaviors: dict[str, Behavior]) -> None:
+        pass
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class TestPerceptionBackendProtocol:
+    def test_stub_satisfies_protocol(self):
+        backend = StubBackend()
+        assert isinstance(backend, PerceptionBackend)
+
+    def test_register_backend(self):
+        engine = PerceptionEngine(
+            presence=_make_mock_presence(),
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        backend = StubBackend(name="test_backend", provides=frozenset({"custom_signal"}))
+        engine.register_backend(backend)
+        assert "test_backend" in engine.registered_backends
+        assert backend.started is True
+
+    def test_register_duplicate_name_raises(self):
+        engine = PerceptionEngine(
+            presence=_make_mock_presence(),
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        engine.register_backend(StubBackend(name="dup", provides=frozenset({"sig_a"})))
+        with pytest.raises(ValueError, match="already registered"):
+            engine.register_backend(StubBackend(name="dup", provides=frozenset({"sig_b"})))
+
+    def test_register_conflicting_provides_raises(self):
+        engine = PerceptionEngine(
+            presence=_make_mock_presence(),
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        engine.register_backend(StubBackend(name="a", provides=frozenset({"shared_signal"})))
+        with pytest.raises(ValueError, match="conflicts"):
+            engine.register_backend(StubBackend(name="b", provides=frozenset({"shared_signal"})))
+
+    def test_unavailable_backend_skipped(self):
+        engine = PerceptionEngine(
+            presence=_make_mock_presence(),
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+        backend = StubBackend(name="unavail", is_available=False)
+        engine.register_backend(backend)
+        assert "unavail" not in engine.registered_backends
+        assert backend.started is False
+
+
+class TestEnvironmentStateNewFields:
+    def test_in_voice_session_default(self):
+        state = EnvironmentState(timestamp=time.monotonic())
+        assert state.in_voice_session is False
+
+    def test_interruptibility_score_default(self):
+        state = EnvironmentState(timestamp=time.monotonic())
+        assert state.interruptibility_score == 1.0
+
+    def test_voice_session_fields(self):
+        state = EnvironmentState(
+            timestamp=time.monotonic(),
+            in_voice_session=True,
+            interruptibility_score=0.1,
+        )
+        assert state.in_voice_session is True
+        assert state.interruptibility_score == 0.1
+
+
+class TestComputeInterruptibility:
+    def test_not_present(self):
+        assert compute_interruptibility(
+            vad_confidence=0.0, activity_mode="idle", in_voice_session=False, operator_present=False
+        ) == 0.0
+
+    def test_in_voice_session(self):
+        score = compute_interruptibility(
+            vad_confidence=0.0, activity_mode="idle", in_voice_session=True, operator_present=True
+        )
+        assert score == 0.1
+
+    def test_idle_fully_interruptible(self):
+        score = compute_interruptibility(
+            vad_confidence=0.0, activity_mode="idle", in_voice_session=False, operator_present=True
+        )
+        assert score == 1.0
+
+    def test_production_reduces_score(self):
+        score = compute_interruptibility(
+            vad_confidence=0.0,
+            activity_mode="production",
+            in_voice_session=False,
+            operator_present=True,
+        )
+        assert score == 0.5
+
+    def test_speech_reduces_score(self):
+        score = compute_interruptibility(
+            vad_confidence=0.9, activity_mode="idle", in_voice_session=False, operator_present=True
+        )
+        assert score < 1.0
+
+    def test_score_clamped_to_zero(self):
+        score = compute_interruptibility(
+            vad_confidence=1.0,
+            activity_mode="meeting",
+            in_voice_session=False,
+            operator_present=True,
+        )
+        assert score >= 0.0
