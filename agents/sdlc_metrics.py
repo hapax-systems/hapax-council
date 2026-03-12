@@ -13,11 +13,9 @@ import argparse
 import json
 import logging
 import subprocess
-import sys
 from collections import Counter
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from statistics import mean, median
+from statistics import mean
 
 from pydantic import BaseModel, Field
 

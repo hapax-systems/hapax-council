@@ -25,7 +25,7 @@ class TestActivityGating:
             "state": "STILL",
             "updated_at": "2026-03-12T07:00:00-05:00",
         }))
-        assert should_deliver_briefing(watch_dir=tmp_path) is False
+        assert should_deliver_briefing(watch_dir=tmp_path, current_hour=7) is False
 
     def test_delivers_when_no_watch_data(self, tmp_path):
         """Delivers immediately (graceful degradation) when no watch data."""

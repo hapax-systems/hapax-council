@@ -85,23 +85,23 @@ class TestOversightFileProtection:
     """The system must not modify its own oversight mechanisms."""
 
     def test_axiom_enforcement_is_never_modify(self):
-        from shared.modification_classifier import classify_path, ModificationClass
+        from shared.modification_classifier import ModificationClass, classify_path
         assert classify_path("shared/axiom_enforcement.py") == ModificationClass.NEVER_MODIFY
 
     def test_health_monitor_is_never_modify(self):
-        from shared.modification_classifier import classify_path, ModificationClass
+        from shared.modification_classifier import ModificationClass, classify_path
         assert classify_path("agents/health_monitor.py") == ModificationClass.NEVER_MODIFY
 
     def test_alert_state_is_never_modify(self):
-        from shared.modification_classifier import classify_path, ModificationClass
+        from shared.modification_classifier import ModificationClass, classify_path
         assert classify_path("shared/alert_state.py") == ModificationClass.NEVER_MODIFY
 
     def test_axiom_registry_is_never_modify(self):
-        from shared.modification_classifier import classify_path, ModificationClass
+        from shared.modification_classifier import ModificationClass, classify_path
         assert classify_path("shared/axiom_registry.py") == ModificationClass.NEVER_MODIFY
 
     def test_github_workflows_are_never_modify(self):
-        from shared.modification_classifier import classify_path, ModificationClass
+        from shared.modification_classifier import ModificationClass, classify_path
         assert classify_path(".github/workflows/ci.yml") == ModificationClass.NEVER_MODIFY
 
 

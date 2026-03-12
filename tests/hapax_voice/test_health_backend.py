@@ -68,11 +68,10 @@ class TestHealthBackend:
 
     def test_failed_blocks_context_gate(self, tmp_path):
         """Verify failed health → ContextGate system_health veto denies."""
+        import time
         from unittest.mock import MagicMock
 
         from agents.hapax_voice.context_gate import ContextGate
-
-        import time
 
         path = tmp_path / "health-history.jsonl"
         path.write_text(json.dumps({"healthy": 0, "total": 80}) + "\n")
@@ -96,11 +95,10 @@ class TestHealthBackend:
 
     def test_degraded_blocks_context_gate(self, tmp_path):
         """Degraded health blocks ContextGate (not fail-open)."""
+        import time
         from unittest.mock import MagicMock
 
         from agents.hapax_voice.context_gate import ContextGate
-
-        import time
 
         path = tmp_path / "health-history.jsonl"
         path.write_text(json.dumps({"healthy": 70, "total": 80}) + "\n")

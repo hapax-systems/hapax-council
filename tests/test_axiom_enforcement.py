@@ -126,7 +126,7 @@ class TestCompileRules:
         impl_t0.enforcement = "block"
         impl_t0.axiom_id = "single_user"
         impl_t0.id = "su-auth-001"
-        impl_t0.text = "No auth"
+        impl_t0.text = "No authentication or authorization mechanisms allowed in the system"
 
         impl_t1 = MagicMock()
         impl_t1.tier = "T1"

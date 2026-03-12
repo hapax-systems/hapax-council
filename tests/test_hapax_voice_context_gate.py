@@ -119,16 +119,8 @@ def test_ambient_fail_closed() -> None:
 
 def test_gate_respects_environment_state_conversation():
     """Gate blocks when EnvironmentState shows conversation."""
-    import time
-
-    from agents.hapax_voice.perception import EnvironmentState
-
     session = SessionManager(silence_timeout_s=30)
     gate = ContextGate(session=session)
-    state = EnvironmentState(
-        timestamp=time.monotonic(),
-        activity_mode="conversation",
-    )
     gate.set_activity_mode("conversation")
     result = gate.check()
     assert not result.eligible

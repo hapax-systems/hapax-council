@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,6 +18,7 @@ try:
     _WATCH_AVAILABLE = True
 except ImportError:
     _WATCH_AVAILABLE = False
+    WATCH_STATE_DIR = Path()  # unused fallback — guarded by _WATCH_AVAILABLE
 
 log = logging.getLogger(__name__)
 

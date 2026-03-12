@@ -142,11 +142,7 @@ def _call_llm(system: str, user: str, *, dry_run: bool = False) -> TriageResult:
 # ---------------------------------------------------------------------------
 
 _TRIAGE_STOP_WORDS = frozenset(
-    "the a an is are was were be been being have has had do does did will would "
-    "could should may might can shall to of in for on with at by from as into "
-    "through during before after above below between out off over under again "
-    "further then once this that these those it its not no nor and but or so "
-    "if when where how what which who whom why".split()
+    ["the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "can", "shall", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "through", "during", "before", "after", "above", "below", "between", "out", "off", "over", "under", "again", "further", "then", "once", "this", "that", "these", "those", "it", "its", "not", "no", "nor", "and", "but", "or", "so", "if", "when", "where", "how", "what", "which", "who", "whom", "why"]
 )
 
 
