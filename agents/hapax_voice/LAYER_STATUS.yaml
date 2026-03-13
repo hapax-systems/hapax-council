@@ -22,31 +22,36 @@ layers:
   L0:
     name: "Stamped[T]"
     modules: [primitives.Stamped]
-    state: matrix-complete
+    state: proven
     tests:
-      file: tests/hapax_voice/test_primitives.py::TestStamped
-      count: 9
+      files:
+        - tests/hapax_voice/test_primitives.py::TestStamped  # 9 tests
+        - tests/hapax_voice/test_hypothesis_L0.py  # 5 hypothesis property tests
+      count: 14
       dimensions: [A, B, C, D, G]
-    notes: "D boundary tests (None, zero, negative, NaN) + G composition contract (Stamped→Behavior.sample). No hypothesis tests — state was incorrectly 'proven', corrected to matrix-complete."
+    hypothesis:
+      - "equality reflexivity, frozen immutability, type closure, hash consistency, composition to L1"
     gaps:
-      - "E: Stamped has no error paths (frozen dataclass, no validation). Inherits from Python dataclass machinery."
-      - "F: No Dog Star proof. Stamped is L0 — no lower layer to violate."
+      - "E: No error paths (frozen dataclass, no validation)."
+      - "F: No Dog Star proof (L0 — no lower layer to violate)."
 
   L1:
     name: "Behavior[T], Event[T]"
     modules: [primitives.Behavior, primitives.Event]
-    state: matrix-complete
+    state: proven
     tests:
       files:
         - tests/hapax_voice/test_primitives.py::TestBehavior  # 9 tests
         - tests/hapax_voice/test_primitives.py::TestEvent  # 7 tests
         - tests/hapax_voice/test_type_system_matrix_2.py::TestEventLifecycleAndFanOut  # 12 tests
         - tests/hapax_voice/test_type_system_matrix_6.py::TestBehaviorPerturbation  # 12 tests
-      count: 40
+        - tests/hapax_voice/test_hypothesis_L1.py  # 8 hypothesis property tests
+      count: 48
       dimensions: [A, B, C, D, E, F, G]
+    hypothesis:
+      - "watermark monotonicity, regression rejection, sample post-condition, subscriber conservation, emit totality, exception isolation, composition to L2"
     dog_star:
       - "D3: watermark regression rejected (TestL1_D3, 3 tests)"
-    notes: "F dimension added via test_dog_star_enforcement.py::TestL1_D3_WatermarkRegression"
 
   L2:
     name: "FusedContext, VetoChain, FallbackChain, FreshnessGuard"
@@ -54,92 +59,112 @@ layers:
     state: proven
     tests:
       files:
-        - tests/hapax_voice/test_governance.py  # hypothesis-powered
+        - tests/hapax_voice/test_governance.py  # 6 hypothesis + 41 example
         - tests/hapax_voice/test_type_system_matrix.py::TestImmutabilityBarriers
         - tests/hapax_voice/test_type_system_matrix.py::TestFreshnessComposition
         - tests/hapax_voice/test_type_system_matrix_3.py  # error boundaries
         - tests/hapax_voice/test_type_system_matrix_4.py  # algebraic properties
-      count: 60+
+        - tests/hapax_voice/test_hypothesis_L2.py  # 7 hypothesis property tests
+      count: 74+
       dimensions: [A, B, C, D, E, F, G]
-    notes: "Hypothesis strategies cover VetoResult, FallbackChain, FreshnessGuard."
+    hypothesis:
+      - "VetoChain: associativity, identity, monotonicity, closure, idempotence (test_governance.py)"
+      - "FallbackChain: priority preservation (test_governance.py)"
+      - "FusedContext: min_watermark ordering, frozen invariant, samples immutability"
+      - "FreshnessGuard: stale detection, fresh acceptance, missing behavior always stale"
+      - "VetoChain: deny-wins monotonicity under composition"
 
   L3:
     name: "with_latest_from combinator"
     modules: [combinator.with_latest_from]
-    state: matrix-complete
+    state: proven
     tests:
       files:
         - tests/hapax_voice/test_combinator.py::TestWithLatestFrom  # 13 tests
         - tests/hapax_voice/test_type_system_matrix_5.py  # forward pipeline flow
-      count: 25
+        - tests/hapax_voice/test_hypothesis_L3.py  # 5 hypothesis property tests
+      count: 30
       dimensions: [A, B, C, D, E, F, G]
+    hypothesis:
+      - "trigger fidelity, snapshot correctness, min_watermark computation, rate independence, composition to L4"
     dog_star:
       - "D2: combinator watermark fidelity (TestL3_D2, 4 tests)"
-    notes: "B dimension closed: FusedContext immutability (frozen, MappingProxyType samples, no retroactive mutation)."
 
   L4:
     name: "Command, Schedule, VetoResult"
     modules: [commands.Command, commands.Schedule, governance.VetoResult]
-    state: matrix-complete
+    state: proven
     tests:
       files:
         - tests/hapax_voice/test_commands.py  # 17 tests
         - tests/hapax_voice/test_type_system_matrix_9.py  # provenance tracing
-      count: 29
+        - tests/hapax_voice/test_hypothesis_L4.py  # 6 hypothesis property tests
+      count: 35
       dimensions: [A, B, C, D, E, F, G]
-    notes: "E dimension closed: error path tests for empty action, denied provenance, zero tolerance, past wall_time."
+    hypothesis:
+      - "frozen invariant, MappingProxyType params, allowed↔denials consistency, tolerance boundary, governance round-trip, composition to L6"
     dog_star:
       - "D1.1: governance denial blocks dispatch (TestD1_1, 2 tests)"
-    notes: "F dimension added via test_dog_star_enforcement.py::TestD1_1"
 
   L5:
     name: "SuppressionField, TimelineMapping, MusicalPosition"
     modules: [suppression.SuppressionField, timeline.TimelineMapping, musical_position.MusicalPosition]
-    state: matrix-complete
+    state: proven
     tests:
       files:
         - tests/test_suppression_field.py  # 33 tests
         - tests/hapax_voice/test_type_system_matrix_8.py  # reconfiguration invariants
         - tests/test_musical_position.py  # 20 tests (from tests/ root)
-      count: 65
+        - tests/hapax_voice/test_hypothesis_L5.py  # 9 hypothesis property tests
+      count: 74
       dimensions: [A, B, C, D, E, F, G]
+    hypothesis:
+      - "TimelineMapping: invertibility (bijection), stopped freezes beat, stopped freezes time, invalid tempo rejected"
+      - "SuppressionField: value bounded [0,1], rate bounded, convergence"
+      - "effective_threshold: monotonic in suppression"
+      - "MusicalPosition: hierarchical decomposition consistency"
     dog_star:
       - "D3/D5: invalid config rejection + stopped transport freeze (TestL5, 6 tests)"
 
   L6:
     name: "ResourceArbiter, ExecutorRegistry, ScheduleQueue"
     modules: [arbiter.ResourceArbiter, executor.ExecutorRegistry, executor.ScheduleQueue]
-    state: matrix-complete
+    state: proven
     tests:
       files:
         - tests/test_arbiter.py  # 29 tests
         - tests/test_executor.py  # 23 tests
-      count: 52
+        - tests/hapax_voice/test_hypothesis_L6.py  # 7 hypothesis property tests
+      count: 59
       dimensions: [A, B, C, D, E, F, G]
+    hypothesis:
+      - "ResourceArbiter: highest priority wins, FIFO tiebreak, release removes"
+      - "ScheduleQueue: drain ready items, preserve future, monotonic drain order, no item loss"
     dog_star:
       - "D4.2: arbiter cannot be bypassed (TestD4_2, 5 tests)"
-    notes: "F dimension added via test_dog_star_enforcement.py::TestD4_2"
 
   L7:
     name: "compose_mc_governance, compose_obs_governance"
     modules: [mc_governance.compose_mc_governance, obs_governance.compose_obs_governance]
-    state: matrix-complete
+    state: proven
     tests:
       files:
         - tests/hapax_voice/test_governance_composition.py  # 47 tests (A, B, D, G)
         - tests/test_composition_integration.py  # 12 tests (C, E, G)
         - tests/hapax_voice/test_type_system_matrix_7.py  # convergent pipelines
         - tests/hapax_voice/test_type_system_matrix_10.py  # feedback/re-entry
-      count: 83
+        - tests/hapax_voice/test_hypothesis_L7.py  # 5 hypothesis property tests
+      count: 88
       dimensions: [A, B, C, D, E, F, G]
+    hypothesis:
+      - "MC veto chain closure, deny-wins monotonicity, fallback determinism, custom config validity, action domain coverage"
     dog_star:
       - "D6.3: composition-time validation rejects missing behaviors (TestD6_3, 5 tests)"
-    notes: "F dimension added via test_dog_star_enforcement.py::TestD6_3"
 
   L8:
     name: "PerceptionEngine, PipelineGovernor, FrameGate"
     modules: [perception.PerceptionEngine, governor.PipelineGovernor, frame_gate.FrameGate]
-    state: matrix-complete
+    state: proven
     tests:
       files:
         - tests/test_perception.py  # 54 tests
@@ -150,27 +175,36 @@ layers:
         - tests/hapax_voice/test_type_system_matrix_14.py  # degradation & recovery Q4
         - tests/hapax_voice/test_type_system_matrix_15.py  # accountable evolution Q5
         - tests/hapax_voice/test_type_system_matrix_16.py  # holistic steady-state Q6
-      count: 137
+        - tests/hapax_voice/test_hypothesis_L8.py  # 6 hypothesis property tests
+      count: 143
       dimensions: [A, B, C, D, E, F, G]
+    hypothesis:
+      - "Governor: directive closure, veto-deny implies pause, observability populated"
+      - "FrameGate: apply_command idempotence, stores provenance"
+      - "Perception: watermarks advance monotonically"
     dog_star:
       - "D5.2: scoped backend writes prevent cross-behavior contamination (TestD5_2, 2 tests)"
-    notes: "F dimension added via test_dog_star_enforcement.py::TestD5_2"
 
   L9:
     name: "VoiceDaemon lifecycle"
     modules: [__main__.VoiceDaemon]
-    state: matrix-complete
+    state: proven
     tests:
       files:
         - tests/hapax_voice/test_daemon_lifecycle_matrix.py  # 34 tests (B, D, E, G)
         - tests/test_hapax_voice_daemon_pipeline.py  # 11 tests (A, C)
         - tests/hapax_voice/test_e2e_use_case_matrix.py
-      count: 57
+        - tests/hapax_voice/test_hypothesis_L9.py  # 4 hypothesis property tests
+      count: 61
       dimensions: [A, B, C, D, E, F, G]
-    notes: "G dimension strengthened: schedule queue acceptance + full perception→governor→frame_gate pipeline test."
+    hypothesis:
+      - "pipeline output closure, queue drain lossless, denied command provenance, state consistency"
     dog_star:
       - "D1.1: denied schedule not dispatched through queue (TestL9, 3 tests)"
 
+# Hypothesis strategy library: tests/hapax_voice/hypothesis_strategies.py
+# 16 @st.composite strategies building bottom-up (L0→L1→L2→L4→L6, L5→L7, L8)
+#
 # Matrix test files (192 tests across 6 themes + 6 trinary combos):
 #
 # Theme coverage:
