@@ -1,53 +1,97 @@
 id: scout
 name: Horizon Scout
-version: "1.0.0"
+version: 1.0.0
 category: observability
 reports_to: operator
-peers: [health_monitor, drift_detector]
+peers:
+- health_monitor
+- drift_detector
 depends_on: []
-
-purpose: Scan external component landscape for fitness changes — new versions, deprecations, security advisories, better alternatives.
+purpose: Scan external component landscape for fitness changes — new versions, deprecations,
+  security advisories, better alternatives.
 inputs:
-  - package manifests (pacman, pip, npm)
-  - GitHub release feeds
-  - security advisory databases
+- package manifests (pacman, pip, npm)
+- GitHub release feeds
+- security advisory databases
 outputs:
-  - profiles/scout-report.json
-  - actionable upgrade recommendations
+- profiles/scout-report.json
+- actionable upgrade recommendations
 capabilities:
-  - version_scanning
-  - fitness_evaluation
-  - alternative_discovery
+- version_scanning
+- fitness_evaluation
+- alternative_discovery
 schedule:
   type: timer
   systemd_unit: scout.timer
   interval: daily
 model: fast
-
 autonomy: advisory
 decision_scope: Evaluate and recommend. Never installs, upgrades, or modifies packages.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: executive_function
-    implications: [ex-routine-001]
-    role: subject
-  - axiom_id: corporate_boundary
-    implications: [cb-llm-001]
-    role: subject
+- axiom_id: executive_function
+  implications:
+  - ex-routine-001
+  role: subject
+- axiom_id: corporate_boundary
+  implications:
+  - cb-llm-001
+  role: subject
 raci:
-  - task: dependency_fitness
-    role: responsible
-  - task: daily_briefing
-    role: consulted
-
+- task: dependency_fitness
+  role: responsible
+- task: daily_briefing
+  role: consulted
 health_group: scout
 service_tier: 2
 metrics_source: profiles/scout-report.json
+narrative: 'The Horizon Scout looks outward. While health_monitor watches internal
+  state and
 
-narrative: |
-  The Horizon Scout looks outward. While health_monitor watches internal state and
   drift_detector watches documentation accuracy, Scout watches the external landscape
+
   of components the system depends on. It checks for new releases, deprecation notices,
+
   security advisories, and potentially superior alternatives. Its output is purely
+
   advisory — it recommends but never acts. The operator uses scout reports to prioritize
+
   upgrade work and avoid being blindsided by breaking changes.
+
+  '
+short_description: Horizon scanner — external fitness
+cli:
+  command: uv run python -m agents.scout
+  module: agents.scout
+  flags:
+  - flag: --save
+    description: Save to profiles/scout-report.{json,md}
+  - flag: --json
+    description: Machine-readable JSON output
+  - flag: --dry-run
+    description: Show search queries without calling APIs
+  - flag: --component
+    description: Scan only this component key
+    flag_type: value
+    metavar: KEY
+  - flag: --notify
+    description: Desktop notification if recommendations found
+timer_display:
+  schedule_label: Weekly Wed 10:00
+  purpose: Horizon scan — external fitness evaluation
+manual_section:
+  title: Evaluating Alternatives
+  order: 3
+  content:
+  - The scout agent evaluates each stack component against the external landscape.
+  - It reads `profiles/component-registry.yaml` and searches the web for alternatives.
+  - ''
+  - '```'
+  - uv run python -m agents.scout --save
+  - 'uv run python -m agents.scout --dry-run           # preview queries only'
+  - 'uv run python -m agents.scout --component litellm  # single component'
+  - '```'
+  - ''
+  - 'Scout tiers: **adopt** (switch now), **evaluate** (worth investigating),'
+  - '**monitor** (keep watching), **current-best** (no action needed).'
+  - The scout timer runs weekly (Wednesday 10:00).
