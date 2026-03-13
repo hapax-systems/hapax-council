@@ -27,8 +27,6 @@ def test_tracer_creates_spans():
     """Spans created via the module tracer are recorded."""
     exporter = _setup_test_tracer()
 
-    from agents.hapax_voice.tracing import tracer  # noqa: F811 — re-import to pick up new provider
-
     # The module-level get_tracer() already ran, but the provider is global
     # so we use a fresh tracer from the new provider to verify the pattern.
     t = trace.get_tracer("hapax_voice.test")

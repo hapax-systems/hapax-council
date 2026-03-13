@@ -79,9 +79,7 @@ class TestResourceArbiterResolve(unittest.TestCase):
         arb = ResourceArbiter(_priorities())
         arb.claim(_claim(resource="audio_output", chain="mc", priority=50, created_at=1.0))
         arb.claim(
-            _claim(
-                resource="audio_output", chain="conversation", priority=100, created_at=2.0
-            )
+            _claim(resource="audio_output", chain="conversation", priority=100, created_at=2.0)
         )
         winner = arb.resolve("audio_output")
         self.assertEqual(winner.chain, "conversation")
@@ -115,9 +113,7 @@ class TestResourceArbiterRelease(unittest.TestCase):
         arb = ResourceArbiter(_priorities())
         arb.claim(_claim(resource="audio_output", chain="tts", priority=30, created_at=1.0))
         arb.claim(
-            _claim(
-                resource="audio_output", chain="conversation", priority=100, created_at=2.0
-            )
+            _claim(resource="audio_output", chain="conversation", priority=100, created_at=2.0)
         )
         self.assertEqual(arb.resolve("audio_output").chain, "conversation")
         arb.release("audio_output", "conversation")
@@ -133,9 +129,7 @@ class TestResourceArbiterDrainWinners(unittest.TestCase):
         arb = ResourceArbiter(_priorities())
         arb.claim(_claim(resource="audio_output", chain="mc", priority=50, created_at=1.0))
         arb.claim(
-            _claim(
-                resource="audio_output", chain="conversation", priority=100, created_at=2.0
-            )
+            _claim(resource="audio_output", chain="conversation", priority=100, created_at=2.0)
         )
         arb.claim(_claim(resource="obs_scene", chain="obs", priority=70, created_at=1.0))
         winners = arb.drain_winners(now=5.0)
@@ -145,9 +139,7 @@ class TestResourceArbiterDrainWinners(unittest.TestCase):
     def test_one_shot_claims_removed_after_drain(self):
         arb = ResourceArbiter(_priorities())
         arb.claim(
-            _claim(
-                resource="audio_output", chain="mc", priority=50, hold_until=0.0, created_at=1.0
-            )
+            _claim(resource="audio_output", chain="mc", priority=50, hold_until=0.0, created_at=1.0)
         )
         winners = arb.drain_winners(now=2.0)
         self.assertEqual(len(winners), 1)
@@ -197,9 +189,7 @@ class TestResourceArbiterDrainWinners(unittest.TestCase):
             )
         )
         arb.claim(
-            _claim(
-                resource="audio_output", chain="mc", priority=50, hold_until=0.0, created_at=2.0
-            )
+            _claim(resource="audio_output", chain="mc", priority=50, hold_until=0.0, created_at=2.0)
         )
         winners = arb.drain_winners(now=3.0)
         self.assertEqual(len(winners), 1)
@@ -231,9 +221,7 @@ class TestResourceArbiterDrainWinners(unittest.TestCase):
             )
         )
         arb.claim(
-            _claim(
-                resource="audio_output", chain="mc", priority=50, hold_until=5.0, created_at=2.0
-            )
+            _claim(resource="audio_output", chain="mc", priority=50, hold_until=5.0, created_at=2.0)
         )
         # Conversation holds
         winners = arb.drain_winners(now=3.0)

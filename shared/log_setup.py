@@ -34,6 +34,7 @@ def configure_logging(
     # Instrument stdlib logging to inject OTel trace context
     try:
         from opentelemetry.instrumentation.logging import LoggingInstrumentor
+
         LoggingInstrumentor().instrument(set_logging_format=False)
     except Exception:
         pass  # OTel not available -- degrade gracefully
@@ -47,9 +48,7 @@ def configure_logging(
     handler = logging.StreamHandler(sys.stdout)
 
     if human_readable:
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     else:
         from pythonjsonlogger.json import JsonFormatter
 
