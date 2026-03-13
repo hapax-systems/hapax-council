@@ -1,0 +1,17 @@
+[Unit]
+Description=Ambient audio processor — classify, transcribe, and index for RAG
+After=network.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python -m agents.audio_processor --process
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+MemoryMax=8G
+CPUQuota=80%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=audio-processor
