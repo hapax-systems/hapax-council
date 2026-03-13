@@ -257,6 +257,8 @@ def compose_obs_governance(
 
     Unlike MC governance which produces Schedules (beat-aligned future actions),
     OBS governance produces Commands (immediate actuation at perception cadence).
+
+    Raises ValueError if required behaviors are missing from the dict (D6.3).
     """
     c = cfg or OBSConfig()
     last_switch_time: list[float] = []
@@ -264,6 +266,13 @@ def compose_obs_governance(
     freshness = build_obs_freshness_guard(c)
     veto_chain = build_obs_veto_chain(c, last_switch_time)
     fallback = build_obs_fallback_chain(c)
+
+    # D6.3: validate behavior keys at composition time, not at first tick
+    required = {r.behavior_name for r in freshness._requirements}
+    required |= {"audio_energy_rms", "emotion_arousal", "timeline_mapping"}
+    missing = required - frozenset(behaviors)
+    if missing:
+        raise ValueError(f"OBS governance missing required behaviors: {missing}")
 
     fused: Event[FusedContext] = with_latest_from(trigger, behaviors)
     output: Event[Command | None] = Event()
