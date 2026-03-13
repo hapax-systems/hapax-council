@@ -176,8 +176,7 @@ def collect_cost_trend(days: int = 14) -> CostTrend:
 
     sorted_agents = sorted(agent_costs.items(), key=lambda x: -x[1])
     top_agents = [
-        AgentCost(agent=a, cost=c, call_count=agent_counts.get(a, 0))
-        for a, c in sorted_agents[:5]
+        AgentCost(agent=a, cost=c, call_count=agent_counts.get(a, 0)) for a, c in sorted_agents[:5]
     ]
 
     return CostTrend(

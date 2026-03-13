@@ -227,9 +227,7 @@ class AgentRegistry:
     def expected_timers(self) -> dict[str, str]:
         """Return {agent_id: timer_unit_name} for all timer agents."""
         return {
-            a.id: a.schedule.systemd_unit
-            for a in self.timer_agents()
-            if a.schedule.systemd_unit
+            a.id: a.schedule.systemd_unit for a in self.timer_agents() if a.schedule.systemd_unit
         }
 
     def zero_config_agents(self) -> list[AgentManifest]:
@@ -243,8 +241,7 @@ class AgentRegistry:
             [
                 a
                 for a in self._agents.values()
-                if a.schedule.type
-                in (ScheduleType.TIMER, ScheduleType.DAEMON, ScheduleType.EVENT)
+                if a.schedule.type in (ScheduleType.TIMER, ScheduleType.DAEMON, ScheduleType.EVENT)
             ],
             key=lambda a: a.id,
         )
