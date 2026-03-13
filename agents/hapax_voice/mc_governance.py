@@ -106,26 +106,28 @@ def build_mc_veto_chain(
       - transport_active: block when transport stopped
     """
     c = cfg or MCConfig()
-    return VetoChain([
-        Veto(
-            name="speech_clear",
-            predicate=lambda ctx, t=c.speech_vad_threshold: speech_clear(ctx, t),
-        ),
-        Veto(
-            name="energy_sufficient",
-            predicate=lambda ctx, t=c.energy_min_threshold: energy_sufficient(ctx, t),
-        ),
-        Veto(
-            name="spacing_respected",
-            predicate=lambda ctx, cd=c.spacing_cooldown_s, lt=last_throw_time: spacing_respected(
-                ctx, cd, lt
+    return VetoChain(
+        [
+            Veto(
+                name="speech_clear",
+                predicate=lambda ctx, t=c.speech_vad_threshold: speech_clear(ctx, t),
             ),
-        ),
-        Veto(
-            name="transport_active",
-            predicate=transport_active,
-        ),
-    ])
+            Veto(
+                name="energy_sufficient",
+                predicate=lambda ctx, t=c.energy_min_threshold: energy_sufficient(ctx, t),
+            ),
+            Veto(
+                name="spacing_respected",
+                predicate=lambda ctx, cd=c.spacing_cooldown_s, lt=last_throw_time: (
+                    spacing_respected(ctx, cd, lt)
+                ),
+            ),
+            Veto(
+                name="transport_active",
+                predicate=transport_active,
+            ),
+        ]
+    )
 
 
 def build_mc_fallback_chain(cfg: MCConfig | None = None) -> FallbackChain[FusedContext, MCAction]:
@@ -169,11 +171,13 @@ def build_mc_freshness_guard(cfg: MCConfig | None = None) -> FreshnessGuard:
       - timeline_mapping: max 500ms stale
     """
     c = cfg or MCConfig()
-    return FreshnessGuard([
-        FreshnessRequirement("audio_energy_rms", c.energy_max_staleness_s),
-        FreshnessRequirement("emotion_arousal", c.emotion_max_staleness_s),
-        FreshnessRequirement("timeline_mapping", c.timeline_max_staleness_s),
-    ])
+    return FreshnessGuard(
+        [
+            FreshnessRequirement("audio_energy_rms", c.energy_max_staleness_s),
+            FreshnessRequirement("emotion_arousal", c.emotion_max_staleness_s),
+            FreshnessRequirement("timeline_mapping", c.timeline_max_staleness_s),
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
