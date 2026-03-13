@@ -727,7 +727,9 @@ async def synthesize_report(report: ActivityReport) -> str:
 
     agent = Agent(
         get_model("fast"),
-        system_prompt=get_system_prompt_fragment("activity-analyzer") + "\n\n" + """\
+        system_prompt=get_system_prompt_fragment("activity-analyzer")
+        + "\n\n"
+        + """\
 You are a system operations analyst. Given a structured activity report for an
 LLM infrastructure stack, produce a concise 3-5 sentence briefing for the
 operator. Focus on: what happened, what's notable, what needs attention.

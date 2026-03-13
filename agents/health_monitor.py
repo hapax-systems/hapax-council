@@ -2813,14 +2813,24 @@ def _get_sync_agents() -> dict[str, Path]:
             # Convention: agent_id underscores → hyphens for cache dir
             cache_name = agent.id.replace("_", "-")
             # Strip trailing "-sync" for the display name
-            display_name = cache_name.removesuffix("-sync") if cache_name.endswith("-sync") else cache_name
+            display_name = (
+                cache_name.removesuffix("-sync") if cache_name.endswith("-sync") else cache_name
+            )
             result[display_name] = Path.home() / ".cache" / cache_name / "state.json"
         return result
     except Exception:
         # Fallback if registry unavailable
         return {
             name: Path.home() / ".cache" / f"{name}-sync" / "state.json"
-            for name in ["gmail", "gcalendar", "gdrive", "youtube", "obsidian", "chrome", "claude-code"]
+            for name in [
+                "gmail",
+                "gcalendar",
+                "gdrive",
+                "youtube",
+                "obsidian",
+                "chrome",
+                "claude-code",
+            ]
         }
 
 
@@ -2880,7 +2890,8 @@ async def check_sync_freshness() -> list[CheckResult]:
                 message=msg,
                 detail=str(state_path),
                 remediation=f"systemctl --user start {agent_name}-sync.service"
-                if status != Status.HEALTHY else None,
+                if status != Status.HEALTHY
+                else None,
                 duration_ms=_timed(t),
                 tier=3,
             )
