@@ -40,9 +40,10 @@ layers:
         - tests/hapax_voice/test_type_system_matrix_2.py::TestEventLifecycleAndFanOut  # 12 tests
         - tests/hapax_voice/test_type_system_matrix_6.py::TestBehaviorPerturbation  # 12 tests
       count: 40
-      dimensions: [A, B, C, D, E, G]
-    gaps:
-      - "F: No dedicated Dog Star proof for Behavior ownership (D5.3)."
+      dimensions: [A, B, C, D, E, F, G]
+    dog_star:
+      - "D3: watermark regression rejected (TestL1_D3, 3 tests)"
+    notes: "F dimension added via test_dog_star_enforcement.py::TestL1_D3_WatermarkRegression"
 
   L2:
     name: "FusedContext, VetoChain, FallbackChain, FreshnessGuard"
@@ -68,7 +69,9 @@ layers:
         - tests/hapax_voice/test_combinator.py::TestWithLatestFrom  # 10 tests
         - tests/hapax_voice/test_type_system_matrix_5.py  # forward pipeline flow
       count: 22
-      dimensions: [A, C, D, E, G]
+      dimensions: [A, C, D, E, F, G]
+    dog_star:
+      - "D2: combinator watermark fidelity (TestL3_D2, 4 tests)"
     gaps:
       - "B: No explicit invariant test for output Event immutability (inherits from Event)."
 
@@ -96,7 +99,9 @@ layers:
         - tests/hapax_voice/test_type_system_matrix_8.py  # reconfiguration invariants
         - tests/test_musical_position.py  # 20 tests (from tests/ root)
       count: 65
-      dimensions: [A, B, C, D, E, G]
+      dimensions: [A, B, C, D, E, F, G]
+    dog_star:
+      - "D3/D5: invalid config rejection + stopped transport freeze (TestL5, 6 tests)"
 
   L6:
     name: "ResourceArbiter, ExecutorRegistry, ScheduleQueue"
@@ -158,9 +163,9 @@ layers:
         - tests/test_hapax_voice_daemon_pipeline.py  # 11 tests (A, C)
         - tests/hapax_voice/test_e2e_use_case_matrix.py
       count: 55
-      dimensions: [A, B, C, D, E, G]
-    gaps:
-      - "F: No Dog Star proofs at daemon level yet."
+      dimensions: [A, B, C, D, E, F, G]
+    dog_star:
+      - "D1.1: denied schedule not dispatched through queue (TestL9, 3 tests)"
 
 # Matrix test files (192 tests across 6 themes + 6 trinary combos):
 #
