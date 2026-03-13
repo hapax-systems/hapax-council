@@ -29,9 +29,7 @@ class TestPriorityMapIntegrity(unittest.TestCase):
             self.assertGreater(priority, 0, f"Priority for {key} must be positive")
 
     def test_conversation_highest_on_audio(self):
-        audio_priorities = {
-            k: v for k, v in DEFAULT_PRIORITIES.items() if k[0] == "audio_output"
-        }
+        audio_priorities = {k: v for k, v in DEFAULT_PRIORITIES.items() if k[0] == "audio_output"}
         max_chain = max(audio_priorities, key=lambda k: audio_priorities[k])
         self.assertEqual(max_chain[1], "conversation")
 

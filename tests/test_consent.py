@@ -11,16 +11,12 @@ from shared.consent import ConsentContract, ConsentRegistry, load_contracts
 
 class TestConsentContract(unittest.TestCase):
     def test_frozen(self):
-        c = ConsentContract(
-            id="test", parties=("operator", "alice"), scope=frozenset({"location"})
-        )
+        c = ConsentContract(id="test", parties=("operator", "alice"), scope=frozenset({"location"}))
         with self.assertRaises(AttributeError):
             c.id = "other"  # type: ignore[misc]
 
     def test_active_when_not_revoked(self):
-        c = ConsentContract(
-            id="test", parties=("operator", "alice"), scope=frozenset({"location"})
-        )
+        c = ConsentContract(id="test", parties=("operator", "alice"), scope=frozenset({"location"}))
         self.assertTrue(c.active)
 
     def test_inactive_when_revoked(self):
