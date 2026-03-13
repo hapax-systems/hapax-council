@@ -123,7 +123,7 @@ class TestArbiterResourceContention(unittest.TestCase):
         arb.claim(
             ResourceClaim(
                 resource="audio_output",
-                chain="mc",
+                chain="mc_governance",
                 priority=50,
                 command="vocal_throw",
                 created_at=1.0,
@@ -157,7 +157,7 @@ class TestArbiterResourceContention(unittest.TestCase):
         arb.claim(
             ResourceClaim(
                 resource="audio_output",
-                chain="mc",
+                chain="mc_governance",
                 priority=50,
                 command="vocal_throw",
                 hold_until=0.0,
@@ -173,7 +173,7 @@ class TestArbiterResourceContention(unittest.TestCase):
         arb.claim(
             ResourceClaim(
                 resource="audio_output",
-                chain="mc",
+                chain="mc_governance",
                 priority=50,
                 command="vocal_throw",
                 hold_until=0.0,
@@ -181,14 +181,14 @@ class TestArbiterResourceContention(unittest.TestCase):
             )
         )
         winners = arb.drain_winners(now=5.0)
-        self.assertEqual(winners[0].chain, "mc")
+        self.assertEqual(winners[0].chain, "mc_governance")
 
     def test_gc_sweep_removes_stale_holds(self):
         arb = ResourceArbiter(DEFAULT_PRIORITIES)
         arb.claim(
             ResourceClaim(
                 resource="audio_output",
-                chain="mc",
+                chain="mc_governance",
                 priority=50,
                 command="vocal_throw",
                 hold_until=5.0,
