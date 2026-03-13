@@ -21,7 +21,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from shared.config import AI_AGENTS_DIR, COCKPIT_STATE_DIR, OBSIDIAN_HAPAX_DIR
+from shared.config import (
+    AI_AGENTS_DIR,
+    COCKPIT_STATE_DIR,
+    HAPAX_VSCODE_DIR,
+    HAPAXROMANA_DIR,
+    OBSIDIAN_HAPAX_DIR,
+    load_expected_timers,
+)
 
 log = logging.getLogger(__name__)
 
@@ -212,25 +219,14 @@ def _check_systemd_timer_coverage() -> tuple[bool, str]:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False, "could not query systemd timers"
 
-    # Expected recurring agents
-    expected_agents = [
-        "health-monitor",
-        "daily-briefing",
-        "drift-detector",
-        "manifest-snapshot",
-        "llm-backup",
-        "profile-update",
-        "scout",
-        "digest",
-        "knowledge-maint",
-    ]
+    expected = load_expected_timers()
 
-    if timer_count >= len(expected_agents):
+    if timer_count >= len(expected):
         return (
             True,
-            f"{timer_count} timers active, covers {len(expected_agents)} expected recurring agents",
+            f"{timer_count} timers active, covers {len(expected)} expected recurring agents",
         )
-    return False, f"only {timer_count} timers but {len(expected_agents)} recurring agents expected"
+    return False, f"only {timer_count} timers but {len(expected)} recurring agents expected"
 
 
 def _check_notification_chain() -> tuple[bool, str]:
@@ -534,6 +530,307 @@ EXECUTIVE_FUNCTION_PROBES: list[SufficiencyProbe] = [
 ]
 
 PROBES.extend(EXECUTIVE_FUNCTION_PROBES)
+
+
+# ── Deliberation governance probes ───────────────────────────────────────────
+
+
+def _check_deliberation_hoop_tests() -> tuple[bool, str]:
+    """Check that multi-round deliberations pass >= 2 of 3 hoop tests (ex-delib-001)."""
+    from shared.deliberation_metrics import read_recent_metrics
+
+    metrics = read_recent_metrics(n=20)
+    multi_round = [m for m in metrics if m.total_rounds > 1]
+    if not multi_round:
+        return True, "no multi-round deliberations to evaluate"
+
+    failing = []
+    for m in multi_round:
+        ht = m.hoop_tests
+        if ht is None:
+            continue
+        passes = sum([ht.position_shift, ht.argument_tracing, ht.counterfactual_divergence])
+        if passes < 2:
+            failing.append(m.deliberation_id)
+
+    if not failing:
+        return True, f"all {len(multi_round)} multi-round deliberations pass >= 2/3 hoop tests"
+    return (
+        False,
+        f"{len(failing)}/{len(multi_round)} deliberations fail hoop tests: {', '.join(failing[:3])}",
+    )
+
+
+def _check_deliberation_activation_rate() -> tuple[bool, str]:
+    """Check that multi-round deliberation activation rate exceeds 10% (ex-delib-002)."""
+    from shared.deliberation_metrics import read_recent_metrics
+
+    metrics = read_recent_metrics(n=20)
+    multi_round = [m for m in metrics if m.total_rounds > 1]
+    if not multi_round:
+        return True, "no multi-round deliberations to evaluate"
+
+    low_activation = [m for m in multi_round if m.activation_rate < 0.1]
+    if not low_activation:
+        mean_act = sum(m.activation_rate for m in multi_round) / len(multi_round)
+        return True, f"mean activation rate {mean_act:.0%} across {len(multi_round)} deliberations"
+    return (
+        False,
+        f"{len(low_activation)}/{len(multi_round)} deliberations have activation rate < 10%",
+    )
+
+
+def _check_deliberation_concession_asymmetry() -> tuple[bool, str]:
+    """Check that concession asymmetry does not exceed 3.0x (ex-delib-003)."""
+    from shared.deliberation_metrics import read_recent_metrics
+
+    metrics = read_recent_metrics(n=20)
+    with_concessions = [m for m in metrics if m.concession_count > 0]
+    if not with_concessions:
+        return True, "no deliberations with concessions to evaluate"
+
+    mean_asym = sum(m.concession_asymmetry_ratio for m in with_concessions) / len(with_concessions)
+    if mean_asym <= 3.0:
+        return (
+            True,
+            f"mean concession asymmetry {mean_asym:.1f}x across {len(with_concessions)} deliberations",
+        )
+
+    # Identify which agent dominates
+    pub_total = sum(m.concession_count_publius for m in with_concessions)
+    bru_total = sum(m.concession_count_brutus for m in with_concessions)
+    dominant = "publius" if pub_total > bru_total else "brutus"
+    return (
+        False,
+        f"concession asymmetry {mean_asym:.1f}x — {dominant} dominates ({max(pub_total, bru_total)}/{pub_total + bru_total})",
+    )
+
+
+def _check_deliberation_activation_trend() -> tuple[bool, str]:
+    """Check activation rate trend is not declining across batches (ex-delib-004)."""
+    from shared.deliberation_metrics import read_recent_metrics
+
+    metrics = read_recent_metrics(n=20)
+    # Only consider multi-round deliberations for trend (early convergence has 0% structurally)
+    multi_round = [m for m in metrics if m.total_rounds > 1]
+    if len(multi_round) < 4:
+        return (
+            True,
+            f"insufficient multi-round data for trend ({len(multi_round)} records, need 4+)",
+        )
+
+    mid = len(multi_round) // 2
+    first_half = sum(m.activation_rate for m in multi_round[:mid]) / mid
+    second_half = sum(m.activation_rate for m in multi_round[mid:]) / (len(multi_round) - mid)
+    diff = second_half - first_half
+
+    if diff >= -0.05:
+        trend = "rising" if diff > 0.05 else "stable"
+        return (
+            True,
+            f"activation trend {trend} ({first_half:.0%} -> {second_half:.0%}) across {len(multi_round)} deliberations",
+        )
+    return (
+        False,
+        f"activation trend falling ({first_half:.0%} -> {second_half:.0%}) across {len(multi_round)} deliberations",
+    )
+
+
+DELIBERATION_PROBES: list[SufficiencyProbe] = [
+    SufficiencyProbe(
+        id="probe-delib-001",
+        axiom_id="executive_function",
+        implication_id="ex-delib-001",
+        level="system",
+        question="Do multi-round deliberations pass >= 2 of 3 hoop tests?",
+        check=_check_deliberation_hoop_tests,
+    ),
+    SufficiencyProbe(
+        id="probe-delib-002",
+        axiom_id="executive_function",
+        implication_id="ex-delib-002",
+        level="system",
+        question="Does multi-round deliberation activation rate exceed 10%?",
+        check=_check_deliberation_activation_rate,
+    ),
+    SufficiencyProbe(
+        id="probe-delib-003",
+        axiom_id="executive_function",
+        implication_id="ex-delib-003",
+        level="system",
+        question="Is concession asymmetry within acceptable bounds (< 3.0x)?",
+        check=_check_deliberation_concession_asymmetry,
+    ),
+    SufficiencyProbe(
+        id="probe-delib-004",
+        axiom_id="executive_function",
+        implication_id="ex-delib-004",
+        level="system",
+        question="Is deliberation activation rate trend not declining?",
+        check=_check_deliberation_activation_trend,
+    ),
+]
+
+PROBES.extend(DELIBERATION_PROBES)
+
+
+# ── Skill health probes ──────────────────────────────────────────────────────
+
+# Known sync methods that should never be awaited
+_KNOWN_SYNC_METHODS = {"get_pending_review", "promote", "reject", "search"}
+
+
+def _check_skill_syntax() -> tuple[bool, str]:
+    """Check that Claude Code skill definitions are syntactically valid (ex-skill-health-001)."""
+    import ast
+
+    from shared.config import CLAUDE_CONFIG_DIR
+
+    skills_dir = CLAUDE_CONFIG_DIR / "skills"
+    if not skills_dir.exists():
+        return False, "skills directory not found"
+
+    checked = 0
+    problems = []
+
+    for skill_dir in sorted(skills_dir.iterdir()):
+        skill_file = skill_dir / "SKILL.md" if skill_dir.is_dir() else None
+        if skill_file is None or not skill_file.exists():
+            continue
+
+        checked += 1
+        content = skill_file.read_text()
+
+        # Check YAML frontmatter has name + description
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                import yaml
+
+                try:
+                    fm = yaml.safe_load(parts[1])
+                    if not fm or not fm.get("name") or not fm.get("description"):
+                        problems.append(
+                            f"{skill_dir.name}: missing name or description in frontmatter"
+                        )
+                        continue
+                except yaml.YAMLError as e:
+                    problems.append(f"{skill_dir.name}: invalid YAML frontmatter: {e}")
+                    continue
+            else:
+                problems.append(f"{skill_dir.name}: malformed frontmatter")
+                continue
+
+        # Extract python -c snippets and validate syntax
+        for m in re.finditer(r'python -c\s+"((?:[^"\\]|\\.)*)"', content):
+            snippet = m.group(1).replace('\\"', '"')
+            try:
+                tree = ast.parse(snippet)
+            except SyntaxError as e:
+                problems.append(f"{skill_dir.name}: Python syntax error: {e}")
+                continue
+
+            # Check for await on known sync methods
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
+                    func = node.value.func
+                    if isinstance(func, ast.Attribute) and func.attr in _KNOWN_SYNC_METHODS:
+                        problems.append(f"{skill_dir.name}: await on sync method .{func.attr}()")
+
+    if checked == 0:
+        return False, "no skill definitions found"
+
+    if not problems:
+        return True, f"all {checked} skill definitions are syntactically valid"
+    return False, f"{len(problems)} issue(s): {'; '.join(problems[:3])}"
+
+
+SKILL_PROBES: list[SufficiencyProbe] = [
+    SufficiencyProbe(
+        id="probe-skill-health-001",
+        axiom_id="executive_function",
+        implication_id="ex-skill-health-001",
+        level="subsystem",
+        question="Are all Claude Code skill definitions syntactically valid?",
+        check=_check_skill_syntax,
+    ),
+]
+
+PROBES.extend(SKILL_PROBES)
+
+
+# ── Security scanning probes ─────────────────────────────────────────────────
+
+
+def _check_gitignore_security() -> tuple[bool, str]:
+    """Check repos have required .gitignore patterns and no tracked secrets (cb-secret-scan-001)."""
+    import subprocess
+
+    from shared.config import COCKPIT_WEB_DIR
+
+    repos = {
+        "hapax-council": AI_AGENTS_DIR,
+        "obsidian-hapax": OBSIDIAN_HAPAX_DIR,
+        "hapaxromana": HAPAXROMANA_DIR,
+        "hapax-vscode": HAPAX_VSCODE_DIR,
+        "cockpit-web": COCKPIT_WEB_DIR,
+    }
+
+    required_patterns = [".env", "*.pem", "*.key", "credentials.json"]
+    sensitive_globs = ["*.pem", "*.key", ".env", ".env.*", "credentials.json"]
+    problems = []
+    checked = 0
+
+    for name, path in repos.items():
+        gitignore = path / ".gitignore"
+        if not path.exists():
+            continue
+        checked += 1
+
+        # Check .gitignore patterns
+        if gitignore.exists():
+            content = gitignore.read_text()
+            for pat in required_patterns:
+                if pat not in content:
+                    problems.append(f"{name}: .gitignore missing '{pat}'")
+        else:
+            problems.append(f"{name}: no .gitignore")
+
+        # Check for tracked sensitive files
+        for glob in sensitive_globs:
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(path), "ls-files", glob],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                tracked = result.stdout.strip()
+                if tracked:
+                    problems.append(f"{name}: tracked sensitive file(s): {tracked}")
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                continue
+
+    if checked == 0:
+        return False, "no repos found to check"
+
+    if not problems:
+        return True, f"all {checked} repos have required .gitignore patterns, no tracked secrets"
+    return False, f"{len(problems)} issue(s): {'; '.join(problems[:3])}"
+
+
+SECURITY_PROBES: list[SufficiencyProbe] = [
+    SufficiencyProbe(
+        id="probe-cb-secret-scan-001",
+        axiom_id="corporate_boundary",
+        implication_id="cb-key-001",
+        level="system",
+        question="Do repos have required .gitignore patterns and no tracked credential files?",
+        check=_check_gitignore_security,
+    ),
+]
+
+PROBES.extend(SECURITY_PROBES)
 
 
 def run_probes(*, axiom_id: str = "", level: str = "") -> list[ProbeResult]:

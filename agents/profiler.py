@@ -37,6 +37,10 @@ try:
 except ImportError:
     pass  # Langfuse optional
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 from agents.profiler_sources import (
     BRIDGED_SOURCE_TYPES,
     SourceChunk,
@@ -1477,6 +1481,18 @@ async def run_extraction(
     force_full: bool = False,
 ) -> None:
     """Main extraction pipeline."""
+    with _tracer.start_as_current_span(
+        "profiler.extract",
+        attributes={"agent.name": "profiler", "agent.repo": "hapax-council"},
+    ):
+        return await _run_extraction_impl(source_filter, force_full)
+
+
+async def _run_extraction_impl(
+    source_filter: str | None = None,
+    force_full: bool = False,
+) -> None:
+    """Implementation of run_extraction, wrapped by OTel span."""
     existing = load_existing_profile()
 
     # Determine which sources to skip
@@ -1645,11 +1661,9 @@ async def run_auto() -> None:
     Designed for systemd timer / cron invocation. Exits quickly (no LLM calls)
     when nothing has changed. Logs to stderr for journal compatibility.
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-        stream=sys.stderr,
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="profiler")
 
     # Pre-flight: abort early if critical services are unreachable
     try:

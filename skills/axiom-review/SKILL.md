@@ -9,15 +9,13 @@ Run:
 
 ```bash
 cd ~/projects/hapax-council && eval "$(direnv export bash 2>/dev/null)" && uv run python -c "
-import asyncio
 from shared.axiom_precedents import PrecedentStore
 
-async def review():
-    store = PrecedentStore()
-    pending = await store.get_pending_review()
-    if not pending:
-        print('No pending precedents to review.')
-        return
+store = PrecedentStore()
+pending = store.get_pending_review()
+if not pending:
+    print('No pending precedents to review.')
+else:
     for p in pending:
         print('---')
         print(f'ID: {p.id}')
@@ -28,8 +26,6 @@ async def review():
         print(f'Reasoning: {p.reasoning}')
         print(f'Distinguishing facts: {p.distinguishing_facts}')
         print()
-
-asyncio.run(review())
 "
 ```
 

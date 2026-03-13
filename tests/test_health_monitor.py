@@ -796,6 +796,7 @@ class TestRegistry:
             "capacity",
             "axioms",
             "voice",
+            "skills",
         }
         assert expected == set(CHECK_REGISTRY.keys())
 

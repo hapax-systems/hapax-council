@@ -75,8 +75,10 @@ def test_meeting_count_today():
     from shared.calendar_context import CalendarContext
 
     now = datetime.now(UTC)
-    today_start = (now + timedelta(hours=1)).isoformat()
-    today_end = (now + timedelta(hours=2)).isoformat()
+    end_of_day = now.replace(hour=23, minute=59, second=59)
+    remaining = (end_of_day - now).total_seconds()
+    today_start = (now + timedelta(seconds=remaining / 3)).isoformat()
+    today_end = (now + timedelta(seconds=remaining * 2 / 3)).isoformat()
     state = CalendarSyncState(
         events={
             "t1": CalendarEvent(event_id="t1", summary="Today", start=today_start, end=today_end),

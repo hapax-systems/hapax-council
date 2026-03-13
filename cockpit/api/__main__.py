@@ -8,7 +8,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import logging
 
 import uvicorn
 
@@ -25,10 +24,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="cockpit", level="DEBUG" if args.verbose else None)
 
     uvicorn.run(
         "cockpit.api.app:app",

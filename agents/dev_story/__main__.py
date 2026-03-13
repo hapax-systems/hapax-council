@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 
 from shared.config import CLAUDE_CONFIG_DIR, PROFILES_DIR
 
@@ -140,10 +139,9 @@ def main() -> None:
     parser.add_argument("--correlations", action="store_true", help="Show correlation quality")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="dev-story")
 
     if args.index:
         asyncio.run(cmd_index(incremental=args.incremental))

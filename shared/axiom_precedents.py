@@ -33,10 +33,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
+from opentelemetry import trace
 
 from shared.config import get_qdrant
 
 log = logging.getLogger(__name__)
+_rag_tracer = trace.get_tracer("hapax.rag")
 
 COLLECTION = "axiom-precedents"
 VECTOR_DIM = 768
@@ -128,54 +130,67 @@ class PrecedentStore:
         limit: int = 5,
     ) -> list[Precedent]:
         """Semantic search for precedents relevant to a situation."""
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
+        with _rag_tracer.start_as_current_span("rag.search") as span:
+            span.set_attribute("rag.query", situation[:200])
+            span.set_attribute("rag.collection", COLLECTION)
+            span.set_attribute("rag.top_k", limit)
 
-        from shared.config import embed
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        query_vec = embed(situation, prefix="search_query")
+            from shared.config import embed
 
-        query_filter = Filter(
-            must=[
-                FieldCondition(key="axiom_id", match=MatchValue(value=axiom_id)),
-                FieldCondition(key="superseded_by", match=MatchValue(value="")),
-            ]
-        )
+            query_vec = embed(situation, prefix="search_query")
 
-        results = self.client.query_points(
-            COLLECTION,
-            query=query_vec,
-            query_filter=query_filter,
-            limit=limit,
-        )
+            query_filter = Filter(
+                must=[
+                    FieldCondition(key="axiom_id", match=MatchValue(value=axiom_id)),
+                    FieldCondition(key="superseded_by", match=MatchValue(value="")),
+                ]
+            )
 
-        return [self._from_payload(p.id, p.payload) for p in results.points]
+            results = self.client.query_points(
+                COLLECTION,
+                query=query_vec,
+                query_filter=query_filter,
+                limit=limit,
+            )
+
+            precedents = [self._from_payload(p.id, p.payload) for p in results.points]
+            span.set_attribute("rag.result_count", len(precedents))
+            if results.points:
+                span.set_attribute("rag.top_score", results.points[0].score)
+
+            return precedents
 
     def record(self, precedent: Precedent) -> str:
         """Record a new precedent. Returns the precedent ID."""
-        from qdrant_client.models import PointStruct
+        with _rag_tracer.start_as_current_span("rag.index") as span:
+            from qdrant_client.models import PointStruct
 
-        from shared.config import embed
+            from shared.config import embed
 
-        if not precedent.id:
-            precedent.id = self._generate_id()
-        if not precedent.created:
-            precedent.created = datetime.now(UTC).isoformat()
+            if not precedent.id:
+                precedent.id = self._generate_id()
+            if not precedent.created:
+                precedent.created = datetime.now(UTC).isoformat()
 
-        vec = embed(precedent.situation, prefix="search_document")
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"axiom-precedent-{precedent.id}"))
+            vec = embed(precedent.situation, prefix="search_document")
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"axiom-precedent-{precedent.id}"))
 
-        self.client.upsert(
-            COLLECTION,
-            [PointStruct(id=point_id, vector=vec, payload=self._to_payload(precedent))],
-        )
+            self.client.upsert(
+                COLLECTION,
+                [PointStruct(id=point_id, vector=vec, payload=self._to_payload(precedent))],
+            )
 
-        log.info(
-            "Recorded precedent %s (axiom=%s, decision=%s)",
-            precedent.id,
-            precedent.axiom_id,
-            precedent.decision,
-        )
-        return precedent.id
+            span.set_attribute("rag.index.count", 1)
+
+            log.info(
+                "Recorded precedent %s (axiom=%s, decision=%s)",
+                precedent.id,
+                precedent.axiom_id,
+                precedent.decision,
+            )
+            return precedent.id
 
     def load_seeds(self, axioms_path: Path) -> int:
         """Load seed precedents from YAML files. Skips already-present IDs."""

@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 
+from opentelemetry import trace
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
 from qdrant_client import QdrantClient
@@ -108,6 +109,7 @@ def get_qdrant() -> QdrantClient:
 
 
 _log = logging.getLogger("shared.config")
+_rag_tracer = trace.get_tracer("hapax.rag")
 
 _ollama_client = None
 
@@ -134,17 +136,25 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
         RuntimeError: If the Ollama embed call fails.
     """
     model_name = model or EMBEDDING_MODEL
-    prefixed = f"{prefix}: {text}" if prefix else text
-    _log.debug("embed: model=%s len=%d prefix=%s", model_name, len(text), prefix)
-    try:
-        client = _get_ollama_client()
-        result = client.embed(model=model_name, input=prefixed)
-    except Exception as exc:
-        raise RuntimeError(f"Embedding failed (model={model_name}): {exc}") from exc
-    vec = result["embeddings"][0]
-    if len(vec) != EXPECTED_EMBED_DIMENSIONS:
-        raise RuntimeError(f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding, got {len(vec)}")
-    return vec
+    with _rag_tracer.start_as_current_span("rag.embed") as span:
+        span.set_attribute("rag.embed.model", model_name)
+        span.set_attribute("rag.embed.prefix", prefix)
+        span.set_attribute("rag.embed.text_length", len(text))
+        prefixed = f"{prefix}: {text}" if prefix else text
+        _log.debug("embed: model=%s len=%d prefix=%s", model_name, len(text), prefix)
+        try:
+            client = _get_ollama_client()
+            result = client.embed(model=model_name, input=prefixed)
+        except Exception as exc:
+            span.set_attribute("rag.error", str(exc)[:500])
+            raise RuntimeError(f"Embedding failed (model={model_name}): {exc}") from exc
+        vec = result["embeddings"][0]
+        if len(vec) != EXPECTED_EMBED_DIMENSIONS:
+            raise RuntimeError(
+                f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding, got {len(vec)}"
+            )
+        span.set_attribute("rag.embed.dimensions", len(vec))
+        return vec
 
 
 def embed_batch(
@@ -168,20 +178,47 @@ def embed_batch(
     if not texts:
         return []
     model_name = model or EMBEDDING_MODEL
-    prefixed = [f"{prefix}: {t}" if prefix else t for t in texts]
-    _log.debug("embed_batch: model=%s count=%d prefix=%s", model_name, len(texts), prefix)
-    try:
-        client = _get_ollama_client()
-        result = client.embed(model=model_name, input=prefixed)
-    except Exception as exc:
-        raise RuntimeError(f"Batch embedding failed (model={model_name}): {exc}") from exc
-    embeddings = result["embeddings"]
-    for i, vec in enumerate(embeddings):
-        if len(vec) != EXPECTED_EMBED_DIMENSIONS:
-            raise RuntimeError(
-                f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding at index {i}, got {len(vec)}"
-            )
-    return embeddings
+    with _rag_tracer.start_as_current_span("rag.embed_batch") as span:
+        span.set_attribute("rag.embed_batch.model", model_name)
+        span.set_attribute("rag.embed_batch.prefix", prefix)
+        span.set_attribute("rag.embed_batch.count", len(texts))
+        span.set_attribute("rag.embed_batch.total_chars", sum(len(t) for t in texts))
+        prefixed = [f"{prefix}: {t}" if prefix else t for t in texts]
+        _log.debug("embed_batch: model=%s count=%d prefix=%s", model_name, len(texts), prefix)
+        try:
+            client = _get_ollama_client()
+            result = client.embed(model=model_name, input=prefixed)
+        except Exception as exc:
+            span.set_attribute("rag.error", str(exc)[:500])
+            raise RuntimeError(f"Batch embedding failed (model={model_name}): {exc}") from exc
+        embeddings = result["embeddings"]
+        for i, vec in enumerate(embeddings):
+            if len(vec) != EXPECTED_EMBED_DIMENSIONS:
+                raise RuntimeError(
+                    f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding at index {i}, got {len(vec)}"
+                )
+        span.set_attribute("rag.embed_batch.dimensions", len(embeddings[0]) if embeddings else 0)
+        return embeddings
+
+
+_expected_timers: dict[str, str] | None = None
+
+
+def load_expected_timers() -> dict[str, str]:
+    """Load the expected systemd timer manifest (cached).
+
+    Returns a dict mapping agent_name → timer unit name.
+    """
+    global _expected_timers
+    if _expected_timers is not None:
+        return _expected_timers
+
+    import yaml
+
+    manifest = AI_AGENTS_DIR / "systemd" / "expected-timers.yaml"
+    data = yaml.safe_load(manifest.read_text())
+    _expected_timers = data["timers"]
+    return _expected_timers
 
 
 def validate_embed_dimensions() -> None:

@@ -8,7 +8,7 @@ Knowledge workers perform substantial executive function work that produces no d
 
 hapax-council externalizes this work into infrastructure. 26 agents on a single workstation handle management context, knowledge curation, system health, voice interaction, and environmental awareness. They coordinate through markdown files on disk (not message queues or databases), and a reactive engine watches for changes and cascades downstream work automatically. A meeting transcript placed in the right directory is processed, the relevant person's context is updated, nudges are recalculated, and a notification is queued — without operator action.
 
-The cognitive constraint is encoded as a constitutional axiom (`executive_function`, weight 95): agents must be zero-config, errors must include next actions, routine work must be automated, state must be visible without investigation. The axiom produces 40+ derived implications enforced at commit time.
+The cognitive constraint is encoded as a constitutional axiom (`executive_function`, weight 95): agents must be zero-config, errors must include next actions, routine work must be automated, state must be visible without investigation. The four axioms produce 78 derived implications enforced at commit time, including 4 that govern the system's own deliberative process (hoop tests, activation rates, concession asymmetry, trend monitoring).
 
 The system is constrained by four constitutional axioms defined in [hapax-constitution](https://github.com/ryanklee/hapax-constitution). Axioms are formal constraints with weighted enforcement, derived implications at graduated tiers (T0 blocks code from existing, T1 requires review, T2 warns), and commit-time hooks that prevent violations from landing. Single-operator is absolute (weight 100): no auth, no roles, no multi-user code anywhere. Management safety (weight 85) ensures agents never generate feedback language or coaching recommendations about individuals. An interpretive canon handles unforeseen cases; a precedent store builds consistency over time. See the constitution for the full governance architecture.
 
@@ -45,6 +45,8 @@ Both are composable — chains can be nested, and veto and fallback can be combi
 
 **System.** Health monitoring every 15 minutes (deterministic, zero LLM), documentation drift detection weekly, knowledge base pruning (stale entries, near-duplicates), infrastructure manifest snapshots. When something breaks, agents fix what they can and notify about what they can't.
 
+**Deliberation evaluation.** The system runs adversarial deliberations (Publius vs Brutus, after the Federalist Papers) over supremacy tensions between axiom implications. A metrics extraction layer computes activation rates, concession asymmetry, responsive reference rates, and position movement from deliberation records. Four sufficiency probes under the `executive_function` axiom evaluate process health — the governance system governs itself through the same mechanism it uses to govern agents.
+
 **Operator profiler.** Extracts and maintains a structured model of the operator across 13 dimensions (goals, constraints, work patterns, communication style, cognitive patterns, creative preferences) from 6 source types (config files, Claude Code transcripts, git repos, Langfuse traces, Obsidian vault, calendar data). The profile is injected into every agent's system prompt, so agent outputs are contextualized to this specific operator's priorities, knowledge, and working style. The profile updates continuously from source data; the operator does not configure it.
 
 **Dev narrative.** Correlates git commits with Claude Code conversation transcripts to reconstruct why decisions were made, not just what changed.
@@ -53,7 +55,7 @@ Both are composable — chains can be nested, and veto and fallback can be combi
 |----------|--------|-----------|
 | Management | `management_prep`, `briefing`, `profiler`, `meeting_lifecycle` | Yes |
 | Sync/RAG | `gdrive_sync`, `gcalendar_sync`, `gmail_sync`, `youtube_sync`, `chrome_sync`, `claude_code_sync`, `obsidian_sync` | No |
-| Analysis | `digest`, `scout`, `drift_detector`, `research`, `code_review` | Yes |
+| Analysis | `digest`, `scout`, `drift_detector`, `research`, `code_review`, `deliberation_eval` | Yes |
 | System | `health_monitor`, `introspect`, `knowledge_maint` | No |
 | Knowledge | `ingest`, `query` | Mixed |
 | Voice | `hapax_voice`, `audio_processor` | Mixed |
@@ -118,7 +120,7 @@ Agents require LiteLLM (localhost:4000), Qdrant (localhost:6333), and Ollama (lo
 ```
 hapax-council/
 ├── agents/           26 agents + 4 agent packages (hapax_voice, demo_pipeline, dev_story, system_ops)
-├── shared/           40 shared modules (config, axioms, profile, frontmatter, context, embedding)
+├── shared/           41 shared modules (config, axioms, profile, frontmatter, context, embedding, deliberation_metrics)
 ├── cockpit/          FastAPI API + 11 data collectors + reactive engine (watcher, rules, executor)
 ├── council-web/      React SPA dashboard
 ├── vscode/           VS Code extension

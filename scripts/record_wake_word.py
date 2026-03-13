@@ -63,7 +63,9 @@ def save_wav(audio: np.ndarray, path: Path) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="record-wake")
 
     parser = argparse.ArgumentParser(description="Record wake word utterances")
     parser.add_argument("--count", type=int, default=50, help="Target number of recordings")

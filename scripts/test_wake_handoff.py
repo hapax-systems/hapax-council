@@ -22,10 +22,9 @@ import time
 
 import numpy as np
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
+from shared.log_setup import configure_logging
+
+configure_logging(agent="test-wake")
 log = logging.getLogger("test_wake_handoff")
 
 

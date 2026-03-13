@@ -14,10 +14,11 @@ from typing import TYPE_CHECKING
 from agents.hapax_voice.activity_mode import classify_activity_mode
 from agents.hapax_voice.audio_input import AudioInputStream
 from agents.hapax_voice.chime_player import ChimePlayer
-from agents.hapax_voice.commands import Command
+from agents.hapax_voice.commands import Command, Schedule
 from agents.hapax_voice.config import load_config
 from agents.hapax_voice.context_gate import ContextGate
 from agents.hapax_voice.event_log import EventLog
+from agents.hapax_voice.executor import ExecutorRegistry, ScheduleQueue
 from agents.hapax_voice.frame_gate import FrameGate
 from agents.hapax_voice.governance import VetoResult
 from agents.hapax_voice.governor import PipelineGovernor
@@ -33,8 +34,12 @@ from agents.hapax_voice.screen_models import CameraConfig
 if TYPE_CHECKING:
     from agents.hapax_voice.hyprland_listener import FocusEvent
 from agents.hapax_voice.session import SessionManager
-from agents.hapax_voice.tracing import VoiceTracer
 from agents.hapax_voice.tts import TTSManager
+
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
 from agents.hapax_voice.wake_word import WakeWordDetector
 from agents.hapax_voice.wake_word_porcupine import PorcupineWakeWord
 from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
@@ -219,14 +224,128 @@ class VoiceDaemon:
             retention_days=self.cfg.observability_events_retention_days,
             enabled=self.cfg.observability_events_enabled,
         )
-        self.tracer = VoiceTracer(enabled=self.cfg.observability_langfuse_enabled)
-
         # Wire observability into subsystems
         self.presence.set_event_log(self.event_log)
         self.gate.set_event_log(self.event_log)
         self.notifications.set_event_log(self.event_log)
         self.workspace_monitor.set_event_log(self.event_log)
-        self.workspace_monitor.set_tracer(self.tracer)
+
+        # Actuation layer
+        self.schedule_queue = ScheduleQueue()
+        self.executor_registry = ExecutorRegistry()
+        self._shared_pa = None  # lazy init in run() if needed
+        self._setup_actuation()
+
+    # ------------------------------------------------------------------
+    # Actuation setup
+    # ------------------------------------------------------------------
+
+    def _setup_actuation(self) -> None:
+        """Wire MC/OBS governance → ScheduleQueue/ExecutorRegistry."""
+        # MC actuation: MIDI clock → governance → schedule → audio playback
+        if self.cfg.mc_enabled:
+            try:
+                self._setup_mc_actuation()
+            except Exception:
+                log.exception("MC actuation setup failed")
+
+        # OBS actuation: perception tick → governance → command → scene switch
+        if self.cfg.obs_enabled:
+            try:
+                self._setup_obs_actuation()
+            except Exception:
+                log.exception("OBS actuation setup failed")
+
+    def _setup_mc_actuation(self) -> None:
+        """Wire MC governance pipeline to AudioExecutor."""
+        from agents.hapax_voice.audio_executor import AudioExecutor
+        from agents.hapax_voice.mc_governance import compose_mc_governance
+        from agents.hapax_voice.sample_bank import SampleBank
+
+        # Load samples
+        sample_bank = SampleBank(
+            base_dir=Path(self.cfg.mc_sample_dir).expanduser(),
+            sample_rate=self.cfg.mc_sample_rate,
+        )
+        count = sample_bank.load()
+        if count == 0:
+            log.info("No MC samples found, MC actuation disabled")
+            return
+
+        # Shared PyAudio (lazy init)
+        self._ensure_shared_pa()
+
+        # Register AudioExecutor
+        audio_exec = AudioExecutor(pa=self._shared_pa, sample_bank=sample_bank)
+        self.executor_registry.register(audio_exec)
+
+        # Find MIDI clock tick event from backends
+        midi_backend = self.perception.registered_backends.get("midi_clock")
+        if midi_backend is None:
+            log.info("No MIDI clock backend, MC governance cannot fire")
+            return
+
+        # Compose MC governance: tick → fused → schedule
+
+        mc_tick = Event[float]()
+        mc_output = compose_mc_governance(
+            trigger=mc_tick,
+            behaviors=self.perception.behaviors,
+        )
+
+        def _on_mc_schedule(timestamp: float, schedule: Schedule | None) -> None:
+            if schedule is not None and schedule.command.action != "silence":
+                self.schedule_queue.enqueue(schedule)
+                self.event_log.emit(
+                    "mc_schedule_enqueued",
+                    action=schedule.command.action,
+                    wall_time=schedule.wall_time,
+                )
+
+        mc_output.subscribe(_on_mc_schedule)
+        self._mc_tick_event = mc_tick
+        log.info("MC actuation wired: MIDI → governance → schedule → audio")
+
+    def _setup_obs_actuation(self) -> None:
+        """Wire OBS governance pipeline to OBSExecutor."""
+        from agents.hapax_voice.obs_executor import OBSExecutor
+        from agents.hapax_voice.obs_governance import compose_obs_governance
+
+        obs_exec = OBSExecutor(
+            host=self.cfg.obs_host,
+            port=self.cfg.obs_port,
+        )
+        self.executor_registry.register(obs_exec)
+
+        obs_tick = Event[float]()
+        obs_output = compose_obs_governance(
+            trigger=obs_tick,
+            behaviors=self.perception.behaviors,
+        )
+
+        def _on_obs_command(timestamp: float, cmd: Command | None) -> None:
+            if cmd is not None:
+                self.executor_registry.dispatch(cmd)
+                self.event_log.emit(
+                    "obs_command_dispatched",
+                    action=cmd.action,
+                    transition=cmd.params.get("transition", ""),
+                )
+
+        obs_output.subscribe(_on_obs_command)
+        self._obs_tick_event = obs_tick
+        log.info("OBS actuation wired: perception → governance → command → scene")
+
+    def _ensure_shared_pa(self) -> None:
+        """Create shared PyAudio instance if not already created."""
+        if self._shared_pa is not None:
+            return
+        try:
+            import pyaudio
+
+            self._shared_pa = pyaudio.PyAudio()
+        except Exception:
+            log.warning("PyAudio not available, audio executors will be unavailable")
 
     # ------------------------------------------------------------------
     # Perception backend registration
@@ -268,6 +387,19 @@ class VoiceDaemon:
             self.perception.register_backend(CircadianBackend())
         except Exception:
             log.info("CircadianBackend not available, skipping")
+
+        # MIDI clock backend (for MC governance)
+        try:
+            from agents.hapax_voice.backends.midi_clock import MidiClockBackend
+
+            self.perception.register_backend(
+                MidiClockBackend(
+                    port_name=self.cfg.midi_port_name,
+                    beats_per_bar=self.cfg.midi_beats_per_bar,
+                )
+            )
+        except Exception:
+            log.info("MidiClockBackend not available, skipping")
 
     # ------------------------------------------------------------------
     # Wake word engine selection
@@ -724,6 +856,28 @@ class VoiceDaemon:
             except Exception:
                 log.exception("Error in perception loop")
 
+    async def _actuation_loop(self) -> None:
+        """Drain ScheduleQueue and dispatch ready commands at beat precision."""
+        tick_s = self.cfg.actuation_tick_ms / 1000.0
+        while self._running:
+            try:
+                now = time.monotonic()
+                ready = self.schedule_queue.drain(now)
+                for schedule in ready:
+                    latency_ms = (now - schedule.wall_time) * 1000.0
+                    dispatched = self.executor_registry.dispatch(schedule.command)
+                    self.event_log.emit(
+                        "actuation",
+                        action=schedule.command.action,
+                        latency_ms=round(latency_ms, 1),
+                        dispatched=dispatched,
+                    )
+                await asyncio.sleep(tick_s)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception("Error in actuation loop")
+
     async def run(self) -> None:
         """Main daemon loop."""
         log.info("Hapax Voice daemon starting (backend=%s)", self.cfg.backend)
@@ -787,6 +941,10 @@ class VoiceDaemon:
         self._background_tasks.append(asyncio.create_task(self._perception_loop()))
         self._background_tasks.append(asyncio.create_task(self._wake_word_processor()))
 
+        # Actuation loop (drains ScheduleQueue at beat precision)
+        if self.cfg.mc_enabled or self.cfg.obs_enabled:
+            self._background_tasks.append(asyncio.create_task(self._actuation_loop()))
+
         try:
             while self._running:
                 # Session timeout check
@@ -818,9 +976,21 @@ class VoiceDaemon:
 
             self.chime_player.close()
 
+            # Close actuation
+            self.executor_registry.close_all()
+            if self._shared_pa is not None:
+                try:
+                    self._shared_pa.terminate()
+                except Exception:
+                    pass
+
             # Flush observability
             self.event_log.close()
-            self.tracer.flush()
+            from opentelemetry.trace import get_tracer_provider
+
+            provider = get_tracer_provider()
+            if hasattr(provider, "force_flush"):
+                provider.force_flush(timeout_millis=5000)
 
             # Cancel background tasks
             for task in self._background_tasks:
@@ -841,10 +1011,9 @@ def main() -> None:
     parser.add_argument("--check", action="store_true", help="Verify config and exit")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="hapax-voice")
 
     cfg = load_config(Path(args.config) if args.config else None)
     if args.check:

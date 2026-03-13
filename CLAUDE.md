@@ -65,16 +65,17 @@ Tests use `unittest.mock` — no pytest fixtures in conftest. Each test file is 
 
 ## Axiom Governance
 
-4 constitutional axioms enforced via `shared/axiom_*.py` and commit hooks in `hooks/`:
+5 axioms (3 constitutional, 2 domain) enforced via `shared/axiom_*.py`, `shared/consent.py`, and commit hooks in `hooks/`:
 
 | Axiom | Weight | Constraint |
 |-------|--------|------------|
 | single_user | 100 | One operator. No auth, roles, or collaboration features. |
 | executive_function | 95 | Zero-config agents, errors include next actions, routine work automated. |
 | corporate_boundary | 90 | Work data stays in employer systems. Home system = personal + management-practice only. |
+| interpersonal_transparency | 88 | No persistent state about non-operator persons without active consent contract. Opt-in, inspectable, revocable. |
 | management_governance | 85 | LLMs prepare, humans deliver. No generated feedback/coaching about individuals. |
 
-T0 violations are blocked by SDLC hooks. Axiom definitions in `axioms/registry.yaml`, implications in `axioms/implications/`.
+T0 violations are blocked by SDLC hooks. Axiom definitions in `axioms/registry.yaml`, implications in `axioms/implications/`. Consent contracts in `axioms/contracts/`, enforced via `shared/consent.py`.
 
 ## SDLC Pipeline
 
@@ -86,7 +87,7 @@ Issue opened (labeled "agent-eligible")
   → Plan (Sonnet): identify files, acceptance criteria, diff estimate
   → Implement (Opus on Claude Code): sandboxed agent/* branch, run tests, open PR
   → Adversarial Review (Sonnet, independent context): up to 3 rounds, then human escalation
-  → Axiom Gate (Haiku): structural checks + semantic LLM judge against 4 axioms
+  → Axiom Gate (Haiku): structural checks + semantic LLM judge against 5 axioms
   → Auto-merge (squash) on pass, block on T0 violation, advisory label on T1+
 ```
 

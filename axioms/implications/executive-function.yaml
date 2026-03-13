@@ -281,6 +281,60 @@ implications:
   canon: purposivist
   mode: sufficiency
   level: component
+- id: ex-delib-001
+  tier: T1
+  text: Multi-round deliberations must pass at least 2 of 3 process-tracing hoop
+    tests (position shift, argument tracing, counterfactual divergence) to qualify
+    as genuine engagement rather than performative exchange.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: system
+- id: ex-delib-002
+  tier: T2
+  text: Multi-round deliberation activation rate (fraction of pre-committed update
+    conditions acknowledged as met) must exceed 10% to indicate agents are engaging
+    with each other's arguments rather than stonewalling.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: system
+- id: ex-delib-003
+  tier: T2
+  text: Concession asymmetry ratio across the rolling window of recent deliberations
+    must not exceed 3.0x, indicating one agent is systematically capitulating rather
+    than genuinely deliberating.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: system
+- id: ex-delib-004
+  tier: T2
+  text: Deliberation activation rate trend must not show sustained decline across
+    batches, which would indicate governance process degradation requiring prompt
+    recalibration.
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: system
+- id: ex-skill-health-001
+  tier: T1
+  text: Skill definitions (SKILL.md files) must be syntactically valid. YAML frontmatter
+    must include name and description. Embedded Python snippets must parse without
+    errors and must not await known synchronous methods.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+- id: ex-governance-001
+  tier: T1
+  text: Governance artifacts (precedents, audit entries) must have lifecycle management
+    with escalation. Agent-created precedents must surface for operator review within
+    7 days and escalate after 21 days.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: system
 - id: ex-prose-001
   tier: T0
   text: >

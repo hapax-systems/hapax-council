@@ -259,11 +259,11 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.WARNING, format="%(message)s")
-    # Only show our own messages, suppress all library logging
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="demo-eval", level="WARNING")
+    # Only show our own messages
     logging.getLogger("agents").setLevel(logging.INFO)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     def print_flush(msg: str) -> None:
         """Print with immediate flush for real-time visibility."""

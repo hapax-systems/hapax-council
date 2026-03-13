@@ -40,6 +40,10 @@ try:
 except ImportError:
     pass
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 from agents.activity_analyzer import generate_activity_report
 from agents.health_monitor import format_human as format_health
 from agents.health_monitor import run_checks
@@ -227,6 +231,61 @@ def _collect_profile_health() -> str | None:
     return "\n".join(lines)
 
 
+def _collect_deliberation_health() -> str | None:
+    """Collect deliberation health via metrics + sufficiency probes."""
+    try:
+        from shared.deliberation_metrics import read_recent_metrics
+
+        metrics = read_recent_metrics(n=6)
+        if not metrics:
+            return None
+
+        parts = []
+        latest = metrics[-1]
+        parts.append(
+            f"- Latest: {latest.deliberation_id} "
+            f"(activation={latest.activation_rate:.0%}, concessions={latest.concession_count})"
+        )
+
+        pseudo_count = sum(1 for m in metrics if m.is_pseudo_deliberation)
+        if pseudo_count:
+            parts.append(
+                f"- {pseudo_count}/{len(metrics)} recent deliberations flagged as pseudo-deliberation"
+            )
+
+        # Agent bias from recent metrics
+        pub_total = sum(m.concession_count_publius for m in metrics)
+        bru_total = sum(m.concession_count_brutus for m in metrics)
+        total = pub_total + bru_total
+        if total >= 3 and max(pub_total, bru_total) / total > 0.75:
+            dominant = "publius" if pub_total > bru_total else "brutus"
+            parts.append(
+                f"- Agent bias: {dominant} dominates concessions ({max(pub_total, bru_total)}/{total})"
+            )
+
+        # Run deliberation probes for governance status
+        try:
+            from shared.sufficiency_probes import run_probes
+
+            probe_results = run_probes(axiom_id="executive_function")
+            delib_probes = [r for r in probe_results if r.probe_id.startswith("probe-delib-")]
+            failing = [r for r in delib_probes if not r.met]
+            if failing:
+                parts.append(
+                    f"- Probes: {len(delib_probes) - len(failing)}/{len(delib_probes)} passing"
+                )
+                for f in failing:
+                    parts.append(f"  - FAIL {f.probe_id}: {f.evidence}")
+            else:
+                parts.append(f"- Probes: {len(delib_probes)}/{len(delib_probes)} passing")
+        except Exception:
+            pass
+
+        return "\n\n## Deliberation Health\n" + "\n".join(parts)
+    except Exception:
+        return None
+
+
 def _collect_axiom_status() -> dict:
     """Collect axiom health: sufficiency probes + pending precedents."""
     result: dict = {
@@ -258,6 +317,15 @@ def _collect_axiom_status() -> dict:
 
 async def generate_briefing(hours: int = 24) -> Briefing:
     """Collect telemetry, run live health check, synthesize briefing."""
+    with _tracer.start_as_current_span(
+        "briefing.generate",
+        attributes={"agent.name": "briefing", "agent.repo": "hapax-council"},
+    ):
+        return await _generate_briefing_impl(hours)
+
+
+async def _generate_briefing_impl(hours: int = 24) -> Briefing:
+    """Implementation of generate_briefing, wrapped by OTel span."""
     # Collect activity data (no LLM calls)
     activity = await generate_activity_report(hours)
 
@@ -402,6 +470,13 @@ async def generate_briefing(hours: int = 24) -> Briefing:
                 parts.append(f"**Uptime Trend:** latest day {latest_uptime:.0f}%")
         if parts:
             predictive_section = "\n## Predictions & Trends\n" + "\n".join(parts) + "\n"
+    except Exception:
+        pass
+
+    # Deliberation health section
+    deliberation_section = ""
+    try:
+        deliberation_section = _collect_deliberation_health() or ""
     except Exception:
         pass
 
@@ -591,7 +666,7 @@ async def generate_briefing(hours: int = 24) -> Briefing:
 ```
 {health_summary}
 ```
-{scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{sdlc_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{gaps_section}{profile_section}
+{scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{sdlc_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{deliberation_section}{gaps_section}{profile_section}
 Generate a briefing for this system state. The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
 The lookback window is {hours} hours."""
 
