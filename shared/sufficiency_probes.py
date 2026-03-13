@@ -595,7 +595,10 @@ def _check_deliberation_concession_asymmetry() -> tuple[bool, str]:
 
     mean_asym = sum(m.concession_asymmetry_ratio for m in with_concessions) / len(with_concessions)
     if mean_asym <= 3.0:
-        return True, f"mean concession asymmetry {mean_asym:.1f}x across {len(with_concessions)} deliberations"
+        return (
+            True,
+            f"mean concession asymmetry {mean_asym:.1f}x across {len(with_concessions)} deliberations",
+        )
 
     # Identify which agent dominates
     pub_total = sum(m.concession_count_publius for m in with_concessions)
@@ -615,7 +618,10 @@ def _check_deliberation_activation_trend() -> tuple[bool, str]:
     # Only consider multi-round deliberations for trend (early convergence has 0% structurally)
     multi_round = [m for m in metrics if m.total_rounds > 1]
     if len(multi_round) < 4:
-        return True, f"insufficient multi-round data for trend ({len(multi_round)} records, need 4+)"
+        return (
+            True,
+            f"insufficient multi-round data for trend ({len(multi_round)} records, need 4+)",
+        )
 
     mid = len(multi_round) // 2
     first_half = sum(m.activation_rate for m in multi_round[:mid]) / mid
@@ -624,7 +630,10 @@ def _check_deliberation_activation_trend() -> tuple[bool, str]:
 
     if diff >= -0.05:
         trend = "rising" if diff > 0.05 else "stable"
-        return True, f"activation trend {trend} ({first_half:.0%} -> {second_half:.0%}) across {len(multi_round)} deliberations"
+        return (
+            True,
+            f"activation trend {trend} ({first_half:.0%} -> {second_half:.0%}) across {len(multi_round)} deliberations",
+        )
     return (
         False,
         f"activation trend falling ({first_half:.0%} -> {second_half:.0%}) across {len(multi_round)} deliberations",

@@ -245,7 +245,9 @@ def _collect_deliberation_health() -> str | None:
 
         pseudo_count = sum(1 for m in metrics if m.is_pseudo_deliberation)
         if pseudo_count:
-            parts.append(f"- {pseudo_count}/{len(metrics)} recent deliberations flagged as pseudo-deliberation")
+            parts.append(
+                f"- {pseudo_count}/{len(metrics)} recent deliberations flagged as pseudo-deliberation"
+            )
 
         # Agent bias from recent metrics
         pub_total = sum(m.concession_count_publius for m in metrics)
@@ -253,7 +255,9 @@ def _collect_deliberation_health() -> str | None:
         total = pub_total + bru_total
         if total >= 3 and max(pub_total, bru_total) / total > 0.75:
             dominant = "publius" if pub_total > bru_total else "brutus"
-            parts.append(f"- Agent bias: {dominant} dominates concessions ({max(pub_total, bru_total)}/{total})")
+            parts.append(
+                f"- Agent bias: {dominant} dominates concessions ({max(pub_total, bru_total)}/{total})"
+            )
 
         # Run deliberation probes for governance status
         try:
@@ -263,7 +267,9 @@ def _collect_deliberation_health() -> str | None:
             delib_probes = [r for r in probe_results if r.probe_id.startswith("probe-delib-")]
             failing = [r for r in delib_probes if not r.met]
             if failing:
-                parts.append(f"- Probes: {len(delib_probes) - len(failing)}/{len(delib_probes)} passing")
+                parts.append(
+                    f"- Probes: {len(delib_probes) - len(failing)}/{len(delib_probes)} passing"
+                )
                 for f in failing:
                     parts.append(f"  - FAIL {f.probe_id}: {f.evidence}")
             else:
