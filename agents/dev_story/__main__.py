@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 
 from shared.config import CLAUDE_CONFIG_DIR, PROFILES_DIR
 
