@@ -172,8 +172,7 @@ def build_obs_fallback_chain(cfg: OBSConfig | None = None) -> FallbackChain[Fuse
             Candidate(
                 name="face_cam_mc_bias",
                 predicate=lambda ctx, e=c.face_cam_energy_min: (
-                    _mc_fired_recently(ctx)
-                    and ctx.get_sample("audio_energy_rms").value >= e
+                    _mc_fired_recently(ctx) and ctx.get_sample("audio_energy_rms").value >= e
                 ),
                 action=OBSScene.FACE_CAM,
             ),

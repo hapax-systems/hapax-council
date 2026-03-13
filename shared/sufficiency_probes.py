@@ -710,7 +710,9 @@ def _check_skill_syntax() -> tuple[bool, str]:
                 try:
                     fm = yaml.safe_load(parts[1])
                     if not fm or not fm.get("name") or not fm.get("description"):
-                        problems.append(f"{skill_dir.name}: missing name or description in frontmatter")
+                        problems.append(
+                            f"{skill_dir.name}: missing name or description in frontmatter"
+                        )
                         continue
                 except yaml.YAMLError as e:
                     problems.append(f"{skill_dir.name}: invalid YAML frontmatter: {e}")
@@ -733,9 +735,7 @@ def _check_skill_syntax() -> tuple[bool, str]:
                 if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
                     func = node.value.func
                     if isinstance(func, ast.Attribute) and func.attr in _KNOWN_SYNC_METHODS:
-                        problems.append(
-                            f"{skill_dir.name}: await on sync method .{func.attr}()"
-                        )
+                        problems.append(f"{skill_dir.name}: await on sync method .{func.attr}()")
 
     if checked == 0:
         return False, "no skill definitions found"

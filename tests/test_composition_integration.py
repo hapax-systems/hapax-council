@@ -120,47 +120,82 @@ class TestSuppressionModulatesMCThreshold(unittest.TestCase):
 class TestArbiterResourceContention(unittest.TestCase):
     def test_higher_priority_wins(self):
         arb = ResourceArbiter(DEFAULT_PRIORITIES)
-        arb.claim(ResourceClaim(
-            resource="audio_output", chain="mc", priority=50,
-            command="vocal_throw", created_at=1.0,
-        ))
-        arb.claim(ResourceClaim(
-            resource="audio_output", chain="conversation", priority=100,
-            command="tts_announce", created_at=2.0,
-        ))
+        arb.claim(
+            ResourceClaim(
+                resource="audio_output",
+                chain="mc",
+                priority=50,
+                command="vocal_throw",
+                created_at=1.0,
+            )
+        )
+        arb.claim(
+            ResourceClaim(
+                resource="audio_output",
+                chain="conversation",
+                priority=100,
+                command="tts_announce",
+                created_at=2.0,
+            )
+        )
         winners = arb.drain_winners(now=3.0)
         winner_actions = {w.resource: w.command for w in winners}
         self.assertEqual(winner_actions["audio_output"], "tts_announce")
 
     def test_held_claim_blocks_then_release_unblocks(self):
         arb = ResourceArbiter(DEFAULT_PRIORITIES)
-        arb.claim(ResourceClaim(
-            resource="audio_output", chain="conversation", priority=100,
-            command="tts_announce", hold_until=10.0, created_at=1.0,
-        ))
-        arb.claim(ResourceClaim(
-            resource="audio_output", chain="mc", priority=50,
-            command="vocal_throw", hold_until=0.0, created_at=2.0,
-        ))
+        arb.claim(
+            ResourceClaim(
+                resource="audio_output",
+                chain="conversation",
+                priority=100,
+                command="tts_announce",
+                hold_until=10.0,
+                created_at=1.0,
+            )
+        )
+        arb.claim(
+            ResourceClaim(
+                resource="audio_output",
+                chain="mc",
+                priority=50,
+                command="vocal_throw",
+                hold_until=0.0,
+                created_at=2.0,
+            )
+        )
         # Conversation holds
         winners = arb.drain_winners(now=3.0)
         self.assertEqual(winners[0].chain, "conversation")
         # Release conversation
         arb.release("audio_output", "conversation")
         # MC should now win
-        arb.claim(ResourceClaim(
-            resource="audio_output", chain="mc", priority=50,
-            command="vocal_throw", hold_until=0.0, created_at=4.0,
-        ))
+        arb.claim(
+            ResourceClaim(
+                resource="audio_output",
+                chain="mc",
+                priority=50,
+                command="vocal_throw",
+                hold_until=0.0,
+                created_at=4.0,
+            )
+        )
         winners = arb.drain_winners(now=5.0)
         self.assertEqual(winners[0].chain, "mc")
 
     def test_gc_sweep_removes_stale_holds(self):
         arb = ResourceArbiter(DEFAULT_PRIORITIES)
-        arb.claim(ResourceClaim(
-            resource="audio_output", chain="mc", priority=50,
-            command="vocal_throw", hold_until=5.0, max_hold_s=2.0, created_at=1.0,
-        ))
+        arb.claim(
+            ResourceClaim(
+                resource="audio_output",
+                chain="mc",
+                priority=50,
+                command="vocal_throw",
+                hold_until=5.0,
+                max_hold_s=2.0,
+                created_at=1.0,
+            )
+        )
         winners = arb.drain_winners(now=4.0)  # age=3 > max_hold_s=2
         self.assertEqual(len(winners), 0)
 
@@ -235,7 +270,9 @@ class TestMusicalPositionIntegration(unittest.TestCase):
     def test_musical_position_from_timeline(self):
         b = create_musical_position_behavior(watermark=0.0)
         mapping = TimelineMapping(
-            reference_time=0.0, reference_beat=0.0, tempo=120.0,
+            reference_time=0.0,
+            reference_beat=0.0,
+            tempo=120.0,
             transport=TransportState.PLAYING,
         )
         pos = update_musical_position(b, mapping, now=2.0)
@@ -249,7 +286,9 @@ class TestOBSFeedbackBias(unittest.TestCase):
         """When MC fired recently, OBS should bias toward face_cam."""
         wm = time.monotonic()
         behaviors = _make_behaviors(
-            energy=0.5, arousal=0.4, watermark=wm,
+            energy=0.5,
+            arousal=0.4,
+            watermark=wm,
             extra={"last_mc_fire": Behavior(wm - 1.0, watermark=wm)},
         )
         trigger = Event[float]()

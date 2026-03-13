@@ -2644,7 +2644,9 @@ async def check_skill_syntax() -> list[CheckResult]:
                 group="skills",
                 status=status,
                 message=evidence,
-                remediation="Fix skill YAML frontmatter or embedded Python syntax" if not met else None,
+                remediation="Fix skill YAML frontmatter or embedded Python syntax"
+                if not met
+                else None,
                 duration_ms=_timed(t),
             )
         ]

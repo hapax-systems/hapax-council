@@ -67,9 +67,7 @@ class ResourceArbiter:
     def release(self, resource: str, chain: str) -> None:
         """Release a chain's claim on a resource."""
         if resource in self._claims:
-            self._claims[resource] = [
-                c for c in self._claims[resource] if c.chain != chain
-            ]
+            self._claims[resource] = [c for c in self._claims[resource] if c.chain != chain]
             if not self._claims[resource]:
                 del self._claims[resource]
 
@@ -96,7 +94,12 @@ class ResourceArbiter:
             surviving: list[ResourceClaim] = []
             for c in claims:
                 if c.hold_until > 0 and now > c.created_at + c.max_hold_s:
-                    log.debug("GC expired hold: %s/%s (age=%.1fs)", c.resource, c.chain, now - c.created_at)
+                    log.debug(
+                        "GC expired hold: %s/%s (age=%.1fs)",
+                        c.resource,
+                        c.chain,
+                        now - c.created_at,
+                    )
                     continue
                 surviving.append(c)
 

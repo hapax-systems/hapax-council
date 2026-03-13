@@ -150,7 +150,9 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
             raise RuntimeError(f"Embedding failed (model={model_name}): {exc}") from exc
         vec = result["embeddings"][0]
         if len(vec) != EXPECTED_EMBED_DIMENSIONS:
-            raise RuntimeError(f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding, got {len(vec)}")
+            raise RuntimeError(
+                f"Expected {EXPECTED_EMBED_DIMENSIONS}-dim embedding, got {len(vec)}"
+            )
         span.set_attribute("rag.embed.dimensions", len(vec))
         return vec
 
