@@ -1,51 +1,78 @@
 id: digest
 name: Content Digest
-version: "1.0.0"
+version: 1.0.0
 category: synthesis
 reports_to: operator
-peers: [briefing, research]
-depends_on: [ingest]
-
-purpose: Generate content digests from ingested knowledge base — surfacing relevant, timely information.
+peers:
+- briefing
+- research
+depends_on:
+- ingest
+purpose: Generate content digests from ingested knowledge base — surfacing relevant,
+  timely information.
 inputs:
-  - Qdrant knowledge collections
-  - operator profile
-  - recent activity context
+- Qdrant knowledge collections
+- operator profile
+- recent activity context
 outputs:
-  - profiles/digest.json
+- profiles/digest.json
 capabilities:
-  - knowledge_synthesis
-  - relevance_ranking
-  - temporal_filtering
+- knowledge_synthesis
+- relevance_ranking
+- temporal_filtering
 schedule:
   type: timer
   systemd_unit: digest.timer
   interval: daily
 model: fast
-
 autonomy: full
 decision_scope: Select and summarize content. Cannot modify knowledge base.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: executive_function
-    implications: [ex-cognitive-009]
-    role: subject
-  - axiom_id: single_user
-    implications: [su-decision-001]
-    role: subject
+- axiom_id: executive_function
+  implications:
+  - ex-cognitive-009
+  role: subject
+- axiom_id: single_user
+  implications:
+  - su-decision-001
+  role: subject
 raci:
-  - task: content_curation
-    role: responsible
-  - task: daily_briefing
-    role: consulted
-
+- task: content_curation
+  role: responsible
+- task: daily_briefing
+  role: consulted
 health_group: digest
 service_tier: 2
 metrics_source: profiles/digest.json
+narrative: 'The Content Digest agent curates knowledge. It queries the RAG knowledge
+  base,
 
-narrative: |
-  The Content Digest agent curates knowledge. It queries the RAG knowledge base,
-  filters for recency and relevance to the operator's current context, and produces
+  filters for recency and relevance to the operator''s current context, and produces
+
   a structured digest. It complements the briefing (which focuses on system state)
+
   by surfacing knowledge content the operator might want to review. Think of it as
-  a personalized newsletter generated from the operator's own ingested sources.
+
+  a personalized newsletter generated from the operator''s own ingested sources.
+
+  '
+short_description: Content/knowledge digest
+cli:
+  command: uv run python -m agents.digest
+  module: agents.digest
+  flags:
+  - flag: --save
+    description: Save to profiles/ and vault
+  - flag: --json
+    description: Machine-readable JSON output
+  - flag: --hours
+    description: Lookback window in hours
+    flag_type: value
+    default: '24'
+    metavar: N
+  - flag: --notify
+    description: Send push notification
+timer_display:
+  schedule_label: Daily 06:45
+  purpose: Content digest — aggregates recently ingested content

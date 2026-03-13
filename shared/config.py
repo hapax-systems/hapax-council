@@ -208,16 +208,15 @@ def load_expected_timers() -> dict[str, str]:
     """Load the expected systemd timer manifest (cached).
 
     Returns a dict mapping agent_name → timer unit name.
+    Derived from the agent manifest registry.
     """
     global _expected_timers
     if _expected_timers is not None:
         return _expected_timers
 
-    import yaml
+    from shared.agent_registry import get_registry
 
-    manifest = AI_AGENTS_DIR / "systemd" / "expected-timers.yaml"
-    data = yaml.safe_load(manifest.read_text())
-    _expected_timers = data["timers"]
+    _expected_timers = get_registry().expected_timers()
     return _expected_timers
 
 

@@ -1,50 +1,83 @@
 id: activity_analyzer
 name: Activity Analyzer
-version: "1.0.0"
+version: 1.0.0
 category: observability
 reports_to: operator
-peers: [health_monitor, briefing]
+peers:
+- health_monitor
+- briefing
 depends_on: []
-
-purpose: Observe system activity via universal telemetry (Langfuse traces) — what agents ran, what they did, how long it took.
+purpose: Observe system activity via universal telemetry (Langfuse traces) — what
+  agents ran, what they did, how long it took.
 inputs:
-  - Langfuse trace data
-  - agent execution logs
+- Langfuse trace data
+- agent execution logs
 outputs:
-  - activity summaries
-  - usage patterns
-  - cost tracking
+- activity summaries
+- usage patterns
+- cost tracking
 capabilities:
-  - trace_analysis
-  - usage_pattern_detection
-  - cost_aggregation
+- trace_analysis
+- usage_pattern_detection
+- cost_aggregation
 schedule:
   type: event
   trigger: Langfuse trace ingestion
 model: null
-
 autonomy: full
 decision_scope: Observe and report activity patterns. Read-only access to trace data.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: executive_function
-    implications: [ex-routine-001]
-    role: subject
+- axiom_id: executive_function
+  implications:
+  - ex-routine-001
+  role: subject
 raci:
-  - task: activity_monitoring
-    role: responsible
-  - task: daily_briefing
-    role: consulted
-  - task: cost_tracking
-    role: responsible
-
+- task: activity_monitoring
+  role: responsible
+- task: daily_briefing
+  role: consulted
+- task: cost_tracking
+  role: responsible
 health_group: langfuse
 service_tier: 2
+narrative: 'The Activity Analyzer watches what the system does. Every LLM call, every
+  agent
 
-narrative: |
-  The Activity Analyzer watches what the system does. Every LLM call, every agent
   execution, every tool use is traced through Langfuse. This agent reads those traces
+
   to build activity summaries, detect usage patterns, and track costs. It answers
+
   questions like "which agents ran today?", "how much did LLM calls cost?", and
+
   "are any agents running more than expected?" Its output feeds into the daily
+
   briefing and cockpit dashboards.
+
+  '
+short_description: Telemetry aggregation
+cli:
+  command: uv run python -m agents.activity_analyzer
+  module: agents.activity_analyzer
+  flags:
+  - flag: --json
+    description: Machine-readable JSON output
+  - flag: --hours
+    description: Time window in hours
+    flag_type: value
+    default: '24'
+    metavar: N
+  - flag: --synthesize
+    description: Add LLM-generated summary
+manual_section:
+  title: Understanding System Activity
+  order: 7
+  content:
+  - The activity analyzer aggregates telemetry from Langfuse traces,
+  - health history, drift reports, and the systemd journal.
+  - ''
+  - '```'
+  - uv run python -m agents.activity_analyzer
+  - uv run python -m agents.activity_analyzer --hours 48
+  - 'uv run python -m agents.activity_analyzer --synthesize  # add LLM summary'
+  - '```'

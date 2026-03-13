@@ -1,58 +1,129 @@
 id: profiler
 name: Operator Profiler
-version: "1.0.0"
+version: 1.0.0
 category: synthesis
 reports_to: operator
-peers: [briefing, research]
-depends_on: [gcalendar_sync, gmail_sync, obsidian_sync, claude_code_sync]
-
-purpose: Extract and maintain a 13-dimension operator profile from config files, git history, Langfuse traces, Obsidian vault, calendar, and Claude Code transcripts.
+peers:
+- briefing
+- research
+depends_on:
+- gcalendar_sync
+- gmail_sync
+- obsidian_sync
+- claude_code_sync
+purpose: Extract and maintain a 13-dimension operator profile from config files, git
+  history, Langfuse traces, Obsidian vault, calendar, and Claude Code transcripts.
 inputs:
-  - config files (~/.claude/CLAUDE.md, etc.)
-  - git commit history
-  - Langfuse trace metadata
-  - Obsidian vault content
-  - calendar events
-  - Claude Code transcripts
+- config files (~/.claude/CLAUDE.md, etc.)
+- git commit history
+- Langfuse trace metadata
+- Obsidian vault content
+- calendar events
+- Claude Code transcripts
 outputs:
-  - profiles/operator-profile.json
-  - profiles/operator-digest.json
-  - Qdrant profile-facts collection
+- profiles/operator-profile.json
+- profiles/operator-digest.json
+- Qdrant profile-facts collection
 capabilities:
-  - profile_extraction
-  - dimension_scoring
-  - fact_deduplication
+- profile_extraction
+- dimension_scoring
+- fact_deduplication
 schedule:
   type: timer
   systemd_unit: profile-update.timer
-  interval: "6h"
+  interval: 6h
 model: balanced
-
 autonomy: full
-decision_scope: Extract and score profile facts. Cannot modify source data or operator preferences.
+decision_scope: Extract and score profile facts. Cannot modify source data or operator
+  preferences.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: single_user
-    implications: [su-decision-001, su-privacy-001]
-    role: subject
-  - axiom_id: executive_function
-    implications: [ex-memory-010]
-    role: enforcer
+- axiom_id: single_user
+  implications:
+  - su-decision-001
+  - su-privacy-001
+  role: subject
+- axiom_id: executive_function
+  implications:
+  - ex-memory-010
+  role: enforcer
 raci:
-  - task: operator_profile_maintenance
-    role: responsible
-  - task: context_enrichment
-    role: accountable
-
+- task: operator_profile_maintenance
+  role: responsible
+- task: context_enrichment
+  role: accountable
 health_group: profiles
 service_tier: 2
 metrics_source: profiles/operator-profile.json
+narrative: 'The Operator Profiler builds and maintains a structured model of who the
+  operator
 
-narrative: |
-  The Operator Profiler builds and maintains a structured model of who the operator
   is across 13 dimensions (goals, constraints, patterns, style, creativity, communication,
-  cognitive, relational, environmental, growth, values, work, habits). It reads from 6
-  source types and uses an LLM to extract structured facts with confidence scores. The
+
+  cognitive, relational, environmental, growth, values, work, habits). It reads from
+  6
+
+  source types and uses an LLM to extract structured facts with confidence scores.
+  The
+
   profile feeds into context injection for other agents, ensuring they tailor their
-  behavior to the operator's actual preferences and cognitive style. This is the system's
+
+  behavior to the operator''s actual preferences and cognitive style. This is the
+  system''s
+
   understanding of its single user, made explicit.
+
+  '
+short_description: Operator profile extraction
+cli:
+  command: uv run python -m agents.profiler
+  module: agents.profiler
+  flags:
+  - flag: --auto
+    description: 'Unattended mode: detect changes, update if needed'
+  - flag: --show
+    description: Display current profile
+  - flag: --full
+    description: Force complete re-extraction (ignore cache)
+  - flag: --curate
+    description: Run quality curation on existing profile
+  - flag: --source
+    description: Only process this source type
+    flag_type: value
+    choices:
+    - config
+    - transcript
+    - shell-history
+    - git
+    - memory
+  - flag: --ingest
+    description: Import external platform data from file
+    flag_type: value
+    metavar: FILE
+  - flag: --store-memory
+    description: Push profile to MCP memory graph
+  - flag: --store-qdrant
+    description: Embed profile in Qdrant
+  - flag: --generate-prompts
+    description: Output extraction prompts for external platforms
+  - flag: --json
+    description: Machine-readable JSON output
+timer_display:
+  schedule_label: Every 12h
+  purpose: Incremental operator profile update
+manual_section:
+  title: Updating Operator Profile
+  order: 8
+  content:
+  - 'The profiler extracts and curates operator preferences from multiple sources:'
+  - config files, conversation transcripts, shell history, git logs, and MCP memory.
+  - ''
+  - '```'
+  - 'uv run python -m agents.profiler --auto       # unattended incremental update'
+  - 'uv run python -m agents.profiler --show        # display current profile'
+  - 'uv run python -m agents.profiler --curate      # quality curation pass'
+  - 'uv run python -m agents.profiler --full        # force complete re-extraction'
+  - 'uv run python -m agents.profiler --source git  # single source only'
+  - '```'
+  - ''
+  - The profile update timer runs every 12 hours.

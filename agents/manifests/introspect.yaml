@@ -1,51 +1,86 @@
 id: introspect
 name: Infrastructure Introspector
-version: "1.0.0"
+version: 1.0.0
 category: observability
 reports_to: operator
-peers: [health_monitor, drift_detector]
+peers:
+- health_monitor
+- drift_detector
 depends_on: []
-
-purpose: Generate live infrastructure manifest snapshots — Docker containers, systemd units, packages, mounts, network state.
+purpose: Generate live infrastructure manifest snapshots — Docker containers, systemd
+  units, packages, mounts, network state.
 inputs:
-  - Docker API
-  - systemd state
-  - package databases (pacman)
-  - mount points
-  - network interfaces
+- Docker API
+- systemd state
+- package databases (pacman)
+- mount points
+- network interfaces
 outputs:
-  - profiles/manifest.json
+- profiles/manifest.json
 capabilities:
-  - infrastructure_discovery
-  - state_snapshot
-  - change_detection
+- infrastructure_discovery
+- state_snapshot
+- change_detection
 schedule:
   type: timer
   systemd_unit: manifest-snapshot.timer
-  interval: "6h"
+  interval: 6h
 model: null
-
 autonomy: full
-decision_scope: Observe and record infrastructure state. Read-only — never modifies system configuration.
+decision_scope: Observe and record infrastructure state. Read-only — never modifies
+  system configuration.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: executive_function
-    implications: [ex-routine-001]
-    role: subject
+- axiom_id: executive_function
+  implications:
+  - ex-routine-001
+  role: subject
 raci:
-  - task: infrastructure_inventory
-    role: responsible
-  - task: documentation_drift
-    role: consulted
-
+- task: infrastructure_inventory
+  role: responsible
+- task: documentation_drift
+  role: consulted
 health_group: introspect
 service_tier: 2
 metrics_source: profiles/manifest.json
+narrative: 'The Infrastructure Introspector takes periodic snapshots of the actual
+  running
 
-narrative: |
-  The Infrastructure Introspector takes periodic snapshots of the actual running
   system — what Docker containers exist, what systemd units are active, what packages
-  are installed, what's mounted where, what network interfaces are up. This manifest
-  is the ground truth that drift_detector compares against documentation. It's purely
-  observational: it queries system APIs but never modifies anything. The manifest also
+
+  are installed, what''s mounted where, what network interfaces are up. This manifest
+
+  is the ground truth that drift_detector compares against documentation. It''s purely
+
+  observational: it queries system APIs but never modifies anything. The manifest
+  also
+
   feeds into the cockpit UI for at-a-glance infrastructure visibility.
+
+  '
+short_description: Infrastructure manifest generator
+cli:
+  command: uv run python -m agents.introspect
+  module: agents.introspect
+  flags:
+  - flag: --json
+    description: Full JSON manifest
+  - flag: --save
+    description: Save to profiles/manifest.json
+timer_display:
+  schedule_label: Weekly Sun 02:30
+  purpose: Infrastructure state snapshot
+manual_section:
+  title: Inspecting Infrastructure
+  order: 9
+  content:
+  - 'The introspect agent generates a deterministic manifest of all infrastructure:'
+  - Docker containers, Ollama models, systemd timers, MCP servers, and more.
+  - ''
+  - '```'
+  - uv run python -m agents.introspect
+  - 'uv run python -m agents.introspect --save  # save to profiles/manifest.json'
+  - 'uv run python -m agents.introspect --json  # full JSON output'
+  - '```'
+  - ''
+  - The manifest snapshot timer runs weekly (Sunday 02:30).

@@ -1,48 +1,85 @@
 id: knowledge_maint
 name: Knowledge Maintenance
-version: "1.0.0"
+version: 1.0.0
 category: knowledge
 reports_to: operator
-peers: [ingest, research]
-depends_on: [ingest]
-
-purpose: Maintain knowledge base health — remove stale entries, deduplicate vectors, optimize collections.
+peers:
+- ingest
+- research
+depends_on:
+- ingest
+purpose: Maintain knowledge base health — remove stale entries, deduplicate vectors,
+  optimize collections.
 inputs:
-  - Qdrant collection stats
-  - document metadata timestamps
-  - source availability checks
+- Qdrant collection stats
+- document metadata timestamps
+- source availability checks
 outputs:
-  - maintenance reports
-  - cleaned Qdrant collections
+- maintenance reports
+- cleaned Qdrant collections
 capabilities:
-  - stale_detection
-  - deduplication
-  - collection_optimization
+- stale_detection
+- deduplication
+- collection_optimization
 schedule:
   type: timer
   systemd_unit: knowledge-maint.timer
   interval: daily
 model: null
-
 autonomy: full
-decision_scope: Remove stale/duplicate entries from knowledge base. Cannot add new content.
+decision_scope: Remove stale/duplicate entries from knowledge base. Cannot add new
+  content.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: executive_function
-    implications: [ex-memory-010]
-    role: enforcer
+- axiom_id: executive_function
+  implications:
+  - ex-memory-010
+  role: enforcer
 raci:
-  - task: knowledge_maintenance
-    role: responsible
-  - task: knowledge_ingestion
-    role: informed
-
+- task: knowledge_maintenance
+  role: responsible
+- task: knowledge_ingestion
+  role: informed
 health_group: qdrant
 service_tier: 2
+narrative: 'Knowledge Maintenance is the janitor of the RAG pipeline. While ingest
+  adds content
 
-narrative: |
-  Knowledge Maintenance is the janitor of the RAG pipeline. While ingest adds content
   and research reads it, this agent keeps the knowledge base healthy by removing entries
+
   whose source documents no longer exist, deduplicating near-identical vectors, and
-  reporting on collection health metrics. It runs daily via timer and requires no LLM —
+
+  reporting on collection health metrics. It runs daily via timer and requires no
+  LLM —
+
   all operations are vector similarity comparisons and metadata queries against Qdrant.
+
+  '
+short_description: Qdrant vector DB maintenance
+cli:
+  command: uv run python -m agents.knowledge_maint
+  module: agents.knowledge_maint
+  flags:
+  - flag: --dry-run
+    description: Report only, no deletions (default)
+  - flag: --apply
+    description: Actually perform deletions
+  - flag: --collection
+    description: Process a single collection
+    flag_type: value
+    metavar: NAME
+  - flag: --json
+    description: Machine-readable JSON output
+  - flag: --save
+    description: Save report to profiles/
+  - flag: --summarize
+    description: Add LLM-generated summary
+  - flag: --notify
+    description: Notify if work done or warnings
+  - flag: --score-threshold
+    description: Similarity threshold for dedup
+    flag_type: value
+    default: '0.98'
+timer_display:
+  schedule_label: Weekly Sun 04:30
+  purpose: Qdrant vector DB hygiene — dedup + pruning
