@@ -105,19 +105,6 @@ def transport_active(ctx: FusedContext) -> bool:
     return mapping.transport is TransportState.PLAYING
 
 
-def _pipeline_allows(ctx: FusedContext) -> bool:
-    """Allow only when PipelineGovernor directive is 'process'.
-
-    Reads the pipeline_directive Behavior from the fused context.
-    Fail-open if the Behavior is not present (standalone OBS testing).
-    """
-    try:
-        directive = ctx.get_sample("pipeline_directive").value
-        return directive == "process"
-    except KeyError:
-        return True  # fail-open: no pipeline governor → allow
-
-
 # ---------------------------------------------------------------------------
 # Factory functions
 # ---------------------------------------------------------------------------
@@ -129,8 +116,7 @@ def build_obs_veto_chain(
 ) -> VetoChain[FusedContext]:
     """Construct the OBS-specific VetoChain.
 
-    Five vetoes, all evaluated (order-independent, deny-wins):
-      - pipeline_active: block when PipelineGovernor has paused/withdrawn
+    Four vetoes, all evaluated (order-independent, deny-wins):
       - dwell_time_respected: minimum time on a scene before switching
       - stream_health_sufficient: block complex transitions when bitrate drops
       - encoding_capacity_available: block when encoder is overloaded
@@ -139,11 +125,6 @@ def build_obs_veto_chain(
     c = cfg or OBSConfig()
     return VetoChain(
         [
-            Veto(
-                name="pipeline_active",
-                predicate=_pipeline_allows,
-                description="Block when PipelineGovernor has paused/withdrawn",
-            ),
             Veto(
                 name="dwell_time_respected",
                 predicate=lambda ctx, d=c.dwell_min_s, lt=last_switch_time: dwell_time_respected(

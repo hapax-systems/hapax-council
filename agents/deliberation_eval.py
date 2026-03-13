@@ -76,6 +76,7 @@ def _escalate_pseudo_deliberations() -> None:
         log.warning("Failed to escalate pseudo-deliberation pattern: %s", e)
 
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Deliberation metric extraction and evaluation")
     parser.add_argument("--pattern", default="*-v5.yaml", help="Glob pattern for YAML files")
@@ -92,6 +93,7 @@ def main() -> None:
 
         # GAP-8: Check for pseudo-deliberation pattern and escalate if needed
         _escalate_pseudo_deliberations()
+
 
     # Run deliberation sufficiency probes
     print(f"\n{'=' * 60}")
