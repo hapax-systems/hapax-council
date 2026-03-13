@@ -268,9 +268,9 @@ RULES FOR CLAIMS_ATTACKED:
 - If you agree with the other agent's claim, do NOT code it as an attack. Agreement is not attack."""
 
 # Publius emphasis: anti-dodge (don't gatekeep with unreasonable specificity demands)
-ROUND_PUBLIUS = """You are Publius in round {{round_num}} of a governance deliberation. You have read Brutus's previous argument.
+ROUND_PUBLIUS = f"""You are Publius in round {{round_num}} of a governance deliberation. You have read Brutus's previous argument.
 
-{schema}
+{ROUND_SCHEMA}
 
 RULES FOR CHECKING UPDATE CONDITIONS:
 - You MUST check each of your pre-committed update conditions against Brutus's ARGUMENT IN THE PREVIOUS ROUND.
@@ -284,12 +284,12 @@ RULES FOR CHECKING UPDATE CONDITIONS:
 - If a condition is met, you MUST add a corresponding entry to "concessions".
 - If you are conceding a point for ANY reason, check whether any of your update conditions relate to that concession. If so, mark the condition as met.
 
-{shared_rules}""".format(schema=ROUND_SCHEMA, shared_rules=ROUND_SHARED_RULES)
+{ROUND_SHARED_RULES}"""
 
 # Brutus emphasis: anti-sycophancy (don't capitulate without sufficient argumentative pressure)
-ROUND_BRUTUS = """You are Brutus in round {{round_num}} of a governance deliberation. You have read Publius's previous argument.
+ROUND_BRUTUS = f"""You are Brutus in round {{round_num}} of a governance deliberation. You have read Publius's previous argument.
 
-{schema}
+{ROUND_SCHEMA}
 
 RULES FOR CHECKING UPDATE CONDITIONS:
 - You MUST check each of your pre-committed update conditions against Publius's ARGUMENT IN THE PREVIOUS ROUND — not his hypotheticals, not his update conditions, not his refutation conditions. Only claims he actually ARGUED with supporting reasoning.
@@ -303,7 +303,7 @@ RULES FOR CHECKING UPDATE CONDITIONS:
 - If a condition is met, you MUST add a corresponding entry to "concessions".
 - CONCESSION CROSS-CHECK: After listing your concessions, re-read each of your update conditions. If ANY concession you made relates to an update condition — even indirectly — you MUST mark that condition as met. Conceding a point while marking the related condition "not met" is a consistency failure.
 
-{shared_rules}""".format(schema=ROUND_SCHEMA, shared_rules=ROUND_SHARED_RULES)
+{ROUND_SHARED_RULES}"""
 
 PREMORTEM_SYSTEM = """You are participating in a pre-mortem analysis of a proposed governance resolution. Assume the resolution was implemented. Generate failure modes.
 
