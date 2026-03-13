@@ -166,12 +166,6 @@ class VoiceDaemon:
         self.workspace_monitor.set_notification_queue(self.notifications)
         self.workspace_monitor.set_presence(self.presence)
 
-        # Consent registry — gates person-linked data at ingestion boundary
-        from shared.consent import load_contracts
-
-        self.consent = load_contracts()
-        log.info("Consent registry: %d active contracts", len(self.consent.active_contracts))
-
         # Perception layer
         self.perception = PerceptionEngine(
             presence=self.presence,
@@ -213,13 +207,6 @@ class VoiceDaemon:
         )
         self._frame_gate = FrameGate()
 
-        # Pipeline directive Behavior — written by PipelineGovernor, read by MC/OBS
-        # governance via their fused context. Values: "process", "pause", "withdraw".
-        from agents.hapax_voice.primitives import Behavior
-
-        self._pipeline_directive: Behavior[str] = Behavior("process", watermark=0.0)
-        self.perception.behaviors["pipeline_directive"] = self._pipeline_directive
-
         self._running = True
         self._background_tasks: list[asyncio.Task] = []
         # Pipeline state (managed per-session)
@@ -244,12 +231,8 @@ class VoiceDaemon:
         self.workspace_monitor.set_event_log(self.event_log)
 
         # Actuation layer
-        from agents.hapax_voice.arbiter import ResourceArbiter
-        from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES
-
         self.schedule_queue = ScheduleQueue()
         self.executor_registry = ExecutorRegistry()
-        self.arbiter = ResourceArbiter(DEFAULT_PRIORITIES)
         self._shared_pa = None  # lazy init in run() if needed
         self._setup_actuation()
 
@@ -259,12 +242,6 @@ class VoiceDaemon:
 
     def _setup_actuation(self) -> None:
         """Wire MC/OBS governance → ScheduleQueue/ExecutorRegistry."""
-        # Wire feedback loop: actuation events → Behaviors readable by governance
-        from agents.hapax_voice.feedback import wire_feedback_behaviors
-
-        fb_behaviors = wire_feedback_behaviors(self.executor_registry.actuation_event)
-        self.perception.behaviors.update(fb_behaviors)
-
         # MC actuation: MIDI clock → governance → schedule → audio playback
         if self.cfg.mc_enabled:
             try:
@@ -348,34 +325,7 @@ class VoiceDaemon:
 
         def _on_obs_command(timestamp: float, cmd: Command | None) -> None:
             if cmd is not None:
-                # Route through arbiter for contention resolution
-                from agents.hapax_voice.arbiter import ResourceClaim
-                from agents.hapax_voice.resource_config import resource_for
-
-                try:
-                    resource = resource_for(cmd.action)
-                except KeyError:
-                    self.executor_registry.dispatch(cmd)
-                    return
-                chain = cmd.trigger_source or "obs"
-                key = (resource, chain)
-                if key in self.arbiter._priorities:
-                    # Wrap in Schedule for arbiter (immediate, no time offset)
-                    immediate_schedule = Schedule(
-                        command=cmd,
-                        domain="wall",
-                        wall_time=timestamp,
-                    )
-                    self.arbiter.claim(
-                        ResourceClaim(
-                            resource=resource,
-                            chain=chain,
-                            priority=self.arbiter._priorities[key],
-                            command=immediate_schedule,
-                        )
-                    )
-                else:
-                    self.executor_registry.dispatch(cmd)
+                self.executor_registry.dispatch(cmd)
                 self.event_log.emit(
                     "obs_command_dispatched",
                     action=cmd.action,
@@ -869,9 +819,6 @@ class VoiceDaemon:
                 # Governor: evaluate state → directive
                 directive = self.governor.evaluate(state)
 
-                # Update pipeline_directive Behavior so MC/OBS governance can read it
-                self._pipeline_directive.update(directive, state.timestamp)
-
                 # Build typed Command with full provenance
                 command = Command(
                     action=directive,
@@ -910,50 +857,20 @@ class VoiceDaemon:
                 log.exception("Error in perception loop")
 
     async def _actuation_loop(self) -> None:
-        """Drain ScheduleQueue, arbitrate contention, dispatch winners."""
-        from agents.hapax_voice.arbiter import ResourceClaim
-        from agents.hapax_voice.resource_config import resource_for
-
+        """Drain ScheduleQueue and dispatch ready commands at beat precision."""
         tick_s = self.cfg.actuation_tick_ms / 1000.0
         while self._running:
             try:
                 now = time.monotonic()
-                # Drain ready schedules and register as resource claims
                 ready = self.schedule_queue.drain(now)
                 for schedule in ready:
-                    action = schedule.command.action
-                    try:
-                        resource = resource_for(action)
-                    except KeyError:
-                        # Unmapped action — dispatch directly (no contention)
-                        self.executor_registry.dispatch(schedule.command, schedule)
-                        continue
-                    chain = schedule.command.trigger_source or "unknown"
-                    priority = self.arbiter._priorities.get((resource, chain), 0)
-                    if (resource, chain) in self.arbiter._priorities:
-                        self.arbiter.claim(
-                            ResourceClaim(
-                                resource=resource,
-                                chain=chain,
-                                priority=priority,
-                                command=schedule,
-                            )
-                        )
-
-                # Resolve winners and dispatch
-                for winner in self.arbiter.drain_winners(now):
-                    schedule = winner.command  # type: Schedule
                     latency_ms = (now - schedule.wall_time) * 1000.0
-                    dispatched = self.executor_registry.dispatch(
-                        schedule.command, schedule
-                    )
+                    dispatched = self.executor_registry.dispatch(schedule.command)
                     self.event_log.emit(
                         "actuation",
                         action=schedule.command.action,
                         latency_ms=round(latency_ms, 1),
                         dispatched=dispatched,
-                        resource=winner.resource,
-                        chain=winner.chain,
                     )
                 await asyncio.sleep(tick_s)
             except asyncio.CancelledError:
