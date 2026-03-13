@@ -6,10 +6,8 @@ Self-contained, asyncio_mode="auto", unittest.mock only.
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

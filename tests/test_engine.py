@@ -6,18 +6,14 @@ Self-contained, asyncio_mode="auto", unittest.mock only.
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-import pytest
-
-from cockpit.engine.models import Action, ActionPlan, ChangeEvent, DeliveryItem
-from cockpit.engine.rules import Rule, RuleRegistry, evaluate_rules
 from cockpit.engine.executor import PhasedExecutor
+from cockpit.engine.models import Action, ActionPlan, ChangeEvent
+from cockpit.engine.rules import Rule, RuleRegistry, evaluate_rules
 from shared.frontmatter import parse_frontmatter
-
 
 # ── TestParseFrontmatter ────────────────────────────────────────────────────
 
@@ -130,22 +126,26 @@ class TestChangeEvent:
 
 class TestActionPlan:
     def test_actions_by_phase_groups_correctly(self):
-        plan = ActionPlan(actions=[
-            Action(name="a", handler=AsyncMock(), phase=0, priority=10),
-            Action(name="b", handler=AsyncMock(), phase=1, priority=20),
-            Action(name="c", handler=AsyncMock(), phase=0, priority=5),
-        ])
+        plan = ActionPlan(
+            actions=[
+                Action(name="a", handler=AsyncMock(), phase=0, priority=10),
+                Action(name="b", handler=AsyncMock(), phase=1, priority=20),
+                Action(name="c", handler=AsyncMock(), phase=0, priority=5),
+            ]
+        )
         by_phase = plan.actions_by_phase()
         assert set(by_phase.keys()) == {0, 1}
         assert len(by_phase[0]) == 2
         assert len(by_phase[1]) == 1
 
     def test_priority_sort_within_phase(self):
-        plan = ActionPlan(actions=[
-            Action(name="high", handler=AsyncMock(), phase=0, priority=100),
-            Action(name="low", handler=AsyncMock(), phase=0, priority=1),
-            Action(name="mid", handler=AsyncMock(), phase=0, priority=50),
-        ])
+        plan = ActionPlan(
+            actions=[
+                Action(name="high", handler=AsyncMock(), phase=0, priority=100),
+                Action(name="low", handler=AsyncMock(), phase=0, priority=1),
+                Action(name="mid", handler=AsyncMock(), phase=0, priority=50),
+            ]
+        )
         by_phase = plan.actions_by_phase()
         names = [a.name for a in by_phase[0]]
         assert names == ["low", "mid", "high"]
@@ -313,11 +313,13 @@ class TestPhasedExecutor:
         async def handler_p2():
             order.append(2)
 
-        plan = ActionPlan(actions=[
-            Action(name="phase2", handler=handler_p2, phase=2),
-            Action(name="phase0", handler=handler_p0, phase=0),
-            Action(name="phase1", handler=handler_p1, phase=1),
-        ])
+        plan = ActionPlan(
+            actions=[
+                Action(name="phase2", handler=handler_p2, phase=2),
+                Action(name="phase0", handler=handler_p0, phase=0),
+                Action(name="phase1", handler=handler_p1, phase=1),
+            ]
+        )
         executor = PhasedExecutor()
         await executor.execute(plan)
         assert order == [0, 1, 2]
@@ -329,10 +331,12 @@ class TestPhasedExecutor:
         async def dependent():
             pass  # pragma: no cover
 
-        plan = ActionPlan(actions=[
-            Action(name="first", handler=failing, phase=0),
-            Action(name="second", handler=dependent, phase=1, depends_on=["first"]),
-        ])
+        plan = ActionPlan(
+            actions=[
+                Action(name="first", handler=failing, phase=0),
+                Action(name="second", handler=dependent, phase=1, depends_on=["first"]),
+            ]
+        )
         executor = PhasedExecutor()
         await executor.execute(plan)
         assert "first" in plan.errors
@@ -342,9 +346,11 @@ class TestPhasedExecutor:
         async def slow():
             await asyncio.sleep(10)
 
-        plan = ActionPlan(actions=[
-            Action(name="slow-action", handler=slow, phase=0),
-        ])
+        plan = ActionPlan(
+            actions=[
+                Action(name="slow-action", handler=slow, phase=0),
+            ]
+        )
         executor = PhasedExecutor(action_timeout_s=0.05)
         await executor.execute(plan)
         assert "slow-action" in plan.errors
@@ -354,9 +360,11 @@ class TestPhasedExecutor:
         async def good():
             return "ok"
 
-        plan = ActionPlan(actions=[
-            Action(name="good-action", handler=good, phase=0),
-        ])
+        plan = ActionPlan(
+            actions=[
+                Action(name="good-action", handler=good, phase=0),
+            ]
+        )
         executor = PhasedExecutor()
         await executor.execute(plan)
         assert plan.results["good-action"] == "ok"
@@ -374,10 +382,9 @@ class TestPhasedExecutor:
             await asyncio.sleep(0.02)
             concurrent -= 1
 
-        plan = ActionPlan(actions=[
-            Action(name=f"gpu-{i}", handler=tracked, phase=1)
-            for i in range(3)
-        ])
+        plan = ActionPlan(
+            actions=[Action(name=f"gpu-{i}", handler=tracked, phase=1) for i in range(3)]
+        )
         executor = PhasedExecutor(gpu_concurrency=1)
         await executor.execute(plan)
         assert max_concurrent == 1
@@ -415,7 +422,7 @@ class TestDirectoryWatcher:
         assert event.event_type == "created"  # First event type preserved
 
     async def test_self_trigger_prevention(self):
-        from cockpit.engine.watcher import DirectoryWatcher, _should_skip
+        from cockpit.engine.watcher import DirectoryWatcher
 
         watcher = DirectoryWatcher(
             watch_paths=[],
@@ -450,9 +457,7 @@ class TestDirectoryWatcher:
     async def test_doc_type_inference_axiom_dir(self):
         from cockpit.engine.watcher import _infer_doc_type
 
-        doc_type, fm = _infer_doc_type(
-            Path("/project/axioms/implications/single_user.yaml")
-        )
+        doc_type, fm = _infer_doc_type(Path("/project/axioms/implications/single_user.yaml"))
         assert doc_type == "axiom-implication"
 
 

@@ -13,19 +13,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from cockpit.engine.models import ChangeEvent
-from cockpit.engine.rules import RuleRegistry, evaluate_rules
 from cockpit.engine.reactive_rules import (
     ALL_RULES,
     INFRASTRUCTURE_RULES,
     QuietWindowScheduler,
-    get_knowledge_scheduler,
-    register_infrastructure_rules,
     _handle_collector_refresh,
     _handle_config_changed,
     _handle_knowledge_maintenance,
     _handle_rag_ingest,
     _handle_sdlc_event,
+    get_knowledge_scheduler,
+    register_infrastructure_rules,
 )
+from cockpit.engine.rules import RuleRegistry, evaluate_rules
 
 
 def _event(path: str, event_type: str = "modified") -> ChangeEvent:
@@ -291,7 +291,7 @@ class TestRagSourceRule:
 
     @patch("agents.ingest.ingest_file", return_value=(True, ""))
     async def test_handler_success(self, mock_ingest):
-        with patch("asyncio.to_thread", new=AsyncMock(return_value=(True, ""))) as mock_thread:
+        with patch("asyncio.to_thread", new=AsyncMock(return_value=(True, ""))):
             result = await _handle_rag_ingest(path="/rag-sources/gmail/msg.md")
         assert "ingested:" in result
 
@@ -417,7 +417,7 @@ class TestKnowledgeMaintenanceRule:
         km_actions = [a for a in plan.actions if a.name == "knowledge-maintenance"]
         assert len(km_actions) == 0
 
-    async def test_profiles_change_records_dirty(self):
+    def test_profiles_change_records_dirty(self):
         self._reset_scheduler()
         reg = _registry()
         # First event records dirty but doesn't fire (quiet window)
