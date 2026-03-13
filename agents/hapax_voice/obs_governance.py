@@ -170,6 +170,14 @@ def build_obs_fallback_chain(cfg: OBSConfig | None = None) -> FallbackChain[Fuse
                 action=OBSScene.RAPID_CUT,
             ),
             Candidate(
+                name="face_cam_mc_bias",
+                predicate=lambda ctx, e=c.face_cam_energy_min: (
+                    _mc_fired_recently(ctx)
+                    and ctx.get_sample("audio_energy_rms").value >= e
+                ),
+                action=OBSScene.FACE_CAM,
+            ),
+            Candidate(
                 name="face_cam",
                 predicate=lambda ctx, e=c.face_cam_energy_min, a=c.face_cam_arousal_min: (
                     ctx.get_sample("audio_energy_rms").value >= e
@@ -205,6 +213,15 @@ def build_obs_freshness_guard(cfg: OBSConfig | None = None) -> FreshnessGuard:
             FreshnessRequirement("stream_bitrate", c.stream_health_max_staleness_s),
         ]
     )
+
+
+def _mc_fired_recently(ctx: FusedContext, window_s: float = 2.0) -> bool:
+    """Check if MC fired within the given window. Used for feedback-driven bias."""
+    try:
+        last_mc_fire = ctx.get_sample("last_mc_fire").value
+    except KeyError:
+        return False
+    return (ctx.trigger_time - last_mc_fire) <= window_s and last_mc_fire > 0
 
 
 def select_transition(ctx: FusedContext, cfg: OBSConfig | None = None) -> OBSTransition:
