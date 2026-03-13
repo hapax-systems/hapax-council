@@ -20,9 +20,12 @@ import json
 import logging
 import uuid
 
+from opentelemetry import trace
+
 from shared.config import PROFILES_DIR
 
 log = logging.getLogger("shared.profile_store")
+_rag_tracer = trace.get_tracer("hapax.rag")
 
 COLLECTION = "profile-facts"
 VECTOR_DIM = 768
@@ -60,64 +63,68 @@ class ProfileStore:
         Each fact becomes a point with deterministic ID based on dimension+key.
         Returns the number of points upserted.
         """
-        from qdrant_client.models import PointStruct
+        with _rag_tracer.start_as_current_span("rag.index") as span:
+            from qdrant_client.models import PointStruct
 
-        from shared.config import embed_batch
+            from shared.config import embed_batch
 
-        texts: list[str] = []
-        metadata: list[dict] = []
+            texts: list[str] = []
+            metadata: list[dict] = []
 
-        for dim in profile.dimensions:
-            for fact in dim.facts:
-                text = f"{fact.dimension}/{fact.key}: {fact.value}"
-                texts.append(text)
-                metadata.append(
-                    {
-                        "dimension": fact.dimension,
-                        "key": fact.key,
-                        "value": fact.value,
-                        "confidence": fact.confidence,
-                        "source": fact.source,
-                        "text": text,
-                        "profile_version": profile.version,
-                    }
+            for dim in profile.dimensions:
+                for fact in dim.facts:
+                    text = f"{fact.dimension}/{fact.key}: {fact.value}"
+                    texts.append(text)
+                    metadata.append(
+                        {
+                            "dimension": fact.dimension,
+                            "key": fact.key,
+                            "value": fact.value,
+                            "confidence": fact.confidence,
+                            "source": fact.source,
+                            "text": text,
+                            "profile_version": profile.version,
+                        }
+                    )
+
+            if not texts:
+                log.info("No facts to index")
+                span.set_attribute("rag.index.count", 0)
+                return 0
+
+            # Batch embed (uses search_document prefix for indexing)
+            try:
+                vectors = embed_batch(texts, prefix="search_document")
+            except Exception as e:
+                log.error("Failed to embed profile facts: %s", e)
+                span.set_attribute("rag.index.count", 0)
+                return 0
+
+            # Build points with deterministic IDs
+            points: list[PointStruct] = []
+            for _i, (vec, meta) in enumerate(zip(vectors, metadata, strict=False)):
+                point_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_DNS,
+                        f"profile-fact-{meta['dimension']}-{meta['key']}",
+                    )
                 )
+                points.append(PointStruct(id=point_id, vector=vec, payload=meta))
 
-        if not texts:
-            log.info("No facts to index")
-            return 0
+            # Upsert in batches of 100
+            batch_size = 100
+            for start in range(0, len(points), batch_size):
+                batch = points[start : start + batch_size]
+                self.client.upsert(COLLECTION, batch)
 
-        # Batch embed (uses search_document prefix for indexing)
-        try:
-            vectors = embed_batch(texts, prefix="search_document")
-        except Exception as e:
-            log.error("Failed to embed profile facts: %s", e)
-            return 0
+            log.info("Indexed %d profile facts into %s", len(points), COLLECTION)
+            span.set_attribute("rag.index.count", len(points))
 
-        # Build points with deterministic IDs
-        points: list[PointStruct] = []
-        for _i, (vec, meta) in enumerate(zip(vectors, metadata, strict=False)):
-            point_id = str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_DNS,
-                    f"profile-fact-{meta['dimension']}-{meta['key']}",
-                )
-            )
-            points.append(PointStruct(id=point_id, vector=vec, payload=meta))
+            # Clean up stale points whose (dimension, key) no longer exists
+            current_keys = {(m["dimension"], m["key"]) for m in metadata}
+            self._cleanup_stale_points(current_keys)
 
-        # Upsert in batches of 100
-        batch_size = 100
-        for start in range(0, len(points), batch_size):
-            batch = points[start : start + batch_size]
-            self.client.upsert(COLLECTION, batch)
-
-        log.info("Indexed %d profile facts into %s", len(points), COLLECTION)
-
-        # Clean up stale points whose (dimension, key) no longer exists
-        current_keys = {(m["dimension"], m["key"]) for m in metadata}
-        self._cleanup_stale_points(current_keys)
-
-        return len(points)
+            return len(points)
 
     def _cleanup_stale_points(self, current_keys: set[tuple[str, str]]) -> int:
         """Remove points whose (dimension, key) is no longer in the profile."""
@@ -164,37 +171,48 @@ class ProfileStore:
         Returns:
             List of dicts with keys: dimension, key, value, confidence, score.
         """
-        from shared.config import embed
+        with _rag_tracer.start_as_current_span("rag.search") as span:
+            span.set_attribute("rag.query", query[:200])
+            span.set_attribute("rag.collection", COLLECTION)
+            span.set_attribute("rag.top_k", limit)
 
-        query_vec = embed(query, prefix="search_query")
+            from shared.config import embed
 
-        query_filter = None
-        if dimension:
-            from qdrant_client.models import FieldCondition, Filter, MatchValue
+            query_vec = embed(query, prefix="search_query")
 
-            query_filter = Filter(
-                must=[
-                    FieldCondition(key="dimension", match=MatchValue(value=dimension)),
-                ]
+            query_filter = None
+            if dimension:
+                from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+                query_filter = Filter(
+                    must=[
+                        FieldCondition(key="dimension", match=MatchValue(value=dimension)),
+                    ]
+                )
+
+            results = self.client.query_points(
+                COLLECTION,
+                query=query_vec,
+                query_filter=query_filter,
+                limit=limit,
             )
 
-        results = self.client.query_points(
-            COLLECTION,
-            query=query_vec,
-            query_filter=query_filter,
-            limit=limit,
-        )
+            result_list = [
+                {
+                    "dimension": p.payload.get("dimension", ""),
+                    "key": p.payload.get("key", ""),
+                    "value": p.payload.get("value", ""),
+                    "confidence": p.payload.get("confidence", 0.0),
+                    "score": p.score,
+                }
+                for p in results.points
+            ]
 
-        return [
-            {
-                "dimension": p.payload.get("dimension", ""),
-                "key": p.payload.get("key", ""),
-                "value": p.payload.get("value", ""),
-                "confidence": p.payload.get("confidence", 0.0),
-                "score": p.score,
-            }
-            for p in results.points
-        ]
+            span.set_attribute("rag.result_count", len(result_list))
+            if result_list:
+                span.set_attribute("rag.top_score", result_list[0]["score"])
+
+            return result_list
 
     def get_digest(self) -> dict | None:
         """Load the pre-computed profile digest from disk.

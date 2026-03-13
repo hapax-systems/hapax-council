@@ -27,6 +27,10 @@ try:
 except ImportError:
     pass
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 
 @dataclass
 class ReviewDeps:
@@ -92,6 +96,15 @@ async def review(code: str, filename: str = "stdin") -> str:
 
 
 async def main():
+    with _tracer.start_as_current_span(
+        "code_review.run",
+        attributes={"agent.name": "code_review", "agent.repo": "hapax-council"},
+    ):
+        return await _main_impl()
+
+
+async def _main_impl():
+    """Implementation of main, wrapped by OTel span."""
     import argparse
 
     parser = argparse.ArgumentParser(description="LLM code review agent")

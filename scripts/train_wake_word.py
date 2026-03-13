@@ -1612,11 +1612,9 @@ Examples:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="train-wake")
 
     args = parse_args()
 

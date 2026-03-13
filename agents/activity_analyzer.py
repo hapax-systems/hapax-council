@@ -32,6 +32,10 @@ try:
 except ImportError:
     pass
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 from shared.config import PROFILES_DIR
 
 log = logging.getLogger("agents.activity_analyzer")
@@ -635,6 +639,15 @@ def _manifest_age() -> str:
 
 async def generate_activity_report(hours: int = 24) -> ActivityReport:
     """Collect all activity data for the given time window."""
+    with _tracer.start_as_current_span(
+        "activity.analyze",
+        attributes={"agent.name": "activity_analyzer", "agent.repo": "hapax-council"},
+    ):
+        return await _generate_activity_report_impl(hours)
+
+
+async def _generate_activity_report_impl(hours: int = 24) -> ActivityReport:
+    """Implementation of generate_activity_report, wrapped by OTel span."""
     now = datetime.now(UTC)
     since = now - timedelta(hours=hours)
 

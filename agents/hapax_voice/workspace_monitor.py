@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING
+
+from opentelemetry.trace import get_tracer
 
 from agents.hapax_voice.hyprland_listener import FocusEvent, HyprlandEventListener
 from agents.hapax_voice.notification_queue import VoiceNotification
@@ -18,6 +19,8 @@ from agents.hapax_voice.screen_models import (
 from agents.hapax_voice.webcam_capturer import WebcamCapturer
 from agents.hapax_voice.workspace_analyzer import WorkspaceAnalyzer
 from shared.hyprland import HyprlandIPC
+
+_tracer = get_tracer("hapax_voice.workspace_monitor")
 
 if TYPE_CHECKING:
     from agents.hapax_voice.face_detector import FaceDetector
@@ -77,7 +80,6 @@ class WorkspaceMonitor:
         self._notification_queue: NotificationQueue | None = None
         self._presence: PresenceDetector | None = None
         self._event_log = None
-        self._tracer = None
 
         if self._listener is not None:
             self._listener.on_focus_changed = self._on_focus_changed
@@ -111,9 +113,6 @@ class WorkspaceMonitor:
 
     def set_event_log(self, event_log) -> None:
         self._event_log = event_log
-
-    def set_tracer(self, tracer) -> None:
-        self._tracer = tracer
 
     def _emit_analysis_event(
         self, analysis: WorkspaceAnalysis, *, latency_ms: int, images_sent: int
@@ -224,19 +223,17 @@ class WorkspaceMonitor:
 
         images_sent = 1 + (1 if operator_b64 else 0) + (1 if hardware_b64 else 0)
 
-        trace_cm = (
-            self._tracer.trace_analysis(
-                presence_score=self._presence.score if self._presence else "unknown",
-                images_sent=images_sent,
-                session_id=self._event_log._session_id if self._event_log else None,
-                activity_mode="unknown",
-            )
-            if self._tracer is not None
-            else contextlib.nullcontext(None)
-        )
-
         t0 = time.monotonic()
-        with trace_cm:
+        with _tracer.start_as_current_span(
+            "workspace_analysis",
+            attributes={
+                "agent.name": "hapax-voice",
+                "agent.repo": "hapax-council",
+                "presence_score": str(self._presence.score) if self._presence else "unknown",
+                "images_sent": images_sent,
+                "activity_mode": "unknown",
+            },
+        ):
             analysis = await self._analyzer.analyze(
                 screen_b64=screen_b64,
                 operator_b64=operator_b64,

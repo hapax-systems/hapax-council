@@ -192,10 +192,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(message)s",
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="proton", level="DEBUG" if args.verbose else None)
 
     if not args.export_dir.is_dir():
         log.error("Not a directory: %s", args.export_dir)
