@@ -184,23 +184,32 @@ def _extract_content_text(content) -> str:
     return ""
 
 
-def _extract_tool_calls(message_id: str, content) -> list[ToolCall]:
-    """Extract tool_use blocks from assistant message content."""
+def _extract_tool_calls(message_id: str, content) -> list[tuple[str | None, ToolCall]]:
+    """Extract tool_use blocks from assistant message content.
+
+    Returns:
+        List of (tool_use_id, ToolCall) tuples. The tool_use_id is used to
+        correlate with subsequent tool_result blocks in user messages.
+    """
     if not isinstance(content, list):
         return []
     calls = []
     for i, block in enumerate(content):
         if isinstance(block, dict) and block.get("type") == "tool_use":
             name = block.get("name", "unknown")
+            tool_use_id = block.get("id")
             inp = block.get("input", {})
             # Summarize arguments: file_path for file tools, command for Bash, pattern for Grep
             summary = inp.get("file_path") or inp.get("command") or inp.get("pattern")
             calls.append(
-                ToolCall(
-                    message_id=message_id,
-                    tool_name=name,
-                    arguments_summary=summary,
-                    sequence_position=i,
+                (
+                    tool_use_id,
+                    ToolCall(
+                        message_id=message_id,
+                        tool_name=name,
+                        arguments_summary=summary,
+                        sequence_position=i,
+                    ),
                 )
             )
     return calls
@@ -236,6 +245,8 @@ def parse_session(path: Path, project_path: str) -> ParsedSession:
     messages: list[Message] = []
     tool_calls: list[ToolCall] = []
     file_changes: list[FileChange] = []
+    # Mapping from tool_use_id to ToolCall for correlating with tool_result blocks
+    tool_use_id_map: dict[str, ToolCall] = {}
 
     session_id: str | None = None
     git_branch: str | None = None
@@ -303,7 +314,22 @@ def parse_session(path: Path, project_path: str) -> ParsedSession:
 
                 # Extract tool calls from assistant messages
                 if entry_type == "assistant":
-                    tool_calls.extend(_extract_tool_calls(uuid, content))
+                    for tool_use_id, tool_call in _extract_tool_calls(uuid, content):
+                        tool_calls.append(tool_call)
+                        if tool_use_id:
+                            tool_use_id_map[tool_use_id] = tool_call
+
+                # Correlate tool_result blocks with preceding tool_use calls
+                if entry_type == "user" and isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") != "tool_result":
+                            continue
+                        use_id = block.get("tool_use_id")
+                        is_error = block.get("is_error")
+                        if use_id and use_id in tool_use_id_map:
+                            tool_use_id_map[use_id].success = not is_error
 
             elif entry_type == "file-history-snapshot":
                 file_changes.extend(_extract_file_changes(entry))

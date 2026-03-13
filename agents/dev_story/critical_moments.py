@@ -1,4 +1,4 @@
-"""Critical moment detection — churn, wrong paths, cascades."""
+"""Critical moment detection — churn, wrong paths, cascades, and positive patterns."""
 
 from __future__ import annotations
 
@@ -239,6 +239,110 @@ def detect_high_token_sessions(conn: sqlite3.Connection) -> list[CriticalMoment]
                     ),
                 )
             )
+
+    return moments
+
+
+def detect_efficient_sessions(conn: sqlite3.Connection) -> list[CriticalMoment]:
+    """Detect sessions with high commit output relative to token spend.
+
+    These represent highly productive sessions — lots of committed code
+    for relatively few tokens consumed.
+    """
+    cursor = conn.execute(
+        """
+        SELECT
+            s.id,
+            s.total_tokens_in + s.total_tokens_out AS total_tokens,
+            COUNT(DISTINCT cor.commit_hash) AS correlated_commits
+        FROM sessions s
+        JOIN messages m ON m.session_id = s.id
+        JOIN correlations cor ON cor.message_id = m.id AND cor.confidence >= 0.85
+        GROUP BY s.id
+        HAVING correlated_commits >= 3
+           AND (total_tokens / correlated_commits) < 50000
+        ORDER BY (total_tokens / correlated_commits) ASC
+        LIMIT 20
+        """
+    )
+
+    moments: list[CriticalMoment] = []
+    for row in cursor.fetchall():
+        session_id, total_tokens, correlated_commits = row
+
+        tokens_per_commit = total_tokens / correlated_commits
+        severity = min(1.0 - (tokens_per_commit / 100000), 0.95)
+
+        moments.append(
+            CriticalMoment(
+                moment_type="efficient",
+                severity=severity,
+                session_id=session_id,
+                description=(
+                    f"Efficient session {session_id}: "
+                    f"{correlated_commits} commits from {total_tokens:,} tokens "
+                    f"({tokens_per_commit:,.0f} tokens/commit)"
+                ),
+            )
+        )
+
+    return moments
+
+
+def detect_clean_implementations(conn: sqlite3.Connection) -> list[CriticalMoment]:
+    """Detect sessions with clean implementations — edits without debugging loops.
+
+    Finds sessions that produced commits with multiple edits but never
+    entered Edit→Bash→Edit cycles (wrong-path patterns). These represent
+    confident, first-attempt-correct implementations.
+    """
+    # Get session IDs that have wrong-path moments
+    wrong_path_sessions = {
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT session_id FROM critical_moments WHERE moment_type = 'wrong_path'"
+        ).fetchall()
+        if r[0] is not None
+    }
+
+    cursor = conn.execute(
+        """
+        SELECT
+            sm.session_id,
+            sm.edit_count,
+            COUNT(DISTINCT cor.commit_hash) AS correlated_commits
+        FROM session_metrics sm
+        JOIN messages m ON m.session_id = sm.session_id
+        JOIN correlations cor ON cor.message_id = m.id AND cor.confidence >= 0.85
+        WHERE sm.edit_count >= 3
+        GROUP BY sm.session_id
+        HAVING correlated_commits >= 2
+        ORDER BY sm.edit_count DESC
+        LIMIT 20
+        """
+    )
+
+    moments: list[CriticalMoment] = []
+    for row in cursor.fetchall():
+        session_id, edit_count, correlated_commits = row
+
+        if session_id in wrong_path_sessions:
+            continue
+
+        severity = min(edit_count * 0.08, 0.95)
+
+        moments.append(
+            CriticalMoment(
+                moment_type="clean_implementation",
+                severity=severity,
+                session_id=session_id,
+                description=(
+                    f"Clean implementation {session_id}: "
+                    f"{edit_count} edits, {correlated_commits} commits, "
+                    f"zero debugging loops"
+                ),
+            )
+        )
 
     return moments
 

@@ -17,6 +17,8 @@ from agents.dev_story.classifier import (
 from agents.dev_story.correlator import correlate
 from agents.dev_story.critical_moments import (
     detect_churn_moments,
+    detect_clean_implementations,
+    detect_efficient_sessions,
     detect_high_token_sessions,
     detect_wrong_path_moments,
 )
@@ -430,12 +432,14 @@ def _compute_critical_moments(conn: sqlite3.Connection) -> int:
     churn = detect_churn_moments(conn)
     wrong_path = detect_wrong_path_moments(conn)
     token_waste = detect_high_token_sessions(conn)
+    efficient = detect_efficient_sessions(conn)
+    clean = detect_clean_implementations(conn)
 
     # Get valid session IDs and message IDs for FK safety
     valid_sessions = {r[0] for r in conn.execute("SELECT id FROM sessions").fetchall()}
     valid_messages = {r[0] for r in conn.execute("SELECT id FROM messages").fetchall()}
 
-    all_moments = churn + wrong_path + token_waste
+    all_moments = churn + wrong_path + token_waste + efficient + clean
     inserted = 0
     for m in all_moments:
         # Nullify references that would violate FK constraints
@@ -451,11 +455,14 @@ def _compute_critical_moments(conn: sqlite3.Connection) -> int:
 
     conn.commit()
     log.info(
-        "Detected %d critical moments (%d churn, %d wrong-path, %d token-waste), inserted %d",
+        "Detected %d critical moments (%d churn, %d wrong-path, %d token-waste, "
+        "%d efficient, %d clean-impl), inserted %d",
         len(all_moments),
         len(churn),
         len(wrong_path),
         len(token_waste),
+        len(efficient),
+        len(clean),
         inserted,
     )
     return inserted

@@ -28,6 +28,7 @@ Let evidence speak for itself. When the evidence is thin, say so.
   - started_at/ended_at: ISO 8601 timestamps (e.g., '2026-03-01T10:00:00Z')
 - messages(id, session_id, parent_id, role, timestamp, content_text, model, tokens_in, tokens_out)
 - tool_calls(id, message_id, tool_name, arguments_summary, duration_ms, success, sequence_position)
+  - success: 0 = tool failed (error), 1 = tool succeeded. Use this to detect recovery patterns.
 - file_changes(id, message_id, file_path, version, change_type, timestamp)
 - commits(hash, author_date, message, branch, files_changed, insertions, deletions)
   - author_date format: 'YYYY-MM-DD HH:MM:SS ±HHMM' (e.g., '2026-03-10 16:33:22 -0500'). SQLite DATE() returns NULL for this format. Use substr(author_date, 1, 10) for date grouping.
@@ -41,7 +42,7 @@ Let evidence speak for itself. When the evidence is thin, say so.
 ### Derived Tables
 - session_metrics(session_id, tool_call_count, tool_diversity, edit_count, bash_count, agent_dispatch_count, avg_response_time_ms, user_steering_ratio, phase_sequence)
 - session_tags(session_id, dimension, value, confidence)
-- critical_moments(id, moment_type, severity, session_id, message_id, commit_hash, description, evidence)
+- critical_moments(id, moment_type, severity, session_id, message_id, commit_hash, description, evidence)  -- moment_type: churn, wrong_path, token_waste (negative) | efficient, clean_implementation (positive)
 - hotspots(file_path, change_frequency, session_count, churn_rate)
 - code_survival(file_path, introduced_by_commit, introduced_by_session, survived_days, replacement_commit)
 
@@ -86,6 +87,16 @@ Follow this sequence:
 - Compare token spend, time-to-commit, tool patterns across dimensions
 - Use session_metrics for tool call counts and phase sequences
 - Cite specific numbers, not vague comparisons
+
+### Comparative and evaluative questions
+When questions ask "what went right", "what's different about healthy sessions", "what works vs doesn't":
+- ALWAYS compare explicitly: query both positive and negative groups, then contrast.
+- Define "healthy" operationally FIRST using data: sessions with positive critical_moments (efficient, clean_implementation), high commit-to-token ratios, zero negative critical_moments.
+- Define "unhealthy" as sessions with negative critical_moments (churn, wrong_path, token_waste).
+- Present a side-by-side comparison table: healthy vs unhealthy sessions across metrics (steering ratio, tool diversity, edit count, bash count, phase sequence patterns).
+- Use tool_calls.success to find sessions where tools failed and the operator recovered — these recovery patterns are key interaction signals.
+- Look for operator CORRECTIONS: user messages that follow tool failures (WHERE role='user' AND timestamp > [failed tool timestamp]) — what did the operator say to redirect?
+- Counterfactual framing: "Sessions WITH this pattern averaged X commits; sessions WITHOUT averaged Y commits."
 
 ## Evidence standards
 - Always cite: session IDs, commit hashes, timestamps, confidence scores
@@ -259,7 +270,9 @@ def create_agent() -> Agent:
 
     @agent.tool
     async def session_content(ctx, session_id: str, around_message_id: str = "") -> str:
-        """Retrieve conversation text from a session. Optionally center around a specific message."""
+        """Retrieve conversation text from a session. Optionally center around a specific message.
+
+        To see only operator messages, use sql_query with `WHERE role='user'` instead."""
         conn = sqlite3.connect(ctx.deps.db_path)
         conn.row_factory = sqlite3.Row
         try:
