@@ -7,12 +7,16 @@ Phase 0 (deterministic):
 
 Phase 1 (local GPU):
 - rag-source-landed: ingest new RAG source files via Ollama embeddings
+
+Phase 2 (cloud LLM):
+- knowledge-maintenance: run maintenance after profiles/ changes settle (quiet window)
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from cockpit.engine.models import Action, ChangeEvent
 from cockpit.engine.rules import Rule
@@ -171,6 +175,159 @@ RAG_SOURCE_RULE = Rule(
 )
 
 
+# ── Phase 2: Knowledge rules (cloud LLM) ───────────────────────────────
+
+
+class QuietWindowScheduler:
+    """Accumulates events and fires a callback after a quiet period.
+
+    Each new event resets the timer. The callback fires only after
+    quiet_window_s seconds pass with no new events.
+    """
+
+    def __init__(self, quiet_window_s: float = 180) -> None:
+        self._quiet_window_s = quiet_window_s
+        self._dirty_paths: set[str] = set()
+        self._last_event: float = 0.0
+        self._scheduled_handle: asyncio.TimerHandle | None = None
+        self._callback: asyncio.Future | None = None
+        self._running = False
+
+    @property
+    def dirty(self) -> bool:
+        return len(self._dirty_paths) > 0
+
+    @property
+    def dirty_paths(self) -> set[str]:
+        return set(self._dirty_paths)
+
+    def record(self, path: str, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """Record a dirty path and reset the quiet window timer."""
+        self._dirty_paths.add(path)
+        self._last_event = time.monotonic()
+
+        # Cancel any pending scheduled fire
+        if self._scheduled_handle is not None:
+            self._scheduled_handle.cancel()
+            self._scheduled_handle = None
+
+        # Schedule fire after quiet window
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop — can't schedule, stay dirty but don't fire
+                return
+        self._scheduled_handle = loop.call_later(self._quiet_window_s, self._mark_ready)
+
+    def _mark_ready(self) -> None:
+        """Called when quiet window expires."""
+        self._scheduled_handle = None
+        self._running = True
+
+    def should_fire(self) -> bool:
+        """Check if quiet window has elapsed and there's dirty state."""
+        return bool(self._running and self._dirty_paths)
+
+    def consume(self) -> set[str]:
+        """Consume dirty paths, resetting state. Call after firing."""
+        paths = set(self._dirty_paths)
+        self._dirty_paths.clear()
+        self._running = False
+        return paths
+
+    def cancel(self) -> None:
+        """Cancel any pending timer."""
+        if self._scheduled_handle is not None:
+            self._scheduled_handle.cancel()
+            self._scheduled_handle = None
+        self._dirty_paths.clear()
+        self._running = False
+
+
+# Module-level scheduler instance shared between filter and handler
+_knowledge_scheduler = QuietWindowScheduler(quiet_window_s=180)
+
+
+def get_knowledge_scheduler() -> QuietWindowScheduler:
+    """Expose scheduler for testing and engine integration."""
+    return _knowledge_scheduler
+
+
+async def _handle_knowledge_maintenance(*, ignore_fn=None) -> str:
+    """Run knowledge maintenance after quiet window expires."""
+    from agents.knowledge_maint import run_maintenance
+    from shared.config import PROFILES_DIR
+
+    # Self-trigger prevention for output files
+    if ignore_fn is not None:
+        ignore_fn(PROFILES_DIR / "knowledge-maint-report.json")
+
+    paths = _knowledge_scheduler.consume()
+    _log.info("Knowledge maintenance triggered by %d dirty paths", len(paths))
+
+    report = await run_maintenance(dry_run=False)
+    _log.info(
+        "Knowledge maintenance complete: pruned=%d merged=%d",
+        report.total_pruned,
+        report.total_merged,
+    )
+    return f"maintenance:pruned={report.total_pruned},merged={report.total_merged}"
+
+
+# Files that should trigger knowledge maintenance consideration
+_KNOWLEDGE_TRIGGER_FILES = {
+    "health-history.jsonl",
+    "drift-report.json",
+    "scout-report.json",
+    "operator-profile.json",
+    "knowledge-maint-report.json",  # own output — filtered by scheduler, not trigger
+}
+
+
+def _knowledge_maint_filter(event: ChangeEvent) -> bool:
+    """Match profiles/ changes and manage quiet window.
+
+    Always records events. Only returns True when quiet window has elapsed.
+    """
+    # Only profiles/ directory changes
+    if "profiles" not in event.path.parts:
+        return False
+    # Skip our own output
+    if event.path.name == "knowledge-maint-report.json":
+        return False
+    if event.path.name == "knowledge-maint-history.jsonl":
+        return False
+
+    # Record the event in the scheduler
+    _knowledge_scheduler.record(str(event.path))
+
+    # Only fire if quiet window has elapsed
+    return _knowledge_scheduler.should_fire()
+
+
+def _knowledge_maint_produce(event: ChangeEvent) -> list[Action]:
+    return [
+        Action(
+            name="knowledge-maintenance",
+            handler=_handle_knowledge_maintenance,
+            args={},
+            phase=2,
+            priority=80,
+        )
+    ]
+
+
+KNOWLEDGE_MAINT_RULE = Rule(
+    name="knowledge-maintenance",
+    description="Run knowledge maintenance after profiles/ changes settle (180s quiet window)",
+    trigger_filter=_knowledge_maint_filter,
+    produce=_knowledge_maint_produce,
+    phase=2,
+    cooldown_s=600,
+)
+
+
 # ── Registration ────────────────────────────────────────────────────────────
 
 ALL_RULES: list[Rule] = [
@@ -197,6 +354,7 @@ ALL_RULES: list[Rule] = [
         cooldown_s=30,
     ),
     RAG_SOURCE_RULE,
+    KNOWLEDGE_MAINT_RULE,
 ]
 
 # Backwards compat alias

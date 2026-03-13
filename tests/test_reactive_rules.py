@@ -5,6 +5,7 @@ Self-contained, asyncio_mode="auto", unittest.mock only.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,9 +17,12 @@ from cockpit.engine.rules import RuleRegistry, evaluate_rules
 from cockpit.engine.reactive_rules import (
     ALL_RULES,
     INFRASTRUCTURE_RULES,
+    QuietWindowScheduler,
+    get_knowledge_scheduler,
     register_infrastructure_rules,
     _handle_collector_refresh,
     _handle_config_changed,
+    _handle_knowledge_maintenance,
     _handle_rag_ingest,
     _handle_sdlc_event,
 )
@@ -37,9 +41,10 @@ def _event(path: str, event_type: str = "modified") -> ChangeEvent:
 def _registry() -> RuleRegistry:
     reg = RuleRegistry()
     register_infrastructure_rules(reg)
-    # Reset cooldowns for test isolation
+    # Reset cooldowns and scheduler for test isolation
     for rule in reg:
         rule._last_fired = 0.0
+    get_knowledge_scheduler().cancel()
     return reg
 
 
@@ -47,9 +52,9 @@ def _registry() -> RuleRegistry:
 
 
 class TestRegistration:
-    def test_registers_four_rules(self):
+    def test_registers_five_rules(self):
         reg = _registry()
-        assert len(reg) == 4
+        assert len(reg) == 5
 
     def test_rule_names(self):
         reg = _registry()
@@ -59,6 +64,7 @@ class TestRegistration:
             "config-changed",
             "sdlc-event-logged",
             "rag-source-landed",
+            "knowledge-maintenance",
         }
 
     def test_phase_zero_rules(self):
@@ -69,6 +75,11 @@ class TestRegistration:
         phase1 = [r for r in ALL_RULES if r.phase == 1]
         assert len(phase1) == 1
         assert phase1[0].name == "rag-source-landed"
+
+    def test_phase_two_rules(self):
+        phase2 = [r for r in ALL_RULES if r.phase == 2]
+        assert len(phase2) == 1
+        assert phase2[0].name == "knowledge-maintenance"
 
 
 # ── TestCollectorRefreshRule ────────────────────────────────────────────────
@@ -289,3 +300,173 @@ class TestRagSourceRule:
         with patch("asyncio.to_thread", new=AsyncMock(return_value=(False, "qdrant down"))):
             with pytest.raises(RuntimeError, match="Ingest failed"):
                 await _handle_rag_ingest(path="/rag-sources/gmail/msg.md")
+
+
+# ── TestQuietWindowScheduler ────────────────────────────────────────────
+
+
+class TestQuietWindowScheduler:
+    def test_not_dirty_initially(self):
+        sched = QuietWindowScheduler(quiet_window_s=1)
+        assert not sched.dirty
+        assert not sched.should_fire()
+
+    def test_record_marks_dirty(self):
+        loop = asyncio.new_event_loop()
+        sched = QuietWindowScheduler(quiet_window_s=1)
+        sched.record("/some/path", loop=loop)
+        assert sched.dirty
+        assert "/some/path" in sched.dirty_paths
+        sched.cancel()
+        loop.close()
+
+    def test_should_fire_false_before_window(self):
+        loop = asyncio.new_event_loop()
+        sched = QuietWindowScheduler(quiet_window_s=100)
+        sched.record("/some/path", loop=loop)
+        assert not sched.should_fire()
+        sched.cancel()
+        loop.close()
+
+    async def test_should_fire_after_window(self):
+        sched = QuietWindowScheduler(quiet_window_s=0.05)
+        loop = asyncio.get_running_loop()
+        sched.record("/path/a", loop=loop)
+        sched.record("/path/b", loop=loop)
+        assert not sched.should_fire()
+
+        await asyncio.sleep(0.1)
+
+        assert sched.should_fire()
+        assert len(sched.dirty_paths) == 2
+
+    async def test_consume_resets_state(self):
+        sched = QuietWindowScheduler(quiet_window_s=0.05)
+        loop = asyncio.get_running_loop()
+        sched.record("/path/a", loop=loop)
+        await asyncio.sleep(0.1)
+
+        assert sched.should_fire()
+        paths = sched.consume()
+        assert "/path/a" in paths
+        assert not sched.dirty
+        assert not sched.should_fire()
+
+    async def test_new_event_resets_timer(self):
+        sched = QuietWindowScheduler(quiet_window_s=0.1)
+        loop = asyncio.get_running_loop()
+        sched.record("/path/a", loop=loop)
+        await asyncio.sleep(0.06)
+
+        # New event resets the window
+        sched.record("/path/b", loop=loop)
+        await asyncio.sleep(0.06)
+
+        # Still shouldn't fire — timer was reset
+        assert not sched.should_fire()
+
+        # Wait for full window after last event
+        await asyncio.sleep(0.06)
+        assert sched.should_fire()
+
+    def test_cancel_clears_state(self):
+        loop = asyncio.new_event_loop()
+        sched = QuietWindowScheduler(quiet_window_s=1)
+        sched.record("/path/a", loop=loop)
+        sched.cancel()
+        assert not sched.dirty
+        assert not sched.should_fire()
+        loop.close()
+
+
+# ── TestKnowledgeMaintenanceRule ────────────────────────────────────────
+
+
+class TestKnowledgeMaintenanceRule:
+    def _reset_scheduler(self):
+        sched = get_knowledge_scheduler()
+        sched.cancel()
+
+    def test_non_profiles_path_no_match(self):
+        self._reset_scheduler()
+        reg = _registry()
+        plan = evaluate_rules(
+            _event("/data/axioms/registry.yaml"),
+            reg,
+        )
+        km_actions = [a for a in plan.actions if a.name == "knowledge-maintenance"]
+        assert len(km_actions) == 0
+
+    def test_own_output_skipped(self):
+        self._reset_scheduler()
+        reg = _registry()
+        plan = evaluate_rules(
+            _event("/data/profiles/knowledge-maint-report.json"),
+            reg,
+        )
+        km_actions = [a for a in plan.actions if a.name == "knowledge-maintenance"]
+        assert len(km_actions) == 0
+
+    def test_history_output_skipped(self):
+        self._reset_scheduler()
+        reg = _registry()
+        plan = evaluate_rules(
+            _event("/data/profiles/knowledge-maint-history.jsonl"),
+            reg,
+        )
+        km_actions = [a for a in plan.actions if a.name == "knowledge-maintenance"]
+        assert len(km_actions) == 0
+
+    async def test_profiles_change_records_dirty(self):
+        self._reset_scheduler()
+        reg = _registry()
+        # First event records dirty but doesn't fire (quiet window)
+        plan = evaluate_rules(
+            _event("/data/profiles/health-history.jsonl"),
+            reg,
+        )
+        km_actions = [a for a in plan.actions if a.name == "knowledge-maintenance"]
+        assert len(km_actions) == 0
+
+        sched = get_knowledge_scheduler()
+        assert sched.dirty
+        sched.cancel()
+
+    def test_rule_has_cooldown(self):
+        rule = next(r for r in ALL_RULES if r.name == "knowledge-maintenance")
+        assert rule.cooldown_s == 600
+
+    def test_rule_is_phase_two(self):
+        rule = next(r for r in ALL_RULES if r.name == "knowledge-maintenance")
+        assert rule.phase == 2
+
+    @patch("agents.knowledge_maint.run_maintenance")
+    async def test_handler_calls_run_maintenance(self, mock_run):
+        mock_report = MagicMock()
+        mock_report.total_pruned = 5
+        mock_report.total_merged = 2
+        mock_run.return_value = mock_report
+
+        sched = get_knowledge_scheduler()
+        sched._dirty_paths = {"/profiles/test.json"}
+        sched._running = True
+
+        result = await _handle_knowledge_maintenance()
+        mock_run.assert_awaited_once_with(dry_run=False)
+        assert "pruned=5" in result
+        assert "merged=2" in result
+
+    @patch("agents.knowledge_maint.run_maintenance")
+    async def test_handler_calls_ignore_fn(self, mock_run):
+        mock_report = MagicMock()
+        mock_report.total_pruned = 0
+        mock_report.total_merged = 0
+        mock_run.return_value = mock_report
+
+        sched = get_knowledge_scheduler()
+        sched._dirty_paths = {"/profiles/test.json"}
+        sched._running = True
+
+        mock_ignore = MagicMock()
+        await _handle_knowledge_maintenance(ignore_fn=mock_ignore)
+        mock_ignore.assert_called_once()
