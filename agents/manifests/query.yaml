@@ -1,0 +1,41 @@
+id: query
+name: RAG Query Tool
+version: "1.0.0"
+category: knowledge
+reports_to: operator
+peers: [research, ingest]
+depends_on: [ingest]
+
+purpose: CLI tool for testing and debugging RAG retrieval — direct vector search against Qdrant collections.
+inputs:
+  - operator queries (CLI arguments)
+  - Qdrant collections
+outputs:
+  - ranked retrieval results
+  - similarity scores
+capabilities:
+  - rag_retrieval
+  - similarity_search
+schedule:
+  type: on-demand
+model: null
+
+autonomy: advisory
+decision_scope: Read-only retrieval. Cannot modify knowledge base.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-init-001]
+    role: subject
+raci:
+  - task: knowledge_retrieval
+    role: consulted
+
+health_group: null
+service_tier: 3
+
+narrative: |
+  The RAG Query Tool is a diagnostic instrument, not a production agent. It provides
+  direct CLI access to Qdrant vector search, letting the operator test retrieval
+  quality, debug embedding issues, and verify that ingest produced usable results.
+  It's the equivalent of a database query console for the knowledge base.

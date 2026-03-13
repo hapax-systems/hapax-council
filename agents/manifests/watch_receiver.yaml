@@ -1,0 +1,47 @@
+id: watch_receiver
+name: Watch Receiver
+version: "1.0.0"
+category: interaction
+reports_to: operator
+peers: [health_monitor]
+depends_on: []
+
+purpose: FastAPI sensor receiver — accepts sensor data from Pixel Watch and writes atomic JSON to the filesystem-as-bus.
+inputs:
+  - HTTP POST from Pixel Watch (heart rate, steps, battery, location)
+outputs:
+  - .cache/watch-receiver/*.json (atomic writes)
+capabilities:
+  - sensor_ingestion
+  - atomic_write
+  - data_validation
+schedule:
+  type: daemon
+model: null
+
+autonomy: full
+decision_scope: Accept, validate, and persist sensor data. Cannot act on the data — downstream agents consume it.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: single_user
+    implications: [su-auth-001]
+    role: subject
+  - axiom_id: executive_function
+    implications: [ex-routine-001]
+    role: subject
+raci:
+  - task: sensor_ingestion
+    role: responsible
+  - task: health_context
+    role: consulted
+
+health_group: watch
+service_tier: 2
+
+narrative: |
+  The Watch Receiver is a FastAPI microservice that acts as the ingest point for
+  wearable sensor data. The Pixel Watch sends heart rate, step count, battery level,
+  and location data via HTTP POST. The receiver validates the payload and writes it
+  as atomic JSON files to the filesystem-as-bus, where downstream agents (briefing,
+  profiler, voice daemon) can consume it. It's designed for the dual-radio presence
+  layer (WiFi at home, BLE via phone when away).

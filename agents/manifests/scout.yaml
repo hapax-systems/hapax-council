@@ -1,0 +1,53 @@
+id: scout
+name: Horizon Scout
+version: "1.0.0"
+category: observability
+reports_to: operator
+peers: [health_monitor, drift_detector]
+depends_on: []
+
+purpose: Scan external component landscape for fitness changes — new versions, deprecations, security advisories, better alternatives.
+inputs:
+  - package manifests (pacman, pip, npm)
+  - GitHub release feeds
+  - security advisory databases
+outputs:
+  - profiles/scout-report.json
+  - actionable upgrade recommendations
+capabilities:
+  - version_scanning
+  - fitness_evaluation
+  - alternative_discovery
+schedule:
+  type: timer
+  systemd_unit: scout.timer
+  interval: daily
+model: fast
+
+autonomy: advisory
+decision_scope: Evaluate and recommend. Never installs, upgrades, or modifies packages.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-routine-001]
+    role: subject
+  - axiom_id: corporate_boundary
+    implications: [cb-llm-001]
+    role: subject
+raci:
+  - task: dependency_fitness
+    role: responsible
+  - task: daily_briefing
+    role: consulted
+
+health_group: scout
+service_tier: 2
+metrics_source: profiles/scout-report.json
+
+narrative: |
+  The Horizon Scout looks outward. While health_monitor watches internal state and
+  drift_detector watches documentation accuracy, Scout watches the external landscape
+  of components the system depends on. It checks for new releases, deprecation notices,
+  security advisories, and potentially superior alternatives. Its output is purely
+  advisory — it recommends but never acts. The operator uses scout reports to prioritize
+  upgrade work and avoid being blindsided by breaking changes.

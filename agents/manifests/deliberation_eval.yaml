@@ -1,0 +1,49 @@
+id: deliberation_eval
+name: Deliberation Evaluator
+version: "1.0.0"
+category: governance
+reports_to: operator
+peers: [code_review]
+depends_on: []
+
+purpose: Evaluate multi-round deliberation quality via hoop tests, activation rate, and concession asymmetry metrics.
+inputs:
+  - deliberation transcripts
+  - profiles/deliberations/*.yaml
+outputs:
+  - deliberation quality metrics
+  - probe evaluation results
+capabilities:
+  - deliberation_evaluation
+  - hoop_test_scoring
+  - activation_measurement
+  - asymmetry_detection
+schedule:
+  type: event
+  trigger: new deliberation record
+model: balanced
+
+autonomy: full
+decision_scope: Evaluate deliberation quality. Cannot modify deliberation outcomes or override decisions.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-deliberation-001, ex-deliberation-002, ex-deliberation-003]
+    role: enforcer
+raci:
+  - task: deliberation_quality
+    role: responsible
+  - task: axiom_compliance
+    role: consulted
+
+health_group: axioms
+service_tier: 2
+
+narrative: |
+  The Deliberation Evaluator is the system's meta-cognitive watchdog. When agents
+  engage in multi-round deliberations (structured debates to resolve tensions), this
+  agent evaluates whether the process was genuine or performative. It applies three
+  hoop tests: position shift (did anyone actually change their mind?), argument tracing
+  (can conclusions be traced to specific arguments?), and counterfactual divergence
+  (would a different argument have produced a different outcome?). It also measures
+  activation rate and concession asymmetry to detect rubber-stamping or power imbalances.

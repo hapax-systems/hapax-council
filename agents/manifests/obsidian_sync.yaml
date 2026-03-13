@@ -1,0 +1,46 @@
+id: obsidian_sync
+name: Obsidian Vault Sync
+version: "1.0.0"
+category: sync
+reports_to: operator
+peers: [gdrive_sync, claude_code_sync]
+depends_on: []
+
+purpose: Sync Obsidian vault notes with metadata extraction — frontmatter, tags, links, modification dates. Zero LLM.
+inputs:
+  - Obsidian vault directories (work + personal)
+outputs:
+  - note metadata index
+  - RAG-ready note content
+capabilities:
+  - vault_sync
+  - frontmatter_extraction
+  - link_graph_building
+schedule:
+  type: event
+  trigger: filesystem watch
+model: null
+
+autonomy: full
+decision_scope: Read and index vault content. Cannot create, modify, or delete notes.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: single_user
+    implications: [su-privacy-001]
+    role: subject
+raci:
+  - task: data_sync
+    role: responsible
+  - task: knowledge_ingestion
+    role: consulted
+
+health_group: sync
+service_tier: 2
+
+narrative: |
+  Obsidian Vault Sync bridges the operator's personal knowledge management (Obsidian)
+  with the system's RAG pipeline. It watches both the work and personal vaults for
+  changes, extracts frontmatter metadata, tags, and internal links, and feeds note
+  content into the ingest pipeline. The Obsidian vault is the operator's primary
+  thinking tool, so keeping it synced to the knowledge base is essential for
+  context-aware agent behavior.

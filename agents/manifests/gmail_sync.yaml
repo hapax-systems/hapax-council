@@ -1,0 +1,48 @@
+id: gmail_sync
+name: Gmail Sync
+version: "1.0.0"
+category: sync
+reports_to: operator
+peers: [gdrive_sync, gcalendar_sync]
+depends_on: []
+
+purpose: Index Gmail metadata and behavioral patterns — thread volume, response times, sender frequency. Zero LLM.
+inputs:
+  - Gmail API
+outputs:
+  - email metadata index
+  - behavioral metrics
+capabilities:
+  - email_sync
+  - metadata_indexing
+  - pattern_tracking
+schedule:
+  type: event
+  trigger: periodic
+model: null
+
+autonomy: full
+decision_scope: Read and index email metadata. Cannot send, modify, or delete emails.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: corporate_boundary
+    implications: [cb-key-001]
+    role: subject
+  - axiom_id: interpersonal_transparency
+    implications: []
+    role: subject
+raci:
+  - task: data_sync
+    role: responsible
+  - task: operator_profile_maintenance
+    role: consulted
+
+health_group: sync
+service_tier: 2
+
+narrative: |
+  Gmail Sync indexes email metadata — not content, just metadata like thread counts,
+  response times, and sender frequency. This feeds into the profiler's communication
+  dimension and the briefing's activity summary. It's strongly constrained by both
+  corporate boundary (crosses employer network) and interpersonal transparency
+  (email metadata reveals information about other people).
