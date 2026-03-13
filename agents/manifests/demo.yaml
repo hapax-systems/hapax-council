@@ -1,52 +1,90 @@
 id: demo
 name: Demo Generator
-version: "1.0.0"
+version: 1.0.0
 category: synthesis
 reports_to: operator
-peers: [demo_eval, research]
-depends_on: [profiler]
-
-purpose: Generate audience-tailored system demonstrations — adapt content, depth, and framing to specific audience profiles.
+peers:
+- demo_eval
+- research
+depends_on:
+- profiler
+purpose: Generate audience-tailored system demonstrations — adapt content, depth,
+  and framing to specific audience profiles.
 inputs:
-  - audience profile (demo-audiences.yaml)
-  - system capabilities inventory
-  - operator profile
-  - presenter style preferences
+- audience profile (demo-audiences.yaml)
+- system capabilities inventory
+- operator profile
+- presenter style preferences
 outputs:
-  - demo scripts
-  - slide content
-  - talking points
+- demo scripts
+- slide content
+- talking points
 capabilities:
-  - audience_analysis
-  - content_generation
-  - narrative_construction
+- audience_analysis
+- content_generation
+- narrative_construction
 schedule:
   type: on-demand
 model: balanced
-
 autonomy: supervised
-decision_scope: Generate demo content for operator review. Cannot present or publish without approval.
+decision_scope: Generate demo content for operator review. Cannot present or publish
+  without approval.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: single_user
-    implications: [su-decision-001]
-    role: subject
-  - axiom_id: management_governance
-    implications: [mg-surface-001]
-    role: subject
+- axiom_id: single_user
+  implications:
+  - su-decision-001
+  role: subject
+- axiom_id: management_governance
+  implications:
+  - mg-surface-001
+  role: subject
 raci:
-  - task: demo_generation
-    role: responsible
-  - task: demo_evaluation
-    role: consulted
-
+- task: demo_generation
+  role: responsible
+- task: demo_evaluation
+  role: consulted
 health_group: null
 service_tier: 3
+narrative: 'The Demo Generator creates audience-tailored demonstrations of the system.
+  Given
 
-narrative: |
-  The Demo Generator creates audience-tailored demonstrations of the system. Given
   an audience profile (technical depth, interests, concerns), it generates demo
+
   scripts, slide content, and talking points that present the system in the most
-  relevant way for that audience. It pulls from the operator's presenter style
+
+  relevant way for that audience. It pulls from the operator''s presenter style
+
   preferences and past demo lessons to maintain consistency. All output requires
+
   operator review before use.
+
+  '
+short_description: Generate audience-tailored system demos
+cli:
+  command: uv run python -m agents.demo
+  module: agents.demo
+  flags:
+  - flag: request
+    description: Natural language request
+    flag_type: positional
+    metavar: REQUEST
+  - flag: --audience
+    description: Override audience archetype
+    flag_type: value
+    metavar: ARCHETYPE
+    choices:
+    - family
+    - technical-peer
+    - leadership
+    - team-member
+  - flag: --format
+    description: Output format
+    flag_type: value
+    default: slides
+    choices:
+    - slides
+    - video
+    - markdown-only
+  - flag: --json
+    description: Print script JSON instead of generating demo

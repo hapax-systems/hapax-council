@@ -1,0 +1,49 @@
+id: backup_local
+name: Local Backup
+version: "1.0.0"
+category: observability
+reports_to: operator
+peers: [backup_remote, llm_backup]
+depends_on: []
+
+purpose: Tier 1 daily backup to local restic repository — dumps Postgres, snapshots Qdrant, then runs restic backup.
+inputs:
+  - PostgreSQL databases
+  - Qdrant snapshots
+  - filesystem paths
+outputs:
+  - local restic snapshots
+capabilities:
+  - restic_backup
+  - postgres_dump
+  - qdrant_snapshot
+schedule:
+  type: timer
+  systemd_unit: hapax-backup-local.timer
+  interval: daily
+model: null
+
+autonomy: full
+decision_scope: Execute backup to local repository. Cannot modify source data.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-routine-007]
+    role: subject
+raci:
+  - task: backup
+    role: responsible
+
+health_group: null
+service_tier: 1
+
+timer_display:
+  schedule_label: "Daily 02:00"
+  purpose: "Local restic backup (Postgres + Qdrant + files)"
+
+narrative: |
+  The Local Backup agent runs the Tier 1 daily backup pipeline. It first
+  dumps PostgreSQL databases and takes Qdrant collection snapshots, then
+  runs restic to back up the entire configured path set to the local
+  repository at /data/backups/restic. This is the first line of defense
+  against data loss.

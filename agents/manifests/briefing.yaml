@@ -1,56 +1,104 @@
 id: briefing
 name: Daily Briefing
-version: "1.0.0"
+version: 1.0.0
 category: synthesis
 reports_to: operator
-peers: [health_monitor, drift_detector, scout, activity_analyzer]
-depends_on: [health_monitor, drift_detector, activity_analyzer]
-
-purpose: Synthesize daily system briefing from health, drift, activity, and calendar signals into an operator-ready summary.
+peers:
+- health_monitor
+- drift_detector
+- scout
+- activity_analyzer
+depends_on:
+- health_monitor
+- drift_detector
+- activity_analyzer
+purpose: Synthesize daily system briefing from health, drift, activity, and calendar
+  signals into an operator-ready summary.
 inputs:
-  - profiles/health-report.json
-  - profiles/drift-report.json
-  - activity telemetry (Langfuse)
-  - calendar events
-  - scout reports
+- profiles/health-report.json
+- profiles/drift-report.json
+- activity telemetry (Langfuse)
+- calendar events
+- scout reports
 outputs:
-  - profiles/briefing.json
-  - Obsidian daily note
+- profiles/briefing.json
+- Obsidian daily note
 capabilities:
-  - multi_source_synthesis
-  - temporal_summarization
+- multi_source_synthesis
+- temporal_summarization
 schedule:
   type: timer
   systemd_unit: daily-briefing.timer
   interval: daily
 model: fast
-
 autonomy: full
-decision_scope: Synthesize and present information. No decision authority — purely informational output.
+decision_scope: Synthesize and present information. No decision authority — purely
+  informational output.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: executive_function
-    implications: [ex-cognitive-009, ex-routine-001]
-    role: subject
-  - axiom_id: single_user
-    implications: [su-decision-001]
-    role: subject
+- axiom_id: executive_function
+  implications:
+  - ex-cognitive-009
+  - ex-routine-001
+  role: subject
+- axiom_id: single_user
+  implications:
+  - su-decision-001
+  role: subject
 raci:
-  - task: daily_briefing
-    role: responsible
-  - task: stack_health_monitoring
-    role: informed
-  - task: documentation_drift
-    role: informed
-
+- task: daily_briefing
+  role: responsible
+- task: stack_health_monitoring
+  role: informed
+- task: documentation_drift
+  role: informed
 health_group: briefing
 service_tier: 1
 metrics_source: profiles/briefing.json
+narrative: 'The Daily Briefing agent is the operator''s morning newspaper. It runs
+  once daily,
 
-narrative: |
-  The Daily Briefing agent is the operator's morning newspaper. It runs once daily,
   pulling from health reports, drift findings, activity telemetry, calendar events,
+
   and scout reports to produce a single synthesized summary. It uses a fast LLM
+
   (Gemini Flash) for the final synthesis pass but all upstream data is pre-computed
+
   by deterministic agents. This is the primary entry point for the operator to
+
   understand system state without manually checking each subsystem.
+
+  '
+short_description: Daily operational briefing
+cli:
+  command: uv run python -m agents.briefing
+  module: agents.briefing
+  flags:
+  - flag: --save
+    description: Save to profiles/briefing.md
+  - flag: --json
+    description: Machine-readable JSON output
+  - flag: --hours
+    description: Lookback window in hours
+    flag_type: value
+    default: '24'
+    metavar: N
+  - flag: --notify
+    description: Send desktop notification
+timer_display:
+  schedule_label: Daily 07:00
+  purpose: Morning briefing + notification
+manual_section:
+  title: Morning Routine
+  order: 1
+  content:
+  - Run the briefing agent for a synthesized overview of the last 24 hours.
+  - Includes health trends, agent activity, action items, and scout alerts.
+  - ''
+  - '```'
+  - uv run python -m agents.briefing --save
+  - '```'
+  - ''
+  - 'Or from the cockpit: select **briefing** in the agent launcher, enable `--save`,
+    press Enter.'
+  - 'The `--hours` flag adjusts the lookback window (default: 24).'

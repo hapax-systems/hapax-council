@@ -1,0 +1,49 @@
+id: backup_remote
+name: Remote Backup
+version: "1.0.0"
+category: observability
+reports_to: operator
+peers: [backup_local, llm_backup]
+depends_on: [backup_local]
+
+purpose: Tier 2 backup to Backblaze B2 — offsite restic replication of the local backup repository.
+inputs:
+  - local restic repository
+outputs:
+  - B2 restic snapshots
+capabilities:
+  - restic_backup
+  - b2_upload
+schedule:
+  type: timer
+  systemd_unit: hapax-backup-remote.timer
+  interval: daily
+model: null
+
+autonomy: full
+decision_scope: Replicate local backups to B2. Cannot modify local repository.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-routine-007]
+    role: subject
+  - axiom_id: corporate_boundary
+    implications: [cb-key-001]
+    role: subject
+raci:
+  - task: backup
+    role: responsible
+
+health_group: null
+service_tier: 1
+
+timer_display:
+  schedule_label: "Daily 03:00"
+  purpose: "Offsite restic backup to Backblaze B2"
+
+narrative: |
+  The Remote Backup agent handles Tier 2 offsite replication. After the
+  local backup completes, this agent replicates snapshots to Backblaze B2,
+  providing geographic redundancy. It uses credentials from the pass
+  password store (backblaze/key-id, backblaze/app-key) and the restic
+  password from pass as well.

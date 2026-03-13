@@ -73,6 +73,40 @@ class RACIEntry(BaseModel):
     role: str  # responsible | accountable | consulted | informed
 
 
+class CLIFlag(BaseModel):
+    """Structured metadata for a single CLI flag."""
+
+    flag: str
+    description: str
+    flag_type: str = "bool"  # "bool" | "value" | "positional"
+    default: str | None = None
+    choices: list[str] | None = None
+    metavar: str | None = None
+
+
+class CLISpec(BaseModel):
+    """CLI invocation specification for an agent."""
+
+    command: str
+    module: str
+    flags: list[CLIFlag] = Field(default_factory=list)
+
+
+class TimerDisplay(BaseModel):
+    """Human-readable timer schedule info for documentation."""
+
+    schedule_label: str  # e.g. "Every 15 min", "Daily 07:00"
+    purpose: str  # e.g. "Auto-fix + desktop notification on failures"
+
+
+class ManualSection(BaseModel):
+    """Content for the operations manual task section."""
+
+    title: str
+    content: list[str]
+    order: int = 99
+
+
 class AgentManifest(BaseModel):
     """Complete agent manifest — the formalized personnel file."""
 
@@ -107,6 +141,17 @@ class AgentManifest(BaseModel):
 
     # ── Narrative ────────────────────────────────────────────────────────
     narrative: str = ""  # human-readable description of what this agent is and why
+
+    # ── Integration ──────────────────────────────────────────────────────
+    short_description: str = ""  # terse cockpit label (falls back to purpose)
+    cli: CLISpec | None = None
+    timer_display: TimerDisplay | None = None
+    manual_section: ManualSection | None = None
+
+    @property
+    def display_name(self) -> str:
+        """Agent ID as a hyphenated display name."""
+        return self.id.replace("_", "-")
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
@@ -164,6 +209,45 @@ class AgentRegistry:
             for a in self._agents.values()
             if any(b.axiom_id == axiom_id for b in a.axiom_bindings)
         ]
+
+    def cli_agents(self) -> list[AgentManifest]:
+        """Agents that have CLI specifications."""
+        return sorted(
+            [a for a in self._agents.values() if a.cli is not None],
+            key=lambda a: a.id,
+        )
+
+    def timer_agents(self) -> list[AgentManifest]:
+        """Agents with systemd timer schedules."""
+        return sorted(
+            [a for a in self._agents.values() if a.schedule.type == ScheduleType.TIMER],
+            key=lambda a: a.id,
+        )
+
+    def expected_timers(self) -> dict[str, str]:
+        """Return {agent_id: timer_unit_name} for all timer agents."""
+        return {
+            a.id: a.schedule.systemd_unit
+            for a in self.timer_agents()
+            if a.schedule.systemd_unit
+        }
+
+    def zero_config_agents(self) -> list[AgentManifest]:
+        """Agents that run unattended without required positional arguments.
+
+        Includes timer, daemon, and event-driven agents regardless of autonomy
+        tier — these all need to be zero-config runnable even if their output
+        requires operator review (supervised/advisory).
+        """
+        return sorted(
+            [
+                a
+                for a in self._agents.values()
+                if a.schedule.type
+                in (ScheduleType.TIMER, ScheduleType.DAEMON, ScheduleType.EVENT)
+            ],
+            key=lambda a: a.id,
+        )
 
 
 def load_manifests(manifests_dir: Path | None = None) -> dict[str, AgentManifest]:

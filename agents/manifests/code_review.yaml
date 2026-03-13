@@ -1,53 +1,87 @@
 id: code_review
 name: Code Review Agent
-version: "1.0.0"
+version: 1.0.0
 category: governance
 reports_to: operator
-peers: [research, deliberation_eval]
+peers:
+- research
+- deliberation_eval
 depends_on: []
-
-purpose: LLM-powered code review with axiom-aware analysis — checks diffs for correctness, style, security, and constitutional compliance.
+purpose: LLM-powered code review with axiom-aware analysis — checks diffs for correctness,
+  style, security, and constitutional compliance.
 inputs:
-  - git diffs
-  - axiom implications
-  - project conventions
+- git diffs
+- axiom implications
+- project conventions
 outputs:
-  - structured review comments
-  - axiom compliance flags
+- structured review comments
+- axiom compliance flags
 capabilities:
-  - code_review
-  - axiom_compliance_check
-  - security_analysis
+- code_review
+- axiom_compliance_check
+- security_analysis
 schedule:
   type: on-demand
 model: balanced
-
 autonomy: advisory
 decision_scope: Review and comment. Cannot merge, approve, or modify code.
 escalation_target: operator
 axiom_bindings:
-  - axiom_id: executive_function
-    implications: [ex-err-001]
-    role: evaluator
-  - axiom_id: single_user
-    implications: [su-auth-001]
-    role: evaluator
-  - axiom_id: corporate_boundary
-    implications: [cb-key-001]
-    role: evaluator
+- axiom_id: executive_function
+  implications:
+  - ex-err-001
+  role: evaluator
+- axiom_id: single_user
+  implications:
+  - su-auth-001
+  role: evaluator
+- axiom_id: corporate_boundary
+  implications:
+  - cb-key-001
+  role: evaluator
 raci:
-  - task: code_review
-    role: responsible
-  - task: axiom_compliance
-    role: consulted
-
+- task: code_review
+  role: responsible
+- task: axiom_compliance
+  role: consulted
 health_group: null
 service_tier: 3
+narrative: 'The Code Review Agent applies LLM analysis to code changes, checking for
 
-narrative: |
-  The Code Review Agent applies LLM analysis to code changes, checking for
-  correctness, style, security issues, and axiom compliance. It's aware of all
+  correctness, style, security issues, and axiom compliance. It''s aware of all
+
   constitutional axioms and their implications, so it can flag changes that might
+
   violate single-user assumptions, executive function requirements, or corporate
+
   boundary constraints. It produces structured review comments but never takes
+
   action — the operator decides what to accept.
+
+  '
+short_description: Code review with operator context
+cli:
+  command: uv run python -m agents.code_review
+  module: agents.code_review
+  flags:
+  - flag: path
+    description: File path to review
+    flag_type: positional
+  - flag: --diff
+    description: Pass a diff string directly
+    flag_type: value
+  - flag: --model
+    description: Model alias
+    flag_type: value
+    default: balanced
+manual_section:
+  title: Reviewing Code
+  order: 6
+  content:
+  - The code review agent analyzes files or diffs with operator context.
+  - ''
+  - '```'
+  - uv run python -m agents.code_review path/to/file.py
+  - uv run python -m agents.code_review --diff "$(git diff)"
+  - 'uv run python -m agents.code_review --model coding  # use qwen-coder'
+  - '```'

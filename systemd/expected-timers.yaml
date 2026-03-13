@@ -1,7 +1,6 @@
-# Expected systemd user timers — single source of truth.
-#
-# Both sufficiency_probes.py and health_monitor.py read this file
-# instead of maintaining separate hardcoded lists.
+# DEPRECATED: Timer definitions now live in agents/manifests/*.yaml
+# and are queried via shared.agent_registry.get_registry().expected_timers().
+# This file is kept for documentation only.
 #
 # Format: agent_name → timer unit name
 
