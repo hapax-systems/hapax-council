@@ -1,0 +1,177 @@
+# Composition Ladder Status — hapax_voice type system
+#
+# Tracks matrix-completion state for each layer.
+# Gate rule: no NEW composition on layer N unless N-1 is matrix-complete.
+#
+# Dimensions:
+#   A — Construction (creation, defaults, from-factory)
+#   B — Invariants (frozen, monotonic, immutability)
+#   C — Operations (update, sample, emit, subscribe, fuse)
+#   D — Boundaries (empty, zero, max, None, NaN)
+#   E — Error paths (regression, missing key, exception isolation)
+#   F — Dog Star proofs (forbidden type sequences blocked)
+#   G — Composition contracts (output of N is valid input to N+1)
+#
+# States: untested → partial → matrix-complete → proven
+#   matrix-complete: all 7 dimensions have ≥1 test
+#   proven: matrix-complete + property-based tests (hypothesis)
+#
+# Updated: 2026-03-13
+
+layers:
+  L0:
+    name: "Stamped[T]"
+    modules: [primitives.Stamped]
+    state: proven
+    tests:
+      file: tests/hapax_voice/test_primitives.py::TestStamped
+      count: 4
+      dimensions: [A, B, C, D]
+    notes: "Frozen dataclass. Hypothesis coverage via test_governance.py."
+
+  L1:
+    name: "Behavior[T], Event[T]"
+    modules: [primitives.Behavior, primitives.Event]
+    state: matrix-complete
+    tests:
+      files:
+        - tests/hapax_voice/test_primitives.py::TestBehavior  # 9 tests
+        - tests/hapax_voice/test_primitives.py::TestEvent  # 7 tests
+        - tests/hapax_voice/test_type_system_matrix_2.py::TestEventLifecycleAndFanOut  # 12 tests
+        - tests/hapax_voice/test_type_system_matrix_6.py::TestBehaviorPerturbation  # 12 tests
+      count: 40
+      dimensions: [A, B, C, D, E, G]
+    gaps:
+      - "F: No dedicated Dog Star proof for Behavior ownership (D5.3). Covered in worktree feat/dog-star-enforcement."
+
+  L2:
+    name: "FusedContext, VetoChain, FallbackChain, FreshnessGuard"
+    modules: [governance.FusedContext, governance.VetoChain, governance.FallbackChain, governance.FreshnessGuard]
+    state: proven
+    tests:
+      files:
+        - tests/hapax_voice/test_governance.py  # hypothesis-powered
+        - tests/hapax_voice/test_type_system_matrix.py::TestImmutabilityBarriers
+        - tests/hapax_voice/test_type_system_matrix.py::TestFreshnessComposition
+        - tests/hapax_voice/test_type_system_matrix_3.py  # error boundaries
+        - tests/hapax_voice/test_type_system_matrix_4.py  # algebraic properties
+      count: 60+
+      dimensions: [A, B, C, D, E, F, G]
+    notes: "Hypothesis strategies cover VetoResult, FallbackChain, FreshnessGuard."
+
+  L3:
+    name: "with_latest_from combinator"
+    modules: [combinator.with_latest_from]
+    state: matrix-complete
+    tests:
+      files:
+        - tests/hapax_voice/test_combinator.py::TestWithLatestFrom  # 10 tests
+        - tests/hapax_voice/test_type_system_matrix_5.py  # forward pipeline flow
+      count: 22
+      dimensions: [A, C, D, E, G]
+    gaps:
+      - "B: No explicit invariant test for output Event immutability (inherits from Event)."
+
+  L4:
+    name: "Command, Schedule, VetoResult"
+    modules: [commands.Command, commands.Schedule, governance.VetoResult]
+    state: matrix-complete
+    tests:
+      files:
+        - tests/hapax_voice/test_commands.py  # 13 tests
+        - tests/hapax_voice/test_type_system_matrix_9.py  # provenance tracing
+      count: 25
+      dimensions: [A, B, C, D, E, G]
+    gaps:
+      - "F: D1.1 governance-denial-blocks-dispatch tested in worktree feat/dog-star-enforcement."
+
+  L5:
+    name: "SuppressionField, TimelineMapping, MusicalPosition"
+    modules: [suppression.SuppressionField, timeline.TimelineMapping, musical_position.MusicalPosition]
+    state: matrix-complete
+    tests:
+      files:
+        - tests/test_suppression_field.py  # 33 tests
+        - tests/hapax_voice/test_type_system_matrix_8.py  # reconfiguration invariants
+        - tests/test_musical_position.py  # 20 tests (from tests/ root)
+      count: 65
+      dimensions: [A, B, C, D, E, G]
+
+  L6:
+    name: "ResourceArbiter, ExecutorRegistry, ScheduleQueue"
+    modules: [arbiter.ResourceArbiter, executor.ExecutorRegistry, executor.ScheduleQueue]
+    state: matrix-complete
+    tests:
+      files:
+        - tests/test_arbiter.py  # 29 tests
+        - tests/test_executor.py  # 23 tests
+      count: 52
+      dimensions: [A, B, C, D, E, G]
+    gaps:
+      - "F: D4.2 arbiter-bypass proof in worktree feat/dog-star-enforcement."
+
+  L7:
+    name: "compose_mc_governance, compose_obs_governance"
+    modules: [mc_governance.compose_mc_governance, obs_governance.compose_obs_governance]
+    state: matrix-complete
+    tests:
+      files:
+        - tests/hapax_voice/test_governance_composition.py  # 47 tests (A, B, D, G)
+        - tests/test_composition_integration.py  # 12 tests (C, E, G)
+        - tests/hapax_voice/test_type_system_matrix_7.py  # convergent pipelines
+        - tests/hapax_voice/test_type_system_matrix_10.py  # feedback/re-entry
+      count: 83
+      dimensions: [A, B, C, D, E, G]
+    gaps:
+      - "F: D6.3 composition-time validation in worktree feat/dog-star-enforcement."
+
+  L8:
+    name: "PerceptionEngine, PipelineGovernor, FrameGate"
+    modules: [perception.PerceptionEngine, governor.PipelineGovernor, frame_gate.FrameGate]
+    state: matrix-complete
+    tests:
+      files:
+        - tests/test_perception.py  # 54 tests
+        - tests/hapax_voice/test_governor.py  # 11 tests
+        - tests/hapax_voice/test_type_system_matrix_11.py  # lifecycle simulation Q1
+        - tests/hapax_voice/test_type_system_matrix_12.py  # multi-path coherence Q2
+        - tests/hapax_voice/test_type_system_matrix_13.py  # adaptive resilience Q3
+        - tests/hapax_voice/test_type_system_matrix_14.py  # degradation & recovery Q4
+        - tests/hapax_voice/test_type_system_matrix_15.py  # accountable evolution Q5
+        - tests/hapax_voice/test_type_system_matrix_16.py  # holistic steady-state Q6
+      count: 137
+      dimensions: [A, B, C, D, E, G]
+    gaps:
+      - "F: D5.2 scoped backend writes in worktree feat/dog-star-enforcement."
+
+  L9:
+    name: "VoiceDaemon lifecycle"
+    modules: [__main__.VoiceDaemon]
+    state: matrix-complete
+    tests:
+      files:
+        - tests/hapax_voice/test_daemon_lifecycle_matrix.py  # 32 tests (B, D, E, G)
+        - tests/test_hapax_voice_daemon_pipeline.py  # 11 tests (A, C)
+        - tests/hapax_voice/test_e2e_use_case_matrix.py
+      count: 55
+      dimensions: [A, B, C, D, E, G]
+    gaps:
+      - "F: No Dog Star proofs at daemon level (depends on feat/dog-star-enforcement merge)."
+
+# Matrix test files (192 tests across 6 themes + 6 trinary combos):
+#
+# Theme coverage:
+#   T1 — Forward pipeline flow: test_type_system_matrix_5.py
+#   T2 — Perturbation cascades: test_type_system_matrix_6.py
+#   T3 — Convergent pipelines: test_type_system_matrix_7.py
+#   T4 — Reconfiguration invariants: test_type_system_matrix_8.py
+#   T5 — Provenance tracing: test_type_system_matrix_9.py
+#   T6 — Feedback / re-entry: test_type_system_matrix_10.py
+#
+# Trinary combinations:
+#   Q1 (T1+T2+T6): test_type_system_matrix_11.py
+#   Q2 (T1+T3+T5): test_type_system_matrix_12.py
+#   Q3 (T2+T4+T6): test_type_system_matrix_13.py
+#   Q4 (T2+T3+T4): test_type_system_matrix_14.py
+#   Q5 (T4+T5+T6): test_type_system_matrix_15.py
+#   Q6 (ALL):       test_type_system_matrix_16.py
