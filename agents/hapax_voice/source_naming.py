@@ -27,9 +27,7 @@ def validate_source_id(source: str) -> None:
     if not source:
         raise ValueError("Source ID must not be empty")
     if not _SOURCE_ID_RE.match(source):
-        raise ValueError(
-            f"Source ID must be lowercase alphanumeric + underscore, got {source!r}"
-        )
+        raise ValueError(f"Source ID must be lowercase alphanumeric + underscore, got {source!r}")
 
 
 def qualify(base: str, source: str) -> str:
@@ -65,9 +63,7 @@ def is_qualified(name: str) -> bool:
     return SEPARATOR in name
 
 
-def behaviors_for_source(
-    behaviors: dict[str, Behavior], source: str
-) -> dict[str, Behavior]:
+def behaviors_for_source(behaviors: dict[str, Behavior], source: str) -> dict[str, Behavior]:
     """Filter a behaviors dict to only those matching a specific source.
 
     Returns a dict keyed by the full qualified name.
@@ -76,15 +72,11 @@ def behaviors_for_source(
     return {k: v for k, v in behaviors.items() if k.endswith(suffix)}
 
 
-def behaviors_for_base(
-    behaviors: dict[str, Behavior], base: str
-) -> dict[str, Behavior]:
+def behaviors_for_base(behaviors: dict[str, Behavior], base: str) -> dict[str, Behavior]:
     """Filter a behaviors dict to all sources providing a given base name.
 
     Includes both qualified names (``base:source``) and unqualified names
     that match the base exactly.
     """
     prefix = f"{base}{SEPARATOR}"
-    return {
-        k: v for k, v in behaviors.items() if k.startswith(prefix) or k == base
-    }
+    return {k: v for k, v in behaviors.items() if k.startswith(prefix) or k == base}

@@ -95,7 +95,9 @@ def extract_activation_rate(record: dict) -> tuple[float, float, float]:
     total_met = sum(agent_met.values())
 
     overall = total_met / total_checked if total_checked > 0 else 0.0
-    pub_rate = agent_met["publius"] / agent_checked["publius"] if agent_checked["publius"] > 0 else 0.0
+    pub_rate = (
+        agent_met["publius"] / agent_checked["publius"] if agent_checked["publius"] > 0 else 0.0
+    )
     bru_rate = agent_met["brutus"] / agent_checked["brutus"] if agent_checked["brutus"] > 0 else 0.0
 
     return overall, pub_rate, bru_rate
@@ -352,11 +354,13 @@ def format_batch_summary(metrics_list: list[DeliberationMetrics]) -> str:
         ht = m.hoop_tests
         hoop_str = "-/-/-"
         if ht:
-            hoop_str = "/".join([
-                "P" if ht.position_shift else "-",
-                "A" if ht.argument_tracing else "-",
-                "C" if ht.counterfactual_divergence else "-",
-            ])
+            hoop_str = "/".join(
+                [
+                    "P" if ht.position_shift else "-",
+                    "A" if ht.argument_tracing else "-",
+                    "C" if ht.counterfactual_divergence else "-",
+                ]
+            )
         pseudo = " [PSEUDO]" if m.is_pseudo_deliberation else ""
         lines.append(
             f"  {m.deliberation_id}: "

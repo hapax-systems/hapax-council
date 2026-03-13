@@ -41,5 +41,7 @@ class CadenceGroup:
             try:
                 backend.contribute(behaviors)
             except Exception:
-                log.exception("Backend %s contribute failed in cadence group %s", backend.name, self.name)
+                log.exception(
+                    "Backend %s contribute failed in cadence group %s", backend.name, self.name
+                )
         self.tick_event.emit(now, now)

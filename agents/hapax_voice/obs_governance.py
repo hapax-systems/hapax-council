@@ -123,28 +123,30 @@ def build_obs_veto_chain(
       - transport_active: block when transport stopped
     """
     c = cfg or OBSConfig()
-    return VetoChain([
-        Veto(
-            name="dwell_time_respected",
-            predicate=lambda ctx, d=c.dwell_min_s, lt=last_switch_time: dwell_time_respected(
-                ctx, d, lt
+    return VetoChain(
+        [
+            Veto(
+                name="dwell_time_respected",
+                predicate=lambda ctx, d=c.dwell_min_s, lt=last_switch_time: dwell_time_respected(
+                    ctx, d, lt
+                ),
             ),
-        ),
-        Veto(
-            name="stream_health_sufficient",
-            predicate=lambda ctx, b=c.stream_health_min_bitrate_kbps: stream_health_sufficient(
-                ctx, b
+            Veto(
+                name="stream_health_sufficient",
+                predicate=lambda ctx, b=c.stream_health_min_bitrate_kbps: stream_health_sufficient(
+                    ctx, b
+                ),
             ),
-        ),
-        Veto(
-            name="encoding_capacity_available",
-            predicate=lambda ctx, l=c.encoding_lag_max_ms: encoding_capacity_available(ctx, l),
-        ),
-        Veto(
-            name="transport_active",
-            predicate=transport_active,
-        ),
-    ])
+            Veto(
+                name="encoding_capacity_available",
+                predicate=lambda ctx, l=c.encoding_lag_max_ms: encoding_capacity_available(ctx, l),
+            ),
+            Veto(
+                name="transport_active",
+                predicate=transport_active,
+            ),
+        ]
+    )
 
 
 def build_obs_fallback_chain(cfg: OBSConfig | None = None) -> FallbackChain[FusedContext, OBSScene]:
@@ -196,11 +198,13 @@ def build_obs_freshness_guard(cfg: OBSConfig | None = None) -> FreshnessGuard:
       - stream_bitrate: max 10s stale (stream stats don't change fast)
     """
     c = cfg or OBSConfig()
-    return FreshnessGuard([
-        FreshnessRequirement("audio_energy_rms", c.energy_max_staleness_s),
-        FreshnessRequirement("emotion_arousal", c.emotion_max_staleness_s),
-        FreshnessRequirement("stream_bitrate", c.stream_health_max_staleness_s),
-    ])
+    return FreshnessGuard(
+        [
+            FreshnessRequirement("audio_energy_rms", c.energy_max_staleness_s),
+            FreshnessRequirement("emotion_arousal", c.emotion_max_staleness_s),
+            FreshnessRequirement("stream_bitrate", c.stream_health_max_staleness_s),
+        ]
+    )
 
 
 def select_transition(ctx: FusedContext, cfg: OBSConfig | None = None) -> OBSTransition:
