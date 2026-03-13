@@ -423,6 +423,15 @@ async def collect_listening_ports() -> list[str]:
 
 async def generate_manifest() -> InfrastructureManifest:
     """Collect all infrastructure state into a single manifest."""
+    with _tracer.start_as_current_span(
+        "introspect.generate",
+        attributes={"agent.name": "introspect", "agent.repo": "hapax-council"},
+    ):
+        return await _generate_manifest_inner()
+
+
+async def _generate_manifest_inner() -> InfrastructureManifest:
+    """Inner implementation of generate_manifest (wrapped by OTel span)."""
     # Run collectors in parallel
     (
         (docker_version, containers),
@@ -543,20 +552,16 @@ async def main() -> None:
     parser.add_argument("--save", action="store_true", help="Save to profiles/manifest.json")
     args = parser.parse_args()
 
-    with _tracer.start_as_current_span(
-        "introspect.generate",
-        attributes={"agent.name": "introspect", "agent.repo": "hapax-council"},
-    ):
-        manifest = await generate_manifest()
+    manifest = await generate_manifest()
 
-        if args.json:
-            print(manifest.model_dump_json(indent=2))
-        elif args.save:
-            out_path = PROFILES_DIR / "manifest.json"
-            out_path.write_text(manifest.model_dump_json(indent=2))
-            print(f"Saved to {out_path}")
-        else:
-            print(format_summary(manifest))
+    if args.json:
+        print(manifest.model_dump_json(indent=2))
+    elif args.save:
+        out_path = PROFILES_DIR / "manifest.json"
+        out_path.write_text(manifest.model_dump_json(indent=2))
+        print(f"Saved to {out_path}")
+    else:
+        print(format_summary(manifest))
 
 
 if __name__ == "__main__":
