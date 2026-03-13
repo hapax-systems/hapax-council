@@ -155,15 +155,15 @@ Systematic bottom-up building discipline for the hapax_voice type system. **Alwa
 | Layer | Types | State |
 |-------|-------|-------|
 | L0 | Stamped[T] | proven |
-| L1 | Behavior[T], Event[T] | matrix-complete |
+| L1 | Behavior[T], Event[T] | proven |
 | L2 | FusedContext, VetoChain, FallbackChain, FreshnessGuard | proven |
-| L3 | with_latest_from | matrix-complete |
-| L4 | Command, Schedule, VetoResult | matrix-complete |
-| L5 | SuppressionField, TimelineMapping, MusicalPosition | matrix-complete |
-| L6 | ResourceArbiter, ExecutorRegistry, ScheduleQueue | matrix-complete |
-| L7 | compose_mc_governance, compose_obs_governance | partial |
-| L8 | PerceptionEngine, PipelineGovernor, FrameGate | matrix-complete |
-| L9 | VoiceDaemon | partial |
+| L3 | with_latest_from | proven |
+| L4 | Command, Schedule, VetoResult | proven |
+| L5 | SuppressionField, TimelineMapping, MusicalPosition | proven |
+| L6 | ResourceArbiter, ExecutorRegistry, ScheduleQueue | proven |
+| L7 | compose_mc_governance, compose_obs_governance | proven |
+| L8 | PerceptionEngine, PipelineGovernor, FrameGate | proven |
+| L9 | VoiceDaemon | proven |
 
 **7-dimension test matrix** (every layer needs ≥1 test per dimension to be matrix-complete):
 - **A** Construction — **B** Invariants — **C** Operations — **D** Boundaries — **E** Error paths — **F** Dog Star proofs — **G** Composition contracts
