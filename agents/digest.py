@@ -394,6 +394,25 @@ async def main() -> None:
     # Agent-specific save: write markdown + JSON, then vault
     if args.save:
         digest_md = format_digest_md(digest)
+
+        # Axiom enforcement check before write (Gap 8)
+        from shared.axiom_enforcer import enforce_output
+
+        enforcement = enforce_output(digest_md, "digest", DIGEST_MD_FILE)
+        if not enforcement.allowed:
+            print(
+                f"BLOCKED: {len(enforcement.violations)} axiom violation(s) detected. "
+                f"Quarantined to {enforcement.quarantine_path}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if enforcement.violations:
+            print(
+                f"AUDIT: {len(enforcement.violations)} pattern match(es) "
+                f"({', '.join(v.pattern_id for v in enforcement.violations)})",
+                file=sys.stderr,
+            )
+
         DIGEST_MD_FILE.write_text(digest_md)
         DIGEST_JSON_FILE.write_text(digest.model_dump_json(indent=2))
         print(f"Saved to {DIGEST_MD_FILE}", file=sys.stderr)
