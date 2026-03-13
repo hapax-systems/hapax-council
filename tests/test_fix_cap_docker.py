@@ -27,7 +27,15 @@ class TestDockerCapabilityMetadata:
         assert cap.name == "docker"
 
     def test_check_groups(self, cap: DockerCapability) -> None:
-        assert cap.check_groups == {"docker"}
+        assert cap.check_groups == {
+            "docker",
+            "endpoints",
+            "latency",
+            "qdrant",
+            "auth",
+            "traces",
+            "connectivity",
+        }
 
     def test_is_capability(self, cap: DockerCapability) -> None:
         assert isinstance(cap, Capability)

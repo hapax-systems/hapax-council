@@ -211,6 +211,8 @@ def compose_mc_governance(
       → Schedule (or None if vetoed/stale)
 
     Returns an Event that emits Schedule on allowed actions, None on denial.
+
+    Raises ValueError if required behaviors are missing from the dict (D6.3).
     """
     c = cfg or MCConfig()
     last_throw_time: list[float] = []
@@ -218,6 +220,13 @@ def compose_mc_governance(
     freshness = build_mc_freshness_guard(c)
     veto_chain = build_mc_veto_chain(c, last_throw_time)
     fallback = build_mc_fallback_chain(c)
+
+    # D6.3: validate behavior keys at composition time, not at first tick
+    required = {r.behavior_name for r in freshness._requirements}
+    required |= {"audio_energy_rms", "emotion_arousal", "vad_confidence", "timeline_mapping"}
+    missing = required - frozenset(behaviors)
+    if missing:
+        raise ValueError(f"MC governance missing required behaviors: {missing}")
 
     fused: Event[FusedContext] = with_latest_from(trigger, behaviors)
     output: Event[Schedule | None] = Event()

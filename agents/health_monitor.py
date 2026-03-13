@@ -549,6 +549,13 @@ async def check_systemd_services() -> list[CheckResult]:
         ("digest.timer", True, "systemctl --user enable --now digest.timer"),
         ("knowledge-maint.timer", True, "systemctl --user enable --now knowledge-maint.timer"),
         ("midi-route.service", False, None),
+        ("gcalendar-sync.timer", True, "systemctl --user restart gcalendar-sync"),
+        ("gdrive-sync.timer", True, "systemctl --user restart gdrive-sync"),
+        ("gmail-sync.timer", True, "systemctl --user restart gmail-sync"),
+        ("youtube-sync.timer", True, "systemctl --user restart youtube-sync"),
+        ("chrome-sync.timer", True, "systemctl --user restart chrome-sync"),
+        ("claude-code-sync.timer", True, "systemctl --user restart claude-code-sync"),
+        ("obsidian-sync.timer", True, "systemctl --user restart obsidian-sync"),
     ]
     results: list[CheckResult] = []
 
@@ -614,6 +621,23 @@ async def check_systemd_services() -> list[CheckResult]:
             )
         )
 
+        # For active timers, also check if the triggered service is in failed state
+        if active and unit.endswith(".timer"):
+            svc = unit.replace(".timer", ".service")
+            t2 = time.monotonic()
+            rc_s, out_s, _ = await run_cmd(["systemctl", "--user", "is-failed", svc])
+            if out_s.strip() == "failed":
+                results.append(
+                    CheckResult(
+                        name=f"systemd.{svc}",
+                        group="systemd",
+                        status=Status.DEGRADED,
+                        message="last run failed (timer will retry)",
+                        remediation=f"systemctl --user reset-failed {svc} && systemctl --user start {svc}",
+                        duration_ms=_timed(t2),
+                    )
+                )
+
     return results
 
 
@@ -654,7 +678,7 @@ async def check_systemd_drift() -> list[CheckResult]:
                 group="systemd",
                 status=Status.DEGRADED,
                 message=f"Systemd drift: {', '.join(drifted[:3])}{'...' if len(drifted) > 3 else ''}",
-                remediation="cd ~/projects/ai-agents && make install-systemd",
+                remediation="bash ~/projects/hapax-council/systemd/scripts/install-units.sh",
                 duration_ms=_timed(t),
             )
         ]
@@ -2060,7 +2084,7 @@ async def check_axiom_registry() -> list[CheckResult]:
                     group="axioms",
                     status=Status.DEGRADED,
                     message="axiom-precedents collection not found in Qdrant",
-                    remediation="Run: uv run python -c 'from shared.axiom_precedents import PrecedentStore; PrecedentStore().ensure_collection()'",
+                    remediation="cd ~/projects/hapax-council && uv run python -c 'from shared.axiom_precedents import PrecedentStore; PrecedentStore().ensure_collection()'",
                     duration_ms=_timed(t2),
                 )
             )
@@ -2102,7 +2126,7 @@ async def check_axiom_registry() -> list[CheckResult]:
                         group="axioms",
                         status=Status.DEGRADED,
                         message=f"Missing implications for: {', '.join(missing)}",
-                        remediation=f"Run: uv run python -m shared.axiom_derivation --axiom {missing[0]}",
+                        remediation=f"cd ~/projects/hapax-council && uv run python -m shared.axiom_derivation --axiom {missing[0]}",
                         duration_ms=_timed(t3),
                     )
                 )
@@ -2175,7 +2199,7 @@ async def check_axiom_hooks_active() -> list[CheckResult]:
                 group="axioms",
                 status=Status.DEGRADED,
                 message="Audit directory missing — hooks may never have fired",
-                remediation="Run: cd ~/projects/hapax-system && ./install.sh",
+                remediation="Check axiom hooks in ~/.claude/settings.json (PreToolUse/PostToolUse)",
                 duration_ms=_timed(t),
             )
         )
@@ -2232,7 +2256,7 @@ async def check_axiom_hooks_active() -> list[CheckResult]:
                     group="axioms",
                     status=Status.DEGRADED,
                     message="No audit trail entries found",
-                    remediation="Run: cd ~/projects/hapax-system && ./install.sh && restart Claude Code",
+                    remediation="Check axiom hooks in ~/.claude/settings.json and restart Claude Code",
                     duration_ms=_timed(t),
                 )
             )
@@ -2254,7 +2278,7 @@ async def check_axiom_settings() -> list[CheckResult]:
                 group="axioms",
                 status=Status.DEGRADED,
                 message="Claude Code settings.json not found",
-                remediation="Run: cd ~/projects/hapax-system && ./install.sh",
+                remediation="Check axiom hooks in ~/.claude/settings.json (PreToolUse/PostToolUse)",
                 duration_ms=_timed(t),
             )
         )
@@ -2302,7 +2326,7 @@ async def check_axiom_settings() -> list[CheckResult]:
                     group="axioms",
                     status=Status.DEGRADED,
                     message=f"Missing hooks: {', '.join(missing)}",
-                    remediation="Run: cd ~/projects/hapax-system && ./install.sh",
+                    remediation="Check axiom hooks in ~/.claude/settings.json (PreToolUse/PostToolUse)",
                     duration_ms=_timed(t),
                 )
             )

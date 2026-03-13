@@ -11,7 +11,7 @@ mkdir -p "$AUDIT_DIR"
 AUDIT_FILE="$AUDIT_DIR/$(date +%Y-%m-%d).jsonl"
 
 TOOL_NAME="$(echo "$INPUT" | jq -r '.tool_name // "unknown"' 2>/dev/null || echo unknown)"
-FILE_PATH="$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // "unknown"' 2>/dev/null || echo unknown)"
+FILE_PATH="$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // "unknown"' 2>/dev/null || echo unknown)"
 SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null || echo unknown)"
 
 # Append audit entry
