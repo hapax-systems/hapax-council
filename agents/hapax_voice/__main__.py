@@ -348,13 +348,27 @@ class VoiceDaemon:
         )
 
         def _on_obs_command(timestamp: float, cmd: Command | None) -> None:
-            if cmd is not None:
-                self.executor_registry.dispatch(cmd)
-                self.event_log.emit(
-                    "obs_command_dispatched",
-                    action=cmd.action,
-                    transition=cmd.params.get("transition", ""),
+            if cmd is None:
+                return
+            from agents.hapax_voice.arbiter import ResourceClaim
+            from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES, RESOURCE_MAP
+
+            resource = RESOURCE_MAP.get(cmd.action)
+            if resource:
+                claim = ResourceClaim(
+                    resource=resource,
+                    chain=cmd.trigger_source,
+                    priority=DEFAULT_PRIORITIES.get((resource, cmd.trigger_source), 0),
+                    command=cmd,
                 )
+                self.arbiter.claim(claim)
+            else:
+                self.executor_registry.dispatch(cmd)
+            self.event_log.emit(
+                "obs_command_dispatched",
+                action=cmd.action,
+                transition=cmd.params.get("transition", ""),
+            )
 
         obs_output.subscribe(_on_obs_command)
         self._obs_tick_event = obs_tick
