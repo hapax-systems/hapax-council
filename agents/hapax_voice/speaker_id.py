@@ -148,9 +148,7 @@ class SpeakerIdentifier:
             if consent_registry is None or not consent_registry.contract_check(
                 person_id, "biometric"
             ):
-                log.warning(
-                    "Biometric processing blocked: no consent for %s", person_id
-                )
+                log.warning("Biometric processing blocked: no consent for %s", person_id)
                 return SpeakerResult(label="uncertain", confidence=0.0)
         embedding = self.extract_embedding(audio, sample_rate)
         if embedding is None:
