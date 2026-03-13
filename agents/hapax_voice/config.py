@@ -119,6 +119,25 @@ class VoiceConfig(BaseModel):
     chime_volume: float = 0.7
     chime_dir: str = "~/.local/share/hapax-voice/chimes"
 
+    # MC actuation
+    mc_enabled: bool = False
+    mc_sample_dir: str = "~/.local/share/hapax-voice/mc-samples"
+    mc_sample_rate: int = 44100
+    actuation_tick_ms: int = 10
+
+    # MIDI clock
+    midi_port_name: str = "OXI One"
+    midi_beats_per_bar: int = 4
+
+    # OBS integration
+    obs_enabled: bool = False
+    obs_host: str = "localhost"
+    obs_port: int = 4455
+
+    # TTS hold-and-release
+    tts_bar_aligned: bool = True
+    tts_lookahead_bars: int = 2
+
     @model_validator(mode="after")
     def _apply_dynamic_defaults(self) -> VoiceConfig:
         if not self.hotkey_socket:
