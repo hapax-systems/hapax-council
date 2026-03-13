@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra ci
 
       - name: Label issue as planning
@@ -214,7 +214,7 @@ jobs:
           This PR has gone through 2+ review rounds without resolution.
           Human attention is needed."
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         if: steps.round.outputs.exceeded == 'false'
       - run: uv sync --extra ci
         if: steps.round.outputs.exceeded == 'false'
