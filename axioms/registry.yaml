@@ -47,6 +47,22 @@ axioms:
     scope: domain
     domain: management
 
+  - id: interpersonal_transparency
+    text: >
+      The system must not maintain persistent state about any non-operator
+      person without an active consent contract. A consent contract requires
+      explicit opt-in by the subject, grants the subject inspection access
+      to all data the system holds about them, and is revocable by either
+      party at any time. Upon revocation, the system purges all
+      subject-specific persistent state.
+    weight: 88
+    type: hardcoded
+    created: "2026-03-13"
+    status: active
+    supersedes: null
+    scope: constitutional
+    domain:
+
   - id: corporate_boundary
     text: >
       The Obsidian plugin operates across a corporate network boundary via
