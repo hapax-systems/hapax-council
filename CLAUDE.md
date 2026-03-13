@@ -104,18 +104,19 @@ Issue opened (labeled "agent-eligible")
 ## Project Layout
 
 ```
-agents/           Agents + agent packages (voice, demo_pipeline, dev_story, system_ops)
+agents/           26+ agents + 4 agent packages (hapax_voice, demo_pipeline, dev_story, system_ops)
+  manifests/      YAML agent manifests (4-layer schema, RACI, axiom bindings)
 cockpit/          FastAPI API (:8051) + data collectors + reactive engine
-shared/           35+ utility modules (config, axioms, profile, frontmatter, context)
+shared/           41+ utility modules (config, axioms, profile, consent, agent_registry, frontmatter)
 council-web/      React SPA dashboard (pnpm, Vite, :5173) — see council-web/CLAUDE.md
 vscode/           VS Code extension (chat, RAG, management commands) — see vscode/CLAUDE.md
 skills/           15 Claude Code skills (slash commands)
 hooks/            Claude Code hooks (axiom scanning, session context)
-axioms/           Governance axioms (registry + implications + precedents)
+axioms/           Governance axioms (registry + implications + precedents + consent contracts)
 systemd/          Timer and service unit files
 docker/           Dockerfiles + docker-compose
-tests/            Test suite (70+ files)
-docs/             Design docs, rules reference, onboarding (docs/first-run.md)
+tests/            2700+ tests (all mocked, no infrastructure needed)
+docs/             Design docs, domain specs (North Star, Dog Star), prior art survey
 profiles/         Generated operational data (gitignored, only .gitkeep tracked)
 ```
 
@@ -126,6 +127,8 @@ profiles/         Generated operational data (gitignored, only .gitkeep tracked)
 - **`shared/notify.py`** — `send_notification()` for ntfy + desktop. Topic: `hapax-alerts`
 - **`shared/frontmatter.py`** — Canonical frontmatter parser (never duplicate this)
 - **`shared/dimensions.py`** — 11 profile dimensions (5 trait, 6 behavioral). Sync agents produce behavioral facts only, validated by `validate_behavioral_write()`
+- **`shared/consent.py`** — `ConsentContract`, `ConsentRegistry`, `contract_check()` for interpersonal_transparency axiom
+- **`shared/agent_registry.py`** — `AgentManifest` (4-layer schema), `AgentRegistry` with query by category/capability/RACI
 - **`cockpit/api/routes/`** — ~30 REST endpoints across 7 route groups. CORS for council-web at :5173
 
 ## Containerization

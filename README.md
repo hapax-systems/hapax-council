@@ -1,16 +1,52 @@
 # hapax-council
 
-A personal operating environment where LLM agents are governed by constitutional axioms, coordinated through filesystem artifacts, and adapted to a structured model of their single human operator.
+Externalized executive function infrastructure governed by constitutional axioms. LLM agents handle the cognitive work that produces no deliverables — tracking open loops, maintaining context across conversations, noticing when things go stale — for a single operator on a single workstation.
 
-## What this is
+## The Problem This Solves
 
-Knowledge workers perform substantial executive function work that produces no deliverables: tracking what needs follow-up, maintaining context across conversations, noticing when things go stale, remembering to check things that don't remind them. This work scales poorly with attention and compounds when neglected. The operator has ADHD and autism, which makes executive function — task initiation, sustained attention, routine maintenance — a genuine cognitive constraint.
+Knowledge workers perform substantial executive function labor that scales poorly with attention and compounds when neglected: remembering what needs follow-up, maintaining awareness of team dynamics, keeping documentation in sync with reality, noticing that a service degraded three days ago and nobody mentioned it. For an operator with ADHD and autism, this labor isn't merely inconvenient — task initiation, sustained attention, and routine maintenance are genuine cognitive constraints that conventional productivity tools do not address because they assume the executive function they're meant to support.
 
-hapax-council externalizes this work into infrastructure. 26 agents on a single workstation handle management context, knowledge curation, system health, voice interaction, and environmental awareness. They coordinate through markdown files on disk (not message queues or databases), and a reactive engine watches for changes and cascades downstream work automatically. A meeting transcript placed in the right directory is processed, the relevant person's context is updated, nudges are recalculated, and a notification is queued — without operator action.
+hapax-council encodes these constraints as architecture. The system doesn't remind the operator to check a dashboard; it processes the data, evaluates what matters, and pushes a notification with a concrete next action. A meeting transcript placed in the right directory is ingested, the relevant person's context is updated, nudges are recalculated, and a notification is queued — without operator involvement. The operator's cognitive budget is spent on judgment, not bookkeeping.
 
-The cognitive constraint is encoded as a constitutional axiom (`executive_function`, weight 95): agents must be zero-config, errors must include next actions, routine work must be automated, state must be visible without investigation. The four axioms produce 78 derived implications enforced at commit time, including 4 that govern the system's own deliberative process (hoop tests, activation rates, concession asymmetry, trend monitoring).
+## Constitutional Governance
 
-The system is constrained by four constitutional axioms defined in [hapax-constitution](https://github.com/ryanklee/hapax-constitution). Axioms are formal constraints with weighted enforcement, derived implications at graduated tiers (T0 blocks code from existing, T1 requires review, T2 warns), and commit-time hooks that prevent violations from landing. Single-operator is absolute (weight 100): no auth, no roles, no multi-user code anywhere. Management safety (weight 85) ensures agents never generate feedback language or coaching recommendations about individuals. An interpretive canon handles unforeseen cases; a precedent store builds consistency over time. See the constitution for the full governance architecture.
+The system is governed by five axioms defined in [hapax-constitution](https://github.com/ryanklee/hapax-constitution). These are not configuration options or feature flags. They are formal constraints with weighted enforcement that cannot be relaxed by any agent, any code path, or any operational pressure.
+
+| Axiom | Weight | Constraint |
+|-------|--------|------------|
+| `single_user` | 100 | One operator. No authentication, no roles, no multi-user abstractions. This is absolute. |
+| `executive_function` | 95 | Zero-config agents. Errors include next actions. Routine work automated. State visible without investigation. |
+| `corporate_boundary` | 90 | Work data stays in employer systems. Home infrastructure is personal + management-practice only. |
+| `interpersonal_transparency` | 88 | No persistent state about non-operator persons without an active, revocable consent contract. |
+| `management_governance` | 85 | LLMs prepare context; humans deliver feedback. No generated coaching language about individuals. |
+
+Each axiom generates concrete implications at graduated enforcement tiers. **T0** implications are structurally blocked — code that violates them cannot merge. **T1** implications require human review. **T2** implications produce warnings. The system currently enforces 78+ derived implications across the five axioms, including implications that govern the system's own deliberative process.
+
+### How Governance Works
+
+Axioms are not aspirational statements. They are executable constraints with four enforcement mechanisms:
+
+**Implication derivation.** Each axiom generates specific, testable implications using interpretive canons borrowed from legal reasoning: textualist reading (what does the text say), purposivist reading (what goal does it serve), absurdity doctrine (reject interpretations that produce absurd results), and omitted-case handling (what does silence mean). This produces implications like `ex-init-001` ("agents must run with zero configuration") rather than vague directives.
+
+**Commit-time enforcement.** Claude Code hooks scan every proposed change against T0 implications. A PR that introduces a user authentication check is blocked before it reaches review. This is structural prevention, not code review.
+
+**Precedent database.** When an axiom implication encounters a novel situation that the implication text doesn't clearly resolve, the decision is recorded as a precedent in Qdrant with authority weights (operator decisions outweigh agent decisions). Future encounters consult precedent before escalating. This is the common law mechanism — consistency over time without requiring that every edge case be specified in advance.
+
+**Supremacy analysis.** Domain axioms (scoped to a specific subsystem) cannot override constitutional axioms (system-wide). When implications from different axioms produce conflicting guidance, the higher-weighted axiom prevails, and the tension is surfaced for operator review. This prevents the equivalent of a state law overriding a constitutional right.
+
+### The Executive Function Axiom
+
+The `executive_function` axiom (weight 95) deserves particular attention because it encodes disability accommodation as governance architecture, not as a quality-of-life enhancement. Its T0 implications — agents must be zero-config, errors must include next actions, routine work must be automated — are not preferences. They are structural requirements that every agent, every error path, and every operational workflow must satisfy.
+
+This extends to the system's own meta-processes. Four implications govern the deliberation system (adversarial debates between LLM agents over axiom tensions): hoop tests detect whether multi-round exchanges involve genuine position shifts or performative agreement, activation rate tracking monitors whether deliberations produce real governance artifacts, concession asymmetry flags one-sided capitulation, and trend monitoring catches process degradation over time. The governance system governs itself through the same mechanism it uses to govern agents.
+
+### The Consent Framework
+
+The `interpersonal_transparency` axiom (weight 88) creates a hard boundary around non-operator person data. The system operates in a household with other people. Cameras detect faces, microphones pick up voices, arrival patterns are observable. Without explicit governance, this data would accumulate into persistent models of other people's behavior — something the operator considers ethically unacceptable regardless of technical convenience.
+
+The enforcement mechanism is a consent contract: a bilateral agreement between operator and subject that enumerates permitted data categories, grants the subject inspection access to all data the system holds about them, and is revocable by either party at any time with full data purge on revocation. The `ConsentRegistry` gates data flows at the ingestion boundary — before embeddings are extracted, before state is persisted, before any downstream processing occurs.
+
+This is more restrictive than most commercial systems. Transient perception is permitted (VAD detects a voice but doesn't persist identity), but any derived or persistent state requires a contract. The system doesn't default to "it's just environmental sensing."
 
 ## Architecture
 
@@ -26,49 +62,72 @@ Voice:         Always-on daemon (wake word, speaker ID, ambient perception, Gemi
 IDE:           VS Code extension + Claude Code skills and hooks
 ```
 
-**Filesystem-as-bus** means agents coordinate by reading and writing files, not by calling each other. All state lives as markdown with YAML frontmatter — human-readable, git-versioned, debuggable with `cat` and `grep`. No broker, no schema migrations, no service to monitor. If the reactive engine goes down, the data is still there. Trades transactional consistency for debuggability. See [hapax-constitution](https://github.com/ryanklee/hapax-constitution) for the full rationale.
+### Filesystem-as-Bus
+
+Agents coordinate by reading and writing markdown files with YAML frontmatter, not by calling each other through APIs or message queues. All state is human-readable, git-versioned, and debuggable with `cat` and `grep`. There is no broker, no schema migration, no service to monitor. If the reactive engine goes down, the data is still there. This trades transactional consistency for debuggability and operational simplicity — a deliberate choice for a single-operator system where the operator is also the maintainer.
+
+### The Reactive Engine
+
+When a file changes in the data directory, inotify fires. The change event is enriched with metadata (document type from YAML frontmatter, file category from path). Rules — pure functions mapping events to actions — evaluate against each event. Multiple rules can fire; duplicate actions collapse. Actions execute in phases: deterministic work first (cache refreshes, metric recalculation — unlimited concurrency, zero cost), then LLM work (synthesis, evaluation — semaphore-bounded at 2 concurrent to prevent GPU saturation or API cost runaway). Self-trigger prevention tracks the engine's own writes and skips events from them.
+
+### The Voice Daemon and Perception Type System
+
+The voice daemon (`agents/hapax_voice/`) is an always-on multimodal interaction system built on a perception type system that borrows from multiple research traditions — functional reactive programming, DSP audio synthesis, and distributed systems — to solve a specific problem: fusing signals that arrive at vastly different rates (MIDI clock at <1ms, audio energy at 50ms, emotion at 1–2s, workspace analysis at 10–15s) into governance decisions without losing data or correctness.
+
+The type system has three layers:
+
+**Perceptives** — continuous and discrete signal abstractions. `Behavior[T]` represents a continuously available value with a monotonic watermark (like a cell that always has a current reading). `Event[T]` represents a discrete occurrence (like a button press or a MIDI tick). `Stamped[T]` is an immutable snapshot with a timestamp, the common currency between the two. These map to the Behavior/Event duality from functional reactive programming (Yampa, Reflex, RxPY), adapted for a single-machine, in-process runtime without the heavyweight infrastructure of Kafka or ROS.
+
+**Detectives** — governance composition primitives. `VetoChain[C]` composes constraints where any link can deny (deny-wins, order-independent, evaluated exhaustively for audit). `FallbackChain[C, T]` selects the highest-priority eligible action with graceful degradation (a default always exists). `FreshnessGuard` rejects decisions made on stale perception data. These compose into a pipeline: trigger → fuse → freshness check → veto → fallback → command. Adding a veto can only make the system more restrictive, never less. This monotonicity property means governance changes are safe by construction.
+
+**Directives** — action descriptions that carry full provenance. A `Command` is an inspectable, immutable data object recording what action was selected, what governance evaluation produced it, which veto chain allowed it, and the minimum watermark of the perception data that informed it. Commands do nothing until an `Executor` acts on them. The gap between description and execution is where governance lives — a denied command carries its `VetoResult` as provenance, and the executor enforces it.
+
+The key combinator is `with_latest_from(trigger, behaviors)`, borrowed from Rx: when a fast event fires, sample all slow behaviors at their current values and emit a `FusedContext` with watermarks. This is how MIDI-rate decisions incorporate second-scale perception without blocking or polling. See [agents/hapax_voice/README.md](agents/hapax_voice/README.md) for the full architecture.
+
+### Agent Manifest System
+
+Every agent has a four-layer YAML manifest (`agents/manifests/`) that serves as its formalized personnel file:
+
+- **Structural** — identity, organizational position, dependencies, peer relationships
+- **Functional** — purpose, inputs/outputs, capabilities, schedule, model requirements
+- **Normative** — autonomy tier (full/supervised/advisory), decision scope, axiom bindings, RACI matrix
+- **Operational** — health monitoring group, service tier, metrics source
+
+The `AgentRegistry` loads and validates these manifests, providing query methods by category, capability, autonomy tier, axiom binding, and RACI task. This is the single source of truth for what agents exist, what they're allowed to do, and who is responsible for what.
 
 ### Agents
 
-**Management.** Prepare 1:1 context, generate morning briefings, track management practice across 6 dimensions, surface stale conversations and overloaded team members. Nudge the operator through push notifications, not dashboards that require checking.
+| Category | Agents | LLM | Purpose |
+|----------|--------|-----|---------|
+| Management | `management_prep`, `briefing`, `profiler`, `meeting_lifecycle` | Yes | 1:1 context, morning briefings, operator modeling, meeting prep |
+| Sync/RAG | `gdrive_sync`, `gcalendar_sync`, `gmail_sync`, `youtube_sync`, `chrome_sync`, `claude_code_sync`, `obsidian_sync` | No | Seven cron agents keep the knowledge base current |
+| Analysis | `digest`, `scout`, `drift_detector`, `research`, `code_review`, `deliberation_eval` | Yes | Content digestion, component fitness scanning, documentation drift, research |
+| System | `health_monitor`, `introspect`, `knowledge_maint` | No | Health monitoring (deterministic, 15min cadence), knowledge pruning |
+| Knowledge | `ingest`, `query` | Mixed | RAG ingestion pipeline, semantic search |
+| Voice | `hapax_voice`, `audio_processor` | Mixed | Always-on daemon, audio processing |
+| Demo | `demo`, `demo_eval` + `demo_pipeline/` | Yes | Self-demonstrating capability |
+| Dev narrative | `dev_story/` | Yes | Correlates commits with conversation transcripts |
 
-**Sync pipeline.** Seven agents run on cron in a Docker container, keeping the knowledge base current: Google Drive, Calendar, Gmail, YouTube, Chrome history, Obsidian vault, and Claude Code transcripts flow into Qdrant for RAG retrieval.
+### Profile System
 
-**Voice daemon.** Always-on multimodal interaction with a perception engine that fuses audio and visual signals. Fast tick (2–3s): VAD, face detection, gaze tracking. Slow enrichment (10–15s): ambient sound classification, LLM workspace analysis. A governor maps environment state to pipeline directives using two composable primitives:
+The operator profiler maintains a structured model across 11 dimensions, split between **trait dimensions** (stable, interview-sourced: identity, neurocognitive, values, communication style, relationships) and **behavioral dimensions** (dynamic, observation-sourced: work patterns, energy and attention, information seeking, creative process, tool usage, communication patterns). The split is enforced at write time — sync agents can only update behavioral dimensions. Traits are sealed once established through interview.
 
-- **VetoChain** — constraint composition where any link can deny. A chain of conditions (e.g., "meeting in progress", "operator stressed", "ambient noise too high") is evaluated in order; the first veto wins and the action is blocked. Example: during a meeting, the veto chain blocks voice output.
-- **FallbackChain** — priority-ordered action selection with graceful degradation. Tries the highest-priority action first (e.g., full voice response), falls back to the next (notification), then the next (silent log). If the preferred output mode is unavailable, the chain degrades without failing.
+This profile is injected into every agent's system prompt, so agent outputs are contextualized to this specific operator's priorities, knowledge, and cognitive patterns. The profile updates continuously from source data; the operator does not configure it.
 
-Both are composable — chains can be nested, and veto and fallback can be combined. The governor evaluates the full tree each tick.
+### SDLC Pipeline
 
-**Analysis.** Content digestion, horizon scanning for component fitness, documentation drift detection and correction, interactive research with RAG context, code review.
+The system includes an LLM-driven software development lifecycle where issues flow through automated stages:
 
-**System.** Health monitoring every 15 minutes (deterministic, zero LLM), documentation drift detection weekly, knowledge base pruning (stale entries, near-duplicates), infrastructure manifest snapshots. When something breaks, agents fix what they can and notify about what they can't.
+1. **Triage** (Sonnet) — classify type/complexity, check axiom relevance, find similar closed issues
+2. **Plan** (Sonnet) — identify files, acceptance criteria, diff estimate
+3. **Implement** (Opus via Claude Code) — sandboxed `agent/*` branch, run tests, open PR
+4. **Adversarial Review** (Sonnet, independent context) — up to 3 rounds, then human escalation
+5. **Axiom Gate** (Haiku) — structural checks + semantic LLM judge against constitutional axioms
+6. **Auto-merge** (squash) on pass, block on T0 violation, advisory label on T1+
 
-**Deliberation evaluation.** The system runs adversarial deliberations (Publius vs Brutus, after the Federalist Papers) over supremacy tensions between axiom implications. A metrics extraction layer computes activation rates, concession asymmetry, responsive reference rates, and position movement from deliberation records. Four sufficiency probes under the `executive_function` axiom evaluate process health — the governance system governs itself through the same mechanism it uses to govern agents.
+Different models are used for author and reviewer to prevent collusiveness. Agent PRs are restricted to `agent/*` branches with `agent-authored` labels. CODEOWNERS protects governance files. Every stage logs to a JSONL event stream with correlated trace IDs.
 
-**Operator profiler.** Extracts and maintains a structured model of the operator across 13 dimensions (goals, constraints, work patterns, communication style, cognitive patterns, creative preferences) from 6 source types (config files, Claude Code transcripts, git repos, Langfuse traces, Obsidian vault, calendar data). The profile is injected into every agent's system prompt, so agent outputs are contextualized to this specific operator's priorities, knowledge, and working style. The profile updates continuously from source data; the operator does not configure it.
-
-**Dev narrative.** Correlates git commits with Claude Code conversation transcripts to reconstruct why decisions were made, not just what changed.
-
-| Category | Agents | LLM calls |
-|----------|--------|-----------|
-| Management | `management_prep`, `briefing`, `profiler`, `meeting_lifecycle` | Yes |
-| Sync/RAG | `gdrive_sync`, `gcalendar_sync`, `gmail_sync`, `youtube_sync`, `chrome_sync`, `claude_code_sync`, `obsidian_sync` | No |
-| Analysis | `digest`, `scout`, `drift_detector`, `research`, `code_review`, `deliberation_eval` | Yes |
-| System | `health_monitor`, `introspect`, `knowledge_maint` | No |
-| Knowledge | `ingest`, `query` | Mixed |
-| Voice | `hapax_voice`, `audio_processor` | Mixed |
-| Demo | `demo`, `demo_eval` + `demo_pipeline/` | Yes |
-| Dev narrative | `dev_story/` | Yes |
-
-### Reactive engine
-
-When a file changes in the data directory, inotify fires. The change event is enriched with metadata (document type from YAML frontmatter, file category from path). Rules — pure functions mapping events to actions — evaluate against each event. Multiple rules can fire; duplicate actions collapse. Actions execute in phases: deterministic work first (cache refreshes, metric recalculation — unlimited concurrency, zero cost), then LLM work (synthesis, evaluation — semaphore-bounded at 2 concurrent to prevent GPU saturation or API cost runaway).
-
-**Self-trigger prevention:** when the engine writes an output file, inotify fires again. Without prevention, the engine evaluates its own output in an infinite loop. The engine tracks its own writes and skips events from them. Notification delivery batches on a configurable interval to prevent storms.
-
-### Model routing
+### Model Routing
 
 All agents reference logical model aliases, not provider model IDs:
 
@@ -79,7 +138,7 @@ All agents reference logical model aliases, not provider model IDs:
 | `reasoning` | Qwen 3.5 27B (local) | Complex local reasoning |
 | `local-fast` | Qwen 3 8B (local) | Lightweight local tasks |
 
-LiteLLM provides the routing layer with bidirectional fallback chains (cloud→cloud, local→cloud). When a better model ships, update the alias map — agents never change. All inference is traced in Langfuse with a $50/30d spend cap.
+LiteLLM provides routing with bidirectional fallback chains. When a better model ships, update the alias map — agents never change. All inference is traced in Langfuse.
 
 ### Infrastructure
 
@@ -94,7 +153,15 @@ LiteLLM provides the routing layer with bidirectional fallback chains (cloud→c
 | ntfy | Push notifications |
 | n8n | Workflow automation |
 
-## Quick start
+## Domain Specifications
+
+The voice perception domain maintains two complementary formal specifications:
+
+**North Star** (`docs/superpowers/specs/2026-03-13-domain-schema-north-star.md`) — a domain schema where every prose sentence decomposes into a valid type sequence from the implemented type system. This constrains the specification to statements that project onto real types — no aspirational prose without type backing. Contains behavior/event/executor registries, governance chain compositions, validation traces, and a coverage matrix showing which behaviors are sourced, governed, and tested.
+
+**Dog Star** (`docs/superpowers/specs/2026-03-13-dog-star-spec.md`) — the negative complement. Forbidden type sequences derived from axioms: compositions that are syntactically constructible but semantically prohibited. Each entry identifies the axiom it violates and the current enforcement level (Type/Runtime/Convention/None). Entries marked `[gap]` indicate places where forbidden sequences execute successfully — the system is honest about where it trusts social conventions over runtime checks.
+
+## Quick Start
 
 ```bash
 git clone git@github.com:ryanklee/hapax-council.git
@@ -115,22 +182,25 @@ uv run python -m cockpit.api --host 127.0.0.1 --port 8051
 
 Agents require LiteLLM (localhost:4000), Qdrant (localhost:6333), and Ollama (localhost:11434) for production use. Tests are fully mocked.
 
-## Project structure
+## Project Structure
 
 ```
 hapax-council/
-├── agents/           26 agents + 4 agent packages (hapax_voice, demo_pipeline, dev_story, system_ops)
-├── shared/           41 shared modules (config, axioms, profile, frontmatter, context, embedding, deliberation_metrics)
+├── agents/           26+ agents + 4 agent packages (hapax_voice, demo_pipeline, dev_story, system_ops)
+│   └── manifests/    YAML agent manifests (4-layer schema, RACI, axiom bindings)
+├── shared/           41+ shared modules (config, axioms, profile, consent, agent_registry, deliberation_metrics)
 ├── cockpit/          FastAPI API + 11 data collectors + reactive engine (watcher, rules, executor)
-├── council-web/      React SPA dashboard
-├── vscode/           VS Code extension
-├── skills/           Claude Code skills (slash commands)
+├── council-web/      React SPA dashboard (health, agents, nudges, chat, demos)
+├── vscode/           VS Code extension (chat, RAG, management commands)
+├── skills/           15 Claude Code skills (slash commands)
 ├── hooks/            Claude Code hooks (axiom scanning, session context)
-├── axioms/           Governance axioms (registry + implications + precedents)
+├── axioms/           Governance axioms (registry + implications + precedents + consent contracts)
 ├── systemd/          Timer and service unit files + watchdog scripts
 ├── docker/           Dockerfiles + docker-compose (cockpit-api, sync-pipeline)
-├── tests/            Test suite
-└── docs/             Design documents, rules reference, plans
+├── tests/            2700+ tests (all mocked, no infrastructure needed)
+├── docs/             Design documents, domain specs, research, plans
+│   └── superpowers/  North Star spec, Dog Star spec, enforcement gaps audit, prior art survey
+└── scripts/          SDLC pipeline scripts (triage, plan, review, axiom gate)
 ```
 
 ## Ecosystem
@@ -141,7 +211,7 @@ Three repositories compose the hapax system:
 - **hapax-council** (this repo) — Personal operating environment. Reference implementation of the constitution. 26+ agents, voice daemon, RAG pipeline, reactive cockpit.
 - **[hapax-officium](https://github.com/ryanklee/hapax-officium)** — Management-domain extraction. Originally part of council, extracted when the management agents proved usable independently. Designed to be forked. Includes a self-demonstrating capability and a synthetic seed corpus.
 
-The three repos share infrastructure (Qdrant, LiteLLM, Ollama, PostgreSQL) but not code. Each implementation owns its full stack — agents, shared modules, reactive engine, API, dashboard. The constitution constrains both; the implementations evolve independently.
+The three repos share infrastructure (Qdrant, LiteLLM, Ollama, PostgreSQL) but not code. Each implementation owns its full stack. The constitution constrains both; the implementations evolve independently.
 
 ## License
 

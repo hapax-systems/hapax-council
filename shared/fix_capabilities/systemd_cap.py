@@ -34,7 +34,7 @@ class SystemdCapability(Capability):
     """Manage systemd user units — restart services and reset failed states."""
 
     name = "systemd"
-    check_groups = {"systemd"}
+    check_groups = {"systemd", "sync"}
 
     async def gather_context(self, check: Any) -> ProbeResult:
         """List all user timers and services via systemctl."""
