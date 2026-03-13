@@ -27,7 +27,7 @@ class TestSystemdCapabilityMetadata:
         assert cap.name == "systemd"
 
     def test_check_groups(self, cap: SystemdCapability) -> None:
-        assert cap.check_groups == {"systemd"}
+        assert cap.check_groups == {"systemd", "sync"}
 
     def test_is_capability(self, cap: SystemdCapability) -> None:
         assert isinstance(cap, Capability)
