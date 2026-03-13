@@ -153,6 +153,7 @@ def worst_status(*statuses: Status) -> Status:
 async def run_cmd(
     cmd: list[str],
     timeout: float = 10.0,
+    cwd: str | None = None,
 ) -> tuple[int, str, str]:
     """Run a command asynchronously and return (returncode, stdout, stderr)."""
     try:
@@ -160,6 +161,7 @@ async def run_cmd(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return (
