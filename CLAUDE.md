@@ -143,3 +143,34 @@ Two containers via `docker-compose.yml` (`--network host`):
 ## Ingest Agent
 
 `agents/ingest.py` auto-detects `source_service` from `rag-sources` path patterns when not set by frontmatter. Recognized patterns: `gdrive`, `gcalendar`, `gmail`, `youtube`, `takeout`, `proton`, `claude-code`, `obsidian`, `chrome`, `ambient-audio`.
+
+## Composition Ladder Protocol (hapax_voice)
+
+Systematic bottom-up building discipline for the hapax_voice type system. **Always climb from the bottom.**
+
+**10 layers** (L0–L9), each depends only on layers below:
+
+| Layer | Types | State |
+|-------|-------|-------|
+| L0 | Stamped[T] | proven |
+| L1 | Behavior[T], Event[T] | matrix-complete |
+| L2 | FusedContext, VetoChain, FallbackChain, FreshnessGuard | proven |
+| L3 | with_latest_from | matrix-complete |
+| L4 | Command, Schedule, VetoResult | matrix-complete |
+| L5 | SuppressionField, TimelineMapping, MusicalPosition | matrix-complete |
+| L6 | ResourceArbiter, ExecutorRegistry, ScheduleQueue | matrix-complete |
+| L7 | compose_mc_governance, compose_obs_governance | partial |
+| L8 | PerceptionEngine, PipelineGovernor, FrameGate | matrix-complete |
+| L9 | VoiceDaemon | partial |
+
+**7-dimension test matrix** (every layer needs ≥1 test per dimension to be matrix-complete):
+- **A** Construction — **B** Invariants — **C** Operations — **D** Boundaries — **E** Error paths — **F** Dog Star proofs — **G** Composition contracts
+
+**Gate rule**: No NEW composition on layer N unless layer N-1 is matrix-complete. Read `agents/hapax_voice/LAYER_STATUS.yaml` before adding composition tests.
+
+**3-question heuristic** (ask before every change):
+1. What layer does this touch?
+2. Is the layer below matrix-complete? (If no → fix that first)
+3. Which dimensions does this test cover? (Update LAYER_STATUS.yaml)
+
+**Matrix test files**: 16 files in `tests/hapax_voice/test_type_system_matrix*.py` (192 tests) covering 6 themes (T1–T6) and 6 trinary combinations (Q1–Q6). See LAYER_STATUS.yaml for full mapping.
