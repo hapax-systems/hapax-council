@@ -27,6 +27,7 @@ jobs:
           fetch-depth: 0
 
       - uses: anthropics/claude-code-action@beta
+        id: claude
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -42,8 +43,29 @@ jobs:
             4. **Type safety**: Mismatched types, missing annotations on public functions.
 
             Rules:
-            - Only post comments for HIGH or MEDIUM priority findings.
+            - Only report HIGH or MEDIUM priority findings.
             - Do NOT post nitpick, style, or formatting comments (Ruff handles those).
-            - Do NOT approve the PR. Post review comments only.
             - Be concise. One sentence per finding, with a suggested fix if non-obvious.
-            - If the PR looks clean, post a single summary comment saying so.
+
+            At the END of your review, you MUST output exactly one of these lines:
+            VERDICT: APPROVE
+            VERDICT: REQUEST_CHANGES
+
+            Use APPROVE if there are no HIGH findings. Use REQUEST_CHANGES only for HIGH findings.
+
+      - name: Submit review verdict
+        if: always() && steps.claude.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_TOKEN }}
+        run: |
+          # Check Claude's comment for verdict
+          COMMENTS=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" or .user.type == "Bot")] | last | .body // ""')
+
+          if echo "$COMMENTS" | grep -q "VERDICT: REQUEST_CHANGES"; then
+            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
+              -X POST -f event=REQUEST_CHANGES -f body="Claude review found issues requiring changes."
+          else
+            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
+              -X POST -f event=APPROVE -f body="Claude review passed — no high-severity findings."
+          fi
