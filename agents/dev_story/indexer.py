@@ -461,6 +461,134 @@ def _compute_critical_moments(conn: sqlite3.Connection) -> int:
     return inserted
 
 
+def _compute_hotspots(conn: sqlite3.Connection) -> int:
+    """Compute file hotspots from commit_files aggregation.
+
+    Metrics per file (only files with change_frequency >= 2):
+    - change_frequency: total commits touching the file
+    - session_count: distinct sessions correlated to those commits
+    - churn_rate: ratio of (adds + deletes) to total operations
+    """
+    conn.execute("DELETE FROM hotspots")
+
+    cursor = conn.execute(
+        """SELECT
+               cf.file_path,
+               COUNT(DISTINCT cf.commit_hash) AS change_frequency,
+               COUNT(DISTINCT s.id) AS session_count,
+               CAST(SUM(CASE WHEN cf.operation IN ('A', 'D') THEN 1 ELSE 0 END) AS REAL)
+                   / COUNT(*) AS churn_rate
+           FROM commit_files cf
+           LEFT JOIN correlations cor ON cor.commit_hash = cf.commit_hash
+           LEFT JOIN messages m ON m.id = cor.message_id
+           LEFT JOIN sessions s ON s.id = m.session_id
+           GROUP BY cf.file_path
+           HAVING change_frequency >= 2
+        """
+    )
+    rows = cursor.fetchall()
+
+    for row in rows:
+        conn.execute(
+            "INSERT INTO hotspots (file_path, change_frequency, session_count, churn_rate) VALUES (?, ?, ?, ?)",
+            (row[0], row[1], row[2], row[3]),
+        )
+
+    conn.commit()
+    log.info("Computed hotspots for %d files", len(rows))
+    return len(rows)
+
+
+def _compute_code_survival(conn: sqlite3.Connection) -> int:
+    """Compute code survival records for files in commit_files.
+
+    For each file, find:
+    - The first commit that introduced it (operation='A', or earliest appearance)
+    - If/when it was deleted (operation='D') or last modified
+    - survived_days: days between introduction and deletion/last modification (or now)
+    - introduced_by_session: session correlated to the introducing commit
+    - replacement_commit: the commit that deleted it, or NULL if still alive
+    """
+    conn.execute("DELETE FROM code_survival")
+
+    # Get all files with their commits ordered by date
+    cursor = conn.execute(
+        """SELECT cf.file_path, cf.commit_hash, cf.operation, c.author_date
+           FROM commit_files cf
+           JOIN commits c ON c.hash = cf.commit_hash
+           ORDER BY cf.file_path, c.author_date ASC"""
+    )
+    rows = cursor.fetchall()
+
+    # Group by file_path
+    from collections import defaultdict
+
+    file_commits: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    for file_path, commit_hash, operation, author_date in rows:
+        file_commits[file_path].append((commit_hash, operation, author_date))
+
+    from datetime import datetime
+
+    now = datetime.now()  # naive, matching parsed dates
+    count = 0
+
+    for file_path, commits in file_commits.items():
+        # Find introduction commits (operation='A', or first appearance if no 'A')
+        add_commits = [(h, op, d) for h, op, d in commits if op == "A"]
+        if not add_commits:
+            # No explicit add — treat first appearance as introduction
+            add_commits = [commits[0]]
+
+        # Find deletion commit if any
+        delete_commits = [(h, op, d) for h, op, d in commits if op == "D"]
+        replacement_hash = delete_commits[-1][0] if delete_commits else None
+        end_date_str = delete_commits[-1][2] if delete_commits else None
+
+        for intro_hash, _intro_op, intro_date_str in add_commits:
+            # Parse dates — format is 'YYYY-MM-DD HH:MM:SS ±HHMM'
+            try:
+                intro_date = datetime.strptime(intro_date_str[:19], "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                continue
+
+            if end_date_str:
+                try:
+                    end_date = datetime.strptime(end_date_str[:19], "%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError):
+                    end_date = now
+            else:
+                end_date = now
+
+            survived_days = max((end_date - intro_date).total_seconds() / 86400.0, 0.0)
+
+            # Find session correlated to the introducing commit
+            sess_cursor = conn.execute(
+                """SELECT DISTINCT m.session_id
+                   FROM correlations cor
+                   JOIN messages m ON m.id = cor.message_id
+                   WHERE cor.commit_hash = ?
+                   LIMIT 1""",
+                (intro_hash,),
+            )
+            sess_row = sess_cursor.fetchone()
+            intro_session = sess_row[0] if sess_row else None
+
+            # Don't set replacement_commit to the same as introduced_by_commit
+            repl = replacement_hash if replacement_hash != intro_hash else None
+
+            conn.execute(
+                """INSERT OR IGNORE INTO code_survival
+                   (file_path, introduced_by_commit, introduced_by_session, survived_days, replacement_commit)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (file_path, intro_hash, intro_session, survived_days, repl),
+            )
+            count += 1
+
+    conn.commit()
+    log.info("Computed code survival for %d file-commit pairs", count)
+    return count
+
+
 def _discover_archived_session_files(archive_dir: Path) -> list[SessionFile]:
     """Convert archived conversation JSONL files into SessionFile entries."""
     archived_paths = discover_archived_sessions(archive_dir)
@@ -549,6 +677,12 @@ def full_index(db_path: str, claude_projects_dir: Path) -> dict:
 
     # 7. Detect critical moments (churn + wrong-path patterns)
     stats["critical_moments"] = _compute_critical_moments(conn)
+
+    # 8. Compute file hotspots (change frequency, session count, churn rate)
+    stats["hotspots"] = _compute_hotspots(conn)
+
+    # 9. Compute code survival (file lifespan tracking)
+    stats["code_survival"] = _compute_code_survival(conn)
 
     # Store index timestamp
     from datetime import datetime

@@ -56,15 +56,51 @@ Let evidence speak for itself. When the evidence is thin, say so.
 ### Story questions
 Follow this sequence:
 1. **Enumerate features first**: Query all feat: commits (GROUP BY scope or topic keyword). List all major feature areas with commit counts. Weight narrative coverage proportionally — features with more commits deserve more space.
-2. **Quantitative overview**: Run these two queries separately and present a combined table. Do NOT join them — cross-joining inflates counts.
+2. **Confidence filtering**: When joining through correlations, prefer high-confidence links (confidence >= 0.85, method='file_and_timestamp'). Flag findings that rely solely on low-confidence correlations (< 0.7, method='file_match').
+3. **Quantitative overview**: Run these two queries separately and present a combined table. Do NOT join them — cross-joining inflates counts.
    - Sessions: `SELECT substr(started_at, 1, 10) as day, COUNT(*) FROM sessions WHERE started_at != '' GROUP BY day ORDER BY day`
    - Commits: `SELECT substr(author_date, 1, 10) as day, COUNT(*), SUM(insertions + deletions) FROM commits GROUP BY day ORDER BY day`
-3. **One arc per major feature area** identified in step 1. Do not artificially compress unrelated features into one arc. Each arc should cover a coherent feature track (e.g., voice pipeline, axiom governance, demo system — not "recent work").
-4. **Per-arc metrics box**: For each arc, find its sessions by joining feat: commits through correlations to messages to sessions (see Key Join Patterns above). Then query session_tags and session_metrics for those session IDs. Include: work_type distribution, interaction_mode, average tool_call_count, steering_ratio, and a representative phase_sequence. Format as a visible data block in the output.
-5. **Trace actual code destinations**: Sessions are tagged by where Claude Code launched (often hapaxromana for specs), but commits may land in different repos. Check commit_files paths to identify where code actually went.
-6. Call session_content() for at least 3-5 pivotal sessions. Quote what was actually said — the conversations are the richest evidence.
-7. Include failures, wrong paths, and rework. Query critical_moments and cite exact counts from the query results — never estimate or round.
-8. Explain WHY each arc led to the next: what problems triggered new work, what decisions shaped direction.
+4. **One arc per major feature area** identified in step 1. Do not artificially compress unrelated features into one arc. Each arc should cover a coherent feature track (e.g., voice pipeline, axiom governance, demo system — not "recent work").
+5. **Per-arc metrics box**: For each arc, find its sessions by joining feat: commits through correlations to messages to sessions (see Key Join Patterns above). Then query session_tags and session_metrics for those session IDs. Include: work_type distribution, interaction_mode, average tool_call_count, steering_ratio, and a representative phase_sequence. Format as a visible data block in the output.
+   Example per-arc metrics query:
+   ```sql
+   SELECT st.dimension, st.value, COUNT(*) as sessions
+   FROM session_tags st
+   WHERE st.session_id IN (
+     SELECT DISTINCT m.session_id FROM commits c
+     JOIN correlations cor ON cor.commit_hash = c.hash
+     JOIN messages m ON m.id = cor.message_id
+     WHERE c.message LIKE '%voice%'
+   )
+   GROUP BY st.dimension, st.value
+   ```
+   Then for those same session_ids, query session_metrics:
+   ```sql
+   SELECT AVG(tool_call_count), AVG(user_steering_ratio),
+          GROUP_CONCAT(DISTINCT phase_sequence)
+   FROM session_metrics WHERE session_id IN (...)
+   ```
+6. **Trace actual code destinations**: Sessions are tagged by where Claude Code launched (often hapaxromana for specs), but commits may land in different repos. Check commit_files paths to identify where code actually went.
+   Call file_history() for 2-3 key files from high-confidence correlations to trace where code actually landed.
+7. Call session_content() for at least 3-5 pivotal sessions. Quote what was actually said — the conversations are the richest evidence.
+   For the 2-3 most impactful commits per arc (highest insertions+deletions), call git_diff(commit_hash) and include the stat summary.
+8. **Critical moments**: Query the critical_moments table with filtering:
+   ```sql
+   SELECT moment_type, severity, session_id, message_id, description
+   FROM critical_moments WHERE severity > 0.3
+   ORDER BY severity DESC LIMIT 15
+   ```
+   For the top 3-5 by severity, call session_content(session_id, around_message_id=message_id) to show the conversation context.
+   Cite exact counts from query results — never estimate or round.
+9. **Tool usage patterns**: For each arc's most representative session, query tool usage:
+   ```sql
+   SELECT tool_name, COUNT(*) as uses, SUM(CASE WHEN success THEN 1 ELSE 0 END) as successes
+   FROM tool_calls WHERE message_id IN (
+     SELECT id FROM messages WHERE session_id = '...'
+   )
+   GROUP BY tool_name ORDER BY uses DESC
+   ```
+10. Explain WHY each arc led to the next: what problems triggered new work, what decisions shaped direction.
 
 **Output constraints:**
 - Begin your response directly with the first content heading (e.g., "## Feature Enumeration"). Your FIRST character must be '#'. Do not narrate your query process, announce what you are about to do, or include transition sentences between sections.
@@ -246,12 +282,16 @@ def create_agent() -> Agent:
         get_model("balanced"),
         system_prompt=build_system_prompt(),
         deps_type=QueryDeps,
-        model_settings={"max_tokens": 16384},
+        model_settings={"max_tokens": 32768},
     )
 
     @agent.tool
     async def sql_query(ctx, query: str) -> str:
-        """Execute read-only SQL against the dev-story database."""
+        """Execute read-only SQL against the dev-story database.
+
+        Use this for all data queries — session counts, commit history, correlation analysis,
+        tool_call patterns, file_change sequences, and session_tags/session_metrics lookups.
+        """
         conn = sqlite3.connect(ctx.deps.db_path)
         conn.row_factory = sqlite3.Row
         try:
@@ -261,7 +301,12 @@ def create_agent() -> Agent:
 
     @agent.tool
     async def session_content(ctx, session_id: str, around_message_id: str = "") -> str:
-        """Retrieve conversation text from a session. Optionally center around a specific message."""
+        """Retrieve conversation text from a session. Optionally center around a specific message.
+
+        Use this to quote what was actually said in pivotal sessions. When investigating a
+        critical_moment, pass around_message_id to see the context around the issue.
+        Example: session_content("abc-123", around_message_id="msg-456")
+        """
         conn = sqlite3.connect(ctx.deps.db_path)
         conn.row_factory = sqlite3.Row
         try:
@@ -271,7 +316,12 @@ def create_agent() -> Agent:
 
     @agent.tool
     async def file_history(ctx, file_path: str) -> str:
-        """Show commit and session history for a specific file."""
+        """Trace the full development history of a specific file — every commit that touched it, which sessions drove each change (via correlation), and confidence scores.
+
+        Use this to trace where specs became code and to understand rewrite patterns.
+        Call for 2-3 key files per arc identified from high-confidence correlations.
+        Example: file_history("agents/voice/pipeline.py")
+        """
         conn = sqlite3.connect(ctx.deps.db_path)
         conn.row_factory = sqlite3.Row
         try:
@@ -281,7 +331,12 @@ def create_agent() -> Agent:
 
     @agent.tool
     async def git_diff(ctx, commit_hash: str) -> str:
-        """Show the actual diff for a git commit."""
+        """Show the stat summary for a git commit (files changed, insertions, deletions).
+
+        Use this for the 2-3 most impactful commits per arc to show concrete code evidence.
+        Quote the stat summary in your narrative. Validates commit hash format (4-40 hex chars).
+        Example: git_diff("a1b2c3d4")
+        """
         import subprocess
 
         if not _COMMIT_HASH_RE.match(commit_hash):
