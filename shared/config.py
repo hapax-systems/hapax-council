@@ -164,6 +164,21 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
         return vec
 
 
+def embed_safe(
+    text: str, model: str | None = None, prefix: str = "search_query"
+) -> list[float] | None:
+    """Generate embedding via Ollama with graceful degradation (cb-degrade-001).
+
+    Returns None instead of raising when Ollama is unavailable. Callers
+    decide how to handle: skip, cache, or notify.
+    """
+    try:
+        return embed(text, model=model, prefix=prefix)
+    except RuntimeError:
+        _log.warning("embed_safe: Ollama unavailable, returning None")
+        return None
+
+
 def embed_batch(
     texts: list[str],
     model: str | None = None,
@@ -213,6 +228,22 @@ def embed_batch(
                 )
         span.set_attribute("rag.embed_batch.dimensions", len(embeddings[0]) if embeddings else 0)
         return embeddings
+
+
+def embed_batch_safe(
+    texts: list[str],
+    model: str | None = None,
+    prefix: str = "search_document",
+) -> list[list[float]] | None:
+    """Generate batch embeddings with graceful degradation (cb-degrade-001).
+
+    Returns None instead of raising when Ollama is unavailable.
+    """
+    try:
+        return embed_batch(texts, model=model, prefix=prefix)
+    except RuntimeError:
+        _log.warning("embed_batch_safe: Ollama unavailable, returning None")
+        return None
 
 
 _expected_timers: dict[str, str] | None = None
