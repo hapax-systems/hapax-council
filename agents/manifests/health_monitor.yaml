@@ -1,0 +1,62 @@
+id: health_monitor
+name: Health Monitor
+version: "1.0.0"
+category: observability
+reports_to: operator
+peers: [drift_detector, introspect, activity_analyzer]
+depends_on: []
+
+purpose: Deterministic stack health checks across Docker, GPU, systemd, Qdrant, endpoints, credentials, and disk — zero LLM calls.
+inputs:
+  - systemd unit status
+  - Docker container state
+  - GPU metrics (nvidia-smi)
+  - Qdrant collection stats
+  - HTTP endpoint probes
+  - disk usage
+  - credential expiry dates
+outputs:
+  - profiles/health-report.json
+  - ntfy alerts (degraded/failed)
+  - cockpit health API
+capabilities:
+  - health_check
+  - alert_dispatch
+  - remediation_suggestion
+schedule:
+  type: timer
+  systemd_unit: health-monitor.timer
+  interval: "30m"
+model: null
+
+autonomy: full
+decision_scope: Detect and report health issues. May send alerts. Never takes corrective action.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-routine-007, ex-attention-001, ex-alert-004]
+    role: enforcer
+  - axiom_id: corporate_boundary
+    implications: [cb-degrade-001]
+    role: subject
+raci:
+  - task: stack_health_monitoring
+    role: responsible
+  - task: incident_detection
+    role: responsible
+  - task: daily_briefing
+    role: consulted
+
+health_group: null
+service_tier: 0
+metrics_source: profiles/health-report.json
+
+narrative: |
+  The Health Monitor is the system's primary sentinel. It runs every 30 minutes via
+  systemd timer, executing deterministic checks across the entire infrastructure stack
+  without any LLM calls. It checks Docker containers, GPU state, Qdrant collections,
+  HTTP endpoints, systemd timers, credential expiry, and disk usage. When it finds
+  degradation or failure, it pushes alerts via ntfy and writes a structured report that
+  the briefing agent, cockpit, and drift detector all consume. It is the only agent at
+  service tier 0 (critical) because if it goes down, the operator loses all automated
+  health visibility.

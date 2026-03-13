@@ -1,0 +1,71 @@
+id: hapax_voice
+name: Voice Daemon
+version: "1.0.0"
+category: interaction
+reports_to: operator
+peers: [watch_receiver, audio_processor]
+depends_on: [health_monitor]
+
+purpose: Always-on multimodal voice daemon — perception engine, governance chains (MC/OBS), resource arbitration, executor dispatch, Gemini Live integration.
+inputs:
+  - audio streams (microphone, system audio)
+  - timeline/transport state (DAW, media player)
+  - sensor data (filesystem-as-bus)
+  - OBS scene state
+outputs:
+  - actuation events (vocal throws, OBS scene switches, ad libs)
+  - suppression fields
+  - musical position tracking
+capabilities:
+  - audio_perception
+  - vad_detection
+  - emotion_classification
+  - mc_governance
+  - obs_governance
+  - resource_arbitration
+  - executor_dispatch
+  - suppression_modulation
+  - musical_position_tracking
+  - gemini_live_conversation
+schedule:
+  type: daemon
+model: null
+
+autonomy: full
+decision_scope: >
+  Autonomous real-time actuation within governed bounds. MC governance decides when to
+  vocalize, OBS governance decides camera angles, arbiter resolves resource contention.
+  All decisions are constrained by suppression fields (conversation active = suppress MC).
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-routine-001]
+    role: subject
+  - axiom_id: single_user
+    implications: [su-decision-001]
+    role: subject
+  - axiom_id: interpersonal_transparency
+    implications: []
+    role: subject
+raci:
+  - task: voice_interaction
+    role: responsible
+  - task: obs_scene_management
+    role: responsible
+  - task: audio_processing
+    role: accountable
+
+health_group: voice
+service_tier: 1
+
+narrative: |
+  The Voice Daemon (hapax_voice) is the system's real-time interaction layer. It runs
+  as an always-on daemon with a perception engine that processes audio streams, detects
+  voice activity, classifies emotions, and tracks musical position from DAW transport.
+  Two governance chains make autonomous decisions: MC governance decides when to vocalize
+  (ad libs, vocal throws) based on energy/arousal thresholds modulated by suppression
+  fields, and OBS governance decides camera angles based on energy patterns and recent
+  MC activity. A ResourceArbiter resolves contention when multiple chains want the same
+  output (e.g., audio_output). Executors dispatch the winning commands to actual hardware
+  (OBS WebSocket, audio output). The entire pipeline runs in real-time with sub-100ms
+  latency targets. This is the largest subsystem in the codebase (71 Python modules).

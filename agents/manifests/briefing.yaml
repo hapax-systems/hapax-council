@@ -1,0 +1,56 @@
+id: briefing
+name: Daily Briefing
+version: "1.0.0"
+category: synthesis
+reports_to: operator
+peers: [health_monitor, drift_detector, scout, activity_analyzer]
+depends_on: [health_monitor, drift_detector, activity_analyzer]
+
+purpose: Synthesize daily system briefing from health, drift, activity, and calendar signals into an operator-ready summary.
+inputs:
+  - profiles/health-report.json
+  - profiles/drift-report.json
+  - activity telemetry (Langfuse)
+  - calendar events
+  - scout reports
+outputs:
+  - profiles/briefing.json
+  - Obsidian daily note
+capabilities:
+  - multi_source_synthesis
+  - temporal_summarization
+schedule:
+  type: timer
+  systemd_unit: daily-briefing.timer
+  interval: daily
+model: fast
+
+autonomy: full
+decision_scope: Synthesize and present information. No decision authority — purely informational output.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-cognitive-009, ex-routine-001]
+    role: subject
+  - axiom_id: single_user
+    implications: [su-decision-001]
+    role: subject
+raci:
+  - task: daily_briefing
+    role: responsible
+  - task: stack_health_monitoring
+    role: informed
+  - task: documentation_drift
+    role: informed
+
+health_group: briefing
+service_tier: 1
+metrics_source: profiles/briefing.json
+
+narrative: |
+  The Daily Briefing agent is the operator's morning newspaper. It runs once daily,
+  pulling from health reports, drift findings, activity telemetry, calendar events,
+  and scout reports to produce a single synthesized summary. It uses a fast LLM
+  (Gemini Flash) for the final synthesis pass but all upstream data is pre-computed
+  by deterministic agents. This is the primary entry point for the operator to
+  understand system state without manually checking each subsystem.
