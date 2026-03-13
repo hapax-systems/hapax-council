@@ -18,9 +18,13 @@ TOOL="$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)" || exit 0
 CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
 [ -n "$CMD" ] || exit 0
 
+# Extract only the first line of the command (before any heredoc/pipe content).
+# This avoids false positives from "pip install" appearing in heredoc bodies,
+# PR descriptions, or multi-line string literals.
+FIRST_LINE="$(echo "$CMD" | head -n1)"
+
 # Strip out "uv pip" so it doesn't false-positive on the pip patterns below.
-# We do the check on a sanitised copy; the real command is untouched.
-CHECK="$(echo "$CMD" | sed 's/uv pip/uv_pip/g')"
+CHECK="$(echo "$FIRST_LINE" | sed 's/uv pip/uv_pip/g')"
 
 # Block direct pip / pip3 / python -m pip usage (install, uninstall, etc.)
 # Allow read-only commands: pip freeze, pip list
