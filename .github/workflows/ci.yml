@@ -33,7 +33,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --extra ci
-      - run: uv run pytest tests/ -q
+      - run: uv run pytest tests/ -q --cov=agents --cov=shared --cov=cockpit --cov-report=term --cov-report=json:coverage.json
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.json
+          if-no-files-found: ignore
 
   web-build:
     runs-on: ubuntu-latest
