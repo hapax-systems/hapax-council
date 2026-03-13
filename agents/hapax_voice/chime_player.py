@@ -38,12 +38,14 @@ class ChimePlayer:
         chime_dir: Path,
         auto_generate: bool = False,
         volume: float = 0.7,
+        pa: pyaudio.PyAudio | None = None,
     ) -> None:
         self._chime_dir = Path(chime_dir)
         self._auto_generate = auto_generate
         self._volume = max(0.0, min(1.0, volume))
         self._buffers: dict[str, bytes] = {}
-        self._pa: pyaudio.PyAudio | None = None
+        self._pa: pyaudio.PyAudio | None = pa
+        self._owns_pa = pa is None  # only terminate if we created it
 
     def load(self) -> None:
         """Pre-load all chime WAVs into memory. Call once at daemon startup."""
@@ -74,7 +76,9 @@ class ChimePlayer:
             except Exception as exc:
                 log.warning("Failed to load chime %s: %s", wav_path.name, exc)
 
-        self._pa = pyaudio.PyAudio()
+        if self._pa is None:
+            self._pa = pyaudio.PyAudio()
+            self._owns_pa = True
         log.info("ChimePlayer loaded %d chimes from %s", len(self._buffers), self._chime_dir)
 
     def play(self, name: str) -> None:
@@ -111,8 +115,8 @@ class ChimePlayer:
             log.warning("Failed to play chime %s: %s", name, exc)
 
     def close(self) -> None:
-        """Release PyAudio resources."""
-        if self._pa is not None:
+        """Release PyAudio resources (only if self-owned)."""
+        if self._pa is not None and self._owns_pa:
             self._pa.terminate()
             self._pa = None
 
