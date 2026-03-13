@@ -6,6 +6,7 @@ Designed to be consumed by the React SPA at cockpit-web/.
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -14,11 +15,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from cockpit.api.cache import start_refresh_loop
 from cockpit.api.sessions import agent_run_manager
 
+_log = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await start_refresh_loop()
+
+    # Start reactive engine
+    try:
+        from cockpit.engine import ReactiveEngine
+        from cockpit.engine.reactive_rules import register_rules
+
+        engine = ReactiveEngine()
+        register_rules(engine.registry)
+        await engine.start()
+        app.state.engine = engine
+    except Exception:
+        _log.exception("Reactive engine failed to start (continuing without it)")
+        engine = None
+
     yield
+
+    if engine is not None:
+        await engine.stop()
     await agent_run_manager.shutdown()
 
 
@@ -65,6 +85,7 @@ from cockpit.api.routes.copilot import router as copilot_router
 from cockpit.api.routes.cycle_mode import router as cycle_mode_router
 from cockpit.api.routes.data import router as data_router
 from cockpit.api.routes.demos import router as demos_router
+from cockpit.api.routes.engine import router as engine_router
 from cockpit.api.routes.nudges import router as nudges_router
 from cockpit.api.routes.profile import router as profile_router
 from cockpit.api.routes.query import router as query_router
@@ -81,6 +102,7 @@ app.include_router(demos_router)
 app.include_router(cycle_mode_router)
 app.include_router(scout_router)
 app.include_router(query_router)
+app.include_router(engine_router)
 
 
 @app.get("/")
