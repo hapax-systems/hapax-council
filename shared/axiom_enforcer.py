@@ -71,7 +71,7 @@ def _is_excepted(agent_id: str, output_path: str | Path) -> bool:
     """Check if this agent/path combination has an enforcement exception."""
     exceptions = _load_exceptions()
     output_str = str(output_path)
-    for component, exc in exceptions.items():
+    for component, _exc in exceptions.items():
         if component in output_str or agent_id in component:
             return True
     return False

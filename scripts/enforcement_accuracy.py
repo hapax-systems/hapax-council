@@ -222,7 +222,7 @@ def cmd_backfill() -> None:
     print(f"Scanned {len(sources)} files + digest history")
     print(f"  {matched} files with matches, {total} violation entries written")
     print(f"  Audit log: {AUDIT_LOG}")
-    print(f"\nNext: run 'label' to classify matches as TP/FP")
+    print("\nNext: run 'label' to classify matches as TP/FP")
 
 
 # ── Label ────────────────────────────────────────────────────────────────────
