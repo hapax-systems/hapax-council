@@ -56,6 +56,8 @@ docker compose up -d cockpit-api              # just API
 - **Secrets via `pass` + `direnv`**. Never hardcoded. `.envrc` is gitignored.
 - **Conventional commits.** Feature branches from `main`.
 - **NEVER switch branches in the primary worktree.** The primary checkout (`~/projects/hapax-council`) stays on `main`. For any feature branch, use `git worktree add ../hapax-council--<branch-slug> <branch>`. This prevents concurrent Claude sessions from clobbering each other's state. When done, `git worktree remove`.
+- **Always PR completed work before moving on.** When you finish a coherent batch of work (feature, fix, refactor), create a PR immediately — do not wait to be asked. Only skip the PR if the work is genuinely incomplete or broken. Push and PR freely; this is expected behavior. **Do NOT start new work until the current work is resolved** — resolved means either a PR has been submitted or there is no branch/changes remaining to PR. This is a blocking requirement.
+- **You own every PR you create through to merge.** Do not abandon PRs. Monitor CI checks, fix failures, update the branch if behind, and merge when ready. A PR is not done until it is merged into main. If checks fail, diagnose and fix them before moving on. If the branch falls behind, update it. This is your responsibility — no one else will do it.
 - **pydantic-ai 1.63.0**: uses `output_type` (not `result_type`) and `result.output` (not `result.data`).
 - **Safety:** LLMs prepare, humans deliver. Never generate feedback language or coaching recommendations about individual team members.
 - **Ruff config**: line-length 100, isort with first-party = `agents`, `shared`, `cockpit`.
