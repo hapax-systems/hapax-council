@@ -27,7 +27,7 @@ class TestSystemdCapabilityMetadata:
         assert cap.name == "systemd"
 
     def test_check_groups(self, cap: SystemdCapability) -> None:
-        assert cap.check_groups == {"systemd", "sync"}
+        assert cap.check_groups == {"systemd", "sync", "voice", "backup"}
 
     def test_is_capability(self, cap: SystemdCapability) -> None:
         assert isinstance(cap, Capability)
@@ -64,9 +64,9 @@ class TestSystemdProbe:
 class TestSystemdActions:
     def test_available_actions(self, cap: SystemdCapability) -> None:
         actions = cap.available_actions()
-        assert len(actions) == 2
+        assert len(actions) == 3
         names = {a.name for a in actions}
-        assert names == {"restart_unit", "reset_failed"}
+        assert names == {"restart_unit", "reset_failed", "sync_units"}
         for a in actions:
             assert a.safety == Safety.SAFE
 

@@ -34,7 +34,7 @@ class DockerCapability(Capability):
     """Manage Docker containers by restarting or starting them."""
 
     name = "docker"
-    check_groups = {"docker"}
+    check_groups = {"docker", "endpoints", "latency", "qdrant", "auth", "traces", "connectivity"}
 
     async def gather_context(self, check: Any) -> ProbeResult:
         """Run docker ps -a to gather container status."""

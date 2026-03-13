@@ -51,5 +51,5 @@ class TestLoadBuiltinCapabilities:
         load_builtin_capabilities()
         second_count = len(get_all_capabilities())
 
-        assert first_count == 4
-        assert second_count == 4
+        assert first_count == 6
+        assert second_count == 6

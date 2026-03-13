@@ -55,6 +55,7 @@ docker compose up -d cockpit-api              # just API
 - **All LLM calls through LiteLLM** at localhost:4000 via `shared.config.get_model()`. Never direct to providers.
 - **Secrets via `pass` + `direnv`**. Never hardcoded. `.envrc` is gitignored.
 - **Conventional commits.** Feature branches from `main`.
+- **NEVER switch branches in the primary worktree.** The primary checkout (`~/projects/hapax-council`) stays on `main`. For any feature branch, use `git worktree add ../hapax-council--<branch-slug> <branch>`. This prevents concurrent Claude sessions from clobbering each other's state. When done, `git worktree remove`.
 - **pydantic-ai 1.63.0**: uses `output_type` (not `result_type`) and `result.output` (not `result.data`).
 - **Safety:** LLMs prepare, humans deliver. Never generate feedback language or coaching recommendations about individual team members.
 - **Ruff config**: line-length 100, isort with first-party = `agents`, `shared`, `cockpit`.

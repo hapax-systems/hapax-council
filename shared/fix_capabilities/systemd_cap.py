@@ -27,6 +27,11 @@ _ACTIONS: dict[str, Action] = {
         params={"unit_name": "str"},
         description="Reset failed state of a systemd user unit",
     ),
+    "sync_units": Action(
+        name="sync_units",
+        safety=Safety.SAFE,
+        description="Copy repo systemd units to deployed location and reload",
+    ),
 }
 
 
@@ -34,7 +39,7 @@ class SystemdCapability(Capability):
     """Manage systemd user units — restart services and reset failed states."""
 
     name = "systemd"
-    check_groups = {"systemd", "sync"}
+    check_groups = {"systemd", "sync", "voice", "backup"}
 
     async def gather_context(self, check: Any) -> ProbeResult:
         """List all user timers and services via systemctl."""
@@ -81,6 +86,9 @@ class SystemdCapability(Capability):
 
     async def execute(self, proposal: FixProposal) -> ExecutionResult:
         """Execute a validated fix proposal."""
+        if proposal.action_name == "sync_units":
+            return await self._sync_units()
+
         unit_name = proposal.params["unit_name"]
 
         if proposal.action_name == "restart_unit":
@@ -104,4 +112,38 @@ class SystemdCapability(Capability):
             success=False,
             message=f"{proposal.action_name} failed for {unit_name}: {stderr}",
             output=stderr,
+        )
+
+    async def _sync_units(self) -> ExecutionResult:
+        """Copy repo systemd units to user config dir and reload daemon."""
+        import shutil
+        from pathlib import Path
+
+        from shared.config import SYSTEMD_USER_DIR
+
+        repo_units = Path.home() / "projects" / "hapax-council" / "systemd" / "units"
+        if not repo_units.exists():
+            return ExecutionResult(success=False, message="Repo units dir not found")
+
+        synced = []
+        for unit_file in sorted(repo_units.iterdir()):
+            if unit_file.suffix not in (".service", ".timer"):
+                continue
+            dest = SYSTEMD_USER_DIR / unit_file.name
+            if not dest.exists() or unit_file.read_text() != dest.read_text():
+                shutil.copy2(unit_file, dest)
+                synced.append(unit_file.name)
+
+        if not synced:
+            return ExecutionResult(success=True, message="All units already in sync")
+
+        rc, stdout, stderr = await run_cmd(["systemctl", "--user", "daemon-reload"], timeout=15.0)
+        if rc != 0:
+            return ExecutionResult(
+                success=False,
+                message=f"daemon-reload failed after syncing {synced}: {stderr}",
+            )
+        return ExecutionResult(
+            success=True,
+            message=f"Synced {len(synced)} units: {', '.join(synced)}",
         )
