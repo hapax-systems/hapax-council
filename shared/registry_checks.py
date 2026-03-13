@@ -284,9 +284,9 @@ def check_document_registry(
     """
     if registry is None:
         if registry_path is None:
-            from shared.config import HAPAXROMANA_DIR
+            from shared.config import HAPAX_CONSTITUTION_DIR
 
-            registry_path = HAPAXROMANA_DIR / "docs" / "document-registry.yaml"
+            registry_path = HAPAX_CONSTITUTION_DIR / "docs" / "document-registry.yaml"
         registry = load_registry(path=registry_path)
 
     if registry is None:
