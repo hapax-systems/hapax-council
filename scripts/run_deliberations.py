@@ -440,12 +440,30 @@ def run_deliberation(tension: dict) -> dict:
         print(f"\n  EARLY CONVERGENCE DETECTED: {convergence_check['reasoning'][:200]}")
         print("  Skipping rounds 2-4 — no genuine disagreement to deliberate.")
         # Minimal round data for converged deliberations
-        brutus_r2 = {"claims_attacked": [], "concessions": [], "position_movement": "converged in round 1",
-                     "update_conditions_checked": [], "new_considerations": [], "values_promoted": []}
-        publius_r3 = {"claims_attacked": [], "concessions": [], "position_movement": "converged in round 1",
-                      "update_conditions_checked": [], "new_considerations": [], "values_promoted": []}
-        brutus_r4 = {"claims_attacked": [], "concessions": [], "position_movement": "converged in round 1",
-                     "update_conditions_checked": [], "new_considerations": [], "values_promoted": []}
+        brutus_r2 = {
+            "claims_attacked": [],
+            "concessions": [],
+            "position_movement": "converged in round 1",
+            "update_conditions_checked": [],
+            "new_considerations": [],
+            "values_promoted": [],
+        }
+        publius_r3 = {
+            "claims_attacked": [],
+            "concessions": [],
+            "position_movement": "converged in round 1",
+            "update_conditions_checked": [],
+            "new_considerations": [],
+            "values_promoted": [],
+        }
+        brutus_r4 = {
+            "claims_attacked": [],
+            "concessions": [],
+            "position_movement": "converged in round 1",
+            "update_conditions_checked": [],
+            "new_considerations": [],
+            "values_promoted": [],
+        }
         rounds = [
             {"round": 1, "agent": "publius", **publius_r1},
             {"round": 1, "agent": "brutus", **brutus_r1},
@@ -459,7 +477,11 @@ def run_deliberation(tension: dict) -> dict:
 
         # Round 2: Brutus responds to Publius
         print("\n--- Round 2: Brutus responds ---")
-        crux_instruction = f"\n\nThe crux of disagreement is: {crux}\nFocus your attacks on this crux." if crux else ""
+        crux_instruction = (
+            f"\n\nThe crux of disagreement is: {crux}\nFocus your attacks on this crux."
+            if crux
+            else ""
+        )
         brutus_r2_raw = llm_call(
             [
                 {
@@ -724,7 +746,9 @@ def main():
         delib_probes = [r for r in probe_results if r.probe_id.startswith("probe-delib-")]
         failing = [r for r in delib_probes if not r.met]
         if failing:
-            print(f"\nGovernance probes: {len(delib_probes) - len(failing)}/{len(delib_probes)} passing")
+            print(
+                f"\nGovernance probes: {len(delib_probes) - len(failing)}/{len(delib_probes)} passing"
+            )
             for f in failing:
                 print(f"  FAIL {f.probe_id}: {f.evidence}")
         else:
