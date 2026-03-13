@@ -14,5 +14,6 @@ Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=health-monitor
-MemoryMax=512M
-CPUQuota=30%
+TimeoutStartSec=300
+MemoryMax=768M
+CPUQuota=50%

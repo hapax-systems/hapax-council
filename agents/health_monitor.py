@@ -547,6 +547,13 @@ async def check_systemd_services() -> list[CheckResult]:
         ("digest.timer", True, "systemctl --user enable --now digest.timer"),
         ("knowledge-maint.timer", True, "systemctl --user enable --now knowledge-maint.timer"),
         ("midi-route.service", False, None),
+        ("gcalendar-sync.timer", True, "systemctl --user restart gcalendar-sync"),
+        ("gdrive-sync.timer", True, "systemctl --user restart gdrive-sync"),
+        ("gmail-sync.timer", True, "systemctl --user restart gmail-sync"),
+        ("youtube-sync.timer", True, "systemctl --user restart youtube-sync"),
+        ("chrome-sync.timer", True, "systemctl --user restart chrome-sync"),
+        ("claude-code-sync.timer", True, "systemctl --user restart claude-code-sync"),
+        ("obsidian-sync.timer", True, "systemctl --user restart obsidian-sync"),
     ]
     results: list[CheckResult] = []
 
@@ -611,6 +618,23 @@ async def check_systemd_services() -> list[CheckResult]:
                 duration_ms=_timed(t),
             )
         )
+
+        # For active timers, also check if the triggered service is in failed state
+        if active and unit.endswith(".timer"):
+            svc = unit.replace(".timer", ".service")
+            t2 = time.monotonic()
+            rc_s, out_s, _ = await run_cmd(["systemctl", "--user", "is-failed", svc])
+            if out_s.strip() == "failed":
+                results.append(
+                    CheckResult(
+                        name=f"systemd.{svc}",
+                        group="systemd",
+                        status=Status.DEGRADED,
+                        message="last run failed (timer will retry)",
+                        remediation=f"systemctl --user reset-failed {svc} && systemctl --user start {svc}",
+                        duration_ms=_timed(t2),
+                    )
+                )
 
     return results
 
