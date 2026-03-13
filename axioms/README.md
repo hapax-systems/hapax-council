@@ -58,7 +58,7 @@ The system derives concrete implications from axioms through an interpretive pro
 
 **Omitted-case canon** asks: what does the axiom's silence mean? `management_governance` says "LLMs prepare context; humans deliver feedback." It does not say "LLMs may draft suggested feedback language for humans to review and edit." The silence is intentional. The canon says: do not add what the axiom chose not to include. If the axiom had wanted to permit drafted language, it would have said so. Its silence on the matter is a prohibition.
 
-This process currently yields ~81 concrete implications across the five axioms, each tagged with the canon that produced it, the tier of enforcement, and whether it's a negative constraint ("don't do X") or a positive requirement ("actively provide Y"). Implications are generated via LLM with majority-vote consistency checking across multiple runs, then reviewed and committed by the operator. They do not change at runtime.
+This process currently yields 90 concrete implications across the five axioms, each tagged with the canon that produced it, the tier of enforcement, and whether it's a negative constraint ("don't do X") or a positive requirement ("actively provide Y"). Implications are generated via LLM with majority-vote consistency checking across multiple runs, then reviewed and committed by the operator. They do not change at runtime.
 
 ## Enforcement
 
@@ -90,7 +90,7 @@ The **cold path** (`check_full`) is for decisions that aren't time-critical. It 
 
 ## The Precedent Store
 
-Eighty-one implications cannot anticipate every situation. The system will encounter novel cases — a data flow that doesn't clearly fall into any implication's scope, a perception backend that processes biometric data in a way the implications didn't envision. The question is: how do you handle ambiguity consistently over time?
+Ninety implications cannot anticipate every situation. The system will encounter novel cases — a data flow that doesn't clearly fall into any implication's scope, a perception backend that processes biometric data in a way the implications didn't envision. The question is: how do you handle ambiguity consistently over time?
 
 The answer is case law. When a governance decision encounters a novel situation, the decision is recorded as a **precedent**: what was being decided, what the decision was (compliant, violation, or edge case), and critically, the reasoning and distinguishing facts that drove the decision. Future encounters with similar situations consult the precedent store first, before escalating.
 
@@ -109,7 +109,7 @@ Precedents carry an authority field:
 
 When an agent records a precedent, it enters the store with `authority="agent"`. It is provisional — good enough to guide future agent decisions, but pending operator ratification. If the operator later reviews the precedent and disagrees, the operator's decision supersedes it, creating a new precedent with higher authority. The old precedent is marked superseded but retained for audit.
 
-This solves a practical problem in agentic governance: the system needs to make consistent decisions even when the operator hasn't reviewed every edge case. Agent-authority precedents provide that consistency while preserving the operator's ability to override. The ~23 seed precedents in `precedents/seed/` establish the initial body of case law with operator authority, covering architecture decisions, management boundaries, and executive function patterns.
+This solves a practical problem in agentic governance: the system needs to make consistent decisions even when the operator hasn't reviewed every edge case. Agent-authority precedents provide that consistency while preserving the operator's ability to override. The 31 seed precedents in `precedents/seed/` establish the initial body of case law with operator authority, covering architecture decisions, management boundaries, and executive function patterns.
 
 ### Semantic Search
 
@@ -141,13 +141,13 @@ Two tools in `shared/axiom_tools.py` expose governance to LLM agents at runtime.
 axioms/
 ├── registry.yaml                    5 axiom definitions (SchemaVer 1-0-0)
 ├── implications/
-│   ├── single-user.yaml            23 implications (su-*)
-│   ├── executive-function.yaml     35+ implications (ex-*)
+│   ├── single-user.yaml            25 implications (su-*)
+│   ├── executive-function.yaml     42 implications (ex-*)
 │   ├── corporate-boundary.yaml     7 implications (cb-*)
 │   ├── interpersonal-transparency.yaml  9 implications (it-*)
 │   └── management-governance.yaml  7 implications (mg-*)
 ├── precedents/
-│   └── seed/                       23 seed precedents (operator authority)
+│   └── seed/                       31 seed precedents (operator authority)
 ├── contracts/                       Consent contracts (empty — none established)
 └── schemas/                         JSON schemas for axioms, implications, precedents
 ```
