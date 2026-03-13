@@ -215,7 +215,7 @@ class TestCrossRoleSentinels(unittest.TestCase):
 class TestFullPipeline(unittest.TestCase):
     def test_perception_to_feedback_loop(self):
         """Full pipeline: perception → governance → arbiter → dispatch → feedback."""
-        wm = 100.0  # use explicit timestamps
+        wm = 0.0  # use 0.0 so dispatch's time.monotonic() is always above watermark
 
         # 1. Create behaviors (perception)
         behaviors = _make_behaviors(energy=0.8, arousal=0.7, watermark=wm)
