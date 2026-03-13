@@ -1,0 +1,46 @@
+id: git_sync
+name: Git Sync
+version: "1.0.0"
+category: sync
+reports_to: operator
+peers: [claude_code_sync, obsidian_sync]
+depends_on: []
+
+purpose: Extract commit history from local Git repositories for RAG ingestion and development pattern analysis. Zero LLM.
+inputs:
+  - Local git repositories (hapax-council, hapax-officium, hapax-constitution, distro-work)
+outputs:
+  - per-repo commit history markdown
+  - development activity profile facts
+capabilities:
+  - commit_extraction
+  - diff_analysis
+  - development_pattern_tracking
+schedule:
+  type: event
+  trigger: periodic
+model: null
+
+autonomy: full
+decision_scope: Read commit history from local repos. Cannot modify repositories or push changes.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: single_user
+    implications: [su-privacy-001]
+    role: subject
+raci:
+  - task: data_sync
+    role: responsible
+  - task: operator_profile_maintenance
+    role: consulted
+
+health_group: sync
+service_tier: 3
+
+narrative: |
+  Git Sync reads commit history from the operator's local repositories, extracting
+  commit messages, file change statistics, and abbreviated diffs for key files. This
+  feeds the RAG pipeline with development context — what was built, what decisions
+  were made, and how the codebase evolved. Combined with Claude Code Sync, it
+  provides a complete picture of the operator's development activity. It uses only
+  subprocess calls to git, requiring no external Python dependencies.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Git commit history sync (every 6h)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

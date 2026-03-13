@@ -1,0 +1,11 @@
+[Unit]
+Description=Langfuse trace sync (every 6h)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

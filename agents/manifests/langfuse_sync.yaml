@@ -1,0 +1,47 @@
+id: langfuse_sync
+name: Langfuse Sync
+version: "1.0.0"
+category: sync
+reports_to: operator
+peers: [chrome_sync, obsidian_sync]
+depends_on: []
+
+purpose: Sync LLM trace summaries and cost data from Langfuse for knowledge base enrichment and usage tracking. Zero LLM.
+inputs:
+  - Langfuse trace API
+  - LiteLLM spend report
+outputs:
+  - daily trace summaries
+  - cost-by-model breakdown
+  - model usage profile facts
+capabilities:
+  - langfuse_sync
+  - trace_indexing
+  - cost_tracking
+schedule:
+  type: event
+  trigger: periodic
+model: null
+
+autonomy: full
+decision_scope: Read and index LLM trace data. Cannot modify traces or Langfuse configuration.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: single_user
+    implications: [su-privacy-001]
+    role: subject
+raci:
+  - task: data_sync
+    role: responsible
+  - task: operator_profile_maintenance
+    role: consulted
+
+health_group: sync
+service_tier: 3
+
+narrative: |
+  Langfuse Sync reads LLM trace data from the local Langfuse instance, summarising
+  daily usage patterns, model distribution, cost trends, and error rates for RAG
+  ingestion. Prompts and completions are truncated to 500 characters — full data
+  stays in Langfuse. Also pulls cost-by-model breakdowns from LiteLLM's spend
+  report endpoint for richer profile facts.
