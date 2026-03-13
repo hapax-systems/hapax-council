@@ -1,0 +1,54 @@
+id: ingest
+name: RAG Ingest Pipeline
+version: "1.0.0"
+category: knowledge
+reports_to: operator
+peers: [knowledge_maint, research]
+depends_on: [gdrive_sync, obsidian_sync, chrome_sync]
+
+purpose: Ingest documents into the RAG knowledge base — chunk, embed via Ollama, index into Qdrant with metadata.
+inputs:
+  - documents from ~/documents/rag-sources/
+  - sync agent outputs
+  - Obsidian vault files
+outputs:
+  - Qdrant knowledge collection entries
+  - ingest state tracking
+capabilities:
+  - document_chunking
+  - embedding_generation
+  - qdrant_indexing
+  - metadata_extraction
+schedule:
+  type: event
+  trigger: filesystem watch on rag-sources/
+model: null
+
+autonomy: full
+decision_scope: Chunk, embed, and index documents. Cannot modify source documents or delete existing knowledge.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-memory-010]
+    role: enforcer
+  - axiom_id: corporate_boundary
+    implications: [cb-key-001]
+    role: subject
+raci:
+  - task: knowledge_ingestion
+    role: responsible
+  - task: knowledge_retrieval
+    role: consulted
+
+health_group: qdrant
+service_tier: 1
+metrics_source: null
+
+narrative: |
+  The RAG Ingest Pipeline is the knowledge base's intake valve. When sync agents
+  deposit new content or the operator adds documents to rag-sources/, this agent
+  chunks them into embedding-sized pieces, generates vector embeddings via Ollama
+  (nomic-embed-text-v2-moe, 768d), and indexes them into Qdrant with rich metadata.
+  It maintains ingest state to avoid re-processing unchanged documents. Without it,
+  the knowledge base goes stale — making Research, Digest, and context injection
+  all degrade.

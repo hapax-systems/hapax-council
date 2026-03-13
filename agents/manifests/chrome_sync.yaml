@@ -1,0 +1,46 @@
+id: chrome_sync
+name: Chrome Sync
+version: "1.0.0"
+category: sync
+reports_to: operator
+peers: [youtube_sync, obsidian_sync]
+depends_on: []
+
+purpose: Sync Chrome browsing history and bookmarks for knowledge base enrichment and interest tracking. Zero LLM.
+inputs:
+  - Chrome history database
+  - Chrome bookmarks
+outputs:
+  - browsing history metadata
+  - bookmark index
+capabilities:
+  - browser_sync
+  - history_indexing
+  - bookmark_extraction
+schedule:
+  type: event
+  trigger: periodic
+model: null
+
+autonomy: full
+decision_scope: Read and index browser data. Cannot modify browsing history or bookmarks.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: single_user
+    implications: [su-privacy-001]
+    role: subject
+raci:
+  - task: data_sync
+    role: responsible
+  - task: operator_profile_maintenance
+    role: consulted
+
+health_group: sync
+service_tier: 3
+
+narrative: |
+  Chrome Sync reads the operator's browsing history and bookmarks, indexing them
+  for knowledge base enrichment and interest profiling. Browsing patterns reveal
+  what the operator is researching, what tools they're evaluating, and what
+  problems they're trying to solve. This is among the most privacy-sensitive sync
+  agents — it only ever reads local Chrome data, never exfiltrates it.

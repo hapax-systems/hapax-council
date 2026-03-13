@@ -1,0 +1,45 @@
+id: llm_backup
+name: LLM Stack Backup
+version: "1.0.0"
+category: observability
+reports_to: operator
+peers: [backup_local, backup_remote]
+depends_on: []
+
+purpose: Full LLM stack backup — Docker volumes, configs, and state for the llm-stack deployment.
+inputs:
+  - Docker volume state
+  - llm-stack configuration
+outputs:
+  - backup artifacts
+capabilities:
+  - docker_backup
+schedule:
+  type: timer
+  systemd_unit: llm-backup.timer
+  interval: weekly
+model: null
+
+autonomy: full
+decision_scope: Execute backup procedure. Cannot modify backed-up data.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-routine-007]
+    role: subject
+raci:
+  - task: backup
+    role: responsible
+
+health_group: null
+service_tier: 2
+
+timer_display:
+  schedule_label: "Weekly Sun 02:00"
+  purpose: "Full stack backup"
+
+narrative: |
+  The LLM Stack Backup agent handles weekly backups of the entire LLM
+  infrastructure — Docker volumes for Qdrant, PostgreSQL, Langfuse, and
+  LiteLLM, plus their configuration files. It runs via systemd timer
+  and requires no LLM or operator input.

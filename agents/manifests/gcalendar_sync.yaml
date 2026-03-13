@@ -1,0 +1,49 @@
+id: gcalendar_sync
+name: Google Calendar Sync
+version: "1.0.0"
+category: sync
+reports_to: operator
+peers: [gdrive_sync, gmail_sync]
+depends_on: []
+
+purpose: Index Google Calendar events and track behavioral patterns — meeting frequency, time allocation, scheduling habits. Zero LLM.
+inputs:
+  - Google Calendar API
+outputs:
+  - calendar state (CalendarSyncState)
+  - shared/calendar_context.py data
+capabilities:
+  - calendar_sync
+  - event_indexing
+  - pattern_tracking
+schedule:
+  type: event
+  trigger: periodic
+model: null
+
+autonomy: full
+decision_scope: Read and index calendar events. Cannot create, modify, or delete events.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: corporate_boundary
+    implications: [cb-key-001]
+    role: subject
+  - axiom_id: interpersonal_transparency
+    implications: []
+    role: subject
+raci:
+  - task: data_sync
+    role: responsible
+  - task: operator_profile_maintenance
+    role: consulted
+
+health_group: sync
+service_tier: 2
+
+narrative: |
+  Google Calendar Sync indexes the operator's calendar events, making them available
+  for context injection. The briefing agent uses it to mention upcoming meetings,
+  the profiler uses it to track time allocation patterns, and the shared calendar
+  context module provides query methods (next_meeting_with, meetings_in_range).
+  It's subject to interpersonal transparency constraints because calendar events
+  contain information about other people (attendees).

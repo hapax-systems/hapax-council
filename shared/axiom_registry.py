@@ -77,6 +77,14 @@ class Axiom:
 
 
 @dataclass
+class ImplicationScope:
+    """E-1: Enumerable scope definition for sufficiency-mode implications."""
+
+    type: str = ""  # "derived" | "enumerated" | "pattern"
+    rule: str = ""  # Human-readable scope rule
+
+
+@dataclass
 class Implication:
     id: str
     axiom_id: str
@@ -86,6 +94,7 @@ class Implication:
     canon: str  # interpretive strategy used
     mode: str = "compatibility"  # "compatibility" | "sufficiency"
     level: str = "component"  # "component" | "subsystem" | "system"
+    scope: ImplicationScope | None = None  # E-1: optional scope for sufficiency implications
 
 
 def load_schema_version(*, path: Path = AXIOMS_PATH) -> SchemaVer | None:
@@ -171,6 +180,13 @@ def load_implications(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Implic
 
     impls = []
     for entry in data.get("implications", []):
+        scope_data = entry.get("scope")
+        scope = None
+        if scope_data and isinstance(scope_data, dict):
+            scope = ImplicationScope(
+                type=scope_data.get("type", ""),
+                rule=scope_data.get("rule", ""),
+            )
         impls.append(
             Implication(
                 id=entry["id"],
@@ -181,6 +197,7 @@ def load_implications(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Implic
                 canon=entry.get("canon", ""),
                 mode=entry.get("mode", "compatibility"),
                 level=entry.get("level", "component"),
+                scope=scope,
             )
         )
 

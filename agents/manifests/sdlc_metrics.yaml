@@ -1,0 +1,47 @@
+id: sdlc_metrics
+name: SDLC Metrics
+version: "1.0.0"
+category: observability
+reports_to: operator
+peers: [activity_analyzer, health_monitor]
+depends_on: []
+
+purpose: Deterministic SDLC pipeline health metrics — CI pass rates, PR velocity, test coverage trends, deployment frequency.
+inputs:
+  - GitHub API (repos, PRs, checks)
+  - CI/CD pipeline state
+  - test coverage reports
+outputs:
+  - profiles/sdlc-metrics.json
+capabilities:
+  - ci_metric_aggregation
+  - pr_velocity_tracking
+  - coverage_trending
+schedule:
+  type: on-demand
+  interval: "6h"
+model: null
+
+autonomy: full
+decision_scope: Aggregate and report metrics. Read-only access to GitHub and CI.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-routine-001]
+    role: subject
+raci:
+  - task: sdlc_monitoring
+    role: responsible
+  - task: daily_briefing
+    role: consulted
+
+health_group: sdlc
+service_tier: 2
+metrics_source: profiles/sdlc-metrics.json
+
+narrative: |
+  The SDLC Metrics agent watches the development pipeline itself. It queries GitHub
+  for PR velocity, CI pass rates, and test results, aggregating them into trend data.
+  No LLM required — it's pure metric computation. Its output helps the operator
+  understand whether the development process is healthy: are PRs getting stuck? Is
+  CI reliability degrading? Are tests being added alongside new code?

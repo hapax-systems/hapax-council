@@ -1,0 +1,44 @@
+id: youtube_sync
+name: YouTube Sync
+version: "1.0.0"
+category: sync
+reports_to: operator
+peers: [chrome_sync, gdrive_sync]
+depends_on: []
+
+purpose: Sync YouTube subscriptions, liked videos, and playlists for knowledge base and interest profiling. Zero LLM.
+inputs:
+  - YouTube Data API
+outputs:
+  - subscription/like/playlist metadata
+  - RAG-ready content summaries
+capabilities:
+  - youtube_sync
+  - interest_tracking
+schedule:
+  type: event
+  trigger: periodic
+model: null
+
+autonomy: full
+decision_scope: Read and index YouTube data. Cannot modify subscriptions or playlists.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: corporate_boundary
+    implications: [cb-key-001]
+    role: subject
+raci:
+  - task: data_sync
+    role: responsible
+  - task: operator_profile_maintenance
+    role: consulted
+
+health_group: sync
+service_tier: 3
+
+narrative: |
+  YouTube Sync captures the operator's YouTube engagement — subscriptions, liked
+  videos, and playlists. This data feeds into interest profiling (what topics does
+  the operator care about?) and can populate the knowledge base with video metadata
+  for RAG retrieval. Lower service tier than other sync agents since YouTube data
+  is less operationally critical.

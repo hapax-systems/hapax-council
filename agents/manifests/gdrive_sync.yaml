@@ -1,0 +1,47 @@
+id: gdrive_sync
+name: Google Drive Sync
+version: "1.0.0"
+category: sync
+reports_to: operator
+peers: [gcalendar_sync, gmail_sync, obsidian_sync]
+depends_on: []
+
+purpose: Smart tiered sync of Google Drive — prioritize recent/modified files, differential download, metadata tracking. Zero LLM.
+inputs:
+  - Google Drive API
+  - sync state tracking
+outputs:
+  - downloaded files to ~/documents/rag-sources/gdrive/
+  - sync state metadata
+capabilities:
+  - drive_sync
+  - differential_download
+  - tier_prioritization
+schedule:
+  type: event
+  trigger: periodic or manual
+model: null
+
+autonomy: full
+decision_scope: Download and organize files from Drive. Cannot upload, modify, or delete Drive content.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: corporate_boundary
+    implications: [cb-key-001, cb-llm-001]
+    role: subject
+raci:
+  - task: data_sync
+    role: responsible
+  - task: knowledge_ingestion
+    role: consulted
+
+health_group: sync
+service_tier: 2
+
+narrative: |
+  Google Drive Sync is one of several sync agents that populate the RAG pipeline's
+  source pool. It connects to the Google Drive API, tracks what's changed since last
+  sync, and downloads new or modified files using a tiered priority system (recent
+  edits first, then shared docs, then archives). Zero LLM calls — it's pure API
+  client work. Subject to corporate boundary constraints since it crosses the
+  employer network boundary.

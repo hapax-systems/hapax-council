@@ -1,0 +1,46 @@
+id: claude_code_sync
+name: Claude Code Sync
+version: "1.0.0"
+category: sync
+reports_to: operator
+peers: [obsidian_sync, chrome_sync]
+depends_on: []
+
+purpose: Parse Claude Code JSONL transcripts into structured data for RAG ingestion and dev narrative reconstruction. Zero LLM.
+inputs:
+  - ~/.claude/projects/*/*.jsonl transcript files
+outputs:
+  - parsed transcript data
+  - RAG-ready conversation chunks
+capabilities:
+  - transcript_parsing
+  - conversation_chunking
+  - tool_use_extraction
+schedule:
+  type: event
+  trigger: new transcript files
+model: null
+
+autonomy: full
+decision_scope: Parse and index transcripts. Cannot modify or delete transcript files.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: single_user
+    implications: [su-privacy-001]
+    role: subject
+raci:
+  - task: data_sync
+    role: responsible
+  - task: knowledge_ingestion
+    role: consulted
+
+health_group: sync
+service_tier: 2
+
+narrative: |
+  Claude Code Sync is unique among the sync agents — it reads the system's own
+  conversation history. Claude Code writes JSONL transcripts for every session, and
+  this agent parses them into structured data: what was discussed, what tools were
+  used, what code was written. This feeds into the dev_story subsystem for narrative
+  reconstruction and into the RAG pipeline for knowledge retrieval. It's how the
+  system remembers what it has done.

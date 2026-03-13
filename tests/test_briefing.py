@@ -245,6 +245,7 @@ class _FakeLangfuseData:
     total_cost = 0.25
     error_count = 1
     models = []
+    cost_trend = None
 
 
 class _FakeHealthData:

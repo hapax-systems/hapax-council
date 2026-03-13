@@ -1,0 +1,51 @@
+id: audio_processor
+name: Audio Processor
+version: "1.0.0"
+category: interaction
+reports_to: operator
+peers: [hapax_voice, ingest]
+depends_on: []
+
+purpose: Process ambient audio for the RAG pipeline — transcription, classification, and knowledge extraction from audio sources.
+inputs:
+  - audio streams (microphone, system audio)
+  - audio files
+outputs:
+  - transcriptions
+  - audio classifications
+  - RAG-ready text chunks
+capabilities:
+  - audio_transcription
+  - sound_classification
+  - text_extraction
+schedule:
+  type: event
+  trigger: audio input available
+model: null
+
+autonomy: full
+decision_scope: Process and classify audio. Cannot initiate recording or modify audio sources.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: single_user
+    implications: [su-privacy-001]
+    role: subject
+  - axiom_id: interpersonal_transparency
+    implications: []
+    role: subject
+raci:
+  - task: audio_processing
+    role: responsible
+  - task: knowledge_ingestion
+    role: consulted
+
+health_group: null
+service_tier: 3
+
+narrative: |
+  The Audio Processor bridges the gap between audio sources and the RAG knowledge
+  base. It takes audio input (ambient microphone, system audio, recorded files),
+  transcribes it, classifies the content type, and extracts knowledge-ready text
+  chunks for downstream ingestion. It's subject to interpersonal transparency
+  constraints — any audio containing non-operator voices must be handled according
+  to consent contracts.

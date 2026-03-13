@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from cockpit.data.agents import AgentFlag, AgentInfo, get_agent_registry
+from shared.agent_registry import get_registry
 from shared.config import PROFILES_DIR
 
 
@@ -51,169 +52,39 @@ def _agent_section(agent: AgentInfo) -> str:
     return "\n".join(lines)
 
 
-TASK_SECTIONS = [
-    (
-        "Morning Routine",
-        "briefing",
-        [
-            "Run the briefing agent for a synthesized overview of the last 24 hours.",
-            "Includes health trends, agent activity, action items, and scout alerts.",
-            "",
-            "```",
-            "uv run python -m agents.briefing --save",
-            "```",
-            "",
-            "Or from the cockpit: select **briefing** in the agent launcher, enable `--save`, press Enter.",
-            "The `--hours` flag adjusts the lookback window (default: 24).",
-        ],
-    ),
-    (
-        "Checking System Health",
-        "health-monitor",
-        [
-            "The health monitor runs 44 deterministic checks across 10 groups:",
-            "docker, gpu, systemd, qdrant, profiles, endpoints, credentials, disk, etc.",
-            "",
-            "```",
-            "uv run python -m agents.health_monitor",
-            "uv run python -m agents.health_monitor --fix       # auto-remediate",
-            "uv run python -m agents.health_monitor --fix --yes  # skip confirmation",
-            "uv run python -m agents.health_monitor --check docker,gpu  # specific groups",
-            "uv run python -m agents.health_monitor --history    # last 20 runs",
-            "```",
-            "",
-            "The health monitor timer runs every 15 minutes automatically.",
-            "The cockpit status strip shows the latest health state at a glance.",
-        ],
-    ),
-    (
-        "Evaluating Alternatives",
-        "scout",
-        [
-            "The scout agent evaluates each stack component against the external landscape.",
-            "It reads `profiles/component-registry.yaml` and searches the web for alternatives.",
-            "",
-            "```",
-            "uv run python -m agents.scout --save",
-            "uv run python -m agents.scout --dry-run           # preview queries only",
-            "uv run python -m agents.scout --component litellm  # single component",
-            "```",
-            "",
-            "Scout tiers: **adopt** (switch now), **evaluate** (worth investigating),",
-            "**monitor** (keep watching), **current-best** (no action needed).",
-            "The scout timer runs weekly (Wednesday 10:00).",
-        ],
-    ),
-    (
-        "Maintaining Documentation",
-        "drift-detector",
-        [
-            "The drift detector compares documentation against actual system state.",
-            "It identifies places where docs have fallen behind reality.",
-            "",
-            "```",
-            "uv run python -m agents.drift_detector",
-            "uv run python -m agents.drift_detector --fix  # generate corrected fragments",
-            "```",
-            "",
-            "The drift detector timer runs weekly (Sunday 03:00).",
-        ],
-    ),
-    (
-        "Researching a Topic",
-        "research",
-        [
-            "The research agent performs RAG-backed queries against indexed documents in Qdrant.",
-            "",
-            "```",
-            'uv run python -m agents.research "how does MIDI routing work on this system"',
-            "uv run python -m agents.research --interactive  # multi-turn conversation",
-            "```",
-            "",
-            "Documents are indexed via the ingest agent (`python -m agents.ingest`).",
-            "Drop files into `~/documents/rag-sources/` for automatic ingestion.",
-        ],
-    ),
-    (
-        "Reviewing Code",
-        "code-review",
-        [
-            "The code review agent analyzes files or diffs with operator context.",
-            "",
-            "```",
-            "uv run python -m agents.code_review path/to/file.py",
-            'uv run python -m agents.code_review --diff "$(git diff)"',
-            "uv run python -m agents.code_review --model coding  # use qwen-coder",
-            "```",
-        ],
-    ),
-    (
-        "Understanding System Activity",
-        "activity-analyzer",
-        [
-            "The activity analyzer aggregates telemetry from Langfuse traces,",
-            "health history, drift reports, and the systemd journal.",
-            "",
-            "```",
-            "uv run python -m agents.activity_analyzer",
-            "uv run python -m agents.activity_analyzer --hours 48",
-            "uv run python -m agents.activity_analyzer --synthesize  # add LLM summary",
-            "```",
-        ],
-    ),
-    (
-        "Updating Operator Profile",
-        "profiler",
-        [
-            "The profiler extracts and curates operator preferences from multiple sources:",
-            "config files, conversation transcripts, shell history, git logs, and MCP memory.",
-            "",
-            "```",
-            "uv run python -m agents.profiler --auto       # unattended incremental update",
-            "uv run python -m agents.profiler --show        # display current profile",
-            "uv run python -m agents.profiler --curate      # quality curation pass",
-            "uv run python -m agents.profiler --full        # force complete re-extraction",
-            "uv run python -m agents.profiler --source git  # single source only",
-            "```",
-            "",
-            "The profile update timer runs every 12 hours.",
-        ],
-    ),
-    (
-        "Inspecting Infrastructure",
-        "introspect",
-        [
-            "The introspect agent generates a deterministic manifest of all infrastructure:",
-            "Docker containers, Ollama models, systemd timers, MCP servers, and more.",
-            "",
-            "```",
-            "uv run python -m agents.introspect",
-            "uv run python -m agents.introspect --save  # save to profiles/manifest.json",
-            "uv run python -m agents.introspect --json  # full JSON output",
-            "```",
-            "",
-            "The manifest snapshot timer runs weekly (Sunday 02:30).",
-        ],
-    ),
-]
+def _get_task_sections() -> list[tuple[str, str, list[str]]]:
+    """Derive task sections from manifests with manual_section metadata."""
+    registry = get_registry()
+    sections = []
+    for m in registry.list_agents():
+        if m.manual_section is not None:
+            sections.append(
+                (
+                    m.manual_section.title,
+                    m.display_name,
+                    m.manual_section.content,
+                    m.manual_section.order,
+                )
+            )
+    return [(t, n, c) for t, n, c, _o in sorted(sections, key=lambda x: x[3])]
 
-TIMER_SCHEDULE = [
-    ("health-monitor.timer", "Every 15 min", "Auto-fix + desktop notification on failures"),
-    ("profile-update.timer", "Every 12h", "Incremental operator profile update"),
-    ("digest.timer", "Daily 06:45", "Content digest — aggregates recently ingested content"),
-    ("daily-briefing.timer", "Daily 07:00", "Morning briefing + notification"),
-    ("scout.timer", "Weekly Wed 10:00", "Horizon scan — external fitness evaluation"),
-    ("drift-detector.timer", "Weekly Sun 03:00", "Documentation drift detection"),
-    ("manifest-snapshot.timer", "Weekly Sun 02:30", "Infrastructure state snapshot"),
-    ("knowledge-maint.timer", "Weekly Sun 04:30", "Qdrant vector DB hygiene — dedup + pruning"),
-    ("llm-backup.timer", "Weekly Sun 02:00", "Full stack backup"),
-]
+
+def _get_timer_schedule() -> list[tuple[str, str, str]]:
+    """Derive timer schedule from manifests with timer_display metadata."""
+    registry = get_registry()
+    return [
+        (a.schedule.systemd_unit, a.timer_display.schedule_label, a.timer_display.purpose)
+        for a in registry.timer_agents()
+        if a.timer_display and a.schedule.systemd_unit
+    ]
 
 
 def generate_manual() -> str:
     """Generate the full operations manual as markdown."""
     agents = get_agent_registry()
     agent_map = {a.name: a for a in agents}
+    task_sections = _get_task_sections()
+    timer_schedule = _get_timer_schedule()
 
     lines = [
         "# Operations Manual",
@@ -227,7 +98,7 @@ def generate_manual() -> str:
         "|------|-------|-------------|",
     ]
 
-    for title, agent_name, _ in TASK_SECTIONS:
+    for title, agent_name, _ in task_sections:
         agent = agent_map.get(agent_name)
         cmd = agent.command if agent else "—"
         lines.append(f"| {title} | {agent_name} | `{cmd}` |")
@@ -235,7 +106,7 @@ def generate_manual() -> str:
     lines.append("")
 
     # Task sections
-    for title, _agent_name, content in TASK_SECTIONS:
+    for title, _agent_name, content in task_sections:
         lines.append(f"## {title}")
         lines.append("")
         lines.extend(content)
@@ -253,7 +124,7 @@ def generate_manual() -> str:
     lines.append("")
     lines.append("| Timer | Schedule | Purpose |")
     lines.append("|-------|----------|---------|")
-    for timer, schedule, purpose in TIMER_SCHEDULE:
+    for timer, schedule, purpose in timer_schedule:
         lines.append(f"| {timer} | {schedule} | {purpose} |")
     lines.append("")
 

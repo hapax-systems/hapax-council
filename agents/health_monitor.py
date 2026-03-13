@@ -2332,16 +2332,9 @@ async def check_axiom_ef_zero_config() -> list[CheckResult]:
 
     # Agents that should be runnable with no required args
     # research takes a positional query arg (acceptable — it's the input, not config)
-    zero_config_agents = [
-        "health_monitor",
-        "introspect",
-        "drift_detector",
-        "briefing",
-        "scout",
-        "digest",
-        "knowledge_maint",
-        "activity_analyzer",
-    ]
+    from shared.agent_registry import get_registry
+
+    zero_config_agents = [a.id for a in get_registry().zero_config_agents()]
 
     violations = []
     for agent_name in zero_config_agents:
@@ -2660,6 +2653,251 @@ async def check_skill_syntax() -> list[CheckResult]:
                 duration_ms=_timed(t),
             )
         ]
+
+
+# ── Trace correlation checks ─────────────────────────────────────────────────
+
+
+@check_group("traces")
+async def check_langfuse_error_spikes() -> list[CheckResult]:
+    """G4: Correlate Langfuse error traces with service health."""
+    t = time.monotonic()
+
+    try:
+        from shared.langfuse_client import LANGFUSE_PK, query_recent_errors
+    except ImportError:
+        return []
+
+    if not LANGFUSE_PK:
+        return [
+            CheckResult(
+                name="traces.langfuse_errors",
+                group="traces",
+                status=Status.HEALTHY,
+                message="Langfuse credentials not configured (skipped)",
+                duration_ms=_timed(t),
+                tier=2,
+            )
+        ]
+
+    services = ["cockpit", "briefing", "health", "drift", "scout", "voice"]
+    results: list[CheckResult] = []
+
+    for svc in services:
+        try:
+            errors = query_recent_errors(svc, hours=1)
+        except Exception:
+            continue
+
+        if len(errors) > 5:
+            status = Status.DEGRADED
+            msg = f"{svc}: {len(errors)} error traces in last hour"
+            top_msgs = "; ".join(e.get("message", "")[:60] for e in errors[:3] if e.get("message"))
+            results.append(
+                CheckResult(
+                    name=f"traces.{svc}_errors",
+                    group="traces",
+                    status=status,
+                    message=msg,
+                    detail=top_msgs or None,
+                    duration_ms=_timed(t),
+                    tier=2,
+                )
+            )
+
+    if not results:
+        results.append(
+            CheckResult(
+                name="traces.langfuse_errors",
+                group="traces",
+                status=Status.HEALTHY,
+                message="No error spikes in Langfuse traces",
+                duration_ms=_timed(t),
+                tier=2,
+            )
+        )
+
+    return results
+
+
+# ── Backup checks ────────────────────────────────────────────────────────────
+
+RESTIC_REPO = Path("/data/backups/restic")
+BACKUP_STALE_H = 36
+BACKUP_FAILED_H = 72
+
+
+@check_group("backup")
+async def check_backup_freshness() -> list[CheckResult]:
+    """GAP-13: Check local restic backup recency via repo mtime."""
+    t = time.monotonic()
+
+    # Check multiple indicators of last backup activity
+    candidates = [
+        RESTIC_REPO / "locks",
+        RESTIC_REPO / "snapshots",
+        RESTIC_REPO / "index",
+    ]
+    latest_mtime: float | None = None
+    checked_path = ""
+    for p in candidates:
+        if p.exists():
+            try:
+                mtime = p.stat().st_mtime
+                if latest_mtime is None or mtime > latest_mtime:
+                    latest_mtime = mtime
+                    checked_path = str(p)
+            except OSError:
+                continue
+
+    if latest_mtime is None:
+        return [
+            CheckResult(
+                name="backup.restic_freshness",
+                group="backup",
+                status=Status.FAILED,
+                message="Restic repo not found or empty",
+                detail=f"Checked: {RESTIC_REPO}",
+                remediation="systemctl --user start hapax-backup-local.service",
+                duration_ms=_timed(t),
+                tier=2,
+            )
+        ]
+
+    age_h = (time.time() - latest_mtime) / 3600
+    if age_h > BACKUP_FAILED_H:
+        status = Status.FAILED
+        msg = f"Backup {age_h:.0f}h old (>{BACKUP_FAILED_H}h)"
+    elif age_h > BACKUP_STALE_H:
+        status = Status.DEGRADED
+        msg = f"Backup {age_h:.0f}h old (>{BACKUP_STALE_H}h)"
+    else:
+        status = Status.HEALTHY
+        msg = f"Backup {age_h:.1f}h old"
+
+    return [
+        CheckResult(
+            name="backup.restic_freshness",
+            group="backup",
+            status=status,
+            message=msg,
+            detail=f"Latest activity in {checked_path}",
+            remediation="systemctl --user start hapax-backup-local.service"
+            if status != Status.HEALTHY
+            else None,
+            duration_ms=_timed(t),
+            tier=2,
+        )
+    ]
+
+
+# ── Sync checks ─────────────────────────────────────────────────────────────
+
+SYNC_STALE_H = 24
+SYNC_FAILED_H = 72
+
+
+def _get_sync_agents() -> dict[str, Path]:
+    """Derive sync agent state file paths from the agent registry.
+
+    Convention: agent_id "gmail_sync" → cache dir "gmail-sync" → state.json.
+    Falls back to hardcoded list if registry is unavailable.
+    """
+    try:
+        from shared.agent_registry import AgentCategory, get_registry
+
+        registry = get_registry()
+        sync_agents = registry.agents_by_category(AgentCategory.SYNC)
+        result: dict[str, Path] = {}
+        for agent in sync_agents:
+            # Convention: agent_id underscores → hyphens for cache dir
+            cache_name = agent.id.replace("_", "-")
+            # Strip trailing "-sync" for the display name
+            display_name = (
+                cache_name.removesuffix("-sync") if cache_name.endswith("-sync") else cache_name
+            )
+            result[display_name] = Path.home() / ".cache" / cache_name / "state.json"
+        return result
+    except Exception:
+        # Fallback if registry unavailable
+        return {
+            name: Path.home() / ".cache" / f"{name}-sync" / "state.json"
+            for name in [
+                "gmail",
+                "gcalendar",
+                "gdrive",
+                "youtube",
+                "obsidian",
+                "chrome",
+                "claude-code",
+            ]
+        }
+
+
+@check_group("sync")
+async def check_sync_freshness() -> list[CheckResult]:
+    """GAP-14: Check sync agent state file recency (derived from agent registry)."""
+    t = time.monotonic()
+    results: list[CheckResult] = []
+
+    for agent_name, state_path in sorted(_get_sync_agents().items()):
+        if not state_path.exists():
+            results.append(
+                CheckResult(
+                    name=f"sync.{agent_name}_freshness",
+                    group="sync",
+                    status=Status.DEGRADED,
+                    message=f"{agent_name} sync state file missing",
+                    detail=str(state_path),
+                    remediation=f"systemctl --user start {agent_name}-sync.service",
+                    duration_ms=_timed(t),
+                    tier=3,
+                )
+            )
+            continue
+
+        try:
+            mtime = state_path.stat().st_mtime
+        except OSError as e:
+            results.append(
+                CheckResult(
+                    name=f"sync.{agent_name}_freshness",
+                    group="sync",
+                    status=Status.DEGRADED,
+                    message=f"{agent_name} state file unreadable: {e}",
+                    duration_ms=_timed(t),
+                    tier=3,
+                )
+            )
+            continue
+
+        age_h = (time.time() - mtime) / 3600
+        if age_h > SYNC_FAILED_H:
+            status = Status.FAILED
+            msg = f"{agent_name} sync {age_h:.0f}h stale (>{SYNC_FAILED_H}h)"
+        elif age_h > SYNC_STALE_H:
+            status = Status.DEGRADED
+            msg = f"{agent_name} sync {age_h:.0f}h stale (>{SYNC_STALE_H}h)"
+        else:
+            status = Status.HEALTHY
+            msg = f"{agent_name} sync {age_h:.1f}h ago"
+
+        results.append(
+            CheckResult(
+                name=f"sync.{agent_name}_freshness",
+                group="sync",
+                status=status,
+                message=msg,
+                detail=str(state_path),
+                remediation=f"systemctl --user start {agent_name}-sync.service"
+                if status != Status.HEALTHY
+                else None,
+                duration_ms=_timed(t),
+                tier=3,
+            )
+        )
+
+    return results
 
 
 # ── Runner ───────────────────────────────────────────────────────────────────

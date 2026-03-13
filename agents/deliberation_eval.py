@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from shared.deliberation_metrics import (
@@ -19,7 +20,60 @@ from shared.deliberation_metrics import (
     EVAL_FILE,
     extract_batch,
     format_batch_summary,
+    read_recent_metrics,
 )
+
+log = logging.getLogger("agents.deliberation_eval")
+
+PSEUDO_THRESHOLD = 3  # number of pseudo-deliberations to trigger escalation
+
+
+def _escalate_pseudo_deliberations() -> None:
+    """If recent metrics show repeated pseudo-deliberations, record a precedent.
+
+    GAP-8: Pseudo-deliberation detection → escalation. When 3+ of the last 50
+    metrics are pseudo-deliberations, record an edge_case precedent so
+    _collect_precedent_nudges() surfaces it for operator review.
+    """
+    metrics = read_recent_metrics(n=50)
+    pseudo = [m for m in metrics if m.is_pseudo_deliberation]
+    if len(pseudo) < PSEUDO_THRESHOLD:
+        return
+
+    try:
+        from shared.axiom_precedents import Precedent, PrecedentStore
+
+        ids = ", ".join(m.deliberation_id for m in pseudo[:5])
+        store = PrecedentStore()
+        precedent_id = store.record(
+            Precedent(
+                id="",
+                axiom_id="executive_function",
+                situation=(
+                    f"{len(pseudo)} of last {len(metrics)} deliberations are pseudo-deliberations "
+                    f"(fail all 3 hoop tests despite multiple rounds). IDs: {ids}"
+                ),
+                decision="edge_case",
+                reasoning=(
+                    "Repeated pseudo-deliberations indicate the deliberation process is not "
+                    "producing genuine engagement between agents. This may signal prompt drift, "
+                    "model capability mismatch, or structural issues in the deliberation format. "
+                    "Operator review needed to determine root cause and corrective action."
+                ),
+                tier="T2",
+                distinguishing_facts=[
+                    f"{len(pseudo)}/{len(metrics)} recent deliberations are pseudo",
+                    "All three hoop tests (position shift, argument tracing, counterfactual divergence) failed",
+                    "Pattern detected automatically by deliberation_eval escalation",
+                ],
+                authority="agent",
+                created="",
+            )
+        )
+        log.info("Escalated pseudo-deliberation pattern as precedent %s", precedent_id)
+        print(f"\n  ** Escalated: {len(pseudo)} pseudo-deliberations → precedent {precedent_id}")
+    except Exception as e:
+        log.warning("Failed to escalate pseudo-deliberation pattern: %s", e)
 
 
 def main() -> None:
@@ -35,6 +89,9 @@ def main() -> None:
         output = None if args.dry_run else args.output
         metrics = extract_batch(args.dir, output, args.pattern)
         print(format_batch_summary(metrics))
+
+        # GAP-8: Check for pseudo-deliberation pattern and escalate if needed
+        _escalate_pseudo_deliberations()
 
     # Run deliberation sufficiency probes
     print(f"\n{'=' * 60}")

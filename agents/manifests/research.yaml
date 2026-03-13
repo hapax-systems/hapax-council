@@ -1,0 +1,84 @@
+id: research
+name: Research Agent
+version: 1.0.0
+category: knowledge
+reports_to: operator
+peers:
+- ingest
+- code_review
+depends_on:
+- ingest
+purpose: RAG-enabled research with structured retrieval, multi-source synthesis, and
+  citation tracking via Pydantic AI + LiteLLM + Qdrant.
+inputs:
+- operator queries
+- Qdrant knowledge collections
+- operator profile context
+outputs:
+- structured research responses
+- cited source references
+capabilities:
+- rag_retrieval
+- multi_source_synthesis
+- citation_tracking
+- tool_use
+schedule:
+  type: on-demand
+model: balanced
+autonomy: advisory
+decision_scope: Retrieve, synthesize, and present research findings. No write access
+  to knowledge base.
+escalation_target: operator
+axiom_bindings:
+- axiom_id: executive_function
+  implications:
+  - ex-memory-010
+  role: subject
+- axiom_id: corporate_boundary
+  implications:
+  - cb-llm-001
+  role: subject
+raci:
+- task: knowledge_retrieval
+  role: responsible
+- task: context_enrichment
+  role: consulted
+health_group: null
+service_tier: 2
+narrative: 'The Research Agent is the system''s on-demand knowledge worker. When the
+  operator
+
+  asks a question, it retrieves relevant context from Qdrant, enriches it with
+
+  operator profile data, and synthesizes a structured answer with citations. It uses
+
+  Pydantic AI tool-use patterns and routes through LiteLLM. Unlike the sync agents
+
+  that populate the knowledge base, Research reads from it — it''s the query-time
+
+  counterpart to the ingest-time pipeline.
+
+  '
+short_description: RAG-backed research with Qdrant
+cli:
+  command: uv run python -m agents.research
+  module: agents.research
+  flags:
+  - flag: query
+    description: Research query
+    flag_type: positional
+  - flag: --interactive
+    description: Interactive multi-turn mode
+manual_section:
+  title: Researching a Topic
+  order: 5
+  content:
+  - The research agent performs RAG-backed queries against indexed documents in Qdrant.
+  - ''
+  - '```'
+  - uv run python -m agents.research "how does MIDI routing work on this system"
+  - 'uv run python -m agents.research --interactive  # multi-turn conversation'
+  - '```'
+  - ''
+  - Documents are indexed via the ingest agent (`python -m agents.ingest`).
+  - Drop files into `~/documents/rag-sources/` for automatic ingestion.

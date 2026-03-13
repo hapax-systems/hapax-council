@@ -1,0 +1,86 @@
+id: drift_detector
+name: Drift Detector
+version: 1.0.0
+category: observability
+reports_to: operator
+peers:
+- health_monitor
+- introspect
+depends_on:
+- introspect
+purpose: Detect and report documentation drift — where docs no longer match actual
+  system state.
+inputs:
+- profiles/manifest.json (infrastructure manifest)
+- documentation files
+- system state queries
+outputs:
+- profiles/drift-report.json
+- drift correction suggestions
+capabilities:
+- drift_detection
+- doc_system_comparison
+- correction_suggestion
+schedule:
+  type: timer
+  systemd_unit: drift-detector.timer
+  interval: 6h
+model: fast
+autonomy: supervised
+decision_scope: Detect and report drift. Suggests corrections but does not auto-apply
+  them.
+escalation_target: operator
+axiom_bindings:
+- axiom_id: executive_function
+  implications:
+  - ex-routine-001
+  role: subject
+raci:
+- task: documentation_drift
+  role: responsible
+- task: daily_briefing
+  role: consulted
+health_group: drift
+service_tier: 2
+metrics_source: profiles/drift-report.json
+narrative: 'The Drift Detector compares documentation against actual system state,
+  finding
+
+  places where the two have diverged. It runs every 6 hours, consuming the
+
+  infrastructure manifest from introspect and checking it against docs, configs,
+
+  and README files. It produces a drift report with specific correction suggestions
+
+  but never auto-applies fixes — the operator reviews and decides. This agent is
+
+  essential for a system that evolves faster than its documentation.
+
+  '
+short_description: Docs vs reality comparison
+cli:
+  command: uv run python -m agents.drift_detector
+  module: agents.drift_detector
+  flags:
+  - flag: --json
+    description: Machine-readable JSON output
+  - flag: --fix
+    description: Generate corrected documentation fragments
+  - flag: --apply
+    description: Apply fixes directly to files (requires --fix)
+timer_display:
+  schedule_label: Weekly Sun 03:00
+  purpose: Documentation drift detection
+manual_section:
+  title: Maintaining Documentation
+  order: 4
+  content:
+  - The drift detector compares documentation against actual system state.
+  - It identifies places where docs have fallen behind reality.
+  - ''
+  - '```'
+  - uv run python -m agents.drift_detector
+  - 'uv run python -m agents.drift_detector --fix  # generate corrected fragments'
+  - '```'
+  - ''
+  - The drift detector timer runs weekly (Sunday 03:00).
