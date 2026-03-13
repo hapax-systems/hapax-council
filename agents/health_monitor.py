@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -2951,7 +2952,47 @@ async def run_checks(
             )
 
     tasks = [_run_one(g, fn) for g, fn in all_fns]
-    raw_results = await asyncio.gather(*tasks)
+    try:
+        raw_results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=90.0
+        )
+    except TimeoutError:
+        log.error("Health checks timed out after 90s")
+        raw_results = [
+            (
+                "timeout",
+                [
+                    CheckResult(
+                        name="checks.timeout",
+                        group="timeout",
+                        status=Status.FAILED,
+                        message="Health checks timed out after 90s",
+                        duration_ms=90000,
+                    )
+                ],
+            )
+        ]
+    # Unwrap any exceptions from return_exceptions=True
+    cleaned_results = []
+    for r in raw_results:
+        if isinstance(r, Exception):
+            cleaned_results.append(
+                (
+                    "error",
+                    [
+                        CheckResult(
+                            name="checks.exception",
+                            group="error",
+                            status=Status.FAILED,
+                            message=f"Check exception: {r}",
+                            duration_ms=0,
+                        )
+                    ],
+                )
+            )
+        else:
+            cleaned_results.append(r)
+    raw_results = cleaned_results
 
     # Group results and annotate tiers
     from shared.service_tiers import ServiceTier, tier_for_check
@@ -3193,7 +3234,12 @@ async def run_fixes_v2(report: HealthReport, mode: str = "apply") -> int:
     from shared.fix_capabilities.pipeline import run_fix_pipeline
 
     load_builtin_capabilities()
-    result = await run_fix_pipeline(report, mode=mode)
+    try:
+        result = await asyncio.wait_for(run_fix_pipeline(report, mode=mode), timeout=120.0)
+    except TimeoutError:
+        log.error("Fix pipeline timed out after 120s")
+        print("Fix pipeline timed out after 120s")
+        return 0
 
     if result.total == 0:
         print("No fix proposals generated.")
@@ -3234,15 +3280,25 @@ _STATUS_SYMBOLS = {"healthy": "OK", "degraded": "!!", "failed": "XX"}
 
 
 def rotate_history() -> None:
-    """Truncate health history if it exceeds MAX_HISTORY_LINES."""
+    """Truncate health history if it exceeds MAX_HISTORY_LINES (atomic)."""
     if not HISTORY_FILE.is_file():
         return
     lines = HISTORY_FILE.read_text().strip().splitlines()
     if len(lines) <= MAX_HISTORY_LINES:
         return
     trimmed = lines[-KEEP_HISTORY_LINES:]
-    HISTORY_FILE.write_text("\n".join(trimmed) + "\n")
-    log.info("Rotated health history: %d → %d lines", len(lines), len(trimmed))
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(dir=HISTORY_FILE.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(trimmed) + "\n")
+        os.replace(tmp, HISTORY_FILE)
+        log.info("Rotated health history: %d → %d lines", len(lines), len(trimmed))
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 _SYSTEM_TIMERS = {"pop-upgrade-notify", "launchpadlib-cache-clean"}
@@ -3581,6 +3637,12 @@ async def main() -> None:
         await run_fixes_v2(report, mode=mode)
     elif args.fix:
         await run_fixes(report, yes=args.yes)
+
+    # Rotate history if needed
+    try:
+        rotate_history()
+    except Exception as e:
+        log.warning("History rotation failed: %s", e)
 
     # Exit code reflects overall status
     if report.overall_status == Status.FAILED:
