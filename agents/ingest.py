@@ -146,11 +146,16 @@ def get_qdrant():
 
 def embed(text: str, prefix: str = "search_document") -> list[float]:
     """Generate embedding via Ollama with nomic prefix."""
+    return embed_batch([text], prefix=prefix)[0]
+
+
+def embed_batch(texts: list[str], prefix: str = "search_document") -> list[list[float]]:
+    """Generate embeddings for multiple texts in a single Ollama call."""
     import ollama
 
-    prefixed = f"{prefix}: {text}" if prefix else text
+    prefixed = [f"{prefix}: {t}" if prefix else t for t in texts]
     result = ollama.embed(model=EMBEDDING_MODEL, input=prefixed)
-    return result["embeddings"][0]
+    return result["embeddings"]
 
 
 def point_id(path: Path, chunk_index: int) -> int:
@@ -528,9 +533,17 @@ def ingest_file(path: Path) -> tuple[bool, str]:
         from qdrant_client import models
 
         points = []
-        for i, chunk in enumerate(chunks):
-            try:
-                vec = embed(chunk.text)
+        # Batch embed all chunks in a single Ollama call
+        chunk_texts = [c.text for c in chunks]
+        try:
+            vectors = embed_batch(chunk_texts)
+        except Exception as e:
+            log.error(f"  Batch embedding failed: {e}")
+            vectors = None
+
+        if vectors and len(vectors) == len(chunks):
+            now = time.time()
+            for i, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True)):
                 payload = {
                     "text": chunk.text,
                     "source": str(path.resolve()),
@@ -538,7 +551,7 @@ def ingest_file(path: Path) -> tuple[bool, str]:
                     "extension": path.suffix.lower(),
                     "chunk_index": i,
                     "chunk_count": len(chunks),
-                    "ingested_at": time.time(),
+                    "ingested_at": now,
                 }
                 # Enrich with frontmatter metadata and path-based auto-detection
                 payload = enrich_payload(payload, frontmatter)
@@ -549,8 +562,6 @@ def ingest_file(path: Path) -> tuple[bool, str]:
                         payload=payload,
                     )
                 )
-            except Exception as e:
-                log.error(f"  Embedding failed for chunk {i}: {e}")
 
         if points:
             # Batch upsert (Qdrant handles batching internally)

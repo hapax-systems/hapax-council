@@ -15,14 +15,54 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json as _json
 import logging
 import os
 import subprocess
+import time
+from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 _log = logging.getLogger(__name__)
+
+# ── Deduplication ────────────────────────────────────────────────────────────
+# Suppress identical notifications within a cooldown window.
+# State is stored in a small JSON file keyed by hash(title+message).
+
+_DEDUP_FILE = Path(os.environ.get("NTFY_DEDUP_FILE", Path.home() / ".cache" / "ntfy-dedup.json"))
+_DEDUP_COOLDOWN = int(os.environ.get("NTFY_DEDUP_COOLDOWN_SECONDS", "3600"))  # 1 hour default
+
+
+def _dedup_key(title: str, message: str) -> str:
+    return hashlib.sha256(f"{title}\x00{message}".encode()).hexdigest()[:16]
+
+
+def _is_duplicate(title: str, message: str) -> bool:
+    """Return True if this exact notification was sent within the cooldown window."""
+    key = _dedup_key(title, message)
+    now = time.time()
+    state: dict = {}
+    try:
+        if _DEDUP_FILE.exists():
+            state = _json.loads(_DEDUP_FILE.read_text())
+    except Exception:
+        pass
+    last_sent = state.get(key, 0)
+    if now - last_sent < _DEDUP_COOLDOWN:
+        return True
+    # Record this send and prune old entries
+    state[key] = now
+    state = {k: v for k, v in state.items() if now - v < _DEDUP_COOLDOWN * 4}
+    try:
+        _DEDUP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DEDUP_FILE.write_text(_json.dumps(state))
+    except Exception:
+        pass
+    return False
+
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -73,6 +113,11 @@ def send_notification(
     Returns:
         True if notification was delivered via at least one channel.
     """
+    # Dedup: suppress identical notifications within cooldown window
+    if _is_duplicate(title, message):
+        _log.debug("Suppressed duplicate notification: %s", title)
+        return True  # Pretend delivered — caller shouldn't retry
+
     delivered = False
 
     # Try ntfy first
