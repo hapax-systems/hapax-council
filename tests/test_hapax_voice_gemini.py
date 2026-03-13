@@ -60,7 +60,7 @@ class TestGeminiLiveSession:
         # receive() returns an empty async iterator (no messages)
         async def empty_receive():
             return
-            yield  # noqa: makes this an async generator
+            yield  # noqa  # makes this an async generator
 
         mock_ws_session.receive = empty_receive
 
