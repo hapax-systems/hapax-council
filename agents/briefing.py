@@ -500,6 +500,27 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
             parts.append(
                 f"- {axiom_status['pending_precedents']} agent precedent(s) awaiting operator review"
             )
+        # Output enforcement readiness
+        try:
+            from scripts.enforcement_accuracy import _compute_stats, _readiness_recommendation
+
+            stats = _compute_stats()
+            total_matches = sum(s.total for s in stats.values())
+            total_labeled = sum(s.labeled for s in stats.values())
+            unlabeled = sum(s.unlabeled for s in stats.values())
+            if total_matches > 0:
+                parts.append(
+                    f"- Output enforcement: {total_matches} pattern matches, "
+                    f"{total_labeled} labeled, {unlabeled} awaiting review"
+                )
+                recommendation = _readiness_recommendation(stats)
+                if recommendation.startswith("READY"):
+                    parts.append("- Blocking readiness: READY")
+                else:
+                    parts.append(f"- Blocking readiness: {recommendation.split(':')[0]}")
+        except Exception:
+            pass
+
         if parts:
             axiom_section = "\n\n## Axiom Governance\n" + "\n".join(parts)
     except Exception:
@@ -845,6 +866,25 @@ async def main() -> None:
 
     if args.save:
         briefing_md = format_briefing_md(briefing)
+
+        # Axiom enforcement check before write (Gap 8)
+        from shared.axiom_enforcer import enforce_output
+
+        enforcement = enforce_output(briefing_md, "briefing", BRIEFING_FILE)
+        if not enforcement.allowed:
+            print(
+                f"BLOCKED: {len(enforcement.violations)} axiom violation(s) detected. "
+                f"Quarantined to {enforcement.quarantine_path}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if enforcement.violations:
+            print(
+                f"AUDIT: {len(enforcement.violations)} pattern match(es) "
+                f"({', '.join(v.pattern_id for v in enforcement.violations)})",
+                file=sys.stderr,
+            )
+
         BRIEFING_FILE.write_text(briefing_md)
         print(f"Saved to {BRIEFING_FILE}", file=sys.stderr)
 

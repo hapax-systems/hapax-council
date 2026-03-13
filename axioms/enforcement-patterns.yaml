@@ -1,0 +1,84 @@
+# Output Enforcement Patterns (Gap 8)
+#
+# T0 patterns for LLM-generated output text. These detect axiom violations
+# in natural language (briefings, summaries, recommendations), not source code.
+#
+# Separate from axiom_patterns.txt (which scans source code).
+#
+# Each pattern has:
+#   - id: unique pattern identifier
+#   - axiom_id: which axiom this protects
+#   - implication_id: specific implication enforced
+#   - tier: enforcement tier (T0=block, T1=review, T2=warn)
+#   - regex: Python regex pattern (case-insensitive)
+#   - description: what this pattern catches
+#   - false_positive_notes: guidance for reviewers
+
+patterns:
+  # ── management_governance: mg-boundary-001 (T0 block) ──────────────
+  - id: out-mg-feedback-001
+    axiom_id: management_governance
+    implication_id: mg-boundary-001
+    tier: T0
+    regex: '\b(?:feedback\s+for|give\s+feedback\s+to|provide\s+feedback\s+to)\s+[A-Z][a-z]+'
+    description: Feedback directed at a named individual
+    false_positive_notes: >
+      May match "feedback for the system" — check if target is a person name.
+
+  - id: out-mg-feedback-002
+    axiom_id: management_governance
+    implication_id: mg-boundary-001
+    tier: T0
+    regex: '\b(?:performance\s+(?:evaluation|review|assessment|rating))\b'
+    description: Performance evaluation language
+    false_positive_notes: May match system performance reviews.
+
+  - id: out-mg-coaching-001
+    axiom_id: management_governance
+    implication_id: mg-boundary-001
+    tier: T0
+    regex: '\b(?:coaching\s+recommend|suggest(?:ed|ing)?\s+(?:you\s+)?(?:tell|say|ask|mention|discuss\s+with|bring\s+up\s+with))\b'
+    description: Coaching recommendations or suggested dialogue
+    false_positive_notes: >
+      "suggest you run this command" is fine — only matches people-directed suggestions.
+
+  # ── management_governance: mg-boundary-002 (T0 block) ──────────────
+  - id: out-mg-draft-001
+    axiom_id: management_governance
+    implication_id: mg-boundary-002
+    tier: T0
+    regex: '\b(?:you\s+(?:could|should|might)\s+say|try\s+saying|consider\s+(?:saying|telling|asking))\b'
+    description: Drafted language for people conversations
+    false_positive_notes: >
+      Legitimate in CLI help context ("you could say --verbose").
+
+  - id: out-mg-draft-002
+    axiom_id: management_governance
+    implication_id: mg-boundary-002
+    tier: T0
+    regex: "\\b(?:here(?:'s| is)\\s+(?:a\\s+)?(?:way|how)\\s+to\\s+(?:say|phrase|frame|deliver|communicate))\\b"
+    description: Scripted delivery guidance
+    false_positive_notes: None expected in system briefings.
+
+  # ── single_user: su-auth (T0 block) ────────────────────────────────
+  - id: out-su-auth-001
+    axiom_id: single_user
+    implication_id: su-auth-001
+    tier: T0
+    regex: '\b(?:add\s+user\s+auth|implement\s+(?:user\s+)?authentication|add\s+role[- ]based\s+access|(?:add|implement|enable|support)\s+multi[- ]?(?:user|tenant))\b'
+    description: Multi-user authentication suggestions
+    false_positive_notes: >
+      Previous pattern matched "multi-user" in axiom descriptions. Now
+      requires an action verb prefix (add/implement/enable/support).
+
+  # ── executive_function: prose quality (T1 review) ──────────────────
+  - id: out-ex-prose-001
+    axiom_id: executive_function
+    implication_id: ex-cognitive-009
+    tier: T1
+    regex: '\b(?:(?:I|we)\s+(?:recommend|suggest|advise)\s+(?:that\s+)?(?:you|the operator))\b'
+    description: >
+      System speaking as advisor rather than instrument panel.
+      Briefings should present data, not give advice.
+    false_positive_notes: >
+      May be appropriate in action items. Review context.

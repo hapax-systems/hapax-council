@@ -1,0 +1,61 @@
+# Enforcement Exceptions Registry
+#
+# Components with documented axiom exceptions. Each entry specifies which
+# axiom/implication is excepted, why, what compensating controls exist,
+# and when the exception should be reviewed.
+#
+# Read by axiom_enforcer.py to skip enforcement for approved paths.
+# Each exception should have a corresponding operator precedent in
+# axioms/precedents/seed/.
+
+exceptions:
+  - id: exception-gemini-live
+    component: agents/hapax_voice/gemini_live.py
+    axiom_id: corporate_boundary
+    implication_id: cb-llm-001
+    reason: >
+      Gemini Live provides speech-to-speech capability via WebSocket that
+      cannot be routed through LiteLLM proxy. Direct Google API access is
+      required for the real-time audio streaming protocol.
+    compensating_controls:
+      - API key stored in pass (not env file)
+      - Usage traced in Langfuse via manual spans
+      - Fallback to local Pipecat pipeline when API unavailable
+    approved_by: operator
+    approved_at: "2026-03-13"
+    review_interval: quarterly
+    next_review: "2026-06-13"
+
+  - id: exception-ntfy-direct
+    component: shared/notify.py
+    axiom_id: corporate_boundary
+    implication_id: cb-network-001
+    reason: >
+      ntfy notification service runs on localhost:8090 but may be configured
+      to use ntfy.sh cloud relay for mobile push. Direct HTTP POST required
+      for notification delivery.
+    compensating_controls:
+      - Default to localhost (no cloud dependency)
+      - Graceful degradation if ntfy unreachable
+      - No sensitive data in notification payloads
+    approved_by: operator
+    approved_at: "2026-03-13"
+    review_interval: quarterly
+    next_review: "2026-06-13"
+
+  - id: exception-tavily-scout
+    component: agents/scout.py
+    axiom_id: corporate_boundary
+    implication_id: cb-network-001
+    reason: >
+      Scout agent uses Tavily API for web search to scan technology
+      landscape. This is an intentional external API dependency for
+      horizon scanning capability.
+    compensating_controls:
+      - API key in environment variable (not committed)
+      - Scout runs on-demand only (not scheduled)
+      - Results cached locally, no PII sent
+    approved_by: operator
+    approved_at: "2026-03-13"
+    review_interval: quarterly
+    next_review: "2026-06-13"

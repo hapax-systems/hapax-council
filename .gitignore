@@ -24,6 +24,8 @@ profiles/*.yaml
 !profiles/workflow-registry.yaml
 profiles/*.bak
 profiles/*.db
+profiles/.quarantine/*
+!profiles/.quarantine/.gitkeep
 
 # SQLite WAL/SHM files
 *.db-wal
@@ -31,6 +33,7 @@ profiles/*.db
 
 # Playwright MCP cache
 .playwright-mcp/
+.claude/settings.local.json
 
 # Demo outputs (generated)
 output/demos/
