@@ -1,0 +1,94 @@
+axiom_id: interpersonal_transparency
+derived_at: '2026-03-13'
+model: balanced
+derivation_version: 1
+implications:
+- id: it-consent-001
+  tier: T0
+  text: The system must not store, persist, or accumulate state about a specific
+    non-operator person (location, presence patterns, biometrics, habits, schedule)
+    without an active consent contract for that person on file.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: system
+
+- id: it-consent-002
+  tier: T0
+  text: A consent contract must record explicit opt-in by the subject. Implied
+    consent, assumed consent, or operator-only consent is insufficient.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: system
+
+- id: it-inspect-001
+  tier: T1
+  text: Each consent contract must specify a visibility mechanism through which the
+    subject can inspect all data the system holds about them. The mechanism must
+    be accessible without requiring the operator's presence or assistance.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+
+- id: it-revoke-001
+  tier: T0
+  text: Either party (operator or subject) may revoke a consent contract at any
+    time. Upon revocation, the system must purge all persistent state specific
+    to that subject. Purge must be confirmed and auditable.
+  enforcement: block
+  canon: textualist
+  mode: compatibility
+  level: system
+
+- id: it-scope-001
+  tier: T1
+  text: Each consent contract must enumerate the specific data categories permitted
+    (e.g., coarse_location, presence, biometrics). Data collection outside the
+    contracted scope is a T0 violation equivalent to having no contract.
+  enforcement: review
+  canon: textualist
+  mode: compatibility
+  level: subsystem
+
+- id: it-environmental-001
+  tier: T2
+  text: Transient environmental perception (e.g., VAD detecting a voice, a figure
+    appearing on a camera feed) does not require a consent contract provided no
+    persistent state about a specific identified person is derived or stored.
+  enforcement: warn
+  canon: purposivist
+  mode: compatibility
+  level: component
+
+- id: it-inference-001
+  tier: T1
+  text: Inferred or derived state about a non-operator person (e.g., predicted
+    arrival time, habitual patterns) counts as persistent state and requires a
+    consent contract with scope covering the derived data category.
+  enforcement: review
+  canon: purposivist
+  mode: compatibility
+  level: component
+
+- id: it-audit-001
+  tier: T2
+  text: All consent contracts must be stored with creation timestamp, parties,
+    scope, and revocation status. Contract history must be retained for audit
+    even after revocation (the contract record persists; the subject data does not).
+  enforcement: warn
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+
+- id: it-backend-001
+  tier: T1
+  text: Any PerceptionBackend or data ingestion pathway that receives data about
+    non-operator persons must verify an active consent contract before updating
+    Behaviors or persisting state. Verification must occur at the ingestion
+    boundary, not downstream.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: component
