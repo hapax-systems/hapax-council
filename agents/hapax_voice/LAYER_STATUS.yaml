@@ -147,18 +147,16 @@ layers:
   L9:
     name: "VoiceDaemon lifecycle"
     modules: [__main__.VoiceDaemon]
-    state: partial
+    state: matrix-complete
     tests:
       files:
-        - tests/test_hapax_voice_daemon_pipeline.py  # 11 tests
+        - tests/hapax_voice/test_daemon_lifecycle_matrix.py  # 32 tests (B, D, E, G)
+        - tests/test_hapax_voice_daemon_pipeline.py  # 11 tests (A, C)
         - tests/hapax_voice/test_e2e_use_case_matrix.py
-      count: 23
-      dimensions: [A, C, G]
+      count: 55
+      dimensions: [A, B, C, D, E, G]
     gaps:
-      - "B: No lifecycle invariant tests (start→stop idempotency, state machine)."
-      - "D: No boundary tests (no executors registered, no backends available)."
-      - "E: 2 pre-existing failures in TestHotkeyIntegration (axiom compliance + MagicMock comparison)."
-      - "F: No Dog Star proofs at daemon level."
+      - "F: No Dog Star proofs at daemon level (depends on feat/dog-star-enforcement merge)."
 
 # Matrix test files (192 tests across 6 themes + 6 trinary combos):
 #
