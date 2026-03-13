@@ -162,10 +162,11 @@ class TestSendDesktop:
 # ── send_notification (unified) tests ────────────────────────────────────────
 
 
+@patch("shared.notify._is_duplicate", return_value=False)
 class TestSendNotification:
     @patch("shared.notify._send_desktop", return_value=True)
     @patch("shared.notify._send_ntfy", return_value=True)
-    def test_both_succeed(self, mock_ntfy, mock_desktop):
+    def test_both_succeed(self, mock_ntfy, mock_desktop, _mock_dedup):
         result = send_notification("Title", "Message")
         assert result is True
         mock_ntfy.assert_called_once()
@@ -173,25 +174,25 @@ class TestSendNotification:
 
     @patch("shared.notify._send_desktop", return_value=True)
     @patch("shared.notify._send_ntfy", return_value=False)
-    def test_ntfy_fails_desktop_succeeds(self, mock_ntfy, mock_desktop):
+    def test_ntfy_fails_desktop_succeeds(self, mock_ntfy, mock_desktop, _mock_dedup):
         result = send_notification("Title", "Message")
         assert result is True
 
     @patch("shared.notify._send_desktop", return_value=False)
     @patch("shared.notify._send_ntfy", return_value=True)
-    def test_ntfy_succeeds_desktop_fails(self, mock_ntfy, mock_desktop):
+    def test_ntfy_succeeds_desktop_fails(self, mock_ntfy, mock_desktop, _mock_dedup):
         result = send_notification("Title", "Message")
         assert result is True
 
     @patch("shared.notify._send_desktop", return_value=False)
     @patch("shared.notify._send_ntfy", side_effect=Exception("boom"))
-    def test_both_fail(self, mock_ntfy, mock_desktop):
+    def test_both_fail(self, mock_ntfy, mock_desktop, _mock_dedup):
         result = send_notification("Title", "Message")
         assert result is False
 
     @patch("shared.notify._send_desktop", return_value=True)
     @patch("shared.notify._send_ntfy", return_value=True)
-    def test_passes_priority(self, mock_ntfy, mock_desktop):
+    def test_passes_priority(self, mock_ntfy, mock_desktop, _mock_dedup):
         send_notification("T", "M", priority="urgent", tags=["skull"])
         mock_ntfy.assert_called_once_with(
             "T",
@@ -205,7 +206,7 @@ class TestSendNotification:
 
     @patch("shared.notify._send_desktop", return_value=True)
     @patch("shared.notify._send_ntfy", return_value=True)
-    def test_passes_topic_override(self, mock_ntfy, mock_desktop):
+    def test_passes_topic_override(self, mock_ntfy, mock_desktop, _mock_dedup):
         send_notification("T", "M", topic="alerts")
         assert mock_ntfy.call_args[1]["topic"] == "alerts"
 
