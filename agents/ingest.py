@@ -36,8 +36,9 @@ configure_logging(agent="ingest")
 log = logging.getLogger("rag-ingest")
 
 try:
-    from shared import langfuse_config  # noqa: F401
     from opentelemetry import trace
+
+    from shared import langfuse_config  # noqa: F401
 
     _tracer = trace.get_tracer(__name__)
 except ImportError:
