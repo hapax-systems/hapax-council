@@ -20,6 +20,14 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 log = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -900,16 +908,31 @@ def main() -> None:
 
     configure_logging(agent="gdrive-sync", level="DEBUG" if args.verbose else None)
 
-    if args.auth:
-        run_auth()
-    elif args.full_scan:
-        run_full_scan()
-    elif args.auto:
-        run_auto()
-    elif args.fetch:
-        run_fetch(args.fetch)
-    elif args.stats:
-        run_stats()
+    action = (
+        "auth"
+        if args.auth
+        else "full_scan"
+        if args.full_scan
+        else "auto"
+        if args.auto
+        else "fetch"
+        if args.fetch
+        else "stats"
+    )
+    with _tracer.start_as_current_span(
+        f"gdrive_sync.{action}",
+        attributes={"agent.name": "gdrive_sync", "agent.repo": "hapax-council"},
+    ):
+        if args.auth:
+            run_auth()
+        elif args.full_scan:
+            run_full_scan()
+        elif args.auto:
+            run_auto()
+        elif args.fetch:
+            run_fetch(args.fetch)
+        elif args.stats:
+            run_stats()
 
 
 if __name__ == "__main__":

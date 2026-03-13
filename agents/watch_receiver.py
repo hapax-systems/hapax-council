@@ -25,6 +25,14 @@ from pydantic import BaseModel
 
 from shared.config import HAPAX_HOME
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 WATCH_STATE_DIR: Path = HAPAX_HOME / "hapax-state" / "watch"
 ALLOWED_DEVICE_IDS: set[str] = {"pw4", "pixel10"}
 DEVICE_NAMES: dict[str, str] = {"pw4": "pixel_watch_4", "pixel10": "pixel_10"}
@@ -250,6 +258,13 @@ def _update_connection(payload: SensorPayload) -> None:
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     _app = FastAPI(title="Hapax Watch Receiver", version="0.1.0")
+
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(_app)
+    except Exception:
+        pass
 
     @_app.post("/watch/sensors")
     async def ingest_sensors(payload: SensorPayload) -> dict[str, str]:

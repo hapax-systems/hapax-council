@@ -29,6 +29,14 @@ try:
 except ImportError:
     torchaudio = None  # type: ignore
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 log = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -931,29 +939,34 @@ def main() -> None:
 
     configure_logging(agent="audio-processor", level="DEBUG" if args.verbose else None)
 
-    if args.process:
-        state = _load_state()
-        summary = _process_new_files(state)
-        log.info("Processing complete: %s", summary)
-    elif args.reprocess:
-        state = _load_state()
-        path = Path(args.reprocess)
-        if not path.exists():
-            path = RAW_DIR / args.reprocess
-        if not path.exists():
-            print(f"File not found: {args.reprocess}")
-            return
-        info = _process_file(path, state)
-        if info:
-            state.processed_files[path.name] = info
-            _save_state(state)
-            _write_profile_facts(state)
-    elif args.stats:
-        state = _load_state()
-        if not state.processed_files:
-            print("No processing state found. Run --process first.")
-            return
-        _print_stats(state)
+    action = "process" if args.process else "reprocess" if args.reprocess else "stats"
+    with _tracer.start_as_current_span(
+        f"audio_processor.{action}",
+        attributes={"agent.name": "audio_processor", "agent.repo": "hapax-council"},
+    ):
+        if args.process:
+            state = _load_state()
+            summary = _process_new_files(state)
+            log.info("Processing complete: %s", summary)
+        elif args.reprocess:
+            state = _load_state()
+            path = Path(args.reprocess)
+            if not path.exists():
+                path = RAW_DIR / args.reprocess
+            if not path.exists():
+                print(f"File not found: {args.reprocess}")
+                return
+            info = _process_file(path, state)
+            if info:
+                state.processed_files[path.name] = info
+                _save_state(state)
+                _write_profile_facts(state)
+        elif args.stats:
+            state = _load_state()
+            if not state.processed_files:
+                print("No processing state found. Run --process first.")
+                return
+            _print_stats(state)
 
 
 if __name__ == "__main__":

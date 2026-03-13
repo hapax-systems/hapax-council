@@ -21,6 +21,14 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 log = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -626,14 +634,21 @@ def main() -> None:
 
     configure_logging(agent="gmail-sync", level="DEBUG" if args.verbose else None)
 
-    if args.auth:
-        run_auth()
-    elif args.full_sync:
-        run_full_sync()
-    elif args.auto:
-        run_auto()
-    elif args.stats:
-        run_stats()
+    action = (
+        "auth" if args.auth else "full_sync" if args.full_sync else "auto" if args.auto else "stats"
+    )
+    with _tracer.start_as_current_span(
+        f"gmail_sync.{action}",
+        attributes={"agent.name": "gmail_sync", "agent.repo": "hapax-council"},
+    ):
+        if args.auth:
+            run_auth()
+        elif args.full_sync:
+            run_full_sync()
+        elif args.auto:
+            run_auto()
+        elif args.stats:
+            run_stats()
 
 
 if __name__ == "__main__":

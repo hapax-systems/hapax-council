@@ -365,113 +365,125 @@ async def extract_from_chunks(
         concurrency: Max parallel LLM calls.
         existing_fact_keys: Known (dimension, key) pairs for early-stop detection.
     """
-    all_facts: list[ProfileFact] = []
-    total = len(chunks)
-    completed = 0
-    lock = asyncio.Lock()
-    sem = asyncio.Semaphore(concurrency)
+    with _tracer.start_as_current_span("profiler.extract", attributes={"chunk_count": len(chunks)}):
+        all_facts: list[ProfileFact] = []
+        total = len(chunks)
+        completed = 0
+        lock = asyncio.Lock()
+        sem = asyncio.Semaphore(concurrency)
 
-    # Early-stop tracking: per source_type
-    seen_keys: set[tuple[str, str]] = set(existing_fact_keys or ())
-    # Per source_type: list of bools — did chunk N produce new keys?
-    source_type_new_counts: dict[str, list[int]] = {}
-    stopped_types: set[str] = set()
+        # Early-stop tracking: per source_type
+        seen_keys: set[tuple[str, str]] = set(existing_fact_keys or ())
+        # Per source_type: list of bools — did chunk N produce new keys?
+        source_type_new_counts: dict[str, list[int]] = {}
+        stopped_types: set[str] = set()
 
-    async def _extract_one(chunk: SourceChunk) -> list[ProfileFact]:
-        nonlocal completed
+        async def _extract_one(chunk: SourceChunk) -> list[ProfileFact]:
+            nonlocal completed
 
-        # Check early-stop before acquiring semaphore
-        if chunk.source_type in stopped_types:
-            return []
-
-        async with sem:
-            # Re-check after acquiring (may have been stopped while waiting)
+            # Check early-stop before acquiring semaphore
             if chunk.source_type in stopped_types:
                 return []
 
-            prompt = (
-                f"Source: {chunk.source_id} (type: {chunk.source_type})\n\n"
-                f"--- TEXT ---\n{chunk.text}\n--- END ---"
-            )
-            try:
-                result = await extraction_agent.run(prompt)
-                facts = result.output.facts or []
-                for fact in facts:
-                    fact.source = chunk.source_id
-            except Exception as e:
-                print(f"    → ERROR [{chunk.source_id}]: {e}", file=sys.stderr, flush=True)
-                facts = []
+            async with sem:
+                # Re-check after acquiring (may have been stopped while waiting)
+                if chunk.source_type in stopped_types:
+                    return []
 
-            # Update progress and early-stop tracking
-            async with lock:
-                completed += 1
-                new_key_count = 0
-                for fact in facts:
-                    fkey = (fact.dimension, fact.key)
-                    if fkey not in seen_keys:
-                        seen_keys.add(fkey)
-                        new_key_count += 1
+                prompt = (
+                    f"Source: {chunk.source_id} (type: {chunk.source_type})\n\n"
+                    f"--- TEXT ---\n{chunk.text}\n--- END ---"
+                )
+                try:
+                    result = await extraction_agent.run(prompt)
+                    facts = result.output.facts or []
+                    for fact in facts:
+                        fact.source = chunk.source_id
+                except Exception as e:
+                    print(
+                        f"    → ERROR [{chunk.source_id}]: {e}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    facts = []
 
-                st = chunk.source_type
-                source_type_new_counts.setdefault(st, []).append(new_key_count)
+                # Update progress and early-stop tracking
+                async with lock:
+                    completed += 1
+                    new_key_count = 0
+                    for fact in facts:
+                        fkey = (fact.dimension, fact.key)
+                        if fkey not in seen_keys:
+                            seen_keys.add(fkey)
+                            new_key_count += 1
 
-                # Check early-stop condition
-                window = source_type_new_counts[st]
-                if len(window) >= EARLY_STOP_WINDOW:
-                    recent = window[-EARLY_STOP_WINDOW:]
-                    if sum(recent) < EARLY_STOP_THRESHOLD:
-                        stopped_types.add(st)
+                    st = chunk.source_type
+                    source_type_new_counts.setdefault(st, []).append(new_key_count)
+
+                    # Check early-stop condition
+                    window = source_type_new_counts[st]
+                    if len(window) >= EARLY_STOP_WINDOW:
+                        recent = window[-EARLY_STOP_WINDOW:]
+                        if sum(recent) < EARLY_STOP_THRESHOLD:
+                            stopped_types.add(st)
+                            print(
+                                f"  Early-stop: {st} — last {EARLY_STOP_WINDOW} "
+                                f"chunks produced {sum(recent)} new keys",
+                                flush=True,
+                            )
+
+                    if facts:
                         print(
-                            f"  Early-stop: {st} — last {EARLY_STOP_WINDOW} "
-                            f"chunks produced {sum(recent)} new keys",
+                            f"  [{completed}/{total}] {chunk.source_id} → "
+                            f"{len(facts)} facts ({new_key_count} new keys)",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"  [{completed}/{total}] {chunk.source_id} → no facts",
                             flush=True,
                         )
 
-                if facts:
-                    print(
-                        f"  [{completed}/{total}] {chunk.source_id} → "
-                        f"{len(facts)} facts ({new_key_count} new keys)",
-                        flush=True,
-                    )
-                else:
-                    print(f"  [{completed}/{total}] {chunk.source_id} → no facts", flush=True)
+                return facts
 
-            return facts
+        # Launch all tasks with bounded concurrency
+        tasks = [asyncio.create_task(_extract_one(chunk)) for chunk in chunks]
+        results = await asyncio.gather(*tasks)
 
-    # Launch all tasks with bounded concurrency
-    tasks = [asyncio.create_task(_extract_one(chunk)) for chunk in chunks]
-    results = await asyncio.gather(*tasks)
+        for facts in results:
+            all_facts.extend(facts)
 
-    for facts in results:
-        all_facts.extend(facts)
+        if stopped_types:
+            print(
+                f"  Early-stopped source types: {', '.join(sorted(stopped_types))}",
+                flush=True,
+            )
 
-    if stopped_types:
-        print(f"  Early-stopped source types: {', '.join(sorted(stopped_types))}", flush=True)
-
-    return all_facts
+        return all_facts
 
 
 async def synthesize_profile(facts: list[ProfileFact]) -> SynthesisOutput:
     """Run the synthesis agent on all collected facts."""
-    grouped = group_facts_by_dimension(facts)
+    with _tracer.start_as_current_span(
+        "profiler.synthesize", attributes={"fact_count": len(facts)}
+    ):
+        grouped = group_facts_by_dimension(facts)
 
-    # Build a text representation of all facts for the synthesis agent
-    parts: list[str] = []
-    for dim, dim_facts in sorted(grouped.items()):
-        parts.append(f"## {dim}")
-        for f in dim_facts:
-            parts.append(
-                f"- **{f.key}**: {f.value} (confidence: {f.confidence}, source: {f.source})"
-            )
-        parts.append("")
+        # Build a text representation of all facts for the synthesis agent
+        parts: list[str] = []
+        for dim, dim_facts in sorted(grouped.items()):
+            parts.append(f"## {dim}")
+            for f in dim_facts:
+                parts.append(
+                    f"- **{f.key}**: {f.value} (confidence: {f.confidence}, source: {f.source})"
+                )
+            parts.append("")
 
-    facts_text = "\n".join(parts)
-    prompt = (
-        f"Synthesize the following extracted facts into a coherent user profile:\n\n{facts_text}"
-    )
+        facts_text = "\n".join(parts)
+        prompt = f"Synthesize the following extracted facts into a coherent user profile:\n\n{facts_text}"
 
-    result = await synthesis_agent.run(prompt)
-    return result.output
+        result = await synthesis_agent.run(prompt)
+        return result.output
 
 
 def build_profile(
@@ -1081,124 +1093,126 @@ async def regenerate_operator(profile: UserProfile) -> None:
     Preserves hand-curated structural sections (constraints, agent_context_map,
     use_cases). Updates goal progress, patterns, and summary via LLM.
     """
-    operator_path = PROFILES_DIR / "operator.json"
-    if not operator_path.exists():
-        log.info("No operator.json found — skipping regeneration")
-        return
-
-    try:
-        operator_data = json.loads(operator_path.read_text())
-    except json.JSONDecodeError as e:
-        # F-1.3: Recover from corrupt operator.json
-        backup_path = operator_path.with_suffix(".json.bak")
-        if backup_path.exists():
-            log.warning("operator.json is corrupt (%s), recovering from backup", e)
-            try:
-                operator_data = json.loads(backup_path.read_text())
-            except json.JSONDecodeError:
-                log.error("Both operator.json and backup are corrupt — skipping regeneration")
-                return
-        else:
-            log.error("operator.json is corrupt and no backup exists — skipping regeneration")
+    with _tracer.start_as_current_span("profiler.regenerate_operator"):
+        operator_path = PROFILES_DIR / "operator.json"
+        if not operator_path.exists():
+            log.info("No operator.json found — skipping regeneration")
             return
 
-    # Build a compact fact summary for the LLM
-    grouped = group_facts_by_dimension([f for dim in profile.dimensions for f in dim.facts])
-    recent_facts: list[str] = []
-    for dim_name, facts in sorted(grouped.items()):
-        for f in sorted(facts, key=lambda x: -x.confidence)[:10]:
-            recent_facts.append(f"[{dim_name}] {f.key}: {f.value}")
-
-    current_goals = json.dumps(operator_data.get("goals", {}), indent=2)
-    current_patterns = json.dumps(operator_data.get("patterns", {}), indent=2)
-    current_neurocognitive = json.dumps(operator_data.get("neurocognitive", {}), indent=2)
-
-    prompt = (
-        f"Current operator manifest goals:\n{current_goals}\n\n"
-        f"Current operator manifest patterns:\n{current_patterns}\n\n"
-        f"Current neurocognitive profile:\n{current_neurocognitive}\n\n"
-        f"Profile facts (top per dimension, {len(recent_facts)} total):\n" + "\n".join(recent_facts)
-    )
-
-    try:
-        result = await operator_agent.run(prompt)
-        update = result.output
-    except Exception as e:
-        log.error(f"Operator update failed: {e}")
-        return
-
-    changed = False
-
-    # Apply goal progress updates
-    if update.goal_updates:
-        now_iso = datetime.now(UTC).isoformat()[:19] + "Z"
-        for goal_list_key in ("primary", "secondary"):
-            goals = operator_data.get("goals", {}).get(goal_list_key, [])
-            for goal in goals:
-                if goal["id"] in update.goal_updates:
-                    goal["progress"] = update.goal_updates[goal["id"]]
-                    goal["last_activity_at"] = now_iso
-                    changed = True
-
-    # Append new patterns
-    if update.new_patterns:
-        for pattern in update.new_patterns:
-            # Add to workflow patterns by default
-            operator_data.setdefault("patterns", {}).setdefault("workflow", [])
-            if pattern not in operator_data["patterns"]["workflow"]:
-                operator_data["patterns"]["workflow"].append(pattern)
-                changed = True
-
-    # Apply neurocognitive updates
-    if update.neurocognitive_updates:
-        existing_neuro = operator_data.setdefault("neurocognitive", {})
-        for category, findings in update.neurocognitive_updates.items():
-            existing_list = existing_neuro.setdefault(category, [])
-            for finding in findings:
-                if finding not in existing_list:
-                    existing_list.append(finding)
-                    changed = True
-
-    # Update summary if provided
-    if update.summary:
-        operator_data["operator"]["context"] = update.summary
-        changed = True
-
-    if changed:
-        # F-1.1: Validate, backup, and atomic write
-        new_content = json.dumps(operator_data, indent=2)
-        if len(new_content) < 100:
-            log.error(
-                "Operator update produced suspiciously small output (%d bytes) — aborting write",
-                len(new_content),
-            )
-            return
-
-        # Backup existing before overwrite
-        if operator_path.exists():
-            backup_path = operator_path.with_suffix(".json.bak")
-            import shutil
-
-            shutil.copy2(operator_path, backup_path)
-
-        # Atomic write via temp file
-        import tempfile
-
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=operator_path.parent, suffix=".json")
         try:
-            with open(tmp_fd, "w", encoding="utf-8") as f:
-                f.write(new_content)
-            Path(tmp_path).replace(operator_path)
-        except Exception:
-            Path(tmp_path).unlink(missing_ok=True)
-            raise
+            operator_data = json.loads(operator_path.read_text())
+        except json.JSONDecodeError as e:
+            # F-1.3: Recover from corrupt operator.json
+            backup_path = operator_path.with_suffix(".json.bak")
+            if backup_path.exists():
+                log.warning("operator.json is corrupt (%s), recovering from backup", e)
+                try:
+                    operator_data = json.loads(backup_path.read_text())
+                except json.JSONDecodeError:
+                    log.error("Both operator.json and backup are corrupt — skipping regeneration")
+                    return
+            else:
+                log.error("operator.json is corrupt and no backup exists — skipping regeneration")
+                return
 
-        log.info("Updated operator.json dynamic sections")
+        # Build a compact fact summary for the LLM
+        grouped = group_facts_by_dimension([f for dim in profile.dimensions for f in dim.facts])
+        recent_facts: list[str] = []
+        for dim_name, facts in sorted(grouped.items()):
+            for f in sorted(facts, key=lambda x: -x.confidence)[:10]:
+                recent_facts.append(f"[{dim_name}] {f.key}: {f.value}")
 
-        # Regenerate operator.md from the updated JSON
-        _regenerate_operator_md(operator_data)
-    else:
-        log.info("No operator manifest changes needed")
+        current_goals = json.dumps(operator_data.get("goals", {}), indent=2)
+        current_patterns = json.dumps(operator_data.get("patterns", {}), indent=2)
+        current_neurocognitive = json.dumps(operator_data.get("neurocognitive", {}), indent=2)
+
+        prompt = (
+            f"Current operator manifest goals:\n{current_goals}\n\n"
+            f"Current operator manifest patterns:\n{current_patterns}\n\n"
+            f"Current neurocognitive profile:\n{current_neurocognitive}\n\n"
+            f"Profile facts (top per dimension, {len(recent_facts)} total):\n"
+            + "\n".join(recent_facts)
+        )
+
+        try:
+            result = await operator_agent.run(prompt)
+            update = result.output
+        except Exception as e:
+            log.error(f"Operator update failed: {e}")
+            return
+
+        changed = False
+
+        # Apply goal progress updates
+        if update.goal_updates:
+            now_iso = datetime.now(UTC).isoformat()[:19] + "Z"
+            for goal_list_key in ("primary", "secondary"):
+                goals = operator_data.get("goals", {}).get(goal_list_key, [])
+                for goal in goals:
+                    if goal["id"] in update.goal_updates:
+                        goal["progress"] = update.goal_updates[goal["id"]]
+                        goal["last_activity_at"] = now_iso
+                        changed = True
+
+        # Append new patterns
+        if update.new_patterns:
+            for pattern in update.new_patterns:
+                # Add to workflow patterns by default
+                operator_data.setdefault("patterns", {}).setdefault("workflow", [])
+                if pattern not in operator_data["patterns"]["workflow"]:
+                    operator_data["patterns"]["workflow"].append(pattern)
+                    changed = True
+
+        # Apply neurocognitive updates
+        if update.neurocognitive_updates:
+            existing_neuro = operator_data.setdefault("neurocognitive", {})
+            for category, findings in update.neurocognitive_updates.items():
+                existing_list = existing_neuro.setdefault(category, [])
+                for finding in findings:
+                    if finding not in existing_list:
+                        existing_list.append(finding)
+                        changed = True
+
+        # Update summary if provided
+        if update.summary:
+            operator_data["operator"]["context"] = update.summary
+            changed = True
+
+        if changed:
+            # F-1.1: Validate, backup, and atomic write
+            new_content = json.dumps(operator_data, indent=2)
+            if len(new_content) < 100:
+                log.error(
+                    "Operator update produced suspiciously small output (%d bytes) — aborting write",
+                    len(new_content),
+                )
+                return
+
+            # Backup existing before overwrite
+            if operator_path.exists():
+                backup_path = operator_path.with_suffix(".json.bak")
+                import shutil
+
+                shutil.copy2(operator_path, backup_path)
+
+            # Atomic write via temp file
+            import tempfile
+
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=operator_path.parent, suffix=".json")
+            try:
+                with open(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                Path(tmp_path).replace(operator_path)
+            except Exception:
+                Path(tmp_path).unlink(missing_ok=True)
+                raise
+
+            log.info("Updated operator.json dynamic sections")
+
+            # Regenerate operator.md from the updated JSON
+            _regenerate_operator_md(operator_data)
+        else:
+            log.info("No operator manifest changes needed")
 
 
 def _regenerate_operator_md(operator_data: dict) -> None:
@@ -1340,92 +1354,95 @@ async def curate_profile(profile: UserProfile) -> tuple[UserProfile, list[Curati
 
     Returns (curated_profile, all_flagged_ops).
     """
-    # Load operator manifest for fitness context
-    operator_path = PROFILES_DIR / "operator.json"
-    fitness_context = ""
-    if operator_path.exists():
-        op_data = json.loads(operator_path.read_text())
-        agent_names = list(op_data.get("agent_context_map", {}).keys())
-        constraint_cats = list(op_data.get("constraints", {}).keys())
-        fitness_context = (
-            f"\n\nFitness context — facts should serve these agents: {', '.join(agent_names)}. "
-            f"Constraint categories: {', '.join(constraint_cats)}. "
-            "Facts that don't inform any agent's behavior or any constraint are candidates for deletion."
-        )
-
-    all_flagged: list[CurationOp] = []
-    curated_dimensions: list[ProfileDimension] = []
-    total_ops = 0
-
-    for dim in profile.dimensions:
-        if not dim.facts:
-            curated_dimensions.append(dim)
-            continue
-
-        # Build fact listing for the curator
-        fact_lines = []
-        for f in dim.facts:
-            fact_lines.append(
-                f"- **{f.key}**: {f.value} (confidence={f.confidence:.2f}, source={f.source})"
+    with _tracer.start_as_current_span("profiler.curate"):
+        # Load operator manifest for fitness context
+        operator_path = PROFILES_DIR / "operator.json"
+        fitness_context = ""
+        if operator_path.exists():
+            op_data = json.loads(operator_path.read_text())
+            agent_names = list(op_data.get("agent_context_map", {}).keys())
+            constraint_cats = list(op_data.get("constraints", {}).keys())
+            fitness_context = (
+                f"\n\nFitness context — facts should serve these agents: {', '.join(agent_names)}. "
+                f"Constraint categories: {', '.join(constraint_cats)}. "
+                "Facts that don't inform any agent's behavior or any constraint are candidates for deletion."
             )
 
-        prompt = (
-            f"Dimension: {dim.name}\n"
-            f"Fact count: {len(dim.facts)}\n\n" + "\n".join(fact_lines) + fitness_context
-        )
+        all_flagged: list[CurationOp] = []
+        curated_dimensions: list[ProfileDimension] = []
+        total_ops = 0
 
-        print(f"  Curating {dim.name} ({len(dim.facts)} facts)...", flush=True)
-        try:
-            result = await curator_agent.run(prompt)
-            curation = result.output
+        for dim in profile.dimensions:
+            if not dim.facts:
+                curated_dimensions.append(dim)
+                continue
 
-            curated_facts, flagged = apply_curation(dim.facts, curation)
-            all_flagged.extend(flagged)
-            total_ops += len(curation.operations)
-
-            op_summary = []
-            for action in ("merge", "delete", "update", "flag"):
-                count = sum(1 for o in curation.operations if o.action == action)
-                if count:
-                    op_summary.append(f"{count} {action}")
-
-            if op_summary:
-                print(
-                    f"    → {', '.join(op_summary)} | health: {curation.health_score:.2f}",
-                    flush=True,
+            # Build fact listing for the curator
+            fact_lines = []
+            for f in dim.facts:
+                fact_lines.append(
+                    f"- **{f.key}**: {f.value} (confidence={f.confidence:.2f}, source={f.source})"
                 )
-            else:
-                print(f"    → clean | health: {curation.health_score:.2f}", flush=True)
 
-            curated_dimensions.append(
-                ProfileDimension(
-                    name=dim.name,
-                    summary=dim.summary,
-                    facts=curated_facts,
-                )
+            prompt = (
+                f"Dimension: {dim.name}\n"
+                f"Fact count: {len(dim.facts)}\n\n" + "\n".join(fact_lines) + fitness_context
             )
 
-        except Exception as e:
-            log.error(f"Curation failed for {dim.name}: {e}")
-            curated_dimensions.append(dim)  # Keep uncurated on failure
+            print(f"  Curating {dim.name} ({len(dim.facts)} facts)...", flush=True)
+            try:
+                result = await curator_agent.run(prompt)
+                curation = result.output
 
-    before_count = sum(len(d.facts) for d in profile.dimensions)
-    after_count = sum(len(d.facts) for d in curated_dimensions)
+                curated_facts, flagged = apply_curation(dim.facts, curation)
+                all_flagged.extend(flagged)
+                total_ops += len(curation.operations)
 
-    curated_profile = profile.model_copy(
-        update={
-            "dimensions": curated_dimensions,
-            "version": profile.version + 1,
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
-    )
+                op_summary = []
+                for action in ("merge", "delete", "update", "flag"):
+                    count = sum(1 for o in curation.operations if o.action == action)
+                    if count:
+                        op_summary.append(f"{count} {action}")
 
-    print(f"\nCuration complete: {total_ops} operations applied")
-    print(f"  Facts: {before_count} → {after_count} ({before_count - after_count} removed/merged)")
-    if all_flagged:
-        print(f"  Flagged for review: {len(all_flagged)}")
+                if op_summary:
+                    print(
+                        f"    → {', '.join(op_summary)} | health: {curation.health_score:.2f}",
+                        flush=True,
+                    )
+                else:
+                    print(f"    → clean | health: {curation.health_score:.2f}", flush=True)
 
-    return curated_profile, all_flagged
+                curated_dimensions.append(
+                    ProfileDimension(
+                        name=dim.name,
+                        summary=dim.summary,
+                        facts=curated_facts,
+                    )
+                )
+
+            except Exception as e:
+                log.error(f"Curation failed for {dim.name}: {e}")
+                curated_dimensions.append(dim)  # Keep uncurated on failure
+
+        before_count = sum(len(d.facts) for d in profile.dimensions)
+        after_count = sum(len(d.facts) for d in curated_dimensions)
+
+        curated_profile = profile.model_copy(
+            update={
+                "dimensions": curated_dimensions,
+                "version": profile.version + 1,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+
+        print(f"\nCuration complete: {total_ops} operations applied")
+        print(
+            f"  Facts: {before_count} → {after_count} ({before_count - after_count} removed/merged)"
+        )
+        if all_flagged:
+            print(f"  Flagged for review: {len(all_flagged)}")
+
+        return curated_profile, all_flagged
 
 
 async def run_curate() -> None:

@@ -35,6 +35,14 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 log = logging.getLogger("agents.health_monitor")
 
 
@@ -3620,35 +3628,39 @@ async def main() -> None:
             print(f"Available: {', '.join(sorted(CHECK_REGISTRY.keys()))}", file=sys.stderr)
             sys.exit(1)
 
-    report = await run_checks(groups)
+    with _tracer.start_as_current_span(
+        "health_monitor.check",
+        attributes={"agent.name": "health_monitor", "agent.repo": "hapax-council"},
+    ):
+        report = await run_checks(groups)
 
-    # Write infra snapshot for cockpit-api container (full runs only)
-    if groups is None:
-        write_infra_snapshot(report)
+        # Write infra snapshot for cockpit-api container (full runs only)
+        if groups is None:
+            write_infra_snapshot(report)
 
-    if args.json:
-        print(report.model_dump_json(indent=2))
-    else:
-        color = sys.stdout.isatty()
-        print(format_human(report, verbose=args.verbose, color=color))
+        if args.json:
+            print(report.model_dump_json(indent=2))
+        else:
+            color = sys.stdout.isatty()
+            print(format_human(report, verbose=args.verbose, color=color))
 
-    if args.apply or args.dry_run:
-        mode = "dry_run" if args.dry_run else "apply"
-        await run_fixes_v2(report, mode=mode)
-    elif args.fix:
-        await run_fixes(report, yes=args.yes)
+        if args.apply or args.dry_run:
+            mode = "dry_run" if args.dry_run else "apply"
+            await run_fixes_v2(report, mode=mode)
+        elif args.fix:
+            await run_fixes(report, yes=args.yes)
 
-    # Rotate history if needed
-    try:
-        rotate_history()
-    except Exception as e:
-        log.warning("History rotation failed: %s", e)
+        # Rotate history if needed
+        try:
+            rotate_history()
+        except Exception as e:
+            log.warning("History rotation failed: %s", e)
 
-    # Exit code reflects overall status
-    if report.overall_status == Status.FAILED:
-        sys.exit(2)
-    elif report.overall_status == Status.DEGRADED:
-        sys.exit(1)
+        # Exit code reflects overall status
+        if report.overall_status == Status.FAILED:
+            sys.exit(2)
+        elif report.overall_status == Status.DEGRADED:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

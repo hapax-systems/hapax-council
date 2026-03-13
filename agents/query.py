@@ -27,6 +27,14 @@ except ImportError:
         return result["embeddings"][0]
 
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 DEFAULT_COLLECTION = "documents"
 
 
@@ -90,34 +98,38 @@ def main():
     print(f"Collection: {args.collection}, Limit: {args.limit}", file=sys.stderr)
     print(file=sys.stderr)
 
-    vec = embed(args.query)
-    results = search(vec, args.collection, args.limit)
+    with _tracer.start_as_current_span(
+        "query.search",
+        attributes={"agent.name": "query", "agent.repo": "hapax-council"},
+    ):
+        vec = embed(args.query)
+        results = search(vec, args.collection, args.limit)
 
-    if args.json:
-        print(json.dumps(results, indent=2))
-        return
+        if args.json:
+            print(json.dumps(results, indent=2))
+            return
 
-    if not results:
-        print("No results found.")
-        return
+        if not results:
+            print("No results found.")
+            return
 
-    for i, r in enumerate(results, 1):
-        score = r.get("score", 0)
-        payload = r.get("payload", {})
-        filename = payload.get("filename", "?")
-        text = payload.get("text", "")
-        chunk_idx = payload.get("chunk_index", "?")
-        chunk_count = payload.get("chunk_count", "?")
+        for i, r in enumerate(results, 1):
+            score = r.get("score", 0)
+            payload = r.get("payload", {})
+            filename = payload.get("filename", "?")
+            text = payload.get("text", "")
+            chunk_idx = payload.get("chunk_index", "?")
+            chunk_count = payload.get("chunk_count", "?")
 
-        print(
-            f"─── Result {i} ─── score={score:.4f} ── {filename} (chunk {chunk_idx}/{chunk_count})"
-        )
-        # Truncate long text for display
-        if len(text) > 500:
-            print(f"{text[:500]}...")
-        else:
-            print(text)
-        print()
+            print(
+                f"─── Result {i} ─── score={score:.4f} ── {filename} (chunk {chunk_idx}/{chunk_count})"
+            )
+            # Truncate long text for display
+            if len(text) > 500:
+                print(f"{text[:500]}...")
+            else:
+                print(text)
+            print()
 
 
 if __name__ == "__main__":

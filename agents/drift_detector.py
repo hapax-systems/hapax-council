@@ -116,17 +116,18 @@ for p in HAPAX_REPO_DIRS:
 
 def load_docs() -> dict[str, str]:
     """Load all documentation files as {short_path: content}."""
-    docs = {}
-    home = str(HAPAX_HOME)
-    for path in DOC_FILES:
-        if path.is_file():
-            try:
-                text = path.read_text(errors="replace")
-                short = str(path).replace(home, "~")
-                docs[short] = text
-            except OSError:
-                continue
-    return docs
+    with _tracer.start_as_current_span("drift.load_docs"):
+        docs = {}
+        home = str(HAPAX_HOME)
+        for path in DOC_FILES:
+            if path.is_file():
+                try:
+                    text = path.read_text(errors="replace")
+                    short = str(path).replace(home, "~")
+                    docs[short] = text
+                except OSError:
+                    continue
+        return docs
 
 
 # ── Agent ────────────────────────────────────────────────────────────────────
@@ -198,76 +199,80 @@ def scan_axiom_violations() -> list[DriftItem]:
     retroactive axiom enforcement as part of the weekly drift check.
     Patterns loaded from shared/axiom_patterns.txt (not inline).
     """
-    from shared.axiom_patterns import load_t0_patterns, scan_directory
+    with _tracer.start_as_current_span("drift.scan_axiom_violations"):
+        from shared.axiom_patterns import load_t0_patterns, scan_directory
 
-    patterns = load_t0_patterns()
-    if not patterns:
-        return []
+        patterns = load_t0_patterns()
+        if not patterns:
+            return []
 
-    home = str(HAPAX_HOME)
-    violations: list[DriftItem] = []
+        home = str(HAPAX_HOME)
+        violations: list[DriftItem] = []
 
-    for repo in HAPAX_REPO_DIRS:
-        if not repo.exists():
-            continue
-        for match in scan_directory(repo, patterns):
-            rel_path = match.file.replace(home, "~")
-            violations.append(
-                DriftItem(
-                    severity="high",
-                    category="axiom-violation",
-                    doc_file=rel_path,
-                    doc_claim=f"T0 pattern match at line {match.line}",
-                    reality=f"Code contains: {match.content}",
-                    suggestion=f"Remove or refactor: {rel_path}:{match.line}",
+        for repo in HAPAX_REPO_DIRS:
+            if not repo.exists():
+                continue
+            for match in scan_directory(repo, patterns):
+                rel_path = match.file.replace(home, "~")
+                violations.append(
+                    DriftItem(
+                        severity="high",
+                        category="axiom-violation",
+                        doc_file=rel_path,
+                        doc_claim=f"T0 pattern match at line {match.line}",
+                        reality=f"Code contains: {match.content}",
+                        suggestion=f"Remove or refactor: {rel_path}:{match.line}",
+                    )
                 )
-            )
 
-    return violations
+        span = trace.get_current_span()
+        span.set_attribute("drift.violation_count", len(violations))
+        return violations
 
 
 def scan_sufficiency_gaps() -> list[DriftItem]:
     """Run sufficiency probes and convert failures to DriftItems."""
-    try:
-        from shared.sufficiency_probes import run_probes
-    except ImportError:
-        return []
+    with _tracer.start_as_current_span("drift.scan_sufficiency_gaps"):
+        try:
+            from shared.sufficiency_probes import run_probes
+        except ImportError:
+            return []
 
-    results = run_probes()
-    items: list[DriftItem] = []
+        results = run_probes()
+        items: list[DriftItem] = []
 
-    for r in results:
-        if r.met:
-            continue
+        for r in results:
+            if r.met:
+                continue
 
-        # Map probe to severity based on implication tier
-        probe = next(
-            (
-                p
-                for p in __import__("shared.sufficiency_probes", fromlist=["PROBES"]).PROBES
-                if p.id == r.probe_id
-            ),
-            None,
-        )
-        if probe:
-            severity = {"T0": "high", "T1": "medium", "T2": "low"}.get(
-                _get_implication_tier(probe.implication_id), "low"
+            # Map probe to severity based on implication tier
+            probe = next(
+                (
+                    p
+                    for p in __import__("shared.sufficiency_probes", fromlist=["PROBES"]).PROBES
+                    if p.id == r.probe_id
+                ),
+                None,
             )
-        else:
-            severity = "low"
+            if probe:
+                severity = {"T0": "high", "T1": "medium", "T2": "low"}.get(
+                    _get_implication_tier(probe.implication_id), "low"
+                )
+            else:
+                severity = "low"
 
-        items.append(
-            DriftItem(
-                severity=severity,
-                category="axiom-sufficiency-gap",
-                doc_file=f"probe:{r.probe_id}",
-                doc_claim=probe.question if probe else r.probe_id,
-                reality=r.evidence,
-                suggestion=f"Address sufficiency gap: {r.evidence}",
+            items.append(
+                DriftItem(
+                    severity=severity,
+                    category="axiom-sufficiency-gap",
+                    doc_file=f"probe:{r.probe_id}",
+                    doc_claim=probe.question if probe else r.probe_id,
+                    reality=r.evidence,
+                    suggestion=f"Address sufficiency gap: {r.evidence}",
+                )
             )
-        )
 
-    return items
+        return items
 
 
 def _get_implication_tier(impl_id: str) -> str:
@@ -294,43 +299,44 @@ def check_project_memory() -> list[DriftItem]:
     This enforces the cross-repo memory standard so Claude Code has
     institutional knowledge seeded in every project.
     """
-    items: list[DriftItem] = []
-    home = str(HAPAX_HOME)
+    with _tracer.start_as_current_span("drift.check_project_memory"):
+        items: list[DriftItem] = []
+        home = str(HAPAX_HOME)
 
-    for repo_dir in HAPAX_REPO_DIRS:
-        if not repo_dir.is_dir():
-            continue
+        for repo_dir in HAPAX_REPO_DIRS:
+            if not repo_dir.is_dir():
+                continue
 
-        claude_md = repo_dir / "CLAUDE.md"
-        short_path = str(repo_dir).replace(home, "~")
+            claude_md = repo_dir / "CLAUDE.md"
+            short_path = str(repo_dir).replace(home, "~")
 
-        if not claude_md.is_file():
-            items.append(
-                DriftItem(
-                    severity="medium",
-                    category="missing_project_memory",
-                    doc_file=f"{short_path}/CLAUDE.md",
-                    doc_claim="File does not exist",
-                    reality="All hapax repos must have a CLAUDE.md with ## Project Memory section",
-                    suggestion=f"Create {short_path}/CLAUDE.md with a ## Project Memory section",
+            if not claude_md.is_file():
+                items.append(
+                    DriftItem(
+                        severity="medium",
+                        category="missing_project_memory",
+                        doc_file=f"{short_path}/CLAUDE.md",
+                        doc_claim="File does not exist",
+                        reality="All hapax repos must have a CLAUDE.md with ## Project Memory section",
+                        suggestion=f"Create {short_path}/CLAUDE.md with a ## Project Memory section",
+                    )
                 )
-            )
-            continue
+                continue
 
-        content = claude_md.read_text(errors="replace")
-        if "## Project Memory" not in content:
-            items.append(
-                DriftItem(
-                    severity="medium",
-                    category="missing_project_memory",
-                    doc_file=f"{short_path}/CLAUDE.md",
-                    doc_claim="No ## Project Memory section found",
-                    reality="All hapax repos must have a ## Project Memory section for cross-session learning",
-                    suggestion=f"Add a ## Project Memory section to {short_path}/CLAUDE.md with stable patterns and conventions",
+            content = claude_md.read_text(errors="replace")
+            if "## Project Memory" not in content:
+                items.append(
+                    DriftItem(
+                        severity="medium",
+                        category="missing_project_memory",
+                        doc_file=f"{short_path}/CLAUDE.md",
+                        doc_claim="No ## Project Memory section found",
+                        reality="All hapax repos must have a ## Project Memory section for cross-session learning",
+                        suggestion=f"Add a ## Project Memory section to {short_path}/CLAUDE.md with stable patterns and conventions",
+                    )
                 )
-            )
 
-    return items
+        return items
 
 
 def check_doc_freshness() -> list[DriftItem]:
@@ -343,109 +349,110 @@ def check_doc_freshness() -> list[DriftItem]:
 
     Returns DriftItems with category="stale_doc" and severity="low".
     """
-    import subprocess
-    from datetime import datetime, timedelta
+    with _tracer.start_as_current_span("drift.check_doc_freshness"):
+        import subprocess
+        from datetime import datetime, timedelta
 
-    stale_threshold = timedelta(days=30)
-    now = datetime.now(UTC)
-    items: list[DriftItem] = []
-    home = str(HAPAX_HOME)
+        stale_threshold = timedelta(days=30)
+        now = datetime.now(UTC)
+        items: list[DriftItem] = []
+        home = str(HAPAX_HOME)
 
-    # Determine latest system change timestamp from available signals
-    latest_system_change: datetime | None = None
+        # Determine latest system change timestamp from available signals
+        latest_system_change: datetime | None = None
 
-    # Signal 1: health history last entry timestamp
-    health_history = AI_AGENTS_DIR / "profiles" / "health-history.jsonl"
-    if health_history.is_file():
-        try:
-            # Read last line efficiently
-            with open(health_history, "rb") as f:
-                f.seek(0, 2)  # seek to end
-                size = f.tell()
-                if size > 0:
-                    # Read last 1KB to find the final line
-                    f.seek(max(0, size - 1024))
-                    last_lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
-                    if last_lines:
-                        entry = json.loads(last_lines[-1])
-                        ts = entry.get("timestamp", "")
-                        if ts:
-                            dt = datetime.fromisoformat(ts)
-                            if latest_system_change is None or dt > latest_system_change:
-                                latest_system_change = dt
-        except (OSError, json.JSONDecodeError, ValueError):
-            pass
+        # Signal 1: health history last entry timestamp
+        health_history = AI_AGENTS_DIR / "profiles" / "health-history.jsonl"
+        if health_history.is_file():
+            try:
+                # Read last line efficiently
+                with open(health_history, "rb") as f:
+                    f.seek(0, 2)  # seek to end
+                    size = f.tell()
+                    if size > 0:
+                        # Read last 1KB to find the final line
+                        f.seek(max(0, size - 1024))
+                        last_lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
+                        if last_lines:
+                            entry = json.loads(last_lines[-1])
+                            ts = entry.get("timestamp", "")
+                            if ts:
+                                dt = datetime.fromisoformat(ts)
+                                if latest_system_change is None or dt > latest_system_change:
+                                    latest_system_change = dt
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
 
-    # Signal 2: Docker container start times
-    try:
-        result = subprocess.run(
-            ["docker", "ps", "--format", "{{.CreatedAt}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.strip().splitlines():
-                try:
-                    # Docker format: "2026-03-01 10:30:45 +0000 UTC"
-                    parts = line.strip().split()
-                    if len(parts) >= 3:
-                        dt_str = f"{parts[0]} {parts[1]} {parts[2]}"
-                        dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S %z")
-                        if latest_system_change is None or dt > latest_system_change:
-                            latest_system_change = dt
-                except (ValueError, IndexError):
-                    continue
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-    if latest_system_change is None:
-        # No system change signals available — can't assess freshness
-        return items
-
-    for path in DOC_FILES:
-        if not path.is_file():
-            continue
-
-        # Get git last-modified date for this file
-        doc_last_modified: datetime | None = None
+        # Signal 2: Docker container start times
         try:
             result = subprocess.run(
-                ["git", "log", "-1", "--format=%aI", "--", str(path)],
+                ["docker", "ps", "--format", "{{.CreatedAt}}"],
                 capture_output=True,
                 text=True,
                 timeout=5,
-                cwd=str(path.parent),
             )
-            if result.returncode == 0 and result.stdout.strip():
-                doc_last_modified = datetime.fromisoformat(result.stdout.strip())
-        except (OSError, subprocess.TimeoutExpired, ValueError):
+            if result.returncode == 0:
+                for line in result.stdout.strip().splitlines():
+                    try:
+                        # Docker format: "2026-03-01 10:30:45 +0000 UTC"
+                        parts = line.strip().split()
+                        if len(parts) >= 3:
+                            dt_str = f"{parts[0]} {parts[1]} {parts[2]}"
+                            dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S %z")
+                            if latest_system_change is None or dt > latest_system_change:
+                                latest_system_change = dt
+                    except (ValueError, IndexError):
+                        continue
+        except (OSError, subprocess.TimeoutExpired):
             pass
 
-        if doc_last_modified is None:
-            # Fall back to filesystem mtime
-            try:
-                mtime = path.stat().st_mtime
-                doc_last_modified = datetime.fromtimestamp(mtime, tz=UTC)
-            except OSError:
+        if latest_system_change is None:
+            # No system change signals available — can't assess freshness
+            return items
+
+        for path in DOC_FILES:
+            if not path.is_file():
                 continue
 
-        age = now - doc_last_modified
-        if age > stale_threshold and latest_system_change > doc_last_modified:
-            short_path = str(path).replace(home, "~")
-            days_old = age.days
-            items.append(
-                DriftItem(
-                    severity="low",
-                    category="stale_doc",
-                    doc_file=short_path,
-                    doc_claim=f"Last updated {days_old} days ago ({doc_last_modified.strftime('%Y-%m-%d')})",
-                    reality=f"System state changed more recently ({latest_system_change.strftime('%Y-%m-%d')})",
-                    suggestion=f"Review {short_path} for accuracy — not updated in {days_old} days",
+            # Get git last-modified date for this file
+            doc_last_modified: datetime | None = None
+            try:
+                result = subprocess.run(
+                    ["git", "log", "-1", "--format=%aI", "--", str(path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    cwd=str(path.parent),
                 )
-            )
+                if result.returncode == 0 and result.stdout.strip():
+                    doc_last_modified = datetime.fromisoformat(result.stdout.strip())
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                pass
 
-    return items
+            if doc_last_modified is None:
+                # Fall back to filesystem mtime
+                try:
+                    mtime = path.stat().st_mtime
+                    doc_last_modified = datetime.fromtimestamp(mtime, tz=UTC)
+                except OSError:
+                    continue
+
+            age = now - doc_last_modified
+            if age > stale_threshold and latest_system_change > doc_last_modified:
+                short_path = str(path).replace(home, "~")
+                days_old = age.days
+                items.append(
+                    DriftItem(
+                        severity="low",
+                        category="stale_doc",
+                        doc_file=short_path,
+                        doc_claim=f"Last updated {days_old} days ago ({doc_last_modified.strftime('%Y-%m-%d')})",
+                        reality=f"System state changed more recently ({latest_system_change.strftime('%Y-%m-%d')})",
+                        suggestion=f"Review {short_path} for accuracy — not updated in {days_old} days",
+                    )
+                )
+
+        return items
 
 
 def check_screen_context_drift() -> list[DriftItem]:
@@ -539,95 +546,96 @@ def check_screen_context_drift() -> list[DriftItem]:
 
 async def detect_drift(manifest: InfrastructureManifest | None = None) -> DriftReport:
     """Run drift detection: collect manifest, load docs, ask LLM to compare."""
-    if manifest is None:
-        manifest = await generate_manifest()
+    with _tracer.start_as_current_span("drift.detect"):
+        if manifest is None:
+            manifest = await generate_manifest()
 
-    # Run deterministic axiom code scan first (retroactive enforcement)
-    axiom_violations = scan_axiom_violations()
+        # Run deterministic axiom code scan first (retroactive enforcement)
+        axiom_violations = scan_axiom_violations()
 
-    # Run sufficiency probes
-    sufficiency_gaps = scan_sufficiency_gaps()
+        # Run sufficiency probes
+        sufficiency_gaps = scan_sufficiency_gaps()
 
-    # Run doc freshness check
-    stale_docs = check_doc_freshness()
+        # Run doc freshness check
+        stale_docs = check_doc_freshness()
 
-    # Run screen context drift check
-    screen_context_drift = check_screen_context_drift()
+        # Run screen context drift check
+        screen_context_drift = check_screen_context_drift()
 
-    # Run project memory check
-    memory_drift = check_project_memory()
+        # Run project memory check
+        memory_drift = check_project_memory()
 
-    # Run document registry checks (coverage gaps, section validation, mutual awareness)
-    from shared.registry_checks import check_document_registry
+        # Run document registry checks (coverage gaps, section validation, mutual awareness)
+        from shared.registry_checks import check_document_registry
 
-    registry_drift = check_document_registry()
+        registry_drift = check_document_registry()
 
-    docs = load_docs()
-    if not docs:
-        return DriftReport(
-            drift_items=[],
-            docs_analyzed=[],
-            summary="No documentation files found to analyze.",
-        )
+        docs = load_docs()
+        if not docs:
+            return DriftReport(
+                drift_items=[],
+                docs_analyzed=[],
+                summary="No documentation files found to analyze.",
+            )
 
-    # Build the prompt with manifest + docs
-    manifest_json = manifest.model_dump_json(indent=2)
+        # Build the prompt with manifest + docs
+        manifest_json = manifest.model_dump_json(indent=2)
 
-    doc_sections = []
-    for path, content in docs.items():
-        # Truncate very long docs to avoid token limits
-        if len(content) > 8000:
-            content = content[:8000] + "\n\n[... truncated ...]"
-        doc_sections.append(f"### {path}\n```\n{content}\n```")
+        doc_sections = []
+        for path, content in docs.items():
+            # Truncate very long docs to avoid token limits
+            if len(content) > 8000:
+                content = content[:8000] + "\n\n[... truncated ...]"
+            doc_sections.append(f"### {path}\n```\n{content}\n```")
 
-    # Build goals context for goal-capability gap detection
-    from shared.operator import get_goals
+        # Build goals context for goal-capability gap detection
+        from shared.operator import get_goals
 
-    goals = get_goals()[:5]
-    goals_section = ""
-    if goals:
-        goal_lines = []
-        for g in goals:
-            status = g.get("status", "unknown")
-            goal_lines.append(f"- [{status}] {g.get('name', '')}: {g.get('description', '')}")
-        goals_section = f"\n\n## Operator Goals\n{chr(10).join(goal_lines)}"
+        goals = get_goals()[:5]
+        goals_section = ""
+        if goals:
+            goal_lines = []
+            for g in goals:
+                status = g.get("status", "unknown")
+                goal_lines.append(f"- [{status}] {g.get('name', '')}: {g.get('description', '')}")
+            goals_section = f"\n\n## Operator Goals\n{chr(10).join(goal_lines)}"
 
-    # Build axiom compliance section
-    axiom_section = ""
-    try:
-        from shared.axiom_registry import load_axioms, load_implications
+        # Build axiom compliance section
+        axiom_section = ""
+        try:
+            from shared.axiom_registry import load_axioms, load_implications
 
-        active_axioms = load_axioms()
-        if active_axioms:
-            axiom_lines = ["\n\n## Active Axioms (check for compliance)"]
-            for ax in active_axioms:
-                scope_label = (
-                    f"[{ax.scope}]" if ax.scope == "constitutional" else f"[domain:{ax.domain}]"
-                )
-                axiom_lines.append(
-                    f"\n### {ax.id} {scope_label} (weight={ax.weight}, type={ax.type})"
-                )
-                axiom_lines.append(ax.text.strip())
-                impls = load_implications(ax.id)
-                blocking = [i for i in impls if i.enforcement in ("block", "review")]
-                if blocking:
-                    axiom_lines.append("Key implications to check:")
-                    for impl in blocking:
-                        axiom_lines.append(
-                            f"  - [{impl.tier}/{impl.mode}/{impl.level}] {impl.text}"
-                        )
-                sufficiency = [i for i in impls if i.mode == "sufficiency"]
-                if sufficiency:
-                    axiom_lines.append("Sufficiency requirements (check active support):")
-                    for impl in sufficiency:
-                        axiom_lines.append(f"  - [{impl.tier}/{impl.level}] {impl.text}")
-            axiom_section = "\n".join(axiom_lines)
-    except Exception as e:
-        import logging
+            active_axioms = load_axioms()
+            if active_axioms:
+                axiom_lines = ["\n\n## Active Axioms (check for compliance)"]
+                for ax in active_axioms:
+                    scope_label = (
+                        f"[{ax.scope}]" if ax.scope == "constitutional" else f"[domain:{ax.domain}]"
+                    )
+                    axiom_lines.append(
+                        f"\n### {ax.id} {scope_label} (weight={ax.weight}, type={ax.type})"
+                    )
+                    axiom_lines.append(ax.text.strip())
+                    impls = load_implications(ax.id)
+                    blocking = [i for i in impls if i.enforcement in ("block", "review")]
+                    if blocking:
+                        axiom_lines.append("Key implications to check:")
+                        for impl in blocking:
+                            axiom_lines.append(
+                                f"  - [{impl.tier}/{impl.mode}/{impl.level}] {impl.text}"
+                            )
+                    sufficiency = [i for i in impls if i.mode == "sufficiency"]
+                    if sufficiency:
+                        axiom_lines.append("Sufficiency requirements (check active support):")
+                        for impl in sufficiency:
+                            axiom_lines.append(f"  - [{impl.tier}/{impl.level}] {impl.text}")
+                axiom_section = "\n".join(axiom_lines)
+        except Exception as e:
+            import logging
 
-        logging.getLogger(__name__).warning("Could not load axioms for drift check: %s", e)
+            logging.getLogger(__name__).warning("Could not load axioms for drift check: %s", e)
 
-    prompt = f"""## Live Infrastructure Manifest (ground truth)
+        prompt = f"""## Live Infrastructure Manifest (ground truth)
 ```json
 {manifest_json}
 ```
@@ -641,11 +649,33 @@ Analyze these documents against the live manifest. Find every discrepancy where
 documentation doesn't match reality. Be thorough but ignore trivial version
 string differences and wildcard model expansions."""
 
-    try:
-        result = await drift_agent.run(prompt, usage_limits=UsageLimits(request_limit=200))
-    except Exception as exc:
-        log.error("LLM drift analysis failed: %s", exc)
-        deterministic = (
+        try:
+            result = await drift_agent.run(prompt, usage_limits=UsageLimits(request_limit=200))
+        except Exception as exc:
+            log.error("LLM drift analysis failed: %s", exc)
+            deterministic = (
+                axiom_violations
+                + sufficiency_gaps
+                + stale_docs
+                + screen_context_drift
+                + memory_drift
+                + registry_drift
+            )
+            return DriftReport(
+                drift_items=deterministic,
+                docs_analyzed=list(docs.keys()),
+                summary=f"Drift analysis failed: {exc}"
+                + (
+                    f" ({len(deterministic)} deterministic finding(s) from code scan)"
+                    if deterministic
+                    else ""
+                ),
+            )
+        report = result.output
+        report.docs_analyzed = list(docs.keys())
+
+        # Merge deterministic findings into the report
+        deterministic_items = (
             axiom_violations
             + sufficiency_gaps
             + stale_docs
@@ -653,46 +683,24 @@ string differences and wildcard model expansions."""
             + memory_drift
             + registry_drift
         )
-        return DriftReport(
-            drift_items=deterministic,
-            docs_analyzed=list(docs.keys()),
-            summary=f"Drift analysis failed: {exc}"
-            + (
-                f" ({len(deterministic)} deterministic finding(s) from code scan)"
-                if deterministic
-                else ""
-            ),
-        )
-    report = result.output
-    report.docs_analyzed = list(docs.keys())
+        if deterministic_items:
+            report.drift_items = deterministic_items + report.drift_items
+            parts = []
+            if axiom_violations:
+                parts.append(f"{len(axiom_violations)} axiom violation(s)")
+            if sufficiency_gaps:
+                parts.append(f"{len(sufficiency_gaps)} sufficiency gap(s)")
+            if stale_docs:
+                parts.append(f"{len(stale_docs)} stale doc(s)")
+            if screen_context_drift:
+                parts.append(f"{len(screen_context_drift)} screen context drift(s)")
+            if memory_drift:
+                parts.append(f"{len(memory_drift)} missing project memory section(s)")
+            if registry_drift:
+                parts.append(f"{len(registry_drift)} registry enforcement finding(s)")
+            report.summary = f"{', '.join(parts)} found in codebase. " + report.summary
 
-    # Merge deterministic findings into the report
-    deterministic_items = (
-        axiom_violations
-        + sufficiency_gaps
-        + stale_docs
-        + screen_context_drift
-        + memory_drift
-        + registry_drift
-    )
-    if deterministic_items:
-        report.drift_items = deterministic_items + report.drift_items
-        parts = []
-        if axiom_violations:
-            parts.append(f"{len(axiom_violations)} axiom violation(s)")
-        if sufficiency_gaps:
-            parts.append(f"{len(sufficiency_gaps)} sufficiency gap(s)")
-        if stale_docs:
-            parts.append(f"{len(stale_docs)} stale doc(s)")
-        if screen_context_drift:
-            parts.append(f"{len(screen_context_drift)} screen context drift(s)")
-        if memory_drift:
-            parts.append(f"{len(memory_drift)} missing project memory section(s)")
-        if registry_drift:
-            parts.append(f"{len(registry_drift)} registry enforcement finding(s)")
-        report.summary = f"{', '.join(parts)} found in codebase. " + report.summary
-
-    return report
+        return report
 
 
 # ── Formatters ───────────────────────────────────────────────────────────────

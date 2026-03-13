@@ -25,6 +25,14 @@ from pydantic import BaseModel, Field
 
 from agents.health_monitor import http_get, run_cmd
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
 
@@ -535,16 +543,20 @@ async def main() -> None:
     parser.add_argument("--save", action="store_true", help="Save to profiles/manifest.json")
     args = parser.parse_args()
 
-    manifest = await generate_manifest()
+    with _tracer.start_as_current_span(
+        "introspect.generate",
+        attributes={"agent.name": "introspect", "agent.repo": "hapax-council"},
+    ):
+        manifest = await generate_manifest()
 
-    if args.json:
-        print(manifest.model_dump_json(indent=2))
-    elif args.save:
-        out_path = PROFILES_DIR / "manifest.json"
-        out_path.write_text(manifest.model_dump_json(indent=2))
-        print(f"Saved to {out_path}")
-    else:
-        print(format_summary(manifest))
+        if args.json:
+            print(manifest.model_dump_json(indent=2))
+        elif args.save:
+            out_path = PROFILES_DIR / "manifest.json"
+            out_path.write_text(manifest.model_dump_json(indent=2))
+            print(f"Saved to {out_path}")
+        else:
+            print(format_summary(manifest))
 
 
 if __name__ == "__main__":

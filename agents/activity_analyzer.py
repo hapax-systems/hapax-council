@@ -190,6 +190,14 @@ def _langfuse_api(path: str, params: dict | None = None) -> dict:
 
 def collect_langfuse(since: datetime) -> LangfuseActivity:
     """Query Langfuse traces for the given time window."""
+    with _tracer.start_as_current_span(
+        "activity.collect_langfuse",
+        attributes={"agent.name": "activity_analyzer"},
+    ):
+        return _collect_langfuse_impl(since)
+
+
+def _collect_langfuse_impl(since: datetime) -> LangfuseActivity:
     activity = LangfuseActivity()
 
     if not LANGFUSE_PK:
@@ -330,6 +338,11 @@ HEALTH_HISTORY = PROFILES_DIR / "health-history.jsonl"
 
 def collect_health_trend(since: datetime) -> HealthTrend:
     """Analyze health history for the given time window."""
+    with _tracer.start_as_current_span("activity.collect_health_trend"):
+        return _collect_health_trend_impl(since)
+
+
+def _collect_health_trend_impl(since: datetime) -> HealthTrend:
     trend = HealthTrend()
 
     if not HEALTH_HISTORY.is_file():
@@ -386,6 +399,11 @@ DRIFT_REPORT = PROFILES_DIR / "drift-report.json"
 
 def collect_drift_trend(since: datetime) -> DriftTrend:
     """Analyze drift detection history."""
+    with _tracer.start_as_current_span("activity.collect_drift_trend"):
+        return _collect_drift_trend_impl(since)
+
+
+def _collect_drift_trend_impl(since: datetime) -> DriftTrend:
     trend = DriftTrend()
 
     # Latest report
@@ -476,6 +494,11 @@ def collect_knowledge_maint_trend(since: datetime) -> KnowledgeMaintTrend:
 
 def collect_sdlc_trend(hours: int) -> SdlcTrend:
     """Analyze SDLC pipeline event history."""
+    with _tracer.start_as_current_span("activity.collect_sdlc_trend"):
+        return _collect_sdlc_trend_impl(hours)
+
+
+def _collect_sdlc_trend_impl(hours: int) -> SdlcTrend:
     trend = SdlcTrend()
     sdlc_log = PROFILES_DIR / "sdlc-events.jsonl"
     if not sdlc_log.is_file():
@@ -567,6 +590,11 @@ def collect_sdlc_trend(hours: int) -> SdlcTrend:
 
 async def collect_service_events(since: datetime) -> list[ServiceEvent]:
     """Query systemd journal for user service events."""
+    with _tracer.start_as_current_span("activity.collect_service_events"):
+        return await _collect_service_events_impl(since)
+
+
+async def _collect_service_events_impl(since: datetime) -> list[ServiceEvent]:
     from agents.health_monitor import run_cmd
 
     since_str = since.strftime("%Y-%m-%d %H:%M:%S")
@@ -699,6 +727,10 @@ async def _generate_activity_report_impl(hours: int = 24) -> ActivityReport:
         manifest_age=_manifest_age(),
         sdlc_events_found=sdlc.total_events > 0,
     )
+
+    span = trace.get_current_span()
+    span.set_attribute("activity.trace_count", langfuse.total_traces)
+    span.set_attribute("activity.service_event_count", len(service_events))
 
     return ActivityReport(
         window_start=since.isoformat()[:19],

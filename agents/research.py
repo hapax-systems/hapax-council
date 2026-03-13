@@ -100,29 +100,33 @@ async def search_knowledge_base(ctx, query: str) -> str:
     Args:
         query: Natural language search query describing what to find.
     """
-    # Embed query
-    query_vec = embed(query, model=ctx.deps.embedding_model)
+    with _tracer.start_as_current_span(
+        "research.search_kb",
+        attributes={"query.text": query[:100]},
+    ):
+        # Embed query
+        query_vec = embed(query, model=ctx.deps.embedding_model)
 
-    # Search Qdrant
-    results = ctx.deps.qdrant.query_points(
-        ctx.deps.collection,
-        query=query_vec,
-        limit=5,
-        score_threshold=0.3,
-    )
+        # Search Qdrant
+        results = ctx.deps.qdrant.query_points(
+            ctx.deps.collection,
+            query=query_vec,
+            limit=5,
+            score_threshold=0.3,
+        )
 
-    if not results.points:
-        return "No relevant documents found in the knowledge base."
+        if not results.points:
+            return "No relevant documents found in the knowledge base."
 
-    # Format results with source attribution
-    chunks = []
-    for p in results.points:
-        filename = p.payload.get("filename", "unknown")
-        text = p.payload.get("text", "")
-        score = p.score
-        chunks.append(f"[{filename}, relevance={score:.3f}]\n{text}")
+        # Format results with source attribution
+        chunks = []
+        for p in results.points:
+            filename = p.payload.get("filename", "unknown")
+            text = p.payload.get("text", "")
+            score = p.score
+            chunks.append(f"[{filename}, relevance={score:.3f}]\n{text}")
 
-    return "\n\n---\n\n".join(chunks)
+        return "\n\n---\n\n".join(chunks)
 
 
 @agent.tool
@@ -132,27 +136,31 @@ async def search_samples(ctx, query: str) -> str:
     Args:
         query: Description of desired audio characteristics (e.g., "dusty vinyl kick drum").
     """
-    query_vec = embed(query, model=ctx.deps.embedding_model)
+    with _tracer.start_as_current_span(
+        "research.search_samples",
+        attributes={"query.text": query[:100]},
+    ):
+        query_vec = embed(query, model=ctx.deps.embedding_model)
 
-    results = ctx.deps.qdrant.query_points(
-        "samples",
-        query=query_vec,
-        limit=5,
-        score_threshold=0.3,
-    )
-
-    if not results.points:
-        return "No matching samples found."
-
-    items = []
-    for p in results.points:
-        payload = p.payload
-        items.append(
-            f"- {payload.get('filename', '?')} "
-            f"(BPM={payload.get('bpm', '?')}, key={payload.get('key', '?')}, "
-            f"score={p.score:.3f})"
+        results = ctx.deps.qdrant.query_points(
+            "samples",
+            query=query_vec,
+            limit=5,
+            score_threshold=0.3,
         )
-    return "\n".join(items)
+
+        if not results.points:
+            return "No matching samples found."
+
+        items = []
+        for p in results.points:
+            payload = p.payload
+            items.append(
+                f"- {payload.get('filename', '?')} "
+                f"(BPM={payload.get('bpm', '?')}, key={payload.get('key', '?')}, "
+                f"score={p.score:.3f})"
+            )
+        return "\n".join(items)
 
 
 # ── Entry points ─────────────────────────────────────────────────────────────
@@ -160,13 +168,14 @@ async def search_samples(ctx, query: str) -> str:
 
 async def query(prompt: str) -> str:
     """Run a single query and return the response."""
-    deps = Deps(qdrant=get_qdrant())
-    try:
-        result = await agent.run(prompt, deps=deps)
-    except Exception as exc:
-        log.error("LLM query failed: %s", exc)
-        return f"Research query failed: {exc}"
-    return result.output
+    with _tracer.start_as_current_span("research.query"):
+        deps = Deps(qdrant=get_qdrant())
+        try:
+            result = await agent.run(prompt, deps=deps)
+        except Exception as exc:
+            log.error("LLM query failed: %s", exc)
+            return f"Research query failed: {exc}"
+        return result.output
 
 
 async def interactive():

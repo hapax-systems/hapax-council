@@ -80,19 +80,23 @@ agent = _make_agent("balanced")
 
 async def review(code: str, filename: str = "stdin") -> str:
     """Run a code review and return the response."""
-    deps = ReviewDeps(filename=filename)
+    with _tracer.start_as_current_span(
+        "code_review.review",
+        attributes={"review.filename": filename},
+    ):
+        deps = ReviewDeps(filename=filename)
 
-    if filename != "stdin":
-        prompt = f"Review this file (`{filename}`):\n\n```\n{code}\n```"
-    else:
-        prompt = f"Review this diff:\n\n```diff\n{code}\n```"
+        if filename != "stdin":
+            prompt = f"Review this file (`{filename}`):\n\n```\n{code}\n```"
+        else:
+            prompt = f"Review this diff:\n\n```diff\n{code}\n```"
 
-    try:
-        result = await agent.run(prompt, deps=deps)
-    except Exception as exc:
-        log.error("LLM code review failed: %s", exc)
-        return f"Code review failed: {exc}"
-    return result.output
+        try:
+            result = await agent.run(prompt, deps=deps)
+        except Exception as exc:
+            log.error("LLM code review failed: %s", exc)
+            return f"Code review failed: {exc}"
+        return result.output
 
 
 async def main():

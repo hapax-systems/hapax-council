@@ -23,6 +23,14 @@ from shared.deliberation_metrics import (
     read_recent_metrics,
 )
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 log = logging.getLogger("agents.deliberation_eval")
 
 PSEUDO_THRESHOLD = 3  # number of pseudo-deliberations to trigger escalation
@@ -85,27 +93,31 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Extract without writing JSONL")
     args = parser.parse_args()
 
-    if not args.probes_only:
-        output = None if args.dry_run else args.output
-        metrics = extract_batch(args.dir, output, args.pattern)
-        print(format_batch_summary(metrics))
+    with _tracer.start_as_current_span(
+        "deliberation_eval.run",
+        attributes={"agent.name": "deliberation_eval", "agent.repo": "hapax-council"},
+    ):
+        if not args.probes_only:
+            output = None if args.dry_run else args.output
+            metrics = extract_batch(args.dir, output, args.pattern)
+            print(format_batch_summary(metrics))
 
-        # GAP-8: Check for pseudo-deliberation pattern and escalate if needed
-        _escalate_pseudo_deliberations()
+            # GAP-8: Check for pseudo-deliberation pattern and escalate if needed
+            _escalate_pseudo_deliberations()
 
-    # Run deliberation sufficiency probes
-    print(f"\n{'=' * 60}")
-    print("SUFFICIENCY PROBES (ex-delib-*)")
-    print(f"{'=' * 60}")
+        # Run deliberation sufficiency probes
+        print(f"\n{'=' * 60}")
+        print("SUFFICIENCY PROBES (ex-delib-*)")
+        print(f"{'=' * 60}")
 
-    from shared.sufficiency_probes import run_probes
+        from shared.sufficiency_probes import run_probes
 
-    results = run_probes(axiom_id="executive_function")
-    delib_results = [r for r in results if r.probe_id.startswith("probe-delib-")]
+        results = run_probes(axiom_id="executive_function")
+        delib_results = [r for r in results if r.probe_id.startswith("probe-delib-")]
 
-    for r in delib_results:
-        icon = "PASS" if r.met else "FAIL"
-        print(f"  [{icon}] {r.probe_id}: {r.evidence}")
+        for r in delib_results:
+            icon = "PASS" if r.met else "FAIL"
+            print(f"  [{icon}] {r.probe_id}: {r.evidence}")
 
 
 if __name__ == "__main__":

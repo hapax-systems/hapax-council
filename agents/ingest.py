@@ -35,6 +35,20 @@ from shared.log_setup import configure_logging
 configure_logging(agent="ingest")
 log = logging.getLogger("rag-ingest")
 
+try:
+    from shared import langfuse_config  # noqa: F401
+    from opentelemetry import trace
+
+    _tracer = trace.get_tracer(__name__)
+except ImportError:
+    from contextlib import nullcontext
+
+    class _NullTracer:
+        def start_as_current_span(self, *a, **kw):
+            return nullcontext()
+
+    _tracer = _NullTracer()  # type: ignore
+
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -686,8 +700,16 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     if not args.watch_only:
-        count = bulk_ingest(force=args.force)
-        log.info(f"Bulk ingest complete: {count} files processed")
+        with _tracer.start_as_current_span(
+            "ingest.bulk",
+            attributes={"agent.name": "ingest", "agent.repo": "hapax-council"},
+        ):
+            count = bulk_ingest(force=args.force)
+            log.info(f"Bulk ingest complete: {count} files processed")
 
     if not args.bulk_only:
-        watch()
+        with _tracer.start_as_current_span(
+            "ingest.watch",
+            attributes={"agent.name": "ingest", "agent.repo": "hapax-council"},
+        ):
+            watch()

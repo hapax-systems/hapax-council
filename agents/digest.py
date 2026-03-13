@@ -83,6 +83,11 @@ def collect_recent_documents(hours: int = 24) -> list[dict]:
 
     Returns list of dicts with keys: source, filename, ingested_at, text_preview.
     """
+    with _tracer.start_as_current_span("digest.collect_documents"):
+        return _collect_recent_documents_impl(hours)
+
+
+def _collect_recent_documents_impl(hours: int = 24) -> list[dict]:
     since_ts = time.time() - (hours * 3600)
     try:
         client = get_qdrant()
@@ -103,6 +108,8 @@ def collect_recent_documents(hours: int = 24) -> list[dict]:
             with_vectors=False,
         )
         points = results[0] if results else []
+        span = trace.get_current_span()
+        span.set_attribute("digest.document_count", len(points))
         # Group by source file
         seen_sources: dict[str, dict] = {}
         for point in points:
@@ -133,18 +140,19 @@ def collect_collection_stats() -> dict[str, int]:
 
     Returns dict mapping collection name to point count.
     """
-    stats: dict[str, int] = {}
-    try:
-        client = get_qdrant()
-        for name in COLLECTIONS:
-            try:
-                count = client.count(collection_name=name).count
-                stats[name] = count
-            except Exception:
-                stats[name] = -1
-    except Exception:
-        pass
-    return stats
+    with _tracer.start_as_current_span("digest.collect_stats"):
+        stats: dict[str, int] = {}
+        try:
+            client = get_qdrant()
+            for name in COLLECTIONS:
+                try:
+                    count = client.count(collection_name=name).count
+                    stats[name] = count
+                except Exception:
+                    stats[name] = -1
+        except Exception:
+            pass
+        return stats
 
 
 # ── LLM Synthesis ────────────────────────────────────────────────────────────

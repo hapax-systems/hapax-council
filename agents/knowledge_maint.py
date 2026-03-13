@@ -117,6 +117,14 @@ def find_stale_sources(collection_name: str) -> list[str]:
     Scrolls all points with 'source' payload, checks Path(source).exists().
     Returns list of stale source paths.
     """
+    with _tracer.start_as_current_span(
+        "knowledge_maint.find_stale",
+        attributes={"collection": collection_name},
+    ):
+        return _find_stale_sources_impl(collection_name)
+
+
+def _find_stale_sources_impl(collection_name: str) -> list[str]:
     stale: set[str] = set()
     seen: set[str] = set()
     try:
@@ -161,6 +169,16 @@ def prune_stale_sources(
     Returns:
         Number of source files pruned (each may have multiple chunks).
     """
+    with _tracer.start_as_current_span(
+        "knowledge_maint.prune_stale",
+        attributes={"collection": collection_name, "dry_run": dry_run},
+    ):
+        return _prune_stale_sources_impl(collection_name, stale_sources, dry_run)
+
+
+def _prune_stale_sources_impl(
+    collection_name: str, stale_sources: list[str], dry_run: bool = True
+) -> int:
     if not stale_sources or dry_run:
         return len(stale_sources)
 
@@ -207,6 +225,21 @@ def find_near_duplicates(
     Returns:
         List of clusters. Each cluster has 2+ points that are near-duplicates.
     """
+    with _tracer.start_as_current_span(
+        "knowledge_maint.find_duplicates",
+        attributes={
+            "collection": collection_name,
+            "score_threshold": score_threshold,
+        },
+    ):
+        return _find_near_duplicates_impl(collection_name, score_threshold, sample_limit)
+
+
+def _find_near_duplicates_impl(
+    collection_name: str,
+    score_threshold: float = DEFAULT_SCORE_THRESHOLD,
+    sample_limit: int = 2000,
+) -> list[list[dict]]:
     try:
         client = get_qdrant()
         results = client.scroll(
@@ -282,6 +315,22 @@ def merge_duplicates(
     Returns:
         Total number of duplicate points removed.
     """
+    with _tracer.start_as_current_span(
+        "knowledge_maint.merge_duplicates",
+        attributes={
+            "collection": collection_name,
+            "cluster_count": len(clusters),
+            "dry_run": dry_run,
+        },
+    ):
+        return _merge_duplicates_impl(collection_name, clusters, dry_run)
+
+
+def _merge_duplicates_impl(
+    collection_name: str,
+    clusters: list[list[dict]],
+    dry_run: bool = True,
+) -> int:
     if not clusters:
         return 0
 

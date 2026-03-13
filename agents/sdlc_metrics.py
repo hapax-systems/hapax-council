@@ -21,6 +21,14 @@ from pydantic import BaseModel, Field
 
 from shared.config import PROFILES_DIR
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 log = logging.getLogger(__name__)
 
 SDLC_LOG = PROFILES_DIR / "sdlc-events.jsonl"
@@ -433,14 +441,23 @@ def main() -> None:
     from shared.log_setup import configure_logging
 
     configure_logging(agent="sdlc-metrics")
-    report = generate_report(days=args.days)
 
-    if args.output == "json":
-        METRICS_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-        METRICS_OUTPUT.write_text(report.model_dump_json(indent=2))
-        print(report.model_dump_json(indent=2))
-    else:
-        print(format_markdown(report))
+    with _tracer.start_as_current_span(
+        "sdlc_metrics.generate",
+        attributes={
+            "agent.name": "sdlc_metrics",
+            "agent.repo": "hapax-council",
+            "window.days": args.days,
+        },
+    ):
+        report = generate_report(days=args.days)
+
+        if args.output == "json":
+            METRICS_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+            METRICS_OUTPUT.write_text(report.model_dump_json(indent=2))
+            print(report.model_dump_json(indent=2))
+        else:
+            print(format_markdown(report))
 
 
 if __name__ == "__main__":

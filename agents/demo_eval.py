@@ -12,6 +12,14 @@ from pathlib import Path
 
 from agents.demo_models import DemoEvalDimension, DemoEvalReport, DemoEvalResult
 
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 log = logging.getLogger(__name__)
 
 DEFAULT_SCENARIO = "the system for my partner"
@@ -269,36 +277,40 @@ async def main() -> None:
         """Print with immediate flush for real-time visibility."""
         print(msg, flush=True)
 
-    if args.eval_only:
-        report = await evaluate_demo_output(args.eval_only)
-        print_flush(
-            f"\nOverall: {report.overall_score:.2f} ({'PASS' if report.overall_pass else 'FAIL'})"
+    with _tracer.start_as_current_span(
+        "demo_eval.run",
+        attributes={"agent.name": "demo_eval", "agent.repo": "hapax-council"},
+    ):
+        if args.eval_only:
+            report = await evaluate_demo_output(args.eval_only)
+            print_flush(
+                f"\nOverall: {report.overall_score:.2f} ({'PASS' if report.overall_pass else 'FAIL'})"
+            )
+            for dim in report.dimensions:
+                status = "PASS" if dim.passed else "FAIL"
+                print_flush(f"  [{status}] {dim.name}: {dim.score:.2f}")
+                for issue in dim.issues:
+                    print_flush(f"         -> {issue}")
+            sys.exit(0 if report.overall_pass else 1)
+
+        result = await run_eval_loop(
+            scenario=args.scenario,
+            format=args.format,
+            duration=args.duration,
+            max_iterations=args.max_iterations,
+            pass_threshold=args.pass_threshold,
+            on_progress=print_flush,
         )
-        for dim in report.dimensions:
-            status = "PASS" if dim.passed else "FAIL"
-            print_flush(f"  [{status}] {dim.name}: {dim.score:.2f}")
-            for issue in dim.issues:
-                print_flush(f"         -> {issue}")
-        sys.exit(0 if report.overall_pass else 1)
 
-    result = await run_eval_loop(
-        scenario=args.scenario,
-        format=args.format,
-        duration=args.duration,
-        max_iterations=args.max_iterations,
-        pass_threshold=args.pass_threshold,
-        on_progress=print_flush,
-    )
+        print_flush(f"\n{'=' * 60}")
+        print_flush(f"FINAL RESULT: {'PASSED' if result.passed else 'FAILED'}")
+        print_flush(f"Iterations: {result.iterations}")
+        print_flush(f"Score: {result.final_report.overall_score:.2f}")
+        print_flush(f"Duration: {result.total_duration_seconds:.0f}s")
+        print_flush(f"Output: {result.demo_dir}")
+        print_flush(f"{'=' * 60}")
 
-    print_flush(f"\n{'=' * 60}")
-    print_flush(f"FINAL RESULT: {'PASSED' if result.passed else 'FAILED'}")
-    print_flush(f"Iterations: {result.iterations}")
-    print_flush(f"Score: {result.final_report.overall_score:.2f}")
-    print_flush(f"Duration: {result.total_duration_seconds:.0f}s")
-    print_flush(f"Output: {result.demo_dir}")
-    print_flush(f"{'=' * 60}")
-
-    sys.exit(0 if result.passed else 1)
+        sys.exit(0 if result.passed else 1)
 
 
 if __name__ == "__main__":

@@ -209,110 +209,113 @@ def _collect_intention_practice_gaps() -> list[str]:
 
 def _collect_profile_health() -> str | None:
     """Build profile health summary from digest."""
-    digest_path = PROFILES_DIR / "operator-digest.json"
-    if not digest_path.exists():
-        return None
-    try:
-        digest = json.loads(digest_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    total = digest.get("total_facts", 0)
-    dims = digest.get("dimensions", {})
-    if not total:
-        return None
-    low_conf = [
-        f"{n} ({d.get('avg_confidence', 0):.2f})"
-        for n, d in dims.items()
-        if d.get("avg_confidence", 1.0) < 0.7
-    ]
-    lines = [f"Profile: {total} facts across {len(dims)} dimensions"]
-    if low_conf:
-        lines.append(f"Low confidence: {', '.join(low_conf)}")
-    return "\n".join(lines)
+    with _tracer.start_as_current_span("briefing.collect_profile_health"):
+        digest_path = PROFILES_DIR / "operator-digest.json"
+        if not digest_path.exists():
+            return None
+        try:
+            digest = json.loads(digest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        total = digest.get("total_facts", 0)
+        dims = digest.get("dimensions", {})
+        if not total:
+            return None
+        low_conf = [
+            f"{n} ({d.get('avg_confidence', 0):.2f})"
+            for n, d in dims.items()
+            if d.get("avg_confidence", 1.0) < 0.7
+        ]
+        lines = [f"Profile: {total} facts across {len(dims)} dimensions"]
+        if low_conf:
+            lines.append(f"Low confidence: {', '.join(low_conf)}")
+        return "\n".join(lines)
 
 
 def _collect_deliberation_health() -> str | None:
     """Collect deliberation health via metrics + sufficiency probes."""
-    try:
-        from shared.deliberation_metrics import read_recent_metrics
-
-        metrics = read_recent_metrics(n=6)
-        if not metrics:
-            return None
-
-        parts = []
-        latest = metrics[-1]
-        parts.append(
-            f"- Latest: {latest.deliberation_id} "
-            f"(activation={latest.activation_rate:.0%}, concessions={latest.concession_count})"
-        )
-
-        pseudo_count = sum(1 for m in metrics if m.is_pseudo_deliberation)
-        if pseudo_count:
-            parts.append(
-                f"- {pseudo_count}/{len(metrics)} recent deliberations flagged as pseudo-deliberation"
-            )
-
-        # Agent bias from recent metrics
-        pub_total = sum(m.concession_count_publius for m in metrics)
-        bru_total = sum(m.concession_count_brutus for m in metrics)
-        total = pub_total + bru_total
-        if total >= 3 and max(pub_total, bru_total) / total > 0.75:
-            dominant = "publius" if pub_total > bru_total else "brutus"
-            parts.append(
-                f"- Agent bias: {dominant} dominates concessions ({max(pub_total, bru_total)}/{total})"
-            )
-
-        # Run deliberation probes for governance status
+    with _tracer.start_as_current_span("briefing.collect_deliberation_health"):
         try:
-            from shared.sufficiency_probes import run_probes
+            from shared.deliberation_metrics import read_recent_metrics
 
-            probe_results = run_probes(axiom_id="executive_function")
-            delib_probes = [r for r in probe_results if r.probe_id.startswith("probe-delib-")]
-            failing = [r for r in delib_probes if not r.met]
-            if failing:
+            metrics = read_recent_metrics(n=6)
+            if not metrics:
+                return None
+
+            parts = []
+            latest = metrics[-1]
+            parts.append(
+                f"- Latest: {latest.deliberation_id} "
+                f"(activation={latest.activation_rate:.0%}, concessions={latest.concession_count})"
+            )
+
+            pseudo_count = sum(1 for m in metrics if m.is_pseudo_deliberation)
+            if pseudo_count:
                 parts.append(
-                    f"- Probes: {len(delib_probes) - len(failing)}/{len(delib_probes)} passing"
+                    f"- {pseudo_count}/{len(metrics)} recent deliberations flagged as pseudo-deliberation"
                 )
-                for f in failing:
-                    parts.append(f"  - FAIL {f.probe_id}: {f.evidence}")
-            else:
-                parts.append(f"- Probes: {len(delib_probes)}/{len(delib_probes)} passing")
-        except Exception:
-            pass
 
-        return "\n\n## Deliberation Health\n" + "\n".join(parts)
-    except Exception:
-        return None
+            # Agent bias from recent metrics
+            pub_total = sum(m.concession_count_publius for m in metrics)
+            bru_total = sum(m.concession_count_brutus for m in metrics)
+            total = pub_total + bru_total
+            if total >= 3 and max(pub_total, bru_total) / total > 0.75:
+                dominant = "publius" if pub_total > bru_total else "brutus"
+                parts.append(
+                    f"- Agent bias: {dominant} dominates concessions ({max(pub_total, bru_total)}/{total})"
+                )
+
+            # Run deliberation probes for governance status
+            try:
+                from shared.sufficiency_probes import run_probes
+
+                probe_results = run_probes(axiom_id="executive_function")
+                delib_probes = [r for r in probe_results if r.probe_id.startswith("probe-delib-")]
+                failing = [r for r in delib_probes if not r.met]
+                if failing:
+                    parts.append(
+                        f"- Probes: {len(delib_probes) - len(failing)}/{len(delib_probes)} passing"
+                    )
+                    for f in failing:
+                        parts.append(f"  - FAIL {f.probe_id}: {f.evidence}")
+                else:
+                    parts.append(f"- Probes: {len(delib_probes)}/{len(delib_probes)} passing")
+            except Exception:
+                pass
+
+            return "\n\n## Deliberation Health\n" + "\n".join(parts)
+        except Exception:
+            return None
 
 
 def _collect_axiom_status() -> dict:
     """Collect axiom health: sufficiency probes + pending precedents."""
-    result: dict = {
-        "probe_total": 0,
-        "probe_failures": 0,
-        "failed_probes": [],
-        "pending_precedents": 0,
-    }
-    try:
-        from shared.sufficiency_probes import run_probes
+    with _tracer.start_as_current_span("briefing.collect_axiom_status"):
+        result: dict = {
+            "probe_total": 0,
+            "probe_failures": 0,
+            "failed_probes": [],
+            "pending_precedents": 0,
+        }
+        try:
+            from shared.sufficiency_probes import run_probes
 
-        probes = run_probes()
-        result["probe_total"] = len(probes)
-        failures = [p for p in probes if not p.met]
-        result["probe_failures"] = len(failures)
-        result["failed_probes"] = [p.probe_id for p in failures]
-    except Exception:
-        pass
-    try:
-        from shared.axiom_precedents import PrecedentStore
+            probes = run_probes()
+            result["probe_total"] = len(probes)
+            failures = [p for p in probes if not p.met]
+            result["probe_failures"] = len(failures)
+            result["failed_probes"] = [p.probe_id for p in failures]
+        except Exception:
+            pass
+        try:
+            from shared.axiom_precedents import PrecedentStore
 
-        store = PrecedentStore()
-        pending = store.get_pending_review(limit=50)
-        result["pending_precedents"] = len(pending)
-    except Exception:
-        pass
-    return result
+            store = PrecedentStore()
+            pending = store.get_pending_review(limit=50)
+            result["pending_precedents"] = len(pending)
+        except Exception:
+            pass
+        return result
 
 
 async def generate_briefing(hours: int = 24) -> Briefing:
@@ -699,6 +702,8 @@ The lookback window is {hours} hours."""
             body=str(e),
             action_items=[],
         )
+    span = trace.get_current_span()
+    span.set_attribute("briefing.action_item_count", len(briefing.action_items))
     briefing.generated_at = datetime.now(UTC).isoformat()[:19] + "Z"
     briefing.hours = hours
     briefing.stats = stats

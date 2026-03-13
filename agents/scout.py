@@ -144,28 +144,29 @@ class ComponentSpec:
 
 def load_registry(filter_component: str | None = None) -> list[ComponentSpec]:
     """Load component registry from YAML."""
-    if not REGISTRY_FILE.exists():
-        log.error(f"Component registry not found: {REGISTRY_FILE}")
-        return []
+    with _tracer.start_as_current_span("scout.load_registry"):
+        if not REGISTRY_FILE.exists():
+            log.error(f"Component registry not found: {REGISTRY_FILE}")
+            return []
 
-    data = yaml.safe_load(REGISTRY_FILE.read_text())
-    components = []
-    for key, spec in data.get("components", {}).items():
-        if filter_component and key != filter_component:
-            continue
-        components.append(
-            ComponentSpec(
-                key=key,
-                role=spec.get("role", ""),
-                current=spec.get("current", ""),
-                provider=spec.get("provider", ""),
-                constraints=spec.get("constraints", []),
-                preferences=spec.get("preferences", []),
-                search_hints=spec.get("search_hints", []),
-                eval_notes=spec.get("eval_notes", ""),
+        data = yaml.safe_load(REGISTRY_FILE.read_text())
+        components = []
+        for key, spec in data.get("components", {}).items():
+            if filter_component and key != filter_component:
+                continue
+            components.append(
+                ComponentSpec(
+                    key=key,
+                    role=spec.get("role", ""),
+                    current=spec.get("current", ""),
+                    provider=spec.get("provider", ""),
+                    constraints=spec.get("constraints", []),
+                    preferences=spec.get("preferences", []),
+                    search_hints=spec.get("search_hints", []),
+                    eval_notes=spec.get("eval_notes", ""),
+                )
             )
-        )
-    return components
+        return components
 
 
 # ── Web Search ───────────────────────────────────────────────────────────────
@@ -214,30 +215,33 @@ def _tavily_search(query: str, max_results: int = 5) -> list[dict]:
 
 def search_component(spec: ComponentSpec) -> str:
     """Run all search hints for a component, return aggregated results as text."""
-    all_results: list[dict] = []
-    seen_urls: set[str] = set()
+    with _tracer.start_as_current_span(
+        "scout.search_component", attributes={"component": spec.key}
+    ):
+        all_results: list[dict] = []
+        seen_urls: set[str] = set()
 
-    for hint in spec.search_hints:
-        results = _tavily_search(hint, max_results=3)
-        for r in results:
-            if r["url"] not in seen_urls:
-                seen_urls.add(r["url"])
-                all_results.append(r)
+        for hint in spec.search_hints:
+            results = _tavily_search(hint, max_results=3)
+            for r in results:
+                if r["url"] not in seen_urls:
+                    seen_urls.add(r["url"])
+                    all_results.append(r)
 
-        # Rate limit: brief pause between searches
-        time.sleep(0.5)
+            # Rate limit: brief pause between searches
+            time.sleep(0.5)
 
-    if not all_results:
-        return "No search results found."
+        if not all_results:
+            return "No search results found."
 
-    lines = []
-    for r in all_results:
-        lines.append(f"### {r['title']}")
-        lines.append(f"URL: {r['url']}")
-        lines.append(r["content"])
-        lines.append("")
+        lines = []
+        for r in all_results:
+            lines.append(f"### {r['title']}")
+            lines.append(f"URL: {r['url']}")
+            lines.append(r["content"])
+            lines.append("")
 
-    return "\n".join(lines)
+        return "\n".join(lines)
 
 
 # ── LLM Evaluation ──────────────────────────────────────────────────────────
@@ -299,21 +303,24 @@ async def evaluate_component(
     usage_context: str = "",
 ) -> Recommendation:
     """Use LLM to evaluate a component against search findings."""
-    usage_block = ""
-    if usage_context:
-        usage_block = f"\n**Operator usage:** {usage_context}\nConsider usage frequency and centrality when assessing migration risk and urgency.\n"
+    with _tracer.start_as_current_span(
+        "scout.evaluate_component", attributes={"component": spec.key}
+    ):
+        usage_block = ""
+        if usage_context:
+            usage_block = f"\n**Operator usage:** {usage_context}\nConsider usage frequency and centrality when assessing migration risk and urgency.\n"
 
-    # Skip LLM evaluation when no search results available
-    if search_results.strip() == "No search results found.":
-        return Recommendation(
-            component=spec.key,
-            current=spec.current,
-            tier="current-best",
-            summary="No web search results available for evaluation",
-            confidence="low",
-        )
+        # Skip LLM evaluation when no search results available
+        if search_results.strip() == "No search results found.":
+            return Recommendation(
+                component=spec.key,
+                current=spec.current,
+                tier="current-best",
+                summary="No web search results available for evaluation",
+                confidence="low",
+            )
 
-    prompt = f"""## Component: {spec.key}
+        prompt = f"""## Component: {spec.key}
 
 **Current solution:** {spec.current}
 **Role:** {spec.role}
@@ -334,22 +341,22 @@ async def evaluate_component(
 Evaluate whether the current solution is still the best choice, or if any
 alternative deserves attention. Be specific about what you found."""
 
-    try:
-        result = await eval_agent.run(prompt)
-    except Exception as exc:
-        log.error("LLM evaluation failed for %s: %s", spec.key, exc)
-        return Recommendation(
-            component=spec.key,
-            current=spec.current,
-            tier="current-best",
-            summary=f"Evaluation failed: {exc}",
-            confidence="low",
-        )
-    rec = result.output
-    # Ensure component key is set correctly
-    rec.component = spec.key
-    rec.current = spec.current
-    return rec
+        try:
+            result = await eval_agent.run(prompt)
+        except Exception as exc:
+            log.error("LLM evaluation failed for %s: %s", spec.key, exc)
+            return Recommendation(
+                component=spec.key,
+                current=spec.current,
+                tier="current-best",
+                summary=f"Evaluation failed: {exc}",
+                confidence="low",
+            )
+        rec = result.output
+        # Ensure component key is set correctly
+        rec.component = spec.key
+        rec.current = spec.current
+        return rec
 
 
 # ── Main Pipeline ────────────────────────────────────────────────────────────
@@ -357,49 +364,56 @@ alternative deserves attention. Be specific about what you found."""
 
 def _build_usage_map() -> dict[str, str]:
     """Build component-key → usage description map from Langfuse data."""
-    try:
-        from shared.langfuse_client import is_available, langfuse_get
-    except ImportError:
-        return {}
+    with _tracer.start_as_current_span("scout.build_usage_map"):
+        try:
+            from shared.langfuse_client import is_available, langfuse_get
+        except ImportError:
+            return {}
 
-    if not is_available():
-        return {}
+        if not is_available():
+            return {}
 
-    try:
-        since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-        result = langfuse_get(
-            "/observations",
-            {
-                "fromStartTime": since,
-                "type": "GENERATION",
-                "limit": 100,
-                "page": 1,
-            },
-        )
-        observations = result.get("data", [])
-        total = result.get("meta", {}).get("totalItems", len(observations))
+        try:
+            since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+            result = langfuse_get(
+                "/observations",
+                {
+                    "fromStartTime": since,
+                    "type": "GENERATION",
+                    "limit": 100,
+                    "page": 1,
+                },
+            )
+            observations = result.get("data", [])
+            total = result.get("meta", {}).get("totalItems", len(observations))
 
-        # Count calls as a proxy for gateway usage
-        usage_map: dict[str, str] = {}
-        if total > 0:
-            usage_map["litellm"] = f"Gateway for {total} LLM calls in last 7 days"
+            # Count calls as a proxy for gateway usage
+            usage_map: dict[str, str] = {}
+            if total > 0:
+                usage_map["litellm"] = f"Gateway for {total} LLM calls in last 7 days"
 
-        # Count by model to infer provider usage
-        model_counts: dict[str, int] = {}
-        for obs in observations:
-            model = obs.get("model", "unknown")
-            model_counts[model] = model_counts.get(model, 0) + 1
+            # Count by model to infer provider usage
+            model_counts: dict[str, int] = {}
+            for obs in observations:
+                model = obs.get("model", "unknown")
+                model_counts[model] = model_counts.get(model, 0) + 1
 
-        for model, count in sorted(model_counts.items(), key=lambda x: -x[1])[:5]:
-            if "ollama" in model.lower() or model in ("qwen3.5:27b", "qwen3:8b", "nomic-embed"):
-                usage_map.setdefault("ollama", f"Serving local models, {count}+ calls in 7 days")
-            if "embed" in model.lower():
-                usage_map.setdefault("embedding-model", f"{count} embedding calls in 7 days")
+            for model, count in sorted(model_counts.items(), key=lambda x: -x[1])[:5]:
+                if "ollama" in model.lower() or model in (
+                    "qwen3.5:27b",
+                    "qwen3:8b",
+                    "nomic-embed",
+                ):
+                    usage_map.setdefault(
+                        "ollama", f"Serving local models, {count}+ calls in 7 days"
+                    )
+                if "embed" in model.lower():
+                    usage_map.setdefault("embedding-model", f"{count} embedding calls in 7 days")
 
-        return usage_map
-    except Exception as e:
-        log.debug(f"Failed to build usage map: {e}")
-        return {}
+            return usage_map
+        except Exception as e:
+            log.debug(f"Failed to build usage map: {e}")
+            return {}
 
 
 async def run_scout(
