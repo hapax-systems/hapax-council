@@ -58,12 +58,19 @@ RAG_INGEST_STATE_DIR: Path = HAPAX_CACHE_DIR / "rag-ingest"
 TAKEOUT_STATE_DIR: Path = HAPAX_CACHE_DIR / "takeout-ingest"
 
 # Project directories (for agents that reference other repos)
-AI_AGENTS_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-council"
-HAPAXROMANA_DIR: Path = HAPAX_PROJECTS_DIR / "hapaxromana"
+# Current 4-repo structure (2026-03-13)
+HAPAX_COUNCIL_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-council"
+HAPAX_CONSTITUTION_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-constitution"
+HAPAX_OFFICIUM_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-officium"
+DISTRO_WORK_DIR: Path = HAPAX_PROJECTS_DIR / "distro-work"
 OBSIDIAN_HAPAX_DIR: Path = HAPAX_PROJECTS_DIR / "obsidian-hapax"
-COCKPIT_WEB_DIR: Path = HAPAX_PROJECTS_DIR / "cockpit-web"
-HAPAX_SYSTEM_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-system"
-HAPAX_VSCODE_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-vscode"
+
+# Legacy aliases — migrate callers to new names, then remove
+AI_AGENTS_DIR: Path = HAPAX_COUNCIL_DIR
+HAPAXROMANA_DIR: Path = HAPAX_CONSTITUTION_DIR
+COCKPIT_WEB_DIR: Path = HAPAX_COUNCIL_DIR / "council-web"
+HAPAX_SYSTEM_DIR: Path = HAPAX_COUNCIL_DIR
+HAPAX_VSCODE_DIR: Path = HAPAX_COUNCIL_DIR / "vscode"
 
 # ── Model aliases (LiteLLM route names) ─────────────────────────────────────
 
