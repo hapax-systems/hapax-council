@@ -6,8 +6,12 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from shared.consent import ConsentRegistry
 
 log = logging.getLogger(__name__)
 
@@ -127,18 +131,51 @@ class SpeakerIdentifier:
         embedding = _pyannote_inference(input_dict)
         return np.array(embedding)
 
-    def identify_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> SpeakerResult:
+    def identify_audio(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+        person_id: str | None = None,
+        consent_registry: ConsentRegistry | None = None,
+    ) -> SpeakerResult:
         """Extract embedding from audio and identify the speaker.
 
         Convenience method combining extract_embedding() and identify().
+        When person_id is provided and is not the operator, checks
+        ConsentRegistry for an active biometric consent contract.
         """
+        if person_id is not None and person_id != "operator":
+            if consent_registry is None or not consent_registry.contract_check(
+                person_id, "biometric"
+            ):
+                log.warning(
+                    "Biometric processing blocked: no consent for %s", person_id
+                )
+                return SpeakerResult(label="uncertain", confidence=0.0)
         embedding = self.extract_embedding(audio, sample_rate)
         if embedding is None:
             return SpeakerResult(label="uncertain", confidence=0.0)
         return self.identify(embedding)
 
-    def enroll(self, embedding: np.ndarray, save_path: Path) -> None:
-        """Normalize and save a speaker embedding for future identification."""
+    def enroll(
+        self,
+        embedding: np.ndarray,
+        save_path: Path,
+        person_id: str | None = None,
+        consent_registry: ConsentRegistry | None = None,
+    ) -> None:
+        """Normalize and save a speaker embedding for future identification.
+
+        When person_id is provided and is not the operator, requires an
+        active biometric consent contract before persisting embeddings.
+        """
+        if person_id is not None and person_id != "operator":
+            if consent_registry is None or not consent_registry.contract_check(
+                person_id, "biometric"
+            ):
+                raise ValueError(
+                    f"Cannot persist biometric data for {person_id}: no consent contract"
+                )
         norm = np.linalg.norm(embedding)
         if norm > 0:
             normalized = embedding / norm

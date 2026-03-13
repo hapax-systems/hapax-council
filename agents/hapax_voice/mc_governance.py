@@ -99,6 +99,19 @@ def transport_active(ctx: FusedContext) -> bool:
     return mapping.transport is TransportState.PLAYING
 
 
+def _pipeline_allows(ctx: FusedContext) -> bool:
+    """Allow only when PipelineGovernor directive is 'process'.
+
+    Reads the pipeline_directive Behavior from the fused context.
+    Fail-open if the Behavior is not present (standalone MC testing).
+    """
+    try:
+        directive = ctx.get_sample("pipeline_directive").value
+        return directive == "process"
+    except KeyError:
+        return True  # fail-open: no pipeline governor → allow
+
+
 # ---------------------------------------------------------------------------
 # Factory functions
 # ---------------------------------------------------------------------------
@@ -119,6 +132,11 @@ def build_mc_veto_chain(
     c = cfg or MCConfig()
     return VetoChain(
         [
+            Veto(
+                name="pipeline_active",
+                predicate=_pipeline_allows,
+                description="Block when PipelineGovernor has paused/withdrawn",
+            ),
             Veto(
                 name="speech_clear",
                 predicate=lambda ctx, t=c.speech_vad_threshold: speech_clear(ctx, t),
