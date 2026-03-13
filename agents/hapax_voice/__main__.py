@@ -166,6 +166,13 @@ class VoiceDaemon:
         self.workspace_monitor.set_notification_queue(self.notifications)
         self.workspace_monitor.set_presence(self.presence)
 
+        # Consent registry (loads from axioms/contracts/, empty = conservative default)
+        from shared.consent import ConsentRegistry
+
+        self.consent_registry = ConsentRegistry()
+        _consent_count = self.consent_registry.load()
+        log.info("Loaded %d consent contracts", _consent_count)
+
         # Perception layer
         self.perception = PerceptionEngine(
             presence=self.presence,
@@ -234,6 +241,13 @@ class VoiceDaemon:
         self.schedule_queue = ScheduleQueue()
         self.executor_registry = ExecutorRegistry()
         self._shared_pa = None  # lazy init in run() if needed
+
+        # Resource arbiter for contention resolution between governance chains
+        from agents.hapax_voice.arbiter import ResourceArbiter
+        from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES
+
+        self.arbiter = ResourceArbiter(priorities=DEFAULT_PRIORITIES)
+
         self._setup_actuation()
 
     # ------------------------------------------------------------------
@@ -255,6 +269,16 @@ class VoiceDaemon:
                 self._setup_obs_actuation()
             except Exception:
                 log.exception("OBS actuation setup failed")
+
+        # Feedback behaviors: actuation events → perception behaviors (closed loop)
+        from agents.hapax_voice.feedback import wire_feedback_behaviors
+
+        feedback_behaviors = wire_feedback_behaviors(
+            actuation_event=self.executor_registry.actuation_event,
+            watermark=self.perception.min_watermark,
+        )
+        self.perception.behaviors.update(feedback_behaviors)
+        log.info("Feedback behaviors wired: %s", list(feedback_behaviors.keys()))
 
     def _setup_mc_actuation(self) -> None:
         """Wire MC governance pipeline to AudioExecutor."""
@@ -324,13 +348,27 @@ class VoiceDaemon:
         )
 
         def _on_obs_command(timestamp: float, cmd: Command | None) -> None:
-            if cmd is not None:
-                self.executor_registry.dispatch(cmd)
-                self.event_log.emit(
-                    "obs_command_dispatched",
-                    action=cmd.action,
-                    transition=cmd.params.get("transition", ""),
+            if cmd is None:
+                return
+            from agents.hapax_voice.arbiter import ResourceClaim
+            from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES, RESOURCE_MAP
+
+            resource = RESOURCE_MAP.get(cmd.action)
+            if resource:
+                claim = ResourceClaim(
+                    resource=resource,
+                    chain=cmd.trigger_source,
+                    priority=DEFAULT_PRIORITIES.get((resource, cmd.trigger_source), 0),
+                    command=cmd,
                 )
+                self.arbiter.claim(claim)
+            else:
+                self.executor_registry.dispatch(cmd)
+            self.event_log.emit(
+                "obs_command_dispatched",
+                action=cmd.action,
+                transition=cmd.params.get("transition", ""),
+            )
 
         obs_output.subscribe(_on_obs_command)
         self._obs_tick_event = obs_tick
@@ -643,6 +681,15 @@ class VoiceDaemon:
             if self.session.is_active:
                 continue
 
+            # Axiom compliance gate — operator activation overrides soft vetoes
+            # but not axiom vetoes (management_governance boundary rules)
+            state = self.perception.tick()
+            veto = self.governor._veto_chain.evaluate(state)
+            if not veto.allowed and "axiom_compliance" in veto.denied_by:
+                log.warning("Wake word blocked by axiom compliance: %s", veto.denied_by)
+                self._acknowledge("denied")
+                continue
+
             self._acknowledge("activation")
             self.governor.wake_word_active = True
             self._frame_gate.set_directive("process")
@@ -657,12 +704,26 @@ class VoiceDaemon:
             if self.session.is_active:
                 await self._close_session(reason="hotkey")
             else:
+                # Axiom compliance gate — block on axiom vetoes only
+                state = self.perception.tick()
+                veto = self.governor._veto_chain.evaluate(state)
+                if not veto.allowed and "axiom_compliance" in veto.denied_by:
+                    log.warning("Hotkey toggle blocked by axiom compliance: %s", veto.denied_by)
+                    self._acknowledge("denied")
+                    return
                 self._acknowledge("activation")
                 self.session.open(trigger="hotkey")
                 self.event_log.set_session_id(self.session.session_id)
                 self.event_log.emit("session_lifecycle", action="opened", trigger="hotkey")
                 await self._start_pipeline()
         elif cmd == "open":
+            # Axiom compliance gate — block on axiom vetoes only
+            state = self.perception.tick()
+            veto = self.governor._veto_chain.evaluate(state)
+            if not veto.allowed and "axiom_compliance" in veto.denied_by:
+                log.warning("Hotkey open blocked by axiom compliance: %s", veto.denied_by)
+                self._acknowledge("denied")
+                return
             self._acknowledge("activation")
             self.session.open(trigger="hotkey")
             self.event_log.set_session_id(self.session.session_id)
@@ -857,21 +918,51 @@ class VoiceDaemon:
                 log.exception("Error in perception loop")
 
     async def _actuation_loop(self) -> None:
-        """Drain ScheduleQueue and dispatch ready commands at beat precision."""
+        """Drain ScheduleQueue, resolve resource contention, dispatch winners."""
+        from agents.hapax_voice.arbiter import ResourceClaim
+        from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES, RESOURCE_MAP
+
         tick_s = self.cfg.actuation_tick_ms / 1000.0
         while self._running:
             try:
                 now = time.monotonic()
                 ready = self.schedule_queue.drain(now)
+
+                # Submit resource claims for each ready schedule
                 for schedule in ready:
-                    latency_ms = (now - schedule.wall_time) * 1000.0
-                    dispatched = self.executor_registry.dispatch(schedule.command)
+                    resource = RESOURCE_MAP.get(schedule.command.action)
+                    if resource:
+                        claim = ResourceClaim(
+                            resource=resource,
+                            chain=schedule.command.trigger_source,
+                            priority=DEFAULT_PRIORITIES.get(
+                                (resource, schedule.command.trigger_source), 0
+                            ),
+                            command=schedule.command,
+                        )
+                        self.arbiter.claim(claim)
+                    else:
+                        # No resource contention — dispatch directly
+                        dispatched = self.executor_registry.dispatch(schedule.command)
+                        self.event_log.emit(
+                            "actuation",
+                            action=schedule.command.action,
+                            latency_ms=round((now - schedule.wall_time) * 1000.0, 1),
+                            dispatched=dispatched,
+                        )
+
+                # Drain arbiter winners and dispatch
+                for winner in self.arbiter.drain_winners(now):
+                    dispatched = self.executor_registry.dispatch(winner.command)
                     self.event_log.emit(
                         "actuation",
-                        action=schedule.command.action,
-                        latency_ms=round(latency_ms, 1),
+                        action=winner.command.action,
+                        chain=winner.chain,
+                        resource=winner.resource,
+                        latency_ms=round((now - winner.created_at) * 1000.0, 1),
                         dispatched=dispatched,
                     )
+
                 await asyncio.sleep(tick_s)
             except asyncio.CancelledError:
                 break
