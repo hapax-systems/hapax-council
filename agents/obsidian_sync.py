@@ -221,7 +221,7 @@ def _extract_metadata(content: str, relative_path: str) -> dict:
 
 def _content_hash(content: str) -> str:
     """Compute MD5 hex digest of content."""
-    return hashlib.md5(content.encode("utf-8")).hexdigest()
+    return hashlib.md5(content.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 # ── Formatting ───────────────────────────────────────────────────────────────

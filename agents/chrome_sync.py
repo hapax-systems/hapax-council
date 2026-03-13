@@ -351,7 +351,7 @@ def _write_bookmarks_file(bookmarks: list[BookmarkEntry], state: ChromeSyncState
         return False
 
     content = _format_bookmarks_markdown(bookmarks)
-    content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+    content_hash = hashlib.md5(content.encode("utf-8"), usedforsecurity=False).hexdigest()
 
     if content_hash == state.bookmark_hash:
         log.debug("Bookmarks unchanged (hash: %s)", content_hash)
