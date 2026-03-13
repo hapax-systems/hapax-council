@@ -129,15 +129,7 @@ class ExecutorRegistry:
 
         On success, emits an ActuationEvent with latency tracking.
         If schedule is provided, latency is computed from schedule.wall_time.
-        Respects governance_result: a denied command is not dispatched.
         """
-        if not command.governance_result.allowed:
-            log.info(
-                "Dispatch blocked by governance: action=%s denied_by=%s",
-                command.action,
-                command.governance_result.denied_by,
-            )
-            return False
         executor = self._action_map.get(command.action)
         if executor is None:
             log.debug("No executor for action: %s", command.action)
