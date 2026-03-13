@@ -32,9 +32,13 @@ def load_builtin_capabilities() -> None:
     from shared.fix_capabilities.docker_cap import DockerCapability
     from shared.fix_capabilities.filesystem_cap import FilesystemCapability
     from shared.fix_capabilities.ollama_cap import OllamaCapability
+    from shared.fix_capabilities.profiles_cap import ProfilesCapability
+    from shared.fix_capabilities.queues_cap import QueuesCapability
     from shared.fix_capabilities.systemd_cap import SystemdCapability
 
     register_capability(OllamaCapability())
     register_capability(DockerCapability())
     register_capability(SystemdCapability())
     register_capability(FilesystemCapability())
+    register_capability(ProfilesCapability())
+    register_capability(QueuesCapability())

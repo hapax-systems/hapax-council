@@ -17,15 +17,17 @@ RESOURCE_MAP: dict[str, str] = {
 }
 
 # (resource, chain) → priority (higher = wins)
+# Chain names must match the trigger_source field in Command objects
+# produced by each governance pipeline.
 DEFAULT_PRIORITIES: dict[tuple[str, str], int] = {
     # Audio output: conversation > MC > TTS
     ("audio_output", "conversation"): 100,
-    ("audio_output", "mc"): 50,
+    ("audio_output", "mc_governance"): 50,
     ("audio_output", "tts"): 30,
     # OBS scene: conversation > OBS governance > MC
     ("obs_scene", "conversation"): 100,
-    ("obs_scene", "obs"): 70,
-    ("obs_scene", "mc"): 40,
+    ("obs_scene", "obs_governance"): 70,
+    ("obs_scene", "mc_governance"): 40,
 }
 
 

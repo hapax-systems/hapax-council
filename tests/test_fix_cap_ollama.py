@@ -28,7 +28,7 @@ class TestOllamaCapabilityMetadata:
         assert cap.name == "ollama"
 
     def test_check_groups(self, cap: OllamaCapability) -> None:
-        assert cap.check_groups == {"gpu"}
+        assert cap.check_groups == {"gpu", "models"}
 
     def test_is_capability(self, cap: OllamaCapability) -> None:
         assert isinstance(cap, Capability)
@@ -86,9 +86,11 @@ class TestOllamaProbe:
 class TestOllamaActions:
     def test_available_actions(self, cap: OllamaCapability) -> None:
         actions = cap.available_actions()
-        assert len(actions) == 1
-        assert actions[0].name == "stop_model"
-        assert actions[0].safety == Safety.SAFE
+        assert len(actions) == 2
+        names = {a.name for a in actions}
+        assert names == {"stop_model", "pull_model"}
+        for a in actions:
+            assert a.safety == Safety.SAFE
 
     def test_validate_stop_model_valid(self, cap: OllamaCapability) -> None:
         proposal = FixProposal(

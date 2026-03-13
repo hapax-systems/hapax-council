@@ -9,9 +9,13 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=/home/operator/projects/hapax-council
 Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=GNUPGHOME=/home/operator/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/operator/.password-store
 # Uses .venv-ingest (isolated from main .venv due to docling/pydantic-ai
 # huggingface-hub version conflict). Create with: make setup-ingest-venv
+ExecStartPre=/home/operator/.local/bin/hapax-env-setup
 ExecStart=/home/operator/projects/hapax-council/.venv-ingest/bin/python -m agents.ingest
+EnvironmentFile=-/run/user/1000/hapax.env
 Restart=on-failure
 RestartSec=15
 StandardOutput=journal
