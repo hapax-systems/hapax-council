@@ -317,6 +317,24 @@ implications:
   canon: purposivist
   mode: sufficiency
   level: system
+- id: ex-skill-health-001
+  tier: T1
+  text: Skill definitions (SKILL.md files) must be syntactically valid. YAML frontmatter
+    must include name and description. Embedded Python snippets must parse without
+    errors and must not await known synchronous methods.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: subsystem
+- id: ex-governance-001
+  tier: T1
+  text: Governance artifacts (precedents, audit entries) must have lifecycle management
+    with escalation. Agent-created precedents must surface for operator review within
+    7 days and escalate after 21 days.
+  enforcement: review
+  canon: purposivist
+  mode: sufficiency
+  level: system
 - id: ex-prose-001
   tier: T0
   text: >

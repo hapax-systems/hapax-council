@@ -91,6 +91,7 @@ from shared.config import (
     PROFILES_DIR,
     RAG_INGEST_STATE_DIR,
     RAG_SOURCES_DIR,
+    load_expected_timers,
 )
 
 WATCH_STATE_DIR: Path = HAPAX_HOME / "hapax-state" / "watch"
@@ -2394,17 +2395,8 @@ async def check_axiom_ef_automated_routines() -> list[CheckResult]:
     results = []
     t = time.monotonic()
 
-    # Map of agents that should run on schedules → expected timer names
-    expected_timers = {
-        "health_monitor": "health-monitor.timer",
-        "drift_detector": "drift-detector.timer",
-        "briefing": "daily-briefing.timer",
-        "scout": "scout.timer",
-        "profiler": "profile-update.timer",
-        "digest": "digest.timer",
-        "knowledge_maint": "knowledge-maint.timer",
-        "introspect": "manifest-snapshot.timer",
-    }
+    # Single source of truth: systemd/expected-timers.yaml
+    expected_timers = load_expected_timers()
 
     # Check which timers are loaded
     rc, stdout, _ = await run_cmd(
@@ -2629,6 +2621,40 @@ async def check_voice_vram_lock() -> list[CheckResult]:
                 message="stale VRAM lockfile (holder process dead)",
                 detail=f"Lock at {VOICE_VRAM_LOCK}",
                 remediation=f"rm {VOICE_VRAM_LOCK}",
+                duration_ms=_timed(t),
+            )
+        ]
+
+
+# ── Skill health checks ──────────────────────────────────────────────────────
+
+
+@check_group("skills")
+async def check_skill_syntax() -> list[CheckResult]:
+    """Validate Claude Code skill definitions are syntactically valid."""
+    t = time.monotonic()
+    try:
+        from shared.sufficiency_probes import _check_skill_syntax
+
+        met, evidence = _check_skill_syntax()
+        status = Status.HEALTHY if met else Status.DEGRADED
+        return [
+            CheckResult(
+                name="skills.syntax",
+                group="skills",
+                status=status,
+                message=evidence,
+                remediation="Fix skill YAML frontmatter or embedded Python syntax" if not met else None,
+                duration_ms=_timed(t),
+            )
+        ]
+    except Exception as e:
+        return [
+            CheckResult(
+                name="skills.syntax",
+                group="skills",
+                status=Status.FAILED,
+                message=f"Skill syntax check error: {e}",
                 duration_ms=_timed(t),
             )
         ]

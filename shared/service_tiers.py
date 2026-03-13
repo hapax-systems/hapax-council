@@ -63,6 +63,7 @@ GROUP_DEFAULTS: dict[str, ServiceTier] = {
     "budget": ServiceTier.OBSERVABILITY,
     "capacity": ServiceTier.IMPORTANT,
     "axioms": ServiceTier.OBSERVABILITY,
+    "skills": ServiceTier.OBSERVABILITY,
 }
 
 

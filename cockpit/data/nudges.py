@@ -456,6 +456,42 @@ def _collect_knowledge_sufficiency_nudges(nudges: list[Nudge]) -> None:
         pass
 
 
+def _collect_precedent_nudges(nudges: list[Nudge]) -> None:
+    """Generate nudges for agent precedents awaiting operator review."""
+    try:
+        from shared.axiom_precedents import PrecedentStore
+
+        store = PrecedentStore()
+        pending = store.get_pending_review()
+        if not pending:
+            return
+
+        for p in pending:
+            age = _age_hours(p.created)
+            if age is not None and age > 21 * 24:
+                score, label = 75, "high"
+            elif age is not None and age > 7 * 24:
+                score, label = 55, "medium"
+            else:
+                score, label = 30, "low"
+
+            days_str = f" ({int(age / 24)}d old)" if age is not None else ""
+            nudges.append(
+                Nudge(
+                    category="sufficiency",
+                    priority_score=score,
+                    priority_label=label,
+                    title=f"Precedent awaiting review: {p.axiom_id}/{p.id}{days_str}",
+                    detail=f"Tier {p.tier}, decision: {p.decision}. {p.situation[:80]}",
+                    suggested_action="Review and confirm or reject this precedent",
+                    command_hint="/axiom-review",
+                    source_id=f"precedent:{p.id}",
+                )
+            )
+    except Exception:
+        pass
+
+
 def _collect_emergence_nudges(nudges: list[Nudge]) -> None:
     """Generate nudges from emergence detection candidates."""
     try:
@@ -567,6 +603,7 @@ def collect_nudges(
     _collect_goal_nudges(nudges)
     _collect_sufficiency_nudges(nudges)
     _collect_knowledge_sufficiency_nudges(nudges)
+    _collect_precedent_nudges(nudges)
     _collect_emergence_nudges(nudges)
 
     # Filter out recently dismissed nudges
