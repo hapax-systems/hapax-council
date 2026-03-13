@@ -12,16 +12,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
-from shared.config import PROFILES_DIR
 from shared.deliberation_metrics import (
     DELIBERATIONS_DIR,
     EVAL_FILE,
     extract_batch,
     format_batch_summary,
-    read_recent_metrics,
 )
 
 
