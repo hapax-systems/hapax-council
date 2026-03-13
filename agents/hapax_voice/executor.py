@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import bisect
 import logging
+import time
 from typing import Protocol, runtime_checkable
 
+from agents.hapax_voice.actuation_event import ActuationEvent
 from agents.hapax_voice.commands import Command, Schedule
+from agents.hapax_voice.primitives import Event
 
 log = logging.getLogger(__name__)
 
@@ -93,13 +96,17 @@ class ScheduleQueue:
 
 
 class ExecutorRegistry:
-    """Maps action names to Executors. Dispatch routes to correct executor."""
+    """Maps action names to Executors. Dispatch routes to correct executor.
 
-    __slots__ = ("_executors", "_action_map")
+    Emits ActuationEvent on successful dispatch via the actuation_event Event.
+    """
+
+    __slots__ = ("_executors", "_action_map", "actuation_event")
 
     def __init__(self) -> None:
         self._executors: dict[str, Executor] = {}
         self._action_map: dict[str, Executor] = {}
+        self.actuation_event: Event[ActuationEvent] = Event()
 
     def register(self, executor: Executor) -> None:
         """Register an executor. Rejects duplicate names or handle conflicts."""
@@ -117,14 +124,30 @@ class ExecutorRegistry:
             self._action_map[action] = executor
         log.info("Registered executor: %s (handles: %s)", executor.name, executor.handles)
 
-    def dispatch(self, command: Command) -> bool:
-        """Route a command to the correct executor. Returns True if handled."""
+    def dispatch(self, command: Command, schedule: Schedule | None = None) -> bool:
+        """Route a command to the correct executor. Returns True if handled.
+
+        On success, emits an ActuationEvent with latency tracking.
+        If schedule is provided, latency is computed from schedule.wall_time.
+        """
         executor = self._action_map.get(command.action)
         if executor is None:
             log.debug("No executor for action: %s", command.action)
             return False
         try:
             executor.execute(command)
+            now = time.monotonic()
+            target = schedule.wall_time if schedule is not None else now
+            latency_ms = (now - target) * 1000.0
+            event = ActuationEvent(
+                action=command.action,
+                chain=command.trigger_source,
+                wall_time=now,
+                target_time=target,
+                latency_ms=latency_ms,
+                params=dict(command.params),
+            )
+            self.actuation_event.emit(now, event)
             return True
         except Exception:
             log.exception("Executor %s failed on action %s", executor.name, command.action)

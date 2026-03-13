@@ -292,7 +292,6 @@ def _mock_daemon():
                 patch("agents.hapax_voice.__main__.PipelineGovernor"),
                 patch("agents.hapax_voice.__main__.FrameGate"),
                 patch("agents.hapax_voice.__main__.EventLog"),
-                patch("agents.hapax_voice.__main__.VoiceTracer"),
             ]
             for p in self._patches:
                 p.start()

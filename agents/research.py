@@ -24,6 +24,10 @@ try:
 except ImportError:
     pass  # Langfuse optional
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 
@@ -189,6 +193,15 @@ async def interactive():
 
 
 async def main():
+    with _tracer.start_as_current_span(
+        "research.run",
+        attributes={"agent.name": "research", "agent.repo": "hapax-council"},
+    ):
+        return await _main_impl()
+
+
+async def _main_impl():
+    """Implementation of main, wrapped by OTel span."""
     if len(sys.argv) > 1 and sys.argv[1] == "--interactive":
         await interactive()
     elif len(sys.argv) > 1:

@@ -227,7 +227,9 @@ async def _main():
     parser.add_argument("--output", type=Path, help="Output YAML file path")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="axiom-derivation")
     await derive_implications(args.axiom, n=args.n, output_path=args.output)
 
 

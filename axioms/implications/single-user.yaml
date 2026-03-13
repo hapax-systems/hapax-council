@@ -29,8 +29,10 @@ implications:
   level: component
 - id: su-privacy-001
   tier: T0
-  text: Privacy controls, data anonymization, and consent mechanisms are unnecessary
-    since the user is also the developer.
+  text: Privacy controls, data anonymization, and consent mechanisms for the operator's
+    own data are unnecessary since the user is also the developer. This does not
+    apply to data about non-operator persons, which is governed by the
+    interpersonal_transparency axiom.
   enforcement: block
   canon: purposivist
   mode: compatibility

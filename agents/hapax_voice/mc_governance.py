@@ -65,8 +65,19 @@ def speech_clear(ctx: FusedContext, threshold: float = 0.5) -> bool:
 
 
 def energy_sufficient(ctx: FusedContext, threshold: float = 0.3) -> bool:
-    """Allow when audio energy RMS is at or above threshold."""
-    return ctx.get_sample("audio_energy_rms").value >= threshold
+    """Allow when audio energy RMS is at or above effective threshold.
+
+    If conversation_suppression is present in the context, the threshold is
+    raised via the additive formula: base + suppression * (1 - base).
+    """
+    try:
+        suppression = ctx.get_sample("conversation_suppression").value
+    except KeyError:
+        suppression = 0.0
+    from agents.hapax_voice.suppression import effective_threshold
+
+    eff = effective_threshold(threshold, suppression)
+    return ctx.get_sample("audio_energy_rms").value >= eff
 
 
 def spacing_respected(

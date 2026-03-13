@@ -46,6 +46,10 @@ try:
 except ImportError:
     pass
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 from agents.introspect import InfrastructureManifest, generate_manifest
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -1141,6 +1145,15 @@ def _notify_fixes(apply_result: ApplyResult, committed: bool) -> None:
 
 
 async def main() -> None:
+    with _tracer.start_as_current_span(
+        "drift.detect",
+        attributes={"agent.name": "drift_detector", "agent.repo": "hapax-council"},
+    ):
+        return await _main_impl()
+
+
+async def _main_impl() -> None:
+    """Implementation of main, wrapped by OTel span."""
     parser = argparse.ArgumentParser(
         description="Documentation drift detector — LLM-powered comparison of docs vs reality",
         prog="python -m agents.drift_detector",

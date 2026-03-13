@@ -1,0 +1,19 @@
+# Expected systemd user timers — single source of truth.
+#
+# Both sufficiency_probes.py and health_monitor.py read this file
+# instead of maintaining separate hardcoded lists.
+#
+# Format: agent_name → timer unit name
+
+timers:
+  health_monitor: health-monitor.timer
+  drift_detector: drift-detector.timer
+  briefing: daily-briefing.timer
+  scout: scout.timer
+  profiler: profile-update.timer
+  digest: digest.timer
+  knowledge_maint: knowledge-maint.timer
+  introspect: manifest-snapshot.timer
+  llm_backup: llm-backup.timer
+  backup_local: hapax-backup-local.timer
+  backup_remote: hapax-backup-remote.timer

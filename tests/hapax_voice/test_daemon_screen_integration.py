@@ -107,7 +107,7 @@ def test_daemon_creates_workspace_monitor():
 
 
 def test_daemon_creates_event_log():
-    """VoiceDaemon should create EventLog and VoiceTracer."""
+    """VoiceDaemon should create EventLog."""
     from unittest.mock import patch
 
     from agents.hapax_voice.config import VoiceConfig
@@ -125,9 +125,7 @@ def test_daemon_creates_event_log():
 
         daemon = VoiceDaemon(cfg=cfg)
         assert hasattr(daemon, "event_log")
-        assert hasattr(daemon, "tracer")
         assert daemon.event_log is not None
-        assert daemon.tracer is not None
 
 
 def test_daemon_wires_event_log_to_subsystems():

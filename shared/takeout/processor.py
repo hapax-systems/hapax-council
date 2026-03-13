@@ -468,10 +468,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(message)s",
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="takeout", level="DEBUG" if args.verbose else None)
 
     # Validate all zip paths
     for zp in args.zip_paths:

@@ -66,9 +66,9 @@ def test_monitor_no_event_without_log():
     mon._emit_face_event(detected=False, count=0, latency_ms=3)
 
 
-def test_monitor_uses_tracer_for_analysis():
-    """WorkspaceMonitor should accept and store a tracer."""
-    mon = WorkspaceMonitor(enabled=False)
-    mock_tracer = MagicMock()
-    mon.set_tracer(mock_tracer)
-    assert mon._tracer is mock_tracer
+def test_monitor_uses_otel_tracer():
+    """WorkspaceMonitor uses module-level OTel tracer (no set_tracer needed)."""
+    from agents.hapax_voice.workspace_monitor import _tracer
+
+    assert _tracer is not None
+    assert hasattr(_tracer, "start_as_current_span")

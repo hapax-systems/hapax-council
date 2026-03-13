@@ -39,6 +39,10 @@ try:
 except ImportError:
     pass
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -331,6 +335,19 @@ async def run_maintenance(
     Returns:
         MaintenanceReport with all stats and warnings.
     """
+    with _tracer.start_as_current_span(
+        "knowledge_maint.run",
+        attributes={"agent.name": "knowledge_maint", "agent.repo": "hapax-council"},
+    ):
+        return await _run_maintenance_impl(collections, dry_run, score_threshold)
+
+
+async def _run_maintenance_impl(
+    collections: list[str] | None = None,
+    dry_run: bool = True,
+    score_threshold: float = DEFAULT_SCORE_THRESHOLD,
+) -> MaintenanceReport:
+    """Implementation of run_maintenance, wrapped by OTel span."""
     start = time.monotonic()
     target_collections = collections or COLLECTIONS
 

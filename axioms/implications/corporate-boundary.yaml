@@ -42,6 +42,16 @@ implications:
   mode: compatibility
   level: component
 
+- id: cb-secret-scan-001
+  tier: T1
+  text: All hapax repositories must have .gitignore patterns for sensitive files
+    (.env, *.pem, *.key, credentials.json). No tracked files may match sensitive
+    patterns. Verified by automated security scanning probe.
+  enforcement: review
+  canon: textualist
+  mode: sufficiency
+  level: system
+
 - id: cb-extensible-001
   tier: T1
   text: Adding a new LLM provider must require only implementing a provider
