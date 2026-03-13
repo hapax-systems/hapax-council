@@ -9,15 +9,22 @@ source "$SCRIPT_DIR/axiom-patterns.sh"
 
 INPUT="$(cat)"
 
-# Extract content from tool input (Edit: new_string, Write: content)
-CONTENT="$(echo "$INPUT" | jq -r '.tool_input.new_string // .tool_input.content // .tool_input.new_content // empty' 2>/dev/null || true)"
+# Extract content from tool input (Edit: new_string, Write: content, MultiEdit: edits[], NotebookEdit: new_source)
+CONTENT="$(echo "$INPUT" | jq -r '
+  .tool_input.new_string //
+  .tool_input.content //
+  .tool_input.new_content //
+  .tool_input.new_source //
+  ([.tool_input.edits[]?.new_string // empty] | join("\n")) //
+  empty
+' 2>/dev/null || true)"
 
 # Nothing to scan
 if [ -z "$CONTENT" ]; then
   exit 0
 fi
 
-FILE_PATH="$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // "unknown"' 2>/dev/null || echo unknown)"
+FILE_PATH="$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // "unknown"' 2>/dev/null || echo unknown)"
 
 # Skip scanning axiom enforcement files themselves (pattern definitions)
 case "$FILE_PATH" in

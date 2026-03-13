@@ -22,10 +22,78 @@ print('%d|%s' % (len(axs), ', '.join(a.id for a in axs)))
 fi
 echo "Axioms: $AXIOM_COUNT loaded ($AXIOM_NAMES)"
 
-# Git context
-BRANCH="$(git branch --show-current 2>/dev/null || echo 'N/A')"
+# Git context (worktree-aware)
+GIT_DIR="$(git rev-parse --git-dir 2>/dev/null || true)"
+GIT_COMMON="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+BRANCH="$(git branch --show-current 2>/dev/null || echo 'detached')"
 LAST_COMMIT="$(git log --oneline -1 2>/dev/null || echo 'N/A')"
-echo "Branch: $BRANCH | Last commit: $LAST_COMMIT"
+
+GIT_DIR_ABS=""
+GIT_COMMON_ABS=""
+if [ -n "$GIT_DIR" ] && [ -n "$GIT_COMMON" ]; then
+  GIT_DIR_ABS="$(cd "$(dirname "$GIT_DIR")" && realpath "$(basename "$GIT_DIR")" 2>/dev/null || echo "$GIT_DIR")"
+  GIT_COMMON_ABS="$(cd "$(dirname "$GIT_COMMON")" && realpath "$(basename "$GIT_COMMON")" 2>/dev/null || echo "$GIT_COMMON")"
+
+  if [ "$GIT_DIR_ABS" != "$GIT_COMMON_ABS" ]; then
+    PRIMARY_ROOT="$(dirname "$GIT_COMMON_ABS")"
+    echo "Worktree: $BRANCH (linked to $PRIMARY_ROOT) | $LAST_COMMIT"
+  else
+    echo "Primary worktree ($BRANCH) | $LAST_COMMIT"
+  fi
+else
+  echo "Branch: $BRANCH | Last commit: $LAST_COMMIT"
+fi
+
+# Active worktrees (only if more than one exists)
+WT_COUNT="$(git worktree list 2>/dev/null | wc -l)"
+if [ "$WT_COUNT" -gt 1 ]; then
+  echo "Worktrees ($WT_COUNT):"
+  git worktree list 2>/dev/null | while read -r path commit branch; do
+    branch="${branch#[}"
+    branch="${branch%]}"
+    echo "  $path [$branch]"
+  done
+fi
+
+# Concurrent Claude sessions in same repo
+if [ -n "$GIT_COMMON_ABS" ]; then
+  CONCURRENT=""
+  CONCURRENT_COUNT=0
+  MY_CLAUDE_PID="$PPID"
+
+  while IFS= read -r pid; do
+    [ "$pid" = "$MY_CLAUDE_PID" ] && continue
+    cwd="$(readlink /proc/"$pid"/cwd 2>/dev/null)" || continue
+    their_common="$(cd "$cwd" && git rev-parse --git-common-dir 2>/dev/null)" || continue
+    their_common="$(realpath "$their_common" 2>/dev/null)"
+    if [ "$their_common" = "$GIT_COMMON_ABS" ]; then
+      their_branch="$(cd "$cwd" && git branch --show-current 2>/dev/null || echo 'detached')"
+      CONCURRENT="${CONCURRENT}  PID $pid: $cwd [$their_branch]\n"
+      CONCURRENT_COUNT=$((CONCURRENT_COUNT + 1))
+    fi
+  done < <(pgrep -f '/opt/claude-code/bin/claude' 2>/dev/null)
+
+  if [ "$CONCURRENT_COUNT" -gt 0 ]; then
+    echo "CONCURRENT SESSIONS ($CONCURRENT_COUNT other):"
+    printf "$CONCURRENT"
+
+    # Same-branch conflict warning
+    SAME_BRANCH=0
+    while IFS= read -r pid; do
+      [ "$pid" = "$MY_CLAUDE_PID" ] && continue
+      cwd="$(readlink /proc/"$pid"/cwd 2>/dev/null)" || continue
+      their_common="$(cd "$cwd" && git rev-parse --git-common-dir 2>/dev/null)" || continue
+      their_common="$(realpath "$their_common" 2>/dev/null)"
+      if [ "$their_common" = "$GIT_COMMON_ABS" ]; then
+        their_branch="$(cd "$cwd" && git branch --show-current 2>/dev/null)"
+        [ "$their_branch" = "$BRANCH" ] && SAME_BRANCH=$((SAME_BRANCH + 1))
+      fi
+    done < <(pgrep -f '/opt/claude-code/bin/claude' 2>/dev/null)
+    if [ "$SAME_BRANCH" -gt 0 ]; then
+      echo "WARNING: $SAME_BRANCH other session(s) on branch '$BRANCH' — high conflict risk"
+    fi
+  fi
+fi
 
 # Health summary (from latest health-history.jsonl entry)
 HEALTH_FILE="$HOME/projects/hapax-council/profiles/health-history.jsonl"

@@ -2,21 +2,134 @@
 
 Processes failing health checks through the probe → evaluate → validate → execute
 flow, wiring together capabilities, the LLM evaluator, and notifications.
+
+When LLM evaluation fails (e.g. LiteLLM down), falls back to deterministic
+execution of safe remediation commands already embedded in health checks.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import shlex
 
 from pydantic import BaseModel, Field
 
-from agents.health_monitor import CheckResult, HealthReport, Status
+from agents.health_monitor import CheckResult, HealthReport, Status, run_cmd
 from shared.fix_capabilities import get_capability_for_group
-from shared.fix_capabilities.base import ExecutionResult, FixProposal
+from shared.fix_capabilities.base import ExecutionResult, FixProposal, Safety
 from shared.fix_capabilities.evaluator import evaluate_check
 from shared.notify import send_notification
 
 log = logging.getLogger(__name__)
+
+# ── Deterministic fallback ──────────────────────────────────────────────────
+
+# Patterns that are safe to execute without LLM evaluation.
+# Each regex is matched against the full remediation command string.
+_SAFE_REMEDIATION_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^systemctl --user (start|restart|reset-failed|enable --now) [\w@.\-]+$"),
+    re.compile(r"^systemctl --user reset-failed [\w@.\-]+ && systemctl --user start [\w@.\-]+$"),
+    re.compile(r"^docker (start|restart) [\w.\-]+$"),
+    re.compile(r"^cd [~/\w.\-]+ && docker compose up -d(?: [\w.\-]+)?$"),
+    re.compile(r"^cd [~/\w.\-]+ && docker compose --profile \w+ up -d(?: [\w.\-]+)?$"),
+    re.compile(r"^cd [~/\w.\-]+ && docker compose restart [\w.\-]+$"),
+    re.compile(r"^bash [~/\w.\-]+\.sh$"),
+    # Qdrant collection creation
+    re.compile(r"^curl -X PUT http://localhost:6333/collections/[\w\-]+ "),
+    # Ollama model pull
+    re.compile(r"^docker exec ollama ollama pull [\w.\-:]+$"),
+    # Python module invocation via uv
+    re.compile(r"^cd [~/\w.\-]+ && uv run python -m [\w.]+(?: --[\w\-]+(?: [\w.\-]+)?)*$"),
+]
+
+
+def _normalize_remediation(cmd: str) -> str:
+    """Strip human-instruction prefixes from remediation commands."""
+    # Remove "Run: ", "Check: ", "Enable timers: " etc.
+    m = re.match(r"^(?:Run|Check|Enable timers|Verify):\s*", cmd)
+    if m:
+        return cmd[m.end() :]
+    return cmd
+
+
+def _is_safe_remediation(cmd: str) -> bool:
+    """Check if a remediation command matches a known-safe pattern."""
+    cmd = _normalize_remediation(cmd)
+    return any(p.match(cmd) for p in _SAFE_REMEDIATION_PATTERNS)
+
+
+async def _run_deterministic_fix(check: CheckResult) -> FixOutcome:
+    """Execute a health check's built-in remediation command directly.
+
+    Only called when the LLM evaluator is unavailable and the remediation
+    command matches a known-safe pattern.
+    """
+    cmd = check.remediation
+    assert cmd is not None  # caller checks
+    cmd = _normalize_remediation(cmd)
+
+    proposal = FixProposal(
+        capability="deterministic_fallback",
+        action_name="remediation_command",
+        params={"command": cmd},
+        rationale=f"LLM evaluator unavailable; executing safe remediation: {cmd}",
+        safety=Safety.SAFE,
+    )
+
+    try:
+        args = shlex.split(cmd)
+    except ValueError as e:
+        return FixOutcome(
+            check_name=check.name,
+            proposal=proposal,
+            rejected_reason=f"Could not parse remediation command: {e}",
+        )
+
+    # Handle "cd <dir> && <cmd>" patterns
+    cwd = None
+    if len(args) >= 4 and args[0] == "cd" and args[2] == "&&":
+        import os
+
+        cwd = os.path.expanduser(args[1])
+        args = args[3:]
+
+    # Handle chained commands: "cmd1 && cmd2"
+    # Split into sub-commands and run sequentially
+    commands: list[list[str]] = []
+    current: list[str] = []
+    for arg in args:
+        if arg == "&&":
+            if current:
+                commands.append(current)
+            current = []
+        else:
+            current.append(arg)
+    if current:
+        commands.append(current)
+
+    last_result = ExecutionResult(success=True, message="no commands")
+    for sub_cmd in commands:
+        rc, stdout, stderr = await run_cmd(sub_cmd, timeout=30.0, cwd=cwd)
+        if rc != 0:
+            last_result = ExecutionResult(
+                success=False,
+                message=f"Command {' '.join(sub_cmd)} failed (rc={rc}): {stderr}",
+                output=stderr,
+            )
+            break
+        last_result = ExecutionResult(
+            success=True,
+            message=f"Executed: {' '.join(sub_cmd)}",
+            output=stdout,
+        )
+
+    return FixOutcome(
+        check_name=check.name,
+        proposal=proposal,
+        executed=True,
+        execution_result=last_result,
+    )
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -81,6 +194,16 @@ async def run_fix_pipeline(
         cap = get_capability_for_group(check.group)
         if cap is None:
             log.debug("No capability for group %s, skipping %s", check.group, check.name)
+            # No capability — try deterministic fallback
+            if mode == "apply" and check.remediation and _is_safe_remediation(check.remediation):
+                log.info(
+                    "No capability for %s, falling back to deterministic fix: %s",
+                    check.name,
+                    check.remediation,
+                )
+                outcome = await _run_deterministic_fix(check)
+                result.total += 1
+                result.outcomes.append(outcome)
             continue
 
         # Gather context (probe)
@@ -88,12 +211,26 @@ async def run_fix_pipeline(
             probe = await cap.gather_context(check)
         except Exception:
             log.warning("gather_context failed for check %s", check.name, exc_info=True)
-            continue
+            probe = None
 
         # Evaluate — ask LLM for a fix proposal
-        proposal = await evaluate_check(check, probe, cap.available_actions())
+        proposal = None
+        if probe is not None:
+            proposal = await evaluate_check(check, probe, cap.available_actions())
+
         if proposal is None:
-            log.debug("No proposal for check %s, skipping", check.name)
+            # LLM evaluator unavailable or returned no proposal — deterministic fallback
+            if mode == "apply" and check.remediation and _is_safe_remediation(check.remediation):
+                log.info(
+                    "LLM evaluator unavailable for %s, falling back to deterministic fix: %s",
+                    check.name,
+                    check.remediation,
+                )
+                outcome = await _run_deterministic_fix(check)
+                result.total += 1
+                result.outcomes.append(outcome)
+            else:
+                log.debug("No proposal for check %s, skipping", check.name)
             continue
 
         # From here we have a proposal, so increment total
