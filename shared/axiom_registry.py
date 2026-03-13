@@ -82,6 +82,7 @@ class ImplicationScope:
 
     type: str = ""  # "derived" | "enumerated" | "pattern"
     rule: str = ""  # Human-readable scope rule
+    items: list[str] | None = None  # Enumerated items (for type="enumerated")
 
 
 @dataclass
@@ -183,9 +184,12 @@ def load_implications(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Implic
         scope_data = entry.get("scope")
         scope = None
         if scope_data and isinstance(scope_data, dict):
+            items_raw = scope_data.get("items")
+            items = list(items_raw) if items_raw and isinstance(items_raw, list) else None
             scope = ImplicationScope(
                 type=scope_data.get("type", ""),
                 rule=scope_data.get("rule", ""),
+                items=items,
             )
         impls.append(
             Implication(
