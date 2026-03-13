@@ -376,3 +376,48 @@ class TestDaemonCompositionContracts:
         cmd = Command(action="pause", trigger_source="test")
         daemon._frame_gate.apply_command(cmd)
         assert daemon._frame_gate.directive == "pause"
+
+    def test_schedule_queue_accepts_well_formed_schedule(self):
+        """G: daemon's ScheduleQueue accepts Schedule objects produced by L4 types."""
+        from agents.hapax_voice.commands import Command, Schedule
+        from agents.hapax_voice.governance import VetoResult
+
+        daemon = _make_daemon()
+        cmd = Command(
+            action="play_sample",
+            params={"sample": "kick.wav"},
+            trigger_time=100.0,
+            trigger_source="perception_tick",
+            min_watermark=99.5,
+            governance_result=VetoResult(allowed=True),
+            selected_by="energy_threshold",
+        )
+        sched = Schedule(command=cmd, wall_time=100.0, tolerance_ms=1000.0)
+        daemon.schedule_queue.enqueue(sched)
+        assert daemon.schedule_queue.pending_count == 1
+
+        # Drain produces the same well-formed command
+        drained = daemon.schedule_queue.drain(now=100.0)
+        assert len(drained) == 1
+        assert drained[0].command.action == "play_sample"
+        assert drained[0].command.governance_result.allowed is True
+        assert drained[0].command.trigger_source == "perception_tick"
+
+    def test_perception_tick_to_governor_to_frame_gate_pipeline(self):
+        """G: full L8→L9 composition — perception tick feeds governor feeds frame gate."""
+        from agents.hapax_voice.commands import Command
+
+        daemon = _make_daemon()
+        # Set presence values so perception.tick() works with real comparisons
+        daemon.presence.latest_vad_confidence = 0.0
+        daemon.presence.face_detected = False
+        daemon.presence.face_count = 0
+        # Tick perception to get environment state
+        state = daemon.perception.tick()
+        # Governor evaluates state
+        directive = daemon.governor.evaluate(state)
+        assert directive in {"process", "pause", "withdraw"}
+        # Frame gate accepts the resulting command
+        cmd = Command(action=directive, trigger_source="governor")
+        daemon._frame_gate.apply_command(cmd)
+        assert daemon._frame_gate.directive == directive

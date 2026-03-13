@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from agents.hapax_voice.combinator import with_latest_from
 from agents.hapax_voice.governance import FusedContext
 from agents.hapax_voice.primitives import Behavior, Event
@@ -150,6 +152,55 @@ class TestWithLatestFrom:
         received: list[FusedContext] = []
         output.subscribe(lambda ts, ctx: received.append(ctx))
         assert received == []
+
+    def test_fused_context_samples_immutable(self):
+        """B: FusedContext.samples is read-only (MappingProxyType)."""
+        import types
+
+        trigger: Event[None] = Event()
+        b = Behavior(0, watermark=0.0)
+
+        received: list[FusedContext] = []
+        output = with_latest_from(trigger, {"val": b})
+        output.subscribe(lambda ts, ctx: received.append(ctx))
+
+        trigger.emit(1.0, None)
+        ctx = received[0]
+        assert isinstance(ctx.samples, types.MappingProxyType)
+        with pytest.raises(TypeError):
+            ctx.samples["injected"] = None  # type: ignore[index]
+
+    def test_fused_context_frozen(self):
+        """B: FusedContext is frozen — attributes cannot be mutated after creation."""
+        trigger: Event[None] = Event()
+        b = Behavior(0, watermark=0.0)
+
+        received: list[FusedContext] = []
+        output = with_latest_from(trigger, {"val": b})
+        output.subscribe(lambda ts, ctx: received.append(ctx))
+
+        trigger.emit(1.0, None)
+        ctx = received[0]
+        with pytest.raises(AttributeError):
+            ctx.trigger_time = 999.0  # type: ignore[misc]
+
+    def test_behavior_update_does_not_mutate_prior_context(self):
+        """B: A previously-emitted FusedContext is not retroactively modified."""
+        trigger: Event[None] = Event()
+        b = Behavior(0, watermark=0.0)
+
+        received: list[FusedContext] = []
+        output = with_latest_from(trigger, {"val": b})
+        output.subscribe(lambda ts, ctx: received.append(ctx))
+
+        trigger.emit(1.0, None)
+        first_val = received[0].get_sample("val").value
+
+        b.update(99, 2.0)
+        trigger.emit(3.0, None)
+
+        # First context must still reflect original value
+        assert received[0].get_sample("val").value == first_val == 0
 
     def test_subscriber_exception_isolation(self):
         trigger: Event[None] = Event()

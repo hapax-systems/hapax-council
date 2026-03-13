@@ -130,6 +130,45 @@ class TestFrameGateCommand:
 
 
 # ------------------------------------------------------------------
+# E: Error paths — Command/Schedule as inert data carriers
+# ------------------------------------------------------------------
+
+
+class TestCommandErrorPaths:
+    def test_empty_action_does_not_crash_frame_gate(self):
+        """Commands with empty action are structurally valid frozen data."""
+        from agents.hapax_voice.frame_gate import FrameGate
+
+        gate = FrameGate()
+        cmd = Command(action="")
+        gate.apply_command(cmd)
+        assert gate.directive == ""
+
+    def test_denied_command_carries_denial_provenance(self):
+        """A denied VetoResult on a Command preserves its denial chain."""
+        denied = VetoResult(
+            allowed=False,
+            denied_by=("safety_veto", "staleness_veto"),
+            axiom_ids=("single_user",),
+        )
+        cmd = Command(action="play_sample", governance_result=denied)
+        assert not cmd.governance_result.allowed
+        assert len(cmd.governance_result.denied_by) == 2
+
+    def test_schedule_with_zero_tolerance_is_valid(self):
+        """Zero tolerance is a valid edge — consumers decide expiry semantics."""
+        cmd = Command(action="process")
+        sched = Schedule(command=cmd, wall_time=100.0, tolerance_ms=0.0)
+        assert sched.tolerance_ms == 0.0
+
+    def test_schedule_with_past_wall_time_is_valid(self):
+        """Schedule with wall_time in the past is structurally valid — queue decides expiry."""
+        cmd = Command(action="process")
+        sched = Schedule(command=cmd, wall_time=0.0)
+        assert sched.wall_time == 0.0
+
+
+# ------------------------------------------------------------------
 # PerceptionEngine min_watermark
 # ------------------------------------------------------------------
 

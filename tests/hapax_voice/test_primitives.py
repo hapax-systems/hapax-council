@@ -35,6 +35,36 @@ class TestStamped:
         b = Stamped(value=1, watermark=3.0)
         assert a != b
 
+    # -- D: Boundaries --
+
+    def test_none_value(self):
+        s = Stamped(value=None, watermark=1.0)
+        assert s.value is None
+
+    def test_zero_watermark(self):
+        s = Stamped(value="x", watermark=0.0)
+        assert s.watermark == 0.0
+
+    def test_negative_watermark(self):
+        s = Stamped(value="x", watermark=-1.0)
+        assert s.watermark == -1.0
+
+    def test_nan_watermark(self):
+        import math
+
+        s = Stamped(value="x", watermark=float("nan"))
+        assert math.isnan(s.watermark)
+
+    # -- G: Composition contract (L0 → L1) --
+
+    def test_stamped_is_valid_behavior_sample(self):
+        """Behavior.sample() returns a Stamped — proving L0 is L1's output type."""
+        b = Behavior(42, watermark=5.0)
+        s = b.sample()
+        assert isinstance(s, Stamped)
+        assert s.value == 42
+        assert s.watermark == 5.0
+
 
 # ------------------------------------------------------------------
 # Behavior

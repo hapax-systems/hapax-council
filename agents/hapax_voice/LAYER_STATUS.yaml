@@ -22,12 +22,15 @@ layers:
   L0:
     name: "Stamped[T]"
     modules: [primitives.Stamped]
-    state: proven
+    state: matrix-complete
     tests:
       file: tests/hapax_voice/test_primitives.py::TestStamped
-      count: 4
-      dimensions: [A, B, C, D]
-    notes: "Frozen dataclass. Hypothesis coverage via test_governance.py."
+      count: 9
+      dimensions: [A, B, C, D, G]
+    notes: "D boundary tests (None, zero, negative, NaN) + G composition contract (Stamped→Behavior.sample). No hypothesis tests — state was incorrectly 'proven', corrected to matrix-complete."
+    gaps:
+      - "E: Stamped has no error paths (frozen dataclass, no validation). Inherits from Python dataclass machinery."
+      - "F: No Dog Star proof. Stamped is L0 — no lower layer to violate."
 
   L1:
     name: "Behavior[T], Event[T]"
@@ -66,14 +69,13 @@ layers:
     state: matrix-complete
     tests:
       files:
-        - tests/hapax_voice/test_combinator.py::TestWithLatestFrom  # 10 tests
+        - tests/hapax_voice/test_combinator.py::TestWithLatestFrom  # 13 tests
         - tests/hapax_voice/test_type_system_matrix_5.py  # forward pipeline flow
-      count: 22
-      dimensions: [A, C, D, E, F, G]
+      count: 25
+      dimensions: [A, B, C, D, E, F, G]
     dog_star:
       - "D2: combinator watermark fidelity (TestL3_D2, 4 tests)"
-    gaps:
-      - "B: No explicit invariant test for output Event immutability (inherits from Event)."
+    notes: "B dimension closed: FusedContext immutability (frozen, MappingProxyType samples, no retroactive mutation)."
 
   L4:
     name: "Command, Schedule, VetoResult"
@@ -81,10 +83,11 @@ layers:
     state: matrix-complete
     tests:
       files:
-        - tests/hapax_voice/test_commands.py  # 13 tests
+        - tests/hapax_voice/test_commands.py  # 17 tests
         - tests/hapax_voice/test_type_system_matrix_9.py  # provenance tracing
-      count: 25
+      count: 29
       dimensions: [A, B, C, D, E, F, G]
+    notes: "E dimension closed: error path tests for empty action, denied provenance, zero tolerance, past wall_time."
     dog_star:
       - "D1.1: governance denial blocks dispatch (TestD1_1, 2 tests)"
     notes: "F dimension added via test_dog_star_enforcement.py::TestD1_1"
@@ -159,11 +162,12 @@ layers:
     state: matrix-complete
     tests:
       files:
-        - tests/hapax_voice/test_daemon_lifecycle_matrix.py  # 32 tests (B, D, E, G)
+        - tests/hapax_voice/test_daemon_lifecycle_matrix.py  # 34 tests (B, D, E, G)
         - tests/test_hapax_voice_daemon_pipeline.py  # 11 tests (A, C)
         - tests/hapax_voice/test_e2e_use_case_matrix.py
-      count: 55
+      count: 57
       dimensions: [A, B, C, D, E, F, G]
+    notes: "G dimension strengthened: schedule queue acceptance + full perception→governor→frame_gate pipeline test."
     dog_star:
       - "D1.1: denied schedule not dispatched through queue (TestL9, 3 tests)"
 
