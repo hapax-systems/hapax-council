@@ -71,7 +71,11 @@ def _make_full_deliberation_record(
         ]
     if brutus_claims_attacked is None:
         brutus_claims_attacked = [
-            {"claim": "Y is wrong", "attack": "Y is right because...", "attack_type": "undercutting"}
+            {
+                "claim": "Y is wrong",
+                "attack": "Y is right because...",
+                "attack_type": "undercutting",
+            }
         ]
 
     def _make_conditions(met_list: list[bool]) -> list[dict]:
