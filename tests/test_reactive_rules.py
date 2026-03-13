@@ -41,9 +41,11 @@ def _event(path: str, event_type: str = "modified") -> ChangeEvent:
 def _registry() -> RuleRegistry:
     reg = RuleRegistry()
     register_infrastructure_rules(reg)
-    # Reset cooldowns and scheduler for test isolation
+    # Reset cooldowns for test isolation. Setting to 0.0 is unsafe because
+    # time.monotonic() can be small on fresh CI containers (uptime < cooldown),
+    # causing rules to appear still in cooldown. Use -inf to guarantee expiry.
     for rule in reg:
-        rule._last_fired = 0.0
+        rule._last_fired = float("-inf")
     get_knowledge_scheduler().cancel()
     return reg
 
