@@ -4,7 +4,7 @@
 
 VS Code extension for the Hapax system. Replaces the archived `obsidian-hapax` plugin. Provides an LLM chat sidebar, Qdrant RAG search, and management commands -- all embedded in the vault editing workflow.
 
-Part of the three-tier Hapax architecture. This is a Tier 1 interface (interactive). Architecture specs live in `~/projects/hapaxromana/`.
+Part of the three-tier Hapax architecture. This is a Tier 1 interface (interactive). Architecture specs live in [hapax-constitution](https://github.com/ryanklee/hapax-constitution).
 
 ## Build and Run
 
@@ -54,7 +54,7 @@ Three-tier fallback: VS Code setting > environment variable (direnv) > `pass` st
 - **Slash commands** (`src/slash-commands.ts`) -- `/prep`, `/review-week`, `/growth`, `/team-risks`, `/setup` (interview), `/setup skip`, `/setup status`. Autocomplete dropdown in chat.
 - **RAG search** (`src/qdrant-client.ts`) -- vector search via Qdrant + Ollama embeddings (nomic-embed-text-v2-moe, 768d). Multi-collection search. Degrades silently off home network.
 - **Interview engine** (`src/interview/`) -- guided setup to populate foundational management data. Three tiers: foundational, structural, enrichment.
-- **Status bar** (`src/status-bar.ts`) -- health status from cockpit API (:8095), 5-minute refresh, silent degradation.
+- **Status bar** (`src/status-bar.ts`) -- health status from cockpit API (:8051), 5-minute refresh, silent degradation.
 - **Management commands** (`src/commands/`) -- prepare 1:1, team snapshot, knowledge search, nudges, profile view, decision capture. Work-vault only (gated at registration).
 
 ## File Layout
