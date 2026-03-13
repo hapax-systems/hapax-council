@@ -273,10 +273,16 @@ class PerceptionEngine:
         self._b_operator_present.update(face_detected, now)
         self._b_face_count.update(face_count, now)
 
-        # Poll registered backends — each merges its Behaviors into self.behaviors
+        # Poll registered backends — each gets a view scoped to its declared provides
+        # (D5.2: prevents backends from writing to behaviors they don't own)
         for name, backend in self._backends.items():
             try:
-                backend.contribute(self.behaviors)
+                scoped = {k: self.behaviors[k] for k in backend.provides if k in self.behaviors}
+                backend.contribute(scoped)
+                # Sync back any new behaviors created within provides scope
+                for k in backend.provides:
+                    if k in scoped and k not in self.behaviors:
+                        self.behaviors[k] = scoped[k]
             except Exception:
                 log.exception("Backend %s contribute failed", name)
 
