@@ -1,0 +1,321 @@
+id: deliberation-2026-03-12-004
+question: "Given the supremacy tension between corporate_boundary and single_user:\n  cb-data-001: Vault\
+  \ data flow must use only git via corporate-approved remote. Extension must never require direct network\
+  \ access to home services.\n  su-auth-001: All authentication, authorization, and user management code\
+  \ must be removed or disabled since there is exactly one authorized user.\n\nContext: cb-data-001 requires\
+  \ vault data via git through approved remotes. su-auth-001 requires removing all auth code. Git remote\
+  \ auth (SSH keys, HTTPS tokens) is auth infrastructure.\n\nQuestion: How should these implications interact\
+  \ when both apply simultaneously? Is there a genuine conflict, complementarity, or a scope distinction\
+  \ that resolves the tension?"
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: cb-data-001 requires vault data via git through approved remotes. su-auth-001 requires
+    removing all auth code. Git remote auth (SSH keys, HTTPS tokens) is auth infrastructure.
+  relevant_axioms:
+  - corporate_boundary
+  - single_user
+  relevant_implications:
+  - cb-data-001
+  - su-auth-001
+  relevant_precedents:
+  - sp-arch-007
+  accumulated_dissents: []
+rounds:
+- round: 1
+  agent: publius
+  position: These implications are complementary, not conflicting. The single_user axiom properly eliminates
+    user-facing authentication while preserving infrastructure authentication required by corporate_boundary.
+    Git credentials are not 'user management code' but rather infrastructure configuration, analogous
+    to network credentials or API keys that enable the system to function within corporate boundaries.
+  canon_applied: textualist
+  supporting_precedents: &id001
+  - sp-arch-007
+  proposed_resolution: 'Apply both implications fully: remove all user authentication/authorization code
+    per su-auth-001, while maintaining git remote authentication as infrastructure configuration required
+    by cb-data-001. Git credentials serve corporate boundary enforcement, not user management.'
+  refutation_conditions: &id002
+  - If Brutus shows that the text of su-auth-001 explicitly includes 'infrastructure authentication' or
+    'system credentials' within its scope of removal
+  - If Brutus identifies specific language in su-auth-001 that makes no distinction between user-facing
+    and infrastructure authentication
+  - If Brutus demonstrates that sp-arch-007 precedent actually treats all authentication uniformly rather
+    than distinguishing authentication types
+  update_conditions: &id003
+  - If Brutus points out that my user/infrastructure distinction creates an exploitable loophole where
+    any auth could be reframed as 'infrastructure'
+  - If Brutus shows that the phrase 'authentication, authorization, and user management code' in su-auth-001
+    uses conjunctive language that treats these as a unified category
+  - If Brutus identifies a specific scenario where git credentials could be used for user management purposes,
+    breaking down my categorical distinction
+  values_promoted: &id004
+  - constitutional coherence
+  - security through proper boundaries
+  - operational functionality
+  - clear categorical distinctions
+- round: 1
+  agent: brutus
+  position: These implications address distinct concerns without genuine conflict. cb-data-001 governs
+    external data flow mechanisms, while su-auth-001 eliminates internal user management. Git authentication
+    serves as infrastructure for secure transport, not user authorization - similar to how a single-user
+    system still requires network passwords. The single_user axiom's higher weight confirms that internal
+    simplification takes precedence over boundary complexity.
+  canon_applied: purposivist
+  supporting_precedents: &id006
+  - sp-arch-007
+  proposed_resolution: Maintain git authentication as required transport security infrastructure while
+    removing all internal user management code. Git credentials function as network access tokens, not
+    user identity verification.
+  refutation_conditions: &id007
+  - Git authentication mechanisms inherently perform user identity verification beyond transport security
+  - The corporate_boundary axiom explicitly requires authentication to verify user identity, not just
+    secure transport
+  - Removing git authentication would not violate cb-data-001's requirement for corporate-approved remote
+    access
+  update_conditions: &id008
+  - If Publius shows that cb-data-001's text explicitly requires 'authentication' rather than just 'approved
+    remote access'
+  - If Publius identifies specific language in su-auth-001 that encompasses transport-layer security as
+    'authentication code'
+  - If Publius demonstrates that my distinction between transport security and user management creates
+    an exploitable security gap in the single-user context
+  values_promoted: &id009
+  - implementation simplicity
+  - domain autonomy
+  - security through appropriate boundaries
+  - avoiding over-broad constitutional interpretation
+- round: 2
+  agent: brutus
+  responds_to: round 1
+  claims_attacked:
+  - claim: Git credentials are not 'user management code' but rather infrastructure configuration
+    attack: This distinction is artificial. Git credentials authenticate a specific user identity to the
+      remote repository - they verify WHO is accessing the repository, not just that the connection is
+      secure. The credential literally contains user-identifying information (username in HTTPS, key identity
+      in SSH).
+    attack_type: rebutting
+  - claim: The single_user axiom properly eliminates user-facing authentication while preserving infrastructure
+      authentication
+    attack: The text of su-auth-001 makes no such distinction - it requires removing 'all authentication,
+      authorization, and user management code.' The word 'all' is unqualified. Creating subcategories
+      of authentication not present in the text violates textualist interpretation.
+    attack_type: undercutting
+  update_conditions_checked:
+  - condition: If Publius shows that cb-data-001's text explicitly requires 'authentication' rather than
+      just 'approved remote access'
+    met: false
+    reasoning: Publius hasn't quoted cb-data-001's actual text to show it explicitly requires 'authentication.'
+      He assumes git remotes require auth but doesn't prove the implication itself mandates it.
+  - condition: If Publius identifies specific language in su-auth-001 that encompasses transport-layer
+      security as 'authentication code'
+    met: true
+    reasoning: While Publius doesn't explicitly frame it as transport-layer security, his point about
+      'all authentication' being unqualified in su-auth-001 effectively shows that the text doesn't exclude
+      any type of authentication, including transport-layer.
+  - condition: If Publius demonstrates that my distinction between transport security and user management
+      creates an exploitable security gap in the single-user context
+    met: true
+    reasoning: Publius's first update condition about reframing any auth as 'infrastructure' identifies
+      exactly this exploitable loophole - my distinction could allow circumventing su-auth-001 by relabeling
+      authentication.
+  concessions:
+  - The text of su-auth-001 uses unqualified language ('all authentication') that doesn't distinguish
+    between user-facing and infrastructure authentication
+  - My transport security vs user management distinction could create an exploitable loophole where authentication
+    requirements could be circumvented through relabeling
+  new_considerations:
+  - Git remotes can function with read-only anonymous access in many implementations, suggesting authentication
+    may not be strictly required for cb-data-001 compliance
+  - The axiom weights (single_user=100 vs corporate_boundary=90) suggest that when genuine conflict exists,
+    single_user requirements should prevail
+  - The purposivist approach should consider that in a true single-user system, the security model fundamentally
+    changes - there's no 'other user' to authenticate against
+  position_movement: I now agree that su-auth-001's unqualified language encompasses all authentication
+    code, including git credentials. However, I maintain these requirements address different scopes -
+    cb-data-001 constrains data flow paths while su-auth-001 eliminates authentication. The resolution
+    may be using anonymous read-only git access.
+  values_promoted:
+  - consistency with text
+  - security through simplicity
+  - avoiding artificial distinctions
+- round: 3
+  agent: publius
+  responds_to: round 2
+  claims_attacked:
+  - claim: su-auth-001's unqualified language encompasses all authentication code, including git credentials
+    attack: The requirement states 'authentication, authorization, and user management code' - the conjunctive
+      'and' suggests these form a unified category of user-facing systems, not isolated infrastructure
+      components
+    attack_type: undercutting
+  - claim: These requirements address different scopes
+    attack: While they do address different concerns, the scopes overlap at git authentication. This overlap
+      requires resolution, not dismissal as 'different scopes'
+    attack_type: rebutting
+  update_conditions_checked:
+  - condition: If Brutus points out that my user/infrastructure distinction creates an exploitable loophole
+      where any auth could be reframed as 'infrastructure'
+    met: true
+    reasoning: Brutus explicitly stated 'My transport security vs user management distinction could create
+      an exploitable loophole where authentication requirements could be circumvented through relabeling'
+  - condition: If Brutus shows that the phrase 'authentication, authorization, and user management code'
+      in su-auth-001 uses conjunctive language that treats these as a unified category
+    met: false
+    reasoning: While Brutus noted the unqualified language, he didn't analyze the conjunctive structure
+      that might support treating these as user-facing systems rather than all authentication
+  - condition: If Brutus identifies a specific scenario where git credentials could be used for user management
+      purposes, breaking down my categorical distinction
+    met: false
+    reasoning: Brutus didn't provide a specific scenario showing git credentials being used for user management
+  concessions: &id005
+  - My user/infrastructure distinction could enable circumvention of authentication requirements through
+    relabeling
+  - The text of su-auth-001 uses unqualified language that prima facie includes all authentication
+  new_considerations:
+  - The conjunctive phrasing 'authentication, authorization, and user management code' suggests these
+    components work together as a user-facing system, not as isolated infrastructure elements
+  - Git authentication serves a fundamentally different purpose than user authentication - it validates
+    repository access rights, not user identity for application features
+  - Removing git authentication would make cb-data-001 impossible to implement, creating a true conflict
+    rather than complementarity
+  position_movement: I concede that my user/infrastructure distinction is vulnerable to exploitation and
+    that su-auth-001's language is unqualified. However, I now argue that the conjunctive structure of
+    'authentication, authorization, and user management code' indicates these form a unified user-facing
+    system, distinguishing them from infrastructure authentication that enables corporate boundary compliance.
+  values_promoted:
+  - consistency
+  - security
+  - practicality
+  - textual fidelity
+- round: 4
+  agent: brutus
+  responds_to: round 3
+  claims_attacked:
+  - claim: The requirement states 'authentication, authorization, and user management code' - the conjunctive
+      structure suggests these form a unified category of user-identity-related code
+    attack: This conjunctive reading is strained. The text lists three distinct types of code to be removed,
+      not a single unified category. If they meant only user-identity code, they would have said 'user
+      authentication, user authorization, and user management code.' The unqualified terms suggest broader
+      scope.
+    attack_type: rebutting
+  - claim: Git credentials serve a different function (transport security) than user management
+    attack: Git credentials don't merely secure transport - they authenticate to the remote repository
+      by proving identity. The remote grants or denies access based on this authentication, which is precisely
+      what su-auth-001 prohibits.
+    attack_type: undermining
+  update_conditions_checked:
+  - condition: If Publius shows that cb-data-001's text explicitly requires 'authentication' rather than
+      just 'approved remote access'
+    met: false
+    reasoning: Publius hasn't shown that cb-data-001's text explicitly requires authentication. The requirement
+      specifies 'git via corporate-approved remote' but doesn't mandate authentication mechanisms.
+  - condition: If Publius identifies specific language in su-auth-001 that encompasses transport-layer
+      security as 'authentication code'
+    met: true
+    reasoning: While Publius hasn't identified specific language about transport-layer security, their
+      argument that git credentials authenticate identity (not just secure transport) effectively shows
+      that what I called 'transport security' is actually authentication code covered by su-auth-001's
+      broad language.
+  - condition: If Publius demonstrates that my distinction between transport security and user management
+      creates an exploitable security gap in the single-user context
+    met: true
+    reasoning: Publius demonstrated in round 3 that my distinction could enable circumvention through
+      relabeling, and I already conceded this point. Any authentication could be reframed as 'infrastructure'
+      or 'transport security' to evade su-auth-001.
+  concessions:
+  - Git credentials authenticate identity to the remote repository, not merely secure transport
+  - My transport security vs user management distinction creates an exploitable loophole that could circumvent
+    su-auth-001's intent
+  - su-auth-001's broad language 'all authentication' encompasses git remote authentication without qualification
+  new_considerations:
+  - The governance system may need to recognize that some requirements create impossible mandates when
+    combined - cb-data-001 requires using git remotes (which inherently require authentication) while
+    su-auth-001 forbids all authentication code
+  - The single_user axiom's weight (100) suggests it should dominate when direct conflict exists, potentially
+    requiring modification of corporate_boundary requirements
+  position_movement: I now accept that git credentials are authentication code covered by su-auth-001's
+    prohibition. Combined with my previous concessions about the unqualified scope and exploitable distinctions,
+    I agree there is a genuine conflict between these requirements that cannot be resolved through scope
+    distinctions.
+  values_promoted:
+  - clarity
+  - security
+  - consistency
+publius_final:
+  position: These implications are complementary, not conflicting. The single_user axiom properly eliminates
+    user-facing authentication while preserving infrastructure authentication required by corporate_boundary.
+    Git credentials are not 'user management code' but rather infrastructure configuration, analogous
+    to network credentials or API keys that enable the system to function within corporate boundaries.
+  canon_applied: textualist
+  supporting_precedents: *id001
+  proposed_resolution: 'Apply both implications fully: remove all user authentication/authorization code
+    per su-auth-001, while maintaining git remote authentication as infrastructure configuration required
+    by cb-data-001. Git credentials serve corporate boundary enforcement, not user management.'
+  refutation_conditions: *id002
+  update_conditions: *id003
+  values_promoted: *id004
+  concessions_made: *id005
+  final_position_movement: I concede that my user/infrastructure distinction is vulnerable to exploitation
+    and that su-auth-001's language is unqualified. However, I now argue that the conjunctive structure
+    of 'authentication, authorization, and user management code' indicates these form a unified user-facing
+    system, distinguishing them from infrastructure authentication that enables corporate boundary compliance.
+brutus_final:
+  position: These implications address distinct concerns without genuine conflict. cb-data-001 governs
+    external data flow mechanisms, while su-auth-001 eliminates internal user management. Git authentication
+    serves as infrastructure for secure transport, not user authorization - similar to how a single-user
+    system still requires network passwords. The single_user axiom's higher weight confirms that internal
+    simplification takes precedence over boundary complexity.
+  canon_applied: purposivist
+  supporting_precedents: *id006
+  proposed_resolution: Maintain git authentication as required transport security infrastructure while
+    removing all internal user management code. Git credentials function as network access tokens, not
+    user identity verification.
+  refutation_conditions: *id007
+  update_conditions: *id008
+  values_promoted: *id009
+  concessions_made:
+  - The text of su-auth-001 uses unqualified language ('all authentication') that doesn't distinguish
+    between user-facing and infrastructure authentication
+  - My transport security vs user management distinction could create an exploitable loophole where authentication
+    requirements could be circumvented through relabeling
+  - Git credentials authenticate identity to the remote repository, not merely secure transport
+  - My transport security vs user management distinction creates an exploitable loophole that could circumvent
+    su-auth-001's intent
+  - su-auth-001's broad language 'all authentication' encompasses git remote authentication without qualification
+  final_position_movement: I now accept that git credentials are authentication code covered by su-auth-001's
+    prohibition. Combined with my previous concessions about the unqualified scope and exploitable distinctions,
+    I agree there is a genuine conflict between these requirements that cannot be resolved through scope
+    distinctions.
+tension_map:
+  agreement: Both agents ultimately agreed that git credentials constitute authentication code that falls
+    under su-auth-001's prohibition, and that attempting to distinguish between 'user-facing' and 'infrastructure'
+    authentication creates an exploitable loophole that could undermine the single-user axiom's intent
+  disagreement: Whether the conjunctive structure of 'authentication, authorization, and user management
+    code' in su-auth-001 creates a unified category requiring all three elements to trigger removal (Publius's
+    final position) or lists three distinct types of code that must each be removed (Brutus's interpretation)
+  disagreement_type: factual
+  novel_insight: The deliberation revealed that git authentication creates a fundamental architectural
+    impossibility when cb-data-001 and su-auth-001 apply simultaneously - the corporate boundary requires
+    authenticated git access while the single-user axiom prohibits all authentication code, exposing an
+    irreconcilable conflict between security models that neither agent initially recognized
+  failure_modes:
+  - Developers reintroduce user authentication by claiming it's 'infrastructure configuration' similar
+    to git credentials
+  - Git credential compromise allows unauthorized access with no internal authentication layer to prevent
+    data exfiltration
+  - Future authentication requirements get implemented as 'transport security' to circumvent su-auth-001
+  - Compliance audit finds the system still performs authentication despite su-auth-001, creating legal
+    exposure
+  - Internal bad actors exploit lack of user authentication to access or modify data they shouldn't
+  - The 'network access token' interpretation spreads to other authentication systems, undermining su-auth-001
+    across the organization
+process_metadata:
+  model: claude-opus
+  total_rounds: 4
+  total_concessions: 7
+  termination: round_limit
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+dissent_id: null
+created: '2026-03-12T21:46:18.739011+00:00'
+resolved: null

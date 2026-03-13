@@ -1,0 +1,297 @@
+id: deliberation-2026-03-12-003
+question: "Given the supremacy tension between corporate_boundary and single_user:\n  cb-llm-001: Extension\
+  \ must support direct API calls to sanctioned providers without requiring a localhost proxy.\n  su-auth-001:\
+  \ All authentication, authorization, and user management code must be removed or disabled since there\
+  \ is exactly one authorized user.\n\nContext: cb-llm-001 requires direct API calls with provider keys.\
+  \ su-auth-001 eliminates auth code. API key management for LLM providers resembles auth infrastructure.\n\
+  \nQuestion: How should these implications interact when both apply simultaneously? Is there a genuine\
+  \ conflict, complementarity, or a scope distinction that resolves the tension?"
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: cb-llm-001 requires direct API calls with provider keys. su-auth-001 eliminates auth code.
+    API key management for LLM providers resembles auth infrastructure.
+  relevant_axioms:
+  - corporate_boundary
+  - single_user
+  relevant_implications:
+  - cb-llm-001
+  - su-auth-001
+  relevant_precedents:
+  - sp-arch-007
+  accumulated_dissents: []
+rounds:
+- round: 1
+  agent: publius
+  position: These implications are complementary, not conflicting. The single_user axiom eliminates authentication
+    between users, not between the extension and external services. API keys for LLM providers are credentials
+    for external service access, not user authentication infrastructure. The extension must support direct
+    API calls (cb-llm-001) while removing multi-user auth code (su-auth-001).
+  canon_applied: textualist
+  supporting_precedents: &id001
+  - sp-arch-007
+  proposed_resolution: Implement direct API calls to LLM providers with stored API keys, but remove all
+    user authentication, authorization, and session management code. API keys are service credentials,
+    not user auth.
+  refutation_conditions: &id002
+  - If Brutus shows that the text of su-auth-001 explicitly includes 'external service credentials' or
+    'API keys' in its definition of authentication infrastructure
+  - If Brutus identifies specific language in cb-llm-001 that requires user-specific API key management
+    rather than system-wide credentials
+  - If Brutus demonstrates that precedent sp-arch-007 explicitly treats service credentials as part of
+    authentication infrastructure
+  update_conditions: &id003
+  - If Brutus points to text in su-auth-001 that uses broader language like 'all credential management'
+    rather than just 'user authentication'
+  - If Brutus identifies a passage in cb-llm-001 that implies multiple users might have different API
+    keys for the same provider
+  - If Brutus shows that my distinction between 'user authentication' and 'service credentials' creates
+    an exploitable loophole for multi-user functionality
+  values_promoted: &id004
+  - clarity of scope
+  - operational efficiency
+  - constitutional coherence
+  - practical implementation
+- round: 1
+  agent: brutus
+  position: These implications are complementary, not conflicting. The single_user axiom eliminates authentication
+    between users, not between the extension and external services. API key management for LLM providers
+    is infrastructure for external service integration, not user authentication. Just as a single-user
+    system still needs network credentials, it needs API keys for sanctioned services.
+  canon_applied: purposivist
+  supporting_precedents: &id006
+  - sp-arch-007
+  proposed_resolution: 'Apply both implications fully: remove all user authentication/authorization code
+    while maintaining minimal API key storage for direct LLM provider calls'
+  refutation_conditions: &id007
+  - If Publius shows that su-auth-001's text explicitly includes 'API keys' or 'service credentials' within
+    its scope of prohibited auth infrastructure
+  - If Publius identifies specific language in su-auth-001 that defines 'authentication' broadly enough
+    to encompass machine-to-machine service authentication
+  - If Publius demonstrates that the precedent sp-arch-007 actually treats API key management as user
+    authentication rather than service integration
+  update_conditions: &id008
+  - If Publius argues that any credential management inherently constitutes 'authentication code' under
+    a plain reading of su-auth-001
+  - If Publius shows that distinguishing between user auth and service auth creates an unprincipled exception
+    that undermines the single_user axiom's purpose
+  - If Publius identifies a specific case where API key management code could be repurposed for multi-user
+    authentication
+  values_promoted: &id009
+  - implementation freedom
+  - domain autonomy
+  - practical governance
+  - purposive coherence
+- round: 2
+  agent: brutus
+  responds_to: round 1
+  claims_attacked:
+  - claim: API keys are service credentials, not user auth
+    attack: This distinction lacks principled boundaries. Both involve storing secrets, validating identity,
+      and controlling access - the core functions of authentication infrastructure. The text of su-auth-001
+      mandates removing 'authentication, authorization, and user management code' without limiting this
+      to inter-user authentication.
+    attack_type: undermining
+  - claim: The extension must support direct API calls with stored API keys
+    attack: While cb-llm-001 requires direct API calls, it doesn't mandate storing API keys in the extension
+      itself. Keys could be provided at runtime through environment variables or command-line arguments,
+      avoiding persistent credential storage infrastructure.
+    attack_type: undercutting
+  update_conditions_checked:
+  - condition: If Publius argues that any credential management inherently constitutes 'authentication
+      code' under a plain reading of su-auth-001
+    met: false
+    reasoning: Publius maintains the user/service distinction rather than arguing all credential management
+      is authentication code
+  - condition: If Publius shows that distinguishing between user auth and service auth creates an unprincipled
+      exception that undermines the single_user axiom's purpose
+    met: false
+    reasoning: Publius doesn't argue the distinction undermines single_user's purpose, only that it's
+      compatible with it
+  - condition: If Publius identifies a specific case where API key management code could be repurposed
+      for multi-user authentication
+    met: false
+    reasoning: Publius doesn't identify any repurposing scenario, instead arguing the distinction is valid
+  concessions:
+  - The extension could satisfy cb-llm-001's direct API call requirement without storing API keys persistently,
+    using runtime-provided credentials instead
+  new_considerations:
+  - The text of su-auth-001 doesn't explicitly limit its scope to 'user-to-user' authentication - it broadly
+    mandates removing authentication code
+  - Credential storage infrastructure shares fundamental characteristics with authentication systems regardless
+    of whether credentials are for users or services
+  - Runtime credential provision (environment variables, command-line) offers a middle path that satisfies
+    both implications
+  position_movement: I now recognize that persistent API key storage isn't required by cb-llm-001, only
+    the capability for direct API calls. This allows for runtime credential provision that avoids creating
+    authentication infrastructure while enabling service access.
+  values_promoted:
+  - single_user axiom supremacy
+  - minimalist system design
+  - avoiding authentication infrastructure creep
+- round: 3
+  agent: publius
+  responds_to: round 2
+  claims_attacked:
+  - claim: Brutus's claim that the distinction between service credentials and user auth lacks principled
+      boundaries
+    attack: 'The distinction has clear boundaries: user authentication verifies WHO is using the system,
+      while service credentials verify WHAT external services the system can access. A single-user system
+      still needs to prove itself to external APIs.'
+    attack_type: rebutting
+  - claim: Brutus's suggestion that runtime-provided credentials satisfy both requirements
+    attack: Runtime credential provision creates the very authentication infrastructure su-auth-001 prohibits.
+      It requires code to accept, validate, and manage credentials from users - precisely the 'authentication
+      and authorization code' that must be removed.
+    attack_type: undermining
+  update_conditions_checked:
+  - condition: If Brutus points to text in su-auth-001 that uses broader language like 'all credential
+      management' rather than just 'user authentication'
+    met: false
+    reasoning: Brutus did not cite any text from su-auth-001 using broader language. He argued conceptually
+      about boundaries but didn't show textual evidence that su-auth-001 covers service credentials.
+  - condition: If Brutus identifies a passage in cb-llm-001 that implies multiple users might have different
+      API keys for the same provider
+    met: false
+    reasoning: Brutus did not identify any such passage. He actually conceded that cb-llm-001 doesn't
+      mandate storing API keys.
+  - condition: If Brutus shows that my distinction between 'user authentication' and 'service credentials'
+      creates an exploitable loophole for multi-user functionality
+    met: true
+    reasoning: Brutus's runtime credential provision proposal effectively creates a loophole where different
+      users could provide different API keys at runtime, enabling multi-user functionality through the
+      backdoor of 'service credentials'.
+  concessions: &id005
+  - Runtime credential provision could create a backdoor for multi-user functionality by allowing different
+    users to supply different API keys
+  new_considerations:
+  - Brutus's runtime credential proposal would require MORE authentication infrastructure than simple
+    stored API keys, as it needs mechanisms to accept and validate user-provided credentials
+  - The textualist reading of su-auth-001 focuses on 'authentication, authorization, and user management
+    code' - stored API keys require none of these, while runtime provision requires all three
+  position_movement: I strengthen my position that stored API keys are the correct solution. Brutus's
+    runtime alternative would CREATE authentication infrastructure where none need exist.
+  values_promoted:
+  - single_user
+  - corporate_boundary
+  - executive_function
+- round: 4
+  agent: brutus
+  responds_to: round 3
+  claims_attacked:
+  - claim: 'The distinction has clear boundaries: user authentication verifies WHO is using the system,
+      while service authentication verifies WHAT service is being accessed'
+    attack: This distinction collapses under scrutiny. API keys verify WHO has access to WHAT service
+      - they are inherently tied to account identity. When you store an OpenAI API key, you're storing
+      credentials that identify a specific OpenAI account holder. This is authentication infrastructure
+      by any reasonable definition.
+    attack_type: rebutting
+  - claim: Runtime credential provision creates the very authentication infrastructure su-auth-001 prohibits
+    attack: This misunderstands my proposal. Runtime provision means the extension never stores, manages,
+      or validates credentials - it merely passes them through to the API. This is less infrastructure
+      than your stored key approach, which requires secure storage, retrieval, and management code.
+    attack_type: undermining
+  update_conditions_checked:
+  - condition: If Publius argues that any credential management inherently constitutes 'authentication
+      code' under a plain reading of su-auth-001
+    met: false
+    reasoning: Publius argues the opposite - that service credential management is distinct from authentication
+      code
+  - condition: If Publius shows that distinguishing between user auth and service auth creates an unprincipled
+      exception that undermines the single_user axiom's purpose
+    met: false
+    reasoning: Publius defends the distinction rather than showing it creates unprincipled exceptions
+  - condition: If Publius identifies a specific case where API key management code could be repurposed
+      for multi-user authentication
+    met: true
+    reasoning: Publius conceded that runtime credential provision could create a backdoor for multi-user
+      functionality by allowing different users to supply different API keys - this directly identifies
+      how credential management could enable multi-user scenarios
+  concessions:
+  - Runtime credential provision could indeed create a backdoor for multi-user functionality if different
+    users can supply different API keys
+  - The stored API key approach better prevents multi-user scenarios than runtime provision
+  new_considerations:
+  - Neither approach fully resolves the tension - stored keys create persistent authentication infrastructure,
+    while runtime provision creates dynamic authentication infrastructure
+  - The real question is which approach minimizes authentication code while satisfying cb-llm-001's direct
+    API call requirement
+  position_movement: I now see that both approaches involve trade-offs. Stored keys prevent multi-user
+    backdoors but require credential management code. Runtime provision minimizes code but could enable
+    multi-user scenarios. The crux is whether su-auth-001 prioritizes preventing multi-user functionality
+    or minimizing authentication-related code.
+  values_promoted:
+  - single_user
+  - corporate_boundary
+  - executive_function
+publius_final:
+  position: These implications are complementary, not conflicting. The single_user axiom eliminates authentication
+    between users, not between the extension and external services. API keys for LLM providers are credentials
+    for external service access, not user authentication infrastructure. The extension must support direct
+    API calls (cb-llm-001) while removing multi-user auth code (su-auth-001).
+  canon_applied: textualist
+  supporting_precedents: *id001
+  proposed_resolution: Implement direct API calls to LLM providers with stored API keys, but remove all
+    user authentication, authorization, and session management code. API keys are service credentials,
+    not user auth.
+  refutation_conditions: *id002
+  update_conditions: *id003
+  values_promoted: *id004
+  concessions_made: *id005
+  final_position_movement: I strengthen my position that stored API keys are the correct solution. Brutus's
+    runtime alternative would CREATE authentication infrastructure where none need exist.
+brutus_final:
+  position: These implications are complementary, not conflicting. The single_user axiom eliminates authentication
+    between users, not between the extension and external services. API key management for LLM providers
+    is infrastructure for external service integration, not user authentication. Just as a single-user
+    system still needs network credentials, it needs API keys for sanctioned services.
+  canon_applied: purposivist
+  supporting_precedents: *id006
+  proposed_resolution: 'Apply both implications fully: remove all user authentication/authorization code
+    while maintaining minimal API key storage for direct LLM provider calls'
+  refutation_conditions: *id007
+  update_conditions: *id008
+  values_promoted: *id009
+  concessions_made:
+  - The extension could satisfy cb-llm-001's direct API call requirement without storing API keys persistently,
+    using runtime-provided credentials instead
+  - Runtime credential provision could indeed create a backdoor for multi-user functionality if different
+    users can supply different API keys
+  - The stored API key approach better prevents multi-user scenarios than runtime provision
+  final_position_movement: I now see that both approaches involve trade-offs. Stored keys prevent multi-user
+    backdoors but require credential management code. Runtime provision minimizes code but could enable
+    multi-user scenarios. The crux is whether su-auth-001 prioritizes preventing multi-user functionality
+    or minimizing authentication-related code.
+tension_map:
+  agreement: Both agents agree that cb-llm-001 and su-auth-001 are complementary rather than conflicting,
+    and that API keys for external LLM services should be distinguished from user authentication infrastructure
+  disagreement: The agents diverge on whether API keys should be stored persistently in the extension
+    (Publius) or provided at runtime without storage (Brutus's evolved position), and whether the distinction
+    between service credentials and user authentication has principled boundaries
+  disagreement_type: factual
+  novel_insight: The deliberation revealed that runtime credential provision, while initially appearing
+    to better satisfy su-auth-001 by avoiding credential storage entirely, actually creates a more dangerous
+    backdoor for multi-user functionality by allowing different users to supply different API keys at
+    runtime - a vulnerability that neither agent identified in their initial positions
+  failure_modes:
+  - Developers reintroduce user authentication through API key management UI, allowing multiple stored
+    API keys per 'workspace' or 'profile'
+  - Browser extension's storage mechanisms inadvertently create user-like sessions through API key association
+    with browser profiles
+  - API key validation and error handling code evolves into de facto user identification system
+  - Third-party contributions add 'convenience features' that circumvent the no-auth restriction through
+    creative interpretations
+  - Removal of authentication code breaks existing functionality that unknowingly depended on auth infrastructure
+  - API key storage implementation becomes a security vulnerability without proper access controls
+  - Future LLM provider requirements force reintroduction of user-specific features
+process_metadata:
+  model: claude-opus
+  total_rounds: 4
+  total_concessions: 4
+  termination: round_limit
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+dissent_id: null
+created: '2026-03-12T21:44:17.364764+00:00'
+resolved: null

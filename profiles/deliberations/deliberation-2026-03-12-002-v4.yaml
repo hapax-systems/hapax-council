@@ -1,0 +1,150 @@
+id: deliberation-2026-03-12-002
+question: "Given the supremacy tension between management_governance and executive_function:\n  mg-boundary-002:\
+  \ Never suggest what the operator should say to a team member or draft language for delivery in people\
+  \ conversations.\n  ex-err-001: Error messages must include specific next actions, not just descriptions\
+  \ of what went wrong.\n\nContext: mg-boundary-002 blocks suggesting what to say to people. ex-err-001\
+  \ requires next actions. When the recommended next action involves a conversation with a person, both\
+  \ apply.\n\nQuestion: How should these implications interact when both apply simultaneously? Is there\
+  \ a genuine conflict, complementarity, or a scope distinction that resolves the tension?"
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: mg-boundary-002 blocks suggesting what to say to people. ex-err-001 requires next actions.
+    When the recommended next action involves a conversation with a person, both apply.
+  relevant_axioms:
+  - management_governance
+  - executive_function
+  relevant_implications:
+  - mg-boundary-002
+  - ex-err-001
+  relevant_precedents:
+  - sp-mgmt-001
+  accumulated_dissents: []
+rounds:
+- round: 1
+  agent: publius
+  position: These implications are complementary, not conflicting. mg-boundary-002 prohibits drafting
+    conversational language, while ex-err-001 requires actionable guidance. The system can satisfy both
+    by providing structured next actions ('Schedule 1:1 with team member about X') without scripting the
+    conversation itself. This preserves management autonomy while maintaining executive function utility.
+  canon_applied: textualist
+  supporting_precedents: &id001
+  - sp-mgmt-001
+  proposed_resolution: When errors require human interaction, provide action-oriented guidance ('Discuss
+    performance concerns with employee') rather than conversational scripts. Include what to address,
+    not how to say it.
+  refutation_conditions: &id002
+  - The text of ex-err-001 requires conversational scripts, not just action descriptions
+  - mg-boundary-002's prohibition extends beyond language suggestions to block any guidance about conversations
+  - The distinction between 'what to discuss' and 'how to say it' creates an unworkable gray area
+  update_conditions: &id003
+  - If Brutus shows that providing topics for discussion without scripts still constitutes 'suggesting
+    what to say' under a reasonable reading of mg-boundary-002
+  - If Brutus identifies specific error scenarios where action-only guidance becomes meaningless without
+    some conversational framing
+  - If Brutus demonstrates that sp-mgmt-001 precedent actually supports requiring conversational guidance
+    in error contexts
+  values_promoted: &id004
+  - executive effectiveness
+  - management autonomy
+  - clear error handling
+  - constitutional coherence
+- round: 1
+  agent: brutus
+  position: These implications operate in complementary scopes without genuine conflict. mg-boundary-002
+    protects managerial autonomy by preventing scripted language for human interactions, while ex-err-001
+    ensures actionable error guidance. When an error requires human conversation, the system can specify
+    WHAT action to take ('discuss timeline with team member') without dictating HOW to say it, preserving
+    both local governance concerns.
+  canon_applied: purposivist
+  supporting_precedents: &id005
+  - sp-mgmt-001
+  proposed_resolution: Error messages should specify concrete next actions including when to have conversations,
+    but stop short of providing scripts or suggested wording for those conversations
+  refutation_conditions: &id006
+  - The text of ex-err-001 requires not just specifying actions but providing complete implementation
+    details
+  - mg-boundary-002 prohibits even mentioning that a conversation should occur
+  - The precedent sp-mgmt-001 established that error handling must include conversation templates
+  update_conditions: &id007
+  - If Publius demonstrates that 'specific next actions' in ex-err-001 necessarily includes the content
+    of communications, not just their occurrence
+  - If Publius shows that my distinction between 'what to do' and 'how to say it' creates situations where
+    users receive insufficient guidance to resolve errors
+  - If Publius identifies cases where specifying an action without implementation details renders the
+    error message effectively non-actionable
+  values_promoted: &id008
+  - domain autonomy
+  - implementation freedom
+  - respect for managerial discretion
+  - practical error resolution
+publius_final:
+  position: These implications are complementary, not conflicting. mg-boundary-002 prohibits drafting
+    conversational language, while ex-err-001 requires actionable guidance. The system can satisfy both
+    by providing structured next actions ('Schedule 1:1 with team member about X') without scripting the
+    conversation itself. This preserves management autonomy while maintaining executive function utility.
+  canon_applied: textualist
+  supporting_precedents: *id001
+  proposed_resolution: When errors require human interaction, provide action-oriented guidance ('Discuss
+    performance concerns with employee') rather than conversational scripts. Include what to address,
+    not how to say it.
+  refutation_conditions: *id002
+  update_conditions: *id003
+  values_promoted: *id004
+  concessions_made: []
+  final_position_movement: converged in round 1
+brutus_final:
+  position: These implications operate in complementary scopes without genuine conflict. mg-boundary-002
+    protects managerial autonomy by preventing scripted language for human interactions, while ex-err-001
+    ensures actionable error guidance. When an error requires human conversation, the system can specify
+    WHAT action to take ('discuss timeline with team member') without dictating HOW to say it, preserving
+    both local governance concerns.
+  canon_applied: purposivist
+  supporting_precedents: *id005
+  proposed_resolution: Error messages should specify concrete next actions including when to have conversations,
+    but stop short of providing scripts or suggested wording for those conversations
+  refutation_conditions: *id006
+  update_conditions: *id007
+  values_promoted: *id008
+  concessions_made: []
+  final_position_movement: converged in round 1
+tension_map:
+  agreement: 'Both agents immediately agreed that mg-boundary-002 and ex-err-001 operate in complementary
+    scopes: error messages can specify WHAT conversations to have (''Discuss performance concerns with
+    employee'') without providing HOW to say it (no scripts or suggested wording)'
+  disagreement: No substantive disagreement emerged - both agents converged on the same resolution in
+    round 1, with neither finding grounds to attack the other's position in subsequent rounds
+  disagreement_type: factual
+  novel_insight: 'The pre-mortem scenarios revealed a critical gap neither agent initially considered:
+    while the distinction between ''what to discuss'' and ''how to say it'' seems clear in theory, it
+    breaks down for inexperienced managers who may need more guidance than just topic identification,
+    especially when handling sensitive or complex conversations that emerge from system errors'
+  failure_modes:
+  - Error message states 'Discuss performance concerns with employee' but operator needs to address sensitive
+    termination decision and has no guidance on what specific topics to cover
+  - System provides action 'Address attendance issues in next one-on-one' but operator is new manager
+    who doesn't know what aspects of attendance to focus on or what outcomes to seek
+  - Error guidance says 'Review compensation concerns with team member' but doesn't specify whether to
+    discuss market rates, performance linkage, or budget constraints, leading to unfocused conversation
+  - Multiple errors stack up with actions like 'Discuss project delays', 'Address quality concerns', 'Review
+    workload' without prioritization, overwhelming operator with too many vague conversations to schedule
+process_metadata:
+  model: claude-opus
+  total_rounds: 1
+  total_concessions: 0
+  termination: early_convergence
+  convergence_check:
+    converged: true
+    reasoning: 'Both agents propose the identical resolution mechanism: provide action-oriented guidance
+      about WHAT to discuss without scripting HOW to say it. They both use the same example format (''Discuss
+      X with Y'' or ''Schedule 1:1 about X''), agree on the same boundary (specify actions but not language),
+      and their refutation conditions are parallel - both would be refuted if either policy required scripts
+      or prohibited mentioning conversations. There are no implementation differences or unexplored distinctions
+      between their positions.'
+    crux: null
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+dissent_id: null
+created: '2026-03-12T23:20:26.145574+00:00'
+resolved: null

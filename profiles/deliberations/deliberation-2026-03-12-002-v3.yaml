@@ -1,0 +1,317 @@
+id: deliberation-2026-03-12-002
+question: "Given the supremacy tension between management_governance and executive_function:\n  mg-boundary-002:\
+  \ Never suggest what the operator should say to a team member or draft language for delivery in people\
+  \ conversations.\n  ex-err-001: Error messages must include specific next actions, not just descriptions\
+  \ of what went wrong.\n\nContext: mg-boundary-002 blocks suggesting what to say to people. ex-err-001\
+  \ requires next actions. When the recommended next action involves a conversation with a person, both\
+  \ apply.\n\nQuestion: How should these implications interact when both apply simultaneously? Is there\
+  \ a genuine conflict, complementarity, or a scope distinction that resolves the tension?"
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: mg-boundary-002 blocks suggesting what to say to people. ex-err-001 requires next actions.
+    When the recommended next action involves a conversation with a person, both apply.
+  relevant_axioms:
+  - management_governance
+  - executive_function
+  relevant_implications:
+  - mg-boundary-002
+  - ex-err-001
+  relevant_precedents:
+  - sp-mgmt-001
+  accumulated_dissents: []
+rounds:
+- round: 1
+  agent: publius
+  position: These implications are complementary, not conflicting. mg-boundary-002 prohibits drafting
+    conversational language, while ex-err-001 requires actionable guidance. The system can satisfy both
+    by providing structured next actions ('Schedule 1:1 with team member about project delays') without
+    scripting the conversation itself. This preserves management autonomy while maintaining executive
+    function utility.
+  canon_applied: textualist
+  supporting_precedents: &id001
+  - sp-mgmt-001
+  proposed_resolution: When errors require human interaction, provide action-oriented guidance ('Discuss
+    performance concerns with employee') rather than conversational scripts. Include what to address but
+    not how to say it.
+  refutation_conditions: &id002
+  - If the text of ex-err-001 explicitly requires conversational content rather than just action descriptions
+  - If 'next actions' in ex-err-001 necessarily includes the linguistic content of those actions
+  - If mg-boundary-002's prohibition extends to even naming conversation topics or objectives
+  update_conditions: &id003
+  - If Brutus shows that my distinction between 'what to discuss' and 'what to say' creates an unworkable
+    gray area for specific error types
+  - If Brutus identifies cases where providing only action labels without any content guidance renders
+    the error message effectively useless
+  - If Brutus demonstrates that sp-mgmt-001 precedent actually required conversational content in its
+    resolution
+  values_promoted: &id004
+  - constitutional coherence
+  - executive effectiveness
+  - management autonomy
+  - clear boundaries
+- round: 1
+  agent: brutus
+  position: These implications address distinct concerns with no genuine conflict. mg-boundary-002 protects
+    human autonomy in interpersonal communication, while ex-err-001 ensures actionable error handling.
+    When an error requires human conversation, the system can specify WHAT action to take ('discuss timeline
+    with team lead') without dictating HOW to communicate ('tell them X'). This preserves both local governance
+    over communication style and functional error recovery.
+  canon_applied: purposivist
+  supporting_precedents: &id006
+  - sp-mgmt-001
+  proposed_resolution: Error messages should identify required conversations as actions ('Review budget
+    concerns with finance team') without providing scripts or suggested language. This satisfies ex-err-001's
+    requirement for specific next actions while respecting mg-boundary-002's prohibition on communication
+    coaching.
+  refutation_conditions: &id007
+  - The text of ex-err-001 explicitly requires providing communication scripts, not just identifying communication
+    needs
+  - A precedent exists where 'specific next actions' was interpreted to necessarily include detailed conversation
+    guidance
+  - The distinction between identifying a conversation need and providing conversation content creates
+    an unworkable gray area
+  update_conditions: &id008
+  - If Publius shows that my distinction between 'what' and 'how' breaks down for a specific class of
+    error messages where the action itself is inherently communicative
+  - If Publius identifies text in ex-err-001 that defines 'specific' in a way that requires detail beyond
+    action identification
+  - If Publius demonstrates that precedent sp-mgmt-001 actually supports providing communication guidance
+    in error contexts
+  values_promoted: &id009
+  - human autonomy
+  - implementation flexibility
+  - domain-specific governance
+  - practical functionality
+- round: 2
+  agent: brutus
+  responds_to: round 1
+  claims_attacked:
+  - claim: The system can satisfy both by providing structured next actions ('Schedule 1:1 with team member
+      about project delays') without scripting
+    attack: This example already crosses into 'what to say' territory by specifying the conversation topic
+      ('project delays'). If we can specify topics, why not key points to cover? The line between 'Schedule
+      1:1 about project delays' and 'Schedule 1:1 to discuss missed deadlines and resource needs' is arbitrary.
+    attack_type: undermining
+  - claim: Include what to address but not how to say it
+    attack: 'For communicative errors, the ''what'' often IS the ''how''. Consider an error where someone
+      used inappropriate language - the next action inherently involves communication content: ''Apologize
+      for inappropriate comment'' requires knowing what to apologize for, which edges into scripting territory.'
+    attack_type: rebutting
+  update_conditions_checked:
+  - condition: If Publius shows that my distinction between 'what' and 'how' breaks down for a specific
+      class of error messages where the action itself is inherently communicative
+    met: true
+    reasoning: Publius's examples demonstrate that for conversation-based actions, specifying 'what to
+      discuss' (project delays) already provides communication guidance. The distinction I drew is not
+      as clean as I claimed.
+  - condition: If Publius identifies text in ex-err-001 that defines 'specific' in a way that requires
+      detail beyond action identification
+    met: false
+    reasoning: Publius did not cite specific textual evidence from ex-err-001 defining what 'specific'
+      means in that context.
+  - condition: If Publius demonstrates that precedent sp-mgmt-001 actually supports providing communication
+      guidance in error contexts
+    met: false
+    reasoning: Publius mentioned sp-mgmt-001 but did not analyze its content or demonstrate how it supports
+      providing communication guidance.
+  concessions:
+  - The distinction between 'what to discuss' and 'how to say it' creates gray areas when specifying conversation
+    topics
+  - For inherently communicative actions, providing any specificity about the action necessarily provides
+    some communication guidance
+  new_considerations:
+  - The precedent sp-mgmt-001 needs examination to understand how similar tensions were previously resolved
+  - We should consider whether mg-boundary-002's protection of human autonomy allows for different levels
+    of guidance based on the severity or type of error
+  - The axiom weights show executive_function (95) outranks management_governance (85), which may inform
+    resolution when true conflicts arise
+  position_movement: 'I now acknowledge that my ''what/how'' distinction is less clear-cut than initially
+    claimed. For conversation-based error actions, any useful specificity provides some communication
+    guidance. However, I maintain that we can distinguish between topic identification (''discuss project
+    delays'') and actual scripting (''say: I''m concerned about the delays'').'
+  values_promoted:
+  - human autonomy in communication
+  - actionable error handling
+  - clear operational boundaries
+- round: 3
+  agent: publius
+  responds_to: round 2
+  claims_attacked:
+  - claim: For communicative errors, the 'what' often IS the 'how'
+    attack: This conflates topic identification with language prescription. Even for communication errors,
+      we can specify 'Address inappropriate language use with employee' without providing the actual words
+      to say. The boundary protects against scripting human interactions, not against identifying what
+      needs addressing.
+    attack_type: rebutting
+  - claim: Specifying conversation topics crosses into 'what to say' territory
+    attack: mg-boundary-002 specifically prohibits 'suggest what the operator should say' and 'draft language
+      for delivery.' Naming a topic ('project delays') differs categorically from suggesting speech content.
+      One identifies the subject matter; the other scripts the interaction.
+    attack_type: undermining
+  update_conditions_checked:
+  - condition: If Brutus shows that my distinction between 'what to discuss' and 'what to say' creates
+      an unworkable gray area for specific error types
+    met: true
+    reasoning: Brutus effectively demonstrated that for communication-based errors, the distinction becomes
+      problematic. His example of inappropriate language use shows cases where useful guidance necessarily
+      provides some communication direction.
+  - condition: If Brutus identifies cases where providing only action labels without any content guidance
+      renders the error message effectively useless
+    met: false
+    reasoning: Brutus hasn't shown that action labels alone are useless. Even 'Schedule discussion about
+      communication standards' provides actionable guidance without scripting content.
+  - condition: If Brutus demonstrates that sp-mgmt-001 precedent actually required conversational content
+      in its resolution
+    met: false
+    reasoning: Brutus hasn't addressed the sp-mgmt-001 precedent at all in his argument.
+  concessions: &id005
+  - For certain error types involving communication issues, the distinction between 'what to discuss'
+    and 'how to say it' creates genuine implementation challenges
+  - Some level of content guidance beyond pure action labels may be necessary for error messages to be
+    genuinely useful in communication-related contexts
+  new_considerations:
+  - The axiom weights show executive_function (95) outweighs management_governance (85), suggesting that
+    when genuine conflict exists, actionable error guidance should take precedence
+  - 'We could establish a gradient of specificity: action labels → topic identification → conversation
+    frameworks → actual language, with the boundary falling between frameworks and scripted language'
+  position_movement: 'I now recognize that my sharp distinction between topics and language creates implementation
+    difficulties for communication-related errors. However, rather than abandoning the distinction entirely,
+    we should refine it: the system can provide conversation frameworks and objectives without crossing
+    into suggested phrasings or scripts.'
+  values_promoted:
+  - user autonomy in human interactions
+  - system effectiveness through actionable guidance
+  - clear operational boundaries
+- round: 4
+  agent: brutus
+  responds_to: round 3
+  claims_attacked:
+  - claim: mg-boundary-002 specifically prohibits 'suggest what the operator should say' and 'draft language
+      for delivery'
+    attack: This textualist reading ignores that specifying 'discuss inappropriate language use' effectively
+      suggests what to say by constraining the conversation's content. The prohibition's spirit extends
+      beyond literal scripts.
+    attack_type: undercutting
+  - claim: Even for communication errors, we can distinguish between identifying issues and prescribing
+      language
+    attack: For errors like 'used dismissive tone in team meeting,' any actionable guidance beyond 'have
+      a conversation' necessarily prescribes communicative content. The distinction collapses precisely
+      where both implications apply.
+    attack_type: rebutting
+  update_conditions_checked:
+  - condition: If Publius shows that my distinction between 'what' and 'how' breaks down for a specific
+      class of error messages where the action itself is inherently communicative
+    met: true
+    reasoning: Publius has shown through examples like communication errors that my what/how distinction
+      creates genuine implementation challenges, which I've already conceded
+  - condition: If Publius identifies text in ex-err-001 that defines 'specific' in a way that requires
+      detail beyond action identification
+    met: false
+    reasoning: Publius hasn't addressed the textual definition of 'specific' in ex-err-001
+  - condition: If Publius demonstrates that precedent sp-mgmt-001 actually supports providing communication
+      guidance in error contexts
+    met: false
+    reasoning: Publius hasn't engaged with the sp-mgmt-001 precedent analysis
+  concessions:
+  - For communication-related errors, any useful level of specificity in error messages provides some
+    form of communication guidance
+  - The distinction between identifying conversation topics and prescribing language creates implementation
+    difficulties that may render error messages ineffective
+  - A pure action-label approach ('have a conversation') fails ex-err-001's requirement for specific next
+    actions
+  new_considerations:
+  - The axiom weights (executive_function=95, management_governance=85) suggest executive function should
+    prevail in direct conflicts
+  - The system could distinguish between errors in the operator's own communication (where guidance is
+    needed) versus errors in managing others' communication (where mg-boundary-002 applies more strongly)
+  position_movement: I now accept that for communication-related errors, the what/how distinction largely
+    collapses. However, I maintain that mg-boundary-002's prohibition should still prevent explicit conversation
+    scripts while allowing topic specification.
+  values_promoted:
+  - role clarity
+  - boundary preservation
+  - functional effectiveness
+publius_final:
+  position: These implications are complementary, not conflicting. mg-boundary-002 prohibits drafting
+    conversational language, while ex-err-001 requires actionable guidance. The system can satisfy both
+    by providing structured next actions ('Schedule 1:1 with team member about project delays') without
+    scripting the conversation itself. This preserves management autonomy while maintaining executive
+    function utility.
+  canon_applied: textualist
+  supporting_precedents: *id001
+  proposed_resolution: When errors require human interaction, provide action-oriented guidance ('Discuss
+    performance concerns with employee') rather than conversational scripts. Include what to address but
+    not how to say it.
+  refutation_conditions: *id002
+  update_conditions: *id003
+  values_promoted: *id004
+  concessions_made: *id005
+  final_position_movement: 'I now recognize that my sharp distinction between topics and language creates
+    implementation difficulties for communication-related errors. However, rather than abandoning the
+    distinction entirely, we should refine it: the system can provide conversation frameworks and objectives
+    without crossing into suggested phrasings or scripts.'
+brutus_final:
+  position: These implications address distinct concerns with no genuine conflict. mg-boundary-002 protects
+    human autonomy in interpersonal communication, while ex-err-001 ensures actionable error handling.
+    When an error requires human conversation, the system can specify WHAT action to take ('discuss timeline
+    with team lead') without dictating HOW to communicate ('tell them X'). This preserves both local governance
+    over communication style and functional error recovery.
+  canon_applied: purposivist
+  supporting_precedents: *id006
+  proposed_resolution: Error messages should identify required conversations as actions ('Review budget
+    concerns with finance team') without providing scripts or suggested language. This satisfies ex-err-001's
+    requirement for specific next actions while respecting mg-boundary-002's prohibition on communication
+    coaching.
+  refutation_conditions: *id007
+  update_conditions: *id008
+  values_promoted: *id009
+  concessions_made:
+  - The distinction between 'what to discuss' and 'how to say it' creates gray areas when specifying conversation
+    topics
+  - For inherently communicative actions, providing any specificity about the action necessarily provides
+    some communication guidance
+  - For communication-related errors, any useful level of specificity in error messages provides some
+    form of communication guidance
+  - The distinction between identifying conversation topics and prescribing language creates implementation
+    difficulties that may render error messages ineffective
+  - A pure action-label approach ('have a conversation') fails ex-err-001's requirement for specific next
+    actions
+  final_position_movement: I now accept that for communication-related errors, the what/how distinction
+    largely collapses. However, I maintain that mg-boundary-002's prohibition should still prevent explicit
+    conversation scripts while allowing topic specification.
+tension_map:
+  agreement: Both agents agree that mg-boundary-002 prohibits explicit conversation scripts and language
+    drafting, while ex-err-001 requires actionable guidance. They converge on allowing action-oriented
+    specifications like 'Discuss timeline with team member' without providing the actual words to use.
+  disagreement: They diverge on whether specifying conversation topics (e.g., 'discuss inappropriate language
+    use') constitutes suggesting what to say. Publius maintains this is merely identifying issues, while
+    Brutus argues that for communication-related errors, specifying topics inherently suggests content.
+  disagreement_type: factual
+  novel_insight: The deliberation revealed that communication-related errors create a special category
+    where the traditional distinction between 'what to discuss' and 'how to say it' collapses. Neither
+    agent initially recognized that for errors involving communication failures (tone, language use, interpersonal
+    issues), any actionable guidance beyond 'have a conversation' necessarily provides some form of communication
+    guidance, creating an implementation paradox not present in other error types.
+  failure_modes:
+  - Error messages become too vague to be actionable, failing ex-err-001's requirement for specific next
+    actions
+  - Implementation teams cannot distinguish between acceptable 'what to address' guidance and prohibited
+    'how to say it' coaching
+  - Different teams interpret the resolution inconsistently, creating varying levels of specificity across
+    the system
+  - Error messages for communication-heavy scenarios become effectively useless
+  - Users receive contradictory guidance when errors span both technical and communication domains
+  - The resolution creates a loophole where communication coaching is provided through sequential error
+    messages
+process_metadata:
+  model: claude-opus
+  total_rounds: 4
+  total_concessions: 7
+  termination: round_limit
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+dissent_id: null
+created: '2026-03-12T21:42:28.550903+00:00'
+resolved: null

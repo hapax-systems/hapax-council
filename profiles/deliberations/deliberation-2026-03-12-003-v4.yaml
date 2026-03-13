@@ -1,0 +1,313 @@
+id: deliberation-2026-03-12-003
+question: "Given the supremacy tension between corporate_boundary and single_user:\n  cb-llm-001: Extension\
+  \ must support direct API calls to sanctioned providers without requiring a localhost proxy.\n  su-auth-001:\
+  \ All authentication, authorization, and user management code must be removed or disabled since there\
+  \ is exactly one authorized user.\n\nContext: cb-llm-001 requires direct API calls with provider keys.\
+  \ su-auth-001 eliminates auth code. API key management for LLM providers resembles auth infrastructure.\n\
+  \nQuestion: How should these implications interact when both apply simultaneously? Is there a genuine\
+  \ conflict, complementarity, or a scope distinction that resolves the tension?"
+trigger:
+  type: supremacy_tension
+  source: validate_supremacy()
+  description: cb-llm-001 requires direct API calls with provider keys. su-auth-001 eliminates auth code.
+    API key management for LLM providers resembles auth infrastructure.
+  relevant_axioms:
+  - corporate_boundary
+  - single_user
+  relevant_implications:
+  - cb-llm-001
+  - su-auth-001
+  relevant_precedents:
+  - sp-arch-007
+  accumulated_dissents: []
+rounds:
+- round: 1
+  agent: publius
+  position: These implications are complementary, not conflicting. The single_user axiom eliminates authentication
+    between users, not between the system and external services. API key management for LLM providers
+    is infrastructure configuration, not user authentication—it identifies the system to external services,
+    not users to the system. Both implications can be satisfied by removing user auth while maintaining
+    provider credentials.
+  canon_applied: textualist
+  supporting_precedents: &id001
+  - sp-arch-007
+  proposed_resolution: Remove all user authentication/authorization code per su-auth-001 while maintaining
+    API key storage and management for external LLM providers per cb-llm-001. API keys are system configuration,
+    not user authentication.
+  refutation_conditions: &id002
+  - If Brutus shows that su-auth-001's text encompasses system-to-service authentication, not just user-to-system
+    authentication
+  - If Brutus demonstrates that the distinction between 'user management' and 'service configuration'
+    creates operational contradictions in practice
+  - If Brutus identifies language in su-auth-001 that treats all credential management as 'authentication
+    code' regardless of purpose
+  update_conditions: &id003
+  - If Brutus argues that API key management inherently involves authorization decisions about what the
+    single user can access
+  - If Brutus shows that maintaining API keys while removing auth code creates a security inconsistency
+    that violates the single_user axiom's intent
+  - If Brutus demonstrates that the precedent sp-arch-007 actually supports treating API keys as part
+    of the authentication infrastructure to be removed
+  values_promoted: &id004
+  - constitutional clarity
+  - operational coherence
+  - security through simplification
+  - clear scope boundaries
+- round: 1
+  agent: brutus
+  position: These implications are complementary, not conflicting. su-auth-001 eliminates authentication
+    between the user and the extension, while cb-llm-001 addresses authentication between the extension
+    and external providers. API keys for LLM providers are configuration credentials, not user authentication
+    infrastructure—they identify the extension to external services, not users to the extension.
+  canon_applied: purposivist
+  supporting_precedents: &id006
+  - sp-arch-007
+  proposed_resolution: 'Apply both implications fully: remove all user-facing authentication code while
+    maintaining API key storage and management as simple configuration values, similar to any other external
+    service credential.'
+  refutation_conditions: &id007
+  - If the text of su-auth-001 uses language broad enough to encompass external service credentials beyond
+    user authentication
+  - If precedent sp-arch-007 actually treats API keys as authentication infrastructure rather than configuration
+  update_conditions: &id008
+  - If Publius demonstrates that API key management code shares substantial implementation overlap with
+    user authentication code such that removing one necessarily impacts the other
+  - If Publius identifies a specific security vulnerability created by storing API keys without the protections
+    typically provided by auth infrastructure
+  - If Publius shows that the distinction between 'user authentication' and 'service credentials' breaks
+    down in practice for browser extensions
+  values_promoted: &id009
+  - implementation freedom
+  - domain autonomy
+  - practical governance
+  - minimal constitutional interference
+- round: 2
+  agent: brutus
+  responds_to: round 1
+  claims_attacked:
+  - claim: API key management for LLM providers is infrastructure configuration, not user authentication—it
+      identifies the system to external services
+    attack: This claim artificially narrows su-auth-001's scope. The implication states 'All authentication,
+      authorization, and user management code must be removed' - not 'user authentication code.' API key
+      management involves authentication code regardless of whether it authenticates users or systems.
+      The text makes no distinction between authentication purposes.
+    attack_type: rebutting
+  - claim: The single_user axiom eliminates authentication between users, not between the system and external
+      services
+    attack: This misreads the axiom's purpose. The single_user axiom (weight 100) establishes that there
+      is exactly one authorized user, making ALL authentication infrastructure unnecessary. If there's
+      only one user who owns and controls the system, why maintain any authentication code at all? The
+      axiom's intent is to eliminate complexity, not to preserve it under different labels.
+    attack_type: undercutting
+  update_conditions_checked:
+  - condition: If Publius demonstrates that API key management code shares substantial implementation
+      overlap with user authentication code such that removing one necessarily impacts the other
+    met: false
+    reasoning: Publius did not argue about implementation overlap between API key management and user
+      authentication code. They focused on conceptual distinctions rather than code structure.
+  - condition: If Publius identifies a specific security vulnerability created by storing API keys without
+      the protections typically provided by auth infrastructure
+    met: false
+    reasoning: Publius made no security arguments about vulnerabilities from storing API keys without
+      auth infrastructure protections.
+  - condition: If Publius shows that the distinction between 'user authentication' and 'service credentials'
+      breaks down in practice for browser extensions
+    met: false
+    reasoning: Publius maintained the distinction between user authentication and service credentials
+      rather than showing how it breaks down in practice.
+  concessions: []
+  new_considerations:
+  - The precedent sp-arch-007 may provide guidance on how to handle external service integration in single-user
+    contexts
+  - The executive_function axiom (weight 95) suggests the system should maintain capabilities necessary
+    for its core function - if LLM access is core, then minimal credential storage may be justified despite
+    su-auth-001
+  - Browser extension storage mechanisms can handle API keys as simple key-value pairs without authentication
+    infrastructure
+  position_movement: no movement
+  values_promoted:
+  - simplicity
+  - consistency
+  - axiom hierarchy
+  - purposive interpretation
+- round: 3
+  agent: publius
+  responds_to: round 2
+  claims_attacked:
+  - claim: The single_user axiom (weight 100) establishes that there is exactly one authorized user, making
+      ALL forms of authentication and authorization unnecessary
+    attack: 'This conflates authentication''s purpose with its mechanism. Authentication serves two distinct
+      functions: (1) verifying user identity within a system, and (2) identifying a system to external
+      services. The single_user axiom eliminates the need for (1) because there''s only one user, but
+      cb-llm-001 explicitly requires (2) for API calls. The axiom''s weight doesn''t change this functional
+      distinction.'
+    attack_type: undercutting
+  - claim: su-auth-001 states 'All authentication, authorization, and user management code must be removed'
+      without qualification
+    attack: Textualist interpretation requires reading implications in their full context. su-auth-001
+      derives from the single_user axiom, which concerns eliminating multi-user complexity. Reading it
+      to prohibit system-to-service authentication contradicts cb-llm-001's explicit requirement for 'direct
+      API calls to sanctioned providers.' When two implications appear to conflict, we must interpret
+      them harmoniously where possible, not maximize conflict.
+    attack_type: rebutting
+  update_conditions_checked:
+  - condition: If Brutus argues that API key management inherently involves authorization decisions about
+      what the single user can access
+    met: false
+    reasoning: Brutus did not argue that API key management involves authorization decisions about user
+      access. He argued that ALL authentication should be removed based on the single_user axiom, but
+      didn't address the authorization aspect of API keys or user access control.
+  - condition: If Brutus shows that maintaining API keys while removing auth code creates a security inconsistency
+      that violates the single_user axiom's intent
+    met: false
+    reasoning: Brutus did not present any security inconsistency argument. He focused on the textual scope
+      of su-auth-001 and the weight of the single_user axiom, but didn't argue that keeping API keys creates
+      security problems.
+  - condition: If Brutus demonstrates that the precedent sp-arch-007 actually supports treating API keys
+      as part of the authentication infrastructure to be removed
+    met: false
+    reasoning: Brutus did not mention or analyze the sp-arch-007 precedent at all in his response.
+  concessions: &id005 []
+  new_considerations:
+  - The governance system must resolve apparent conflicts between implications by finding interpretations
+    that honor both, not by using axiom weights as trump cards
+  - The 'without qualification' reading of su-auth-001 would make cb-llm-001 impossible to implement,
+    suggesting we need a more nuanced interpretation
+  position_movement: no movement - Brutus's arguments rely on an overly broad reading of su-auth-001 that
+    would nullify cb-llm-001 entirely, rather than finding a harmonious interpretation
+  values_promoted:
+  - coherence
+  - practicality
+  - systematic interpretation
+- round: 4
+  agent: brutus
+  responds_to: round 3
+  claims_attacked:
+  - claim: 'Authentication serves two distinct functions: (1) verifying user identity and (2) establishing
+      system identity to external services'
+    attack: This functional distinction, while conceptually valid, doesn't address the implementation
+      reality. In browser extensions, API key management and user authentication often share the same
+      storage mechanisms, encryption libraries, and access control patterns. The code is architecturally
+      intertwined.
+    attack_type: undercutting
+  - claim: su-auth-001 derives from an axiom about eliminating multi-user complexity, not about preventing
+      the system from identifying itself to external services
+    attack: This interpretation privileges assumed intent over explicit text. su-auth-001 states 'ALL
+      authentication, authorization, and user management code' without qualification. A textualist reading
+      cannot insert exceptions based on inferred purpose.
+    attack_type: rebutting
+  update_conditions_checked:
+  - condition: If Publius demonstrates that API key management code shares substantial implementation
+      overlap with user authentication code such that removing one necessarily impacts the other
+    met: false
+    reasoning: Publius argued for conceptual distinction between authentication functions but did not
+      address implementation overlap or code interdependencies
+  - condition: If Publius identifies a specific security vulnerability created by storing API keys without
+      the protections typically provided by auth infrastructure
+    met: false
+    reasoning: Publius did not identify any security vulnerabilities; instead argued that API keys serve
+      a different purpose than user authentication
+  - condition: If Publius shows that the distinction between 'user authentication' and 'service credentials'
+      breaks down in practice for browser extensions
+    met: false
+    reasoning: Publius maintained the distinction throughout, arguing they serve different functions without
+      addressing practical implementation challenges
+  concessions:
+  - Authentication does serve conceptually distinct functions of user identity verification versus system-to-service
+    identification
+  new_considerations:
+  - The governance system must resolve conflicts between implications of different weights when both derive
+    from high-weight axioms
+  - Implementation architecture in browser extensions creates practical constraints that pure conceptual
+    distinctions may not resolve
+  position_movement: Partial movement - I concede the conceptual distinction between user and service
+    authentication but maintain that su-auth-001's unqualified text creates implementation challenges
+    that require explicit governance resolution
+  values_promoted:
+  - clarity
+  - consistency
+  - implementation feasibility
+publius_final:
+  position: These implications are complementary, not conflicting. The single_user axiom eliminates authentication
+    between users, not between the system and external services. API key management for LLM providers
+    is infrastructure configuration, not user authentication—it identifies the system to external services,
+    not users to the system. Both implications can be satisfied by removing user auth while maintaining
+    provider credentials.
+  canon_applied: textualist
+  supporting_precedents: *id001
+  proposed_resolution: Remove all user authentication/authorization code per su-auth-001 while maintaining
+    API key storage and management for external LLM providers per cb-llm-001. API keys are system configuration,
+    not user authentication.
+  refutation_conditions: *id002
+  update_conditions: *id003
+  values_promoted: *id004
+  concessions_made: *id005
+  final_position_movement: no movement - Brutus's arguments rely on an overly broad reading of su-auth-001
+    that would nullify cb-llm-001 entirely, rather than finding a harmonious interpretation
+brutus_final:
+  position: These implications are complementary, not conflicting. su-auth-001 eliminates authentication
+    between the user and the extension, while cb-llm-001 addresses authentication between the extension
+    and external providers. API keys for LLM providers are configuration credentials, not user authentication
+    infrastructure—they identify the extension to external services, not users to the extension.
+  canon_applied: purposivist
+  supporting_precedents: *id006
+  proposed_resolution: 'Apply both implications fully: remove all user-facing authentication code while
+    maintaining API key storage and management as simple configuration values, similar to any other external
+    service credential.'
+  refutation_conditions: *id007
+  update_conditions: *id008
+  values_promoted: *id009
+  concessions_made:
+  - Authentication does serve conceptually distinct functions of user identity verification versus system-to-service
+    identification
+  final_position_movement: Partial movement - I concede the conceptual distinction between user and service
+    authentication but maintain that su-auth-001's unqualified text creates implementation challenges
+    that require explicit governance resolution
+tension_map:
+  agreement: Both agents agree that su-auth-001 and cb-llm-001 are complementary rather than conflicting,
+    with su-auth-001 targeting user-to-system authentication while cb-llm-001 addresses system-to-external-service
+    credentials. Both propose maintaining API keys as configuration values while removing user authentication
+    code.
+  disagreement: The agents diverge on whether su-auth-001's text ('ALL authentication, authorization,
+    and user management code') encompasses API key management infrastructure. Publius argues for a narrow
+    reading based on the axiom's anti-multi-user purpose, while Brutus insists the unqualified text creates
+    implementation ambiguities that could affect security and code maintainability.
+  disagreement_type: factual
+  novel_insight: The deliberation revealed that the seemingly clear distinction between 'user authentication'
+    and 'service credentials' breaks down at the implementation level—API key management code often shares
+    infrastructure with user authentication systems (secure storage, validation, rotation mechanisms).
+    This implementation entanglement, which neither agent initially considered, suggests that removing
+    authentication infrastructure while maintaining API key management may require explicit architectural
+    decisions about which shared components to preserve.
+  failure_modes:
+  - API keys stored in plaintext configuration files become accessible to any process or script running
+    on the system, leading to unauthorized LLM API usage and potential cost overruns
+  - Extension cannot differentiate between legitimate configuration changes and malicious API key modifications,
+    allowing attackers to redirect LLM calls to compromised endpoints
+  - API key rotation becomes a manual, error-prone process requiring direct file editing, increasing likelihood
+    of service disruptions during key updates
+  - Extension loses ability to validate API key format or provider compatibility at configuration time,
+    causing runtime failures when making LLM calls
+process_metadata:
+  model: claude-opus
+  total_rounds: 4
+  total_concessions: 1
+  termination: round_limit
+  convergence_check:
+    converged: false
+    reasoning: 'While both agents agree there''s no conflict and propose similar high-level solutions
+      (remove user auth, keep API keys), they frame the distinction differently. Publius emphasizes ''system
+      configuration'' vs ''user authentication'' while Brutus emphasizes ''configuration credentials''
+      vs ''user authentication infrastructure''. More importantly, their refutation conditions reveal
+      underlying uncertainties: both worry about whether su-auth-001''s language might be broad enough
+      to encompass API keys, and Brutus specifically questions whether precedent sp-arch-007 treats API
+      keys as authentication infrastructure. These uncertainties about scope and precedent interpretation
+      need adversarial testing.'
+    crux: Whether su-auth-001's scope is limited to user-to-system authentication or encompasses all authentication
+      code including system-to-service credentials
+status: pending_operator_review
+operator_ruling: null
+ruling_precedent_id: null
+dissent_id: null
+created: '2026-03-12T23:22:18.880818+00:00'
+resolved: null
