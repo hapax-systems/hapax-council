@@ -24,7 +24,7 @@ capabilities:
 schedule:
   type: timer
   systemd_unit: drift-detector.timer
-  interval: 6h
+  interval: 12h
 model: fast
 autonomy: supervised
 decision_scope: Detect and report drift. Suggests corrections but does not auto-apply
@@ -55,6 +55,7 @@ narrative: 'The Drift Detector compares documentation against actual system stat
   but never auto-applies fixes — the operator reviews and decides. This agent is
 
   essential for a system that evolves faster than its documentation.
+  It runs twice daily (03:00 and 15:00) to catch drift early.
 
   '
 short_description: Docs vs reality comparison
@@ -69,7 +70,7 @@ cli:
   - flag: --apply
     description: Apply fixes directly to files (requires --fix)
 timer_display:
-  schedule_label: Weekly Sun 03:00
+  schedule_label: Twice daily 03:00 & 15:00
   purpose: Documentation drift detection
 manual_section:
   title: Maintaining Documentation
@@ -83,4 +84,4 @@ manual_section:
   - 'uv run python -m agents.drift_detector --fix  # generate corrected fragments'
   - '```'
   - ''
-  - The drift detector timer runs weekly (Sunday 03:00).
+  - The drift detector timer runs twice daily (03:00 and 15:00).

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from agents.hapax_voice.commands import Command, Schedule
 from agents.hapax_voice.executor import Executor, ExecutorRegistry, ScheduleQueue
+from agents.hapax_voice.governance import VetoResult
 
 
 class FakeExecutor:
@@ -170,6 +171,34 @@ class TestExecutorRegistry(unittest.TestCase):
         ex.execute = MagicMock(side_effect=RuntimeError("kaboom"))
         reg.register(ex)
         self.assertFalse(reg.dispatch(_cmd("boom")))
+
+    def test_governance_blocked_command_not_dispatched(self):
+        """dispatch returns False and executor.execute() never called when governance blocks."""
+        reg = ExecutorRegistry()
+        ex = FakeExecutor("audio", frozenset({"vocal_throw"}))
+        reg.register(ex)
+        blocked_cmd = Command(
+            action="vocal_throw",
+            governance_result=VetoResult(
+                allowed=False,
+                denied_by=("axiom_compliance",),
+                axiom_ids=("mg-boundary-001",),
+            ),
+        )
+        self.assertFalse(reg.dispatch(blocked_cmd))
+        self.assertEqual(len(ex.executed), 0)
+
+    def test_governance_allowed_command_dispatched(self):
+        """dispatch succeeds when governance_result.allowed=True."""
+        reg = ExecutorRegistry()
+        ex = FakeExecutor("audio", frozenset({"vocal_throw"}))
+        reg.register(ex)
+        allowed_cmd = Command(
+            action="vocal_throw",
+            governance_result=VetoResult(allowed=True),
+        )
+        self.assertTrue(reg.dispatch(allowed_cmd))
+        self.assertEqual(len(ex.executed), 1)
 
     def test_registered_actions(self):
         reg = ExecutorRegistry()
