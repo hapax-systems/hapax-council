@@ -130,6 +130,14 @@ class ExecutorRegistry:
         On success, emits an ActuationEvent with latency tracking.
         If schedule is provided, latency is computed from schedule.wall_time.
         """
+        if not command.governance_result.allowed:
+            log.info(
+                "Command blocked by governance: action=%s denied_by=%s axioms=%s",
+                command.action,
+                command.governance_result.denied_by,
+                command.governance_result.axiom_ids,
+            )
+            return False
         executor = self._action_map.get(command.action)
         if executor is None:
             log.debug("No executor for action: %s", command.action)
