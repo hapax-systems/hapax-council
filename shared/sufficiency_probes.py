@@ -1014,13 +1014,13 @@ def _check_capability_coverage() -> tuple[bool, str]:
         try:
             from agents.health_monitor import CHECK_REGISTRY
 
-            declared_groups = {
-                a.health_group for a in registry.list_agents() if a.health_group
-            }
+            declared_groups = {a.health_group for a in registry.list_agents() if a.health_group}
             registered_groups = set(CHECK_REGISTRY.keys())
             missing_groups = declared_groups - registered_groups
             if missing_groups:
-                problems.append(f"health_groups without checks: {', '.join(sorted(missing_groups))}")
+                problems.append(
+                    f"health_groups without checks: {', '.join(sorted(missing_groups))}"
+                )
         except ImportError:
             pass  # health_monitor not importable in this context
 

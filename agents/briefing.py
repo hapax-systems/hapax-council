@@ -668,7 +668,9 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
         if ct.top_agent:
             cost_section += f"\nTop spender: {ct.top_agent} (${ct.top_agent_cost:.2f})"
         if ct.cost_spike:
-            cost_section += "\n**ACTION: Cost spike detected (>20% WoW increase) — review agent usage.**"
+            cost_section += (
+                "\n**ACTION: Cost spike detected (>20% WoW increase) — review agent usage.**"
+            )
         cost_section += "\n"
 
     # Synthesize via LLM

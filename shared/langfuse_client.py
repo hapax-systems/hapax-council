@@ -107,7 +107,9 @@ def query_zero_result_spans(hours: int = 24) -> list[dict]:
             if result_count is not None and int(result_count) == 0:
                 zero_results.append(
                     {
-                        "collection": metadata.get("rag.collection", metadata.get("collection", "")),
+                        "collection": metadata.get(
+                            "rag.collection", metadata.get("collection", "")
+                        ),
                         "query": (metadata.get("rag.query", metadata.get("query", "")))[:100],
                         "trace_id": obs.get("traceId", ""),
                         "timestamp": obs.get("startTime", ""),

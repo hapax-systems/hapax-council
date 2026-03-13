@@ -58,12 +58,14 @@ def _get_task_sections() -> list[tuple[str, str, list[str]]]:
     sections = []
     for m in registry.list_agents():
         if m.manual_section is not None:
-            sections.append((
-                m.manual_section.title,
-                m.display_name,
-                m.manual_section.content,
-                m.manual_section.order,
-            ))
+            sections.append(
+                (
+                    m.manual_section.title,
+                    m.display_name,
+                    m.manual_section.content,
+                    m.manual_section.order,
+                )
+            )
     return [(t, n, c) for t, n, c, _o in sorted(sections, key=lambda x: x[3])]
 
 

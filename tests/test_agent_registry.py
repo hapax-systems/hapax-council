@@ -248,9 +248,7 @@ class TestTimerAgents:
         """Verify registry-derived timers are a superset of the old YAML file."""
         import yaml
 
-        legacy_path = (
-            Path(__file__).resolve().parent.parent / "systemd" / "expected-timers.yaml"
-        )
+        legacy_path = Path(__file__).resolve().parent.parent / "systemd" / "expected-timers.yaml"
         legacy = yaml.safe_load(legacy_path.read_text())["timers"]
         derived = registry.expected_timers()
         for agent_id, timer_unit in legacy.items():
