@@ -97,7 +97,7 @@ jobs:
             gh pr edit "$PR_NUMBER" --add-label "needs-human"
           fi
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         if: steps.guard.outputs.should_fix == 'true' && steps.scope.outputs.fixable == 'true'
 
       - name: Install dependencies
