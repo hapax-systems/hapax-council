@@ -369,6 +369,61 @@ PROBES: list[SufficiencyProbe] = [
 ]
 
 
+# ── Scope coverage probes (E-1) ──────────────────────────────────────────────
+
+
+def _check_scope_coverage() -> tuple[bool, str]:
+    """Check that sufficiency implications with enumerated scope have coverage entries.
+
+    For each sufficiency implication at T0/T1 with scope.type == "enumerated",
+    verifies that scope.items is non-empty and that a corresponding
+    capability-coverage entry or probe exists.
+    """
+    from shared.axiom_registry import load_axioms, load_implications
+
+    axioms = load_axioms()
+    problems: list[str] = []
+    checked = 0
+
+    for axiom in axioms:
+        for impl in load_implications(axiom.id):
+            if impl.mode != "sufficiency":
+                continue
+            if impl.tier not in ("T0", "T1"):
+                continue
+
+            checked += 1
+
+            if impl.scope is None:
+                problems.append(f"{impl.id}: T0/T1 sufficiency implication has no scope")
+                continue
+
+            if impl.scope.type == "enumerated":
+                if not impl.scope.items:
+                    problems.append(f"{impl.id}: enumerated scope has no items")
+
+    if checked == 0:
+        return True, "no T0/T1 sufficiency implications to check"
+
+    if not problems:
+        return True, f"all {checked} T0/T1 sufficiency implications have valid scope"
+    return False, f"{len(problems)} issue(s): {'; '.join(problems[:5])}"
+
+
+SCOPE_COVERAGE_PROBES: list[SufficiencyProbe] = [
+    SufficiencyProbe(
+        id="probe-scope-coverage-001",
+        axiom_id="management_governance",
+        implication_id="mg-cadence-001",
+        level="system",
+        question="Do T0/T1 sufficiency implications have valid enumerable scope?",
+        check=_check_scope_coverage,
+    ),
+]
+
+PROBES.extend(SCOPE_COVERAGE_PROBES)
+
+
 # ── Corporate boundary probes ────────────────────────────────────────────────
 
 
