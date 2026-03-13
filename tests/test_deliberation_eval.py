@@ -7,8 +7,6 @@ from pathlib import Path
 import pytest
 
 from shared.deliberation_metrics import (
-    DeliberationMetrics,
-    HoopTestResults,
     append_metrics,
     compute_concession_asymmetry,
     extract_activation_rate,
@@ -19,7 +17,6 @@ from shared.deliberation_metrics import (
     read_recent_metrics,
     run_hoop_tests,
 )
-
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
