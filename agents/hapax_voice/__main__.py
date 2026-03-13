@@ -34,8 +34,12 @@ from agents.hapax_voice.screen_models import CameraConfig
 if TYPE_CHECKING:
     from agents.hapax_voice.hyprland_listener import FocusEvent
 from agents.hapax_voice.session import SessionManager
-from agents.hapax_voice.tracing import VoiceTracer
 from agents.hapax_voice.tts import TTSManager
+
+try:
+    from shared import langfuse_config  # noqa: F401
+except ImportError:
+    pass
 from agents.hapax_voice.wake_word import WakeWordDetector
 from agents.hapax_voice.wake_word_porcupine import PorcupineWakeWord
 from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
@@ -220,14 +224,11 @@ class VoiceDaemon:
             retention_days=self.cfg.observability_events_retention_days,
             enabled=self.cfg.observability_events_enabled,
         )
-        self.tracer = VoiceTracer(enabled=self.cfg.observability_langfuse_enabled)
-
         # Wire observability into subsystems
         self.presence.set_event_log(self.event_log)
         self.gate.set_event_log(self.event_log)
         self.notifications.set_event_log(self.event_log)
         self.workspace_monitor.set_event_log(self.event_log)
-        self.workspace_monitor.set_tracer(self.tracer)
 
         # Actuation layer
         self.schedule_queue = ScheduleQueue()
@@ -985,7 +986,11 @@ class VoiceDaemon:
 
             # Flush observability
             self.event_log.close()
-            self.tracer.flush()
+            from opentelemetry.trace import get_tracer_provider
+
+            provider = get_tracer_provider()
+            if hasattr(provider, "force_flush"):
+                provider.force_flush(timeout_millis=5000)
 
             # Cancel background tasks
             for task in self._background_tasks:
@@ -1006,10 +1011,9 @@ def main() -> None:
     parser.add_argument("--check", action="store_true", help="Verify config and exit")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="hapax-voice")
 
     cfg = load_config(Path(args.config) if args.config else None)
     if args.check:

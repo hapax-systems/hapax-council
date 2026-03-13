@@ -46,6 +46,10 @@ try:
 except ImportError:
     pass
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 log = logging.getLogger("scout")
 
 from shared.config import PROFILES_DIR
@@ -403,6 +407,18 @@ async def run_scout(
     dry_run: bool = False,
 ) -> ScoutReport:
     """Run the full scout pipeline: load registry, search, evaluate."""
+    with _tracer.start_as_current_span(
+        "scout.run",
+        attributes={"agent.name": "scout", "agent.repo": "hapax-council"},
+    ):
+        return await _run_scout_impl(filter_component, dry_run)
+
+
+async def _run_scout_impl(
+    filter_component: str | None = None,
+    dry_run: bool = False,
+) -> ScoutReport:
+    """Implementation of run_scout, wrapped by OTel span."""
     components = load_registry(filter_component)
     if not components:
         return ScoutReport(
@@ -605,11 +621,9 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="scout")
 
     # Load Tavily API key from pass if not in environment
     global TAVILY_API_KEY

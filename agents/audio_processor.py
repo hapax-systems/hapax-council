@@ -927,10 +927,9 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    from shared.log_setup import configure_logging
+
+    configure_logging(agent="audio-processor", level="DEBUG" if args.verbose else None)
 
     if args.process:
         state = _load_state()

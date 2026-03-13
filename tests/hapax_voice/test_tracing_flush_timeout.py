@@ -1,43 +1,43 @@
-"""Tests for VoiceTracer.flush() timeout behavior."""
+"""Tests for OTel TracerProvider flush on shutdown.
 
-from __future__ import annotations
+Replaces the old VoiceTracer.flush() timeout tests — flush is now
+handled by the OTel SDK's TracerProvider.force_flush().
+"""
 
-import threading
-from unittest.mock import MagicMock
-
-from agents.hapax_voice.tracing import VoiceTracer
-
-
-def _make_tracer_with_mock_client() -> tuple[VoiceTracer, MagicMock]:
-    tracer = VoiceTracer(enabled=False)
-    mock_client = MagicMock()
-    tracer._client = mock_client
-    return tracer, mock_client
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory import InMemorySpanExporter
 
 
-def test_flush_completes_normally():
-    tracer, mock_client = _make_tracer_with_mock_client()
-    tracer.flush(timeout_s=2.0)
-    mock_client.flush.assert_called_once()
+def test_force_flush_completes():
+    """TracerProvider.force_flush() completes without error."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+
+    t = trace.get_tracer("hapax_voice.test_flush")
+    with t.start_as_current_span("flush_test"):
+        pass
+
+    result = provider.force_flush(timeout_millis=5000)
+    assert result is True
+    assert len(exporter.get_finished_spans()) == 1
 
 
-def test_flush_times_out():
-    tracer, mock_client = _make_tracer_with_mock_client()
-    block = threading.Event()
-    mock_client.flush.side_effect = lambda: block.wait()
-
-    tracer.flush(timeout_s=0.5)
-    # Should return without hanging
-    block.set()  # unblock the background thread so it can exit cleanly
+def test_force_flush_on_empty_provider():
+    """force_flush() on a provider with no spans is a no-op."""
+    provider = TracerProvider()
+    result = provider.force_flush(timeout_millis=1000)
+    assert result is True
 
 
-def test_flush_with_no_client():
-    tracer = VoiceTracer(enabled=False)
-    assert tracer._client is None
-    tracer.flush()  # should be a no-op, no error
+def test_shutdown_pattern():
+    """Verify the shutdown pattern used in __main__.py works."""
+    provider = TracerProvider()
+    trace.set_tracer_provider(provider)
 
-
-def test_flush_handles_exception():
-    tracer, mock_client = _make_tracer_with_mock_client()
-    mock_client.flush.side_effect = RuntimeError("connection refused")
-    tracer.flush(timeout_s=2.0)  # should not raise
+    retrieved = trace.get_tracer_provider()
+    assert hasattr(retrieved, "force_flush")
+    retrieved.force_flush(timeout_millis=5000)

@@ -215,12 +215,10 @@ def test_daemon_creates_perception_engine():
         patch("agents.hapax_voice.__main__.TTSManager"),
         patch("agents.hapax_voice.__main__.ChimePlayer"),
         patch("agents.hapax_voice.__main__.EventLog"),
-        patch("agents.hapax_voice.__main__.VoiceTracer"),
     ):
         MockWM.return_value.set_notification_queue = MagicMock()
         MockWM.return_value.set_presence = MagicMock()
         MockWM.return_value.set_event_log = MagicMock()
-        MockWM.return_value.set_tracer = MagicMock()
         daemon = VoiceDaemon(cfg=VoiceConfig())
         assert hasattr(daemon, "perception")
         assert hasattr(daemon, "governor")

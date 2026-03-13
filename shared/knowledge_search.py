@@ -11,11 +11,14 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from opentelemetry import trace
+
 from shared.config import embed, get_qdrant
 from shared.ops_db import _load_json
 from shared.profile_store import ProfileStore
 
 log = logging.getLogger("shared.knowledge_search")
+_rag_tracer = trace.get_tracer("hapax.rag")
 
 
 # ── Qdrant Search ────────────────────────────────────────────────────────────
@@ -30,59 +33,68 @@ def search_documents(
     limit: int = 10,
 ) -> str:
     """Semantic search over the documents collection."""
-    try:
-        from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
+    with _rag_tracer.start_as_current_span("rag.search") as span:
+        span.set_attribute("rag.query", query[:200])
+        span.set_attribute("rag.collection", "documents")
+        span.set_attribute("rag.top_k", limit)
+        try:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
 
-        query_vec = embed(query, prefix="search_query")
-        client = get_qdrant()
+            query_vec = embed(query, prefix="search_query")
+            client = get_qdrant()
 
-        conditions = []
-        if source_service:
-            conditions.append(
-                FieldCondition(key="source_service", match=MatchValue(value=source_service))
+            conditions = []
+            if source_service:
+                conditions.append(
+                    FieldCondition(key="source_service", match=MatchValue(value=source_service))
+                )
+            if content_type:
+                conditions.append(
+                    FieldCondition(key="content_type", match=MatchValue(value=content_type))
+                )
+            if days_back:
+                since_ts = (datetime.now(UTC) - timedelta(days=days_back)).timestamp()
+                conditions.append(FieldCondition(key="ingested_at", range=Range(gte=since_ts)))
+
+            query_filter = Filter(must=conditions) if conditions else None
+
+            results = client.query_points(
+                "documents",
+                query=query_vec,
+                query_filter=query_filter,
+                limit=limit,
             )
-        if content_type:
-            conditions.append(
-                FieldCondition(key="content_type", match=MatchValue(value=content_type))
-            )
-        if days_back:
-            since_ts = (datetime.now(UTC) - timedelta(days=days_back)).timestamp()
-            conditions.append(FieldCondition(key="ingested_at", range=Range(gte=since_ts)))
+        except Exception as e:
+            span.set_attribute("rag.result_count", 0)
+            return f"Document search error: {e}"
 
-        query_filter = Filter(must=conditions) if conditions else None
+        span.set_attribute("rag.result_count", len(results.points))
+        if results.points:
+            span.set_attribute("rag.top_score", results.points[0].score)
 
-        results = client.query_points(
-            "documents",
-            query=query_vec,
-            query_filter=query_filter,
-            limit=limit,
-        )
-    except Exception as e:
-        return f"Document search error: {e}"
+        if not results.points:
+            filters = []
+            if source_service:
+                filters.append(f"source_service={source_service}")
+            if content_type:
+                filters.append(f"content_type={content_type}")
+            if days_back:
+                filters.append(f"last {days_back} days")
+            filter_desc = f" (filters: {', '.join(filters)})" if filters else ""
+            return f"No documents found matching '{query}'{filter_desc}."
 
-    if not results.points:
-        filters = []
-        if source_service:
-            filters.append(f"source_service={source_service}")
-        if content_type:
-            filters.append(f"content_type={content_type}")
-        if days_back:
-            filters.append(f"last {days_back} days")
-        filter_desc = f" (filters: {', '.join(filters)})" if filters else ""
-        return f"No documents found matching '{query}'{filter_desc}."
+        lines = [f"Found {len(results.points)} results for '{query}':", ""]
+        for i, pt in enumerate(results.points, 1):
+            p = pt.payload
+            text = p.get("text", "")[:300]
+            source = p.get("source", "unknown")
+            service = p.get("source_service", "unknown")
+            lines.append(f"**Result {i}** (score: {pt.score:.2f}, source: {service})")
+            lines.append(f"  File: {source}")
+            lines.append(f"  {text}")
+            lines.append("")
 
-    lines = [f"Found {len(results.points)} results for '{query}':", ""]
-    for i, pt in enumerate(results.points, 1):
-        p = pt.payload
-        text = p.get("text", "")[:300]
-        source = p.get("source", "unknown")
-        service = p.get("source_service", "unknown")
-        lines.append(f"**Result {i}** (score: {pt.score:.2f}, source: {service})")
-        lines.append(f"  File: {source}")
-        lines.append(f"  {text}")
-        lines.append("")
-
-    return "\n".join(lines)
+        return "\n".join(lines)
 
 
 def search_profile(
@@ -92,46 +104,64 @@ def search_profile(
     limit: int = 5,
 ) -> str:
     """Semantic search over operator profile facts."""
-    try:
-        store = ProfileStore()
-        results = store.search(query, dimension=dimension, limit=limit)
-    except Exception as e:
-        return f"Profile search error: {e}"
+    with _rag_tracer.start_as_current_span("rag.search") as span:
+        span.set_attribute("rag.query", query[:200])
+        span.set_attribute("rag.collection", "profile-facts")
+        span.set_attribute("rag.top_k", limit)
+        try:
+            store = ProfileStore()
+            results = store.search(query, dimension=dimension, limit=limit)
+        except Exception as e:
+            span.set_attribute("rag.result_count", 0)
+            return f"Profile search error: {e}"
 
-    if not results:
-        dim_note = f" in dimension '{dimension}'" if dimension else ""
-        return f"No profile facts found matching '{query}'{dim_note}."
+        span.set_attribute("rag.result_count", len(results))
+        if results:
+            span.set_attribute("rag.top_score", results[0]["score"])
 
-    lines = [f"Found {len(results)} profile facts:", ""]
-    for r in results:
-        lines.append(
-            f"- [{r['dimension']}/{r['key']}] {r['value']} "
-            f"(confidence: {r['confidence']:.2f}, score: {r['score']:.2f})"
-        )
+        if not results:
+            dim_note = f" in dimension '{dimension}'" if dimension else ""
+            return f"No profile facts found matching '{query}'{dim_note}."
 
-    return "\n".join(lines)
+        lines = [f"Found {len(results)} profile facts:", ""]
+        for r in results:
+            lines.append(
+                f"- [{r['dimension']}/{r['key']}] {r['value']} "
+                f"(confidence: {r['confidence']:.2f}, score: {r['score']:.2f})"
+            )
+
+        return "\n".join(lines)
 
 
 def search_memory(query: str, *, limit: int = 5) -> str:
     """Semantic search over the claude-memory collection."""
-    try:
-        query_vec = embed(query, prefix="search_query")
-        client = get_qdrant()
-        results = client.query_points("claude-memory", query=query_vec, limit=limit)
-    except Exception as e:
-        return f"Memory search error: {e}"
+    with _rag_tracer.start_as_current_span("rag.search") as span:
+        span.set_attribute("rag.query", query[:200])
+        span.set_attribute("rag.collection", "claude-memory")
+        span.set_attribute("rag.top_k", limit)
+        try:
+            query_vec = embed(query, prefix="search_query")
+            client = get_qdrant()
+            results = client.query_points("claude-memory", query=query_vec, limit=limit)
+        except Exception as e:
+            span.set_attribute("rag.result_count", 0)
+            return f"Memory search error: {e}"
 
-    if not results.points:
-        return f"No memory entries found matching '{query}'."
+        span.set_attribute("rag.result_count", len(results.points))
+        if results.points:
+            span.set_attribute("rag.top_score", results.points[0].score)
 
-    lines = [f"Found {len(results.points)} memory entries:", ""]
-    for i, pt in enumerate(results.points, 1):
-        text = pt.payload.get("text", pt.payload.get("content", ""))[:300]
-        lines.append(f"**Entry {i}** (score: {pt.score:.2f})")
-        lines.append(f"  {text}")
-        lines.append("")
+        if not results.points:
+            return f"No memory entries found matching '{query}'."
 
-    return "\n".join(lines)
+        lines = [f"Found {len(results.points)} memory entries:", ""]
+        for i, pt in enumerate(results.points, 1):
+            text = pt.payload.get("text", pt.payload.get("content", ""))[:300]
+            lines.append(f"**Entry {i}** (score: {pt.score:.2f})")
+            lines.append(f"  {text}")
+            lines.append("")
+
+        return "\n".join(lines)
 
 
 # ── Artifact Reads ───────────────────────────────────────────────────────────

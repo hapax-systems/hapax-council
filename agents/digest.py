@@ -38,6 +38,10 @@ try:
 except ImportError:
     pass
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -185,6 +189,15 @@ for _tool_fn in get_axiom_tools():
 
 async def generate_digest(hours: int = 24) -> Digest:
     """Collect content data and synthesize digest."""
+    with _tracer.start_as_current_span(
+        "digest.generate",
+        attributes={"agent.name": "digest", "agent.repo": "hapax-council"},
+    ):
+        return await _generate_digest_impl(hours)
+
+
+async def _generate_digest_impl(hours: int = 24) -> Digest:
+    """Implementation of generate_digest, wrapped by OTel span."""
     # Collect data (zero LLM)
     recent_docs = collect_recent_documents(hours)
     collection_stats = collect_collection_stats()

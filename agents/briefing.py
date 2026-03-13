@@ -40,6 +40,10 @@ try:
 except ImportError:
     pass
 
+from opentelemetry import trace
+
+_tracer = trace.get_tracer(__name__)
+
 from agents.activity_analyzer import generate_activity_report
 from agents.health_monitor import format_human as format_health
 from agents.health_monitor import run_checks
@@ -313,6 +317,15 @@ def _collect_axiom_status() -> dict:
 
 async def generate_briefing(hours: int = 24) -> Briefing:
     """Collect telemetry, run live health check, synthesize briefing."""
+    with _tracer.start_as_current_span(
+        "briefing.generate",
+        attributes={"agent.name": "briefing", "agent.repo": "hapax-council"},
+    ):
+        return await _generate_briefing_impl(hours)
+
+
+async def _generate_briefing_impl(hours: int = 24) -> Briefing:
+    """Implementation of generate_briefing, wrapped by OTel span."""
     # Collect activity data (no LLM calls)
     activity = await generate_activity_report(hours)
 
