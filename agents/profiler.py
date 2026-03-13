@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from shared.config import get_model
+from shared.operator import get_system_prompt_fragment
 
 # Import Langfuse OTel config (side-effect: configures exporter)
 try:
@@ -123,6 +124,7 @@ extraction_agent = Agent(
     get_model("balanced"),
     output_type=ChunkExtraction,
     system_prompt=(
+        get_system_prompt_fragment("profiler") + "\n\n"
         "You are a profile extraction agent. Given a text chunk from a data source, "
         "extract factual information about the user into structured ProfileFact objects.\n\n"
         "Dimensions to extract into:\n" + _DIM_DESCRIPTIONS + "\n\n"

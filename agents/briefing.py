@@ -656,6 +656,21 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
     except Exception as exc:
         log.debug("SDLC status unavailable: %s", exc)
 
+    # Cost trend section (GAP-10/G1)
+    cost_section = ""
+    ct = activity.langfuse.cost_trend
+    if ct and (ct.this_week > 0 or ct.last_week > 0):
+        cost_section = (
+            f"\n## LLM Cost Trend (14-day)\n"
+            f"This week: ${ct.this_week:.2f}, Last week: ${ct.last_week:.2f} "
+            f"({ct.wow_change_pct:+.0f}% WoW)"
+        )
+        if ct.top_agent:
+            cost_section += f"\nTop spender: {ct.top_agent} (${ct.top_agent_cost:.2f})"
+        if ct.cost_spike:
+            cost_section += "\n**ACTION: Cost spike detected (>20% WoW increase) — review agent usage.**"
+        cost_section += "\n"
+
     # Synthesize via LLM
     prompt = f"""## Activity Report ({hours}h window)
 ```json
@@ -666,7 +681,7 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
 ```
 {health_summary}
 ```
-{scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{sdlc_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{deliberation_section}{gaps_section}{profile_section}
+{scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{sdlc_section}{cost_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{deliberation_section}{gaps_section}{profile_section}
 Generate a briefing for this system state. The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
 The lookback window is {hours} hours."""
 

@@ -492,6 +492,41 @@ def _collect_precedent_nudges(nudges: list[Nudge]) -> None:
         pass
 
 
+def _collect_rag_quality_nudges(nudges: list[Nudge]) -> None:
+    """G3: Surface knowledge gaps from RAG zero-result queries."""
+    try:
+        from shared.langfuse_client import query_zero_result_spans
+
+        zero_results = query_zero_result_spans(hours=24)
+        if not zero_results:
+            return
+
+        # Group by collection
+        by_collection: dict[str, list[str]] = {}
+        for r in zero_results:
+            col = r.get("collection") or "unknown"
+            q = r.get("query", "")
+            by_collection.setdefault(col, []).append(q)
+
+        for col, queries in by_collection.items():
+            if len(queries) < 3:
+                continue
+            sample = "; ".join(q for q in queries[:3] if q)
+            nudges.append(
+                Nudge(
+                    category="knowledge",
+                    priority_score=45,
+                    priority_label="medium",
+                    title=f"RAG knowledge gap in {col} ({len(queries)} zero-result queries)",
+                    detail=f"Sample queries: {sample[:150]}",
+                    suggested_action=f"Review and index content for '{col}' collection",
+                    source_id=f"rag-quality:{col}",
+                )
+            )
+    except Exception:
+        pass
+
+
 def _collect_emergence_nudges(nudges: list[Nudge]) -> None:
     """Generate nudges from emergence detection candidates."""
     try:
@@ -604,10 +639,14 @@ def collect_nudges(
     _collect_sufficiency_nudges(nudges)
     _collect_knowledge_sufficiency_nudges(nudges)
     _collect_precedent_nudges(nudges)
+    _collect_rag_quality_nudges(nudges)
     _collect_emergence_nudges(nudges)
 
     # Filter out recently dismissed nudges
     nudges = _filter_dismissed(nudges)
+
+    # GAP-5: Watch biometrics → nudge priority adjustment
+    _apply_watch_adjustments(nudges)
 
     # Apply accommodation adjustments
     if accommodations is not None:
@@ -633,6 +672,50 @@ def collect_nudges(
         return visible
 
     return nudges[:max_nudges]
+
+
+def _apply_watch_adjustments(nudges: list[Nudge]) -> None:
+    """GAP-5: Adjust nudge priorities based on watch biometrics.
+
+    - Poor sleep quality: reduce non-critical scores by 20%
+    - Activity state "sleep" or "rest": suppress non-critical nudges entirely
+    """
+    import json
+    from pathlib import Path
+
+    watch_dir = Path.home() / "hapax-state" / "watch"
+
+    # Read activity state
+    activity_state = ""
+    try:
+        activity_file = watch_dir / "activity.json"
+        if activity_file.exists():
+            data = json.loads(activity_file.read_text())
+            activity_state = data.get("state", "").upper()
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    # Read sleep quality
+    sleep_quality = ""
+    try:
+        sleep_file = watch_dir / "sleep.json"
+        if sleep_file.exists():
+            data = json.loads(sleep_file.read_text())
+            sleep_quality = data.get("quality", "").lower()
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    # Suppress non-critical nudges during sleep/rest
+    if activity_state in ("STILL", "SLEEP"):
+        for nudge in nudges:
+            if nudge.priority_label not in ("critical",):
+                nudge.priority_score = 0
+
+    # Poor sleep: reduce non-critical scores by 20%
+    if sleep_quality in ("poor", "restless", "bad"):
+        for nudge in nudges:
+            if nudge.priority_label not in ("critical", "high"):
+                nudge.priority_score = max(1, int(nudge.priority_score * 0.8))
 
 
 def _filter_dismissed(nudges: list[Nudge]) -> list[Nudge]:

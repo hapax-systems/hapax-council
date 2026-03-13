@@ -54,6 +54,17 @@ class ModelUsage(BaseModel):
     error_count: int = 0
 
 
+class CostTrendSummary(BaseModel):
+    """Week-over-week cost comparison (GAP-10/G1)."""
+
+    this_week: float = 0.0
+    last_week: float = 0.0
+    wow_change_pct: float = 0.0
+    cost_spike: bool = False  # True if this_week > 1.2 * last_week
+    top_agent: str = ""
+    top_agent_cost: float = 0.0
+
+
 class LangfuseActivity(BaseModel):
     """LLM usage from Langfuse traces."""
 
@@ -65,6 +76,7 @@ class LangfuseActivity(BaseModel):
     models: list[ModelUsage] = Field(default_factory=list)
     error_count: int = 0
     unique_trace_names: list[str] = Field(default_factory=list)
+    cost_trend: CostTrendSummary | None = None
 
 
 class HealthTrend(BaseModel):
@@ -290,6 +302,24 @@ def collect_langfuse(since: datetime) -> LangfuseActivity:
         activity.error_count += s["errors"]
 
     activity.total_cost = round(activity.total_cost, 6)
+
+    # GAP-10/G1: Attach cost trend if available
+    try:
+        from cockpit.data.cost import collect_cost_trend
+
+        trend = collect_cost_trend(days=14)
+        if trend.available:
+            activity.cost_trend = CostTrendSummary(
+                this_week=round(trend.this_week, 4),
+                last_week=round(trend.last_week, 4),
+                wow_change_pct=round(trend.wow_change_pct, 1),
+                cost_spike=trend.last_week > 0 and trend.this_week > 1.2 * trend.last_week,
+                top_agent=trend.top_agents[0].agent if trend.top_agents else "",
+                top_agent_cost=round(trend.top_agents[0].cost, 4) if trend.top_agents else 0.0,
+            )
+    except Exception as e:
+        log.debug("Cost trend collection failed: %s", e)
+
     return activity
 
 
@@ -693,10 +723,11 @@ async def synthesize_report(report: ActivityReport) -> str:
     from pydantic_ai import Agent
 
     from shared.config import get_model
+    from shared.operator import get_system_prompt_fragment
 
     agent = Agent(
         get_model("fast"),
-        system_prompt="""\
+        system_prompt=get_system_prompt_fragment("activity-analyzer") + "\n\n" + """\
 You are a system operations analyst. Given a structured activity report for an
 LLM infrastructure stack, produce a concise 3-5 sentence briefing for the
 operator. Focus on: what happened, what's notable, what needs attention.

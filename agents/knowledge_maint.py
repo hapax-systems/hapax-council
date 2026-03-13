@@ -411,10 +411,12 @@ async def add_summary(report: MaintenanceReport) -> MaintenanceReport:
     from pydantic_ai import Agent
 
     from shared.config import get_model
+    from shared.operator import get_system_prompt_fragment
 
     agent = Agent(
         get_model("fast"),
-        system_prompt="Summarize this knowledge base maintenance report in 2-3 sentences. Be specific about numbers.",
+        system_prompt=get_system_prompt_fragment("knowledge-maint")
+        + "\n\nSummarize this knowledge base maintenance report in 2-3 sentences. Be specific about numbers.",
     )
     from shared.axiom_tools import get_axiom_tools
 
