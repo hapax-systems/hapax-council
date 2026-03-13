@@ -28,17 +28,34 @@ log = logging.getLogger(__name__)
 # Patterns that are safe to execute without LLM evaluation.
 # Each regex is matched against the full remediation command string.
 _SAFE_REMEDIATION_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"^systemctl --user (start|restart|reset-failed) [\w@.\-]+$"),
+    re.compile(r"^systemctl --user (start|restart|reset-failed|enable --now) [\w@.\-]+$"),
     re.compile(r"^systemctl --user reset-failed [\w@.\-]+ && systemctl --user start [\w@.\-]+$"),
     re.compile(r"^docker (start|restart) [\w.\-]+$"),
     re.compile(r"^cd [~/\w.\-]+ && docker compose up -d(?: [\w.\-]+)?$"),
     re.compile(r"^cd [~/\w.\-]+ && docker compose --profile \w+ up -d(?: [\w.\-]+)?$"),
     re.compile(r"^cd [~/\w.\-]+ && docker compose restart [\w.\-]+$"),
+    re.compile(r"^bash [~/\w.\-]+\.sh$"),
+    # Qdrant collection creation
+    re.compile(r"^curl -X PUT http://localhost:6333/collections/[\w\-]+ "),
+    # Ollama model pull
+    re.compile(r"^docker exec ollama ollama pull [\w.\-:]+$"),
+    # Python module invocation via uv
+    re.compile(r"^cd [~/\w.\-]+ && uv run python -m [\w.]+(?: --[\w\-]+(?: [\w.\-]+)?)*$"),
 ]
+
+
+def _normalize_remediation(cmd: str) -> str:
+    """Strip human-instruction prefixes from remediation commands."""
+    # Remove "Run: ", "Check: ", "Enable timers: " etc.
+    m = re.match(r"^(?:Run|Check|Enable timers|Verify):\s*", cmd)
+    if m:
+        return cmd[m.end() :]
+    return cmd
 
 
 def _is_safe_remediation(cmd: str) -> bool:
     """Check if a remediation command matches a known-safe pattern."""
+    cmd = _normalize_remediation(cmd)
     return any(p.match(cmd) for p in _SAFE_REMEDIATION_PATTERNS)
 
 
@@ -50,6 +67,7 @@ async def _run_deterministic_fix(check: CheckResult) -> FixOutcome:
     """
     cmd = check.remediation
     assert cmd is not None  # caller checks
+    cmd = _normalize_remediation(cmd)
 
     proposal = FixProposal(
         capability="deterministic_fallback",
