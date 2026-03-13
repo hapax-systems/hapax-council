@@ -157,7 +157,9 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
         return vec
 
 
-def embed_safe(text: str, model: str | None = None, prefix: str = "search_query") -> list[float] | None:
+def embed_safe(
+    text: str, model: str | None = None, prefix: str = "search_query"
+) -> list[float] | None:
     """Generate embedding via Ollama with graceful degradation (cb-degrade-001).
 
     Returns None instead of raising when Ollama is unavailable. Callers

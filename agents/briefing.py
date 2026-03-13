@@ -504,16 +504,16 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
         try:
             from scripts.enforcement_accuracy import _compute_stats, _readiness_recommendation
 
-            stats = _compute_stats()
-            total_matches = sum(s.total for s in stats.values())
-            total_labeled = sum(s.labeled for s in stats.values())
-            unlabeled = sum(s.unlabeled for s in stats.values())
+            enforcement_stats = _compute_stats()
+            total_matches = sum(s.total for s in enforcement_stats.values())
+            total_labeled = sum(s.labeled for s in enforcement_stats.values())
+            unlabeled = sum(s.unlabeled for s in enforcement_stats.values())
             if total_matches > 0:
                 parts.append(
                     f"- Output enforcement: {total_matches} pattern matches, "
                     f"{total_labeled} labeled, {unlabeled} awaiting review"
                 )
-                recommendation = _readiness_recommendation(stats)
+                recommendation = _readiness_recommendation(enforcement_stats)
                 if recommendation.startswith("READY"):
                     parts.append("- Blocking readiness: READY")
                 else:

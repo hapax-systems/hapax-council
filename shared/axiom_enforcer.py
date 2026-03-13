@@ -84,8 +84,7 @@ def _quarantine(text: str, agent_id: str, violations: list[PatternViolation]) ->
     quarantine_file = QUARANTINE_DIR / f"{agent_id}-{ts}.md"
 
     violation_summary = "\n".join(
-        f"- [{v.tier}] {v.pattern_id}: '{v.matched_text}' — {v.description}"
-        for v in violations
+        f"- [{v.tier}] {v.pattern_id}: '{v.matched_text}' — {v.description}" for v in violations
     )
 
     quarantine_file.write_text(

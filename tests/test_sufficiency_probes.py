@@ -24,7 +24,12 @@ from shared.sufficiency_probes import (
 
 def test_probes_have_valid_fields():
     """All probes have required fields populated."""
-    valid_axioms = {"executive_function", "single_user", "corporate_boundary", "management_governance"}
+    valid_axioms = {
+        "executive_function",
+        "single_user",
+        "corporate_boundary",
+        "management_governance",
+    }
     for probe in PROBES:
         assert probe.id.startswith("probe-")
         assert probe.axiom_id in valid_axioms

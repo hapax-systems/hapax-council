@@ -115,21 +115,25 @@ def _scan_file(path: Path, agent_id: str) -> list[dict]:
         end = min(len(text), v.match_end + 60)
         context = text[start:end].replace("\n", " ").strip()
 
-        entries.append({
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "agent_id": agent_id,
-            "output_path": str(path),
-            "allowed": True,
-            "audit_only": True,
-            "source": "backfill",
-            "violations": [{
-                "pattern_id": v.pattern_id,
-                "tier": v.tier,
-                "matched_text": v.matched_text,
-                "axiom_id": v.axiom_id,
-                "context": context,
-            }],
-        })
+        entries.append(
+            {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "agent_id": agent_id,
+                "output_path": str(path),
+                "allowed": True,
+                "audit_only": True,
+                "source": "backfill",
+                "violations": [
+                    {
+                        "pattern_id": v.pattern_id,
+                        "tier": v.tier,
+                        "matched_text": v.matched_text,
+                        "axiom_id": v.axiom_id,
+                        "context": context,
+                    }
+                ],
+            }
+        )
 
     return entries
 
@@ -196,13 +200,15 @@ def cmd_backfill() -> None:
                             "allowed": True,
                             "audit_only": True,
                             "source": "backfill",
-                            "violations": [{
-                                "pattern_id": v.pattern_id,
-                                "tier": v.tier,
-                                "matched_text": v.matched_text,
-                                "axiom_id": v.axiom_id,
-                                "context": context,
-                            }],
+                            "violations": [
+                                {
+                                    "pattern_id": v.pattern_id,
+                                    "tier": v.tier,
+                                    "matched_text": v.matched_text,
+                                    "axiom_id": v.axiom_id,
+                                    "context": context,
+                                }
+                            ],
                         }
                         with AUDIT_LOG.open("a") as f:
                             f.write(json.dumps(entry) + "\n")
@@ -249,15 +255,20 @@ def _save_label(label: Label) -> None:
     """Append a label to the labels file."""
     LABELS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with LABELS_FILE.open("a") as f:
-        f.write(json.dumps({
-            "timestamp": label.timestamp,
-            "pattern_id": label.pattern_id,
-            "matched_text": label.matched_text,
-            "context": label.context,
-            "verdict": label.verdict,
-            "agent_id": label.agent_id,
-            "note": label.note,
-        }) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "timestamp": label.timestamp,
+                    "pattern_id": label.pattern_id,
+                    "matched_text": label.matched_text,
+                    "context": label.context,
+                    "verdict": label.verdict,
+                    "agent_id": label.agent_id,
+                    "note": label.note,
+                }
+            )
+            + "\n"
+        )
 
 
 def cmd_label() -> None:
@@ -296,7 +307,7 @@ def cmd_label() -> None:
     labeled = 0
     for i, (entry, v) in enumerate(unlabeled):
         context = v.get("context", v.get("matched_text", ""))
-        print(f"─── [{i+1}/{len(unlabeled)}] ─────────────────────────")
+        print(f"─── [{i + 1}/{len(unlabeled)}] ─────────────────────────")
         print(f"  Pattern:  {v['pattern_id']} [{v['tier']}]")
         print(f"  Agent:    {entry['agent_id']}")
         print(f"  Source:   {entry['output_path']}")
@@ -382,6 +393,7 @@ def _compute_stats() -> dict[str, PatternStats]:
     # Also include patterns with no matches (zero baseline)
     try:
         from shared.axiom_pattern_checker import load_patterns
+
         for p in load_patterns():
             all_pattern_ids.add(p.id)
     except Exception:
@@ -436,10 +448,7 @@ def cmd_report(*, as_json: bool = False) -> None:
         # Readiness
         t0_patterns = {pid: s for pid, s in stats.items() if pid.startswith("out-") and s.total > 0}
         assessed = [s for s in t0_patterns.values() if s.assessed]
-        all_precise = all(
-            (s.fp_rate or 0) <= MAX_FP_RATE_FOR_BLOCKING
-            for s in assessed
-        )
+        all_precise = all((s.fp_rate or 0) <= MAX_FP_RATE_FOR_BLOCKING for s in assessed)
         result["readiness"] = {
             "t0_patterns_with_matches": len(t0_patterns),
             "assessed": len(assessed),
@@ -476,7 +485,9 @@ def cmd_report(*, as_json: bool = False) -> None:
             status = "PASS" if (s.fp_rate or 0) <= MAX_FP_RATE_FOR_BLOCKING else "HIGH FP"
         else:
             status = f"need {MIN_SAMPLES_FOR_CONFIDENCE - s.labeled} more"
-        print(f"{pid:<28} {s.total:>5} {s.tp:>4} {s.fp:>4} {s.unlabeled:>4} {prec_str:>7} {status:<12}")
+        print(
+            f"{pid:<28} {s.total:>5} {s.tp:>4} {s.fp:>4} {s.unlabeled:>4} {prec_str:>7} {status:<12}"
+        )
 
     print()
 
@@ -487,7 +498,7 @@ def cmd_report(*, as_json: bool = False) -> None:
     total_fp = sum(s.fp for s in stats.values())
     print(f"Total: {total_matches} matches, {total_labeled} labeled ({total_tp} TP, {total_fp} FP)")
     if total_labeled > 0:
-        print(f"Overall precision: {total_tp/total_labeled:.0%}")
+        print(f"Overall precision: {total_tp / total_labeled:.0%}")
     print()
 
     # Readiness assessment
@@ -500,10 +511,7 @@ def cmd_report(*, as_json: bool = False) -> None:
 
 def _readiness_recommendation(stats: dict[str, PatternStats]) -> str:
     """Generate a readiness recommendation for enabling T0 blocking."""
-    t0_with_matches = {
-        pid: s for pid, s in stats.items()
-        if s.total > 0
-    }
+    t0_with_matches = {pid: s for pid, s in stats.items() if s.total > 0}
 
     if not t0_with_matches:
         return (
@@ -542,7 +550,7 @@ def _readiness_recommendation(stats: dict[str, PatternStats]) -> str:
     total_labeled = sum(s.labeled for s in assessed)
     return (
         f"READY: All {len(assessed)} active pattern(s) below {MAX_FP_RATE_FOR_BLOCKING:.0%} FP threshold. "
-        f"Overall precision: {total_tp}/{total_labeled} ({total_tp/total_labeled:.0%}). "
+        f"Overall precision: {total_tp}/{total_labeled} ({total_tp / total_labeled:.0%}). "
         f"Enable blocking with: AXIOM_ENFORCE_BLOCK=1"
     )
 
