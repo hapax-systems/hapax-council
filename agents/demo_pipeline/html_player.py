@@ -211,7 +211,7 @@ def generate_html_player(
     generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # ── Render template ─────────────────────────────────────────
-    env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=False)
+    env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
     template = env.get_template("player.html.j2")
     html = template.render(
         title=script.title,
