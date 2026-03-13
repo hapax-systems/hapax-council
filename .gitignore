@@ -31,6 +31,7 @@ profiles/*.db
 
 # Playwright MCP cache
 .playwright-mcp/
+.claude/settings.local.json
 
 # Demo outputs (generated)
 output/demos/
