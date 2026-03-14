@@ -4,6 +4,10 @@ Phase 3 of the perception type system. Directives prescribe action — they are
 inert data objects carrying full provenance of the perception and governance
 decisions that produced them. A Directive does nothing until an interpreter
 executes it. This gap between description and execution is where governance lives.
+
+Consent threading (DD-22 L4-L6): Labels propagate unchanged. Command carries
+an optional consent_label from its originating FusedContext. Schedule inherits
+via its Command. No label transformation occurs at this layer.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agents.hapax_voice.governance import VetoResult
+from shared.consent_label import ConsentLabel
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,8 @@ class Command:
     Every field is readable data. Governance can inspect action, params,
     min_watermark, trigger_source before deciding whether to allow execution.
     Immutable — prevents TOCTOU bugs between governance check and execution.
+
+    Optional consent_label (DD-22): propagated from FusedContext, unchanged.
     """
 
     action: str
@@ -31,6 +38,7 @@ class Command:
     min_watermark: float = 0.0
     governance_result: VetoResult = field(default_factory=lambda: VetoResult(allowed=True))
     selected_by: str = "default"
+    consent_label: ConsentLabel | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "params", types.MappingProxyType(self.params))
