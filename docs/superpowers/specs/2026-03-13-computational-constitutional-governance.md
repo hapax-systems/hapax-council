@@ -3,7 +3,7 @@
 **Status**: Hardened theory document — research synthesis + formal design decisions
 **Date**: 2026-03-13
 **Scope**: Foundational theory for hapax-council's governance architecture
-**Research basis**: 7 primary research threads, 4 deep-dive analyses, 100+ sources
+**Research basis**: 10 primary research threads, 7 deep-dive analyses, 140+ sources
 
 ---
 
@@ -463,9 +463,165 @@ THOMAS's norm propagation through organizational unit hierarchies maps to the co
 
 ---
 
-## 9. Position in the Literature
+## 9. Epistemic Carrier Dynamics
 
-### 9.1 What Exists (Pieces)
+### 9.1 The Cross-Domain Error Correction Problem
+
+The principal model (Section 3) assigns each agent a domain — a bounded scope of knowledge and responsibility. The institutional architecture (Section 8) organizes agents into roles with normative obligations. Both follow Conway's law: communication structure determines what the system can know.
+
+This creates a specific, empirically documented failure mode: **cross-domain factual inconsistency persisting because no agent has standing to detect it.** Domain A holds fact X; domain B holds fact ¬X; no agent operates in both domains; the contradiction persists indefinitely. This failure has no single name in the literature but has killed people:
+
+| Case | Deaths | Mechanism |
+|------|--------|-----------|
+| 9/11 intelligence silos | 2,977 | FBI Phoenix memo never reached CIA counterterrorism (9/11 Commission Report) |
+| Space Shuttle Challenger | 7 | O-ring data couldn't override management domain (Vaughan, "normalization of deviance") |
+| Space Shuttle Columbia | 7 | Same organizational pathology, 17 years later (CAIB) |
+| Boeing 737 MAX | 346 | Engineering facts couldn't reach finance-driven leadership (PMC 7351545) |
+| Medical diagnostic errors | ~250K/yr | Specialist silos, no cross-domain fact flow (NCBI/AHRQ NBK555525) |
+| 2008 financial crisis | systemic | Risk assessed within departments, not across them (SEC/FSB post-crisis report) |
+
+The Nagappan, Murphy, and Basili study at Microsoft (2008) provides quantitative confirmation: **organizational metrics predicted software failure-proneness with 85% precision and recall** — significantly higher than code complexity, churn, or coverage. Conway's law is not just an architectural constraint; it is an *epistemic* constraint — it determines what the system can *know*, not just what it can *build*. This epistemic characterization of Conway's law appears to be latent but not formalized in the existing literature.
+
+The MAS literature (OperA, MOISE+, AMELI, THOMAS) provides no mechanism for cross-role fact checking. These frameworks assign roles, enforce norms, and coordinate — but every agent operates strictly within its domain standing. The closest named problem in cognitive science is **transactive memory system failure** (Wegner, 1987): a group's distributed memory breaks down when members cannot locate knowledge held by others.
+
+### 9.2 The Factor Graph Equivalence
+
+The solution has a precise mathematical formalization via factor graphs. This is not an analogy — it is a structural equivalence established by Kschischang, Frey, and Loeliger (IEEE Trans. Information Theory, 2001), who proved that belief propagation, error-correcting code decoding, the Viterbi algorithm, turbo decoding, and the Kalman filter are all instances of a single message-passing algorithm on factor graphs.
+
+The mapping to multi-agent systems is exact:
+
+| Factor graph concept | Agent system equivalent |
+|---------------------|----------------------|
+| Variable node | Agent with local domain knowledge |
+| Check node | Cross-domain contact point where facts from multiple domains meet |
+| Variable → check message | Agent sharing local facts at contact |
+| Check → variable message | Contradiction/consistency signal propagated back |
+| Sparse connectivity | Each agent participates in few cross-domain contacts (bounded) |
+| Iterative decoding | Repeated rounds of fact exchange refining system knowledge |
+
+**LDPC codes** (Gallager, 1960; MacKay & Neal, 1990s) demonstrate that sparse parity checks achieve near-Shannon-limit error correction. Each check node connects to only 6–20 variable nodes (low density), yet the code corrects nearly as many errors as theoretically possible. The implication: **a small, constant number of cross-domain contacts per agent achieves near-optimal error correction.** This is the formal justification for bounded carrying capacity.
+
+**Expander codes** (Sipser & Spielman) show that bipartite expander graphs yield codes with linear-time decoding via a greedy local flip: each node checks its local constraints and flips bits that violate the majority of their checks. This is structurally identical to agents detecting contradictions when carrier facts contact local knowledge and revising accordingly. The expansion property guarantees that local errors cannot hide — they will be detected by enough check nodes to trigger correction.
+
+**Network error correction** (Cai & Yeung, 2006) generalizes the Hamming bound, Singleton bound, and Gilbert-Varshamov bound to networks where intermediate nodes carry redundant information. The key insight: error correction in networks exploits topology, not just link-by-link redundancy. The network's minimum cut between domains determines maximum detectable cross-domain errors.
+
+### 9.3 Empirical Validation: Multi-Agent Error Detection
+
+Two 2025 papers provide direct empirical and information-theoretic support:
+
+**Multi-Agent Fact Checking** (arXiv:2503.02116, March 2025) models each fact-checking agent as a Binary Symmetric Channel with unknown crossover probability π_i ∈ (0,1), representing the agent's unreliability. The paper provides an algorithm to jointly learn agent reliabilities and determine fact truth values, proving convergence. Agents are noisy channels whose collective redundancy enables distributed error detection.
+
+**Multi-Agent Code Verification via Information Theory** (arXiv:2511.16708, November 2025) proves via submodularity of mutual information under conditional independence that combining agents with different detection patterns finds more errors than any single agent. Key results:
+- Agent correlation ρ = 0.05 to 0.25 (agents detect different bugs)
+- Marginal information gains decrease monotonically: +14.9pp, +13.5pp, +11.2pp for agents 2, 3, 4
+- Four agents catch 76.1% of bugs vs. 32.8% for the best single agent
+- Submodularity proof formalizes diminishing returns from additional carriers
+
+### 9.4 The Carrier Mechanism
+
+**Design decision DD-24**: Extend principals with a bounded carrier slot for cross-domain facts.
+
+Each principal carries a small set of facts from foreign domains — facts it observed incidentally through contact topology, not through deliberate cross-domain queries. These facts are not the principal's primary concern; they are carried opportunistically.
+
+The mechanism has four properties, each independently formalized in existing literature:
+
+1. **Incidental acquisition**: Facts are acquired through contact, not through deliberate search. A health monitor agent observing disk metrics incidentally observes a pattern relevant to the profile agent's domain. This follows the Socialization quadrant of Nonaka & Takeuchi's SECI model (1995) — tacit-to-tacit transfer through co-presence, not through explicit documentation.
+
+2. **Bounded capacity**: Each agent carries at most k foreign-domain facts, where k is proportional to its domain knowledge depth. This is the T-shaped professional model (McKinsey/IDEO): deep expertise (vertical bar) enables bounded cross-domain capacity (horizontal bar). Information-theoretic bounds from LDPC sparsity suggest k = O(1) suffices with good contact topology; the memory-bounded agent lower bound (PODC 2024, arXiv:2402.11553) shows k = O(log n) is needed in the worst case.
+
+3. **Error detection on contact**: When a carrier fact contacts local knowledge at a receiving agent and produces a contradiction, this triggers a consistency check — mechanically, a veto in the VetoChain. The receiving agent does not need to understand the foreign fact's domain significance; it only needs to detect that its local knowledge is inconsistent with the carried fact. This is the expander code decoding pattern: local constraint checking triggers correction.
+
+4. **Anti-homogenization**: Carrier facts must not cause domain knowledge convergence. The Friedkin-Johnsen stubbornness model provides the formal mechanism: each agent maintains partial attachment to its domain knowledge (stubbornness parameter s_i > 0), preventing consensus collapse. Domain boundaries function as natural bounded-confidence thresholds (Hegselmann-Krause): agents in different domains have incommensurable knowledge that limits cross-domain influence. Additionally, carriers propagate *facts* (observations, data), not *interpretations* (conclusions, judgments) — preserving Surowiecki's independence condition for collective intelligence.
+
+### 9.5 Displacement Dynamics
+
+**Design decision DD-25**: Carrier facts are displaced by frequency, not by recency.
+
+When an agent's carrier capacity is full and it encounters a new foreign-domain fact, displacement follows a frequency-weighted policy: the new fact displaces the least-observed existing carrier fact only if the new fact has been observed significantly more frequently. This prevents:
+
+- **Recency bias**: FIFO displacement would cause high-turnover carrier slots that never persist long enough to reach a contradiction-detecting contact.
+- **Homogenization**: If all agents converge on carrying the same high-frequency facts, the system loses diversity. The displacement threshold must be large enough that displacement is infrequent, preserving carrier diversity across the agent population.
+- **Echo chambers**: The Galam contrarian model shows that a fraction of agents maintaining minority-position facts has a moderating (not polarizing) effect. The displacement policy should ensure that low-frequency but high-value facts persist in the system.
+
+The epidemiological analog is superinfection with fitness competition: a more transmissible strain (higher-frequency fact) displaces a less transmissible one, but the displacement dynamics have a critical threshold below which coexistence is stable.
+
+### 9.6 Composition with Existing Architecture
+
+Epistemic carrier dynamics composes with every layer of the existing architecture:
+
+| Component | Integration |
+|-----------|------------|
+| **Principals (§3)** | Each principal gains a `carrier_slots: list[CarrierFact]` field, bounded by `carrier_capacity: int` |
+| **Consent labels (§5)** | Carrier facts are `Labeled[T]` values — consent labels travel with carried facts via the DLM join |
+| **VetoChain (§5.5)** | Contradiction between carrier fact and local knowledge generates a new veto type: `EpistemicContradictionVeto` |
+| **FusedContext (§6)** | Carrier facts appear as additional samples in the fused context, with their foreign-domain provenance preserved |
+| **Composition ladder (§6)** | Carrier slots are populated at L8 (PerceptionEngine) where cross-domain contact occurs, and checked at L7 (governance composition) where VetoChain evaluates |
+| **Institutional architecture (§8)** | The governor pattern (§8.3) mediates carrier fact exchange at agent boundaries — governors validate that carrier facts respect consent labels before propagation |
+| **Axiom system (§4)** | Carrier dynamics is governed by existing axioms: `interpersonal_transparency` constrains what facts about persons can be carried; `corporate_boundary` constrains what work facts can flow to home-system carriers |
+
+**Design decision DD-26**: Carrier facts propagate through the filesystem-as-bus like any other data, but with a `carrier: true` frontmatter flag that triggers carrier-specific governance checks. The reactive engine (inotify) treats carrier-flagged writes as a distinct event type, routing them through carrier-specific validation rules.
+
+### 9.7 Formal Precedents
+
+The concept assembles five properties that exist independently across seven research traditions:
+
+| Property | Formalized in | Our extension |
+|----------|--------------|---------------|
+| Probabilistic information spreading | Gossip protocols (Demers et al., 1987) | Cross-domain, not intra-domain |
+| Message passing for global consistency | Factor graphs / sum-product (Kschischang et al., 2001); GBP (Yedidia et al., 2001) | Messages carried incidentally, not computed deliberately |
+| Bounded carrying capacity | Memory-bounded agents (PODC 2024) | Applied to cross-domain facts, not homogeneous bits |
+| Error detection via redundancy | LDPC codes (Gallager, 1960); network error correction (Cai & Yeung, 2006) | Agents as sparse parity checks |
+| Anti-homogenization | Stubbornness (Friedkin-Johnsen); contrarians (Galam); bounded confidence (Hegselmann-Krause) | Domain boundaries as natural confidence bounds |
+
+Additional supporting traditions:
+
+- **Boundary spanners** (Tushman, 1981; Allen): Human cross-domain fact carriers are disproportionately valuable; agent carriers mechanize this
+- **Structural holes** (Burt, 1992, 2004): Bridging disconnected groups provides information advantages and accelerates learning; carrier dynamics ensures no persistent structural holes
+- **High-reliability organizations** (Weick & Sutcliffe): "Reluctance to simplify" and "deference to expertise" are institutional policies that resist domain-standing-as-filter — carrier dynamics is the structural implementation
+- **Epistemic injustice** (Fricker, 2007): Suppressing valid observations based on domain standing is structurally analogous to testimonial injustice; the harm falls on the system's users (collectively dumber system), not on the agents themselves
+- **Nogood propagation** (DCSP/DCOP literature): Agents propagate constraint violation information from foreign domains, enabling other agents to prune infeasible solutions — the most direct existing formalism for the carrier mechanism
+- **Double-loop learning** (Argyris & Schon): Carrier facts that contradict domain assumptions force double-loop learning structurally, without requiring interpersonal challenge
+- **Knowledge redundancy** (Bourgeois, 1981): Overlapping knowledge prevents single-point epistemic failure; carrier dynamics creates deliberate epistemic redundancy
+
+### 9.8 Carrying Capacity Bounds
+
+Combining results from LDPC sparsity, submodularity, and memory-bounded agent theory:
+
+| Topology | Required carrier capacity k | Source |
+|----------|---------------------------|--------|
+| Good expansion (well-connected contact graph) | O(1) — constant, independent of system size | LDPC near-Shannon-limit at degree 6–20 |
+| Arbitrary topology | O(log n) where n = number of domains | Memory-bounded agent lower bound (PODC 2024) |
+| Practical heuristic | 3–5 foreign-domain facts | Submodularity plateau (arXiv:2511.16708) |
+
+The system-level error detection probability with k carrier facts per agent: P(detection) ≈ 1 − (1−p)^(k·n_agents), where p is the probability that a given foreign fact is relevant to a contradiction in the receiving agent's local domain. For independent facts with good expansion, the system approaches complete error coverage rapidly.
+
+### 9.9 The Epistemic Dimension of Conway's Law
+
+**Design decision DD-27**: Treat Conway's law as an epistemic constraint, not merely a structural one.
+
+Conway's original formulation (1968): "organizations which design systems are constrained to produce designs which are copies of the communication structures of these organizations." The standard reading is architectural — communication structure determines system structure. The epistemic reading is stronger: **communication structure determines what the system can *know***, as a prerequisite to determining what it can build.
+
+The Nagappan et al. (2008) result supports the epistemic reading directly: organizational structure predicts defects better than code metrics because organizational structure determines which failure modes are *epistemically accessible* to the development team. A defect that spans two teams' domains is invisible to each team individually — it exists in the structural hole between them.
+
+Carrier dynamics is the antidote to epistemic Conway's law. By ensuring that facts circulate across domain boundaries — even in bounded, incidental quantities — the system prevents persistent structural holes from becoming persistent epistemic blind spots.
+
+### 9.10 Open Questions Specific to Carrier Dynamics
+
+1. **Carrier fact representation**: What is the minimal representation for a carrier fact? Raw observations, structured assertions, or labeled values? The answer affects both carrying capacity (bits per fact) and contradiction detection capability.
+
+2. **Contact topology design**: Should the agent contact graph be designed for good expansion properties, or should it emerge from the reactive engine's existing wiring? Designed topologies guarantee error-correction bounds; emergent topologies may miss critical cross-domain contacts.
+
+3. **Contradiction detection threshold**: How much inconsistency between a carrier fact and local knowledge is required to trigger a veto? Zero tolerance produces false positives from noise; high tolerance misses real errors. The FRACTURE framework's compliance margins (arXiv:2511.17937) may provide the right model.
+
+4. **Carrier fact provenance**: Should carrier facts record their full chain of custody (which agents carried them, for how long)? Full provenance enables trust calibration but increases metadata overhead.
+
+5. **Cross-system carrier dynamics**: If multiple hapax-council-like systems exist (the single-operator axiom scopes to one system), could carrier dynamics operate between systems via shared external surfaces? This connects to the Solid/Keyhive interoperability question.
+
+---
+
+## 10. Position in the Literature
+
+### 10.1 What Exists (Pieces)
 
 | Domain | Key Work | What They Have |
 |--------|----------|---------------|
@@ -487,7 +643,7 @@ THOMAS's norm propagation through organizational unit hierarchies maps to the co
 | Gradual security | Toro, Garcia, Tanter (2018) | Mixed labeled/unlabeled regions |
 | Local-first + AI | Kleppmann (2019), Ink & Switch, Litt (2025) | CRDTs, Keyhive, ambient agents |
 
-### 9.2 What Does Not Exist (Our Contribution)
+### 10.2 What Does Not Exist (Our Contribution)
 
 No published system combines:
 
@@ -498,16 +654,17 @@ No published system combines:
 5. **Neurodivergent accommodation as governance axiom** — cognitive accommodation enforced by the same mechanisms as data protection and consent, with 35 derived implications at T0/T1/T2 tiers
 6. **Separation of value enforcement from value internalization** — principles externalized as axioms evaluated by independent models, not embedded in the acting model's weights
 7. **Norm refinement with interpretive canons** — traceability from abstract value through derivation canon to executable enforcement pattern, exceeding the most sophisticated MAS frameworks (OperA, MOISE+, ISLANDER)
+8. **Epistemic carrier dynamics** — bounded cross-domain fact carrying for distributed error correction, with formal grounding in factor graphs, LDPC codes, and network error correction theory, solving a documented lethal problem (cross-domain knowledge silos) that no MAS framework addresses
 
-### 9.3 Philosophical Lineage
+### 10.3 Philosophical Lineage
 
 Weiser (calm computing, 1991) → Clark & Chalmers (extended mind, 1998) → Ostrom (institutional analysis) → Lessig (code as law, 1999) → Kleppmann (local-first, 2019) → Lanier (data dignity) → Berners-Lee (Solid + AI, 2025) → Clark (extending minds with generative AI, 2025) → **this system** (constitutional governance for the extended mind).
 
 ---
 
-## 10. Open Questions
+## 11. Open Questions
 
-### 10.1 Answered by Research
+### 11.1 Answered by Research
 
 **Consent label granularity**: Use DLM owner-set policies. Granularity is per-owner, per-reader-set. This is neither too coarse nor too fine — the lattice structure handles arbitrary combinations via join. (DD-1)
 
@@ -517,7 +674,7 @@ Weiser (calm computing, 1991) → Clark & Chalmers (extended mind, 1998) → Ost
 
 **Python implementation approach**: Runtime `Labeled[T]` wrappers with LIO-style floating labels, not phantom types. Python's type system cannot express label joins statically. (DD-21)
 
-### 10.2 Remaining Open
+### 11.2 Remaining Open
 
 1. **Environmental vs. personal boundary**: `it-environmental-001` allows transient environmental perception without consent. Where exactly is the line? `face_count > 1` is environmental; `conversation_detected` derives personal inference. The boundary needs formal definition — potentially a constitutive rule: "environmental observation (X) counts as personal inference (Y) when it enables re-identification (C)."
 
@@ -528,10 +685,6 @@ Weiser (calm computing, 1991) → Clark & Chalmers (extended mind, 1998) → Ost
 4. **Constitutional amendment**: Axioms are currently static YAML. The NorMAS literature establishes that effective normative systems need lifecycle management: creation, activation, suspension, modification, retirement. The `status: active | retired` field and `supersedes` reference show awareness. Consider adding activation conditions and a formal amendment process with versioning and impact analysis.
 
 5. **Consent enforcement strength**: Code-level checking (`contract_check()`) vs Keyhive-style cryptographic enforcement. Cryptographic enforcement makes unauthorized access structurally impossible regardless of code bugs, but adds complexity. Current code-level enforcement depends on every data pathway calling the check — a discipline requirement, not a physics guarantee.
-
-6. **Inference provenance**: Profile facts record their `source` but not the chain of inference that produced them. No trace from fact back to source observations. For consent threading, this chain is needed to determine which consent contracts were involved in producing each fact.
-
-7. **Scaffolding fading**: The accommodation engine has no concept of withdrawing support as operator capability grows. ZPD theory predicts good scaffolding should be gradually withdrawable. No mechanism to measure whether the system is enabling growth or creating dependency.
 
 6. **Inference provenance**: Profile facts record their `source` but not the chain of inference that produced them. No trace from fact back to source observations. For consent threading, this chain is needed to determine which consent contracts were involved in producing each fact.
 
@@ -553,7 +706,7 @@ Weiser (calm computing, 1991) → Clark & Chalmers (extended mind, 1998) → Ost
 
 ---
 
-## 11. Design Decisions Index
+## 12. Design Decisions Index
 
 All formal design decisions from the DLM/info-flow research, organized for implementation reference:
 
@@ -581,10 +734,14 @@ All formal design decisions from the DLM/info-flow research, organized for imple
 | DD-21 | Runtime Labeled[T] wrappers, not phantom types | Python type system limitations | 5.6 |
 | DD-22 | Thread consent bottom-up L0-L9 | Composition ladder protocol | 5.9 |
 | DD-23 | Simplified frozenset[str] provenance at current scale | PosBool degeneracy | 5.4 |
+| DD-24 | Extend principals with bounded carrier slot for cross-domain facts | Factor graphs (Kschischang et al. 2001), LDPC codes | 9.4 |
+| DD-25 | Carrier facts displaced by frequency, not recency | Epidemiological superinfection models, Galam contrarian dynamics | 9.5 |
+| DD-26 | Carrier facts propagate via filesystem-as-bus with `carrier: true` frontmatter | Filesystem-as-bus architecture | 9.6 |
+| DD-27 | Treat Conway's law as epistemic constraint, not merely structural | Nagappan et al. 2008 (85% defect prediction from org metrics) | 9.9 |
 
 ---
 
-## 12. References
+## 13. References
 
 ### Formal Models
 - Abadi, Burrows, Lampson, Plotkin, "A Calculus for Access Control in Distributed Systems" (1993)
@@ -673,6 +830,42 @@ All formal design decisions from the DLM/info-flow research, organized for imple
 - Lanier, "Data Dignity and the Inversion of AI" (2025)
 - Ink & Switch, Keyhive (2025)
 - Litt, "Ambient Agents" (2025)
+
+### Information Theory & Error Correction
+- Kschischang, Frey & Loeliger, "Factor Graphs and the Sum-Product Algorithm" (IEEE Trans. Info. Theory, 2001)
+- Gallager, "Low-Density Parity-Check Codes" (IRE Trans. Info. Theory, 1962)
+- Sipser & Spielman, "Expander Codes" (IEEE Trans. Info. Theory, 1996)
+- Cai & Yeung, "Network Error Correction, I: Basic Concepts and Upper Bounds" (Comm. Info. Systems, 2006)
+- Yedidia, Weiss & Freeman, "Understanding Belief Propagation and its Generalizations" (MERL TR-2001-22)
+- Yedidia, Weiss & Freeman, "Constructing Free Energy Approximations and Generalized Belief Propagation Algorithms" (IEEE Trans. Info. Theory, 2005)
+- "Multi-Agent Fact Checking" (arXiv:2503.02116, 2025)
+- "Multi-Agent Code Verification via Information Theory" (arXiv:2511.16708, 2025)
+- "On the Limits of Information Spread by Memory-less Agents" (arXiv:2402.11553, PODC 2024)
+
+### Organizational Theory & Silo Failures
+- Conway, "How Do Committees Invent?" (Datamation, 1968)
+- Nagappan, Murphy & Basili, "The Influence of Organizational Structure on Software Quality" (Microsoft Research TR-2008-11, 2008)
+- 9/11 Commission Report, "The Aviation Security System and the 9/11 Attacks" (2004)
+- Columbia Accident Investigation Board, "Report Volume 1" (NASA, 2003)
+- Vaughan, "The Challenger Launch Decision: Risky Technology, Culture, and Deviance at NASA" (1996)
+- Wegner, "Transactive Memory: A Contemporary Analysis of the Group Mind" (1987)
+- Tushman, "Boundary Spanning Individuals: Their Role in Information Transfer" (AMJ, 1981)
+- Burt, "Structural Holes and Good Ideas" (American Journal of Sociology, 2004)
+- Weick & Sutcliffe, "Managing the Unexpected: Resilient Performance in an Age of Uncertainty" (2007)
+- Granovetter, "The Strength of Weak Ties" (American Journal of Sociology, 1973)
+- Nonaka & Takeuchi, "The Knowledge-Creating Company" (1995)
+- Argyris & Schon, "Organizational Learning: A Theory of Action Perspective" (1978)
+- Senge, "The Fifth Discipline" (1990)
+- Fricker, "Epistemic Injustice: Power and the Ethics of Knowing" (Oxford, 2007)
+- Bourgeois, "On the Measurement of Organizational Slack" (Academy of Management Review, 1981)
+- Kitcher, "The Division of Cognitive Labor" (Journal of Philosophy, 1990)
+- Surowiecki, "The Wisdom of Crowds" (2004)
+
+### Opinion Dynamics & Anti-Homogenization
+- Friedkin & Johnsen, "Social Influence and Opinions" (Journal of Mathematical Sociology, 1990)
+- Hegselmann & Krause, "Opinion Dynamics and Bounded Confidence" (JASSS, 2002)
+- Galam, "Minority Opinion Spreading in Random Geometry" (European Physical Journal B, 2002)
+- Demers et al., "Epidemic Algorithms for Replicated Database Maintenance" (PODC, 1987)
 
 ### Regulatory
 - GDPR (Regulation 2016/679), Articles 7, 28
