@@ -1,0 +1,123 @@
+# Constitutive Rules (§4.3)
+#
+# Explicit "X counts as Y in context C" mappings. Each rule assigns
+# institutional status to brute facts (files on disk). Defeating
+# conditions implement defeasible logic (Governatori & Rotolo).
+#
+# These were previously implicit in path conventions, frontmatter
+# parsing, and agent logic. Making them explicit enables auditable
+# governance chains and coherence checking.
+
+rules:
+  # ── Source service classification (ingest agent) ──────────────────
+  - id: cr-source-gdrive
+    brute_pattern: "rag-sources/gdrive/*"
+    institutional_type: gdrive-data
+    context: ingest
+    match_type: path
+    linked_implications: [it-consent-001]
+    description: "Files in rag-sources/gdrive/ count as Google Drive data"
+
+  - id: cr-source-gmail
+    brute_pattern: "rag-sources/gmail/*"
+    institutional_type: personal-communication
+    context: ingest
+    match_type: path
+    linked_implications: [it-consent-001, it-consent-002]
+    description: "Files in rag-sources/gmail/ count as personal communication"
+
+  - id: cr-source-gcalendar
+    brute_pattern: "rag-sources/gcalendar/*"
+    institutional_type: calendar-data
+    context: ingest
+    match_type: path
+    linked_implications: [it-consent-001]
+    description: "Files in rag-sources/gcalendar/ count as calendar data"
+
+  - id: cr-source-proton
+    brute_pattern: "rag-sources/proton/*"
+    institutional_type: personal-communication
+    context: ingest
+    match_type: path
+    linked_implications: [it-consent-001, it-consent-002]
+    description: "Files in rag-sources/proton/ count as personal communication"
+
+  - id: cr-source-audio
+    brute_pattern: "rag-sources/audio/*"
+    institutional_type: ambient-audio
+    context: perception
+    match_type: path
+    defeating_conditions:
+      - field: face_count
+        description: "Audio with face_count becomes personal data requiring consent"
+        override_type: personal-inference
+    linked_implications: [it-environmental-001]
+    description: "Files in rag-sources/audio/ count as ambient audio (environmental)"
+
+  # ── Document type classification (frontmatter) ────────────────────
+  - id: cr-doctype-profile-fact
+    brute_pattern: ""
+    institutional_type: profile-fact
+    context: profile
+    match_type: frontmatter
+    match_field: doc_type
+    match_value: profile-fact
+    linked_implications: [it-consent-001]
+    description: "Files with doc_type: profile-fact count as profile facts"
+
+  - id: cr-doctype-briefing
+    brute_pattern: ""
+    institutional_type: briefing
+    context: executive-function
+    match_type: frontmatter
+    match_field: doc_type
+    match_value: briefing
+    linked_implications: []
+    description: "Files with doc_type: briefing count as system briefings"
+
+  # ── Carrier fact classification ───────────────────────────────────
+  - id: cr-carrier-flag
+    brute_pattern: ""
+    institutional_type: carrier-fact
+    context: carrier-dynamics
+    match_type: frontmatter
+    match_field: carrier
+    match_value: "true"
+    linked_implications: [it-consent-001]
+    description: "Files with carrier: true count as carrier facts (DD-26)"
+
+  # ── Consent classification ────────────────────────────────────────
+  - id: cr-consent-active
+    brute_pattern: ""
+    institutional_type: consented-data
+    context: consent
+    match_type: frontmatter
+    match_field: consent_contract
+    match_value: active
+    description: "Files with consent_contract: active count as consented data"
+
+  - id: cr-consent-label-present
+    brute_pattern: ""
+    institutional_type: labeled-data
+    context: consent
+    match_type: frontmatter_exists
+    match_field: consent_label
+    description: "Files with consent_label in frontmatter count as labeled data (DD-11)"
+
+  # ── Environmental vs. personal boundary (spec gap #1) ─────────────
+  - id: cr-environmental-observation
+    brute_pattern: ""
+    institutional_type: environmental-observation
+    context: perception
+    match_type: frontmatter
+    match_field: observation_type
+    match_value: environmental
+    defeating_conditions:
+      - field: enables_reidentification
+        value: "true"
+        override_type: personal-inference
+        description: >
+          Environmental observation that enables re-identification counts
+          as personal inference requiring consent (spec gap #1)
+    linked_implications: [it-environmental-001, it-consent-001]
+    description: "Environmental observations that may cross into personal inference"
