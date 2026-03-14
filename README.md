@@ -64,7 +64,7 @@ Agents require LiteLLM (localhost:4000), Qdrant (localhost:6333), and Ollama (lo
 | Principal non-amplification | **Proven** | 3 hypothesis properties ([`tests/test_principal.py`](tests/test_principal.py)) |
 | Governor consistent with can_flow_to | **Proven** | Hypothesis property ([`tests/test_governor.py`](tests/test_governor.py)) |
 | Perception type system (L0-L9) | **Proven** | 192 matrix tests + 62 hypothesis ([`tests/hapax_voice/`](tests/hapax_voice/)) |
-| Consent threads through composition | **Partial** | L0-L1 proven, L2-L9 designed not implemented |
+| Consent threads through composition (L0-L9) | **Proven** | All 10 layers, 4 test files, 6 hypothesis ([`tests/hapax_voice/test_consent_threading_*.py`](tests/hapax_voice/)) |
 | Constitutive rules with defeasible override | **Built** | 27 tests ([`tests/test_constitutive.py`](tests/test_constitutive.py)) |
 | Governance coherence (rule→implication→enforcement) | **Built** | 6 tests ([`tests/test_coherence.py`](tests/test_coherence.py)) |
 | Revocation cascades through provenance | **Built** | 13 tests ([`tests/test_revocation.py`](tests/test_revocation.py)) |
