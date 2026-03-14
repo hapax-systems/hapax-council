@@ -1,5 +1,34 @@
 # hapax_voice — A Perception Type System for Governed Voice Interaction
 
+A 10-layer composition ladder for fusing signals at different temporal rates into governance decisions. Each layer's algebraic properties are proven via a 7-dimension test matrix and Hypothesis property-based tests. 192 matrix tests + 62 hypothesis tests across all layers.
+
+## Proven properties per layer
+
+| Layer | Types | State | Key properties proven |
+|-------|-------|-------|----------------------|
+| L0 | Stamped[T] | Proven | Equality reflexivity, frozen immutability, hash consistency (5 hypothesis) |
+| L1 | Behavior[T], Event[T] | Proven | Watermark monotonicity, regression rejection, subscriber conservation, consent label monotonicity (8+4 hypothesis) |
+| L2 | FusedContext, VetoChain, FallbackChain, FreshnessGuard | Proven | VetoChain monotonicity (adding vetoes only restricts), deny-wins totality |
+| L3 | with_latest_from | Proven | Fusion preserves watermarks, min_watermark is minimum of all sources |
+| L4 | Command, Schedule, VetoResult | Proven | Command immutability, governance trail completeness |
+| L5 | SuppressionField, TimelineMapping, MusicalPosition | Proven | Timeline bijectivity, suppression monotonicity |
+| L6 | ResourceArbiter, ExecutorRegistry, ScheduleQueue | Proven | Priority determinism, resource exclusivity |
+| L7 | compose_mc_governance, compose_obs_governance | Proven | Chain composition preserves monotonicity |
+| L8 | PerceptionEngine, PipelineGovernor, FrameGate | Proven | Governor axiom compliance |
+| L9 | VoiceDaemon | Proven | End-to-end lifecycle |
+
+**7-dimension test matrix**: A (Construction), B (Invariants), C (Operations), D (Boundaries), E (Error paths), F (Dog Star proofs — forbidden sequences blocked), G (Composition contracts — output of layer N is valid input to layer N+1).
+
+**Gate rule**: No new composition on layer N unless layer N-1 is matrix-complete. Full status in [`LAYER_STATUS.yaml`](LAYER_STATUS.yaml).
+
+## Research traditions
+
+| Tradition | Contribution | Key references |
+|-----------|-------------|----------------|
+| Functional reactive programming | Behavior/Event duality, with_latest_from combinator | Elliott 2009, Yampa, Reflex, RxPY |
+| Stream processing | Watermarks for staleness reasoning, monotonic progress | Flink, Dataflow, VLDB watermark theory |
+| DSP / audio synthesis | Suppression envelopes (attack/release), temporal smoothing | Modular synthesis, compressor design |
+
 ## The Temporal Fusion Problem
 
 An always-on voice daemon receives signals from the world at vastly different rates. A MIDI clock tick arrives every few milliseconds. Audio energy measurements update at 50ms. Voice activity detection settles over hundreds of milliseconds. Emotion classification from body language or vocal tone takes 1–2 seconds. An LLM-powered workspace analysis — "what is the operator doing right now?" — takes 10–15 seconds. All of these signals contribute to a single governance decision: should the system fire a beat-aligned audio sample, switch an OBS camera, or stay quiet?
