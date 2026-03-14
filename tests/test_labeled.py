@@ -67,6 +67,7 @@ class TestLabeledFunctor(unittest.TestCase):
     @given(x=st_labeled())
     def test_map_composition(self, x: Labeled):
         """map(f).map(g) == map(g ∘ f)"""
+
         def f(v):
             return v + 1
 

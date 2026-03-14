@@ -30,9 +30,7 @@ class TestConsentLabelConstruction(unittest.TestCase):
 
     def test_can_flow_to_superset(self):
         a = ConsentLabel(frozenset({("alice", frozenset({"bob"}))}))
-        b = ConsentLabel(
-            frozenset({("alice", frozenset({"bob"})), ("carol", frozenset({"dave"}))})
-        )
+        b = ConsentLabel(frozenset({("alice", frozenset({"bob"})), ("carol", frozenset({"dave"}))}))
         assert a.can_flow_to(b)
         assert not b.can_flow_to(a)
 
