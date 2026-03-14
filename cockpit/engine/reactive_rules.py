@@ -20,6 +20,7 @@ import time
 
 from cockpit.engine.models import Action, ChangeEvent
 from cockpit.engine.rules import Rule
+from shared.carrier import CarrierRegistry
 
 _log = logging.getLogger(__name__)
 
@@ -328,6 +329,87 @@ KNOWLEDGE_MAINT_RULE = Rule(
 )
 
 
+# ── Phase 0: Carrier fact intake (DD-26) ──────────────────────────────────
+
+# Module-level carrier registry, shared across intake events.
+# Principals are registered lazily on first carrier fact arrival.
+_carrier_registry: CarrierRegistry | None = None
+_DEFAULT_CARRIER_CAPACITY = 5
+
+
+def get_carrier_registry() -> CarrierRegistry:
+    """Get or create the module-level CarrierRegistry."""
+    global _carrier_registry  # noqa: PLW0603
+    if _carrier_registry is None:
+        from shared.carrier import CarrierRegistry as _CR
+
+        _carrier_registry = _CR()
+    return _carrier_registry
+
+
+def set_carrier_registry(registry: CarrierRegistry) -> None:
+    """Inject a CarrierRegistry for testing or external initialization."""
+    global _carrier_registry  # noqa: PLW0603
+    _carrier_registry = registry
+
+
+async def _handle_carrier_intake(*, path: str, principal_id: str) -> str:
+    """Process a carrier-flagged file."""
+    import asyncio
+    from pathlib import Path as _Path
+
+    from shared.carrier_intake import intake_carrier_fact
+
+    registry = get_carrier_registry()
+
+    # Ensure principal is registered (lazy registration)
+    if principal_id not in registry._capacities:
+        registry.register(principal_id, _DEFAULT_CARRIER_CAPACITY)
+
+    result = await asyncio.to_thread(
+        intake_carrier_fact,
+        _Path(path),
+        principal_id,
+        registry,
+    )
+    status = "accepted" if result.accepted else "rejected"
+    return f"carrier:{status}:{result.source_domain}"
+
+
+def _carrier_intake_filter(event: ChangeEvent) -> bool:
+    """Match files with carrier: true in frontmatter."""
+    if event.frontmatter is None:
+        return False
+    return bool(event.frontmatter.get("carrier"))
+
+
+def _carrier_intake_produce(event: ChangeEvent) -> list[Action]:
+    """Produce carrier intake action."""
+    # Principal ID from frontmatter, or default to the source agent
+    principal_id = "operator"
+    if event.frontmatter:
+        principal_id = event.frontmatter.get("carrier_principal", "operator")
+    return [
+        Action(
+            name=f"carrier-intake:{event.path}",
+            handler=_handle_carrier_intake,
+            args={"path": str(event.path), "principal_id": str(principal_id)},
+            phase=0,
+            priority=30,
+        )
+    ]
+
+
+CARRIER_INTAKE_RULE = Rule(
+    name="carrier-intake",
+    description="Process carrier-flagged files into CarrierRegistry (DD-26)",
+    trigger_filter=_carrier_intake_filter,
+    produce=_carrier_intake_produce,
+    phase=0,
+    cooldown_s=0,
+)
+
+
 # ── Registration ────────────────────────────────────────────────────────────
 
 ALL_RULES: list[Rule] = [
@@ -354,6 +436,7 @@ ALL_RULES: list[Rule] = [
         cooldown_s=30,
     ),
     RAG_SOURCE_RULE,
+    CARRIER_INTAKE_RULE,
     KNOWLEDGE_MAINT_RULE,
 ]
 
