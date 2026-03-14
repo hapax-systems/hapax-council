@@ -46,16 +46,24 @@ layers:
         - tests/hapax_voice/test_type_system_matrix_2.py::TestEventLifecycleAndFanOut  # 12 tests
         - tests/hapax_voice/test_type_system_matrix_6.py::TestBehaviorPerturbation  # 12 tests
         - tests/hapax_voice/test_hypothesis_L1.py  # 8 hypothesis property tests
-      count: 48
+        - tests/hapax_voice/test_consent_threading_L1.py  # 22 tests (18 example + 4 hypothesis)
+      count: 70
       dimensions: [A, B, C, D, E, F, G]
     hypothesis:
       - "watermark monotonicity, regression rejection, sample post-condition, subscriber conservation, emit totality, exception isolation, composition to L2"
+      - "consent: join commutativity, join idempotence, label monotonicity, None-update identity"
     dog_star:
       - "D3: watermark regression rejected (TestL1_D3, 3 tests)"
+      - "D-consent: label cannot be lowered via update (TestConsentL1DogStar, 1 test)"
+    consent_threading:
+      state: proven
+      dd: "DD-22"
+      dimensions: [A, B, C, D, E, F, G]
+      notes: "Optional consent_label on Behavior. None=untracked (DD-16), bottom=public. Labels float upward only via join (DD-4)."
 
   L2:
     name: "FusedContext, VetoChain, FallbackChain, FreshnessGuard"
-    modules: [governance.FusedContext, governance.VetoChain, governance.FallbackChain, governance.FreshnessGuard]
+    modules: [governance.FusedContext, governance.VetoChain, governance.FallbackChain, governance.FreshnessGuard, governance.consent_veto]
     state: proven
     tests:
       files:
@@ -65,7 +73,9 @@ layers:
         - tests/hapax_voice/test_type_system_matrix_3.py  # error boundaries
         - tests/hapax_voice/test_type_system_matrix_4.py  # algebraic properties
         - tests/hapax_voice/test_hypothesis_L2.py  # 7 hypothesis property tests
-      count: 74+
+        - tests/hapax_voice/test_consent_threading_L2L3.py::TestFusedContextConsent  # 4 tests
+        - tests/hapax_voice/test_consent_threading_L2L3.py::TestConsentVeto  # 7 tests
+      count: 85+
       dimensions: [A, B, C, D, E, F, G]
     hypothesis:
       - "VetoChain: associativity, identity, monotonicity, closure, idempotence (test_governance.py)"
@@ -73,6 +83,12 @@ layers:
       - "FusedContext: min_watermark ordering, frozen invariant, samples immutability"
       - "FreshnessGuard: stale detection, fresh acceptance, missing behavior always stale"
       - "VetoChain: deny-wins monotonicity under composition"
+      - "consent_veto: self-flow allowed, flow transitivity via join"
+    consent_threading:
+      state: proven
+      dd: "DD-5, DD-6"
+      dimensions: [A, B, C, D, E, F, G]
+      notes: "FusedContext gains optional consent_label (DD-5). consent_veto factory checks labels at enforcement boundaries (DD-6). None=untracked denied at enforcement per DD-3."
 
   L3:
     name: "with_latest_from combinator"
@@ -83,12 +99,19 @@ layers:
         - tests/hapax_voice/test_combinator.py::TestWithLatestFrom  # 13 tests
         - tests/hapax_voice/test_type_system_matrix_5.py  # forward pipeline flow
         - tests/hapax_voice/test_hypothesis_L3.py  # 5 hypothesis property tests
-      count: 30
+        - tests/hapax_voice/test_consent_threading_L2L3.py::TestWithLatestFromConsent  # 6 tests
+        - tests/hapax_voice/test_consent_threading_L2L3.py::TestConsentL2L3Hypothesis  # 3 hypothesis
+      count: 39
       dimensions: [A, B, C, D, E, F, G]
     hypothesis:
       - "trigger fidelity, snapshot correctness, min_watermark computation, rate independence, composition to L4"
+      - "consent: label join is LUB, flow transitivity via join"
     dog_star:
       - "D2: combinator watermark fidelity (TestL3_D2, 4 tests)"
+    consent_threading:
+      state: proven
+      dd: "DD-22 L3"
+      notes: "with_latest_from computes label join from all Behavior consent_labels. None Behaviors treated as bottom if any sibling is tracked. All-None → None (untracked)."
 
   L4:
     name: "Command, Schedule, VetoResult"
@@ -99,12 +122,17 @@ layers:
         - tests/hapax_voice/test_commands.py  # 17 tests
         - tests/hapax_voice/test_type_system_matrix_9.py  # provenance tracing
         - tests/hapax_voice/test_hypothesis_L4.py  # 6 hypothesis property tests
-      count: 35
+        - tests/hapax_voice/test_consent_threading_L4L6.py  # 6 tests
+      count: 41
       dimensions: [A, B, C, D, E, F, G]
     hypothesis:
       - "frozen invariant, MappingProxyType params, allowed↔denials consistency, tolerance boundary, governance round-trip, composition to L6"
     dog_star:
       - "D1.1: governance denial blocks dispatch (TestD1_1, 2 tests)"
+    consent_threading:
+      state: proven
+      dd: "DD-22 L4-L6"
+      notes: "Command gains optional consent_label (passthrough from FusedContext). Schedule inherits via Command. L5 types (domain config) have no consent semantics. L6 (ScheduleQueue) inherits via Schedule.command."
 
   L5:
     name: "SuppressionField, TimelineMapping, MusicalPosition"
@@ -160,6 +188,10 @@ layers:
       - "MC veto chain closure, deny-wins monotonicity, fallback determinism, custom config validity, action domain coverage"
     dog_star:
       - "D6.3: composition-time validation rejects missing behaviors (TestD6_3, 5 tests)"
+    consent_threading:
+      state: proven
+      dd: "DD-22 L7"
+      notes: "compose_mc/obs_governance propagate FusedContext.consent_label → Command.consent_label. Consent veto composable via VetoChain | operator — callers add consent_veto as needed."
 
   L8:
     name: "PerceptionEngine, PipelineGovernor, FrameGate"

@@ -260,6 +260,7 @@ def compose_mc_governance(
             min_watermark=ctx.min_watermark,
             governance_result=veto_result,
             selected_by=selected.selected_by,
+            consent_label=ctx.consent_label,
         )
         schedule = Schedule(
             command=cmd,
