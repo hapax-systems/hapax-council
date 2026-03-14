@@ -68,7 +68,7 @@ Agents require LiteLLM (localhost:4000), Qdrant (localhost:6333), and Ollama (lo
 | Constitutive rules with defeasible override | **Built** | 27 tests ([`tests/test_constitutive.py`](tests/test_constitutive.py)) |
 | Governance coherence (rule→implication→enforcement) | **Built** | 6 tests ([`tests/test_coherence.py`](tests/test_coherence.py)) |
 | Revocation cascades through provenance | **Built** | 13 tests ([`tests/test_revocation.py`](tests/test_revocation.py)) |
-| Carrier dynamics (cross-domain error correction) | **Theoretical** | Carrier type exists, no runtime integration |
+| Carrier dynamics (cross-domain error correction) | **Built** | 22 tests, reactive engine integration ([`tests/test_carrier_intake.py`](tests/test_carrier_intake.py)) |
 | Alignment tax ≤ 20% | **Estimated** | Self-reported, not independently measured |
 
 ## Architecture
