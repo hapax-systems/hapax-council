@@ -305,6 +305,7 @@ def compose_obs_governance(
             min_watermark=ctx.min_watermark,
             governance_result=veto_result,
             selected_by=selected.selected_by,
+            consent_label=ctx.consent_label,
         )
 
         # Record switch time for dwell cooldown
