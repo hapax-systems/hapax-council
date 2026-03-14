@@ -154,6 +154,7 @@ class ExecutorRegistry:
                 target_time=target,
                 latency_ms=latency_ms,
                 params=dict(command.params),
+                consent_label=command.consent_label,
             )
             self.actuation_event.emit(now, event)
             return True

@@ -31,12 +31,14 @@ def wire_feedback_behaviors(
 
     def _on_actuation(timestamp: float, event: ActuationEvent) -> None:
         if event.action in _MC_ACTIONS:
-            last_mc_fire.update(event.wall_time, timestamp)
-            mc_fire_count.update(mc_fire_count.value + 1, timestamp)
+            last_mc_fire.update(event.wall_time, timestamp, consent_label=event.consent_label)
+            mc_fire_count.update(
+                mc_fire_count.value + 1, timestamp, consent_label=event.consent_label
+            )
         elif event.action in _OBS_ACTIONS:
-            last_obs_switch.update(event.wall_time, timestamp)
+            last_obs_switch.update(event.wall_time, timestamp, consent_label=event.consent_label)
         elif event.action in _TTS_ACTIONS:
-            last_tts_end.update(event.wall_time, timestamp)
+            last_tts_end.update(event.wall_time, timestamp, consent_label=event.consent_label)
 
     actuation_event.subscribe(_on_actuation)
 

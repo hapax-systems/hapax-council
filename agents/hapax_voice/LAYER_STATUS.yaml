@@ -208,7 +208,10 @@ layers:
         - tests/hapax_voice/test_type_system_matrix_15.py  # accountable evolution Q5
         - tests/hapax_voice/test_type_system_matrix_16.py  # holistic steady-state Q6
         - tests/hapax_voice/test_hypothesis_L8.py  # 6 hypothesis property tests
-      count: 143
+        - tests/hapax_voice/test_consent_threading_L8L9.py::TestActuationEventConsent  # 3 tests
+        - tests/hapax_voice/test_consent_threading_L8L9.py::TestFrameGateConsentProvenance  # 2 tests
+        - tests/hapax_voice/test_consent_threading_L8L9.py::TestExecutorRegistryConsentPropagation  # 3 tests
+      count: 151
       dimensions: [A, B, C, D, E, F, G]
     hypothesis:
       - "Governor: directive closure, veto-deny implies pause, observability populated"
@@ -216,6 +219,11 @@ layers:
       - "Perception: watermarks advance monotonically"
     dog_star:
       - "D5.2: scoped backend writes prevent cross-behavior contamination (TestD5_2, 2 tests)"
+    consent_threading:
+      state: proven
+      dd: "DD-22 L8"
+      dimensions: [A, B, C]
+      notes: "ActuationEvent gains optional consent_label (DD-22). ExecutorRegistry propagates Command.consent_label → ActuationEvent.consent_label. FrameGate preserves consent provenance via last_command. PipelineGovernor is a policy evaluator (no data transform) — consent N/A."
 
   L9:
     name: "VoiceDaemon lifecycle"
@@ -227,12 +235,20 @@ layers:
         - tests/test_hapax_voice_daemon_pipeline.py  # 11 tests (A, C)
         - tests/hapax_voice/test_e2e_use_case_matrix.py
         - tests/hapax_voice/test_hypothesis_L9.py  # 4 hypothesis property tests
-      count: 61
+        - tests/hapax_voice/test_consent_threading_L8L9.py::TestFeedbackConsentPropagation  # 6 tests
+        - tests/hapax_voice/test_consent_threading_L8L9.py::TestConsentLoopClosure  # 1 test
+        - tests/hapax_voice/test_consent_threading_L8L9.py::TestConsentL8L9Hypothesis  # 3 hypothesis
+      count: 71
       dimensions: [A, B, C, D, E, F, G]
     hypothesis:
       - "pipeline output closure, queue drain lossless, denied command provenance, state consistency"
     dog_star:
       - "D1.1: denied schedule not dispatched through queue (TestL9, 3 tests)"
+    consent_threading:
+      state: proven
+      dd: "DD-22 L9"
+      dimensions: [A, B, C]
+      notes: "Feedback loop propagates ActuationEvent.consent_label → Behavior updates via join. Closes the IFC loop: perception → FusedContext → Command → ActuationEvent → feedback Behaviors → back to perception. 3 hypothesis properties: passthrough, loop preservation, join commutativity."
 
 # Hypothesis strategy library: tests/hapax_voice/hypothesis_strategies.py
 # 16 @st.composite strategies building bottom-up (L0→L1→L2→L4→L6, L5→L7, L8)
