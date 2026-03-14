@@ -46,12 +46,20 @@ layers:
         - tests/hapax_voice/test_type_system_matrix_2.py::TestEventLifecycleAndFanOut  # 12 tests
         - tests/hapax_voice/test_type_system_matrix_6.py::TestBehaviorPerturbation  # 12 tests
         - tests/hapax_voice/test_hypothesis_L1.py  # 8 hypothesis property tests
-      count: 48
+        - tests/hapax_voice/test_consent_threading_L1.py  # 22 tests (18 example + 4 hypothesis)
+      count: 70
       dimensions: [A, B, C, D, E, F, G]
     hypothesis:
       - "watermark monotonicity, regression rejection, sample post-condition, subscriber conservation, emit totality, exception isolation, composition to L2"
+      - "consent: join commutativity, join idempotence, label monotonicity, None-update identity"
     dog_star:
       - "D3: watermark regression rejected (TestL1_D3, 3 tests)"
+      - "D-consent: label cannot be lowered via update (TestConsentL1DogStar, 1 test)"
+    consent_threading:
+      state: proven
+      dd: "DD-22"
+      dimensions: [A, B, C, D, E, F, G]
+      notes: "Optional consent_label on Behavior. None=untracked (DD-16), bottom=public. Labels float upward only via join (DD-4)."
 
   L2:
     name: "FusedContext, VetoChain, FallbackChain, FreshnessGuard"
