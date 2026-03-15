@@ -1,0 +1,383 @@
+import { useState } from "react";
+import { PRESETS, type OverlayType } from "./compositePresets";
+import { SOURCE_FILTERS } from "./compositeFilters";
+import { useStudio, useStudioStreamInfo } from "../../api/hooks";
+import {
+  Layers,
+  Circle,
+  Radio,
+  Camera,
+  Mic,
+  Eye,
+  Clock,
+  PanelRightClose,
+  PanelRightOpen,
+} from "lucide-react";
+
+const ALL_OVERLAYS: OverlayType[] = ["scanlines", "rgbsplit", "vignette", "huecycle", "noise"];
+
+interface Props {
+  viewMode: "grid" | "composite" | "smooth";
+  onViewModeChange: (m: "grid" | "composite" | "smooth") => void;
+  presetIdx: number;
+  onPresetChange: (i: number) => void;
+  liveFilterIdx: number;
+  onLiveFilterChange: (i: number) => void;
+  trailFilterIdx: number;
+  onTrailFilterChange: (i: number) => void;
+  overlayOverrides: OverlayType[] | null;
+  onOverlayToggle: (ov: OverlayType) => void;
+  onOverlayReset: () => void;
+  heroRole: string | null;
+  onHeroChange: (role: string) => void;
+  onOrderReset: () => void;
+  cameraRoles: string[];
+}
+
+export function StudioSidebar({
+  viewMode,
+  onViewModeChange,
+  presetIdx,
+  onPresetChange,
+  liveFilterIdx,
+  onLiveFilterChange,
+  trailFilterIdx,
+  onTrailFilterChange,
+  overlayOverrides,
+  onOverlayToggle,
+  onOverlayReset,
+  heroRole,
+  onHeroChange,
+  onOrderReset,
+  cameraRoles,
+}: Props) {
+  const { data: studio } = useStudio();
+  const { data: streamInfo } = useStudioStreamInfo();
+  const compositor = studio?.compositor;
+  const capture = studio?.capture;
+  const [collapsed, setCollapsed] = useState(false);
+
+  const isComposite = viewMode === "composite";
+  const activePreset = PRESETS[presetIdx];
+  const currentOverlays = overlayOverrides ?? activePreset.overlays;
+  const recordingCams = compositor?.recording_cameras ?? {};
+  const isRecording = compositor?.recording_enabled ?? false;
+
+  // --- Collapsed: icon strip ---
+  if (collapsed) {
+    return (
+      <div className="flex w-10 shrink-0 flex-col items-center gap-3 border-l border-zinc-800 bg-zinc-900/50 py-3">
+        <button
+          onClick={() => setCollapsed(false)}
+          className="text-zinc-500 hover:text-zinc-300"
+          title="Expand sidebar"
+        >
+          <PanelRightClose className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={() => setCollapsed(false)}
+          className="text-zinc-500 hover:text-zinc-300"
+          title="View"
+        >
+          <Layers className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={() => setCollapsed(false)}
+          className="relative text-zinc-500 hover:text-zinc-300"
+          title="Recording"
+        >
+          <Circle className="h-3.5 w-3.5" />
+          {isRecording && (
+            <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
+          )}
+        </button>
+        <button
+          onClick={() => setCollapsed(false)}
+          className="relative text-zinc-500 hover:text-zinc-300"
+          title="Stream"
+        >
+          <Radio className="h-3.5 w-3.5" />
+          {streamInfo?.hls_enabled && (
+            <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-green-500" />
+          )}
+        </button>
+        <button
+          onClick={() => setCollapsed(false)}
+          className="text-zinc-500 hover:text-zinc-300"
+          title="Layout"
+        >
+          <Camera className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={() => setCollapsed(false)}
+          className="relative text-zinc-500 hover:text-zinc-300"
+          title="Audio"
+        >
+          <Mic className="h-3.5 w-3.5" />
+          {capture?.audio_recorder_active && (
+            <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-green-500" />
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  // --- Expanded ---
+  return (
+    <div className="flex w-60 shrink-0 flex-col border-l border-zinc-800 bg-zinc-900/50 text-xs">
+      {/* Collapse button */}
+      <div className="flex items-center justify-between border-b border-zinc-800/50 px-3 py-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          Controls
+        </span>
+        <button
+          onClick={() => setCollapsed(true)}
+          className="text-zinc-500 hover:text-zinc-300"
+          title="Collapse sidebar"
+        >
+          <PanelRightOpen className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* Scrollable body */}
+      <div className="flex-1 overflow-y-auto">
+        {/* VIEW */}
+        <section className="border-b border-zinc-800/50 px-3 py-2.5">
+          <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            View
+          </h3>
+          <div className="flex gap-1">
+            {(["grid", "composite", "smooth"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => onViewModeChange(m)}
+                className={`flex-1 rounded px-1.5 py-1 text-[10px] font-medium transition-colors ${
+                  viewMode === m
+                    ? "bg-zinc-700 text-zinc-100"
+                    : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {m === "grid" ? "Grid" : m === "composite" ? "Composite" : "Smooth"}
+              </button>
+            ))}
+          </div>
+          {compositor && compositor.state !== "unknown" && (
+            <p className="mt-1.5 text-[10px] text-zinc-600">
+              {compositor.resolution} · {compositor.active_cameras}/{compositor.total_cameras} cams
+            </p>
+          )}
+        </section>
+
+        {/* PRESET (composite only) */}
+        {isComposite && (
+          <section className="border-b border-zinc-800/50 px-3 py-2.5">
+            <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              Preset
+            </h3>
+            <div className="flex flex-col gap-0.5">
+              {PRESETS.map((p, i) => (
+                <button
+                  key={p.name}
+                  onClick={() => onPresetChange(i)}
+                  className={`flex items-start gap-2 rounded px-2 py-1.5 text-left transition-colors ${
+                    presetIdx === i
+                      ? "bg-purple-950/30 text-zinc-200"
+                      : "text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-300"
+                  }`}
+                >
+                  <span
+                    className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${
+                      presetIdx === i ? "bg-purple-400" : "bg-zinc-700"
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium">{p.name}</div>
+                    <div className="text-[10px] text-zinc-600">{p.description}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* FILTERS (composite only) */}
+        {isComposite && (
+          <section className="border-b border-zinc-800/50 px-3 py-2.5">
+            <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              Filters
+            </h3>
+            <div className="flex flex-col gap-2">
+              {/* Live filter */}
+              <label className="flex items-center gap-1.5">
+                <Eye className="h-3 w-3 shrink-0 text-amber-400" />
+                <span className="shrink-0 text-[10px] text-amber-300">Live</span>
+                <select
+                  value={liveFilterIdx}
+                  onChange={(e) => onLiveFilterChange(Number(e.target.value))}
+                  className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+                >
+                  {SOURCE_FILTERS.map((f, i) => (
+                    <option key={f.name} value={i}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {/* Trail filter */}
+              <label className="flex items-center gap-1.5">
+                <Clock className="h-3 w-3 shrink-0 text-cyan-400" />
+                <span className="shrink-0 text-[10px] text-cyan-300">Trail</span>
+                <select
+                  value={trailFilterIdx}
+                  onChange={(e) => onTrailFilterChange(Number(e.target.value))}
+                  className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+                >
+                  {SOURCE_FILTERS.map((f, i) => (
+                    <option key={f.name} value={i}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </section>
+        )}
+
+        {/* OVERLAYS (composite only) */}
+        {isComposite && (
+          <section className="border-b border-zinc-800/50 px-3 py-2.5">
+            <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              Overlays
+            </h3>
+            <div className="flex flex-wrap gap-1">
+              {ALL_OVERLAYS.map((ov) => {
+                const active = currentOverlays.includes(ov);
+                return (
+                  <button
+                    key={ov}
+                    onClick={() => onOverlayToggle(ov)}
+                    className={`rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                      active
+                        ? "bg-purple-900/50 text-purple-300"
+                        : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-400"
+                    }`}
+                  >
+                    {ov}
+                  </button>
+                );
+              })}
+            </div>
+            {overlayOverrides !== null && (
+              <button
+                onClick={onOverlayReset}
+                className="mt-1.5 text-[10px] text-purple-400 hover:text-purple-300"
+              >
+                Reset to preset
+              </button>
+            )}
+          </section>
+        )}
+
+        {/* RECORDING */}
+        <section className="border-b border-zinc-800/50 px-3 py-2.5">
+          <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            Recording
+            {isRecording && (
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
+            )}
+          </h3>
+          {cameraRoles.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              {cameraRoles.map((role) => {
+                const recStatus = recordingCams[role];
+                const recActive = recStatus === "active";
+                return (
+                  <div key={role} className="flex items-center justify-between">
+                    <span className="truncate text-[10px] text-zinc-400">{role}</span>
+                    {recActive && (
+                      <span className="shrink-0 rounded bg-red-900/50 px-1 py-0.5 text-[9px] font-medium text-red-400">
+                        REC
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-[10px] text-zinc-600">No cameras</p>
+          )}
+        </section>
+
+        {/* STREAM */}
+        <section className="border-b border-zinc-800/50 px-3 py-2.5">
+          <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            Stream
+          </h3>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  streamInfo?.hls_enabled ? "bg-green-500" : "bg-red-500"
+                }`}
+              />
+              <span className="text-[10px] text-zinc-400">HLS</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  streamInfo?.enabled ? "bg-green-500" : "bg-red-500"
+                }`}
+              />
+              <span className="text-[10px] text-zinc-400">Snapshot</span>
+            </div>
+          </div>
+        </section>
+
+        {/* LAYOUT */}
+        <section className="border-b border-zinc-800/50 px-3 py-2.5">
+          <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            Layout
+          </h3>
+          <label className="flex items-center gap-1.5">
+            <span className="shrink-0 text-[10px] text-zinc-400">Hero</span>
+            <select
+              value={heroRole ?? ""}
+              onChange={(e) => onHeroChange(e.target.value)}
+              className="flex-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+            >
+              <option value="">None</option>
+              {cameraRoles.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={onOrderReset}
+            className="mt-1.5 text-[10px] text-zinc-500 hover:text-zinc-300"
+          >
+            Reset order
+          </button>
+        </section>
+
+        {/* AUDIO */}
+        <section className="px-3 py-2.5">
+          <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            Audio
+          </h3>
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                capture?.audio_recorder_active ? "bg-green-500" : "bg-red-500"
+              }`}
+            />
+            <span className="text-[10px] text-zinc-400">
+              {capture?.audio_recorder_active ? "Active" : "Inactive"}
+            </span>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
