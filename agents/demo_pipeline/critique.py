@@ -38,7 +38,7 @@ critique_agent = Agent(
 )
 
 revision_agent = Agent(
-    get_model("balanced"),
+    get_model("long-context"),  # revision needs full script JSON (including visual specs)
     system_prompt=(
         "You are revising a demo script based on quality feedback. Fix ONLY the issues "
         "identified in the quality report. Do not rewrite scenes that passed review. "
@@ -123,16 +123,17 @@ Bad Example (pitch mode — narration sounding like this FAILS voice_consistency
             avoid_text = "Style AVOID list: " + "; ".join(style_guide["avoid"])
         voice_section = f"\n{avoid_text}\n"
 
-    # Guard: truncate script JSON to stay within context limits.
-    script_json = script.model_dump_json(indent=2)
-    max_script_chars = 500_000  # ~125K tokens, leaving headroom for prompt + output
-    if len(script_json) > max_script_chars:
-        log.warning(
-            "Critique prompt: truncating script JSON from %d to %d chars",
-            len(script_json),
-            max_script_chars,
-        )
-        script_json = script_json[:max_script_chars] + "\n... [truncated]"
+    # For critique, strip execution-only visual specs (screenshot, interaction,
+    # illustration) — these are rendering instructions, not content. Keep
+    # diagram_spec since visual_substance evaluation checks diagram content.
+    import json
+
+    script_dict = script.model_dump()
+    for scene in script_dict.get("scenes", []):
+        for key in ("screenshot", "interaction", "illustration"):
+            if scene.get(key):
+                scene[key] = f"[{key} present]"
+    script_json = json.dumps(script_dict, indent=2)
 
     return f"""Evaluate this demo script against all quality dimensions.
 
@@ -290,16 +291,9 @@ RULES:
 - Maximum 2 screencast scenes
 """
 
-    # Guard: truncate script JSON to stay within context limits.
-    script_json = script.model_dump_json(indent=2)
-    max_script_chars = 500_000
-    if len(script_json) > max_script_chars:
-        log.warning(
-            "Revision prompt: truncating script JSON from %d to %d chars",
-            len(script_json),
-            max_script_chars,
-        )
-        script_json = script_json[:max_script_chars] + "\n... [truncated]"
+    # Revision needs the full script (including visual specs) so the LLM can
+    # return a complete DemoScript. Use compact JSON to save ~40% tokens.
+    script_json = script.model_dump_json()
 
     return f"""Revise this demo script to fix the identified quality issues.
 
