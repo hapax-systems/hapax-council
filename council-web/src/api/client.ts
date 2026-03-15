@@ -58,6 +58,8 @@ export const api = {
   scoutDecisions: () => get<import("./types").ScoutDecisionsResponse>("/scout/decisions"),
   scoutDecide: (component: string, decision: string, notes?: string) =>
     post<import("./types").ScoutDecision>(`/scout/${component}/decide`, { decision, notes: notes ?? "" }),
+  studio: () => get<import("./types").StudioSnapshot>("/studio"),
+  studioStreamInfo: () => get<import("./types").StudioStreamInfo>("/studio/stream/info"),
   demos: () => get<import("./types").Demo[]>("/demos"),
   demo: (id: string) => get<import("./types").Demo>(`/demos/${id}`),
   deleteDemo: (id: string) => del<{ deleted: string }>(`/demos/${id}`),

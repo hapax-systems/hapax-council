@@ -6,6 +6,7 @@ search over the studio_moments Qdrant collection.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,59 @@ async def get_studio():
     return _slow_response(_to_dict(cache.studio))
 
 
+@router.get("/studio/stream/info")
+async def get_stream_info():
+    """Stream availability info."""
+    hls_dir = Path.home() / ".cache" / "hapax-compositor" / "hls"
+    playlist = hls_dir / "stream.m3u8"
+    snapshot = SNAPSHOT_PATH
+    return {
+        "hls_url": "/api/studio/hls/stream.m3u8",
+        "hls_enabled": playlist.exists(),
+        "mjpeg_url": "/api/studio/stream/snapshot",
+        "mjpeg_enabled": snapshot.exists(),
+        "enabled": playlist.exists() or snapshot.exists(),
+    }
+
+
+SNAPSHOT_PATH = Path("/dev/shm/hapax-compositor/snapshot.jpg")
+
+
+_NO_CACHE = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+}
+
+
+@router.get("/studio/stream/snapshot")
+async def snapshot():
+    """Single JPEG snapshot of the composited output."""
+    if not SNAPSHOT_PATH.exists():
+        return JSONResponse({"error": "compositor not running"}, status_code=503)
+    try:
+        data = SNAPSHOT_PATH.read_bytes()
+    except OSError:
+        return JSONResponse({"error": "read failed"}, status_code=503)
+    from starlette.responses import Response
+
+    return Response(content=data, media_type="image/jpeg", headers=_NO_CACHE)
+
+
+@router.get("/studio/stream/camera/{role}")
+async def camera_snapshot(role: str):
+    """Single JPEG snapshot of an individual camera feed."""
+    cam_path = Path(f"/dev/shm/hapax-compositor/{role}.jpg")
+    if not cam_path.exists():
+        return JSONResponse({"error": f"camera {role} not available"}, status_code=404)
+    try:
+        data = cam_path.read_bytes()
+    except OSError:
+        return JSONResponse({"error": "read failed"}, status_code=503)
+    from starlette.responses import Response
+
+    return Response(content=data, media_type="image/jpeg", headers=_NO_CACHE)
+
+
 class MomentSearchRequest(BaseModel):
     query: str
     limit: int = 10
@@ -66,7 +120,6 @@ async def search_moments(req: MomentSearchRequest):
     Accepts natural language queries like "jazzy piano loop with horns"
     and returns ranked audio moments from Qdrant.
     """
-    import asyncio
 
     results = await asyncio.to_thread(_search_moments_sync, req.query, req.limit)
     return JSONResponse(content=results)

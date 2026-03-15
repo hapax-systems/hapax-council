@@ -98,6 +98,10 @@ class CompositorStatus:
     total_cameras: int = 0
     output_device: str = ""
     resolution: str = ""
+    recording_enabled: bool = False
+    recording_cameras: dict[str, str] = field(default_factory=dict)  # role -> active|offline
+    hls_enabled: bool = False
+    hls_url: str = ""
 
 
 @dataclass
@@ -247,8 +251,12 @@ def _collect_arbiter_summary() -> ArbiterSummary:
         return ArbiterSummary()
 
 
-def _collect_capture_status() -> CaptureStatus:
-    """Check if audio/video capture services are running."""
+def _collect_capture_status(compositor: CompositorStatus | None = None) -> CaptureStatus:
+    """Check if audio/video capture services are running.
+
+    If the compositor reports recording_enabled, use that instead of probing
+    individual hapax-video-cam@ systemd units.
+    """
     import subprocess
 
     status = CaptureStatus()
@@ -265,19 +273,24 @@ def _collect_capture_status() -> CaptureStatus:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    # Video cameras
-    for role in ["brio", "c920-hardware", "c920-room", "c920-aux"]:
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "is-active", f"hapax-video-cam@{role}.service"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.stdout.strip() == "active":
+    # Video cameras — prefer compositor recording status over individual services
+    if compositor and compositor.recording_enabled and compositor.recording_cameras:
+        for role, cam_status in compositor.recording_cameras.items():
+            if cam_status == "active":
                 status.video_cameras.append(role)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+    else:
+        for role in ["brio", "c920-hardware", "c920-room", "c920-aux"]:
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", f"hapax-video-cam@{role}.service"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.stdout.strip() == "active":
+                    status.video_cameras.append(role)
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
 
     return status
 
@@ -299,6 +312,10 @@ def _collect_compositor_status() -> CompositorStatus:
             total_cameras=data.get("total_cameras", 0),
             output_device=data.get("output_device", ""),
             resolution=data.get("resolution", ""),
+            recording_enabled=data.get("recording_enabled", False),
+            recording_cameras=data.get("recording_cameras", {}),
+            hls_enabled=data.get("hls_enabled", False),
+            hls_url=data.get("hls_url", ""),
         )
     except (json.JSONDecodeError, OSError) as exc:
         log.warning("Failed to read compositor status: %s", exc)
@@ -310,8 +327,8 @@ def collect_studio() -> StudioSnapshot:
     processor = _collect_processor_stats()
     archive, values, recent = _collect_archive_stats()
     arbiter = _collect_arbiter_summary()
-    capture = _collect_capture_status()
     compositor = _collect_compositor_status()
+    capture = _collect_capture_status(compositor)
 
     return StudioSnapshot(
         processor=processor,

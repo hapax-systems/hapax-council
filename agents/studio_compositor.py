@@ -11,6 +11,10 @@ Features:
 - Cairo overlay: role labels, consent badges, flow state, audio meter
 - Perception state bridge: reads ~/.cache/hapax-voice/perception-state.json
 - Status file written atomically to ~/.cache/hapax-compositor/status.json
+- Per-camera recording via nvh264enc + splitmuxsink
+- HLS output for browser preview via hlssink2
+- JPEG snapshots to /dev/shm for low-latency access
+- Camera profiles with time-based and condition-based switching
 
 Usage:
     uv run python -m agents.studio_compositor --config PATH
@@ -25,9 +29,11 @@ import logging
 import math
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -49,9 +55,33 @@ log = logging.getLogger(__name__)
 CACHE_DIR = Path.home() / ".cache" / "hapax-compositor"
 STATUS_FILE = CACHE_DIR / "status.json"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "hapax-compositor" / "config.yaml"
+SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
 
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080
+
+
+class CameraV4L2(BaseModel):
+    """V4L2 control values for a camera."""
+
+    gain: int | None = None
+    exposure: int | None = None
+    brightness: int | None = None
+    contrast: int | None = None
+    saturation: int | None = None
+    sharpness: int | None = None
+    white_balance_temperature: int | None = None
+    focus_absolute: int | None = None
+
+
+class CameraProfile(BaseModel):
+    """A named camera profile with optional schedule/condition gating."""
+
+    name: str
+    schedule: str | None = None  # e.g. "08:00-18:00" or "night"
+    condition: str | None = None  # e.g. "flow_state=active"
+    priority: int = 0
+    cameras: dict[str, CameraV4L2] = Field(default_factory=dict)
 
 
 class CameraSpec(BaseModel):
@@ -66,6 +96,26 @@ class CameraSpec(BaseModel):
     hero: bool = False  # hero cam gets 2x tile size
 
 
+class RecordingConfig(BaseModel):
+    """Per-camera recording configuration."""
+
+    enabled: bool = True
+    output_dir: str = str(Path.home() / "video-recording")
+    segment_seconds: int = 300
+    qp: int = 23
+
+
+class HlsConfig(BaseModel):
+    """HLS output configuration."""
+
+    enabled: bool = True
+    target_duration: int = 2
+    playlist_length: int = 3
+    max_files: int = 6
+    output_dir: str = str(CACHE_DIR / "hls")
+    bitrate: int = 4000
+
+
 class CompositorConfig(BaseModel):
     """Full compositor configuration."""
 
@@ -78,6 +128,9 @@ class CompositorConfig(BaseModel):
     watchdog_timeout_ms: int = 5000  # per-source watchdog timeout
     status_interval_s: float = 5.0
     overlay_enabled: bool = True
+    recording: RecordingConfig = Field(default_factory=RecordingConfig)
+    hls: HlsConfig = Field(default_factory=HlsConfig)
+    camera_profiles: list[CameraProfile] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +197,22 @@ class TileRect(BaseModel):
     h: int
 
 
+def _fit_16x9(w: int, h: int) -> tuple[int, int, int, int]:
+    """Compute largest 16:9 rect fitting in w x h, return (x_off, y_off, fit_w, fit_h)."""
+    target_ratio = 16 / 9
+    if w / h > target_ratio:
+        # slot is wider than 16:9 — height is the constraint
+        fit_h = h
+        fit_w = int(h * target_ratio)
+    else:
+        # slot is taller than 16:9 — width is the constraint
+        fit_w = w
+        fit_h = int(w / target_ratio)
+    x_off = (w - fit_w) // 2
+    y_off = (h - fit_h) // 2
+    return x_off, y_off, fit_w, fit_h
+
+
 def compute_tile_layout(
     cameras: list[CameraSpec],
     canvas_w: int = OUTPUT_WIDTH,
@@ -151,8 +220,8 @@ def compute_tile_layout(
 ) -> dict[str, TileRect]:
     """Compute tile positions for each camera on the output canvas.
 
-    Hero camera (if any) gets a 2x tile in the top-left.
-    Remaining cameras fill in a grid around it.
+    Hero camera (if any) gets the left portion, others stack vertically on the right.
+    All tiles are 16:9 fitted and centered within their allocated slots.
     """
     n = len(cameras)
     if n == 0:
@@ -165,50 +234,44 @@ def compute_tile_layout(
 
     if heroes and len(others) >= 1:
         hero = heroes[0]
-        hero_w = canvas_w // 2
-        hero_h = canvas_h // 2
+        # Hero gets left portion: 2/3 width for <=4 others, 1/2 for more
+        if len(others) <= 4:
+            hero_slot_w = (canvas_w * 2) // 3
+        else:
+            hero_slot_w = canvas_w // 2
+        hero_slot_h = canvas_h
 
-        layout[hero.role] = TileRect(x=0, y=0, w=hero_w, h=hero_h)
+        hx, hy, hw, hh = _fit_16x9(hero_slot_w, hero_slot_h)
+        layout[hero.role] = TileRect(x=hx, y=hy, w=hw, h=hh)
 
-        right_count = min(len(others), 4)
-        right_cams = others[:right_count]
-        remaining = others[right_count:]
+        # Others stack vertically on the right
+        right_x = hero_slot_w
+        right_w = canvas_w - hero_slot_w
+        slot_h = canvas_h // len(others)
 
-        right_cols = 2
-        right_rows = (right_count + right_cols - 1) // right_cols
-        tile_w = (canvas_w - hero_w) // right_cols
-        tile_h = hero_h // max(right_rows, 1)
-
-        for i, cam in enumerate(right_cams):
-            col = i % right_cols
-            row = i // right_cols
+        for i, cam in enumerate(others):
+            sx, sy, sw, sh = _fit_16x9(right_w, slot_h)
             layout[cam.role] = TileRect(
-                x=hero_w + col * tile_w,
-                y=row * tile_h,
-                w=tile_w,
-                h=tile_h,
+                x=right_x + sx,
+                y=i * slot_h + sy,
+                w=sw,
+                h=sh,
             )
-
-        if remaining:
-            bottom_w = canvas_w // len(remaining)
-            for i, cam in enumerate(remaining):
-                layout[cam.role] = TileRect(
-                    x=i * bottom_w,
-                    y=hero_h,
-                    w=bottom_w,
-                    h=canvas_h - hero_h,
-                )
     else:
+        # No hero: equal grid with 16:9 fitted tiles
         cols = math.ceil(math.sqrt(n))
         rows = math.ceil(n / cols)
-        tile_w = canvas_w // cols
-        tile_h = canvas_h // rows
+        slot_w = canvas_w // cols
+        slot_h = canvas_h // rows
         for i, cam in enumerate(cameras):
+            col = i % cols
+            row = i // cols
+            sx, sy, sw, sh = _fit_16x9(slot_w, slot_h)
             layout[cam.role] = TileRect(
-                x=(i % cols) * tile_w,
-                y=(i // cols) * tile_h,
-                w=tile_w,
-                h=tile_h,
+                x=col * slot_w + sx,
+                y=row * slot_h + sy,
+                w=sw,
+                h=sh,
             )
 
     return layout
@@ -264,6 +327,103 @@ class OverlayState:
 
 
 # ---------------------------------------------------------------------------
+# Camera profile engine
+# ---------------------------------------------------------------------------
+
+PROFILES_CONFIG_PATH = Path.home() / ".config" / "hapax-compositor" / "profiles.yaml"
+
+
+def _time_in_range(start_str: str, end_str: str) -> bool:
+    """Check if current time is within start-end range (HH:MM format)."""
+    now = datetime.now(tz=UTC).astimezone()
+    current = now.hour * 60 + now.minute
+    sh, sm = (int(x) for x in start_str.split(":"))
+    eh, em = (int(x) for x in end_str.split(":"))
+    start = sh * 60 + sm
+    end = eh * 60 + em
+    if start <= end:
+        return start <= current < end
+    # wraps midnight
+    return current >= start or current < end
+
+
+def _schedule_matches(schedule: str | None) -> bool:
+    """Evaluate a schedule string."""
+    if not schedule:
+        return True
+    if "-" in schedule and ":" in schedule:
+        parts = schedule.split("-", 1)
+        return _time_in_range(parts[0].strip(), parts[1].strip())
+    if schedule == "night":
+        return _time_in_range("20:00", "06:00")
+    if schedule == "day":
+        return _time_in_range("06:00", "20:00")
+    return True
+
+
+def _condition_matches(condition: str | None, overlay_data: OverlayData) -> bool:
+    """Evaluate a condition string against current overlay/perception state."""
+    if not condition:
+        return True
+    if "=" in condition:
+        key, value = condition.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        actual = getattr(overlay_data, key, None)
+        if actual is None:
+            return False
+        return str(actual) == value
+    return True
+
+
+def evaluate_active_profile(
+    profiles: list[CameraProfile], overlay_data: OverlayData
+) -> CameraProfile | None:
+    """Return the highest-priority matching profile, or None."""
+    candidates = []
+    for p in profiles:
+        if _schedule_matches(p.schedule) and _condition_matches(p.condition, overlay_data):
+            candidates.append(p)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.priority, reverse=True)
+    return candidates[0]
+
+
+def apply_camera_profile(profile: CameraProfile) -> None:
+    """Apply V4L2 controls from a camera profile via v4l2-ctl."""
+    for device_role, controls in profile.cameras.items():
+        ctrl_args: list[str] = []
+        for field_name, value in controls.model_dump(exclude_none=True).items():
+            ctrl_args.append(f"{field_name}={value}")
+        if not ctrl_args:
+            continue
+        ctrl_str = ",".join(ctrl_args)
+        # Find device path — we use the role name from the profile
+        # The caller should ensure device_role matches a known device
+        cmd = ["v4l2-ctl", "-d", device_role, "--set-ctrl", ctrl_str]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=5, check=False)
+            log.debug("Applied profile controls to %s: %s", device_role, ctrl_str)
+        except Exception as exc:
+            log.warning("Failed to apply v4l2 controls to %s: %s", device_role, exc)
+
+
+def load_camera_profiles(config_profiles: list[CameraProfile]) -> list[CameraProfile]:
+    """Load camera profiles from config or standalone file."""
+    if config_profiles:
+        return config_profiles
+    if PROFILES_CONFIG_PATH.exists():
+        try:
+            data = yaml.safe_load(PROFILES_CONFIG_PATH.read_text()) or {}
+            profiles_raw = data.get("profiles", [])
+            return [CameraProfile(**p) for p in profiles_raw]
+        except Exception as exc:
+            log.warning("Failed to load camera profiles: %s", exc)
+    return []
+
+
+# ---------------------------------------------------------------------------
 # GStreamer pipeline builder
 # ---------------------------------------------------------------------------
 
@@ -290,6 +450,8 @@ class StudioCompositor:
         self._running = False
         self._camera_status: dict[str, str] = {}
         self._camera_status_lock = threading.Lock()
+        self._recording_status: dict[str, str] = {}
+        self._recording_status_lock = threading.Lock()
         self._element_to_role: dict[str, str] = {}
         self._status_timer_id: int | None = None
         self._overlay_state = OverlayState()
@@ -298,6 +460,9 @@ class StudioCompositor:
         self._state_reader_thread: threading.Thread | None = None
         self._GLib: Any = None
         self._Gst: Any = None
+        self._active_profile_name: str = ""
+        self._camera_profiles = load_camera_profiles(config.camera_profiles)
+        self._status_dir_exists = False
 
     def _build_pipeline(self) -> Any:
         """Build the full GStreamer pipeline."""
@@ -325,7 +490,7 @@ class StudioCompositor:
                 continue
             self._add_camera_branch(pipeline, compositor, cam, tile, fps)
 
-        # Output chain: compositor -> cudadownload -> BGRA -> cairooverlay -> YUY2 -> v4l2sink
+        # Output chain: compositor -> cudadownload -> BGRA -> cairooverlay -> tee
         download = Gst.ElementFactory.make("cudadownload", "download")
         convert_bgra = Gst.ElementFactory.make("videoconvert", "convert-bgra")
         bgra_caps = Gst.ElementFactory.make("capsfilter", "bgra-caps")
@@ -341,6 +506,26 @@ class StudioCompositor:
         overlay.connect("draw", self._on_draw)
         overlay.connect("caps-changed", self._on_overlay_caps_changed)
 
+        # Tee after overlay for v4l2sink + HLS + snapshot branches
+        output_tee = Gst.ElementFactory.make("tee", "output-tee")
+
+        elements_pre = [download, convert_bgra, bgra_caps, overlay, output_tee]
+        for el in elements_pre:
+            if el is None:
+                raise RuntimeError("Failed to create GStreamer element")
+            pipeline.add(el)
+
+        # Link compositor -> download -> convert_bgra -> bgra_caps -> overlay -> tee
+        prev = compositor
+        for el in elements_pre:
+            if not prev.link(el):
+                raise RuntimeError(f"Failed to link {prev.get_name()} -> {el.get_name()}")
+            prev = el
+
+        # v4l2sink branch via tee
+        queue_v4l2 = Gst.ElementFactory.make("queue", "queue-v4l2")
+        queue_v4l2.set_property("leaky", 1)  # upstream
+        queue_v4l2.set_property("max-size-buffers", 2)
         convert_out = Gst.ElementFactory.make("videoconvert", "convert-out")
         sink_caps = Gst.ElementFactory.make("capsfilter", "sink-caps")
         sink_caps.set_property(
@@ -350,23 +535,172 @@ class StudioCompositor:
                 f"height={self.config.output_height},framerate={fps}/1"
             ),
         )
-
         sink = Gst.ElementFactory.make("v4l2sink", "output")
         sink.set_property("device", self.config.output_device)
+        sink.set_property("sync", False)
 
-        elements = [download, convert_bgra, bgra_caps, overlay, convert_out, sink_caps, sink]
-        for el in elements:
-            if el is None:
-                raise RuntimeError("Failed to create GStreamer element")
+        for el in [queue_v4l2, convert_out, sink_caps, sink]:
             pipeline.add(el)
 
-        prev = compositor
-        for el in elements:
-            if not prev.link(el):
-                raise RuntimeError(f"Failed to link {prev.get_name()} -> {el.get_name()}")
-            prev = el
+        # Link queue_v4l2 -> convert_out -> sink_caps -> sink
+        queue_v4l2.link(convert_out)
+        convert_out.link(sink_caps)
+        sink_caps.link(sink)
+
+        # Explicit tee -> queue pad linking
+        tee_pad = output_tee.request_pad(output_tee.get_pad_template("src_%u"), None, None)
+        queue_sink_pad = queue_v4l2.get_static_pad("sink")
+        tee_pad.link(queue_sink_pad)
+
+        # HLS branch
+        if self.config.hls.enabled:
+            self._add_hls_branch(pipeline, output_tee, fps)
+
+        # Snapshot branch
+        self._add_snapshot_branch(pipeline, output_tee)
 
         return pipeline
+
+    def _add_snapshot_branch(self, pipeline: Any, tee: Any) -> None:
+        """Add composited frame snapshot branch: tee -> queue -> convert -> scale -> rate -> jpeg -> appsink."""
+        Gst = self._Gst
+
+        queue = Gst.ElementFactory.make("queue", "queue-snapshot")
+        queue.set_property("leaky", 2)  # downstream
+        queue.set_property("max-size-buffers", 1)
+        convert = Gst.ElementFactory.make("videoconvert", "snapshot-convert")
+        scale = Gst.ElementFactory.make("videoscale", "snapshot-scale")
+        scale_caps = Gst.ElementFactory.make("capsfilter", "snapshot-scale-caps")
+        scale_caps.set_property(
+            "caps",
+            Gst.Caps.from_string("video/x-raw,width=960,height=540"),
+        )
+        rate = Gst.ElementFactory.make("videorate", "snapshot-rate")
+        rate_caps = Gst.ElementFactory.make("capsfilter", "snapshot-rate-caps")
+        rate_caps.set_property(
+            "caps",
+            Gst.Caps.from_string("video/x-raw,framerate=15/1"),
+        )
+        encoder = Gst.ElementFactory.make("jpegenc", "snapshot-jpeg")
+        encoder.set_property("quality", 75)
+        appsink = Gst.ElementFactory.make("appsink", "snapshot-sink")
+        appsink.set_property("sync", False)
+        appsink.set_property("async", False)
+        appsink.set_property("drop", True)
+        appsink.set_property("max-buffers", 1)
+
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+        def _on_new_sample(sink: Any) -> int:
+            sample = sink.emit("pull-sample")
+            if sample is None:
+                return 1  # GST_FLOW_ERROR
+            buf = sample.get_buffer()
+            ok, mapinfo = buf.map(self._Gst.MapFlags.READ)
+            if ok:
+                try:
+                    tmp = SNAPSHOT_DIR / "snapshot.jpg.tmp"
+                    final = SNAPSHOT_DIR / "snapshot.jpg"
+                    tmp.write_bytes(bytes(mapinfo.data))
+                    tmp.rename(final)
+                finally:
+                    buf.unmap(mapinfo)
+            return 0  # GST_FLOW_OK
+
+        appsink.set_property("emit-signals", True)
+        appsink.connect("new-sample", _on_new_sample)
+
+        elements = [queue, convert, scale, scale_caps, rate, rate_caps, encoder, appsink]
+        for el in elements:
+            pipeline.add(el)
+
+        # Chain link
+        queue.link(convert)
+        convert.link(scale)
+        scale.link(scale_caps)
+        scale_caps.link(rate)
+        rate.link(rate_caps)
+        rate_caps.link(encoder)
+        encoder.link(appsink)
+
+        # Explicit tee -> queue pad link
+        tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
+        queue_sink = queue.get_static_pad("sink")
+        tee_pad.link(queue_sink)
+
+    def _add_camera_snapshot_branch(
+        self, pipeline: Any, camera_tee: Any, cam: CameraSpec
+    ) -> None:
+        """Add per-camera snapshot branch writing JPEG to /dev/shm."""
+        Gst = self._Gst
+        role = cam.role.replace("-", "_")
+
+        queue = Gst.ElementFactory.make("queue", f"queue-camsnap-{role}")
+        queue.set_property("leaky", 2)  # downstream
+        queue.set_property("max-size-buffers", 2)
+        convert = Gst.ElementFactory.make("videoconvert", f"camsnap-convert-{role}")
+        rate = Gst.ElementFactory.make("videorate", f"camsnap-rate-{role}")
+        rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
+        rate_caps.set_property(
+            "caps",
+            Gst.Caps.from_string("video/x-raw,framerate=5/1"),
+        )
+        scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
+        # Maintain aspect ratio, target 640 wide
+        aspect_h = int(640 * cam.height / cam.width)
+        scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
+        scale_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(f"video/x-raw,width=640,height={aspect_h}"),
+        )
+        encoder = Gst.ElementFactory.make("jpegenc", f"camsnap-jpeg-{role}")
+        encoder.set_property("quality", 70)
+        appsink = Gst.ElementFactory.make("appsink", f"camsnap-sink-{role}")
+        appsink.set_property("sync", False)
+        appsink.set_property("async", False)
+        appsink.set_property("drop", True)
+        appsink.set_property("max-buffers", 1)
+
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        snap_role = cam.role  # capture for closure
+
+        def _on_new_sample(sink: Any) -> int:
+            sample = sink.emit("pull-sample")
+            if sample is None:
+                return 1
+            buf = sample.get_buffer()
+            ok, mapinfo = buf.map(self._Gst.MapFlags.READ)
+            if ok:
+                try:
+                    tmp = SNAPSHOT_DIR / f"{snap_role}.jpg.tmp"
+                    final = SNAPSHOT_DIR / f"{snap_role}.jpg"
+                    tmp.write_bytes(bytes(mapinfo.data))
+                    tmp.rename(final)
+                finally:
+                    buf.unmap(mapinfo)
+            return 0
+
+        appsink.set_property("emit-signals", True)
+        appsink.connect("new-sample", _on_new_sample)
+
+        elements = [queue, convert, rate, rate_caps, scale, scale_caps, encoder, appsink]
+        for el in elements:
+            pipeline.add(el)
+
+        queue.link(convert)
+        convert.link(rate)
+        rate.link(rate_caps)
+        rate_caps.link(scale)
+        scale.link(scale_caps)
+        scale_caps.link(encoder)
+        encoder.link(appsink)
+
+        # Explicit tee -> queue pad link
+        tee_pad = camera_tee.request_pad(
+            camera_tee.get_pad_template("src_%u"), None, None
+        )
+        queue_sink = queue.get_static_pad("sink")
+        tee_pad.link(queue_sink)
 
     def _add_camera_branch(
         self, pipeline: Any, compositor: Any, cam: CameraSpec, tile: TileRect, fps: int
@@ -394,14 +728,12 @@ class StudioCompositor:
                 ),
             )
             decoder = Gst.ElementFactory.make("jpegdec", f"dec_{role}")
-            upload = Gst.ElementFactory.make("cudaupload", f"upload_{role}")
-            convert = Gst.ElementFactory.make("cudaconvert", f"convert_{role}")
-            for el in [src, src_caps, decoder, upload, convert]:
+            convert = Gst.ElementFactory.make("videoconvert", f"convert_{role}")
+            for el in [src, src_caps, decoder, convert]:
                 pipeline.add(el)
             src.link(src_caps)
             src_caps.link(decoder)
-            decoder.link(upload)
-            upload.link(convert)
+            decoder.link(convert)
             last = convert
         else:
             src_caps = Gst.ElementFactory.make("capsfilter", f"srccaps_{role}")
@@ -414,26 +746,48 @@ class StudioCompositor:
                 ),
             )
             convert = Gst.ElementFactory.make("videoconvert", f"rawconv_{role}")
-            upload = Gst.ElementFactory.make("cudaupload", f"upload_{role}")
-            for el in [src, src_caps, convert, upload]:
+            for el in [src, src_caps, convert]:
                 pipeline.add(el)
             src.link(src_caps)
             src_caps.link(convert)
-            convert.link(upload)
-            last = upload
+            last = convert
 
+        # Insert tee after decode/convert, before CUDA upload
+        camera_tee = Gst.ElementFactory.make("tee", f"tee_{role}")
+        pipeline.add(camera_tee)
+        last.link(camera_tee)
+
+        # Compositor branch: tee -> queue -> cudaupload -> cudaconvert -> cudascale -> compositor
+        queue_comp = Gst.ElementFactory.make("queue", f"queue-comp-{role}")
+        queue_comp.set_property("leaky", 1)  # upstream
+        queue_comp.set_property("max-size-buffers", 2)
+        upload = Gst.ElementFactory.make("cudaupload", f"upload_{role}")
+        cuda_convert = Gst.ElementFactory.make("cudaconvert", f"cudaconv_{role}")
         scale = Gst.ElementFactory.make("cudascale", f"scale_{role}")
         scale_caps = Gst.ElementFactory.make("capsfilter", f"scalecaps_{role}")
         scale_caps.set_property(
             "caps",
-            Gst.Caps.from_string(f"video/x-raw(memory:CUDAMemory),width={tile.w},height={tile.h}"),
+            Gst.Caps.from_string(
+                f"video/x-raw(memory:CUDAMemory),width={tile.w},height={tile.h}"
+            ),
         )
 
-        for el in [scale, scale_caps]:
+        for el in [queue_comp, upload, cuda_convert, scale, scale_caps]:
             pipeline.add(el)
-        last.link(scale)
+
+        queue_comp.link(upload)
+        upload.link(cuda_convert)
+        cuda_convert.link(scale)
         scale.link(scale_caps)
 
+        # Explicit tee -> queue pad link
+        tee_pad = camera_tee.request_pad(
+            camera_tee.get_pad_template("src_%u"), None, None
+        )
+        queue_sink = queue_comp.get_static_pad("sink")
+        tee_pad.link(queue_sink)
+
+        # Link to compositor
         pad_template = compositor.get_pad_template("sink_%u")
         pad = compositor.request_pad(pad_template, None, None)
         if pad is None:
@@ -447,6 +801,122 @@ class StudioCompositor:
         src_pad = scale_caps.get_static_pad("src")
         if src_pad.link(pad) != Gst.PadLinkReturn.OK:
             raise RuntimeError(f"Failed to link {cam.role} to compositor")
+
+        # Recording branch
+        if self.config.recording.enabled:
+            self._add_recording_branch(pipeline, camera_tee, cam, fps)
+
+        # Per-camera snapshot branch
+        self._add_camera_snapshot_branch(pipeline, camera_tee, cam)
+
+    def _add_recording_branch(
+        self, pipeline: Any, camera_tee: Any, cam: CameraSpec, fps: int
+    ) -> None:
+        """Add per-camera recording branch: tee -> queue -> convert -> nvh264enc -> splitmuxsink."""
+        Gst = self._Gst
+        role = cam.role.replace("-", "_")
+        rec_cfg = self.config.recording
+
+        queue = Gst.ElementFactory.make("queue", f"queue-rec-{role}")
+        queue.set_property("leaky", 2)  # downstream
+        queue.set_property("max-size-buffers", 30)
+        queue.set_property("max-size-time", 5 * 1_000_000_000)  # 5 seconds in ns
+        convert = Gst.ElementFactory.make("videoconvert", f"rec-convert-{role}")
+        nv12_caps = Gst.ElementFactory.make("capsfilter", f"rec-nv12caps-{role}")
+        nv12_caps.set_property(
+            "caps",
+            Gst.Caps.from_string("video/x-raw,format=NV12"),
+        )
+        encoder = Gst.ElementFactory.make("nvh264enc", f"rec-enc-{role}")
+        encoder.set_property("preset", 2)  # hp
+        encoder.set_property("rc-mode", 3)  # constqp
+        encoder.set_property("qp-const", rec_cfg.qp)
+        parser = Gst.ElementFactory.make("h264parse", f"rec-parse-{role}")
+
+        mux_sink = Gst.ElementFactory.make("splitmuxsink", f"rec-mux-{role}")
+        mux_sink.set_property("max-size-time", rec_cfg.segment_seconds * 1_000_000_000)
+        mux_sink.set_property("muxer", Gst.ElementFactory.make("matroskamux", None))
+        mux_sink.set_property("async-handling", True)
+
+        # Create output directory
+        rec_dir = Path(rec_cfg.output_dir) / cam.role
+        rec_dir.mkdir(parents=True, exist_ok=True)
+
+        cam_role = cam.role  # capture for closure
+
+        def _format_location(splitmux: Any, fragment_id: int) -> str:
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            return str(rec_dir / f"{cam_role}_{ts}_{fragment_id:04d}.mkv")
+
+        mux_sink.connect("format-location-full", lambda s, fid, _sample: _format_location(s, fid))
+
+        elements = [queue, convert, nv12_caps, encoder, parser, mux_sink]
+        for el in elements:
+            pipeline.add(el)
+
+        queue.link(convert)
+        convert.link(nv12_caps)
+        nv12_caps.link(encoder)
+        encoder.link(parser)
+        parser.link(mux_sink)
+
+        # Explicit tee -> queue pad link
+        tee_pad = camera_tee.request_pad(
+            camera_tee.get_pad_template("src_%u"), None, None
+        )
+        queue_sink = queue.get_static_pad("sink")
+        tee_pad.link(queue_sink)
+
+        with self._recording_status_lock:
+            self._recording_status[cam.role] = "active"
+
+    def _add_hls_branch(self, pipeline: Any, tee: Any, fps: int) -> None:
+        """Add HLS output branch: tee -> queue -> convert -> nvh264enc -> h264parse -> hlssink2."""
+        Gst = self._Gst
+        hls_cfg = self.config.hls
+
+        queue = Gst.ElementFactory.make("queue", "queue-hls")
+        queue.set_property("leaky", 2)  # downstream
+        queue.set_property("max-size-buffers", 60)
+        queue.set_property("max-size-time", 3 * 1_000_000_000)  # 3 seconds in ns
+        convert = Gst.ElementFactory.make("videoconvert", "hls-convert")
+        nv12_caps = Gst.ElementFactory.make("capsfilter", "hls-nv12caps")
+        nv12_caps.set_property(
+            "caps",
+            Gst.Caps.from_string("video/x-raw,format=NV12"),
+        )
+        encoder = Gst.ElementFactory.make("nvh264enc", "hls-enc")
+        encoder.set_property("preset", 2)  # hp
+        encoder.set_property("rc-mode", 3)  # constqp
+        encoder.set_property("qp-const", 26)
+        encoder.set_property("gop-size", fps * hls_cfg.target_duration)
+        parser = Gst.ElementFactory.make("h264parse", "hls-parse")
+
+        hls_dir = Path(hls_cfg.output_dir)
+        hls_dir.mkdir(parents=True, exist_ok=True)
+
+        hls_sink = Gst.ElementFactory.make("hlssink2", "hls-sink")
+        hls_sink.set_property("target-duration", hls_cfg.target_duration)
+        hls_sink.set_property("playlist-length", hls_cfg.playlist_length)
+        hls_sink.set_property("max-files", hls_cfg.max_files)
+        hls_sink.set_property("location", str(hls_dir / "segment%05d.ts"))
+        hls_sink.set_property("playlist-location", str(hls_dir / "playlist.m3u8"))
+        hls_sink.set_property("async-handling", True)
+
+        elements = [queue, convert, nv12_caps, encoder, parser, hls_sink]
+        for el in elements:
+            pipeline.add(el)
+
+        queue.link(convert)
+        convert.link(nv12_caps)
+        nv12_caps.link(encoder)
+        encoder.link(parser)
+        parser.link(hls_sink)
+
+        # Explicit tee -> queue pad link
+        tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
+        queue_sink = queue.get_static_pad("sink")
+        tee_pad.link(queue_sink)
 
     # -- Error handling ---------------------------------------------------
 
@@ -503,10 +973,17 @@ class StudioCompositor:
 
     def _write_status(self, state: str) -> None:
         """Write compositor status to cache file (atomic write-then-rename)."""
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        if not self._status_dir_exists:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            self._status_dir_exists = True
         with self._camera_status_lock:
             cameras = dict(self._camera_status)
+        with self._recording_status_lock:
+            recording_cameras = dict(self._recording_status)
         active_count = sum(1 for s in cameras.values() if s == "active")
+        hls_url = ""
+        if self.config.hls.enabled:
+            hls_url = str(Path(self.config.hls.output_dir) / "playlist.m3u8")
         status = {
             "state": state,
             "pid": os.getpid(),
@@ -515,6 +992,11 @@ class StudioCompositor:
             "total_cameras": len(cameras),
             "output_device": self.config.output_device,
             "resolution": f"{self.config.output_width}x{self.config.output_height}",
+            "recording_enabled": self.config.recording.enabled,
+            "recording_cameras": recording_cameras,
+            "hls_enabled": self.config.hls.enabled,
+            "hls_url": hls_url,
+            "camera_profile": self._active_profile_name,
             "timestamp": time.time(),
         }
         tmp = STATUS_FILE.with_suffix(".tmp")
@@ -627,8 +1109,25 @@ class StudioCompositor:
 
     # -- State reader -----------------------------------------------------
 
+    def _evaluate_camera_profile(self) -> None:
+        """Evaluate and apply camera profiles if changed."""
+        if not self._camera_profiles:
+            return
+        overlay_data = self._overlay_state.data
+        profile = evaluate_active_profile(self._camera_profiles, overlay_data)
+        if profile is None:
+            if self._active_profile_name:
+                log.info("No camera profile matches, clearing active profile")
+                self._active_profile_name = ""
+            return
+        if profile.name != self._active_profile_name:
+            log.info("Switching camera profile: %s -> %s", self._active_profile_name, profile.name)
+            self._active_profile_name = profile.name
+            apply_camera_profile(profile)
+
     def _state_reader_loop(self) -> None:
         """Daemon thread: read perception-state.json every 1s."""
+        profile_check_counter = 0
         while self._running:
             try:
                 if PERCEPTION_STATE_PATH.exists():
@@ -643,6 +1142,16 @@ class StudioCompositor:
             except (json.JSONDecodeError, OSError, ValueError) as exc:
                 log.debug("Failed to read perception state: %s", exc)
                 self._overlay_state.mark_stale()
+
+            # Evaluate camera profiles every 10 iterations (~10s)
+            profile_check_counter += 1
+            if profile_check_counter >= 10:
+                profile_check_counter = 0
+                try:
+                    self._evaluate_camera_profile()
+                except Exception as exc:
+                    log.debug("Failed to evaluate camera profile: %s", exc)
+
             time.sleep(1.0)
 
     # -- Lifecycle --------------------------------------------------------
@@ -740,6 +1249,9 @@ def main() -> None:
         "--default-config", action="store_true", help="Print default config and exit"
     )
     parser.add_argument("--no-overlay", action="store_true", help="Disable overlay rendering")
+    parser.add_argument("--record-dir", type=str, help="Override recording output directory")
+    parser.add_argument("--no-record", action="store_true", help="Disable per-camera recording")
+    parser.add_argument("--no-hls", action="store_true", help="Disable HLS output")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -755,15 +1267,23 @@ def main() -> None:
     cfg = load_config(path=args.config)
     if args.no_overlay:
         cfg.overlay_enabled = False
+    if args.no_record:
+        cfg.recording.enabled = False
+    if args.record_dir:
+        cfg.recording.output_dir = args.record_dir
+    if args.no_hls:
+        cfg.hls.enabled = False
 
     log.info(
-        "Config: %d cameras, output=%s, %dx%d@%dfps, overlay=%s",
+        "Config: %d cameras, output=%s, %dx%d@%dfps, overlay=%s, recording=%s, hls=%s",
         len(cfg.cameras),
         cfg.output_device,
         cfg.output_width,
         cfg.output_height,
         cfg.framerate,
         cfg.overlay_enabled,
+        cfg.recording.enabled,
+        cfg.hls.enabled,
     )
 
     compositor = StudioCompositor(cfg)

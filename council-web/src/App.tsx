@@ -4,6 +4,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { ChatPage } from "./pages/ChatPage";
 import { DemosPage } from "./pages/DemosPage";
 import { InsightPage } from "./pages/InsightPage";
+import { StudioPage } from "./pages/StudioPage";
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
           <Route path="chat" element={<ChatPage />} />
           <Route path="insight" element={<InsightPage />} />
           <Route path="demos" element={<DemosPage />} />
+          <Route path="studio" element={<StudioPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

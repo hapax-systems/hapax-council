@@ -121,6 +121,14 @@ export function useScoutDecide() {
   });
 }
 
+// --- Studio ---
+
+export const useStudio = () =>
+  useQuery({ queryKey: ["studio"], queryFn: api.studio, refetchInterval: FAST });
+
+export const useStudioStreamInfo = () =>
+  useQuery({ queryKey: ["studioStreamInfo"], queryFn: api.studioStreamInfo, refetchInterval: FAST });
+
 // --- Demos ---
 
 export const useDemos = () =>

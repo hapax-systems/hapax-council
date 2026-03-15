@@ -115,6 +115,15 @@ app.include_router(consent_router)
 app.include_router(governance_router)
 app.include_router(studio_router)
 
+# Mount HLS segment directory for live stream serving
+from pathlib import Path as _Path
+
+_HLS_DIR = _Path.home() / ".cache" / "hapax-compositor" / "hls"
+_HLS_DIR.mkdir(parents=True, exist_ok=True)
+from starlette.staticfiles import StaticFiles as _StaticFiles
+
+app.mount("/api/studio/hls", _StaticFiles(directory=_HLS_DIR), name="hls-stream")
+
 
 @app.get("/")
 async def root():
