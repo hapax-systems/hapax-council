@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agents.hapax_voice._perception_state_writer import write_perception_state
 from agents.hapax_voice.activity_mode import classify_activity_mode
 from agents.hapax_voice.audio_input import AudioInputStream
 from agents.hapax_voice.chime_player import ChimePlayer
@@ -919,6 +920,9 @@ class VoiceDaemon:
 
                 # Update context gate with backend Behaviors
                 self.gate.set_behaviors(self.perception.behaviors)
+
+                # Write perception state for external consumers (compositor overlay)
+                write_perception_state(self.perception, self.consent_registry)
 
             except asyncio.CancelledError:
                 break
