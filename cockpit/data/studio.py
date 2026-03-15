@@ -89,6 +89,18 @@ class CaptureStatus:
 
 
 @dataclass
+class CompositorStatus:
+    """Studio compositor pipeline status."""
+
+    state: str = "unknown"  # running | stopped | error | unknown
+    cameras: dict[str, str] = field(default_factory=dict)  # role -> active|offline
+    active_cameras: int = 0
+    total_cameras: int = 0
+    output_device: str = ""
+    resolution: str = ""
+
+
+@dataclass
 class StudioSnapshot:
     """Combined studio ingestion snapshot."""
 
@@ -98,6 +110,7 @@ class StudioSnapshot:
     recent: list[RecentClassification] = field(default_factory=list)
     arbiter: ArbiterSummary = field(default_factory=ArbiterSummary)
     capture: CaptureStatus = field(default_factory=CaptureStatus)
+    compositor: CompositorStatus = field(default_factory=CompositorStatus)
 
 
 def _collect_processor_stats() -> ProcessorStats:
@@ -269,12 +282,36 @@ def _collect_capture_status() -> CaptureStatus:
     return status
 
 
+def _collect_compositor_status() -> CompositorStatus:
+    """Read studio compositor status file."""
+    from pathlib import Path
+
+    status_file = Path.home() / ".cache" / "hapax-compositor" / "status.json"
+    if not status_file.exists():
+        return CompositorStatus()
+
+    try:
+        data = json.loads(status_file.read_text(encoding="utf-8"))
+        return CompositorStatus(
+            state=data.get("state", "unknown"),
+            cameras=data.get("cameras", {}),
+            active_cameras=data.get("active_cameras", 0),
+            total_cameras=data.get("total_cameras", 0),
+            output_device=data.get("output_device", ""),
+            resolution=data.get("resolution", ""),
+        )
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Failed to read compositor status: %s", exc)
+        return CompositorStatus()
+
+
 def collect_studio() -> StudioSnapshot:
     """Collect all studio ingestion data into a single snapshot."""
     processor = _collect_processor_stats()
     archive, values, recent = _collect_archive_stats()
     arbiter = _collect_arbiter_summary()
     capture = _collect_capture_status()
+    compositor = _collect_compositor_status()
 
     return StudioSnapshot(
         processor=processor,
@@ -283,4 +320,5 @@ def collect_studio() -> StudioSnapshot:
         recent=recent,
         arbiter=arbiter,
         capture=capture,
+        compositor=compositor,
     )
