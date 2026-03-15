@@ -96,5 +96,5 @@ def _search_moments_sync(query: str, limit: int) -> list[dict]:
             }
             for r in results
         ]
-    except Exception:
+    except (ValueError, KeyError, TypeError, RuntimeError, OSError):
         return []

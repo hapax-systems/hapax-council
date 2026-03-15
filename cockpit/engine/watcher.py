@@ -125,6 +125,7 @@ class DirectoryWatcher:
         self._data_dir = data_dir
 
         # Debounce state
+        self._lock = threading.Lock()
         self._pending: dict[Path, tuple[str, datetime]] = {}
         self._timers: dict[Path, threading.Timer] = {}
 
@@ -164,7 +165,8 @@ class DirectoryWatcher:
 
     async def _consume(self) -> None:
         """Read events from the queue and debounce them."""
-        assert self._queue is not None
+        if self._queue is None:
+            raise RuntimeError("Watcher not started")
         while True:
             try:
                 src_path, event_type = await self._queue.get()
@@ -181,27 +183,29 @@ class DirectoryWatcher:
                 self._debounce(path, event_type)
             except asyncio.CancelledError:
                 return
-            except Exception:
+            except (OSError, FileNotFoundError, ValueError):
                 _log.exception("Error in watcher consumer")
 
     def _debounce(self, path: Path, event_type: str) -> None:
         """Collapse multiple events on the same path within the debounce window."""
-        if path not in self._pending:
-            self._pending[path] = (event_type, datetime.now())
+        with self._lock:
+            if path not in self._pending:
+                self._pending[path] = (event_type, datetime.now())
 
-        # Cancel existing timer
-        if path in self._timers:
-            self._timers[path].cancel()
+            # Cancel existing timer
+            if path in self._timers:
+                self._timers[path].cancel()
 
-        # Set new timer
-        timer = threading.Timer(self._debounce_s, self._fire, args=[path])
-        self._timers[path] = timer
-        timer.start()
+            # Set new timer
+            timer = threading.Timer(self._debounce_s, self._fire, args=[path])
+            self._timers[path] = timer
+            timer.start()
 
     def _fire(self, path: Path) -> None:
         """Fire the callback after debounce window expires."""
-        pending = self._pending.pop(path, None)
-        self._timers.pop(path, None)
+        with self._lock:
+            pending = self._pending.pop(path, None)
+            self._timers.pop(path, None)
 
         if pending is None:
             return
@@ -226,15 +230,16 @@ class DirectoryWatcher:
 
         One-shot: consumed on first matching event. Auto-clears after 2x debounce window.
         """
-        self._own_writes.add(path)
+        with self._lock:
+            self._own_writes.add(path)
 
-        # Auto-clear timer at 2x debounce window
-        if path in self._own_write_timers:
-            self._own_write_timers[path].cancel()
+            # Auto-clear timer at 2x debounce window
+            if path in self._own_write_timers:
+                self._own_write_timers[path].cancel()
 
-        timer = threading.Timer(self._debounce_s * 2, self._clear_own_write, args=[path])
-        self._own_write_timers[path] = timer
-        timer.start()
+            timer = threading.Timer(self._debounce_s * 2, self._clear_own_write, args=[path])
+            self._own_write_timers[path] = timer
+            timer.start()
 
     def _clear_own_write(self, path: Path) -> None:
         """Remove an own-write entry after timeout."""
