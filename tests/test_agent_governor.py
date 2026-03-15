@@ -16,6 +16,7 @@ from shared.agent_governor import create_agent_governor
 from shared.consent_label import ConsentLabel
 from shared.governor import GovernorWrapper
 from shared.labeled import Labeled
+from tests.consent_strategies import st_labeled
 
 # ── Factory basics ───────────────────────────────────────────────────
 
@@ -250,6 +251,8 @@ class TestGovernorCarrierIntake(unittest.TestCase):
 
 
 class TestGovernorFactoryHypothesis(unittest.TestCase):
+    """Algebraic properties: manifest bindings → governor → policy ≡ can_flow_to."""
+
     @given(
         agent_id=st.text(
             alphabet=st.characters(whitelist_categories=("L", "N")),
@@ -259,7 +262,7 @@ class TestGovernorFactoryHypothesis(unittest.TestCase):
     )
     @settings(max_examples=50)
     def test_empty_bindings_always_permissive(self, agent_id):
-        """Any agent with no bindings is fully permissive."""
+        """∀ agent, data: no_bindings(agent) → allow(input) ∧ allow(output)."""
         gov = create_agent_governor(agent_id, axiom_bindings=[])
         data = Labeled(value=42, label=ConsentLabel.bottom())
         assert gov.check_input(data).allowed
@@ -275,7 +278,7 @@ class TestGovernorFactoryHypothesis(unittest.TestCase):
     )
     @settings(max_examples=50)
     def test_public_data_always_passes_consent_policy(self, agent_id, role):
-        """Bottom-labeled data always passes consent policies (regardless of role)."""
+        """∀ agent, role: bottom.can_flow_to(any) = True → allow(bottom_data)."""
         gov = create_agent_governor(
             agent_id,
             axiom_bindings=[
@@ -284,3 +287,138 @@ class TestGovernorFactoryHypothesis(unittest.TestCase):
         )
         public = Labeled(value="public", label=ConsentLabel.bottom())
         assert gov.check_input(public).allowed
+
+
+class TestGovernanceCoherenceProperties(unittest.TestCase):
+    """Algebraic proof: factory-built governors are coherent with can_flow_to.
+
+    The key property: for any agent with interpersonal_transparency binding
+    (subject or enforcer role), the governor's input decision equals
+    data.label.can_flow_to(ConsentLabel.bottom()). This proves that the
+    factory path (manifest → axiom builder → policy → check) is equivalent
+    to the direct lattice check.
+    """
+
+    @given(data=st_labeled())
+    @settings(max_examples=100)
+    def test_factory_input_consistent_with_can_flow_to(self, data: Labeled):
+        """∀ data: factory_gov.check_input(data) ≡ data.label.can_flow_to(bottom).
+
+        The factory builds a consent_input_policy(bottom) for
+        interpersonal_transparency. This must agree with the direct
+        lattice operation for all labeled data.
+        """
+        gov = create_agent_governor(
+            "coherence-test",
+            axiom_bindings=[
+                {"axiom_id": "interpersonal_transparency", "role": "enforcer"},
+            ],
+        )
+        result = gov.check_input(data)
+        expected = data.label.can_flow_to(ConsentLabel.bottom())
+        assert result.allowed == expected, (
+            f"Governor disagrees with can_flow_to: "
+            f"gov={result.allowed}, lattice={expected}, label={data.label}"
+        )
+
+    @given(data=st_labeled())
+    @settings(max_examples=100)
+    def test_factory_output_consistent_with_can_flow_to(self, data: Labeled):
+        """∀ data: factory_gov.check_output(data) ≡ data.label.can_flow_to(bottom).
+
+        Output policy mirrors input: agent must not produce data more
+        restrictive than its governance context.
+        """
+        gov = create_agent_governor(
+            "coherence-test",
+            axiom_bindings=[
+                {"axiom_id": "interpersonal_transparency", "role": "subject"},
+            ],
+        )
+        result = gov.check_output(data)
+        expected = data.label.can_flow_to(ConsentLabel.bottom())
+        assert result.allowed == expected
+
+    @given(
+        data=st_labeled(),
+        role=st.sampled_from(["subject", "enforcer"]),
+    )
+    @settings(max_examples=100)
+    def test_factory_role_symmetry(self, data: Labeled, role: str):
+        """∀ data, role ∈ {subject, enforcer}: same policies, same decisions.
+
+        Both subject and enforcer roles produce identical consent policies
+        for interpersonal_transparency. Evaluator produces none.
+        """
+        gov = create_agent_governor(
+            "symmetry-test",
+            axiom_bindings=[
+                {"axiom_id": "interpersonal_transparency", "role": role},
+            ],
+        )
+        result_in = gov.check_input(data)
+        result_out = gov.check_output(data)
+        expected = data.label.can_flow_to(ConsentLabel.bottom())
+        assert result_in.allowed == expected
+        assert result_out.allowed == expected
+
+    @given(data=st_labeled())
+    @settings(max_examples=100)
+    def test_evaluator_is_permissive(self, data: Labeled):
+        """∀ data: evaluator role produces no policies → always allows.
+
+        Evaluators observe governance but don't enforce it.
+        """
+        gov = create_agent_governor(
+            "eval-test",
+            axiom_bindings=[
+                {"axiom_id": "interpersonal_transparency", "role": "evaluator"},
+            ],
+        )
+        assert gov.check_input(data).allowed
+        assert gov.check_output(data).allowed
+
+    @given(
+        data=st_labeled(),
+        n_bindings=st.integers(min_value=1, max_value=3),
+    )
+    @settings(max_examples=50)
+    def test_idempotent_binding_accumulation(self, data: Labeled, n_bindings: int):
+        """∀ data, n: repeating the same binding n times ≡ binding once.
+
+        Multiple identical axiom bindings produce the same decision as one.
+        First-denial-wins semantics means redundant policies don't change outcome.
+        """
+        gov_single = create_agent_governor(
+            "single",
+            axiom_bindings=[
+                {"axiom_id": "interpersonal_transparency", "role": "enforcer"},
+            ],
+        )
+        gov_repeated = create_agent_governor(
+            "repeated",
+            axiom_bindings=[
+                {"axiom_id": "interpersonal_transparency", "role": "enforcer"},
+            ]
+            * n_bindings,
+        )
+        assert gov_single.check_input(data).allowed == gov_repeated.check_input(data).allowed
+        assert gov_single.check_output(data).allowed == gov_repeated.check_output(data).allowed
+
+    @given(data=st_labeled())
+    @settings(max_examples=100)
+    def test_unknown_axiom_is_identity(self, data: Labeled):
+        """∀ data: unknown_axiom binding ≡ no binding (identity element).
+
+        Unrecognized axiom IDs produce no policies, so they act as the
+        identity element in binding composition.
+        """
+        gov_empty = create_agent_governor("empty", axiom_bindings=[])
+        gov_unknown = create_agent_governor(
+            "unknown",
+            axiom_bindings=[
+                {"axiom_id": "nonexistent_axiom_xyz", "role": "enforcer"},
+            ],
+        )
+        assert gov_empty.check_input(data).allowed == gov_unknown.check_input(data).allowed
+        assert gov_empty.check_output(data).allowed == gov_unknown.check_output(data).allowed
