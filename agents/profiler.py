@@ -480,6 +480,18 @@ async def synthesize_profile(facts: list[ProfileFact]) -> SynthesisOutput:
             parts.append("")
 
         facts_text = "\n".join(parts)
+
+        # Guard: truncate facts to stay within Sonnet's 200K token context.
+        # ~4 chars/token, leave 10K tokens for system prompt + output.
+        max_chars = 190_000 * 4
+        if len(facts_text) > max_chars:
+            log.warning(
+                "Profiler synthesis: truncating facts from %d to %d chars",
+                len(facts_text),
+                max_chars,
+            )
+            facts_text = facts_text[:max_chars] + "\n\n[... truncated due to context limits]"
+
         prompt = f"Synthesize the following extracted facts into a coherent user profile:\n\n{facts_text}"
 
         result = await synthesis_agent.run(prompt)

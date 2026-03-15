@@ -123,10 +123,21 @@ Bad Example (pitch mode — narration sounding like this FAILS voice_consistency
             avoid_text = "Style AVOID list: " + "; ".join(style_guide["avoid"])
         voice_section = f"\n{avoid_text}\n"
 
+    # Guard: truncate script JSON to stay within context limits.
+    script_json = script.model_dump_json(indent=2)
+    max_script_chars = 500_000  # ~125K tokens, leaving headroom for prompt + output
+    if len(script_json) > max_script_chars:
+        log.warning(
+            "Critique prompt: truncating script JSON from %d to %d chars",
+            len(script_json),
+            max_script_chars,
+        )
+        script_json = script_json[:max_script_chars] + "\n... [truncated]"
+
     return f"""Evaluate this demo script against all quality dimensions.
 
 ## Script
-{script.model_dump_json(indent=2)}
+{script_json}
 
 ## Quality Dimensions to Evaluate
 {dimensions_text}
@@ -279,10 +290,21 @@ RULES:
 - Maximum 2 screencast scenes
 """
 
+    # Guard: truncate script JSON to stay within context limits.
+    script_json = script.model_dump_json(indent=2)
+    max_script_chars = 500_000
+    if len(script_json) > max_script_chars:
+        log.warning(
+            "Revision prompt: truncating script JSON from %d to %d chars",
+            len(script_json),
+            max_script_chars,
+        )
+        script_json = script_json[:max_script_chars] + "\n... [truncated]"
+
     return f"""Revise this demo script to fix the identified quality issues.
 
 ## Current Script
-{script.model_dump_json(indent=2)}
+{script_json}
 
 ## Issues to Fix
 {issues_text}
