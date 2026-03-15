@@ -890,7 +890,7 @@ class StudioCompositor:
         hls_sink.set_property("playlist-length", hls_cfg.playlist_length)
         hls_sink.set_property("max-files", hls_cfg.max_files)
         hls_sink.set_property("location", str(hls_dir / "segment%05d.ts"))
-        hls_sink.set_property("playlist-location", str(hls_dir / "playlist.m3u8"))
+        hls_sink.set_property("playlist-location", str(hls_dir / "stream.m3u8"))
         hls_sink.set_property("async-handling", True)
 
         elements = [queue, convert, nv12_caps, encoder, parser, hls_sink]
@@ -973,7 +973,7 @@ class StudioCompositor:
         active_count = sum(1 for s in cameras.values() if s == "active")
         hls_url = ""
         if self.config.hls.enabled:
-            hls_url = str(Path(self.config.hls.output_dir) / "playlist.m3u8")
+            hls_url = str(Path(self.config.hls.output_dir) / "stream.m3u8")
         status = {
             "state": state,
             "pid": os.getpid(),

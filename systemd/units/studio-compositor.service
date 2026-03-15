@@ -11,6 +11,7 @@ OnFailure=notify-failure@%n.service
 Type=simple
 WorkingDirectory=/home/hapax/projects/hapax-council
 ExecStartPre=/usr/bin/mkdir -p %h/video-recording %h/.cache/hapax-compositor/hls
+ExecStartPre=/usr/bin/find %h/.cache/hapax-compositor/hls -type f -delete
 ExecStartPre=/home/hapax/projects/hapax-council/systemd/units/studio-camera-setup.sh
 ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.studio_compositor
 Restart=on-failure
