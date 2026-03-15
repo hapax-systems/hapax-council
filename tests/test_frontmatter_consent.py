@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shared.governance.consent_label import ConsentLabel
 from shared.frontmatter import extract_consent_label, extract_provenance, labeled_read
+from shared.governance.consent_label import ConsentLabel
 
 
 class TestExtractConsentLabel(unittest.TestCase):
