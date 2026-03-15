@@ -31,6 +31,7 @@ dependencies = [
     "hapax-sdlc @ git+https://github.com/ryanklee/hapax-constitution.git",
     "openwakeword>=0.4.0",
     "litellm>=1.82.2",
+    "kokoro>=0.9.4",
 ]
 
 [project.optional-dependencies]

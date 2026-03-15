@@ -1810,6 +1810,7 @@ source = { editable = "." }
 dependencies = [
     { name = "hapax-sdlc" },
     { name = "httpx" },
+    { name = "kokoro" },
     { name = "litellm" },
     { name = "ollama" },
     { name = "opentelemetry-api" },
@@ -1939,6 +1940,7 @@ requires-dist = [
     { name = "hsemotion-onnx", marker = "extra == 'audio'", specifier = ">=0.3" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "jinja2", marker = "extra == 'cockpit-api'", specifier = ">=3.1" },
+    { name = "kokoro", specifier = ">=0.9.4" },
     { name = "kokoro", marker = "extra == 'audio'", specifier = ">=0.9.0" },
     { name = "langfuse", marker = "extra == 'cockpit-api'", specifier = ">=3.14.5" },
     { name = "langfuse", marker = "extra == 'sync-pipeline'", specifier = ">=3.14.5" },
