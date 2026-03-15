@@ -248,6 +248,20 @@ class VoiceDaemon:
         self.consent_tracker.set_event_log(self.event_log)
         self._consent_session_active = False
 
+        # Lightweight voice pipeline (replaces Pipecat)
+        from agents.hapax_voice.conversation_buffer import ConversationBuffer
+        from agents.hapax_voice.resident_stt import ResidentSTT
+
+        self._conversation_buffer = ConversationBuffer()
+        self._resident_stt = ResidentSTT(
+            model=self.cfg.local_stt_model
+            if "whisper" in self.cfg.local_stt_model.lower()
+            or "distil" in self.cfg.local_stt_model.lower()
+            else "distil-large-v3",
+            device="cuda",
+        )
+        self._conversation_pipeline = None
+
         # Actuation layer
         self.schedule_queue = ScheduleQueue()
         self.executor_registry = ExecutorRegistry()
@@ -527,12 +541,21 @@ class VoiceDaemon:
             _wake_buf.extend(frame)
             _vad_buf.extend(frame)
 
+            # Conversation buffer: feed every frame (inline, no copy overhead)
+            if self._conversation_buffer.is_active:
+                self._conversation_buffer.feed_audio(frame)
+
             # Presence/VAD: drain all complete 512-sample chunks
             while len(_vad_buf) >= _VAD_CHUNK:
                 chunk = bytes(_vad_buf[:_VAD_CHUNK])
                 del _vad_buf[:_VAD_CHUNK]
                 try:
                     self.presence.process_audio_frame(chunk)
+                    # Feed VAD probability to conversation buffer
+                    if self._conversation_buffer.is_active:
+                        self._conversation_buffer.update_vad(
+                            self.presence._latest_vad_confidence
+                        )
                 except Exception as exc:
                     log.warning("Presence consumer error: %s", exc)
 
@@ -553,11 +576,10 @@ class VoiceDaemon:
     async def _start_pipeline(self) -> None:
         """Start the voice pipeline for the current session.
 
-        For backend="local", builds a Pipecat pipeline (STT -> LLM -> TTS)
-        with LocalAudioTransport. For backend="gemini", connects a Gemini
-        Live session for speech-to-speech.
+        For backend="local", starts the lightweight conversation pipeline.
+        For backend="gemini", connects a Gemini Live session.
         """
-        if self._pipeline_task is not None:
+        if self._conversation_pipeline is not None and self._conversation_pipeline.is_active:
             log.warning("Pipeline already running, skipping start")
             return
 
@@ -566,58 +588,38 @@ class VoiceDaemon:
         if backend == "gemini":
             await self._start_gemini_session()
         else:
-            await self._start_local_pipeline()
+            await self._start_conversation_pipeline()
 
-    async def _start_local_pipeline(self) -> None:
-        """Build and start the local Pipecat pipeline in a background task.
+    async def _start_conversation_pipeline(self) -> None:
+        """Start the lightweight conversation pipeline.
 
-        Stops the daemon's AudioInputStream first so Pipecat's
-        LocalAudioTransport can claim the microphone exclusively.
+        No mic handoff — the mic stays shared. Models stay resident.
+        The conversation buffer accumulates speech from _audio_loop().
         """
-        from pipecat.pipeline.runner import PipelineRunner
+        from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+        from agents.hapax_voice.persona import system_prompt
 
-        from agents.hapax_voice.pipeline import build_pipeline_task
+        # Load STT model on first use (stays resident)
+        if not self._resident_stt.is_loaded:
+            log.info("Loading resident STT model (first session)...")
+            self._resident_stt.load()
 
-        # Release mic so Pipecat can open its own input stream
-        self._audio_input.stop()
-        log.info("Daemon audio input stopped — handing mic to pipeline")
+        prompt = system_prompt(guest_mode=self.session.is_guest_mode)
 
-        guest_mode = self.session.is_guest_mode
+        self._conversation_pipeline = ConversationPipeline(
+            stt=self._resident_stt,
+            tts_manager=self.tts,
+            system_prompt=prompt,
+            llm_model=self.cfg.llm_model,
+            event_log=self.event_log,
+            conversation_buffer=self._conversation_buffer,
+        )
 
-        try:
-            task, transport = build_pipeline_task(
-                stt_model=self.cfg.local_stt_model,
-                llm_model=self.cfg.llm_model,
-                kokoro_voice=self.cfg.kokoro_voice,
-                guest_mode=guest_mode,
-                config=self.cfg,
-                webcam_capturer=getattr(self.workspace_monitor, "webcam_capturer", None),
-                screen_capturer=getattr(self.workspace_monitor, "screen_capturer", None),
-                frame_gate=self._frame_gate,
-            )
-        except Exception:
-            log.exception("Failed to build Pipecat pipeline")
-            # Restore daemon audio input on failure
-            self._audio_input.start()
-            return
+        await self._conversation_pipeline.start()
+        log.info("Conversation pipeline started (mic stays shared)")
 
-        self._pipecat_task = task
-        self._pipecat_transport = transport
-
-        async def _run_pipeline() -> None:
-            try:
-                runner = PipelineRunner(
-                    handle_sigint=False,
-                    handle_sigterm=False,
-                )
-                log.info("Local Pipecat pipeline started (guest=%s)", guest_mode)
-                await runner.run(task)
-            except asyncio.CancelledError:
-                log.info("Local Pipecat pipeline cancelled")
-            except Exception:
-                log.exception("Local Pipecat pipeline error")
-
-        self._pipeline_task = asyncio.create_task(_run_pipeline())
+        # Run the conversation loop as a background task
+        self._pipeline_task = asyncio.create_task(self._conversation_loop())
 
     async def _start_gemini_session(self) -> None:
         """Connect and start a Gemini Live session."""
@@ -636,33 +638,55 @@ class VoiceDaemon:
         else:
             log.error("Gemini Live session failed to connect")
 
-    async def _stop_pipeline(self) -> None:
-        """Stop the active pipeline or Gemini session.
+    async def _conversation_loop(self) -> None:
+        """Background task: poll conversation buffer for utterances.
 
-        Restores the daemon's AudioInputStream so wake word detection
-        resumes after the session ends.
+        Runs while the conversation pipeline is active. Checks every
+        50ms for complete utterances from the ConversationBuffer and
+        feeds them to the pipeline for processing.
         """
+        try:
+            while (
+                self._conversation_pipeline is not None
+                and self._conversation_pipeline.is_active
+                and self._running
+            ):
+                utterance = self._conversation_buffer.get_utterance()
+                if utterance is not None:
+                    await self._conversation_pipeline.process_utterance(utterance)
+                else:
+                    await asyncio.sleep(0.05)  # 50ms poll
+
+                # Session timeout check
+                if self.session.is_active and self.session.is_timed_out:
+                    log.info("Conversation timed out (silence)")
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception("Conversation loop error")
+
+    async def _stop_pipeline(self) -> None:
+        """Stop the active pipeline or Gemini session."""
         if self._gemini_session is not None:
             await self._gemini_session.disconnect()
             self._gemini_session = None
             log.info("Gemini Live session stopped")
 
+        if self._conversation_pipeline is not None:
+            await self._conversation_pipeline.stop()
+            self._conversation_pipeline = None
+
         if self._pipeline_task is not None:
-            # Cancel the runner task and wait for cleanup
             self._pipeline_task.cancel()
             try:
                 await self._pipeline_task
             except asyncio.CancelledError:
                 pass
             self._pipeline_task = None
-            self._pipecat_task = None
-            self._pipecat_transport = None
-            log.info("Local Pipecat pipeline stopped")
+            log.info("Conversation pipeline stopped")
 
-        # Restore daemon audio input for wake word / VAD
-        if not self._audio_input.is_active:
-            self._audio_input.start()
-            log.info("Daemon audio input restored")
+        # No need to restore audio input — mic was never stopped
 
     # ------------------------------------------------------------------
     # Session events
