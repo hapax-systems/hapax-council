@@ -1075,7 +1075,7 @@ class VoiceDaemon:
                     self.session.pause(reason=f"governor:{state.activity_mode}")
                 elif directive == "process" and self.session.is_paused:
                     self.session.resume()
-                elif directive == "withdraw" and self.session.is_active:
+                elif directive == "withdraw" and self.session.is_active and self._conversation_pipeline is None:
                     await self._close_session(reason="operator_absent")
 
                 # Update context gate with backend Behaviors
