@@ -52,7 +52,9 @@ async def revoke_consent(person_id: str) -> dict:
 
 
 @router.get("/trace")
-async def trace_consent(source: str = Query(..., description="File path or source identifier")) -> dict:
+async def trace_consent(
+    source: str = Query(..., description="File path or source identifier"),
+) -> dict:
     """Trace consent provenance for a file.
 
     Shows: consent label, provenance contracts, flow constraints,
