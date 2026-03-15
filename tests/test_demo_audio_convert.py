@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg", reason="imageio_ffmpeg not installed")
+try:
+    import imageio_ffmpeg
+    _HAS_FFMPEG = bool(imageio_ffmpeg.get_ffmpeg_exe())
+except (ModuleNotFoundError, RuntimeError):
+    _HAS_FFMPEG = False
+pytestmark = pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg not available")
 
 from agents.demo_pipeline.audio_convert import (  # noqa: E402
     convert_all_wav_to_mp3,
