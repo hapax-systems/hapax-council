@@ -300,3 +300,20 @@ async def precedent_timeline(axiom_id: str | None = None) -> dict:
         }
     except Exception as e:
         return {"error": str(e), "total_precedents": 0, "precedents": []}
+
+
+@router.get("/overhead")
+async def governance_overhead(days: int = 14) -> dict:
+    """Governance overhead dashboard — alignment tax measurement.
+
+    Shows the cost of governance across three dimensions:
+    1. Token cost: governance LLM calls vs total
+    2. SDLC pipeline: axiom-gate duration vs total
+    3. Label operations: microbenchmark latencies
+    """
+    import dataclasses
+
+    from agents.alignment_tax_meter import measure_alignment_tax
+
+    snapshot = measure_alignment_tax(lookback_days=days)
+    return dataclasses.asdict(snapshot)
