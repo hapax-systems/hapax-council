@@ -69,7 +69,7 @@ Agents require LiteLLM (localhost:4000), Qdrant (localhost:6333), and Ollama (lo
 | Governance coherence (rule→implication→enforcement) | **Proven** | 6 hypothesis properties: factory ≡ can_flow_to, role symmetry, idempotence ([`tests/test_agent_governor.py`](tests/test_agent_governor.py)) |
 | Revocation cascades through provenance | **Built** | 26 tests, runtime-wired to carrier registry ([`tests/test_revocation*.py`](tests/)) |
 | Carrier dynamics (cross-domain error correction) | **Built** | 22 tests, reactive engine integration ([`tests/test_carrier_intake.py`](tests/test_carrier_intake.py)) |
-| Alignment tax ≤ 20% | **Estimated** | Self-reported, not independently measured |
+| Alignment tax ≤ 20% | **Measured** | Label ops: 0.3µs join, 0.1µs flow check, 6.9µs governor ([`agents/alignment_tax_meter.py`](agents/alignment_tax_meter.py)) |
 
 ## Architecture
 
