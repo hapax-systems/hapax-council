@@ -143,6 +143,7 @@ class ConversationPipeline:
         """Stream LLM response, accumulate sentences, synthesize and play."""
         try:
             import os
+
             import litellm
 
             kwargs = {
