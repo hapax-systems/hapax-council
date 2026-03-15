@@ -4,8 +4,10 @@ Provides model aliases, factory functions for LiteLLM-backed models,
 Qdrant client, embedding via Ollama, and canonical path constants.
 """
 
+import functools
 import logging
 import os
+import warnings
 from pathlib import Path
 
 from opentelemetry import trace
@@ -19,7 +21,12 @@ LITELLM_BASE: str = os.environ.get(
     "LITELLM_API_BASE",
     os.environ.get("LITELLM_BASE_URL", "http://localhost:4000"),
 )
-LITELLM_KEY: str = os.environ.get("LITELLM_API_KEY", "changeme")
+LITELLM_KEY: str = os.environ.get("LITELLM_API_KEY", "")
+if not LITELLM_KEY:
+    warnings.warn(
+        "LITELLM_API_KEY is not set — LLM calls will fail until a valid key is provided",
+        stacklevel=1,
+    )
 QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
 
 # ── Canonical paths ─────────────────────────────────────────────────────────
@@ -117,31 +124,21 @@ def get_model(alias_or_id: str = "balanced") -> OpenAIChatModel:
     )
 
 
-_qdrant_client: QdrantClient | None = None
-
-
+@functools.lru_cache(maxsize=1)
 def get_qdrant() -> QdrantClient:
     """Return a QdrantClient connected to the configured URL (singleton)."""
-    global _qdrant_client
-    if _qdrant_client is None:
-        _qdrant_client = QdrantClient(QDRANT_URL)
-    return _qdrant_client
+    return QdrantClient(QDRANT_URL)
 
 
 _log = logging.getLogger("shared.config")
 _rag_tracer = trace.get_tracer("hapax.rag")
 
-_ollama_client = None
-
-
+@functools.lru_cache(maxsize=1)
 def _get_ollama_client():
     """Return a singleton Ollama client (avoids per-call HTTP client creation)."""
-    global _ollama_client
-    if _ollama_client is None:
-        import ollama
+    import ollama
 
-        _ollama_client = ollama.Client(timeout=120)
-    return _ollama_client
+    return ollama.Client(timeout=120)
 
 
 def embed(text: str, model: str | None = None, prefix: str = "search_query") -> list[float]:
@@ -266,23 +263,16 @@ def embed_batch_safe(
         return None
 
 
-_expected_timers: dict[str, str] | None = None
-
-
+@functools.lru_cache(maxsize=1)
 def load_expected_timers() -> dict[str, str]:
     """Load the expected systemd timer manifest (cached).
 
     Returns a dict mapping agent_name → timer unit name.
     Derived from the agent manifest registry.
     """
-    global _expected_timers
-    if _expected_timers is not None:
-        return _expected_timers
-
     from shared.agent_registry import get_registry
 
-    _expected_timers = get_registry().expected_timers()
-    return _expected_timers
+    return get_registry().expected_timers()
 
 
 def validate_embed_dimensions() -> None:

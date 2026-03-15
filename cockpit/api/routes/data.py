@@ -6,6 +6,7 @@ refresh loop. Clients poll at matching cadence (30s fast, 5min slow).
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from datetime import UTC
 from pathlib import Path
@@ -131,14 +132,12 @@ async def get_accommodations():
 @router.get("/workspace")
 async def workspace():
     """Latest workspace analysis (screen + camera + hardware state)."""
-    import json
-
     state_path = Path.home() / ".local" / "share" / "hapax-voice" / "workspace_state.json"
     try:
         if state_path.exists():
             data = json.loads(state_path.read_text())
             return _fast_response(data)
-    except Exception:
+    except (json.JSONDecodeError, OSError, KeyError, ValueError):
         pass
     return _fast_response({})
 

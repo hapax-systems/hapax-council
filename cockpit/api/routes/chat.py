@@ -55,7 +55,7 @@ async def create_session(req: CreateSessionRequest) -> CreateSessionResponse:
         try:
             session = ChatSession.load(persist_path, PROJECT_DIR)
             session.set_model(req.model)
-        except Exception:
+        except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError):
             session = ChatSession(project_dir=PROJECT_DIR, model_alias=req.model)
     else:
         session = ChatSession(project_dir=PROJECT_DIR, model_alias=req.model)
@@ -116,7 +116,7 @@ async def get_models():
         from shared.config import MODELS
 
         return {"models": list(MODELS.keys())}
-    except Exception:
+    except (ImportError, AttributeError):
         return {"models": ["balanced", "fast", "reasoning", "coding", "local-fast"]}
 
 
@@ -201,7 +201,7 @@ async def send_message(session_id: str, req: SendRequest):
                     },
                 }
             )
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError, OSError) as e:
             log.exception("Chat generation error: %s", e)
             await queue.put(
                 {
@@ -215,7 +215,7 @@ async def send_message(session_id: str, req: SendRequest):
             # Auto-save after each turn
             try:
                 session.save(ChatSession.session_path())
-            except Exception:
+            except OSError:
                 pass
 
     task = asyncio.create_task(_generate())
@@ -322,14 +322,14 @@ async def start_interview(session_id: str):
                     },
                 }
             )
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError, OSError) as e:
             log.exception("Interview start error: %s", e)
             await queue.put({"event": "error", "data": {"message": str(e), "recoverable": False}})
         finally:
             await queue.put(None)
             try:
                 session.save(ChatSession.session_path())
-            except Exception:
+            except OSError:
                 pass
 
     task = asyncio.create_task(_run())
@@ -357,7 +357,7 @@ async def end_interview(session_id: str):
     summary = await session.end_interview()
     try:
         session.save(ChatSession.session_path())
-    except Exception:
+    except OSError:
         pass
     return {"status": "ok", "summary": summary}
 
