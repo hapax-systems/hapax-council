@@ -213,6 +213,47 @@ _generate_image = FunctionSchema(
     required=["prompt"],
 )
 
+# ── Consent query tools ────────────────────────────────────────────────
+
+_check_consent_status = FunctionSchema(
+    name="check_consent_status",
+    description=(
+        "Check a person's consent status — whether they have an active "
+        "consent contract, what scope it covers, and what happens if they "
+        "enter the room. Use when the operator asks about consent for a "
+        "specific person (e.g. 'what's my wife's consent status?')."
+    ),
+    properties={
+        "person_id": {
+            "type": "string",
+            "description": "Person identifier (e.g. 'wife', 'friend', 'guest')",
+        },
+    },
+    required=["person_id"],
+)
+
+_describe_consent_flow = FunctionSchema(
+    name="describe_consent_flow",
+    description=(
+        "Describe what happens when a new person enters the room — the "
+        "consent detection, offering, and resolution flow. Use when the "
+        "operator asks 'what happens if someone walks in?'"
+    ),
+    properties={},
+    required=[],
+)
+
+_check_governance_health = FunctionSchema(
+    name="check_governance_health",
+    description=(
+        "Check the governance heartbeat — overall consent and authority "
+        "health score. Use when the operator asks about governance status, "
+        "consent coverage, or system health."
+    ),
+    properties={},
+    required=[],
+)
+
 TOOL_SCHEMAS: list[FunctionSchema] = [
     _search_documents,
     _search_drive,
@@ -223,6 +264,9 @@ TOOL_SCHEMAS: list[FunctionSchema] = [
     _analyze_scene,
     _get_system_status,
     _generate_image,
+    _check_consent_status,
+    _describe_consent_flow,
+    _check_governance_health,
 ]
 
 
@@ -776,6 +820,133 @@ async def handle_generate_image(params) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Consent query handlers
+# ---------------------------------------------------------------------------
+
+
+async def handle_check_consent_status(
+    function_name, tool_call_id, args, llm, context, result_callback
+):
+    """Check consent status for a specific person."""
+    person_id = args.get("person_id", "")
+    try:
+        from shared.governance.consent import load_contracts
+        from shared.governance.consent_channels import GuestContext, build_channel_menu
+
+        registry = load_contracts()
+        contract = registry.get_contract_for(person_id)
+
+        if contract and contract.active:
+            result = (
+                f"{person_id} has an active consent contract.\n"
+                f"Scope: {', '.join(sorted(contract.scope))}.\n"
+                f"Created: {contract.created_at}.\n"
+                f"If they enter the room, the system will recognize their consent "
+                f"and operate normally for the consented data categories."
+            )
+        else:
+            menu = build_channel_menu(guest=GuestContext())
+            available = [o for o in menu.offers if o.available]
+            channels = ", ".join(o.channel.name for o in available[:3])
+            result = (
+                f"{person_id} does NOT have an active consent contract.\n"
+                f"If they enter the room:\n"
+                f"1. The system detects their presence within ~5 seconds\n"
+                f"2. All data persistence pauses immediately\n"
+                f"3. The system offers consent via voice conversation\n"
+                f"4. Available channels: {channels}\n"
+                f"5. If they accept, a contract is created and data flows normally\n"
+                f"6. If they refuse, everything captured during their visit is deleted"
+            )
+
+        # Check blast radius if contract exists
+        if contract and contract.active:
+            try:
+                from cockpit.data.governance import collect_revocation_blast_radius
+
+                blast = collect_revocation_blast_radius(person_id)
+                if blast.total_items > 0:
+                    result += (
+                        f"\n\nRevocation impact: {blast.total_items} items would be purged "
+                        f"({blast.qdrant_points} Qdrant points, {blast.carrier_facts} carrier facts)."
+                    )
+            except Exception:
+                pass
+
+    except Exception as e:
+        result = f"Error checking consent status: {e}"
+
+    await result_callback(result)
+
+
+async def handle_describe_consent_flow(
+    function_name, tool_call_id, args, llm, context, result_callback
+):
+    """Describe the consent detection and offering flow."""
+    try:
+        from shared.governance.consent_channels import build_channel_menu, check_channel_sufficiency
+
+        sufficient, uncovered = check_channel_sufficiency()
+        menu = build_channel_menu()
+        available = [o for o in menu.offers if o.available]
+
+        result = (
+            "When someone enters this room, here's what happens:\n\n"
+            "1. DETECTION: The camera detects a new face (face count goes above 1) "
+            "or the microphone detects a non-operator voice. This takes ~2.5 seconds.\n\n"
+            "2. DEBOUNCE: The system waits 5 seconds of sustained presence to avoid "
+            "false triggers from someone just popping their head in.\n\n"
+            "3. CURTAILMENT: All data persistence pauses immediately. The system "
+            "continues perceiving (face detection, audio classification) but does NOT "
+            "store, transcribe, or index anything about the guest.\n\n"
+            "4. OFFERING: The system speaks through the speakers, explaining what it "
+            "records and asking if the guest is comfortable. The guest can say yes, no, "
+            "or ask questions. An LLM understands their natural language response.\n\n"
+            "5. RESOLUTION:\n"
+            "   - Accept: A consent contract is created. Data flows normally.\n"
+            "   - Refuse: Everything captured during the visit is deleted.\n"
+            "   - Questions: The system answers up to 3 clarifications.\n\n"
+            f"Available consent channels ({len(available)}):\n"
+        )
+        for o in available:
+            result += f"  - {o.channel.name} (friction: {o.friction.total:.1f})\n"
+        result += f"\nChannel sufficiency: {'adequate' if sufficient else f'gaps in: {uncovered}'}"
+
+    except Exception as e:
+        result = f"Error describing consent flow: {e}"
+
+    await result_callback(result)
+
+
+async def handle_check_governance_health(
+    function_name, tool_call_id, args, llm, context, result_callback
+):
+    """Check governance heartbeat and consent coverage."""
+    try:
+        from cockpit.data.governance import collect_governance_heartbeat
+
+        hb = collect_governance_heartbeat()
+        result = f"Governance health: {hb.label.upper()} ({hb.score})\n\nComponents:\n"
+        for name, score in sorted(hb.components.items()):
+            result += f"  - {name}: {score}\n"
+        if hb.issues:
+            result += "\nIssues:\n"
+            for issue in hb.issues:
+                result += f"  - {issue}\n"
+        if hb.coverage:
+            result += (
+                f"\nConsent coverage:\n"
+                f"  - Active contracts: {hb.coverage.active_contracts}\n"
+                f"  - Persons covered: {', '.join(hb.coverage.persons_covered) or 'none'}\n"
+            )
+
+    except Exception as e:
+        result = f"Error checking governance health: {e}"
+
+    await result_callback(result)
+
+
+# ---------------------------------------------------------------------------
 # Tool registration
 # ---------------------------------------------------------------------------
 
@@ -818,5 +989,10 @@ def register_tool_handlers(
     llm.register_function("open_app", handle_open_app)
     llm.register_function("confirm_open_app", handle_confirm_open_app)
     llm.register_function("get_desktop_state", handle_get_desktop_state)
+
+    # Consent query tools
+    llm.register_function("check_consent_status", handle_check_consent_status)
+    llm.register_function("describe_consent_flow", handle_describe_consent_flow)
+    llm.register_function("check_governance_health", handle_check_governance_health)
 
     log.info("Registered %d voice tools", len(TOOL_SCHEMAS) + len(DESKTOP_TOOL_SCHEMAS))
