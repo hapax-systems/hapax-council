@@ -31,6 +31,11 @@ async def lifespan(app: FastAPI):
         register_rules(engine.registry)
         await engine.start()
         app.state.engine = engine
+
+        # Wire revocation propagator to carrier registry
+        from shared.revocation_wiring import get_revocation_propagator
+
+        app.state.revocation_propagator = get_revocation_propagator()
     except Exception:
         _log.exception("Reactive engine failed to start (continuing without it)")
         engine = None
@@ -81,6 +86,7 @@ except Exception:
 from cockpit.api.routes.accommodations import router as accommodations_router
 from cockpit.api.routes.agents import router as agents_router
 from cockpit.api.routes.chat import router as chat_router
+from cockpit.api.routes.consent import router as consent_router
 from cockpit.api.routes.copilot import router as copilot_router
 from cockpit.api.routes.cycle_mode import router as cycle_mode_router
 from cockpit.api.routes.data import router as data_router
@@ -103,6 +109,7 @@ app.include_router(cycle_mode_router)
 app.include_router(scout_router)
 app.include_router(query_router)
 app.include_router(engine_router)
+app.include_router(consent_router)
 
 
 @app.get("/")
