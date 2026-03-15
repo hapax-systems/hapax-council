@@ -142,14 +142,17 @@ class ConversationPipeline:
     async def _generate_and_speak(self) -> None:
         """Stream LLM response, accumulate sentences, synthesize and play."""
         try:
+            import os
             import litellm
 
             kwargs = {
-                "model": self.llm_model,
+                "model": f"openai/{self.llm_model}",
                 "messages": self.messages,
                 "stream": True,
                 "max_tokens": _MAX_RESPONSE_TOKENS,
                 "temperature": 0.7,
+                "api_base": os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000"),
+                "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
             }
             if self.tools:
                 kwargs["tools"] = self.tools
