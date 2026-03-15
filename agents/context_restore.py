@@ -80,6 +80,7 @@ class ContextSnapshot:
     operator_present: bool = True
     weather: str = ""  # e.g. "28°F heavy snow"
     presence_transitions: int = 0  # how many times came/went today
+    governance_heartbeat: str = ""  # "green (0.92)" or "yellow (0.65)"
 
     # Derived
     start_here: str = ""
@@ -546,6 +547,9 @@ def format_context(ctx: ContextSnapshot) -> str:
     if ctx.weather:
         lines.append(f"**Weather:** {ctx.weather}")
 
+    if ctx.governance_heartbeat:
+        lines.append(f"**Governance:** {ctx.governance_heartbeat}")
+
     # Start here — always last, always present
     if ctx.start_here:
         lines.append("")
@@ -574,6 +578,16 @@ def collect_context(project_path: str | None = None) -> ContextSnapshot:
     meetings = collect_next_meetings()
     voice = collect_voice_events_summary()
     weather = collect_weather()
+
+    # Governance heartbeat
+    gov_heartbeat = ""
+    try:
+        from cockpit.data.governance import collect_governance_heartbeat
+
+        hb = collect_governance_heartbeat()
+        gov_heartbeat = f"{hb.label} ({hb.score})"
+    except Exception:
+        pass
 
     # Compute deep work window from calendar
     deep_work_h = 0.0
@@ -608,6 +622,7 @@ def collect_context(project_path: str | None = None) -> ContextSnapshot:
         operator_present=voice["present"],
         weather=weather,
         presence_transitions=voice["transitions"],
+        governance_heartbeat=gov_heartbeat,
         accommodations=accom,
         collected_at=datetime.now(UTC).isoformat(),
     )
