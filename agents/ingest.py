@@ -389,7 +389,23 @@ def enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
         "categories",
         "location",
         "gdrive_folder",
+        "provenance",  # DD-20: why-provenance contract IDs
     }
+
+    # DD-11: Extract consent label from frontmatter if present
+    from shared.frontmatter import extract_consent_label, extract_provenance
+
+    consent_label = extract_consent_label(frontmatter)
+    if consent_label is not None:
+        # Serialize as list of dicts for Qdrant JSON payload
+        base_payload["consent_label"] = [
+            {"owner": owner, "readers": sorted(readers)}
+            for owner, readers in consent_label.policies
+        ]
+
+    provenance = extract_provenance(frontmatter)
+    if provenance:
+        base_payload["provenance"] = sorted(provenance)
 
     for key in enrichment_keys:
         if key in frontmatter:
