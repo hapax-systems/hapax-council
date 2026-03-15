@@ -1,0 +1,42 @@
+/* Studio composite preset animations */
+
+@keyframes studio-drift {
+  0%, 100% { transform: scale(1) translate(0, 0); }
+  50% { transform: scale(1.02) translate(2px, 1px); }
+}
+
+@keyframes studio-vhs-jitter {
+  0%, 90%, 100% { transform: skewX(0deg); }
+  92% { transform: skewX(0.4deg) translateX(2px); }
+  94% { transform: skewX(-0.3deg) translateX(-1px); }
+  96% { transform: skewX(0.2deg); }
+}
+
+@keyframes studio-huecycle {
+  0% { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(360deg); }
+}
+
+@keyframes studio-noise {
+  0% { transform: translate(0, 0); }
+  25% { transform: translate(-2px, 1px); }
+  50% { transform: translate(1px, -1px); }
+  75% { transform: translate(-1px, 2px); }
+  100% { transform: translate(0, 0); }
+}
+
+.studio-drift {
+  animation: studio-drift 8s ease-in-out infinite alternate;
+}
+
+.studio-vhs-jitter {
+  animation: studio-vhs-jitter 3s steps(1) infinite;
+}
+
+.studio-huecycle {
+  animation: studio-huecycle 30s linear infinite;
+}
+
+.studio-noise {
+  animation: studio-noise 0.15s steps(4) infinite;
+}
