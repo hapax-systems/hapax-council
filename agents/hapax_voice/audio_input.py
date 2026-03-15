@@ -25,7 +25,7 @@ class AudioInputStream:
         source_name: str = "echo_cancel_capture",
         sample_rate: int = 16000,
         frame_ms: int = 30,
-        queue_maxsize: int = 100,
+        queue_maxsize: int = 300,  # ~9s buffer at 33 frames/sec (was 100/3s)
     ) -> None:
         self._source_name = source_name
         self._sample_rate = sample_rate

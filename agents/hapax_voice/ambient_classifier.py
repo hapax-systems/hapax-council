@@ -159,6 +159,8 @@ def _capture_audio_pipewire(duration_s: float = CAPTURE_DURATION_S) -> np.ndarra
     """Capture audio from the PipeWire default monitor source.
 
     Returns float32 mono audio at PANNS_SAMPLE_RATE, or None on failure.
+    Uses synchronous subprocess — call from executor thread to avoid
+    blocking the asyncio event loop.
     """
     try:
         result = subprocess.run(
@@ -193,6 +195,20 @@ def _capture_audio_pipewire(duration_s: float = CAPTURE_DURATION_S) -> np.ndarra
     except Exception:
         log.exception("Failed to capture audio via pw-record")
     return None
+
+
+async def async_classify(
+    block_threshold: float = DEFAULT_BLOCK_THRESHOLD,
+) -> AmbientResult:
+    """Non-blocking classify: runs pw-record + PANNs in executor thread.
+
+    Prevents the 3-5 second blocking window that causes audio queue
+    overflow and wake word detection failures.
+    """
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, classify, None, block_threshold)
 
 
 def classify(

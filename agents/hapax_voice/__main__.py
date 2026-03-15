@@ -993,6 +993,21 @@ class VoiceDaemon:
             except Exception:
                 log.exception("Error in proactive delivery loop")
 
+    async def _ambient_refresh_loop(self) -> None:
+        """Refresh ambient classification cache in executor thread.
+
+        Runs PANNs + pw-record off the event loop to prevent blocking
+        the audio queue consumer and wake word detector.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(30)  # classify every 30s
+                await self.gate.refresh_ambient_cache()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.debug("Ambient refresh error (non-fatal)", exc_info=True)
+
     async def _perception_loop(self) -> None:
         """Run perception fast tick + governor evaluation on cadence."""
         while self._running:
@@ -1184,6 +1199,7 @@ class VoiceDaemon:
 
         self._background_tasks.append(asyncio.create_task(self._perception_loop()))
         self._background_tasks.append(asyncio.create_task(self._wake_word_processor()))
+        self._background_tasks.append(asyncio.create_task(self._ambient_refresh_loop()))
 
         # Actuation loop (drains ScheduleQueue at beat precision)
         if self.cfg.mc_enabled or self.cfg.obs_enabled:
