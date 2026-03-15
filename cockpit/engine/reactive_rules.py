@@ -354,10 +354,11 @@ def set_carrier_registry(registry: CarrierRegistry) -> None:
 
 
 async def _handle_carrier_intake(*, path: str, principal_id: str) -> str:
-    """Process a carrier-flagged file."""
+    """Process a carrier-flagged file with governor enforcement."""
     import asyncio
     from pathlib import Path as _Path
 
+    from shared.agent_governor import create_agent_governor
     from shared.carrier_intake import intake_carrier_fact
 
     registry = get_carrier_registry()
@@ -366,11 +367,20 @@ async def _handle_carrier_intake(*, path: str, principal_id: str) -> str:
     if principal_id not in registry._capacities:
         registry.register(principal_id, _DEFAULT_CARRIER_CAPACITY)
 
+    # Create governor for carrier-intake boundary (AMELI pattern)
+    governor = create_agent_governor(
+        "carrier-intake",
+        axiom_bindings=[
+            {"axiom_id": "interpersonal_transparency", "role": "enforcer"},
+        ],
+    )
+
     result = await asyncio.to_thread(
         intake_carrier_fact,
         _Path(path),
         principal_id,
         registry,
+        governor=governor,
     )
     status = "accepted" if result.accepted else "rejected"
     return f"carrier:{status}:{result.source_domain}"
