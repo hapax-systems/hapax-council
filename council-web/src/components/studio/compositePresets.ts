@@ -35,13 +35,13 @@ export const PRESETS: CompositePreset[] = [
   },
   {
     name: "Screwed",
-    description: "Purple syrup, slow chop",
+    description: "Purple syrup, slow drift",
     trail: {
-      blendMode: "lighten", opacity: 0.7,
-      filter: "sepia(1) hue-rotate(250deg) saturate(3) brightness(0.5) contrast(1.5)",
-      count: 5, intervalMs: 600, maxAgeMs: 4000,
+      blendMode: "screen", opacity: 0.0,
+      filter: "none",
+      count: 0, intervalMs: 9999, maxAgeMs: 1,
     },
-    liveFilter: "sepia(0.5) hue-rotate(260deg) saturate(2) brightness(0.7) contrast(1.3)",
+    liveFilter: "sepia(0.6) hue-rotate(260deg) saturate(2.5) brightness(0.65) contrast(1.4) blur(0.3px)",
     overlays: ["scanlines", "vignette"],
     cellAnimation: "studio-drift",
   },
