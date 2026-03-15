@@ -66,7 +66,7 @@ Agents require LiteLLM (localhost:4000), Qdrant (localhost:6333), and Ollama (lo
 | Perception type system (L0-L9) | **Proven** | 192 matrix tests + 62 hypothesis ([`tests/hapax_voice/`](tests/hapax_voice/)) |
 | Consent threads through composition (L0-L9) | **Proven** | All 10 layers, 4 test files, 6 hypothesis ([`tests/hapax_voice/test_consent_threading_*.py`](tests/hapax_voice/)) |
 | Constitutive rules with defeasible override | **Built** | 27 tests ([`tests/test_constitutive.py`](tests/test_constitutive.py)) |
-| Governance coherence (rule→implication→enforcement) | **Built** | 21 tests, governor factory wired to manifests ([`tests/test_coherence.py`](tests/test_coherence.py), [`tests/test_agent_governor.py`](tests/test_agent_governor.py)) |
+| Governance coherence (rule→implication→enforcement) | **Proven** | 6 hypothesis properties: factory ≡ can_flow_to, role symmetry, idempotence ([`tests/test_agent_governor.py`](tests/test_agent_governor.py)) |
 | Revocation cascades through provenance | **Built** | 26 tests, runtime-wired to carrier registry ([`tests/test_revocation*.py`](tests/)) |
 | Carrier dynamics (cross-domain error correction) | **Built** | 22 tests, reactive engine integration ([`tests/test_carrier_intake.py`](tests/test_carrier_intake.py)) |
 | Alignment tax ≤ 20% | **Estimated** | Self-reported, not independently measured |
