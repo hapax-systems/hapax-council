@@ -37,6 +37,7 @@ VIDEO_DIR = HAPAX_HOME / "video-recording"
 SEGMENT_SECONDS = 300  # 5 minutes
 
 # Camera role → resolution mapping
+# Roles with a common prefix share resolution settings.
 CAMERA_PROFILES: dict[str, dict] = {
     "brio": {
         "width": 1920,
@@ -44,11 +45,23 @@ CAMERA_PROFILES: dict[str, dict] = {
         "fps": 30,
         "description": "Logitech BRIO — operator camera (1080p)",
     },
-    "c920": {
+    "c920-hardware": {
         "width": 1280,
         "height": 720,
         "fps": 30,
         "description": "Logitech C920 — hardware camera (720p)",
+    },
+    "c920-room": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "description": "Logitech C920 — room camera (720p)",
+    },
+    "c920-aux": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "description": "Logitech C920 — auxiliary camera (720p)",
     },
 }
 
@@ -122,12 +135,17 @@ def build_ffmpeg_cmd(config: CaptureConfig) -> list[str]:
         str(config.fps),
         "-i",
         config.device_path,
-        # Encoding
+        # MJPEG decodes to yuvj422p — NVENC requires yuv420p
+        "-pix_fmt",
+        "yuv420p",
+        # Encoding — NVENC uses dedicated GPU ASIC, no CUDA/VRAM contention
         "-c:v",
-        "libx264",
+        "h264_nvenc",
         "-preset",
-        "ultrafast",
-        "-crf",
+        "p1",
+        "-rc",
+        "constqp",
+        "-qp",
         "23",
         # Segmentation
         "-f",

@@ -253,7 +253,7 @@ def _collect_capture_status() -> CaptureStatus:
         pass
 
     # Video cameras
-    for role in ["brio", "c920"]:
+    for role in ["brio", "c920-hardware", "c920-room", "c920-aux"]:
         try:
             result = subprocess.run(
                 ["systemctl", "--user", "is-active", f"hapax-video-cam@{role}.service"],
