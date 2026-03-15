@@ -59,9 +59,9 @@ export function ScrewedCanvas({ role, className }: Props) {
 
       if (phase === "play") {
         displayIdx = (writeHead - 1) % RING_SIZE;
-        if (tick % 20 === 0 && Math.random() < 0.30) {
+        if (tick % 10 === 0 && Math.random() < 0.50) {
           phase = "freeze";
-          freezeFor = 5 + Math.floor(Math.random() * 6);
+          freezeFor = 3 + Math.floor(Math.random() * 8);
           holdTicks = 0;
         }
       } else if (phase === "freeze") {
@@ -74,7 +74,7 @@ export function ScrewedCanvas({ role, className }: Props) {
         }
       } else if (phase === "replay") {
         holdTicks++;
-        if (holdTicks >= 3) {
+        if (holdTicks >= 2) {
           holdTicks = 0;
           replayStep++;
           displayIdx = (replayFrom - 3 + replayStep + RING_SIZE * 10) % RING_SIZE;
@@ -94,8 +94,8 @@ export function ScrewedCanvas({ role, className }: Props) {
         if (!ghost) continue;
         ctx.save();
         ctx.filter = "saturate(0.3) brightness(0.5) sepia(0.6) hue-rotate(250deg)";
-        ctx.globalAlpha = 0.15 + (3 - g) * 0.07;
-        ctx.drawImage(ghost, g * 0.7, g * 4, w, h);
+        ctx.globalAlpha = 0.18 + (3 - g) * 0.1;
+        ctx.drawImage(ghost, g * 0.7, g * 6, w, h);
         ctx.restore();
       }
 
@@ -127,10 +127,10 @@ export function ScrewedCanvas({ role, className }: Props) {
       ctx.fillRect(0, 0, w, h);
 
       // Band displacement
-      if (Math.random() < 0.1 && main) {
+      if (Math.random() < 0.18 && main) {
         const bandY = Math.floor(Math.random() * h * 0.6) + h * 0.2;
-        const bandH = 3 + Math.floor(Math.random() * 10);
-        const shift = (Math.random() > 0.5 ? 1 : -1) * (3 + Math.random() * 8);
+        const bandH = 4 + Math.floor(Math.random() * 16);
+        const shift = (Math.random() > 0.5 ? 1 : -1) * (5 + Math.random() * 15);
         ctx.save();
         ctx.filter = "saturate(0.55) sepia(0.4) hue-rotate(250deg) contrast(1.05) brightness(0.9)";
         ctx.beginPath();
@@ -142,7 +142,7 @@ export function ScrewedCanvas({ role, className }: Props) {
 
       // Freeze indicator
       if (phase === "freeze") {
-        ctx.fillStyle = "rgba(60, 20, 80, 0.12)";
+        ctx.fillStyle = "rgba(80, 30, 120, 0.18)";
         ctx.fillRect(0, 0, w, h);
       }
     };
