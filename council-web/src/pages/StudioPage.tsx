@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Hls from "hls.js";
 import { StudioLiveGrid } from "../components/studio/StudioLiveGrid";
-import { PRESETS } from "../components/studio/compositePresets";
+import { PRESETS, type CompositePreset } from "../components/studio/compositePresets";
+import { SOURCE_FILTERS } from "../components/studio/compositeFilters";
 import {
   StudioStatusGrid,
   CameraSoloView,
 } from "../components/studio/StudioStatusGrid";
 import { useStudio, useStudioStreamInfo } from "../api/hooks";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Eye, Clock } from "lucide-react";
 
 type ViewMode = "grid" | "composite" | "smooth";
 
@@ -19,6 +20,8 @@ export function StudioPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [userOrder, setUserOrder] = useState<string[] | null>(null);
   const [presetIdx, setPresetIdx] = useState(0);
+  const [liveFilterIdx, setLiveFilterIdx] = useState(0); // 0 = None (use preset default)
+  const [trailFilterIdx, setTrailFilterIdx] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [hlsReady, setHlsReady] = useState(false);
   const hlsRef = useRef<Hls | null>(null);
@@ -29,10 +32,25 @@ export function StudioPage() {
     [compositor ? Object.keys(compositor.cameras).join(",") : ""],
   );
   const cameraOrder = userOrder ?? defaultOrder;
-  const preset = PRESETS[presetIdx];
+  const basePreset = PRESETS[presetIdx];
+  const liveFilter = SOURCE_FILTERS[liveFilterIdx];
+  const trailFilter = SOURCE_FILTERS[trailFilterIdx];
+
+  // Build effective preset with user filter overrides
+  const effectivePreset: CompositePreset | undefined = useMemo(() => {
+    if (viewMode !== "composite") return undefined;
+    return {
+      ...basePreset,
+      liveFilter: liveFilter.css !== "none" ? liveFilter.css : basePreset.liveFilter,
+      trail: {
+        ...basePreset.trail,
+        filter: trailFilter.css !== "none" ? trailFilter.css : basePreset.trail.filter,
+      },
+    };
+  }, [viewMode, basePreset, liveFilter.css, trailFilter.css]);
 
   const hlsAvailable = streamInfo?.hls_enabled ?? false;
-  const showHls = hlsAvailable; // always load HLS so it's pre-buffered
+  const showHls = hlsAvailable;
 
   // HLS
   useEffect(() => {
@@ -62,8 +80,22 @@ export function StudioPage() {
     return () => { clearInterval(sync); hls.destroy(); hlsRef.current = null; setHlsReady(false); };
   }, [showHls, streamInfo?.hls_url]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const prevPreset = useCallback(() => setPresetIdx((i) => (i - 1 + PRESETS.length) % PRESETS.length), []);
-  const nextPreset = useCallback(() => setPresetIdx((i) => (i + 1) % PRESETS.length), []);
+  const prevPreset = useCallback(() => {
+    setPresetIdx((i) => (i - 1 + PRESETS.length) % PRESETS.length);
+    setLiveFilterIdx(0);
+    setTrailFilterIdx(0);
+  }, []);
+  const nextPreset = useCallback(() => {
+    setPresetIdx((i) => (i + 1) % PRESETS.length);
+    setLiveFilterIdx(0);
+    setTrailFilterIdx(0);
+  }, []);
+  const cycleLiveFilter = useCallback(
+    () => setLiveFilterIdx((i) => (i + 1) % SOURCE_FILTERS.length), [],
+  );
+  const cycleTrailFilter = useCallback(
+    () => setTrailFilterIdx((i) => (i + 1) % SOURCE_FILTERS.length), [],
+  );
 
   return (
     <div className="flex flex-1 flex-col gap-2 overflow-hidden p-3">
@@ -91,17 +123,38 @@ export function StudioPage() {
         </div>
         <div className="flex items-center gap-2">
           {viewMode === "composite" && (
-            <div className="flex items-center gap-1">
-              <button onClick={prevPreset} className="rounded bg-zinc-800 p-0.5 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200">
-                <ChevronLeft className="h-3 w-3" />
+            <>
+              {/* Preset selector */}
+              <div className="flex items-center gap-1">
+                <button onClick={prevPreset} className="rounded bg-zinc-800 p-0.5 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200">
+                  <ChevronLeft className="h-3 w-3" />
+                </button>
+                <span className="min-w-[4.5rem] text-center text-[10px] font-medium text-purple-300" title={basePreset.description}>
+                  {basePreset.name}
+                </span>
+                <button onClick={nextPreset} className="rounded bg-zinc-800 p-0.5 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200">
+                  <ChevronRight className="h-3 w-3" />
+                </button>
+              </div>
+              {/* Live filter */}
+              <button
+                onClick={cycleLiveFilter}
+                className="flex items-center gap-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 hover:bg-zinc-700"
+                title="Filter on live (current) layer — click to cycle"
+              >
+                <Eye className="h-2.5 w-2.5" />
+                {liveFilter.name}
               </button>
-              <span className="min-w-[4.5rem] text-center text-[10px] font-medium text-purple-300" title={preset.description}>
-                {preset.name}
-              </span>
-              <button onClick={nextPreset} className="rounded bg-zinc-800 p-0.5 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200">
-                <ChevronRight className="h-3 w-3" />
+              {/* Trail filter */}
+              <button
+                onClick={cycleTrailFilter}
+                className="flex items-center gap-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-cyan-300 hover:bg-zinc-700"
+                title="Filter on trail (past) layer — click to cycle"
+              >
+                <Clock className="h-2.5 w-2.5" />
+                {trailFilter.name}
               </button>
-            </div>
+            </>
           )}
           {compositor && compositor.state !== "unknown" && (
             <span className="text-[10px] text-zinc-500">
@@ -124,10 +177,9 @@ export function StudioPage() {
                 cameraOrder={cameraOrder}
                 onReorder={setUserOrder}
                 onFocusCamera={setFocusedCamera}
-                preset={viewMode === "composite" ? preset : undefined}
+                preset={effectivePreset}
               />
             </div>
-            {/* HLS video — always mounted for pre-buffering, visible only in smooth mode */}
             <video
               ref={videoRef}
               className={viewMode === "smooth" ? "h-full w-full rounded-lg bg-black object-contain" : "hidden"}
