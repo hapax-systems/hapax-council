@@ -20,6 +20,7 @@ export function StudioPage() {
   const [userOrder, setUserOrder] = useState<string[] | null>(null);
   const [presetIdx, setPresetIdx] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [hlsReady, setHlsReady] = useState(false);
   const hlsRef = useRef<Hls | null>(null);
 
   const defaultOrder = useMemo(
@@ -31,7 +32,7 @@ export function StudioPage() {
   const preset = PRESETS[presetIdx];
 
   const hlsAvailable = streamInfo?.hls_enabled ?? false;
-  const showHls = viewMode === "smooth" && hlsAvailable;
+  const showHls = hlsAvailable; // always load HLS so it's pre-buffered
 
   // HLS
   useEffect(() => {
@@ -48,14 +49,16 @@ export function StudioPage() {
     hlsRef.current = hls;
     hls.loadSource(streamInfo.hls_url);
     hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      video.play().then(() => setHlsReady(true)).catch(() => {});
+    });
     const sync = setInterval(() => {
       if (hls.liveSyncPosition && video.currentTime > 0) {
         const drift = hls.liveSyncPosition - video.currentTime;
         if (drift > 3) video.currentTime = hls.liveSyncPosition;
       }
     }, 2000);
-    return () => { clearInterval(sync); hls.destroy(); hlsRef.current = null; };
+    return () => { clearInterval(sync); hls.destroy(); hlsRef.current = null; setHlsReady(false); };
   }, [showHls, streamInfo]);
 
   const prevPreset = useCallback(() => setPresetIdx((i) => (i - 1 + PRESETS.length) % PRESETS.length), []);
@@ -123,8 +126,20 @@ export function StudioPage() {
                 preset={viewMode === "composite" ? preset : undefined}
               />
             </div>
-            {showHls && (
-              <video ref={videoRef} className="h-full w-full rounded-lg bg-black object-contain" muted playsInline />
+            {/* HLS video — always mounted for pre-buffering, visible only in smooth mode */}
+            <video
+              ref={videoRef}
+              className={viewMode === "smooth" ? "h-full w-full rounded-lg bg-black object-contain" : "hidden"}
+              muted
+              playsInline
+            />
+            {viewMode === "smooth" && !hlsReady && (
+              <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/80">
+                <div className="flex flex-col items-center gap-2 text-zinc-500">
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
+                  <span className="text-[10px]">Buffering stream...</span>
+                </div>
+              </div>
             )}
           </>
         )}
