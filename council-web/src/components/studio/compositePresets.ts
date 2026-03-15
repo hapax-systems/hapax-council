@@ -94,8 +94,8 @@ export const PRESETS: CompositePreset[] = [
     name: "Diff",
     description: "Motion highlight",
     trail: {
-      blendMode: "difference", opacity: 1.0,
-      filter: "none", count: 1, intervalMs: 150, maxAgeMs: 400,
+      blendMode: "difference", opacity: 0.7,
+      filter: "none", count: 3, intervalMs: 200, maxAgeMs: 1500,
     },
     liveFilter: "none",
     overlays: [],
