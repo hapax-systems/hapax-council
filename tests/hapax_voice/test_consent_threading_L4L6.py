@@ -11,7 +11,7 @@ import unittest
 
 from agents.hapax_voice.commands import Command, Schedule
 from agents.hapax_voice.governance import VetoResult
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 
 
 class TestCommandConsentPassthrough(unittest.TestCase):

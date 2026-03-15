@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from agents.hapax_voice.governance import FusedContext
 from agents.hapax_voice.primitives import Behavior, Event
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 
 
 def with_latest_from(

@@ -167,7 +167,7 @@ class VoiceDaemon:
         self.workspace_monitor.set_presence(self.presence)
 
         # Consent registry (loads from axioms/contracts/, empty = conservative default)
-        from shared.consent import ConsentRegistry
+        from shared.governance.consent import ConsentRegistry
 
         self.consent_registry = ConsentRegistry()
         _consent_count = self.consent_registry.load()

@@ -12,10 +12,10 @@ from unittest.mock import patch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from shared.agent_governor import create_agent_governor
-from shared.consent_label import ConsentLabel
-from shared.governor import GovernorWrapper
-from shared.labeled import Labeled
+from shared.governance.agent_governor import create_agent_governor
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.governor import GovernorWrapper
+from shared.governance.labeled import Labeled
 from tests.consent_strategies import st_labeled
 
 # ── Factory basics ───────────────────────────────────────────────────
@@ -115,7 +115,7 @@ class TestCreateAgentGovernor(unittest.TestCase):
 class TestManifestLoading(unittest.TestCase):
     def test_no_manifest_returns_permissive(self):
         """Missing manifest = empty governor."""
-        with patch("shared.agent_governor._load_bindings_from_manifest") as mock:
+        with patch("shared.governance.agent_governor._load_bindings_from_manifest") as mock:
             mock.return_value = []
             gov = create_agent_governor("nonexistent-agent")
             assert isinstance(gov, GovernorWrapper)
@@ -129,7 +129,7 @@ class TestManifestLoading(unittest.TestCase):
 class TestGovernorCarrierIntake(unittest.TestCase):
     def test_governor_allows_public_carrier_fact(self):
         """Governor allows carrier facts with bottom (public) label."""
-        from shared.carrier import CarrierFact, CarrierRegistry
+        from shared.governance.carrier import CarrierFact, CarrierRegistry
 
         gov = create_agent_governor(
             "carrier-intake",
@@ -158,9 +158,9 @@ class TestGovernorCarrierIntake(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from shared.carrier import CarrierRegistry
-        from shared.carrier_intake import intake_carrier_fact
-        from shared.governor import GovernorPolicy
+        from shared.governance.carrier import CarrierRegistry
+        from shared.governance.carrier_intake import intake_carrier_fact
+        from shared.governance.governor import GovernorPolicy
 
         registry = CarrierRegistry()
         registry.register("agent-a", capacity=5)
@@ -192,8 +192,8 @@ class TestGovernorCarrierIntake(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from shared.carrier import CarrierRegistry
-        from shared.carrier_intake import intake_carrier_fact
+        from shared.governance.carrier import CarrierRegistry
+        from shared.governance.carrier_intake import intake_carrier_fact
 
         registry = CarrierRegistry()
         registry.register("agent-a", capacity=5)
@@ -221,8 +221,8 @@ class TestGovernorCarrierIntake(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from shared.carrier import CarrierRegistry
-        from shared.carrier_intake import intake_carrier_fact
+        from shared.governance.carrier import CarrierRegistry
+        from shared.governance.carrier_intake import intake_carrier_fact
 
         registry = CarrierRegistry()
         registry.register("agent-a", capacity=5)

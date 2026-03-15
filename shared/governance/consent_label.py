@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from shared.consent import ConsentContract
+from shared.governance.consent import ConsentContract
 
 
 @dataclass(frozen=True)

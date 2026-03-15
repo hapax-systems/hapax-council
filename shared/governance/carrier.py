@@ -15,8 +15,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from shared.consent_label import ConsentLabel
-from shared.labeled import Labeled
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.labeled import Labeled
 
 
 @dataclass(frozen=True)

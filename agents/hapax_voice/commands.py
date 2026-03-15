@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agents.hapax_voice.governance import VetoResult
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 
 
 @dataclass(frozen=True)

@@ -19,9 +19,9 @@ from pathlib import Path
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from shared.carrier import CarrierRegistry
-from shared.consent import ConsentContract, ConsentRegistry
-from shared.revocation import RevocationPropagator
+from shared.governance.carrier import CarrierRegistry
+from shared.governance.consent import ConsentContract, ConsentRegistry
+from shared.governance.revocation import RevocationPropagator
 
 
 def _make_carrier_file(
@@ -322,8 +322,8 @@ class TestGovernorInPipeline(unittest.TestCase):
 
     async def test_governor_denies_restricted_data_without_consent(self):
         """Governor blocks carrier facts that violate consent policy."""
-        from shared.carrier_intake import intake_carrier_fact
-        from shared.governor import GovernorPolicy, GovernorWrapper
+        from shared.governance.carrier_intake import intake_carrier_fact
+        from shared.governance.governor import GovernorPolicy, GovernorWrapper
 
         carrier_reg = CarrierRegistry()
         carrier_reg.register("operator", capacity=5)

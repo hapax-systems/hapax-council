@@ -14,9 +14,9 @@ from typing import Any
 from hypothesis import given
 from hypothesis import strategies as st
 
-from shared.carrier import CarrierRegistry
-from shared.carrier_intake import intake_carrier_fact, parse_carrier_fact
-from shared.consent_label import ConsentLabel
+from shared.governance.carrier import CarrierRegistry
+from shared.governance.carrier_intake import intake_carrier_fact, parse_carrier_fact
+from shared.governance.consent_label import ConsentLabel
 
 
 def _write_carrier_file(

@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
         app.state.engine = engine
 
         # Wire revocation propagator to carrier registry
-        from shared.revocation_wiring import get_revocation_propagator
+        from shared.governance.revocation_wiring import get_revocation_propagator
 
         app.state.revocation_propagator = get_revocation_propagator()
     except Exception:

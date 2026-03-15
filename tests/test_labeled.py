@@ -6,8 +6,8 @@ import unittest
 
 from hypothesis import given
 
-from shared.consent_label import ConsentLabel
-from shared.labeled import Labeled
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.labeled import Labeled
 from tests.consent_strategies import st_consent_label, st_labeled
 
 

@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import logging
 
-from shared.consent import ConsentRegistry, load_contracts
-from shared.revocation import RevocationPropagator
+from shared.governance.consent import ConsentRegistry, load_contracts
+from shared.governance.revocation import RevocationPropagator
 
 _log = logging.getLogger(__name__)
 

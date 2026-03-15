@@ -21,11 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shared.carrier import CarrierFact, CarrierRegistry, DisplacementResult
-from shared.consent_label import ConsentLabel
 from shared.frontmatter import extract_consent_label, extract_provenance, parse_frontmatter
-from shared.governor import GovernorWrapper
-from shared.labeled import Labeled
+from shared.governance.carrier import CarrierFact, CarrierRegistry, DisplacementResult
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.governor import GovernorWrapper
+from shared.governance.labeled import Labeled
 
 _log = logging.getLogger(__name__)
 
