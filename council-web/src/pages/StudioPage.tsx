@@ -151,7 +151,7 @@ export function StudioPage() {
               </div>
               <video
                 ref={videoRef}
-                className={viewMode === "smooth" ? "h-full w-full rounded-lg bg-black object-contain" : "hidden"}
+                className={`h-full w-full rounded-lg bg-black object-contain ${viewMode !== "smooth" ? "invisible absolute inset-0" : ""}`}
                 muted
                 playsInline
               />
