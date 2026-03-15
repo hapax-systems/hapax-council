@@ -19,7 +19,7 @@ from agents.hapax_voice.feedback import wire_feedback_behaviors
 from agents.hapax_voice.frame_gate import FrameGate
 from agents.hapax_voice.governance import VetoResult
 from agents.hapax_voice.primitives import Event
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 
 # --- Shared test data ---
 

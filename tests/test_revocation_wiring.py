@@ -12,12 +12,12 @@ from unittest.mock import patch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from shared.carrier import CarrierRegistry
-from shared.consent import ConsentContract, ConsentRegistry
-from shared.consent_label import ConsentLabel
-from shared.labeled import Labeled
-from shared.revocation import RevocationPropagator
-from shared.revocation_wiring import (
+from shared.governance.carrier import CarrierRegistry
+from shared.governance.consent import ConsentContract, ConsentRegistry
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.labeled import Labeled
+from shared.governance.revocation import RevocationPropagator
+from shared.governance.revocation_wiring import (
     get_revocation_propagator,
     set_revocation_propagator,
 )
@@ -46,7 +46,7 @@ def _make_carrier_with_fact(
     contract_id: str,
     domain: str = "test-domain",
 ) -> CarrierRegistry:
-    from shared.carrier import CarrierFact
+    from shared.governance.carrier import CarrierFact
 
     registry = CarrierRegistry()
     registry.register(principal_id, capacity=5)
@@ -87,7 +87,7 @@ class TestRevocationWiringModule(unittest.TestCase):
         set_revocation_propagator(prop1)
         set_revocation_propagator(None)
 
-        with patch("shared.revocation_wiring.load_contracts") as mock_load:
+        with patch("shared.governance.revocation_wiring.load_contracts") as mock_load:
             mock_load.return_value = cr
             with patch(
                 "cockpit.engine.reactive_rules.get_carrier_registry",
@@ -96,7 +96,7 @@ class TestRevocationWiringModule(unittest.TestCase):
                 prop2 = get_revocation_propagator()
                 assert prop2 is not prop1
 
-    @patch("shared.revocation_wiring.load_contracts")
+    @patch("shared.governance.revocation_wiring.load_contracts")
     def test_lazy_init_loads_contracts(self, mock_load):
         """First call to get_revocation_propagator loads consent contracts."""
         cr = _make_consent_registry()
@@ -107,7 +107,7 @@ class TestRevocationWiringModule(unittest.TestCase):
             assert prop is not None
             mock_load.assert_called_once()
 
-    @patch("shared.revocation_wiring.load_contracts")
+    @patch("shared.governance.revocation_wiring.load_contracts")
     def test_lazy_init_wires_carrier_registry(self, mock_load):
         """First call wires the carrier registry from reactive_rules."""
         cr = _make_consent_registry()
@@ -120,7 +120,7 @@ class TestRevocationWiringModule(unittest.TestCase):
             # Verify the carrier registry handler was registered
             assert any(name == "carrier_registry" for name, _ in prop._handlers)
 
-    @patch("shared.revocation_wiring.load_contracts")
+    @patch("shared.governance.revocation_wiring.load_contracts")
     def test_lazy_init_survives_carrier_import_failure(self, mock_load):
         """Propagator still works if carrier registry import fails."""
         cr = _make_consent_registry()
@@ -176,7 +176,7 @@ class TestRevocationCarrierCascade(unittest.TestCase):
 
     def test_revoke_leaves_unrelated_facts(self):
         """Revocation only purges facts with matching provenance."""
-        from shared.carrier import CarrierFact
+        from shared.governance.carrier import CarrierFact
 
         c1 = _make_contract("c1", "alice")
         cr = _make_consent_registry(c1)

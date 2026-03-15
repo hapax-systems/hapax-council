@@ -7,11 +7,11 @@ import unittest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from shared.carrier import CarrierFact, CarrierRegistry
-from shared.consent import ConsentContract, ConsentRegistry
-from shared.consent_label import ConsentLabel
-from shared.labeled import Labeled
-from shared.revocation import (
+from shared.governance.carrier import CarrierFact, CarrierRegistry
+from shared.governance.consent import ConsentContract, ConsentRegistry
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.labeled import Labeled
+from shared.governance.revocation import (
     PurgeResult,
     RevocationPropagator,
     RevocationReport,

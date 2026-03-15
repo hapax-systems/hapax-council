@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 
 
 @dataclass(frozen=True)

@@ -15,14 +15,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.consent_label import ConsentLabel
-from shared.governor import (
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.governor import (
     GovernorPolicy,
     GovernorWrapper,
     consent_input_policy,
     consent_output_policy,
 )
-from shared.labeled import Labeled
+from shared.governance.labeled import Labeled
 
 _log = logging.getLogger(__name__)
 

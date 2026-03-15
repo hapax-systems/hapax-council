@@ -14,8 +14,8 @@ from typing import Any
 
 import yaml
 
-from shared.consent_label import ConsentLabel
-from shared.labeled import Labeled
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.labeled import Labeled
 
 
 def parse_frontmatter(path_or_text: Path | str) -> tuple[dict, str]:

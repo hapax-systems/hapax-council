@@ -11,7 +11,7 @@ import logging
 
 from fastapi import APIRouter
 
-from shared.revocation_wiring import get_revocation_propagator
+from shared.governance.revocation_wiring import get_revocation_propagator
 
 _log = logging.getLogger(__name__)
 
