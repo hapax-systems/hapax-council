@@ -46,6 +46,11 @@ class VoiceConfig(BaseModel):
     local_stt_model: str = "nvidia/parakeet-tdt-0.6b-v2"
     kokoro_voice: str = "af_heart"
 
+    # Consent
+    consent_debounce_s: float = 5.0  # sustained presence before triggering
+    consent_absence_clear_s: float = 30.0  # how long guest must be absent to clear
+    consent_session_timeout_s: float = 120.0  # max duration for consent conversation
+
     # Notification queue
     notification_priority_ttls: dict[str, int] = {
         "urgent": 1800,
