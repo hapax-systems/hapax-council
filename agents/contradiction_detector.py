@@ -193,7 +193,6 @@ def _check_profile_vs_activity() -> list[Contradiction]:
         neuro = profile.get("neurocognitive", {})
         if isinstance(neuro, dict):
             energy_patterns = neuro.get("energy_cycles", [])
-            
 
             # Check: profile claims morning peak but we know operator works late
             # (This is detected from Claude Code session history)
