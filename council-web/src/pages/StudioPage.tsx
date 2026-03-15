@@ -8,13 +8,13 @@ import {
   CameraSoloView,
 } from "../components/studio/StudioStatusGrid";
 import { StudioSidebar } from "../components/studio/StudioSidebar";
-import { useStudio, useStudioStreamInfo } from "../api/hooks";
+import { useStudio } from "../api/hooks";
 
 type ViewMode = "grid" | "composite" | "smooth";
 
 export function StudioPage() {
   const { data: studio } = useStudio();
-  const { data: streamInfo } = useStudioStreamInfo();
+  
   const compositor = studio?.compositor;
   const [focusedCamera, setFocusedCamera] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
@@ -51,13 +51,10 @@ export function StudioPage() {
     };
   }, [viewMode, basePreset, liveFilter.css, trailFilter.css, overlayOverrides]);
 
-  const hlsAvailable = streamInfo?.hls_enabled ?? false;
-  const showHls = hlsAvailable;
 
-  // HLS pre-buffering
+  // HLS pre-buffering — start immediately, don't wait for stream info
   useEffect(() => {
-    const hlsUrl = streamInfo?.hls_url;
-    if (!showHls || !hlsUrl) return;
+    const hlsUrl = "/api/studio/hls/stream.m3u8";
     const video = videoRef.current;
     if (!video) return;
     if (!Hls.isSupported()) return;
@@ -80,7 +77,7 @@ export function StudioPage() {
       }
     }, 2000);
     return () => { clearInterval(sync); hls.destroy(); hlsRef.current = null; setHlsReady(false); };
-  }, [showHls, streamInfo?.hls_url]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Callbacks for sidebar ---
 

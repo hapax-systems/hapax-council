@@ -646,8 +646,7 @@ class StudioCompositor:
             Gst.Caps.from_string("video/x-raw,framerate=60/1"),
         )
         scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
-        # Maintain aspect ratio, target 640 wide
-        aspect_h = int(640 * cam.height / cam.width)
+        # Use native resolution
         scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
         scale_caps.set_property(
             "caps",
