@@ -176,9 +176,7 @@ class TestGovernorCarrierIntake(unittest.TestCase):
 
         # Write a valid carrier file
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(
-                "---\ncarrier: true\nsource_domain: test\ncarrier_value: hello\n---\nBody\n"
-            )
+            f.write("---\ncarrier: true\nsource_domain: test\ncarrier_value: hello\n---\nBody\n")
             path = Path(f.name)
 
         try:
@@ -208,9 +206,7 @@ class TestGovernorCarrierIntake(unittest.TestCase):
         )
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(
-                "---\ncarrier: true\nsource_domain: health\ncarrier_value: normal\n---\n"
-            )
+            f.write("---\ncarrier: true\nsource_domain: health\ncarrier_value: normal\n---\n")
             path = Path(f.name)
 
         try:
@@ -238,9 +234,7 @@ class TestGovernorCarrierIntake(unittest.TestCase):
         )
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(
-                "---\ncarrier: true\nsource_domain: test\ncarrier_value: x\n---\n"
-            )
+            f.write("---\ncarrier: true\nsource_domain: test\ncarrier_value: x\n---\n")
             path = Path(f.name)
 
         try:

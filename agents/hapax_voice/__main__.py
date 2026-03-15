@@ -426,6 +426,14 @@ class VoiceDaemon:
         except Exception:
             log.info("CircadianBackend not available, skipping")
 
+        # Studio ingestion backend (CLAP audio classification)
+        try:
+            from agents.hapax_voice.backends.studio_ingestion import StudioIngestionBackend
+
+            self.perception.register_backend(StudioIngestionBackend())
+        except Exception:
+            log.info("StudioIngestionBackend not available, skipping")
+
         # MIDI clock backend (for MC governance)
         try:
             from agents.hapax_voice.backends.midi_clock import MidiClockBackend
