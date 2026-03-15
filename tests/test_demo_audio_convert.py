@@ -10,6 +10,7 @@ import pytest
 
 try:
     import imageio_ffmpeg
+
     _HAS_FFMPEG = bool(imageio_ffmpeg.get_ffmpeg_exe())
 except (ModuleNotFoundError, RuntimeError):
     _HAS_FFMPEG = False
