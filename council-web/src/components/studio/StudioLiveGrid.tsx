@@ -72,6 +72,21 @@ interface CameraCellProps {
   preset?: CompositePreset;
 }
 
+/** Capture current img pixels as a low-res data URL for trail frames. */
+function captureFrame(img: HTMLImageElement, maxW = 480): string | null {
+  if (!img.naturalWidth) return null;
+  const scale = Math.min(1, maxW / img.naturalWidth);
+  const w = Math.round(img.naturalWidth * scale);
+  const h = Math.round(img.naturalHeight * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", 0.4);
+}
+
 function CameraCell({
   role, isHero, idx, dragIdx, overIdx,
   onDragStart, onDragOver, onDrop, onDragEnd, onFocus, preset,
@@ -79,9 +94,8 @@ function CameraCell({
   const imgRef = useRef<HTMLImageElement>(null);
   const cellRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [trailSrcs, setTrailSrcs] = useState<string[]>([]);
-
-  const trailCount = preset?.trail.count ?? 0;
+  const trailBuf = useRef<string[]>([]);
+  const [trailFrames, setTrailFrames] = useState<string[]>([]);
 
   const toggleFullscreen = useCallback(() => {
     const el = cellRef.current;
@@ -115,22 +129,33 @@ function CameraCell({
     return () => { running = false; clearInterval(timer); };
   }, [role, isHero]);
 
-  // Trail accumulator
+  // Trail capture — freeze actual pixels from the live img via canvas
   useEffect(() => {
     if (!preset) {
-      queueMicrotask(() => setTrailSrcs([]));
+      trailBuf.current = [];
+      queueMicrotask(() => setTrailFrames([]));
       return;
     }
+    const count = preset.trail.count;
+    const intervalMs = preset.trail.intervalMs;
     let running = true;
+
     const timer = setInterval(() => {
       if (!running) return;
-      const liveSrc = imgRef.current?.getAttribute("src");
-      if (liveSrc && (liveSrc.startsWith("/") || liveSrc.startsWith("http"))) {
-        setTrailSrcs((prev) => [liveSrc, ...prev].slice(0, trailCount));
+      const img = imgRef.current;
+      if (!img) return;
+      const dataUrl = captureFrame(img, isHero ? 640 : 320);
+      if (dataUrl) {
+        trailBuf.current = [dataUrl, ...trailBuf.current].slice(0, count);
+        setTrailFrames([...trailBuf.current]);
       }
-    }, preset.trail.intervalMs);
-    return () => { running = false; clearInterval(timer); };
-  }, [role, !!preset, trailCount, preset?.trail.intervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, intervalMs);
+
+    return () => {
+      running = false;
+      clearInterval(timer);
+    };
+  }, [role, isHero, !!preset, preset?.trail.count, preset?.trail.intervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isDragging = dragIdx === idx;
   const isOver = overIdx === idx && dragIdx !== idx;
@@ -145,7 +170,7 @@ function CameraCell({
       onDragEnd={onDragEnd}
       onDoubleClick={toggleFullscreen}
       className={`relative flex-1 overflow-hidden rounded-lg transition-all ${
-        preset?.cellAnimation ? preset.cellAnimation : ""
+        preset?.cellAnimation ?? ""
       } ${
         isFullscreen ? "flex items-center justify-center bg-black"
           : isDragging ? "scale-[0.97] opacity-50"
@@ -157,12 +182,13 @@ function CameraCell({
       <img
         ref={imgRef}
         alt={role}
+        crossOrigin="anonymous"
         className={`bg-black object-contain ${isFullscreen ? "max-h-screen max-w-full" : "h-full w-full"}`}
         style={preset?.liveFilter && preset.liveFilter !== "none" ? { filter: preset.liveFilter } : undefined}
       />
 
-      {/* Trail layers */}
-      {preset && trailSrcs.map((src, i) => (
+      {/* Trail layers — frozen past frames as data URLs */}
+      {preset && trailFrames.map((src, i) => (
         <img
           key={i}
           src={src}
@@ -170,8 +196,8 @@ function CameraCell({
           className="pointer-events-none absolute inset-0 h-full w-full object-contain"
           style={{
             mixBlendMode: preset.trail.blendMode,
-            opacity: preset.trail.opacity * ((trailSrcs.length - i) / trailSrcs.length),
-            filter: preset.trail.filter,
+            opacity: preset.trail.opacity * ((trailFrames.length - i) / trailFrames.length),
+            filter: preset.trail.filter !== "none" ? preset.trail.filter : undefined,
           }}
         />
       ))}
