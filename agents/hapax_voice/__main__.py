@@ -553,9 +553,7 @@ class VoiceDaemon:
                     self.presence.process_audio_frame(chunk)
                     # Feed VAD probability to conversation buffer
                     if self._conversation_buffer.is_active:
-                        self._conversation_buffer.update_vad(
-                            self.presence._latest_vad_confidence
-                        )
+                        self._conversation_buffer.update_vad(self.presence._latest_vad_confidence)
                 except Exception as exc:
                     log.warning("Presence consumer error: %s", exc)
 
