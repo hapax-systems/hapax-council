@@ -14,7 +14,9 @@ from agents.video_capture import (
 
 def test_camera_profiles_exist():
     assert "brio" in CAMERA_PROFILES
-    assert "c920" in CAMERA_PROFILES
+    assert "c920-hardware" in CAMERA_PROFILES
+    assert "c920-room" in CAMERA_PROFILES
+    assert "c920-aux" in CAMERA_PROFILES
 
 
 def test_brio_profile():
@@ -24,7 +26,7 @@ def test_brio_profile():
 
 
 def test_c920_profile():
-    p = CAMERA_PROFILES["c920"]
+    p = CAMERA_PROFILES["c920-hardware"]
     assert p["width"] == 1280
     assert p["height"] == 720
 

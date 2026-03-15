@@ -304,6 +304,34 @@ export interface ScoutDecisionsResponse {
   decisions: ScoutDecision[];
 }
 
+// --- Studio ---
+
+export interface CompositorStatus {
+  state: string;
+  cameras: Record<string, string>;
+  active_cameras: number;
+  total_cameras: number;
+  output_device: string;
+  resolution: string;
+  recording_enabled: boolean;
+  recording_cameras: Record<string, string>;
+  hls_enabled: boolean;
+  hls_url: string;
+}
+
+export interface StudioSnapshot {
+  compositor: CompositorStatus;
+  capture: { audio_recorder_active: boolean; video_cameras: string[] };
+}
+
+export interface StudioStreamInfo {
+  hls_url: string;
+  hls_enabled: boolean;
+  mjpeg_url: string;
+  mjpeg_enabled: boolean;
+  enabled: boolean;
+}
+
 // --- Demos ---
 
 export interface Demo {

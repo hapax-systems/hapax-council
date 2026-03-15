@@ -393,7 +393,9 @@ def collect_governance_heartbeat() -> GovernanceHeartbeat:
                 components["historical_audit"] = 1.0
         else:
             components["historical_audit"] = 0.6
-            issues.append("No consent audit has been run (use: uv run python -m agents.consent_audit --scan --report)")
+            issues.append(
+                "No consent audit has been run (use: uv run python -m agents.consent_audit --scan --report)"
+            )
     except Exception:
         components["historical_audit"] = 0.5
 

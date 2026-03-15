@@ -13,8 +13,10 @@ import pytest
 from agents.studio_compositor import (
     CameraSpec,
     CompositorConfig,
+    HlsConfig,
     OverlayData,
     OverlayState,
+    RecordingConfig,
     compute_tile_layout,
     load_config,
 )
@@ -43,6 +45,38 @@ class TestCameraSpec:
         assert cam.hero is True
 
 
+class TestRecordingConfig:
+    def test_defaults(self) -> None:
+        cfg = RecordingConfig()
+        assert cfg.enabled is True
+        assert cfg.segment_seconds == 300
+        assert cfg.qp == 23
+        assert str(cfg.output_dir).endswith("video-recording")
+
+    def test_custom(self) -> None:
+        cfg = RecordingConfig(enabled=False, segment_seconds=600, qp=18)
+        assert cfg.enabled is False
+        assert cfg.segment_seconds == 600
+        assert cfg.qp == 18
+
+
+class TestHlsConfig:
+    def test_defaults(self) -> None:
+        cfg = HlsConfig()
+        assert cfg.enabled is True
+        assert cfg.target_duration == 2
+        assert cfg.playlist_length == 3
+        assert cfg.max_files == 6
+        assert cfg.bitrate == 4000
+        assert "hls" in str(cfg.output_dir)
+
+    def test_custom(self) -> None:
+        cfg = HlsConfig(enabled=False, bitrate=2000, target_duration=4)
+        assert cfg.enabled is False
+        assert cfg.bitrate == 2000
+        assert cfg.target_duration == 4
+
+
 class TestCompositorConfig:
     def test_defaults(self) -> None:
         cfg = CompositorConfig()
@@ -52,6 +86,8 @@ class TestCompositorConfig:
         assert cfg.framerate == 30
         assert cfg.cameras == []
         assert cfg.overlay_enabled is True
+        assert cfg.recording.enabled is True
+        assert cfg.hls.enabled is True
 
     def test_custom_config(self) -> None:
         cfg = CompositorConfig(
@@ -62,6 +98,26 @@ class TestCompositorConfig:
         assert len(cfg.cameras) == 1
         assert cfg.framerate == 15
         assert cfg.bitrate == 4_000_000
+
+    def test_recording_disabled(self) -> None:
+        cfg = CompositorConfig(recording=RecordingConfig(enabled=False))
+        assert cfg.recording.enabled is False
+
+    def test_hls_disabled(self) -> None:
+        cfg = CompositorConfig(hls=HlsConfig(enabled=False))
+        assert cfg.hls.enabled is False
+
+    def test_config_serialization_roundtrip(self) -> None:
+        cfg = CompositorConfig(
+            cameras=[CameraSpec(role="test", device="/dev/video0")],
+            recording=RecordingConfig(segment_seconds=600),
+            hls=HlsConfig(bitrate=2000),
+        )
+        data = json.loads(cfg.model_dump_json())
+        restored = CompositorConfig(**data)
+        assert restored.recording.segment_seconds == 600
+        assert restored.hls.bitrate == 2000
+        assert len(restored.cameras) == 1
 
 
 class TestLoadConfig:
@@ -122,18 +178,20 @@ class TestTileLayout:
         ]
         layout = compute_tile_layout(cams, 1920, 1080)
 
-        # Hero should be top-left, half width, half height
+        # Hero: 16:9 fitted in left 2/3, centered vertically
         hero = layout["hero"]
+        assert hero.w == 1280
+        assert hero.h == 720
         assert hero.x == 0
-        assert hero.y == 0
-        assert hero.w == 960
-        assert hero.h == 540
+        assert hero.y == 180  # centered: (1080-720)/2
 
-        # Others should be in right quadrant
-        assert layout["cam1"].x == 960
-        assert layout["cam2"].x == 1440
-        assert layout["cam3"].x == 960
-        assert layout["cam3"].y == 270
+        # Others: 16:9 fitted, stacked on right
+        assert layout["cam1"].x == 1280
+        assert layout["cam1"].y == 0
+        assert layout["cam1"].w == 640
+        assert layout["cam1"].h == 360
+        assert layout["cam2"].y == 360
+        assert layout["cam3"].y == 720
 
     def test_no_hero_grid(self) -> None:
         cams = [CameraSpec(role=f"cam{i}", device=f"/dev/video{i}") for i in range(4)]
@@ -160,16 +218,19 @@ class TestTileLayout:
         total = sum(t.w * t.h for t in layout.values())
         assert total <= 1920 * 1080
 
-    def test_hero_with_bottom_row(self) -> None:
-        """With >4 non-hero cameras, extras go to bottom row."""
+    def test_hero_with_many_others(self) -> None:
+        """With >4 non-hero cameras, hero gets 1/2 width, others stack right."""
         cams = [
             CameraSpec(role="hero", device="/dev/video0", hero=True),
         ] + [CameraSpec(role=f"cam{i}", device=f"/dev/video{i}") for i in range(6)]
         layout = compute_tile_layout(cams, 1920, 1080)
         assert len(layout) == 7
-        # Bottom row cameras should be at y=540
-        assert layout["cam4"].y == 540
-        assert layout["cam5"].y == 540
+        # Hero: 16:9 fitted in left half
+        assert layout["hero"].w == 960
+        assert layout["hero"].h == 540
+        # All others on the right
+        for i in range(6):
+            assert layout[f"cam{i}"].x >= 960
 
     def test_all_tiles_positive_dimensions(self) -> None:
         cams = [CameraSpec(role=f"cam{i}", device=f"/dev/video{i}") for i in range(8)]
@@ -312,12 +373,20 @@ class TestCompositorCockpitStatus:
             "total_cameras": 2,
             "output_device": "/dev/video42",
             "resolution": "1920x1080",
+            "recording_enabled": True,
+            "recording_cameras": {"brio": "active"},
+            "hls_enabled": True,
+            "hls_url": "/api/studio/hls/stream.m3u8",
         }
 
         status = CompositorStatus(**status_data)
         assert status.state == "running"
         assert status.active_cameras == 1
         assert status.cameras["brio"] == "active"
+        assert status.recording_enabled is True
+        assert status.recording_cameras["brio"] == "active"
+        assert status.hls_enabled is True
+        assert status.hls_url == "/api/studio/hls/stream.m3u8"
 
     def test_default_status(self) -> None:
         from cockpit.data.studio import CompositorStatus
@@ -325,6 +394,8 @@ class TestCompositorCockpitStatus:
         status = CompositorStatus()
         assert status.state == "unknown"
         assert status.cameras == {}
+        assert status.recording_enabled is False
+        assert status.hls_enabled is False
 
     def test_studio_snapshot_includes_compositor(self) -> None:
         from cockpit.data.studio import StudioSnapshot

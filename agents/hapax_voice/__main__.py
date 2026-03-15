@@ -879,7 +879,9 @@ class VoiceDaemon:
             self._consent_session_active = False
             self.event_log.emit(
                 "consent_session_end",
-                resolved=getattr(consent_state, "resolved", False) if "consent_state" in dir() else False,
+                resolved=getattr(consent_state, "resolved", False)
+                if "consent_state" in dir()
+                else False,
             )
 
     async def _handle_scan(self) -> None:
@@ -1061,9 +1063,10 @@ class VoiceDaemon:
                 # Consent state tracking (interpersonal_transparency axiom)
                 # Pure function: no I/O, no blocking, just state transitions
                 try:
-                    speaker_is_op = not self.session.is_active or getattr(
-                        self.session, "speaker", "operator"
-                    ) == "operator"
+                    speaker_is_op = (
+                        not self.session.is_active
+                        or getattr(self.session, "speaker", "operator") == "operator"
+                    )
                     self.consent_tracker.tick(
                         face_count=state.face_count,
                         speaker_is_operator=speaker_is_op,
