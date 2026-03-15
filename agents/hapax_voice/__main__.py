@@ -1073,7 +1073,15 @@ class VoiceDaemon:
                     self.session.pause(reason=f"governor:{state.activity_mode}")
                 elif directive == "process" and self.session.is_paused:
                     self.session.resume()
+<<<<<<< HEAD
                 elif directive == "withdraw" and self.session.is_active:
+=======
+                elif (
+                    directive == "withdraw"
+                    and self.session.is_active
+                    and self._conversation_pipeline is None
+                ):
+>>>>>>> 8eed578 (style: ruff 0.15.6 format hapax_voice/__main__.py)
                     await self._close_session(reason="operator_absent")
 
                 # Update context gate with backend Behaviors
