@@ -35,6 +35,8 @@ BRIEFING_PATH = PROFILES_DIR / "briefing.md"
 DRIFT_REPORT = PROFILES_DIR / "drift-report.json"
 FLOW_STATE_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "flow_state.json"
 WORKSPACE_STATE_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "workspace_state.json"
+VOICE_EVENTS_DIR = Path.home() / ".local" / "share" / "hapax-voice"
+WEATHER_DIR = Path.home() / "documents" / "rag-sources" / "weather"
 
 
 @dataclass
@@ -73,6 +75,11 @@ class ContextSnapshot:
     drift_count: int = 0
     high_priority_actions: list[str] = field(default_factory=list)
     time_since_last_session: str = ""
+
+    # Environment
+    operator_present: bool = True
+    weather: str = ""  # e.g. "28°F heavy snow"
+    presence_transitions: int = 0  # how many times came/went today
 
     # Derived
     start_here: str = ""
@@ -367,6 +374,67 @@ def collect_accommodations() -> Accommodations:
 # ── Start-here logic ─────────────────────────────────────────────────
 
 
+def collect_voice_events_summary() -> dict:
+    """Summarize today's voice daemon events (presence transitions)."""
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    events_file = VOICE_EVENTS_DIR / f"events-{today}.jsonl"
+    result: dict = {"transitions": 0, "present": True}
+
+    if not events_file.exists():
+        return result
+
+    try:
+        transitions = 0
+        last_presence = "likely_present"
+        for line in events_file.read_text().splitlines():
+            try:
+                event = json.loads(line)
+                if event.get("type") == "presence_transition":
+                    transitions += 1
+                    last_presence = event.get("to", last_presence)
+            except json.JSONDecodeError:
+                continue
+        result["transitions"] = transitions
+        result["present"] = last_presence == "likely_present"
+    except Exception:
+        pass
+
+    return result
+
+
+def collect_weather() -> str:
+    """Get the latest weather observation."""
+    if not WEATHER_DIR.exists():
+        return ""
+
+    try:
+        files = sorted(WEATHER_DIR.glob("weather-*.md"), reverse=True)
+        if not files:
+            return ""
+
+        # Parse frontmatter from most recent file
+        content = files[0].read_text()
+        for line in content.splitlines():
+            if line.startswith("**Conditions:**"):
+                # Extract from the body lines
+                pass
+
+        # Simpler: read frontmatter fields
+        import yaml
+
+        parts = content.split("---")
+        if len(parts) >= 3:
+            fm = yaml.safe_load(parts[1])
+            if fm:
+                temp = fm.get("temperature_f", "?")
+                desc = fm.get("description", "")
+                return f"{temp}°F {desc}"
+    except Exception:
+        pass
+
+    return ""
+
+
 def determine_start_here(ctx: ContextSnapshot) -> str:
     """Determine the single most actionable next step.
 
@@ -474,6 +542,10 @@ def format_context(ctx: ContextSnapshot) -> str:
         for a in ctx.high_priority_actions[:3]:
             lines.append(f"  - {a}")
 
+    # Environment
+    if ctx.weather:
+        lines.append(f"**Weather:** {ctx.weather}")
+
     # Start here — always last, always present
     if ctx.start_here:
         lines.append("")
@@ -500,6 +572,8 @@ def collect_context(project_path: str | None = None) -> ContextSnapshot:
     accom = collect_accommodations()
     nudges = collect_pending_nudges(max_nudges=7)
     meetings = collect_next_meetings()
+    voice = collect_voice_events_summary()
+    weather = collect_weather()
 
     # Compute deep work window from calendar
     deep_work_h = 0.0
@@ -531,6 +605,9 @@ def collect_context(project_path: str | None = None) -> ContextSnapshot:
         drift_count=sys_status["drift_count"],
         high_priority_actions=sys_status["actions"],
         time_since_last_session=collect_time_since_last_session(proj),
+        operator_present=voice["present"],
+        weather=weather,
+        presence_transitions=voice["transitions"],
         accommodations=accom,
         collected_at=datetime.now(UTC).isoformat(),
     )

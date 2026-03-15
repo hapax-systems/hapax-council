@@ -5,13 +5,18 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/operator/.local/bin/uv run --directory /home/operator/projects/hapax-council python -m agents.audio_processor --process
+ExecStart=/home/operator/.local/bin/uv run --extra audio --directory /home/operator/projects/hapax-council python -m agents.audio_processor --process
 Environment=PATH=/home/operator/.local/bin:/home/operator/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/operator/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/operator/.password-store
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+Environment=OPENBLAS_NUM_THREADS=2
+Environment=ONNXRUNTIME_INTRA_OP_NUM_THREADS=2
 MemoryMax=8G
-CPUQuota=80%
+CPUQuota=400%
+AllowedCPUs=4-7
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=audio-processor
