@@ -99,22 +99,42 @@ export function ScrewedCanvas({ role, className }: Props) {
         ctx.restore();
       }
 
-      // Main frame — screwed filter + slow warp pan
+      // Main frame — screwed filter + warp pan + horizontal slice deformation
       const main = frameRing[idx];
       if (main) {
-        ctx.save();
-        ctx.filter = "saturate(0.55) sepia(0.4) hue-rotate(250deg) contrast(1.05) brightness(0.9)";
-        // Slow sinusoidal drift — like floating through syrup
         const t = tick * 0.04;
         const panX = Math.sin(t) * 20;
         const panY = Math.sin(t * 0.7) * 14 + Math.sin(t * 0.3) * 8;
-        const rot = Math.sin(t * 0.5) * 0.025; // ~0.5 degree wobble
-        const scale = 1.06 + Math.sin(t * 0.2) * 0.04; // subtle zoom breathe
-        ctx.translate(w / 2, h / 2);
-        ctx.rotate(rot);
-        ctx.scale(scale, scale);
-        ctx.translate(-w / 2 + panX, -h / 2 + panY);
-        ctx.drawImage(main, 0, 0, w, h);
+        const rot = Math.sin(t * 0.5) * 0.025;
+        const scale = 1.06 + Math.sin(t * 0.2) * 0.04;
+
+        // Draw in horizontal slices with per-slice displacement (liquid warp)
+        const SLICES = 24;
+        const sliceH = Math.ceil(h / SLICES);
+        ctx.save();
+        ctx.filter = "saturate(0.55) sepia(0.4) hue-rotate(250deg) contrast(1.05) brightness(0.9)";
+
+        for (let s = 0; s < SLICES; s++) {
+          const sy = s * sliceH;
+          const slicePhase = t + s * 0.15;
+          // Each slice gets its own horizontal wobble + slight vertical stretch
+          const sliceShift = Math.sin(slicePhase) * 6 + Math.sin(slicePhase * 2.3) * 3;
+          const sliceStretch = 1 + Math.sin(slicePhase * 0.8) * 0.008;
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, sy, w, sliceH + 1);
+          ctx.clip();
+
+          ctx.translate(w / 2, h / 2);
+          ctx.rotate(rot);
+          ctx.scale(scale, scale * sliceStretch);
+          ctx.translate(-w / 2 + panX + sliceShift, -h / 2 + panY);
+          ctx.drawImage(main, 0, 0, w, h);
+
+          ctx.restore();
+        }
+
         ctx.restore();
       }
 
