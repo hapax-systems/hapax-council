@@ -27,10 +27,11 @@ import argparse
 import json
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
+import yaml
 from pydantic import BaseModel, Field
 
 try:
@@ -170,6 +171,105 @@ NOISE_CLASSES = frozenset(
         "Engine",
     }
 )
+
+# ── Consent Gate ─────────────────────────────────────────────────────────────
+# interpersonal_transparency axiom (it-consent-001, T0): no persistent state
+# about non-operator persons without an active consent contract. Multi-speaker
+# conversations may contain non-operator speech. Suppress storage when:
+#   1. speaker_count > 1 AND
+#   2. Segment overlaps a calendar event (likely a work call) OR
+#      no consent contract covers the non-operator speaker(s)
+
+GCALENDAR_RAG_DIR = RAG_SOURCES / "gcalendar"
+
+
+def _overlaps_calendar_event(segment_start: datetime, segment_end: datetime) -> bool:
+    """Check if a time range overlaps any calendar event in the gcalendar RAG source.
+
+    Reads YAML frontmatter from gcalendar RAG documents to find events whose
+    timestamp and duration overlap the given segment. This is a heuristic for
+    detecting work calls — a multi-speaker conversation during a calendar event
+    is very likely a work meeting and should not be stored in the personal RAG.
+    """
+    if not GCALENDAR_RAG_DIR.exists():
+        return False
+
+    for path in GCALENDAR_RAG_DIR.iterdir():
+        if path.suffix != ".md":
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            if not text.startswith("---"):
+                continue
+            end_idx = text.index("---", 3)
+            fm = yaml.safe_load(text[3:end_idx])
+            if not fm or "timestamp" not in fm:
+                continue
+
+            event_start = datetime.fromisoformat(fm["timestamp"])
+            duration_min = fm.get("duration_minutes", 60)
+            event_end = event_start + timedelta(minutes=duration_min)
+
+            # Check overlap
+            if segment_start < event_end and segment_end > event_start:
+                log.info(
+                    "Conversation at %s overlaps calendar event '%s' — suppressing (it-consent-001)",
+                    segment_start.isoformat(),
+                    path.stem,
+                )
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _check_conversation_consent(
+    speaker_count: int,
+    base_timestamp: str,
+    segment_start_s: float,
+    segment_end_s: float,
+) -> bool:
+    """Check whether a multi-speaker conversation may be stored.
+
+    Returns True if storage is permitted, False if it should be suppressed.
+
+    Enforcement of it-consent-001 (T0): no persistent state about
+    non-operator persons without an active consent contract.
+    """
+    if speaker_count <= 1:
+        return True
+
+    # Parse the recording timestamp and compute segment wall-clock times
+    try:
+        rec_start = datetime.fromisoformat(base_timestamp)
+    except (ValueError, TypeError):
+        log.warning("Cannot parse timestamp %r for consent check, suppressing", base_timestamp)
+        return False
+
+    seg_start = rec_start + timedelta(seconds=segment_start_s)
+    seg_end = rec_start + timedelta(seconds=segment_end_s)
+
+    # Heuristic 1: If the segment overlaps a calendar event, it's likely a work
+    # call. Suppress entirely — this prevents both it-consent-001 (non-operator
+    # PII) and mg-bridge-001 (work/home boundary) violations.
+    if _overlaps_calendar_event(seg_start, seg_end):
+        return False
+
+    # Heuristic 2: Even without a calendar match, multi-speaker conversations
+    # contain non-operator speech. The speakers are anonymous (SPEAKER_00 etc)
+    # so we cannot check specific consent contracts. Without positive
+    # identification, the safe default is to suppress.
+    # This is conservative — false positives (suppressing the operator talking
+    # to themselves across diarization splits) are acceptable; false negatives
+    # (storing non-operator speech) are T0 violations.
+    log.info(
+        "Multi-speaker conversation (%d speakers) at %s — suppressing (it-consent-001)",
+        speaker_count,
+        seg_start.isoformat(),
+    )
+    return False
+
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -1257,6 +1357,20 @@ def _process_file(
             if not has_content:
                 continue
 
+            # Consent gate (it-consent-001 T0): check whether multi-speaker
+            # conversation may be stored. Suppresses work calls and
+            # unconsented non-operator speech.
+            group_speakers: set[str] = set()
+            for sr in group:
+                group_speakers.update(sr.speakers)
+            if not _check_conversation_consent(
+                speaker_count=len(group_speakers),
+                base_timestamp=base_timestamp,
+                segment_start_s=group[0].start,
+                segment_end_s=group[-1].end,
+            ):
+                continue
+
             md = _format_conversation(group, base_timestamp, filename)
             start_tag = _format_timestamp(group[0].start).replace(":", "")
             out_name = f"conv-{filename.replace('.flac', '')}-s{start_tag}.md"
@@ -1267,7 +1381,7 @@ def _process_file(
                 f"{filename}:{_format_timestamp(group[0].start)}",
                 {
                     "duration": round(total_dur, 1),
-                    "speakers": len(all_speakers),
+                    "speakers": len(group_speakers),
                 },
             )
 

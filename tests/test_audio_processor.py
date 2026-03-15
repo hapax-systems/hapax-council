@@ -296,3 +296,110 @@ def test_run_transcription():
         text = _run_transcription("/tmp/fake.wav", 0.0, 10.0)
 
     assert "Hello world" in text
+
+
+# ── Consent gate tests ───────────────────────────────────────────────────────
+
+
+def test_consent_gate_single_speaker_allowed():
+    """Single-speaker conversations are always permitted."""
+    from agents.audio_processor import _check_conversation_consent
+
+    assert _check_conversation_consent(
+        speaker_count=1,
+        base_timestamp="2026-03-14T14:00:00",
+        segment_start_s=0.0,
+        segment_end_s=30.0,
+    )
+
+
+def test_consent_gate_multi_speaker_suppressed():
+    """Multi-speaker conversations are suppressed without consent."""
+    from agents.audio_processor import _check_conversation_consent
+
+    assert not _check_conversation_consent(
+        speaker_count=2,
+        base_timestamp="2026-03-14T14:00:00",
+        segment_start_s=0.0,
+        segment_end_s=30.0,
+    )
+
+
+def test_consent_gate_calendar_overlap_suppressed():
+    """Multi-speaker conversation overlapping calendar event is suppressed."""
+    from unittest.mock import patch
+
+    from agents.audio_processor import _check_conversation_consent
+
+    with patch("agents.audio_processor._overlaps_calendar_event", return_value=True):
+        assert not _check_conversation_consent(
+            speaker_count=2,
+            base_timestamp="2026-03-14T14:00:00",
+            segment_start_s=0.0,
+            segment_end_s=30.0,
+        )
+
+
+def test_overlaps_calendar_event_no_dir():
+    """Returns False when gcalendar RAG dir doesn't exist."""
+    from unittest.mock import patch
+
+    from agents.audio_processor import _overlaps_calendar_event
+
+    with patch("agents.audio_processor.GCALENDAR_RAG_DIR") as mock_dir:
+        mock_dir.exists.return_value = False
+        from datetime import datetime
+
+        result = _overlaps_calendar_event(
+            datetime(2026, 3, 14, 14, 0),
+            datetime(2026, 3, 14, 14, 30),
+        )
+        assert not result
+
+
+def test_overlaps_calendar_event_matching(tmp_path):
+    """Returns True when a calendar event overlaps the segment time."""
+    from datetime import datetime
+    from unittest.mock import patch
+
+    from agents.audio_processor import _overlaps_calendar_event
+
+    cal_file = tmp_path / "meeting.md"
+    cal_file.write_text(
+        "---\n"
+        "timestamp: '2026-03-14T14:00:00'\n"
+        "duration_minutes: 30\n"
+        "---\n"
+        "# Team sync\n"
+    )
+
+    with patch("agents.audio_processor.GCALENDAR_RAG_DIR", tmp_path):
+        result = _overlaps_calendar_event(
+            datetime(2026, 3, 14, 14, 10),
+            datetime(2026, 3, 14, 14, 20),
+        )
+        assert result
+
+
+def test_overlaps_calendar_event_no_overlap(tmp_path):
+    """Returns False when no calendar event overlaps."""
+    from datetime import datetime
+    from unittest.mock import patch
+
+    from agents.audio_processor import _overlaps_calendar_event
+
+    cal_file = tmp_path / "meeting.md"
+    cal_file.write_text(
+        "---\n"
+        "timestamp: '2026-03-14T10:00:00'\n"
+        "duration_minutes: 30\n"
+        "---\n"
+        "# Morning standup\n"
+    )
+
+    with patch("agents.audio_processor.GCALENDAR_RAG_DIR", tmp_path):
+        result = _overlaps_calendar_event(
+            datetime(2026, 3, 14, 14, 10),
+            datetime(2026, 3, 14, 14, 20),
+        )
+        assert not result
