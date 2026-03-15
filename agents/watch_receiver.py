@@ -341,4 +341,5 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("agents.watch_receiver:app", host="0.0.0.0", port=8042, reload=True)
+    # Bind to localhost only. For remote access (e.g. phone), use Tailscale/WireGuard.
+    uvicorn.run("agents.watch_receiver:app", host="127.0.0.1", port=8042, reload=True)

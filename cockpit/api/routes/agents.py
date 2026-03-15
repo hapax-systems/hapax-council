@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 
 from fastapi import APIRouter, HTTPException
@@ -52,7 +53,16 @@ async def run_agent(name: str, req: AgentRunRequest):
     if agent_run_manager.is_running:
         raise HTTPException(status_code=409, detail="Another agent is already running")
 
-    # Build command args from agent's base command + user flags
+    # Validate flags — reject anything that doesn't look like a CLI flag
+    _FLAG_PATTERN = re.compile(r"^--?[a-zA-Z0-9_-]+(=.*)?$")
+    for flag in req.flags:
+        if not _FLAG_PATTERN.match(flag):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid flag format: {flag!r}. Flags must match --name or --name=value.",
+            )
+
+    # Build command args from agent's base command + validated flags
     command = agent.command if hasattr(agent, "command") else agent.get("command", "")
     args = shlex.split(command) + req.flags
 

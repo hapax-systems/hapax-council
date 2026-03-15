@@ -113,7 +113,9 @@ class AgentRunManager:
                 )
             except Exception as e:
                 log.exception("Agent run error: %s", e)
-                await queue.put({"event": "error", "data": {"message": str(e)}})
+                await queue.put(
+                    {"event": "error", "data": {"message": "Internal error running agent"}}
+                )
             finally:
                 self._process = None
                 self._status = None

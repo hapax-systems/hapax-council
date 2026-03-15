@@ -203,10 +203,16 @@ async def send_message(session_id: str, req: SendRequest):
             )
         except Exception as e:
             log.exception("Chat generation error: %s", e)
+            is_rate_limit = "rate_limit" in str(e).lower()
             await queue.put(
                 {
                     "event": "error",
-                    "data": {"message": str(e), "recoverable": "rate_limit" in str(e).lower()},
+                    "data": {
+                        "message": "Rate limit exceeded, please retry"
+                        if is_rate_limit
+                        else "Internal error during chat generation",
+                        "recoverable": is_rate_limit,
+                    },
                 }
             )
         finally:
@@ -324,7 +330,12 @@ async def start_interview(session_id: str):
             )
         except Exception as e:
             log.exception("Interview start error: %s", e)
-            await queue.put({"event": "error", "data": {"message": str(e), "recoverable": False}})
+            await queue.put(
+                {
+                    "event": "error",
+                    "data": {"message": "Internal error starting interview", "recoverable": False},
+                }
+            )
         finally:
             await queue.put(None)
             try:
