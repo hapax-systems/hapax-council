@@ -93,7 +93,11 @@ def should_deliver_briefing(
     except (json.JSONDecodeError, OSError):
         return True  # graceful degradation
 
+    _KNOWN_STATES = {"STILL", "WALKING", "RUNNING", "UNKNOWN"}
     state = data.get("state", "UNKNOWN")
+    if state not in _KNOWN_STATES:
+        log.warning("Unknown activity state: %s, treating as UNKNOWN", state)
+        state = "UNKNOWN"
 
     # STILL likely means asleep before 09:00
     return state != "STILL"
