@@ -138,9 +138,7 @@ class TestFeedbackConsentPropagation(unittest.TestCase):
         label: ConsentLabel | None,
         timestamp: float = 1.0,
     ) -> None:
-        event = ActuationEvent(
-            action=action, wall_time=timestamp, consent_label=label
-        )
+        event = ActuationEvent(action=action, wall_time=timestamp, consent_label=label)
         actuation_event.emit(timestamp, event)
 
     def test_mc_fire_propagates_consent_label(self):

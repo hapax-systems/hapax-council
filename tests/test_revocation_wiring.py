@@ -54,7 +54,10 @@ def _make_carrier_with_fact(
     labeled = Labeled(value="test-value", label=label, provenance=frozenset({contract_id}))
     now = time.monotonic()
     fact = CarrierFact(
-        labeled=labeled, source_domain=domain, first_seen=now, last_seen=now,
+        labeled=labeled,
+        source_domain=domain,
+        first_seen=now,
+        last_seen=now,
     )
     registry.offer(principal_id, fact)
     return registry
@@ -185,13 +188,17 @@ class TestRevocationCarrierCascade(unittest.TestCase):
         # Fact with c1 provenance (should be purged)
         label1 = ConsentLabel(frozenset({"c1"}))
         labeled1 = Labeled(value="alice-data", label=label1, provenance=frozenset({"c1"}))
-        fact1 = CarrierFact(labeled=labeled1, source_domain="domain-1", first_seen=now, last_seen=now)
+        fact1 = CarrierFact(
+            labeled=labeled1, source_domain="domain-1", first_seen=now, last_seen=now
+        )
         carrier.offer("agent-a", fact1)
 
         # Fact with c2 provenance (should survive)
         label2 = ConsentLabel(frozenset({"c2"}))
         labeled2 = Labeled(value="bob-data", label=label2, provenance=frozenset({"c2"}))
-        fact2 = CarrierFact(labeled=labeled2, source_domain="domain-2", first_seen=now + 1, last_seen=now + 1)
+        fact2 = CarrierFact(
+            labeled=labeled2, source_domain="domain-2", first_seen=now + 1, last_seen=now + 1
+        )
         carrier.offer("agent-a", fact2)
 
         prop = RevocationPropagator(cr)

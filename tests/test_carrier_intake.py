@@ -71,19 +71,16 @@ class TestParseCarrierFact(unittest.TestCase):
     def test_missing_carrier_value_uses_body(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "test.md"
-            path.write_text("---\ncarrier: true\nsource_domain: drift\n---\nThe body is the value.\n")
+            path.write_text(
+                "---\ncarrier: true\nsource_domain: drift\n---\nThe body is the value.\n"
+            )
             fact = parse_carrier_fact(path)
             assert fact is not None
             assert fact.labeled.value == "The body is the value."
 
     def test_consent_label_extracted(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            extra = (
-                "consent_label:\n"
-                "  policies:\n"
-                '    - owner: "alice"\n'
-                '      readers: ["bob"]'
-            )
+            extra = 'consent_label:\n  policies:\n    - owner: "alice"\n      readers: ["bob"]'
             path = _write_carrier_file(Path(tmpdir), extra_frontmatter=extra)
             fact = parse_carrier_fact(path)
             assert fact is not None
@@ -134,12 +131,7 @@ class TestIntakeCarrierFact(unittest.TestCase):
     def test_consent_flow_violation_rejected(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             # File has a restrictive label (alice+bob)
-            extra = (
-                "consent_label:\n"
-                "  policies:\n"
-                '    - owner: "alice"\n'
-                '      readers: ["bob"]'
-            )
+            extra = 'consent_label:\n  policies:\n    - owner: "alice"\n      readers: ["bob"]'
             path = _write_carrier_file(Path(tmpdir), extra_frontmatter=extra)
             reg = self._make_registry()
             # Require bottom (public) — alice-restricted cannot flow to public
@@ -150,12 +142,7 @@ class TestIntakeCarrierFact(unittest.TestCase):
 
     def test_consent_flow_allowed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            extra = (
-                "consent_label:\n"
-                "  policies:\n"
-                '    - owner: "alice"\n'
-                '      readers: ["bob"]'
-            )
+            extra = 'consent_label:\n  policies:\n    - owner: "alice"\n      readers: ["bob"]'
             path = _write_carrier_file(Path(tmpdir), extra_frontmatter=extra)
             reg = self._make_registry()
             required = ConsentLabel(frozenset({("alice", frozenset({"bob"}))}))
@@ -265,14 +252,14 @@ class TestCarrierIntakeHypothesis(unittest.TestCase):
 
     @given(
         domain=st.text(min_size=1, max_size=10, alphabet="abcdefghij"),
-        value=st.text(min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L", "N"))),
+        value=st.text(
+            min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L", "N"))
+        ),
     )
     def test_parsed_fact_preserves_domain_and_value(self, domain: str, value: str):
         """parse_carrier_fact preserves source_domain and carrier_value."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = _write_carrier_file(
-                Path(tmpdir), source_domain=domain, carrier_value=value
-            )
+            path = _write_carrier_file(Path(tmpdir), source_domain=domain, carrier_value=value)
             fact = parse_carrier_fact(path, now=1.0)
             assert fact is not None
             assert fact.source_domain == domain
@@ -280,14 +267,14 @@ class TestCarrierIntakeHypothesis(unittest.TestCase):
 
     @given(
         domain=st.text(min_size=1, max_size=10, alphabet="abcdefghij"),
-        value=st.text(min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L", "N"))),
+        value=st.text(
+            min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L", "N"))
+        ),
     )
     def test_intake_accepted_iff_registry_has_capacity(self, domain: str, value: str):
         """Valid carrier fact is accepted when registry has capacity."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = _write_carrier_file(
-                Path(tmpdir), source_domain=domain, carrier_value=value
-            )
+            path = _write_carrier_file(Path(tmpdir), source_domain=domain, carrier_value=value)
             reg = CarrierRegistry()
             reg.register("op", 5)
             result = intake_carrier_fact(path, "op", reg, now=1.0)

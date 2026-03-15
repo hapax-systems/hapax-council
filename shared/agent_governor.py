@@ -46,13 +46,9 @@ def _interpersonal_transparency_policies(
 
     if role in ("subject", "enforcer"):
         # Input: data must have valid consent for this agent to process
-        input_policies.append(
-            consent_input_policy(ConsentLabel.bottom())
-        )
+        input_policies.append(consent_input_policy(ConsentLabel.bottom()))
         # Output: agent must not produce data with labels it doesn't hold
-        output_policies.append(
-            consent_output_policy(ConsentLabel.bottom())
-        )
+        output_policies.append(consent_output_policy(ConsentLabel.bottom()))
 
     return input_policies, output_policies
 
@@ -91,9 +87,7 @@ def _corporate_boundary_policies(
 # Registry of axiom ID → policy builder
 _AXIOM_POLICY_BUILDERS: dict[
     str,
-    type[
-        tuple[list[GovernorPolicy], list[GovernorPolicy]]
-    ],
+    type[tuple[list[GovernorPolicy], list[GovernorPolicy]]],
 ] = {}
 
 _AXIOM_BUILDERS = {
