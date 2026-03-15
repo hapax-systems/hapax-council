@@ -238,6 +238,16 @@ class VoiceDaemon:
         self.notifications.set_event_log(self.event_log)
         self.workspace_monitor.set_event_log(self.event_log)
 
+        # Consent tracking (interpersonal_transparency axiom)
+        from agents.hapax_voice.consent_state import ConsentStateTracker
+
+        self.consent_tracker = ConsentStateTracker(
+            debounce_s=self.cfg.consent_debounce_s,
+            absence_clear_s=self.cfg.consent_absence_clear_s,
+        )
+        self.consent_tracker.set_event_log(self.event_log)
+        self._consent_session_active = False
+
         # Actuation layer
         self.schedule_queue = ScheduleQueue()
         self.executor_registry = ExecutorRegistry()
@@ -763,6 +773,115 @@ class VoiceDaemon:
         self.event_log.set_session_id(None)
         self.session.close(reason=reason)
 
+    async def _run_consent_session(self) -> None:
+        """Run a voice consent session for a detected guest.
+
+        Builds a separate Pipecat pipeline with the consent system prompt
+        and consent-only tools. The LLM explains what the system records
+        and understands the guest's natural language response.
+
+        Guards:
+        - Only runs when main voice session is inactive (audio transport free)
+        - Sets _consent_session_active flag to prevent concurrent launches
+        - Times out after consent_session_timeout_s
+        - All exceptions are caught (non-fatal)
+        """
+        if self._consent_session_active:
+            return
+
+        self._consent_session_active = True
+        self.event_log.emit("consent_session_start")
+        log.info("Starting consent voice session for detected guest")
+
+        try:
+            from agents.hapax_voice.consent_session import (
+                CONSENT_SYSTEM_PROMPT,
+                CONSENT_TOOL_SCHEMAS,
+                build_consent_tools_for_llm,
+            )
+            from agents.hapax_voice.pipeline import _build_llm, _build_stt, _build_tts
+
+            # Build minimal pipeline components
+            stt = _build_stt(self.cfg.local_stt_model)
+            llm = _build_llm(self.cfg.llm_model, CONSENT_SYSTEM_PROMPT)
+            tts = _build_tts(self.cfg.kokoro_voice)
+
+            # Register consent tools (only 2: record_decision, request_clarification)
+            consent_state = build_consent_tools_for_llm(
+                llm,
+                consent_tracker=self.consent_tracker,
+                event_log=self.event_log,
+            )
+
+            # Build and run pipeline
+            from pipecat.pipeline.pipeline import Pipeline
+            from pipecat.pipeline.task import PipelineTask
+            from pipecat.processors.aggregators.openai_llm_context import (
+                LLMContext,
+                LLMContextAggregatorPair,
+            )
+            from pipecat.transports.local.audio import LocalAudioTransport
+
+            transport = LocalAudioTransport(
+                input_name=self.cfg.audio_input_source,
+            )
+
+            context = LLMContext(
+                messages=[{"role": "system", "content": CONSENT_SYSTEM_PROMPT}],
+                tools=CONSENT_TOOL_SCHEMAS,
+            )
+            context_aggregator = LLMContextAggregatorPair(context)
+
+            pipeline = Pipeline(
+                processors=[
+                    transport.input(),
+                    stt,
+                    context_aggregator.user(),
+                    llm,
+                    tts,
+                    transport.output(),
+                    context_aggregator.assistant(),
+                ]
+            )
+
+            task = PipelineTask(pipeline)
+
+            # Run with timeout
+            from pipecat.pipeline.runner import PipelineRunner
+
+            runner = PipelineRunner()
+
+            async def _run_with_timeout():
+                try:
+                    await asyncio.wait_for(
+                        runner.run(task),
+                        timeout=self.cfg.consent_session_timeout_s,
+                    )
+                except TimeoutError:
+                    log.info("Consent session timed out — curtailment continues")
+                    await task.cancel()
+
+            await _run_with_timeout()
+
+            # Log outcome
+            if consent_state.resolved:
+                log.info(
+                    "Consent session resolved: %s (scope: %s)",
+                    consent_state.decision,
+                    consent_state.scope,
+                )
+            else:
+                log.info("Consent session ended without resolution — curtailment continues")
+
+        except Exception:
+            log.exception("Consent session failed (non-fatal, curtailment continues)")
+        finally:
+            self._consent_session_active = False
+            self.event_log.emit(
+                "consent_session_end",
+                resolved=getattr(consent_state, "resolved", False) if "consent_state" in dir() else False,
+            )
+
     async def _handle_scan(self) -> None:
         """Capture a high-res frame from BRIO and extract text via Gemini."""
         if not self.workspace_monitor.has_camera("operator"):
@@ -923,6 +1042,28 @@ class VoiceDaemon:
 
                 # Write perception state for external consumers (compositor overlay)
                 write_perception_state(self.perception, self.consent_registry)
+
+                # Consent state tracking (interpersonal_transparency axiom)
+                # Pure function: no I/O, no blocking, just state transitions
+                try:
+                    speaker_is_op = not self.session.is_active or getattr(
+                        self.session, "speaker", "ryan"
+                    ) == "ryan"
+                    self.consent_tracker.tick(
+                        face_count=state.face_count,
+                        speaker_is_operator=speaker_is_op,
+                        now=state.timestamp,
+                    )
+
+                    # Launch consent voice session when needed
+                    if (
+                        self.consent_tracker.needs_notification
+                        and not self.session.is_active
+                        and not self._consent_session_active
+                    ):
+                        asyncio.create_task(self._run_consent_session())
+                except Exception:
+                    log.debug("Consent tracker error (non-fatal)", exc_info=True)
 
             except asyncio.CancelledError:
                 break
