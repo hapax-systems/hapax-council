@@ -380,12 +380,30 @@ def collect_governance_heartbeat() -> GovernanceHeartbeat:
     except Exception:
         components["authority_health"] = 0.5
 
+    # 5. Historical data audit status
+    try:
+        audit_report = PROFILES_DIR / "consent-audit-report.json"
+        if audit_report.exists():
+            audit = json.loads(audit_report.read_text())
+            flagged = audit.get("flagged", 0)
+            if flagged > 0:
+                components["historical_audit"] = max(0.2, 1.0 - (flagged * 0.1))
+                issues.append(f"{flagged} historical document(s) flagged for consent review")
+            else:
+                components["historical_audit"] = 1.0
+        else:
+            components["historical_audit"] = 0.6
+            issues.append("No consent audit has been run (use: uv run python -m agents.consent_audit --scan --report)")
+    except Exception:
+        components["historical_audit"] = 0.5
+
     # Composite score (weighted average)
     weights = {
-        "consent_coverage": 0.3,
-        "gate_health": 0.3,
-        "contract_freshness": 0.2,
-        "authority_health": 0.2,
+        "consent_coverage": 0.25,
+        "gate_health": 0.25,
+        "contract_freshness": 0.15,
+        "authority_health": 0.15,
+        "historical_audit": 0.2,
     }
     score = sum(components.get(k, 0) * w for k, w in weights.items())
     score = round(min(1.0, max(0.0, score)), 2)
