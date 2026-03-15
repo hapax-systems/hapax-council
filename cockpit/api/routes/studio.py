@@ -7,6 +7,7 @@ search over the studio_moments Qdrant collection.
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,15 @@ router = APIRouter(prefix="/api", tags=["studio"])
 
 
 def _dict_factory(fields: list[tuple]) -> dict:
-    return {k: str(v) if isinstance(v, Path) else v for k, v in fields}
+    result = {}
+    for k, v in fields:
+        if isinstance(v, Path):
+            result[k] = str(v)
+        elif isinstance(v, datetime):
+            result[k] = v.isoformat()
+        else:
+            result[k] = v
+    return result
 
 
 def _to_dict(obj: Any) -> Any:
