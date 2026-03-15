@@ -54,9 +54,9 @@ def _registry() -> RuleRegistry:
 
 
 class TestRegistration:
-    def test_registers_five_rules(self):
+    def test_registers_all_rules(self):
         reg = _registry()
-        assert len(reg) == 6
+        assert len(reg) == 8
 
     def test_rule_names(self):
         reg = _registry()
@@ -68,16 +68,20 @@ class TestRegistration:
             "rag-source-landed",
             "carrier-intake",
             "knowledge-maintenance",
+            "audio-archive-sidecar",
+            "audio-clap-indexed",
         }
 
     def test_phase_zero_rules(self):
         phase0 = [r for r in ALL_RULES if r.phase == 0]
-        assert len(phase0) == 4
+        assert len(phase0) == 5
 
     def test_phase_one_rules(self):
         phase1 = [r for r in ALL_RULES if r.phase == 1]
-        assert len(phase1) == 1
-        assert phase1[0].name == "rag-source-landed"
+        assert len(phase1) == 2
+        phase1_names = {r.name for r in phase1}
+        assert "rag-source-landed" in phase1_names
+        assert "audio-clap-indexed" in phase1_names
 
     def test_phase_two_rules(self):
         phase2 = [r for r in ALL_RULES if r.phase == 2]

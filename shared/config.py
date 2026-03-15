@@ -56,6 +56,12 @@ COCKPIT_STATE_DIR: Path = HAPAX_CACHE_DIR / "cockpit"
 HEALTH_STATE_DIR: Path = HAPAX_CACHE_DIR / "health-watchdog"
 RAG_INGEST_STATE_DIR: Path = HAPAX_CACHE_DIR / "rag-ingest"
 TAKEOUT_STATE_DIR: Path = HAPAX_CACHE_DIR / "takeout-ingest"
+AUDIO_PROCESSOR_CACHE_DIR: Path = HAPAX_CACHE_DIR / "audio-processor"
+
+# Studio ingestion paths
+AUDIO_RAW_DIR: Path = HAPAX_HOME / "audio-recording" / "raw"
+AUDIO_ARCHIVE_DIR: Path = HAPAX_HOME / "audio-recording" / "archive"
+AUDIO_RAG_DIR: Path = HAPAX_HOME / "documents" / "rag-sources" / "audio"
 
 # Project directories (for agents that reference other repos)
 # Current 4-repo structure (2026-03-13)
@@ -84,6 +90,12 @@ MODELS: dict[str, str] = {
 
 EMBEDDING_MODEL: str = "nomic-embed-text-v2-moe"
 EXPECTED_EMBED_DIMENSIONS: int = 768
+
+# CLAP (audio-text) embedding dimensions
+CLAP_EMBED_DIMENSIONS: int = 512
+
+# Qdrant collections
+STUDIO_MOMENTS_COLLECTION: str = "studio-moments"
 
 
 # ── Factories ────────────────────────────────────────────────────────────────
@@ -283,4 +295,28 @@ def validate_embed_dimensions() -> None:
         raise RuntimeError(
             f"Embedding model returned {len(test)}d, expected {EXPECTED_EMBED_DIMENSIONS}d. "
             f"Check EMBED_MODEL={EMBEDDING_MODEL}"
+        )
+
+
+def ensure_studio_moments_collection() -> None:
+    """Create the studio-moments Qdrant collection if it does not exist.
+
+    Uses CLAP 512-dim vectors with cosine distance. Idempotent.
+    """
+    from qdrant_client.models import Distance, VectorParams
+
+    client = get_qdrant()
+    collections = [c.name for c in client.get_collections().collections]
+    if STUDIO_MOMENTS_COLLECTION not in collections:
+        client.create_collection(
+            collection_name=STUDIO_MOMENTS_COLLECTION,
+            vectors_config=VectorParams(
+                size=CLAP_EMBED_DIMENSIONS,
+                distance=Distance.COSINE,
+            ),
+        )
+        _log.info(
+            "Created Qdrant collection '%s' (%d-dim, cosine)",
+            STUDIO_MOMENTS_COLLECTION,
+            CLAP_EMBED_DIMENSIONS,
         )

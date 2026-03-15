@@ -4,9 +4,11 @@ Phase 0 (deterministic):
 - collector-refresh: refresh cockpit cache tier on profiles/ changes
 - config-changed: log axiom registry reload on axioms/registry.yaml change
 - sdlc-event-logged: notify + cache refresh on SDLC event append
+- audio-archive-sidecar: log new audio archive sidecars
 
 Phase 1 (local GPU):
 - rag-source-landed: ingest new RAG source files via Ollama embeddings
+- audio-clap-indexed: trigger RAG ingest after audio CLAP indexing
 
 Phase 2 (cloud LLM):
 - knowledge-maintenance: run maintenance after profiles/ changes settle (quiet window)
@@ -420,6 +422,94 @@ CARRIER_INTAKE_RULE = Rule(
 )
 
 
+# ── Phase 0/1: Audio archive & CLAP indexing rules ──────────────────────────
+
+
+async def _handle_audio_archive_sidecar(*, path: str) -> str:
+    """Log that a new audio archive sidecar was written."""
+    _log.info("Audio archive sidecar created: %s", path)
+    return f"audio-sidecar:{path}"
+
+
+def _audio_archive_sidecar_filter(event: ChangeEvent) -> bool:
+    """Match new .md sidecar files in the audio archive directory."""
+    if event.event_type != "created":
+        return False
+    path_str = str(event.path)
+    return "audio-recording/archive" in path_str and event.path.suffix == ".md"
+
+
+def _audio_archive_sidecar_produce(event: ChangeEvent) -> list[Action]:
+    return [
+        Action(
+            name=f"audio-archive-sidecar:{event.path.name}",
+            handler=_handle_audio_archive_sidecar,
+            args={"path": str(event.path)},
+            phase=0,
+            priority=15,
+        )
+    ]
+
+
+AUDIO_ARCHIVE_SIDECAR_RULE = Rule(
+    name="audio-archive-sidecar",
+    description="Log new audio archive sidecars (Phase 0, deterministic)",
+    trigger_filter=_audio_archive_sidecar_filter,
+    produce=_audio_archive_sidecar_produce,
+    phase=0,
+    cooldown_s=0,
+)
+
+
+async def _handle_audio_clap_indexed(*, path: str) -> str:
+    """Trigger RAG ingest for CLAP-indexed audio RAG documents."""
+    from pathlib import Path as _Path
+
+    from agents.ingest import ingest_file
+
+    file_path = _Path(path)
+    success, error = await asyncio.to_thread(ingest_file, file_path)
+    if success:
+        _log.info("CLAP-indexed audio RAG ingested: %s", file_path.name)
+        return f"clap-ingested:{file_path.name}"
+    else:
+        _log.warning("CLAP audio ingest failed for %s: %s", file_path.name, error)
+        raise RuntimeError(f"CLAP audio ingest failed: {error}")
+
+
+def _audio_clap_indexed_filter(event: ChangeEvent) -> bool:
+    """Match new audio RAG documents (listening-*, sample-*, note-*, conv-*)."""
+    if event.event_type != "created":
+        return False
+    path_str = str(event.path)
+    if "rag-sources/audio" not in path_str:
+        return False
+    name = event.path.name
+    return name.startswith(("listening-", "sample-", "note-", "conv-"))
+
+
+def _audio_clap_indexed_produce(event: ChangeEvent) -> list[Action]:
+    return [
+        Action(
+            name=f"audio-clap-indexed:{event.path.name}",
+            handler=_handle_audio_clap_indexed,
+            args={"path": str(event.path)},
+            phase=1,
+            priority=55,
+        )
+    ]
+
+
+AUDIO_CLAP_INDEXED_RULE = Rule(
+    name="audio-clap-indexed",
+    description="Ingest CLAP-indexed audio RAG documents via local GPU embeddings",
+    trigger_filter=_audio_clap_indexed_filter,
+    produce=_audio_clap_indexed_produce,
+    phase=1,
+    cooldown_s=0,
+)
+
+
 # ── Registration ────────────────────────────────────────────────────────────
 
 ALL_RULES: list[Rule] = [
@@ -446,6 +536,8 @@ ALL_RULES: list[Rule] = [
         cooldown_s=30,
     ),
     RAG_SOURCE_RULE,
+    AUDIO_ARCHIVE_SIDECAR_RULE,
+    AUDIO_CLAP_INDEXED_RULE,
     CARRIER_INTAKE_RULE,
     KNOWLEDGE_MAINT_RULE,
 ]
