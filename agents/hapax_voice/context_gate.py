@@ -153,6 +153,8 @@ class ContextGate:
         b = self._behaviors.get("active_window_class")
         if b is None:
             return True  # fail-open: activity_mode catches meetings via slow-tick
+        if not isinstance(b.value, (str, int, float, bool)):
+            return True  # non-simple type, skip veto check
         window_class = str(b.value).lower()
         if window_class in self._fullscreen_block_classes:
             self._denial_reasons["fullscreen_app"] = f"Blocked: fullscreen app '{b.value}'"
