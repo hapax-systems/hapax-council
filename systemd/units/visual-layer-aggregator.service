@@ -1,18 +1,18 @@
 [Unit]
-Description=Visual Layer Signal Aggregator — polls cockpit API, writes display state
-After=network.target
+Description=Visual Layer Aggregator — polls cockpit API and perception state for compositor overlay
+After=cockpit-api.service hapax-voice.service
 Wants=cockpit-api.service
-OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple
 WorkingDirectory=/home/hapax/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-voice.env
 ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.visual_layer_aggregator
 Restart=on-failure
 RestartSec=10
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
-MemoryMax=512M
+MemoryMax=256M
 SyslogIdentifier=visual-layer-aggregator
 
 [Install]
