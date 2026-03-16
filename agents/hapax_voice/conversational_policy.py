@@ -86,13 +86,17 @@ _OPERATOR_STYLE = (
 # ── Profile Loading ──────────────────────────────────────────────────────────
 
 
-def _load_communication_style() -> str | None:
-    """Load communication_style summary from operator digest. Returns None on failure."""
+def _load_profile_summary() -> str | None:
+    """Load the overall operator profile summary from digest.
+
+    This gives the LLM actual knowledge of who the operator is —
+    identity, cognitive style, values, communication preferences.
+    """
     try:
         data = json.loads(_DIGEST_PATH.read_text())
-        return data["dimensions"]["communication_style"]["summary"]
+        return data.get("overall_summary")
     except (FileNotFoundError, KeyError, json.JSONDecodeError):
-        log.debug("Could not load communication_style from digest")
+        log.debug("Could not load profile summary from digest")
         return None
 
 
@@ -251,10 +255,15 @@ def get_policy(
         if consent_phase == "pending_consent":
             return _format_block(sections)
 
-    # 3. Interview-derived operator style (primary — rich, specific)
+    # 3. Operator profile (who is this person — from digest)
+    profile = _load_profile_summary()
+    if profile:
+        sections.append(f"Who Ryan is: {profile}")
+
+    # 4. Interview-derived operator style (primary — rich, specific)
     sections.append(_OPERATOR_STYLE)
 
-    # 4. Environmental modulation
+    # 5. Environmental modulation
     env_rules = _modulate_for_environment(env, session_start)
     if env_rules:
         sections.append("Environment:\n" + "\n".join(f"- {r}" for r in env_rules))

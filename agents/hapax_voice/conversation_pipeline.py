@@ -200,10 +200,8 @@ class ConversationPipeline:
         # Refresh environment context before LLM call
         self._update_system_context()
 
-        # Bridge phrase: acknowledge before thinking so there's no dead air.
-        # Vary the phrase so it doesn't feel robotic.
+        # LLM → TTS
         self.state = ConvState.THINKING
-        await self._speak_bridge()
         await self._generate_and_speak()
 
         # Check limits
@@ -252,10 +250,6 @@ class ConversationPipeline:
             self.state = ConvState.SPEAKING
             if self.buffer:
                 self.buffer.set_speaking(True)
-                # Flush any audio captured before the flag was set —
-                # it's from the gap between utterance end and LLM response start,
-                # or from the bridge phrase echo. All of it is garbage.
-                self.buffer.get_utterance()
 
             async for chunk in response:
                 delta = chunk.choices[0].delta if chunk.choices else None
@@ -292,6 +286,10 @@ class ConversationPipeline:
                         sentence = sentence.strip()
                         if sentence and len(sentence.split()) >= _MIN_SENTENCE_WORDS:
                             await self._speak_sentence(sentence)
+                            # Barge-in: operator spoke over us — stop and yield
+                            if self.buffer and self.buffer.barge_in_detected:
+                                log.info("Barge-in: cutting response short")
+                                break
                     accumulated = parts[-1]
                     accumulation_start = time.monotonic()
                 elif (time.monotonic() - accumulation_start) > _MAX_ACCUMULATION_S:
@@ -300,14 +298,22 @@ class ConversationPipeline:
                         accumulated = ""
                         accumulation_start = time.monotonic()
 
-            # Flush remaining text
-            if accumulated.strip():
+                # Barge-in: break out of LLM stream
+                if self.buffer and self.buffer.barge_in_detected:
+                    break
+
+            # Flush remaining text (skip if barge-in — operator is talking)
+            if accumulated.strip() and not (self.buffer and self.buffer.barge_in_detected):
                 await self._speak_sentence(accumulated.strip())
 
-            # Record assistant message
+            # Record assistant message (even partial on barge-in)
             if full_text:
                 self.messages.append({"role": "assistant", "content": full_text})
-                self._emit("assistant_response", text=full_text)
+                if self.buffer and self.buffer.barge_in_detected:
+                    self._emit("assistant_interrupted", text=full_text)
+                    self._emit("user_interrupted", turn=self.turn_count)
+                else:
+                    self._emit("assistant_response", text=full_text)
                 self._last_assistant_end = time.monotonic()
 
             # Handle tool calls
@@ -321,13 +327,6 @@ class ConversationPipeline:
             log.exception("LLM generation failed")
             await self._speak_sentence("Sorry, something went wrong.")
         finally:
-            # Guard period: keep mic suppressed while audio output drains
-            # and room echo decays. Without this, the Yeti picks up the tail
-            # of TTS playback and feeds it back as a user utterance.
-            await asyncio.sleep(1.0)
-            # Flush any echo audio that accumulated during the guard
-            if self.buffer:
-                self.buffer.get_utterance()
             if self.buffer:
                 self.buffer.set_speaking(False)
 
@@ -417,13 +416,11 @@ class ConversationPipeline:
         phrase = phrases[self._bridge_idx % len(phrases)]
         self._bridge_idx += 1
 
-        # Suppress mic during bridge to prevent echo feedback
+        # Suppress mic during bridge phrase
         if self.buffer:
             self.buffer.set_speaking(True)
         await self._speak_sentence(phrase)
-        await asyncio.sleep(0.6)
         if self.buffer:
-            self.buffer.get_utterance()  # flush echo
             self.buffer.set_speaking(False)
 
     # ── Observation Signals (Batch 4) ──────────────────────────────────
