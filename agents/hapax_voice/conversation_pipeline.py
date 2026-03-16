@@ -64,6 +64,7 @@ class ConversationPipeline:
         consent_reader=None,  # ConsentGatedReader | None
         env_context_fn: Callable[[], str] | None = None,
         ambient_fn: Callable[[], object | None] | None = None,
+        policy_fn: Callable[[], str] | None = None,
     ) -> None:
         self.stt = stt
         self.tts = tts_manager
@@ -77,6 +78,7 @@ class ConversationPipeline:
         self._consent_reader = consent_reader
         self._env_context_fn = env_context_fn
         self._ambient_fn = ambient_fn
+        self._policy_fn = policy_fn
 
         self.state = ConvState.IDLE
         self.messages: list[dict] = []
@@ -121,23 +123,35 @@ class ConversationPipeline:
         log.info("Conversation pipeline stopped (%d turns)", self.turn_count)
 
     def _update_system_context(self) -> None:
-        """Refresh system message with current environment TOON block."""
-        if self._env_context_fn is None or not self.messages:
+        """Refresh system message with current environment and policy blocks."""
+        if not self.messages:
             return
-        try:
-            env_toon = self._env_context_fn()
-            if not env_toon:
-                return
-            env_hash = hash(env_toon)
-            if env_hash == self._last_env_hash:
-                return
-            self._last_env_hash = env_hash
-            # Mutate system message in-place: base prompt + env block
-            self.messages[0]["content"] = (
-                self.system_prompt + "\n\n## Current Environment\n" + env_toon
-            )
-        except Exception:
-            log.debug("env_context_fn failed (non-fatal)", exc_info=True)
+
+        updated = self.system_prompt
+
+        # Refresh conversational policy (adapts to environment changes)
+        if self._policy_fn is not None:
+            try:
+                policy = self._policy_fn()
+                if policy:
+                    updated += policy
+            except Exception:
+                log.debug("policy_fn failed (non-fatal)", exc_info=True)
+
+        # Append environment TOON block
+        if self._env_context_fn is not None:
+            try:
+                env_toon = self._env_context_fn()
+                if env_toon:
+                    updated += "\n\n## Current Environment\n" + env_toon
+            except Exception:
+                log.debug("env_context_fn failed (non-fatal)", exc_info=True)
+
+        content_hash = hash(updated)
+        if content_hash == self._last_env_hash:
+            return
+        self._last_env_hash = content_hash
+        self.messages[0]["content"] = updated
 
     async def process_utterance(self, audio_bytes: bytes) -> None:
         """Process a complete utterance through STT → LLM → TTS.
