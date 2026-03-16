@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PRESETS, type OverlayType } from "./compositePresets";
+import { PRESETS, type CompositePreset } from "./compositePresets";
 import { SOURCE_FILTERS } from "./compositeFilters";
 import { useStudio, useStudioStreamInfo } from "../../api/hooks";
 import {
@@ -14,7 +14,12 @@ import {
   PanelRightOpen,
 } from "lucide-react";
 
-const ALL_OVERLAYS: OverlayType[] = ["scanlines", "rgbsplit", "vignette", "huecycle", "noise"];
+const EFFECT_TOGGLES: { key: keyof CompositePreset["effects"]; label: string }[] = [
+  { key: "scanlines", label: "Scanlines" },
+  { key: "bandDisplacement", label: "Glitch Bands" },
+  { key: "vignette", label: "Vignette" },
+  { key: "syrupGradient", label: "Syrup" },
+];
 
 interface Props {
   viewMode: "grid" | "composite" | "smooth";
@@ -25,9 +30,10 @@ interface Props {
   onLiveFilterChange: (i: number) => void;
   trailFilterIdx: number;
   onTrailFilterChange: (i: number) => void;
-  overlayOverrides: OverlayType[] | null;
-  onOverlayToggle: (ov: OverlayType) => void;
-  onOverlayReset: () => void;
+  effectOverrides: Partial<CompositePreset["effects"]> | null;
+  baseEffects: CompositePreset["effects"];
+  onEffectToggle: (key: keyof CompositePreset["effects"]) => void;
+  onEffectReset: () => void;
   heroRole: string | null;
   onHeroChange: (role: string) => void;
   onOrderReset: () => void;
@@ -43,9 +49,10 @@ export function StudioSidebar({
   onLiveFilterChange,
   trailFilterIdx,
   onTrailFilterChange,
-  overlayOverrides,
-  onOverlayToggle,
-  onOverlayReset,
+  effectOverrides,
+  baseEffects,
+  onEffectToggle,
+  onEffectReset,
   heroRole,
   onHeroChange,
   onOrderReset,
@@ -58,8 +65,9 @@ export function StudioSidebar({
   const [collapsed, setCollapsed] = useState(false);
 
   const isComposite = viewMode === "composite";
-  const activePreset = PRESETS[presetIdx];
-  const currentOverlays = overlayOverrides ?? activePreset.overlays;
+  const currentEffects = effectOverrides
+    ? { ...baseEffects, ...effectOverrides }
+    : baseEffects;
   const recordingCams = compositor?.recording_cameras ?? {};
   const isRecording = compositor?.recording_enabled ?? false;
 
@@ -243,33 +251,33 @@ export function StudioSidebar({
           </section>
         )}
 
-        {/* OVERLAYS (composite only) */}
+        {/* EFFECTS (composite only) */}
         {isComposite && (
           <section className="border-b border-zinc-800/50 px-3 py-2.5">
             <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              Overlays
+              Effects
             </h3>
             <div className="flex flex-wrap gap-1">
-              {ALL_OVERLAYS.map((ov) => {
-                const active = currentOverlays.includes(ov);
+              {EFFECT_TOGGLES.map(({ key, label }) => {
+                const active = !!currentEffects[key];
                 return (
                   <button
-                    key={ov}
-                    onClick={() => onOverlayToggle(ov)}
+                    key={key}
+                    onClick={() => onEffectToggle(key)}
                     className={`rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${
                       active
                         ? "bg-purple-900/50 text-purple-300"
                         : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-400"
                     }`}
                   >
-                    {ov}
+                    {label}
                   </button>
                 );
               })}
             </div>
-            {overlayOverrides !== null && (
+            {effectOverrides !== null && (
               <button
-                onClick={onOverlayReset}
+                onClick={onEffectReset}
                 className="mt-1.5 text-[10px] text-purple-400 hover:text-purple-300"
               >
                 Reset to preset
