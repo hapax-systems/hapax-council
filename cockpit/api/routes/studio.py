@@ -268,3 +268,35 @@ async def get_consent_status():
         }
     except (json.JSONDecodeError, OSError):
         return {"recording_allowed": True, "guest_present": False, "phase": "no_guest"}
+
+
+@router.get("/studio/visual-layer")
+async def get_visual_layer_state():
+    """Current visual layer state from the aggregator.
+
+    Returns the display state machine output: display state, zone opacities,
+    active signals per category, and ambient shader parameters.
+    """
+    import json
+
+    vl_path = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
+    if not vl_path.exists():
+        return {
+            "available": False,
+            "display_state": "ambient",
+            "zone_opacities": {},
+            "signals": {},
+            "ambient_params": {},
+        }
+    try:
+        data = json.loads(vl_path.read_text())
+        data["available"] = True
+        return data
+    except (json.JSONDecodeError, OSError):
+        return {
+            "available": False,
+            "display_state": "ambient",
+            "zone_opacities": {},
+            "signals": {},
+            "ambient_params": {},
+        }
