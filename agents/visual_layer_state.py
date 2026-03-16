@@ -174,6 +174,8 @@ class VisualLayerState(BaseModel):
     ambient_text: str = ""  # Dynamic ambient fragment (replaces hardcoded list)
     activity_label: str = ""  # What Hapax thinks operator is doing
     activity_detail: str = ""  # Supporting detail (app, genre, etc.)
+    display_density: str = "ambient"  # Content density mode from scheduler
+    scheduler_source: str = ""  # Last content source the scheduler selected
     timestamp: float = 0.0
 
 

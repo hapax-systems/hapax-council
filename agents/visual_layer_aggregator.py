@@ -17,7 +17,6 @@ import asyncio
 import json
 import logging
 import os
-import random
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +24,13 @@ from typing import Any
 
 import httpx
 
+from agents.content_scheduler import (
+    ContentPools,
+    ContentScheduler,
+    ContentSource,
+    SchedulerContext,
+    SchedulerDecision,
+)
 from agents.visual_layer_state import (
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
@@ -399,16 +405,14 @@ class VisualLayerAggregator:
         self._voice_content: list[SupplementaryContent] = []
         self._biometrics = BiometricState()
 
-        # Ambient content rotation
+        # Content scheduler (replaces _rotate_ambient_text + _maybe_inject_camera)
+        self._scheduler = ContentScheduler()
         self._ambient_text: str = ""
         self._ambient_facts: list[str] = []
+        self._nudge_titles: list[str] = []
+        self._ambient_moments: list[str] = []
         self._last_ambient_fetch: float = 0.0
-        self._last_ambient_rotate: float = 0.0
-        self._ambient_text_history: list[str] = []  # track recent to avoid repetition
-
-        # Camera feed injection
         self._injected_feeds: list[InjectedFeed] = []
-        self._last_feed_inject: float = 0.0
 
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
@@ -485,7 +489,7 @@ class VisualLayerAggregator:
             pass  # perception daemon may not be running
 
     async def poll_ambient_content(self) -> None:
-        """Fetch ambient content from cockpit API (profile facts, moments)."""
+        """Fetch ambient content from cockpit API (profile facts, moments, nudges)."""
         now = time.monotonic()
         if now - self._last_ambient_fetch < 300.0:  # refresh pool every 5 min
             return
@@ -496,71 +500,91 @@ class VisualLayerAggregator:
             facts = data.get("facts", [])
             if facts:
                 self._ambient_facts = facts
+            moments = data.get("moments", [])
+            if moments:
+                self._ambient_moments = moments
+            nudge_titles = data.get("nudge_titles", [])
+            if nudge_titles:
+                self._nudge_titles = nudge_titles
 
-    def _rotate_ambient_text(self) -> None:
-        """Pick a new ambient text fragment, avoiding recent repetition."""
-        now = time.monotonic()
-        interval = random.uniform(30.0, 90.0)
-        if now - self._last_ambient_rotate < interval:
-            return
-        self._last_ambient_rotate = now
-
-        if not self._ambient_facts:
-            return
-
-        # Filter out recently shown (last 30 min worth)
-        available = [f for f in self._ambient_facts if f not in self._ambient_text_history[-20:]]
-        if not available:
-            available = self._ambient_facts
-            self._ambient_text_history.clear()
-
-        self._ambient_text = random.choice(available)
-        self._ambient_text_history.append(self._ambient_text)
-
-    def _maybe_inject_camera(self, display_state: str) -> None:
-        """Decide whether to inject a camera feed for visual interest."""
+    def _run_scheduler(self, state: VisualLayerState) -> None:
+        """Run the content scheduler and apply its decision."""
         now = time.monotonic()
 
-        # Expire old injections
+        # Expire old camera injections
         self._injected_feeds = [
             f for f in self._injected_feeds if now - f.injected_at < f.duration_s
         ]
 
-        # Don't inject if we already have one or too recently
-        if self._injected_feeds or now - self._last_feed_inject < 120.0:
-            return
-
-        # Only inject in ambient state, occasionally
-        if display_state != "ambient":
-            return
-
-        # 15% chance per tick (every 15s -> roughly once per ~100s)
-        if random.random() > 0.15:
-            return
-
-        # Pick a random camera and filter
-        role = random.choice(CAMERA_ROLES)
-        css_filter = random.choice(CAMERA_FILTERS)
-        duration = random.uniform(30.0, 60.0)
-
-        # Random position in the right half
-        x = random.uniform(0.5, 0.7)
-        y = random.uniform(0.15, 0.55)
-
-        feed = InjectedFeed(
-            role=role,
-            x=x,
-            y=y,
-            w=random.uniform(0.25, 0.4),
-            h=random.uniform(0.25, 0.4),
-            opacity=random.uniform(0.3, 0.6),
-            css_filter=css_filter,
-            duration_s=duration,
-            injected_at=now,
+        activity_label, _ = self._infer_activity()
+        ctx = SchedulerContext(
+            activity=activity_label,
+            flow_score=self._flow_score,
+            audio_energy=self._audio_energy,
+            stress_elevated=self._biometrics.stress_elevated,
+            heart_rate=self._biometrics.heart_rate_bpm,
+            sleep_quality=self._biometrics.sleep_quality,
+            voice_active=self._voice_session.active,
+            display_state=state.display_state,
+            hour=datetime.now().hour,
+            signal_count=sum(len(v) for v in state.signals.values()),
         )
-        self._injected_feeds.append(feed)
-        self._last_feed_inject = now
-        log.debug("Injected camera feed: %s with %s", role, css_filter)
+
+        pools = ContentPools(
+            facts=self._ambient_facts,
+            moments=self._ambient_moments,
+            nudge_titles=self._nudge_titles,
+            camera_roles=CAMERA_ROLES,
+            camera_filters=CAMERA_FILTERS,
+        )
+
+        decision = self._scheduler.tick(ctx, pools, now=now)
+        if decision:
+            self._apply_scheduler_decision(decision, state, now)
+            state.scheduler_source = decision.source.value
+            state.display_density = self._scheduler._compute_density(ctx).value
+
+    def _apply_scheduler_decision(
+        self, decision: SchedulerDecision, state: VisualLayerState, now: float
+    ) -> None:
+        """Apply a scheduler decision to the visual layer state."""
+        if decision.source == ContentSource.PROFILE_FACT and decision.content:
+            self._ambient_text = decision.content
+
+        elif decision.source == ContentSource.CAMERA_FEED and decision.camera_role:
+            if not self._injected_feeds:  # don't stack camera feeds
+                feed = InjectedFeed(
+                    role=decision.camera_role,
+                    x=decision.camera_x,
+                    y=decision.camera_y,
+                    w=decision.camera_w,
+                    h=decision.camera_h,
+                    opacity=decision.camera_opacity,
+                    css_filter=decision.camera_filter,
+                    duration_s=decision.dwell_s,
+                    injected_at=now,
+                )
+                self._injected_feeds.append(feed)
+                log.debug("Scheduler injected camera: %s", decision.camera_role)
+
+        elif decision.content and decision.source in (
+            ContentSource.STUDIO_MOMENT,
+            ContentSource.SIGNAL_CARD,
+        ):
+            self._ambient_text = decision.content
+
+        # Apply shader nudge
+        nudge = decision.shader_nudge
+        state.ambient_params.speed = round(state.ambient_params.speed * nudge.speed_mult, 3)
+        state.ambient_params.turbulence = round(
+            state.ambient_params.turbulence * nudge.turbulence_mult, 3
+        )
+        state.ambient_params.color_warmth = round(
+            min(1.0, max(0.0, state.ambient_params.color_warmth + nudge.warmth_offset)), 3
+        )
+        state.ambient_params.brightness = round(
+            min(1.0, max(0.0, state.ambient_params.brightness + nudge.brightness_offset)), 3
+        )
 
     def _apply_biometric_modulation(self, params: Any) -> Any:
         """Modulate ambient params based on biometric state (Batch E).
@@ -678,11 +702,8 @@ class VisualLayerAggregator:
             production_active=self._production_active,
         )
 
-        # Rotate ambient content
-        self._rotate_ambient_text()
-
-        # Camera feed injection (Batch F)
-        self._maybe_inject_camera(state.display_state)
+        # Content scheduler: intelligent text rotation + camera injection + shader nudges
+        self._run_scheduler(state)
 
         # Apply biometric modulation (Batch E)
         state.ambient_params = self._apply_biometric_modulation(state.ambient_params)

@@ -351,7 +351,41 @@ async def get_ambient_content():
     except Exception:
         pass
 
-    return {"facts": facts, "moments": moments}
+    # Nudge titles for ambient text display
+    nudge_titles: list[str] = []
+    try:
+        nudges_data = cache.slow.get("nudges", [])
+        if isinstance(nudges_data, list):
+            for nudge in nudges_data[:5]:
+                title = nudge.get("title", "")
+                if title:
+                    nudge_titles.append(title[:80])
+    except Exception:
+        pass
+
+    # Weather conditions (if available from perception or cache)
+    weather: str = ""
+    try:
+        import json as _json
+
+        weather_path = Path.home() / ".cache" / "hapax" / "weather.json"
+        if weather_path.exists():
+            w = _json.loads(weather_path.read_text())
+            condition = w.get("condition", "")
+            temp = w.get("temperature_c")
+            if condition:
+                weather = f"{condition}"
+                if temp is not None:
+                    weather += f" {temp}°C"
+    except Exception:
+        pass
+
+    return {
+        "facts": facts,
+        "moments": moments,
+        "nudge_titles": nudge_titles,
+        "weather": weather,
+    }
 
 
 class ActivityCorrectionRequest(BaseModel):
