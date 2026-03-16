@@ -8,13 +8,41 @@ from pathlib import Path
 
 import pytest
 
-try:
-    import imageio_ffmpeg
 
-    _HAS_FFMPEG = bool(imageio_ffmpeg.get_ffmpeg_exe())
-except (ModuleNotFoundError, RuntimeError):
-    _HAS_FFMPEG = False
-pytestmark = pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg not available")
+def _ffmpeg_can_encode() -> bool:
+    """Check that ffmpeg can actually convert a WAV to MP3."""
+    import tempfile
+
+    try:
+        import imageio_ffmpeg
+
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        if not ffmpeg:
+            return False
+    except (ModuleNotFoundError, RuntimeError):
+        return False
+
+    import subprocess
+    import wave
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = Path(tmp) / "probe.wav"
+        mp3 = Path(tmp) / "probe.mp3"
+        with wave.open(str(wav), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(8000)
+            wf.writeframes(b"\x00\x00" * 800)
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", str(wav), "-b:a", "64k", str(mp3)],
+            capture_output=True,
+            text=True,
+        )
+        return r.returncode == 0 and mp3.exists()
+
+
+_HAS_FFMPEG = _ffmpeg_can_encode()
+pytestmark = pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg not available or cannot encode")
 
 from agents.demo_pipeline.audio_convert import (  # noqa: E402
     convert_all_wav_to_mp3,

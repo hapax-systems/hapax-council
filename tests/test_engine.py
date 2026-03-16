@@ -465,7 +465,7 @@ class TestDirectoryWatcher:
 
 
 class TestReactiveEngine:
-    @patch("cockpit.engine.watcher.DirectoryWatcher")
+    @patch("cockpit.engine.DirectoryWatcher")
     async def test_lifecycle_start_stop(self, mock_watcher_cls):
         from cockpit.engine import ReactiveEngine
 
@@ -507,7 +507,7 @@ class TestReactiveEngine:
         engine = ReactiveEngine(data_dir=Path("/tmp/test"))
         assert len(engine.registry) == 0
 
-    @patch("cockpit.engine.watcher.DirectoryWatcher")
+    @patch("cockpit.engine.DirectoryWatcher")
     async def test_handle_change_paused(self, mock_watcher_cls):
         from cockpit.engine import ReactiveEngine
 
