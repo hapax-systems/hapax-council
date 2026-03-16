@@ -559,6 +559,9 @@ class StudioCompositor:
         # Snapshot branch
         self._add_snapshot_branch(pipeline, output_tee)
 
+        # GPU effects branch
+        self._add_effects_branch(pipeline, output_tee)
+
         return pipeline
 
     def _add_snapshot_branch(self, pipeline: Any, tee: Any) -> None:
@@ -627,6 +630,399 @@ class StudioCompositor:
         tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
         queue_sink = queue.get_static_pad("sink")
         tee_pad.link(queue_sink)
+
+    def _add_effects_branch(self, pipeline: Any, tee: Any) -> None:
+        """Add GPU-accelerated visual effects branch.
+
+        Pipeline: tee → queue → videoconvert(RGBA) → glupload → glcolorconvert →
+                  glshader(color_grade) → [gleffects] → glshader(post_process) →
+                  glcolorconvert → gldownload → videoconvert → videoscale → videorate →
+                  jpegenc → appsink (fx snapshot to /dev/shm)
+        """
+        Gst = self._Gst
+
+        from agents.studio_effects import PRESETS, load_shader
+
+        # Start with a default preset
+        initial_preset = PRESETS.get("clean", list(PRESETS.values())[0])
+
+        # --- Build the chain ---
+        queue = Gst.ElementFactory.make("queue", "queue-fx")
+        queue.set_property("leaky", 2)
+        queue.set_property("max-size-buffers", 2)
+
+        # Stutter element (freeze/replay) — before GL upload
+        from agents.studio_stutter import StutterElement
+
+        stutter_el = StutterElement()
+        stutter_el.set_property("check-interval", 999)  # disabled by default
+        stutter_el.set_property("freeze-chance", 0.0)
+
+        # Convert to RGBA for GL upload
+        convert_rgba = Gst.ElementFactory.make("videoconvert", "fx-convert-rgba")
+        rgba_caps = Gst.ElementFactory.make("capsfilter", "fx-rgba-caps")
+        rgba_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGBA"))
+
+        # GL upload + color convert
+        glupload = Gst.ElementFactory.make("glupload", "fx-glupload")
+        glcolorconvert_in = Gst.ElementFactory.make("glcolorconvert", "fx-glcc-in")
+
+        # Color grade shader
+        color_grade = Gst.ElementFactory.make("glshader", "fx-color-grade")
+        color_frag = load_shader("color_grade.frag")
+        if color_frag:
+            color_grade.set_property("fragment", color_frag)
+            cg = initial_preset.color_grade
+            uniforms = Gst.Structure.from_string(
+                f"uniforms, u_saturation=(float){cg.saturation}, "
+                f"u_brightness=(float){cg.brightness}, "
+                f"u_contrast=(float){cg.contrast}, "
+                f"u_sepia=(float){cg.sepia}, "
+                f"u_hue_rotate=(float){cg.hue_rotate}"
+            )
+            color_grade.set_property("uniforms", uniforms[0])
+
+        # VHS shader (RGB split, head-switch, noise band, scanlines)
+        vhs_shader = Gst.ElementFactory.make("glshader", "fx-vhs")
+        vhs_frag = load_shader("vhs.frag")
+        if vhs_frag:
+            vhs_shader.set_property("fragment", vhs_frag)
+            vhs_uniforms = Gst.Structure.from_string(
+                "uniforms, u_time=(float)0.0, u_chroma_shift=(float)0.0, "
+                "u_head_switch_y=(float)0.92, u_noise_band_y=(float)0.0, "
+                "u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            vhs_shader.set_property("uniforms", vhs_uniforms[0])
+
+        # Slice warp shader (pan, rotate, zoom, horizontal slice displacement)
+        warp_shader = Gst.ElementFactory.make("glshader", "fx-warp")
+        warp_frag = load_shader("slice_warp.frag")
+        if warp_frag:
+            warp_shader.set_property("fragment", warp_frag)
+            warp_uniforms = Gst.Structure.from_string(
+                "uniforms, u_time=(float)0.0, u_slice_count=(float)0.0, "
+                "u_slice_amplitude=(float)0.0, u_pan_x=(float)0.0, u_pan_y=(float)0.0, "
+                "u_rotation=(float)0.0, u_zoom=(float)1.0, u_zoom_breath=(float)0.0, "
+                "u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            warp_shader.set_property("uniforms", warp_uniforms[0])
+
+        # GL effects (glow for Neon, sobel for Ghost)
+        glow_effect = Gst.ElementFactory.make("gleffects", "fx-glow")
+        glow_effect.set_property("effect", 0)  # identity (passthrough)
+
+        # Post-process shader (vignette, scanlines, band displacement)
+        post_proc = Gst.ElementFactory.make("glshader", "fx-post-process")
+        post_frag = load_shader("post_process.frag")
+        if post_frag:
+            post_proc.set_property("fragment", post_frag)
+            pp = initial_preset.post_process
+            pp_uniforms = Gst.Structure.from_string(
+                f"uniforms, u_vignette_strength=(float){pp.vignette_strength}, "
+                f"u_scanline_alpha=(float){pp.scanline_alpha}, "
+                f"u_time=(float)0.0, "
+                f"u_band_active=(float)0.0, "
+                f"u_band_y=(float)0.0, u_band_height=(float)0.0, u_band_shift=(float)0.0, "
+                f"u_syrup_active=(float){1.0 if pp.syrup_gradient else 0.0}, "
+                f"u_syrup_color_r=(float){pp.syrup_color[0]}, "
+                f"u_syrup_color_g=(float){pp.syrup_color[1]}, "
+                f"u_syrup_color_b=(float){pp.syrup_color[2]}"
+            )
+            post_proc.set_property("uniforms", pp_uniforms[0])
+
+        # GL download back to CPU
+        glcolorconvert_out = Gst.ElementFactory.make("glcolorconvert", "fx-glcc-out")
+        gldownload = Gst.ElementFactory.make("gldownload", "fx-gldownload")
+
+        # Scale + rate + JPEG encode for snapshot output
+        fx_convert = Gst.ElementFactory.make("videoconvert", "fx-out-convert")
+        fx_scale = Gst.ElementFactory.make("videoscale", "fx-scale")
+        fx_scale_caps = Gst.ElementFactory.make("capsfilter", "fx-scale-caps")
+        fx_scale_caps.set_property(
+            "caps", Gst.Caps.from_string("video/x-raw,width=1920,height=1080")
+        )
+
+        fx_rate = Gst.ElementFactory.make("videorate", "fx-rate")
+        fx_rate_caps = Gst.ElementFactory.make("capsfilter", "fx-rate-caps")
+        fx_rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=15/1"))
+
+        fx_jpeg = Gst.ElementFactory.make("jpegenc", "fx-jpeg")
+        fx_jpeg.set_property("quality", 80)
+
+        fx_sink = Gst.ElementFactory.make("appsink", "fx-snapshot-sink")
+        fx_sink.set_property("sync", False)
+        fx_sink.set_property("async", False)
+        fx_sink.set_property("drop", True)
+        fx_sink.set_property("max-buffers", 1)
+
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+        def _on_fx_sample(sink: Any) -> int:
+            sample = sink.emit("pull-sample")
+            if sample is None:
+                return 1
+            buf = sample.get_buffer()
+            ok, mapinfo = buf.map(self._Gst.MapFlags.READ)
+            if ok:
+                try:
+                    tmp = SNAPSHOT_DIR / "fx-snapshot.jpg.tmp"
+                    final = SNAPSHOT_DIR / "fx-snapshot.jpg"
+                    tmp.write_bytes(bytes(mapinfo.data))
+                    tmp.rename(final)
+                except OSError:
+                    pass
+                finally:
+                    buf.unmap(mapinfo)
+            return 0
+
+        fx_sink.set_property("emit-signals", True)
+        fx_sink.connect("new-sample", _on_fx_sample)
+
+        # Add all elements to pipeline
+        elements = [
+            queue,
+            stutter_el,
+            convert_rgba,
+            rgba_caps,
+            glupload,
+            glcolorconvert_in,
+            color_grade,
+            vhs_shader,
+            warp_shader,
+            glow_effect,
+            post_proc,
+            glcolorconvert_out,
+            gldownload,
+            fx_convert,
+            fx_scale,
+            fx_scale_caps,
+            fx_rate,
+            fx_rate_caps,
+            fx_jpeg,
+            fx_sink,
+        ]
+        for el in elements:
+            if el is None:
+                log.error("Failed to create FX pipeline element")
+                return
+            pipeline.add(el)
+
+        # Link chain
+        convert_rgba.link(rgba_caps)
+        rgba_caps.link(glupload)
+        glupload.link(glcolorconvert_in)
+        glcolorconvert_in.link(color_grade)
+        color_grade.link(vhs_shader)
+        vhs_shader.link(warp_shader)
+        warp_shader.link(glow_effect)
+        # Trail echo via glvideomixer — mix current frame with delayed copy
+        trail_tee = Gst.ElementFactory.make("tee", "fx-trail-tee")
+        trail_queue = Gst.ElementFactory.make("queue", "fx-trail-queue")
+        trail_queue.set_property("leaky", 2)
+        trail_queue.set_property("max-size-buffers", 8)
+        trail_queue.set_property("min-threshold-time", 200 * 1_000_000)  # 200ms delay
+
+        trail_color = Gst.ElementFactory.make("glshader", "fx-trail-color")
+        trail_color_frag = load_shader("color_grade.frag")
+        if trail_color_frag:
+            trail_color.set_property("fragment", trail_color_frag)
+            # Trail defaults: dim and slightly shifted
+            trail_u = Gst.Structure.from_string(
+                "uniforms, u_saturation=(float)0.7, u_brightness=(float)0.5, "
+                "u_contrast=(float)1.0, u_sepia=(float)0.0, u_hue_rotate=(float)0.0"
+            )
+            trail_color.set_property("uniforms", trail_u[0])
+
+        trail_mixer = Gst.ElementFactory.make("glvideomixer", "fx-trail-mixer")
+
+        for el in [trail_tee, trail_queue, trail_color, trail_mixer]:
+            if el:
+                pipeline.add(el)
+
+        # Link: glow_effect → trail_tee
+        glow_effect.link(trail_tee)
+
+        # Branch 1 (main): trail_tee → trail_mixer pad 0 (alpha=1.0)
+        main_pad = trail_mixer.request_pad_simple("sink_%u")
+        main_pad.set_property("alpha", 1.0)
+        tee_src1 = trail_tee.request_pad(trail_tee.get_pad_template("src_%u"), None, None)
+        tee_src1.link(main_pad)
+
+        # Branch 2 (delayed trail): trail_tee → queue(delay) → trail_color → trail_mixer pad 1
+        tee_src2 = trail_tee.request_pad(trail_tee.get_pad_template("src_%u"), None, None)
+        trail_q_sink = trail_queue.get_static_pad("sink")
+        tee_src2.link(trail_q_sink)
+        trail_queue.link(trail_color)
+        trail_pad = trail_mixer.request_pad_simple("sink_%u")
+        trail_pad.set_property("alpha", 0.3)
+        # For additive blending: src=one, dst=one
+        trail_pad.set_property("blend-function-src-rgb", 1)  # one
+        trail_pad.set_property("blend-function-dst-rgb", 1)  # one
+        trail_color.get_static_pad("src").link(trail_pad)
+
+        # trail_mixer → post_proc
+        trail_mixer.link(post_proc)
+        post_proc.link(glcolorconvert_out)
+        glcolorconvert_out.link(gldownload)
+        gldownload.link(fx_convert)
+        fx_convert.link(fx_scale)
+        fx_scale.link(fx_scale_caps)
+        fx_scale_caps.link(fx_rate)
+        fx_rate.link(fx_rate_caps)
+        fx_rate_caps.link(fx_jpeg)
+        fx_jpeg.link(fx_sink)
+
+        # Link queue to convert (first in chain after queue)
+        queue.link(stutter_el)
+        stutter_el.link(convert_rgba)
+
+        # Explicit tee → queue pad link
+        tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
+        queue_sink = queue.get_static_pad("sink")
+        tee_pad.link(queue_sink)
+
+        # Store references for runtime preset switching
+        self._fx_trail_queue = trail_queue
+        self._fx_trail_color = trail_color
+        self._fx_trail_pad = trail_pad
+        self._fx_stutter = stutter_el
+        self._fx_color_grade = color_grade
+        self._fx_vhs_shader = vhs_shader
+        self._fx_warp_shader = warp_shader
+        self._fx_glow_effect = glow_effect
+        self._fx_post_proc = post_proc
+        self._fx_active_preset = initial_preset.name
+        self._fx_tick = 0
+
+        log.info("FX branch: glshader pipeline → /dev/shm/hapax-compositor/fx-snapshot.jpg")
+
+    def _switch_fx_preset(self, preset_name: str) -> None:
+        """Switch the active visual effect preset at runtime."""
+        from agents.studio_effects import PRESETS
+
+        preset = PRESETS.get(preset_name)
+        if preset is None:
+            log.warning("Unknown FX preset: %s", preset_name)
+            return
+        if preset_name == self._fx_active_preset:
+            return
+
+        Gst = self._Gst
+
+        # Update color grade uniforms
+        cg = preset.color_grade
+        uniforms = Gst.Structure.from_string(
+            f"uniforms, u_saturation=(float){cg.saturation}, "
+            f"u_brightness=(float){cg.brightness}, "
+            f"u_contrast=(float){cg.contrast}, "
+            f"u_sepia=(float){cg.sepia}, "
+            f"u_hue_rotate=(float){cg.hue_rotate}"
+        )
+        self._fx_color_grade.set_property("uniforms", uniforms[0])
+
+        # Update VHS shader — active only for VHS preset
+        chroma_shift = 4.0 if preset.use_vhs_shader else 0.0
+        vhs_uniforms = Gst.Structure.from_string(
+            f"uniforms, u_time=(float)0.0, u_chroma_shift=(float){chroma_shift}, "
+            f"u_head_switch_y=(float)0.92, u_noise_band_y=(float)0.0, "
+            f"u_width=(float)1920.0, u_height=(float)1080.0"
+        )
+        self._fx_vhs_shader.set_property("uniforms", vhs_uniforms[0])
+
+        # Update warp shader
+        warp = preset.warp
+        if warp:
+            warp_uniforms = Gst.Structure.from_string(
+                f"uniforms, u_time=(float)0.0, "
+                f"u_slice_count=(float){warp.slice_count}, "
+                f"u_slice_amplitude=(float){warp.slice_amplitude}, "
+                f"u_pan_x=(float){warp.pan_x}, u_pan_y=(float){warp.pan_y}, "
+                f"u_rotation=(float){warp.rotation}, u_zoom=(float){warp.zoom}, "
+                f"u_zoom_breath=(float){warp.zoom_breath}, "
+                f"u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+        else:
+            warp_uniforms = Gst.Structure.from_string(
+                "uniforms, u_time=(float)0.0, u_slice_count=(float)0.0, "
+                "u_slice_amplitude=(float)0.0, u_pan_x=(float)0.0, u_pan_y=(float)0.0, "
+                "u_rotation=(float)0.0, u_zoom=(float)1.0, u_zoom_breath=(float)0.0, "
+                "u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+        self._fx_warp_shader.set_property("uniforms", warp_uniforms[0])
+
+        # Update gleffects — glow for Neon, sobel for Ghost, identity otherwise
+        if preset.use_glow:
+            self._fx_glow_effect.set_property("effect", 15)  # glow
+        elif preset.use_sobel:
+            self._fx_glow_effect.set_property("effect", 16)  # sobel
+        else:
+            self._fx_glow_effect.set_property("effect", 0)  # identity
+
+        # Update post-process uniforms
+        pp = preset.post_process
+        pp_uniforms = Gst.Structure.from_string(
+            f"uniforms, u_vignette_strength=(float){pp.vignette_strength}, "
+            f"u_scanline_alpha=(float){pp.scanline_alpha}, "
+            f"u_time=(float)0.0, "
+            f"u_band_active=(float)0.0, "
+            f"u_band_y=(float)0.0, u_band_height=(float)0.0, u_band_shift=(float)0.0, "
+            f"u_syrup_active=(float){1.0 if pp.syrup_gradient else 0.0}, "
+            f"u_syrup_color_r=(float){pp.syrup_color[0]}, "
+            f"u_syrup_color_g=(float){pp.syrup_color[1]}, "
+            f"u_syrup_color_b=(float){pp.syrup_color[2]}"
+        )
+        self._fx_post_proc.set_property("uniforms", pp_uniforms[0])
+
+        # Update trail echo
+        trail = preset.trail
+        if trail.count > 0 and trail.opacity > 0:
+            # Configure trail delay and alpha
+            delay_ns = int(200 * 1_000_000)  # base 200ms delay
+            self._fx_trail_queue.set_property("min-threshold-time", delay_ns)
+            self._fx_trail_pad.set_property("alpha", trail.opacity)
+
+            # Configure trail color treatment
+            trail_u = Gst.Structure.from_string(
+                f"uniforms, u_saturation=(float){trail.filter_params.get('saturation', 0.7)}, "
+                f"u_brightness=(float){trail.filter_params.get('brightness', 0.5)}, "
+                f"u_contrast=(float){trail.filter_params.get('contrast', 1.0)}, "
+                f"u_sepia=(float){trail.filter_params.get('sepia', 0.0)}, "
+                f"u_hue_rotate=(float){trail.filter_params.get('hue_rotate', 0.0)}"
+            )
+            self._fx_trail_color.set_property("uniforms", trail_u[0])
+
+            # Set blend mode: additive for most, multiply for trap
+            if trail.blend_mode == "multiply":
+                # dst * src → multiply-like via dst-color blend
+                self._fx_trail_pad.set_property("blend-function-src-rgb", 4)  # dst-color
+                self._fx_trail_pad.set_property("blend-function-dst-rgb", 0)  # zero
+            elif trail.blend_mode == "difference":
+                # Approximation: subtract mode isn't available, use additive
+                self._fx_trail_pad.set_property("blend-function-src-rgb", 1)  # one
+                self._fx_trail_pad.set_property("blend-function-dst-rgb", 1)  # one
+            else:
+                # Additive (lighter) — default for most presets
+                self._fx_trail_pad.set_property("blend-function-src-rgb", 1)  # one
+                self._fx_trail_pad.set_property("blend-function-dst-rgb", 1)  # one
+        else:
+            # Disable trail: set alpha to 0
+            self._fx_trail_pad.set_property("alpha", 0.0)
+
+        # Update stutter element
+        st = preset.stutter
+        if st:
+            self._fx_stutter.set_property("check-interval", st.check_interval)
+            self._fx_stutter.set_property("freeze-chance", st.freeze_chance)
+            self._fx_stutter.set_property("freeze-min", st.freeze_min)
+            self._fx_stutter.set_property("freeze-max", st.freeze_max)
+            self._fx_stutter.set_property("replay-frames", st.replay_frames)
+        else:
+            self._fx_stutter.set_property("freeze-chance", 0.0)
+            self._fx_stutter.set_property("check-interval", 999)
+
+        self._fx_active_preset = preset_name
+        self._fx_tick = 0
+        log.info("FX preset switched to: %s", preset_name)
 
     def _add_camera_snapshot_branch(self, pipeline: Any, camera_tee: Any, cam: CameraSpec) -> None:
         """Add per-camera snapshot branch writing JPEG to /dev/shm."""
@@ -992,6 +1388,73 @@ class StudioCompositor:
         tmp.write_text(json.dumps(status, indent=2))
         tmp.rename(STATUS_FILE)
 
+    def _fx_tick_callback(self) -> bool:
+        """GLib timeout: update time-varying FX shader uniforms at ~30fps."""
+        if not self._running:
+            return False
+        if not hasattr(self, "_fx_warp_shader"):
+            return False
+
+        import random
+
+        from agents.studio_effects import PRESETS
+
+        self._fx_tick += 1
+        t = self._fx_tick * 0.04
+        Gst = self._Gst
+
+        preset = PRESETS.get(self._fx_active_preset)
+        if not preset:
+            return True
+
+        # Update warp time
+        if preset.warp and (preset.warp.pan_x > 0 or preset.warp.slice_count > 0):
+            w = preset.warp
+            warp_u = Gst.Structure.from_string(
+                f"uniforms, u_time=(float){t}, "
+                f"u_slice_count=(float){w.slice_count}, "
+                f"u_slice_amplitude=(float){w.slice_amplitude}, "
+                f"u_pan_x=(float){w.pan_x}, u_pan_y=(float){w.pan_y}, "
+                f"u_rotation=(float){w.rotation}, u_zoom=(float){w.zoom}, "
+                f"u_zoom_breath=(float){w.zoom_breath}, "
+                f"u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            self._fx_warp_shader.set_property("uniforms", warp_u[0])
+
+        # Update VHS time (scrolling noise band)
+        if preset.use_vhs_shader:
+            noise_y = (self._fx_tick * 0.003) % 1.0
+            vhs_u = Gst.Structure.from_string(
+                f"uniforms, u_time=(float){t}, u_chroma_shift=(float)4.0, "
+                f"u_head_switch_y=(float)0.92, u_noise_band_y=(float){noise_y}, "
+                f"u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            self._fx_vhs_shader.set_property("uniforms", vhs_u[0])
+
+        # Update post-process time + random band displacement
+        pp = preset.post_process
+        band_active = 1.0 if pp.band_chance > 0 and random.random() < pp.band_chance else 0.0
+        band_y = random.random() * 0.6 + 0.2 if band_active else 0.0
+        band_h = random.random() * 0.03 + 0.005 if band_active else 0.0
+        band_shift = (
+            (random.random() - 0.5) * 2 * pp.band_max_shift / 1920.0 if band_active else 0.0
+        )
+
+        pp_u = Gst.Structure.from_string(
+            f"uniforms, u_vignette_strength=(float){pp.vignette_strength}, "
+            f"u_scanline_alpha=(float){pp.scanline_alpha}, "
+            f"u_time=(float){t}, "
+            f"u_band_active=(float){band_active}, "
+            f"u_band_y=(float){band_y}, u_band_height=(float){band_h}, u_band_shift=(float){band_shift}, "
+            f"u_syrup_active=(float){1.0 if pp.syrup_gradient else 0.0}, "
+            f"u_syrup_color_r=(float){pp.syrup_color[0]}, "
+            f"u_syrup_color_g=(float){pp.syrup_color[1]}, "
+            f"u_syrup_color_b=(float){pp.syrup_color[2]}"
+        )
+        self._fx_post_proc.set_property("uniforms", pp_u[0])
+
+        return True  # keep timer running
+
     def _status_tick(self) -> bool:
         """GLib timeout callback: periodically refresh the status file."""
         if self._running:
@@ -1141,6 +1604,16 @@ class StudioCompositor:
                 except Exception as exc:
                     log.debug("Failed to evaluate camera profile: %s", exc)
 
+            # Check for FX preset switch requests
+            fx_request_path = SNAPSHOT_DIR / "fx-request.txt"
+            if fx_request_path.exists():
+                try:
+                    preset_name = fx_request_path.read_text().strip()
+                    if preset_name and hasattr(self, "_fx_color_grade"):
+                        self._switch_fx_preset(preset_name)
+                    fx_request_path.unlink()
+                except Exception as exc:
+                    log.debug("Failed to process FX request: %s", exc)
             time.sleep(1.0)
 
     # -- Lifecycle --------------------------------------------------------
@@ -1184,6 +1657,10 @@ class StudioCompositor:
 
         interval_ms = int(self.config.status_interval_s * 1000)
         self._status_timer_id = GLib.timeout_add(interval_ms, self._status_tick)
+
+        # FX uniform update timer (~30fps) for time-varying effects
+        if hasattr(self, "_fx_warp_shader"):
+            GLib.timeout_add(33, self._fx_tick_callback)
 
         if self.config.overlay_enabled:
             self._state_reader_thread = threading.Thread(
