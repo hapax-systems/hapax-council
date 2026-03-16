@@ -845,50 +845,68 @@ class StudioCompositor:
         color_grade.link(vhs_shader)
         vhs_shader.link(warp_shader)
         warp_shader.link(glow_effect)
-        # Trail echo via glvideomixer — mix current frame with delayed copy
+        # Multi-tap trail system via glvideomixer
+        #
+        # 5 delay taps with independent delay, alpha, blend mode, and color
+        # treatment. Preset switching activates/deactivates taps via alpha=0.
+        # Each tap: tee → queue(delay) → glshader(color_grade) → mixer pad
+        #
+        # This creates layered temporal echoes — not true feedback accumulation,
+        # but convincing multi-ghost/trail effects. Phase 2 (Rust GstGLFilter
+        # plugin with FBO ping-pong) will replace this with proper feedback.
+        NUM_TRAIL_TAPS = 5
+
         trail_tee = Gst.ElementFactory.make("tee", "fx-trail-tee")
-        trail_queue = Gst.ElementFactory.make("queue", "fx-trail-queue")
-        trail_queue.set_property("leaky", 2)
-        trail_queue.set_property("max-size-buffers", 8)
-        trail_queue.set_property("min-threshold-time", 200 * 1_000_000)  # 200ms delay
-
-        trail_color = Gst.ElementFactory.make("glshader", "fx-trail-color")
-        trail_color_frag = load_shader("color_grade.frag")
-        if trail_color_frag:
-            trail_color.set_property("fragment", trail_color_frag)
-            # Trail defaults: dim and slightly shifted
-            trail_u = Gst.Structure.from_string(
-                "uniforms, u_saturation=(float)0.7, u_brightness=(float)0.5, "
-                "u_contrast=(float)1.0, u_sepia=(float)0.0, u_hue_rotate=(float)0.0"
-            )
-            trail_color.set_property("uniforms", trail_u[0])
-
         trail_mixer = Gst.ElementFactory.make("glvideomixer", "fx-trail-mixer")
-
-        for el in [trail_tee, trail_queue, trail_color, trail_mixer]:
-            if el:
-                pipeline.add(el)
+        pipeline.add(trail_tee)
+        pipeline.add(trail_mixer)
 
         # Link: glow_effect → trail_tee
         glow_effect.link(trail_tee)
 
-        # Branch 1 (main): trail_tee → trail_mixer pad 0 (alpha=1.0)
+        # Main input (current frame): tee → mixer pad 0 (alpha=1.0)
         main_pad = trail_mixer.request_pad_simple("sink_%u")
         main_pad.set_property("alpha", 1.0)
-        tee_src1 = trail_tee.request_pad(trail_tee.get_pad_template("src_%u"), None, None)
-        tee_src1.link(main_pad)
+        tee_src = trail_tee.request_pad(trail_tee.get_pad_template("src_%u"), None, None)
+        tee_src.link(main_pad)
 
-        # Branch 2 (delayed trail): trail_tee → queue(delay) → trail_color → trail_mixer pad 1
-        tee_src2 = trail_tee.request_pad(trail_tee.get_pad_template("src_%u"), None, None)
-        trail_q_sink = trail_queue.get_static_pad("sink")
-        tee_src2.link(trail_q_sink)
-        trail_queue.link(trail_color)
-        trail_pad = trail_mixer.request_pad_simple("sink_%u")
-        trail_pad.set_property("alpha", 0.3)
-        # For additive blending: src=one, dst=one
-        trail_pad.set_property("blend-function-src-rgb", 1)  # one
-        trail_pad.set_property("blend-function-dst-rgb", 1)  # one
-        trail_color.get_static_pad("src").link(trail_pad)
+        # Build trail taps
+        trail_color_frag = load_shader("color_grade.frag")
+        trail_taps: list[dict] = []
+
+        for i in range(NUM_TRAIL_TAPS):
+            q = Gst.ElementFactory.make("queue", f"fx-trail-q-{i}")
+            q.set_property("leaky", 2)
+            q.set_property("max-size-buffers", 4)
+            # Default delays: 100ms, 200ms, 350ms, 550ms, 800ms
+            base_delays = [100, 200, 350, 550, 800]
+            q.set_property("min-threshold-time", base_delays[i] * 1_000_000)
+
+            cs = Gst.ElementFactory.make("glshader", f"fx-trail-color-{i}")
+            if trail_color_frag:
+                cs.set_property("fragment", trail_color_frag)
+                u = Gst.Structure.from_string(
+                    "uniforms, u_saturation=(float)0.7, u_brightness=(float)0.5, "
+                    "u_contrast=(float)1.0, u_sepia=(float)0.0, u_hue_rotate=(float)0.0"
+                )
+                cs.set_property("uniforms", u[0])
+
+            pipeline.add(q)
+            pipeline.add(cs)
+
+            # tee → queue → color_shader → mixer pad
+            tee_src_n = trail_tee.request_pad(trail_tee.get_pad_template("src_%u"), None, None)
+            tee_src_n.link(q.get_static_pad("sink"))
+            q.link(cs)
+
+            pad = trail_mixer.request_pad_simple("sink_%u")
+            pad.set_property("alpha", 0.0)  # all taps start disabled
+            # Default additive blend
+            pad.set_property("blend-function-src-rgb", 1)  # GL_ONE
+            pad.set_property("blend-function-dst-rgb", 1)  # GL_ONE
+            cs.get_static_pad("src").link(pad)
+
+            trail_taps.append({"queue": q, "color_shader": cs, "pad": pad})
 
         # trail_mixer → post_proc
         trail_mixer.link(post_proc)
@@ -912,9 +930,7 @@ class StudioCompositor:
         tee_pad.link(queue_sink)
 
         # Store references for runtime preset switching
-        self._fx_trail_queue = trail_queue
-        self._fx_trail_color = trail_color
-        self._fx_trail_pad = trail_pad
+        self._fx_trail_taps = trail_taps
         self._fx_stutter = stutter_el
         self._fx_color_grade = color_grade
         self._fx_vhs_shader = vhs_shader
@@ -1003,40 +1019,64 @@ class StudioCompositor:
         )
         self._fx_post_proc.set_property("uniforms", pp_uniforms[0])
 
-        # Update trail echo
+        # Update multi-tap trail system
         trail = preset.trail
-        if trail.count > 0 and trail.opacity > 0:
-            # Configure trail delay and alpha
-            delay_ns = int(200 * 1_000_000)  # base 200ms delay
-            self._fx_trail_queue.set_property("min-threshold-time", delay_ns)
-            self._fx_trail_pad.set_property("alpha", trail.opacity)
+        num_taps = len(self._fx_trail_taps)
+        active_taps = min(trail.count, num_taps) if trail.count > 0 and trail.opacity > 0 else 0
 
-            # Configure trail color treatment
-            trail_u = Gst.Structure.from_string(
-                f"uniforms, u_saturation=(float){trail.filter_params.get('saturation', 0.7)}, "
-                f"u_brightness=(float){trail.filter_params.get('brightness', 0.5)}, "
-                f"u_contrast=(float){trail.filter_params.get('contrast', 1.0)}, "
-                f"u_sepia=(float){trail.filter_params.get('sepia', 0.0)}, "
-                f"u_hue_rotate=(float){trail.filter_params.get('hue_rotate', 0.0)}"
-            )
-            self._fx_trail_color.set_property("uniforms", trail_u[0])
-
-            # Set blend mode: additive for most, multiply for trap
-            if trail.blend_mode == "multiply":
-                # dst * src → multiply-like via dst-color blend
-                self._fx_trail_pad.set_property("blend-function-src-rgb", 4)  # dst-color
-                self._fx_trail_pad.set_property("blend-function-dst-rgb", 0)  # zero
-            elif trail.blend_mode == "difference":
-                # Approximation: subtract mode isn't available, use additive
-                self._fx_trail_pad.set_property("blend-function-src-rgb", 1)  # one
-                self._fx_trail_pad.set_property("blend-function-dst-rgb", 1)  # one
-            else:
-                # Additive (lighter) — default for most presets
-                self._fx_trail_pad.set_property("blend-function-src-rgb", 1)  # one
-                self._fx_trail_pad.set_property("blend-function-dst-rgb", 1)  # one
+        # Base delay spacing depends on how many taps are active
+        # Fewer taps = wider spacing for more visible separation
+        if active_taps > 0:
+            base_delay_ms = max(80, 400 // active_taps)
         else:
-            # Disable trail: set alpha to 0
-            self._fx_trail_pad.set_property("alpha", 0.0)
+            base_delay_ms = 100
+
+        for i, tap in enumerate(self._fx_trail_taps):
+            if i < active_taps:
+                # Exponential decay: each tap gets progressively less opaque
+                decay = 0.45 ** (i + 1)  # 0.45, 0.20, 0.091, 0.041, 0.018
+                tap_alpha = trail.opacity * decay
+
+                # Increasing delay per tap
+                delay_ms = base_delay_ms * (i + 1)
+                tap["queue"].set_property(
+                    "min-threshold-time", int(delay_ms * 1_000_000)
+                )
+                tap["pad"].set_property("alpha", tap_alpha)
+
+                # Per-tap color treatment: progressively shift toward trail params
+                t = (i + 1) / active_taps  # 0→1 interpolation factor
+                fp = trail.filter_params
+                sat = 1.0 + t * (fp.get("saturation", 0.7) - 1.0)
+                bright = 1.0 + t * (fp.get("brightness", 0.5) - 1.0)
+                con = 1.0 + t * (fp.get("contrast", 1.0) - 1.0)
+                sep = t * fp.get("sepia", 0.0)
+                hue = t * fp.get("hue_rotate", 0.0)
+
+                trail_u = Gst.Structure.from_string(
+                    f"uniforms, u_saturation=(float){sat:.3f}, "
+                    f"u_brightness=(float){bright:.3f}, "
+                    f"u_contrast=(float){con:.3f}, "
+                    f"u_sepia=(float){sep:.3f}, "
+                    f"u_hue_rotate=(float){hue:.3f}"
+                )
+                tap["color_shader"].set_property("uniforms", trail_u[0])
+
+                # Blend mode
+                if trail.blend_mode == "multiply":
+                    tap["pad"].set_property("blend-function-src-rgb", 4)  # dst-color
+                    tap["pad"].set_property("blend-function-dst-rgb", 0)  # zero
+                elif trail.blend_mode == "difference":
+                    # GL_ONE_MINUS_DST_COLOR approximates difference
+                    tap["pad"].set_property("blend-function-src-rgb", 5)
+                    tap["pad"].set_property("blend-function-dst-rgb", 5)
+                else:
+                    # Additive (lighter)
+                    tap["pad"].set_property("blend-function-src-rgb", 1)  # GL_ONE
+                    tap["pad"].set_property("blend-function-dst-rgb", 1)  # GL_ONE
+            else:
+                # Disable this tap
+                tap["pad"].set_property("alpha", 0.0)
 
         # Update stutter element
         st = preset.stutter
@@ -1936,9 +1976,19 @@ class StudioCompositor:
     _VL_LERP_RATE = 3.0  # opacity units per second (full 0→1 in ~333ms)
     _VL_LAST_FRAME_TIME: float = 0.0
 
+    _VL_TOGGLE_PATH = Path("/dev/shm/hapax-compositor/visual-layer-enabled.txt")
+
     def _render_visual_layer(self, cr: Any, canvas_w: int, canvas_h: int) -> None:
         """Render visual layer zones with per-zone opacity interpolation."""
         import cairo  # type: ignore[import-untyped]
+
+        # Check toggle — defaults to enabled
+        try:
+            if self._VL_TOGGLE_PATH.exists():
+                if self._VL_TOGGLE_PATH.read_text().strip() == "false":
+                    return
+        except OSError:
+            pass
 
         with self._vl_state_lock:
             vl = self._vl_state
