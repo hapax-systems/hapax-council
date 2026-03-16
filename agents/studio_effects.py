@@ -92,8 +92,8 @@ PRESETS: dict[str, EffectPreset] = {
         name="ghost",
         # Desaturated, slightly cool — phosphor persistence feel
         color_grade=ColorGradeConfig(saturation=0.6, brightness=1.0, contrast=1.15, hue_rotate=-10),
-        # Many trails with exponential-decay feel: low opacity, subtle drift
-        trail=TrailConfig(count=8, opacity=0.2, blend_mode="add", drift_x=4, drift_y=5),
+        # 5 taps with exponential decay — visible layered persistence
+        trail=TrailConfig(count=5, opacity=0.6, blend_mode="add", drift_x=4, drift_y=5),
         warp=WarpConfig(pan_x=2, pan_y=2, rotation=0.003, zoom=1.008, zoom_breath=0.004),
         post_process=PostProcessConfig(vignette_strength=0.35),
         # Use glow instead of sobel — soft edge glow without destroying the image
@@ -103,12 +103,13 @@ PRESETS: dict[str, EffectPreset] = {
         name="trails",
         color_grade=ColorGradeConfig(saturation=0.7, brightness=1.15, sepia=0.1, hue_rotate=20),
         trail=TrailConfig(
-            count=10,
-            opacity=0.65,
+            count=5,
+            opacity=0.35,
             blend_mode="add",
             drift_x=6,
             drift_y=8,
-            filter_params={"saturation": 0.8, "brightness": 1.8, "sepia": 0.15, "hue_rotate": 45},
+            # Trails progressively warm and dim — film long-exposure reciprocity
+            filter_params={"saturation": 0.7, "brightness": 0.9, "sepia": 0.2, "hue_rotate": 35},
         ),
         warp=WarpConfig(pan_x=3, pan_y=2, rotation=0.004, zoom=1.01, zoom_breath=0.005),
     ),
@@ -121,8 +122,8 @@ PRESETS: dict[str, EffectPreset] = {
         ),
         # Heavy temporal smear — slow, syrupy trails (not choppy stutter)
         trail=TrailConfig(
-            count=8,
-            opacity=0.5,
+            count=5,
+            opacity=0.7,
             blend_mode="add",
             drift_x=1,
             drift_y=3,
@@ -156,7 +157,7 @@ PRESETS: dict[str, EffectPreset] = {
         name="datamosh",
         color_grade=ColorGradeConfig(saturation=0.6, brightness=1.15, contrast=1.8, hue_rotate=40),
         trail=TrailConfig(
-            count=7,
+            count=5,
             opacity=0.95,
             blend_mode="difference",
             drift_x=8,
