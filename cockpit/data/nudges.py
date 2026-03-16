@@ -596,6 +596,29 @@ def _collect_drift_nudges(nudges: list[Nudge]) -> None:
         pass
 
 
+def _collect_contradiction_nudges(nudges: list[Nudge]) -> None:
+    """Surface cross-domain contradictions as nudges (DD-24)."""
+    try:
+        from agents.contradiction_detector import detect_contradictions
+
+        contradictions = detect_contradictions()
+        for c in contradictions:
+            score = 80 if c.severity == "high" else 60 if c.severity == "medium" else 40
+            nudges.append(
+                Nudge(
+                    category="knowledge",
+                    priority_score=score,
+                    priority_label=c.severity,
+                    title=f"{c.domain_a} \u2194 {c.domain_b}: {c.assertion_a[:60]}",
+                    detail=f"{c.assertion_a}\nvs: {c.assertion_b}",
+                    suggested_action=c.suggestion,
+                    source_id=c.source_id,
+                )
+            )
+    except Exception:
+        pass
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 
@@ -641,6 +664,7 @@ def collect_nudges(
     _collect_precedent_nudges(nudges)
     _collect_rag_quality_nudges(nudges)
     _collect_emergence_nudges(nudges)
+    _collect_contradiction_nudges(nudges)
 
     # Filter out recently dismissed nudges
     nudges = _filter_dismissed(nudges)

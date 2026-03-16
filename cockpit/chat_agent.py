@@ -217,9 +217,30 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         except Exception as e:
             return f"Search failed: {e}"
 
+    # ── Path restrictions for read_file (security: prevent arbitrary file reads) ──
+
+    ALLOWED_READ_ROOTS: list[Path] = [
+        PROJECT_DIR,
+        Path.home() / "profiles",
+        Path.home() / "documents",
+        Path("/tmp"),
+    ]
+
+    ALLOWED_SYSTEM_FILES: list[str] = [
+        "/etc/os-release",
+        "/etc/hostname",
+        "/proc/meminfo",
+        "/proc/cpuinfo",
+        "/proc/loadavg",
+        "/proc/uptime",
+    ]
+
     @agent.tool
     async def read_file(ctx: RunContext[ChatDeps], path: str) -> str:
         """Read a file's contents. Path is relative to the ai-agents project root or absolute.
+
+        Only files within the project directory, ~/profiles/, ~/documents/,
+        /tmp/, and select system info files are accessible.
 
         Args:
             path: File path (relative to project root or absolute).
@@ -228,9 +249,31 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             p = Path(path)
             if not p.is_absolute():
                 p = ctx.deps.project_dir / p
-            if not p.exists():
-                return f"File not found: {p}"
-            content = p.read_text()
+
+            # Resolve symlinks to prevent traversal attacks
+            resolved = p.resolve()
+
+            # Check against allowed system files first
+            if str(resolved) in ALLOWED_SYSTEM_FILES:
+                pass  # allowed
+            else:
+                # Check against allowed directory roots
+                allowed = any(
+                    resolved == root or str(resolved).startswith(str(root) + "/")
+                    for root in ALLOWED_READ_ROOTS
+                )
+                if not allowed:
+                    return (
+                        f"Access denied: {resolved} is outside allowed directories. "
+                        f"Allowed: {', '.join(str(r) for r in ALLOWED_READ_ROOTS)} "
+                        f"and select system files."
+                    )
+
+            if not resolved.exists():
+                return f"File not found: {resolved}"
+            if not resolved.is_file():
+                return f"Not a file: {resolved}"
+            content = resolved.read_text()
             if len(content) > 15_000:
                 return content[:15_000] + f"\n\n... (truncated, {len(content)} chars total)"
             return content
@@ -276,16 +319,68 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         except Exception as e:
             return f"Error running agent: {e}"
 
+    # ── Shell command allowlist (security: LLM can only run pre-approved commands) ──
+
+    SHELL_COMMAND_ALLOWLIST: list[str] = [
+        "docker ",
+        "docker-compose ",
+        "systemctl status ",
+        "systemctl --user status ",
+        "systemctl is-active ",
+        "systemctl --user is-active ",
+        "journalctl ",
+        "ls ",
+        "cat ",
+        "head ",
+        "tail ",
+        "wc ",
+        "df ",
+        "free ",
+        "uptime",
+        "date",
+        "uname ",
+        "ps ",
+        "top -bn1",
+        "nvidia-smi",
+        "uv run python -m agents.",
+        "uv run pytest ",
+        "uv run ruff ",
+        "git status",
+        "git log ",
+        "git diff ",
+        "git branch",
+    ]
+
     @agent.tool
     async def run_shell_command(ctx: RunContext[ChatDeps], command: str) -> str:
         """Run a shell command and return output. Use for quick checks only.
 
+        Only commands matching the security allowlist are permitted.
+
         Args:
             command: Shell command to execute.
         """
+        cmd = command.strip()
+
+        # Security: reject commands not on the allowlist
+        allowed = any(
+            cmd == prefix.rstrip() or cmd.startswith(prefix) for prefix in SHELL_COMMAND_ALLOWLIST
+        )
+        if not allowed:
+            return (
+                f"Command rejected: not on allowlist. "
+                f"Allowed prefixes: {', '.join(p.strip() for p in SHELL_COMMAND_ALLOWLIST)}"
+            )
+
+        # Security: reject shell metacharacters that could bypass the allowlist
+        # Allow pipes/redirects for simple composition, but block command chaining
+        for dangerous in ("&&", "||", ";", "`", "$(", "${", "\n"):
+            if dangerous in cmd:
+                return f"Command rejected: shell operator '{dangerous}' not allowed."
+
         try:
             proc = await asyncio.create_subprocess_shell(
-                command,
+                cmd,
                 cwd=str(ctx.deps.project_dir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -924,6 +1019,20 @@ class ChatSession:
         old_text = _serialize_messages_for_summary(old_messages)
         if not old_text.strip():
             return
+
+        # Pre-compress old text with LLMLingua-2 before LLM summarization
+        # This reduces token cost of the summary call itself
+        try:
+            from shared.context_compression import _get_compressor
+
+            compressor = _get_compressor()
+            if compressor is not None:
+                result_compressed = compressor.compress_prompt_llmlingua2(
+                    [old_text], rate=0.5, force_tokens=["\n", "[", "]"]
+                )
+                old_text = result_compressed.get("compressed_prompt", old_text)
+        except Exception:
+            pass  # Use uncompressed text
 
         summary_prompt = (
             "Summarize this conversation so far, preserving key facts, decisions, "

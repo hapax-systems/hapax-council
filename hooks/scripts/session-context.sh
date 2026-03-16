@@ -212,6 +212,58 @@ if [ -f "$SCOUT_REPORT" ]; then
   fi
 fi
 
+# ── Context Restoration (cognitive state) ──
+
+# Last Claude Code interaction in this project
+CC_HISTORY="$HOME/.claude/history.jsonl"
+if [ -f "$CC_HISTORY" ]; then
+  WORK_DIR_ESCAPED="$(pwd | sed 's/[[\.*^$()+?{|\\]/\\&/g')"
+  LAST_QUERY="$(tac "$CC_HISTORY" 2>/dev/null | jq -r --arg proj "$WORK_DIR_ESCAPED" 'select(.project | test($proj)) | .display' 2>/dev/null | head -1)"
+  if [ -n "$LAST_QUERY" ] && [ "$LAST_QUERY" != "null" ]; then
+    # Truncate to 120 chars for display
+    if [ ${#LAST_QUERY} -gt 120 ]; then
+      LAST_QUERY="${LAST_QUERY:0:117}..."
+    fi
+    echo "Last query: $LAST_QUERY"
+  fi
+fi
+
+# Next meeting from calendar
+if [ -d "$HOME/projects/hapax-council" ]; then
+  NEXT_MTG="$(cd "$HOME/projects/hapax-council" && python3 -c "
+import sys; sys.path.insert(0, '.')
+try:
+    from shared.calendar_context import CalendarContext
+    ctx = CalendarContext()
+    mtgs = ctx.meetings_in_range(days=1)
+    if mtgs:
+        m = mtgs[0]
+        from datetime import datetime
+        try:
+            dt = datetime.fromisoformat(m.start.replace('Z', '+00:00'))
+            t = dt.strftime('%H:%M')
+        except Exception:
+            t = m.start
+        att = f' — {', '.join(m.attendees[:2])}' if m.attendees else ''
+        print(f'{t} {m.summary} ({m.duration_minutes}min){att}')
+    else:
+        print('')
+except Exception:
+    print('')
+" 2>/dev/null || true)"
+  if [ -n "$NEXT_MTG" ]; then
+    echo "Next meeting: $NEXT_MTG"
+  fi
+fi
+
+# Open PRs in this repo
+OPEN_PRS="$(gh pr list --state open --json number,title,headRefName 2>/dev/null | jq -r 'length' 2>/dev/null || echo 0)"
+if [ "$OPEN_PRS" -gt 0 ] && [ "$OPEN_PRS" != "null" ]; then
+  PR_SUMMARY="$(gh pr list --state open --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>/dev/null | head -3)"
+  echo "Open PRs ($OPEN_PRS):"
+  echo "$PR_SUMMARY" | while read -r line; do echo "  $line"; done
+fi
+
 # Seed auto-memory directory if missing
 WORK_DIR="$(pwd)"
 SANITIZED="$(echo "$WORK_DIR" | sed 's|/|-|g; s|^-||')"

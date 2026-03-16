@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from shared.consent import ConsentRegistry
+    from shared.governance.consent import ConsentRegistry
 
 log = logging.getLogger(__name__)
 

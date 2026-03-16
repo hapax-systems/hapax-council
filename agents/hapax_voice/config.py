@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import logging
 import os
+from enum import StrEnum
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, model_validator
 
 log = logging.getLogger(__name__)
+
+
+class PerceptionTier(StrEnum):
+    """Privacy-aware perception level, switchable via voice or hotkey."""
+
+    FULL = "full"  # cameras + audio + inference
+    PRESENCE = "presence"  # face detection only, no analysis
+    AUDIO = "audio"  # no cameras, voice only
+    DORMANT = "dormant"  # wake word only
+
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "hapax-voice" / "config.yaml"
 
@@ -41,10 +52,15 @@ class VoiceConfig(BaseModel):
 
     # Backends
     backend: str = "local"  # "local" or "gemini"
-    llm_model: str = "claude-sonnet"
+    llm_model: str = "gemini-flash"
     gemini_model: str = "gemini-2.5-flash-preview-native-audio"
     local_stt_model: str = "nvidia/parakeet-tdt-0.6b-v2"
     kokoro_voice: str = "af_heart"
+
+    # Consent
+    consent_debounce_s: float = 5.0  # sustained presence before triggering
+    consent_absence_clear_s: float = 30.0  # how long guest must be absent to clear
+    consent_session_timeout_s: float = 120.0  # max duration for consent conversation
 
     # Notification queue
     notification_priority_ttls: dict[str, int] = {
@@ -85,6 +101,7 @@ class VoiceConfig(BaseModel):
     timelapse_path: str = "~/.local/share/hapax-voice/timelapse"
 
     # Perception layer
+    perception_tier: PerceptionTier = PerceptionTier.FULL
     perception_fast_tick_s: float = 2.5
     perception_slow_tick_s: float = 12.0
     conversation_debounce_s: float = 3.0
@@ -111,7 +128,7 @@ class VoiceConfig(BaseModel):
     vision_refresh_interval: int = 60
 
     # Wake word engine
-    wake_word_engine: str = "porcupine"  # "porcupine" or "oww"
+    wake_word_engine: str = "oww"  # "porcupine" or "oww"
     porcupine_sensitivity: float = 0.5
 
     # Chime settings

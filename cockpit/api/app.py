@@ -31,6 +31,11 @@ async def lifespan(app: FastAPI):
         register_rules(engine.registry)
         await engine.start()
         app.state.engine = engine
+
+        # Wire revocation propagator to carrier registry
+        from shared.governance.revocation_wiring import get_revocation_propagator
+
+        app.state.revocation_propagator = get_revocation_propagator()
     except Exception:
         _log.exception("Reactive engine failed to start (continuing without it)")
         engine = None
@@ -81,15 +86,18 @@ except Exception:
 from cockpit.api.routes.accommodations import router as accommodations_router
 from cockpit.api.routes.agents import router as agents_router
 from cockpit.api.routes.chat import router as chat_router
+from cockpit.api.routes.consent import router as consent_router
 from cockpit.api.routes.copilot import router as copilot_router
 from cockpit.api.routes.cycle_mode import router as cycle_mode_router
 from cockpit.api.routes.data import router as data_router
 from cockpit.api.routes.demos import router as demos_router
 from cockpit.api.routes.engine import router as engine_router
+from cockpit.api.routes.governance import router as governance_router
 from cockpit.api.routes.nudges import router as nudges_router
 from cockpit.api.routes.profile import router as profile_router
 from cockpit.api.routes.query import router as query_router
 from cockpit.api.routes.scout import router as scout_router
+from cockpit.api.routes.studio import router as studio_router
 
 app.include_router(data_router)
 app.include_router(nudges_router)
@@ -103,6 +111,18 @@ app.include_router(cycle_mode_router)
 app.include_router(scout_router)
 app.include_router(query_router)
 app.include_router(engine_router)
+app.include_router(consent_router)
+app.include_router(governance_router)
+app.include_router(studio_router)
+
+# Mount HLS segment directory for live stream serving
+from pathlib import Path as _Path
+
+_HLS_DIR = _Path.home() / ".cache" / "hapax-compositor" / "hls"
+_HLS_DIR.mkdir(parents=True, exist_ok=True)
+from starlette.staticfiles import StaticFiles as _StaticFiles
+
+app.mount("/api/studio/hls", _StaticFiles(directory=_HLS_DIR), name="hls-stream")
 
 
 @app.get("/")

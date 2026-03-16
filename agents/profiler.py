@@ -462,11 +462,72 @@ async def extract_from_chunks(
         return all_facts
 
 
+def _deduplicate_facts(
+    facts: list[ProfileFact],
+    max_per_dimension: int = 30,
+) -> list[ProfileFact]:
+    """Deduplicate and cap facts per dimension, keeping highest-confidence entries.
+
+    Facts with the same (dimension, key) are merged: highest confidence wins,
+    sources are combined. Then each dimension is capped at max_per_dimension
+    entries, sorted by confidence descending.
+    """
+    from collections import defaultdict
+
+    # Group by (dimension, key) — merge duplicates
+    merged: dict[tuple[str, str], ProfileFact] = {}
+    source_sets: dict[tuple[str, str], set[str]] = defaultdict(set)
+
+    for f in facts:
+        dk = (f.dimension, f.key)
+        source_sets[dk].add(f.source)
+        existing = merged.get(dk)
+        if existing is None or f.confidence > existing.confidence:
+            merged[dk] = f
+
+    # Annotate merged facts with combined source count
+    deduped: list[ProfileFact] = []
+    for dk, fact in merged.items():
+        sources = source_sets[dk]
+        if len(sources) > 1:
+            fact = ProfileFact(
+                dimension=fact.dimension,
+                key=fact.key,
+                value=fact.value,
+                confidence=fact.confidence,
+                source=f"{len(sources)} sources",
+                evidence=fact.evidence,
+            )
+        deduped.append(fact)
+
+    # Cap per dimension by confidence
+    by_dim: dict[str, list[ProfileFact]] = defaultdict(list)
+    for f in deduped:
+        by_dim[f.dimension].append(f)
+
+    result: list[ProfileFact] = []
+    for dim in sorted(by_dim):
+        dim_facts = sorted(by_dim[dim], key=lambda f: f.confidence, reverse=True)
+        result.extend(dim_facts[:max_per_dimension])
+
+    return result
+
+
 async def synthesize_profile(facts: list[ProfileFact]) -> SynthesisOutput:
     """Run the synthesis agent on all collected facts."""
     with _tracer.start_as_current_span(
         "profiler.synthesize", attributes={"fact_count": len(facts)}
     ):
+        # Deduplicate and cap facts to prevent context overflow
+        original_count = len(facts)
+        facts = _deduplicate_facts(facts)
+        if len(facts) < original_count:
+            log.info(
+                "Profiler synthesis: deduplicated %d → %d facts",
+                original_count,
+                len(facts),
+            )
+
         grouped = group_facts_by_dimension(facts)
 
         # Build a text representation of all facts for the synthesis agent
@@ -480,7 +541,11 @@ async def synthesize_profile(facts: list[ProfileFact]) -> SynthesisOutput:
             parts.append("")
 
         facts_text = "\n".join(parts)
-        prompt = f"Synthesize the following extracted facts into a coherent user profile:\n\n{facts_text}"
+
+        prompt = (
+            "Synthesize the following extracted facts into a coherent "
+            f"user profile:\n\n{facts_text}"
+        )
 
         result = await synthesis_agent.run(prompt)
         return result.output

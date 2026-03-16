@@ -13,7 +13,8 @@ Each output document is self-contained with enough semantic context to match
 natural queries like "that track with the horn stab yesterday" or "production
 notes about the snare from Monday."
 
-Raw FLAC files are deleted after successful processing — no archival.
+Raw FLAC files are moved to ~/audio-recording/archive/ after successful
+processing, with a YAML-frontmatter sidecar capturing classification metadata.
 
 Usage:
     uv run python -m agents.audio_processor --process    # Process new chunks
@@ -51,6 +52,7 @@ log = logging.getLogger(__name__)
 # ── Constants ────────────────────────────────────────────────────────────────
 
 RAW_DIR = Path.home() / "audio-recording" / "raw"
+ARCHIVE_DIR = Path.home() / "audio-recording" / "archive"
 CACHE_DIR = Path.home() / ".cache" / "audio-processor"
 STATE_FILE = CACHE_DIR / "state.json"
 PROFILE_FACTS_FILE = CACHE_DIR / "audio-profile-facts.jsonl"
@@ -1066,7 +1068,8 @@ def _process_file(
     5. Cross-reference speech with music regions
     6. Transcribe speech, diarize conversations
     7. Write RAG documents per category
-    8. Delete raw FLAC
+    8. CLAP embedding + zero-shot classification → Qdrant studio_moments
+    9. Archive raw FLAC with sidecar
     """
     filename = audio_path.name
     base_timestamp = _extract_timestamp_from_filename(filename)
@@ -1260,7 +1263,56 @@ def _process_file(
             md = _format_conversation(group, base_timestamp, filename)
             start_tag = _format_timestamp(group[0].start).replace(":", "")
             out_name = f"conv-{filename.replace('.flac', '')}-s{start_tag}.md"
-            (AUDIO_RAG_DIR / out_name).write_text(md, encoding="utf-8")
+            target_path = AUDIO_RAG_DIR / out_name
+
+            # Consent gate: check before persisting conversation data.
+            # If multiple speakers detected, non-operator persons need contracts.
+            # Fixes T0 violation of it-consent-001.
+            if len(all_speakers) > 1:
+                non_operator = {
+                    s for s in all_speakers if s not in ("SPEAKER_00", "operator", "ryan")
+                }
+                if non_operator:
+                    from shared.governance.consent_gate import ConsentGatedWriter
+                    from shared.governance.consent_label import ConsentLabel
+                    from shared.governance.labeled import Labeled
+
+                    gate = ConsentGatedWriter.create(
+                        agent_id="audio-processor",
+                        audit_path=AUDIO_RAG_DIR.parent.parent
+                        / "profiles"
+                        / ".consent-audit.jsonl",
+                    )
+                    labeled_data = Labeled(
+                        value=md, label=ConsentLabel.bottom(), provenance=frozenset()
+                    )
+                    decision = gate.check(
+                        labeled_data,
+                        person_ids=tuple(sorted(non_operator)),
+                        data_category="audio",
+                    )
+                    if not decision.allowed:
+                        log.info(
+                            "Consent gate CURTAILED conversation %s: %s",
+                            out_name,
+                            decision.reason,
+                        )
+                        # Notify operator about curtailed content
+                        try:
+                            from shared.governance.guest_detection import (
+                                check_guest_consent,
+                                notify_guest_detected,
+                            )
+
+                            for person in sorted(non_operator):
+                                event = check_guest_consent(person, "audio")
+                                if not event.has_consent:
+                                    notify_guest_detected(event, person_label=person)
+                        except Exception:
+                            pass
+                        continue  # Skip writing — data curtailed
+
+            target_path.write_text(md, encoding="utf-8")
             conversations += 1
             _log_change(
                 "conversation",
@@ -1294,7 +1346,226 @@ def _process_file(
         conversations,
         listening_logs,
     )
+
+    # 8. CLAP enrichment — embedding + zero-shot classification → Qdrant
+    _clap_enrich(waveform, sr, info, base_timestamp)
+
     return info
+
+
+# ── CLAP zero-shot labels ────────────────────────────────────────────────────
+
+CLAP_GENRE_LABELS = [
+    "hip hop beat",
+    "trap beat",
+    "boom bap beat",
+    "lo-fi hip hop",
+    "jazz",
+    "soul music",
+    "funk music",
+    "r&b",
+    "electronic music",
+    "ambient music",
+    "rock music",
+    "pop music",
+    "classical music",
+    "reggae",
+    "latin music",
+]
+
+CLAP_ACTIVITY_LABELS = [
+    "music production session",
+    "sample digging and listening",
+    "beat making",
+    "recording vocals",
+    "mixing and mastering",
+    "casual conversation",
+    "silence or ambient noise",
+]
+
+
+def _clap_enrich(
+    waveform: np.ndarray,
+    sr: int,
+    info: ProcessedFileInfo,
+    base_timestamp: str,
+) -> None:
+    """Compute CLAP embedding and zero-shot classification, upsert to Qdrant.
+
+    Gracefully degrades — logs warning and returns on any failure.
+    """
+    try:
+        from shared.clap import classify_zero_shot, embed_audio
+        from shared.config import STUDIO_MOMENTS_COLLECTION, ensure_studio_moments_collection
+    except ImportError:
+        log.debug("CLAP not available, skipping enrichment")
+        return
+
+    try:
+        embedding = embed_audio(waveform, sr=sr)
+    except Exception as exc:
+        log.warning("CLAP embed failed for %s: %s", info.filename, exc)
+        return
+
+    try:
+        genre_scores = classify_zero_shot(waveform, CLAP_GENRE_LABELS, sr=sr)
+        activity_scores = classify_zero_shot(waveform, CLAP_ACTIVITY_LABELS, sr=sr)
+    except Exception as exc:
+        log.warning("CLAP classify failed for %s: %s", info.filename, exc)
+        genre_scores = {}
+        activity_scores = {}
+
+    # Top genre and activity
+    top_genre = max(genre_scores, key=genre_scores.get) if genre_scores else "unknown"
+    top_activity = max(activity_scores, key=activity_scores.get) if activity_scores else "unknown"
+
+    # Upsert to Qdrant
+    try:
+        from qdrant_client.models import PointStruct
+
+        from shared.config import get_qdrant
+
+        ensure_studio_moments_collection()
+        client = get_qdrant()
+
+        import uuid
+
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, info.filename))
+        payload = {
+            "filename": info.filename,
+            "timestamp": base_timestamp,
+            "processed_at": info.processed_at,
+            "dominant_classification": max(
+                {
+                    "sample-session": info.sample_sessions,
+                    "vocal-note": info.vocal_notes,
+                    "conversation": info.conversations,
+                    "listening-log": info.listening_logs,
+                },
+                key=lambda k: {
+                    "sample-session": info.sample_sessions,
+                    "vocal-note": info.vocal_notes,
+                    "conversation": info.conversations,
+                    "listening-log": info.listening_logs,
+                }[k],
+            )
+            if info.segment_count > 0
+            else "silence",
+            "top_genre": top_genre,
+            "top_activity": top_activity,
+            "genre_scores": genre_scores,
+            "activity_scores": activity_scores,
+            "speech_seconds": info.speech_seconds,
+            "music_seconds": info.music_seconds,
+            "segment_count": info.segment_count,
+            "value_score": _compute_value_score(info),
+        }
+
+        client.upsert(
+            collection_name=STUDIO_MOMENTS_COLLECTION,
+            points=[PointStruct(id=point_id, vector=embedding.tolist(), payload=payload)],
+        )
+        log.info(
+            "CLAP indexed %s → %s (genre=%s, activity=%s)",
+            info.filename,
+            STUDIO_MOMENTS_COLLECTION,
+            top_genre,
+            top_activity,
+        )
+    except Exception as exc:
+        log.warning("Qdrant upsert failed for %s: %s", info.filename, exc)
+
+
+def _compute_value_score(info: ProcessedFileInfo) -> float:
+    """Compute an initial value score (0.0-1.0) from classification results.
+
+    Higher scores for sample sessions (most valuable content for a producer).
+    """
+    score = 0.0
+    if info.sample_sessions > 0:
+        score += 0.4 + 0.1 * min(info.sample_sessions, 5)
+    if info.vocal_notes > 0:
+        score += 0.2
+    if info.conversations > 0:
+        score += 0.15
+    if info.listening_logs > 0:
+        score += 0.15
+    if info.music_seconds > 60:
+        score += 0.1
+    return min(1.0, score)
+
+
+def _write_sidecar(
+    archive_path: Path,
+    info: ProcessedFileInfo,
+    *,
+    windows: list | None = None,
+) -> Path:
+    """Write a YAML-frontmatter sidecar for an archived FLAC.
+
+    Sidecar lives alongside the archived FLAC with a .md extension.
+    Contains classification metadata, value score, and disposition.
+    """
+    import yaml
+
+    value_score = _compute_value_score(info)
+
+    # Determine dominant classification
+    counts = {
+        "sample-session": info.sample_sessions,
+        "vocal-note": info.vocal_notes,
+        "conversation": info.conversations,
+        "listening-log": info.listening_logs,
+    }
+    dominant = max(counts, key=counts.get) if any(counts.values()) else "silence"
+
+    frontmatter = {
+        "source_file": info.filename,
+        "processed_at": datetime.fromtimestamp(info.processed_at, tz=UTC).isoformat(),
+        "disposition": "archive",
+        "value_score": round(value_score, 3),
+        "dominant_classification": dominant,
+        "speech_seconds": round(info.speech_seconds, 1),
+        "music_seconds": round(info.music_seconds, 1),
+        "silence_seconds": round(info.silence_seconds, 1),
+        "segment_count": info.segment_count,
+        "speaker_count": info.speaker_count,
+        "sample_sessions": info.sample_sessions,
+        "vocal_notes": info.vocal_notes,
+        "conversations": info.conversations,
+        "listening_logs": info.listening_logs,
+    }
+
+    if info.error:
+        frontmatter["error"] = info.error
+
+    sidecar_path = archive_path.with_suffix(".md")
+    content = f"---\n{yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)}---\n"
+    content += f"\n# {info.filename}\n\nArchived audio sidecar — classification metadata.\n"
+    sidecar_path.write_text(content, encoding="utf-8")
+    log.debug("Wrote sidecar: %s", sidecar_path.name)
+    return sidecar_path
+
+
+def _archive_file(raw_path: Path, info: ProcessedFileInfo) -> Path | None:
+    """Move a processed FLAC to the archive directory with a sidecar.
+
+    Returns the archive path on success, None on failure.
+    """
+    import shutil
+
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    archive_path = ARCHIVE_DIR / raw_path.name
+
+    try:
+        shutil.move(str(raw_path), str(archive_path))
+        log.info("Archived: %s → %s", raw_path.name, archive_path)
+    except OSError as exc:
+        log.warning("Failed to archive %s: %s", raw_path.name, exc)
+        return None
+
+    _write_sidecar(archive_path, info)
+    return archive_path
 
 
 def _process_new_files(state: AudioProcessorState) -> dict[str, int]:
@@ -1327,13 +1598,9 @@ def _process_new_files(state: AudioProcessorState) -> dict[str, int]:
             state.processed_files[f.name] = info
             processed += 1
 
-            # Delete raw FLAC after successful processing (no archival)
+            # Archive raw FLAC after successful processing (with sidecar)
             if not info.error:
-                try:
-                    f.unlink()
-                    log.info("Deleted processed raw file: %s", f.name)
-                except OSError as exc:
-                    log.warning("Failed to delete %s: %s", f.name, exc)
+                _archive_file(f, info)
 
     state.last_run = time.time()
     _save_state(state)

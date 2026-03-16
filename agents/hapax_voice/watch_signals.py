@@ -8,6 +8,7 @@ for the ContextGate veto chain and PresenceDetector.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -214,15 +215,18 @@ class WatchSignalReader:
         self._watch_dir = watch_dir or WATCH_STATE_DIR
         self._cache_ttl = cache_ttl
         self._cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        self._lock = threading.Lock()
 
     def read(self, filename: str, max_age_seconds: float = 300) -> dict[str, Any] | None:
         """Read a watch signal file with caching."""
         now = time.time()
-        cached = self._cache.get(filename)
-        if cached and now - cached[0] < self._cache_ttl:
-            return cached[1]
+        with self._lock:
+            cached = self._cache.get(filename)
+            if cached and now - cached[0] < self._cache_ttl:
+                return cached[1]
         result = read_watch_signal(self._watch_dir / filename, max_age_seconds)
-        self._cache[filename] = (now, result)
+        with self._lock:
+            self._cache[filename] = (now, result)
         return result
 
     def is_stress_elevated(self) -> bool:

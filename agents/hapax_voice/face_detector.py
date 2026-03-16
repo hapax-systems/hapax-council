@@ -25,13 +25,10 @@ class FaceResult:
 
 
 def _normalize_color(image: np.ndarray) -> np.ndarray:
-    """Gray world color normalization for tinted lighting (e.g. red studio LEDs)."""
-    avg = image.mean(axis=(0, 1))
-    overall = avg.mean()
-    if overall < 1.0:
-        return image
-    scale = overall / np.clip(avg, 1.0, None)
-    return np.clip(image * scale, 0, 255).astype(np.uint8)
+    """Gray world color normalization — delegates to shared.color_utils."""
+    from shared.color_utils import normalize_color
+
+    return normalize_color(image)
 
 
 class FaceDetector:
