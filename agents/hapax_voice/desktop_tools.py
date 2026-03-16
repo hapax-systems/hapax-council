@@ -7,12 +7,15 @@ focus_window, switch_workspace, open_app, confirm_open_app, get_desktop_state.
 from __future__ import annotations
 
 import logging
+import time
 
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 
 from shared.hyprland import HyprlandIPC
 
 log = logging.getLogger(__name__)
+
+_PENDING_OPEN_TTL_S = 120  # Pending app launch expires after 2 minutes
 
 _ipc = HyprlandIPC()
 
@@ -120,7 +123,7 @@ async def handle_open_app(params) -> None:
     command = params.arguments["command"]
     workspace = params.arguments.get("workspace")
 
-    _pending_open = {"command": command, "workspace": workspace}
+    _pending_open = {"command": command, "workspace": workspace, "created_at": time.monotonic()}
     await params.result_callback(
         {
             "status": "pending_confirmation",
@@ -133,6 +136,14 @@ async def handle_confirm_open_app(params) -> None:
     global _pending_open
     if _pending_open is None:
         await params.result_callback({"status": "error", "message": "No pending app launch."})
+        return
+
+    # Check expiry
+    if time.monotonic() - _pending_open.get("created_at", 0) > _PENDING_OPEN_TTL_S:
+        _pending_open = None
+        await params.result_callback(
+            {"status": "error", "message": "Pending app launch expired. Please try again."}
+        )
         return
 
     command = _pending_open["command"]

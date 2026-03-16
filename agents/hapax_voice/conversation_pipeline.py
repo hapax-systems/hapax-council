@@ -60,6 +60,7 @@ class ConversationPipeline:
         event_log=None,
         conversation_buffer=None,  # ConversationBuffer
         timeout_s: float = _SILENCE_TIMEOUT_S,
+        consent_reader=None,  # ConsentGatedReader | None
     ) -> None:
         self.stt = stt
         self.tts = tts_manager
@@ -70,6 +71,7 @@ class ConversationPipeline:
         self.event_log = event_log
         self.buffer = conversation_buffer
         self.timeout_s = timeout_s
+        self._consent_reader = consent_reader
 
         self.state = ConvState.IDLE
         self.messages: list[dict] = []
@@ -88,6 +90,10 @@ class ConversationPipeline:
         self.turn_count = 0
         self._running = True
         self.state = ConvState.LISTENING
+
+        # Refresh consent contracts to pick up any new ones
+        if self._consent_reader:
+            self._consent_reader.reload_contracts()
 
         if self.buffer:
             self.buffer.activate()
@@ -269,6 +275,10 @@ class ConversationPipeline:
                         result = json.dumps(result)
                 except Exception as e:
                     result = json.dumps({"error": str(e)})
+
+            # Consent gate: filter tool results before they reach the LLM
+            if self._consent_reader:
+                result = self._consent_reader.filter_tool_result(tc["name"], result)
 
             self.messages.append(
                 {
