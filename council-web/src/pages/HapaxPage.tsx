@@ -153,6 +153,8 @@ export function HapaxPage() {
   const [showSignals, setShowSignals] = useState(true);
   const [time, setTime] = useState(new Date());
   const [fragmentIdx, setFragmentIdx] = useState(0);
+  const [showCorrection, setShowCorrection] = useState(false);
+  const [correctionInput, setCorrectionInput] = useState("");
   const snapshotRef = useRef<HTMLImageElement>(null);
 
   // Poll visual layer state
@@ -234,8 +236,6 @@ export function HapaxPage() {
   const injectedFeeds = vlState?.injected_feeds ?? [];
   const activityLabel = vlState?.activity_label ?? "present";
   const activityDetail = vlState?.activity_detail ?? "";
-  const [showCorrection, setShowCorrection] = useState(false);
-  const [correctionInput, setCorrectionInput] = useState("");
   const allSignals = Object.values(signals).flat();
   const hasSignals = allSignals.length > 0 && showSignals;
   const isAlert = state === "alert";
@@ -341,7 +341,7 @@ export function HapaxPage() {
           }}
         >
           <img
-            src={`${API}/studio/stream/camera/${feed.role}?t=${Date.now()}`}
+            src={`${API}/studio/stream/camera/${feed.role}?t=${time.getTime()}`}
             alt=""
             className="w-full h-full object-cover"
           />
@@ -354,7 +354,7 @@ export function HapaxPage() {
           {["brio-operator", "c920-hardware", "c920-room", "c920-aux"].map(cam => (
             <div key={cam} className="relative">
               <img
-                src={`${API}/studio/stream/camera/${cam}?t=${Date.now()}`}
+                src={`${API}/studio/stream/camera/${cam}?t=${time.getTime()}`}
                 alt={cam}
                 className="w-56 rounded-lg border border-white/10"
                 style={{
@@ -488,7 +488,7 @@ export function HapaxPage() {
               )}
               {content.image_path && (
                 <img
-                  src={`${API}/studio/stream/camera/${content.image_path}?t=${Date.now()}`}
+                  src={`${API}/studio/stream/camera/${content.image_path}?t=${time.getTime()}`}
                   alt=""
                   className="w-full rounded-lg mt-2 opacity-80"
                 />
