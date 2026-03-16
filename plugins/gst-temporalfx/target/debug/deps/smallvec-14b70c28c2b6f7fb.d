@@ -1,0 +1,5 @@
+/home/operator/projects/hapax-council/plugins/gst-temporalfx/target/debug/deps/smallvec-14b70c28c2b6f7fb.d: /home/operator/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.15.1/src/lib.rs
+
+/home/operator/projects/hapax-council/plugins/gst-temporalfx/target/debug/deps/libsmallvec-14b70c28c2b6f7fb.rmeta: /home/operator/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.15.1/src/lib.rs
+
+/home/operator/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smallvec-1.15.1/src/lib.rs:
