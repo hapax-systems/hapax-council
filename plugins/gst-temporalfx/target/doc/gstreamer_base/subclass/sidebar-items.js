@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["base_src","base_transform","prelude"]};

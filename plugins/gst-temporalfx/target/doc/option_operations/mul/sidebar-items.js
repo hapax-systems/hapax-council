@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"trait":["OptionCheckedMul","OptionMul","OptionMulAssign","OptionOverflowingMul","OptionSaturatingMul","OptionWrappingMul"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["gl_check_extension","gl_element_propagate_display_context","glsl_string_get_version_profile"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["gl_set_caps","gl_start","gl_stop"],"mod":["sealed"],"trait":["GLBaseFilterImpl","GLBaseFilterImplExt"]};
