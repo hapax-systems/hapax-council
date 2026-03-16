@@ -42,44 +42,45 @@ def parse_health_db(db_path: Path | str) -> list[dict]:
     """
     db_path = Path(db_path)
     conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    try:
+        conn.row_factory = sqlite3.Row
 
-    # Discover which tables exist
-    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    existing_tables = {row[0] for row in cursor.fetchall()}
+        # Discover which tables exist
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        existing_tables = {row[0] for row in cursor.fetchall()}
 
-    daily: dict[str, dict] = defaultdict(
-        lambda: {
-            "heart_rates": [],
-            "steps": 0,
-            "sleep_sessions": [],
-        }
-    )
+        daily: dict[str, dict] = defaultdict(
+            lambda: {
+                "heart_rates": [],
+                "steps": 0,
+                "sleep_sessions": [],
+            }
+        )
 
-    # Heart rate records
-    if "heart_rate_record" in existing_tables:
-        for row in conn.execute("SELECT time, bpm FROM heart_rate_record"):
-            ts, bpm = row
-            dt = datetime.fromtimestamp(ts, tz=UTC)
-            date_str = dt.strftime("%Y-%m-%d")
-            daily[date_str]["heart_rates"].append(bpm)
+        # Heart rate records
+        if "heart_rate_record" in existing_tables:
+            for row in conn.execute("SELECT time, bpm FROM heart_rate_record"):
+                ts, bpm = row
+                dt = datetime.fromtimestamp(ts, tz=UTC)
+                date_str = dt.strftime("%Y-%m-%d")
+                daily[date_str]["heart_rates"].append(bpm)
 
-    # Steps records
-    if "steps_record" in existing_tables:
-        for row in conn.execute("SELECT start_time, count FROM steps_record"):
-            ts, count = row
-            dt = datetime.fromtimestamp(ts, tz=UTC)
-            date_str = dt.strftime("%Y-%m-%d")
-            daily[date_str]["steps"] += count
+        # Steps records
+        if "steps_record" in existing_tables:
+            for row in conn.execute("SELECT start_time, count FROM steps_record"):
+                ts, count = row
+                dt = datetime.fromtimestamp(ts, tz=UTC)
+                date_str = dt.strftime("%Y-%m-%d")
+                daily[date_str]["steps"] += count
 
-    # Sleep session records
-    if "sleep_session_record" in existing_tables:
-        for row in conn.execute("SELECT start_time, end_time FROM sleep_session_record"):
-            start_ts, end_ts = row
-            daily_date = datetime.fromtimestamp(end_ts, tz=UTC).strftime("%Y-%m-%d")
-            daily[daily_date]["sleep_sessions"].append((start_ts, end_ts))
-
-    conn.close()
+        # Sleep session records
+        if "sleep_session_record" in existing_tables:
+            for row in conn.execute("SELECT start_time, end_time FROM sleep_session_record"):
+                start_ts, end_ts = row
+                daily_date = datetime.fromtimestamp(end_ts, tz=UTC).strftime("%Y-%m-%d")
+                daily[daily_date]["sleep_sessions"].append((start_ts, end_ts))
+    finally:
+        conn.close()
 
     if not daily:
         return []

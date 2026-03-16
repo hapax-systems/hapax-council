@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from agents.hapax_voice.primitives import Stamped
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 
 log = logging.getLogger(__name__)
 

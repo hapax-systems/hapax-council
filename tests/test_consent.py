@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shared.consent import ConsentContract, ConsentRegistry, load_contracts
+from shared.governance.consent import ConsentContract, ConsentRegistry, load_contracts
 
 
 class TestConsentContract(unittest.TestCase):

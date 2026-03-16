@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agents.hapax_voice._perception_state_writer import write_perception_state
 from agents.hapax_voice.activity_mode import classify_activity_mode
 from agents.hapax_voice.audio_input import AudioInputStream
 from agents.hapax_voice.chime_player import ChimePlayer
@@ -25,7 +26,7 @@ from agents.hapax_voice.governor import PipelineGovernor
 from agents.hapax_voice.hotkey import HotkeyServer
 from agents.hapax_voice.notification_queue import NotificationQueue
 from agents.hapax_voice.ntfy_listener import subscribe_ntfy
-from agents.hapax_voice.perception import PerceptionEngine
+from agents.hapax_voice.perception import EnvironmentState, PerceptionEngine
 from agents.hapax_voice.persona import format_notification, session_end_message
 from agents.hapax_voice.presence import PresenceDetector
 from agents.hapax_voice.primitives import Event
@@ -167,7 +168,7 @@ class VoiceDaemon:
         self.workspace_monitor.set_presence(self.presence)
 
         # Consent registry (loads from axioms/contracts/, empty = conservative default)
-        from shared.consent import ConsentRegistry
+        from shared.governance.consent import ConsentRegistry
 
         self.consent_registry = ConsentRegistry()
         _consent_count = self.consent_registry.load()
@@ -236,6 +237,31 @@ class VoiceDaemon:
         self.gate.set_event_log(self.event_log)
         self.notifications.set_event_log(self.event_log)
         self.workspace_monitor.set_event_log(self.event_log)
+
+        # Consent tracking (interpersonal_transparency axiom)
+        from agents.hapax_voice.consent_state import ConsentStateTracker
+
+        self.consent_tracker = ConsentStateTracker(
+            debounce_s=self.cfg.consent_debounce_s,
+            absence_clear_s=self.cfg.consent_absence_clear_s,
+        )
+        self.consent_tracker.set_event_log(self.event_log)
+        self._consent_session_active = False
+        self._perception_tier = self.cfg.perception_tier
+
+        # Lightweight voice pipeline (replaces Pipecat)
+        from agents.hapax_voice.conversation_buffer import ConversationBuffer
+        from agents.hapax_voice.resident_stt import ResidentSTT
+
+        self._conversation_buffer = ConversationBuffer()
+        self._resident_stt = ResidentSTT(
+            model=self.cfg.local_stt_model
+            if "whisper" in self.cfg.local_stt_model.lower()
+            or "distil" in self.cfg.local_stt_model.lower()
+            else "distil-large-v3",
+            device="cuda",
+        )
+        self._conversation_pipeline = None
 
         # Actuation layer
         self.schedule_queue = ScheduleQueue()
@@ -426,6 +452,14 @@ class VoiceDaemon:
         except Exception:
             log.info("CircadianBackend not available, skipping")
 
+        # Studio ingestion backend (CLAP audio classification)
+        try:
+            from agents.hapax_voice.backends.studio_ingestion import StudioIngestionBackend
+
+            self.perception.register_backend(StudioIngestionBackend())
+        except Exception:
+            log.info("StudioIngestionBackend not available, skipping")
+
         # MIDI clock backend (for MC governance)
         try:
             from agents.hapax_voice.backends.midi_clock import MidiClockBackend
@@ -508,12 +542,19 @@ class VoiceDaemon:
             _wake_buf.extend(frame)
             _vad_buf.extend(frame)
 
+            # Conversation buffer: feed every frame (inline, no copy overhead)
+            if self._conversation_buffer.is_active:
+                self._conversation_buffer.feed_audio(frame)
+
             # Presence/VAD: drain all complete 512-sample chunks
             while len(_vad_buf) >= _VAD_CHUNK:
                 chunk = bytes(_vad_buf[:_VAD_CHUNK])
                 del _vad_buf[:_VAD_CHUNK]
                 try:
                     self.presence.process_audio_frame(chunk)
+                    # Feed VAD probability to conversation buffer
+                    if self._conversation_buffer.is_active:
+                        self._conversation_buffer.update_vad(self.presence._latest_vad_confidence)
                 except Exception as exc:
                     log.warning("Presence consumer error: %s", exc)
 
@@ -534,11 +575,10 @@ class VoiceDaemon:
     async def _start_pipeline(self) -> None:
         """Start the voice pipeline for the current session.
 
-        For backend="local", builds a Pipecat pipeline (STT -> LLM -> TTS)
-        with LocalAudioTransport. For backend="gemini", connects a Gemini
-        Live session for speech-to-speech.
+        For backend="local", starts the lightweight conversation pipeline.
+        For backend="gemini", connects a Gemini Live session.
         """
-        if self._pipeline_task is not None:
+        if self._conversation_pipeline is not None and self._conversation_pipeline.is_active:
             log.warning("Pipeline already running, skipping start")
             return
 
@@ -547,65 +587,134 @@ class VoiceDaemon:
         if backend == "gemini":
             await self._start_gemini_session()
         else:
-            await self._start_local_pipeline()
+            await self._start_conversation_pipeline()
 
-    async def _start_local_pipeline(self) -> None:
-        """Build and start the local Pipecat pipeline in a background task.
+    def _precompute_pipeline_deps(self) -> None:
+        """Precompute pipeline dependencies at startup so session open is instant.
 
-        Stops the daemon's AudioInputStream first so Pipecat's
-        LocalAudioTransport can claim the microphone exclusively.
+        Called once during daemon init. Tools, consent reader, and callbacks
+        are stable across sessions. Only the system prompt needs refreshing
+        per session (policy + screen context depend on current environment).
         """
-        from pipecat.pipeline.runner import PipelineRunner
+        from agents.hapax_voice.conversational_policy import get_policy
+        from agents.hapax_voice.env_context import serialize_environment
+        from agents.hapax_voice.tools_openai import get_openai_tools
 
-        from agents.hapax_voice.pipeline import build_pipeline_task
+        # Tools (stable across sessions for operator mode)
+        self._precomputed_tools = None
+        self._precomputed_handlers: dict = {}
+        if self.cfg.tools_enabled:
+            tool_kwargs: dict = {
+                "guest_mode": False,
+                "config": self.cfg,
+                "webcam_capturer": getattr(self.workspace_monitor, "_webcam_capturer", None),
+                "screen_capturer": getattr(self.workspace_monitor, "_screen_capturer", None),
+            }
+            vfx = getattr(self.tts, "vocal_fx", None)
+            if vfx is not None:
+                import inspect
 
-        # Release mic so Pipecat can open its own input stream
-        self._audio_input.stop()
-        log.info("Daemon audio input stopped — handing mic to pipeline")
+                sig = inspect.signature(get_openai_tools)
+                if "vocal_fx" in sig.parameters:
+                    tool_kwargs["vocal_fx"] = vfx
+            self._precomputed_tools, self._precomputed_handlers = get_openai_tools(**tool_kwargs)
 
-        guest_mode = self.session.is_guest_mode
-
+        # Consent reader (stable, reloads contracts on session start)
+        self._precomputed_consent_reader = None
         try:
-            task, transport = build_pipeline_task(
-                stt_model=self.cfg.local_stt_model,
-                llm_model=self.cfg.llm_model,
-                kokoro_voice=self.cfg.kokoro_voice,
-                guest_mode=guest_mode,
-                config=self.cfg,
-                webcam_capturer=getattr(self.workspace_monitor, "webcam_capturer", None),
-                screen_capturer=getattr(self.workspace_monitor, "screen_capturer", None),
-                frame_gate=self._frame_gate,
-            )
+            from shared.governance.consent_reader import ConsentGatedReader
+
+            self._precomputed_consent_reader = ConsentGatedReader.create()
         except Exception:
-            log.exception("Failed to build Pipecat pipeline")
-            # Restore daemon audio input on failure
-            self._audio_input.start()
-            return
+            log.warning("ConsentGatedReader unavailable, proceeding without consent filtering")
 
-        self._pipecat_task = task
-        self._pipecat_transport = transport
+        # Callbacks (closures over self — stable)
+        self._env_context_fn = lambda: serialize_environment(
+            self.perception.latest or EnvironmentState(timestamp=0),
+            self.workspace_monitor.latest_analysis,
+            self.gate._ambient_result,
+            perception_tier=self._perception_tier.value,
+        )
+        self._ambient_fn = lambda: self.gate._ambient_result
+        self._policy_fn = lambda: get_policy(
+            env=self.perception.latest,
+            guest_mode=self.session.is_guest_mode,
+        )
 
-        async def _run_pipeline() -> None:
-            try:
-                runner = PipelineRunner(
-                    handle_sigint=False,
-                    handle_sigterm=False,
-                )
-                log.info("Local Pipecat pipeline started (guest=%s)", guest_mode)
-                await runner.run(task)
-            except asyncio.CancelledError:
-                log.info("Local Pipecat pipeline cancelled")
-            except Exception:
-                log.exception("Local Pipecat pipeline error")
+        log.info("Pipeline dependencies precomputed")
 
-        self._pipeline_task = asyncio.create_task(_run_pipeline())
+    async def _start_conversation_pipeline(self) -> None:
+        """Start the lightweight conversation pipeline.
+
+        Most dependencies are precomputed at startup. This method only builds
+        the fresh system prompt (policy + screen context) and creates the
+        pipeline object. Should complete in <50ms.
+        """
+        from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+        from agents.hapax_voice.conversational_policy import get_policy
+        from agents.hapax_voice.persona import screen_context_block, system_prompt
+        from agents.hapax_voice.tools_openai import get_openai_tools
+
+        # Fresh system prompt (only part that changes per session)
+        policy_block = get_policy(
+            env=self.perception.latest,
+            guest_mode=self.session.is_guest_mode,
+        )
+        prompt = system_prompt(
+            guest_mode=self.session.is_guest_mode,
+            policy_block=policy_block,
+        )
+        screen_ctx = screen_context_block(self.workspace_monitor.latest_analysis)
+        if screen_ctx:
+            prompt += screen_ctx
+
+        # Guest mode needs fresh tools (restricted set)
+        if self.session.is_guest_mode and self.cfg.tools_enabled:
+            tools, tool_handlers = get_openai_tools(
+                guest_mode=True,
+                config=self.cfg,
+                webcam_capturer=getattr(self.workspace_monitor, "_webcam_capturer", None),
+                screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
+            )
+        else:
+            tools = self._precomputed_tools
+            tool_handlers = self._precomputed_handlers
+
+        self._conversation_pipeline = ConversationPipeline(
+            stt=self._resident_stt,
+            tts_manager=self.tts,
+            system_prompt=prompt,
+            tools=tools or None,
+            tool_handlers=tool_handlers,
+            llm_model=self.cfg.llm_model,
+            event_log=self.event_log,
+            conversation_buffer=self._conversation_buffer,
+            consent_reader=self._precomputed_consent_reader,
+            env_context_fn=self._env_context_fn,
+            ambient_fn=self._ambient_fn,
+            policy_fn=self._policy_fn,
+        )
+
+        await self._conversation_pipeline.start()
+        log.info("Conversation pipeline started (mic stays shared)")
+
+        # Run the conversation loop as a background task
+        self._pipeline_task = asyncio.create_task(self._conversation_loop())
 
     async def _start_gemini_session(self) -> None:
         """Connect and start a Gemini Live session."""
+        from agents.hapax_voice.conversational_policy import get_policy
         from agents.hapax_voice.gemini_live import GeminiLiveSession
         from agents.hapax_voice.persona import system_prompt
 
-        prompt = system_prompt(guest_mode=self.session.is_guest_mode)
+        policy_block = get_policy(
+            env=self.perception.latest,
+            guest_mode=self.session.is_guest_mode,
+        )
+        prompt = system_prompt(
+            guest_mode=self.session.is_guest_mode,
+            policy_block=policy_block,
+        )
         session = GeminiLiveSession(
             model=self.cfg.gemini_model,
             system_prompt=prompt,
@@ -617,33 +726,55 @@ class VoiceDaemon:
         else:
             log.error("Gemini Live session failed to connect")
 
-    async def _stop_pipeline(self) -> None:
-        """Stop the active pipeline or Gemini session.
+    async def _conversation_loop(self) -> None:
+        """Background task: poll conversation buffer for utterances.
 
-        Restores the daemon's AudioInputStream so wake word detection
-        resumes after the session ends.
+        Runs while the conversation pipeline is active. Checks every
+        50ms for complete utterances from the ConversationBuffer and
+        feeds them to the pipeline for processing.
         """
+        try:
+            while (
+                self._conversation_pipeline is not None
+                and self._conversation_pipeline.is_active
+                and self._running
+            ):
+                utterance = self._conversation_buffer.get_utterance()
+                if utterance is not None:
+                    await self._conversation_pipeline.process_utterance(utterance)
+                else:
+                    await asyncio.sleep(0.05)  # 50ms poll
+
+                # Session timeout check
+                if self.session.is_active and self.session.is_timed_out:
+                    log.info("Conversation timed out (silence)")
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception("Conversation loop error")
+
+    async def _stop_pipeline(self) -> None:
+        """Stop the active pipeline or Gemini session."""
         if self._gemini_session is not None:
             await self._gemini_session.disconnect()
             self._gemini_session = None
             log.info("Gemini Live session stopped")
 
+        if self._conversation_pipeline is not None:
+            await self._conversation_pipeline.stop()
+            self._conversation_pipeline = None
+
         if self._pipeline_task is not None:
-            # Cancel the runner task and wait for cleanup
             self._pipeline_task.cancel()
             try:
                 await self._pipeline_task
             except asyncio.CancelledError:
                 pass
             self._pipeline_task = None
-            self._pipecat_task = None
-            self._pipecat_transport = None
-            log.info("Local Pipecat pipeline stopped")
+            log.info("Conversation pipeline stopped")
 
-        # Restore daemon audio input for wake word / VAD
-        if not self._audio_input.is_active:
-            self._audio_input.start()
-            log.info("Daemon audio input restored")
+        # No need to restore audio input — mic was never stopped
 
     # ------------------------------------------------------------------
     # Session events
@@ -694,6 +825,7 @@ class VoiceDaemon:
             self.governor.wake_word_active = True
             self._frame_gate.set_directive("process")
             self.session.open(trigger="wake_word")
+            self.session.set_speaker("ryan", confidence=1.0)  # Wake word implies operator
             log.info("Session opened via wake word")
             self.event_log.set_session_id(self.session.session_id)
             self.event_log.emit("session_lifecycle", action="opened", trigger="wake_word")
@@ -713,6 +845,7 @@ class VoiceDaemon:
                     return
                 self._acknowledge("activation")
                 self.session.open(trigger="hotkey")
+                self.session.set_speaker("ryan", confidence=1.0)  # Physical access = operator
                 self.event_log.set_session_id(self.session.session_id)
                 self.event_log.emit("session_lifecycle", action="opened", trigger="hotkey")
                 await self._start_pipeline()
@@ -726,6 +859,7 @@ class VoiceDaemon:
                 return
             self._acknowledge("activation")
             self.session.open(trigger="hotkey")
+            self.session.set_speaker("ryan", confidence=1.0)  # Physical access = operator
             self.event_log.set_session_id(self.session.session_id)
             self.event_log.emit("session_lifecycle", action="opened", trigger="hotkey")
             await self._start_pipeline()
@@ -735,12 +869,32 @@ class VoiceDaemon:
             await self._handle_scan()
         elif cmd == "status":
             log.info(
-                "Status: session=%s presence=%s queue=%d pipeline=%s",
+                "Status: session=%s presence=%s queue=%d pipeline=%s tier=%s",
                 self.session.state,
                 self.presence.score,
                 self.notifications.pending_count,
                 "running" if self._pipeline_task is not None else "idle",
+                self._perception_tier.value,
             )
+        elif cmd.startswith("perception:"):
+            tier_name = cmd.split(":", 1)[1].strip()
+            self._set_perception_tier(tier_name)
+
+    def _set_perception_tier(self, tier_name: str) -> None:
+        """Switch perception tier (voice/hotkey command)."""
+        from agents.hapax_voice.config import PerceptionTier
+
+        try:
+            new_tier = PerceptionTier(tier_name)
+        except ValueError:
+            log.warning("Unknown perception tier: %s", tier_name)
+            return
+        old_tier = self._perception_tier
+        self._perception_tier = new_tier
+        log.info("Perception tier: %s → %s", old_tier.value, new_tier.value)
+        self.event_log.emit("perception_tier_changed", old=old_tier.value, new=new_tier.value)
+
+        # Tier restrictions applied in _perception_loop via self._perception_tier
 
     async def _close_session(self, reason: str) -> None:
         """Close the active session and stop the pipeline."""
@@ -753,6 +907,117 @@ class VoiceDaemon:
             )
         self.event_log.set_session_id(None)
         self.session.close(reason=reason)
+
+    async def _run_consent_session(self) -> None:
+        """Run a voice consent session for a detected guest.
+
+        Builds a separate Pipecat pipeline with the consent system prompt
+        and consent-only tools. The LLM explains what the system records
+        and understands the guest's natural language response.
+
+        Guards:
+        - Only runs when main voice session is inactive (audio transport free)
+        - Sets _consent_session_active flag to prevent concurrent launches
+        - Times out after consent_session_timeout_s
+        - All exceptions are caught (non-fatal)
+        """
+        if self._consent_session_active:
+            return
+
+        self._consent_session_active = True
+        self.event_log.emit("consent_session_start")
+        log.info("Starting consent voice session for detected guest")
+
+        try:
+            from agents.hapax_voice.consent_session import (
+                CONSENT_SYSTEM_PROMPT,
+                CONSENT_TOOL_SCHEMAS,
+                build_consent_tools_for_llm,
+            )
+            from agents.hapax_voice.pipeline import _build_llm, _build_stt, _build_tts
+
+            # Build minimal pipeline components
+            stt = _build_stt(self.cfg.local_stt_model)
+            llm = _build_llm(self.cfg.llm_model, CONSENT_SYSTEM_PROMPT)
+            tts = _build_tts(self.cfg.kokoro_voice)
+
+            # Register consent tools (only 2: record_decision, request_clarification)
+            consent_state = build_consent_tools_for_llm(
+                llm,
+                consent_tracker=self.consent_tracker,
+                event_log=self.event_log,
+            )
+
+            # Build and run pipeline
+            from pipecat.pipeline.pipeline import Pipeline
+            from pipecat.pipeline.task import PipelineTask
+            from pipecat.processors.aggregators.openai_llm_context import (
+                LLMContext,
+                LLMContextAggregatorPair,
+            )
+            from pipecat.transports.local.audio import LocalAudioTransport
+
+            transport = LocalAudioTransport(
+                input_name=self.cfg.audio_input_source,
+            )
+
+            context = LLMContext(
+                messages=[{"role": "system", "content": CONSENT_SYSTEM_PROMPT}],
+                tools=CONSENT_TOOL_SCHEMAS,
+            )
+            context_aggregator = LLMContextAggregatorPair(context)
+
+            pipeline = Pipeline(
+                processors=[
+                    transport.input(),
+                    stt,
+                    context_aggregator.user(),
+                    llm,
+                    tts,
+                    transport.output(),
+                    context_aggregator.assistant(),
+                ]
+            )
+
+            task = PipelineTask(pipeline)
+
+            # Run with timeout
+            from pipecat.pipeline.runner import PipelineRunner
+
+            runner = PipelineRunner()
+
+            async def _run_with_timeout():
+                try:
+                    await asyncio.wait_for(
+                        runner.run(task),
+                        timeout=self.cfg.consent_session_timeout_s,
+                    )
+                except TimeoutError:
+                    log.info("Consent session timed out — curtailment continues")
+                    await task.cancel()
+
+            await _run_with_timeout()
+
+            # Log outcome
+            if consent_state.resolved:
+                log.info(
+                    "Consent session resolved: %s (scope: %s)",
+                    consent_state.decision,
+                    consent_state.scope,
+                )
+            else:
+                log.info("Consent session ended without resolution — curtailment continues")
+
+        except Exception:
+            log.exception("Consent session failed (non-fatal, curtailment continues)")
+        finally:
+            self._consent_session_active = False
+            self.event_log.emit(
+                "consent_session_end",
+                resolved=getattr(consent_state, "resolved", False)
+                if "consent_state" in dir()
+                else False,
+            )
 
     async def _handle_scan(self) -> None:
         """Capture a high-res frame from BRIO and extract text via Gemini."""
@@ -865,11 +1130,32 @@ class VoiceDaemon:
             except Exception:
                 log.exception("Error in proactive delivery loop")
 
+    async def _ambient_refresh_loop(self) -> None:
+        """Refresh ambient classification cache in executor thread.
+
+        Runs PANNs + pw-record off the event loop to prevent blocking
+        the audio queue consumer and wake word detector.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(30)  # classify every 30s
+                await self.gate.refresh_ambient_cache()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.debug("Ambient refresh error (non-fatal)", exc_info=True)
+
     async def _perception_loop(self) -> None:
         """Run perception fast tick + governor evaluation on cadence."""
+        from agents.hapax_voice.config import PerceptionTier
+
         while self._running:
             try:
                 await asyncio.sleep(self.cfg.perception_fast_tick_s)
+
+                # Skip perception entirely in dormant mode
+                if self._perception_tier == PerceptionTier.DORMANT:
+                    continue
 
                 # Update perception with session state before tick
                 self.perception.set_voice_session_active(self.session.is_active)
@@ -906,11 +1192,42 @@ class VoiceDaemon:
                     self.session.pause(reason=f"governor:{state.activity_mode}")
                 elif directive == "process" and self.session.is_paused:
                     self.session.resume()
-                elif directive == "withdraw" and self.session.is_active:
+                elif (
+                    directive == "withdraw"
+                    and self.session.is_active
+                    and self._conversation_pipeline is None
+                ):
                     await self._close_session(reason="operator_absent")
 
                 # Update context gate with backend Behaviors
                 self.gate.set_behaviors(self.perception.behaviors)
+
+                # Consent state tracking (interpersonal_transparency axiom)
+                # Pure function: no I/O, no blocking, just state transitions
+                try:
+                    speaker_is_op = (
+                        not self.session.is_active
+                        or getattr(self.session, "speaker", "ryan") == "ryan"
+                    )
+                    self.consent_tracker.tick(
+                        face_count=state.face_count,
+                        speaker_is_operator=speaker_is_op,
+                        now=state.timestamp,
+                    )
+
+                    # Launch consent voice session when needed
+                    if (
+                        self.consent_tracker.needs_notification
+                        and not self.session.is_active
+                        and not self._consent_session_active
+                    ):
+                        asyncio.create_task(self._run_consent_session())
+                except Exception:
+                    log.debug("Consent tracker error (non-fatal)", exc_info=True)
+
+                # Write perception state AFTER consent tick so published state
+                # reflects the current consent decision
+                write_perception_state(self.perception, self.consent_registry, self.consent_tracker)
 
             except asyncio.CancelledError:
                 break
@@ -979,6 +1296,16 @@ class VoiceDaemon:
         # Load wake word model (non-blocking, logs warning if unavailable)
         self.wake_word.load()
 
+        # Preload STT + TTS models at startup so first wake word is instant.
+        # These stay resident in GPU memory for the daemon's lifetime.
+        if not self._resident_stt.is_loaded:
+            log.info("Preloading STT model at startup...")
+            self._resident_stt.load()
+        self.tts.preload()
+
+        # Precompute pipeline dependencies (tools, consent, callbacks)
+        self._precompute_pipeline_deps()
+
         # Load chime sounds
         if self.cfg.chime_enabled:
             self.chime_player.load()
@@ -1031,6 +1358,7 @@ class VoiceDaemon:
 
         self._background_tasks.append(asyncio.create_task(self._perception_loop()))
         self._background_tasks.append(asyncio.create_task(self._wake_word_processor()))
+        self._background_tasks.append(asyncio.create_task(self._ambient_refresh_loop()))
 
         # Actuation loop (drains ScheduleQueue at beat precision)
         if self.cfg.mc_enabled or self.cfg.obs_enabled:

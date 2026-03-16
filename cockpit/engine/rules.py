@@ -72,13 +72,13 @@ def evaluate_rules(event: ChangeEvent, registry: RuleRegistry) -> ActionPlan:
         try:
             if not rule.trigger_filter(event):
                 continue
-        except Exception:
+        except (ValueError, KeyError, TypeError, OSError):
             _log.exception("Exception in trigger_filter for rule %s", rule.name)
             continue
 
         try:
             actions = rule.produce(event)
-        except Exception:
+        except (ValueError, KeyError, TypeError, OSError):
             _log.exception("Exception in produce for rule %s", rule.name)
             continue
 

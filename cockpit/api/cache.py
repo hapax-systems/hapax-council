@@ -36,6 +36,7 @@ class DataCache:
     nudges: list = field(default_factory=list)
     agents: list = field(default_factory=list)
     accommodations: Any = None
+    studio: Any = None
 
     # Refresh timestamps (monotonic seconds)
     _fast_refreshed_at: float = 0.0
@@ -94,6 +95,7 @@ class DataCache:
         from cockpit.data.nudges import collect_nudges
         from cockpit.data.readiness import collect_readiness
         from cockpit.data.scout import collect_scout
+        from cockpit.data.studio import collect_studio
 
         for name, fn in [
             ("briefing", collect_briefing),
@@ -103,6 +105,7 @@ class DataCache:
             ("goals", collect_goals),
             ("readiness", collect_readiness),
             ("agents", get_agent_registry),
+            ("studio", collect_studio),
         ]:
             try:
                 setattr(self, name, fn())

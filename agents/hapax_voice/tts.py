@@ -48,6 +48,11 @@ class TTSManager:
         self._piper_model = None
         self._kokoro_pipeline = None
 
+    def preload(self) -> None:
+        """Eagerly load TTS models at startup instead of lazy-loading on first use."""
+        if self._kokoro_pipeline is None:
+            self._load_kokoro()
+
     def synthesize(self, text: str, use_case: str = "conversation") -> bytes:
         """Synthesize text to raw PCM int16 audio bytes using the appropriate TTS tier."""
         tier = select_tier(use_case)

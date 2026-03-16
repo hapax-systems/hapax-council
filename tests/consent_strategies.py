@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from hypothesis import strategies as st
 
-from shared.consent_label import ConsentLabel
-from shared.labeled import Labeled
-from shared.principal import Principal, PrincipalKind
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.labeled import Labeled
+from shared.governance.principal import Principal, PrincipalKind
 
 # ── Shared strategies ─────────────────────────────────────────────────
 

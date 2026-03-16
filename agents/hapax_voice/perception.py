@@ -153,6 +153,9 @@ class EnvironmentState:
     in_voice_session: bool = False
     interruptibility_score: float = 1.0
 
+    # Consent state (set by ConsentStateTracker after creation)
+    consent_phase: str = "no_guest"
+
     # Directive (set by Governor after creation)
     directive: str = "process"
 

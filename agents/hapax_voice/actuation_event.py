@@ -14,7 +14,7 @@ import types
 from dataclasses import dataclass, field
 from typing import Any
 
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 
 
 @dataclass(frozen=True)

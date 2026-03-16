@@ -49,6 +49,9 @@ export function Header({ onManualToggle }: HeaderProps) {
           <NavLink to="/demos" className={navLinkClass}>
             Demos
           </NavLink>
+          <NavLink to="/studio" className={navLinkClass}>
+            Studio
+          </NavLink>
         </nav>
       </div>
       <div className="flex items-center gap-3 text-xs">

@@ -37,7 +37,7 @@ async def get_copilot_observation():
             gen = datetime.fromisoformat(cache.briefing.generated_at)
             now = datetime.now(UTC)
             ctx.briefing_age_h = (now - gen).total_seconds() / 3600
-        except Exception:
+        except (ValueError, TypeError):
             pass
         ctx.action_item_count = len(getattr(cache.briefing, "action_items", []))
 

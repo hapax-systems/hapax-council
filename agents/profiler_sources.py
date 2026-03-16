@@ -498,7 +498,7 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
         try:
             data = json.loads(hr_file.read_text())
             current = data.get("current", {})
-            if current.get("bpm"):
+            if current.get("bpm") is not None:
                 facts.append(
                     {
                         "key": "health.resting_hr",
@@ -517,7 +517,7 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
         try:
             data = json.loads(hrv_file.read_text())
             window = data.get("window_1h", {})
-            if window.get("mean"):
+            if window.get("mean") is not None:
                 facts.append(
                     {
                         "key": "health.hrv_baseline",

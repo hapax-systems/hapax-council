@@ -11,9 +11,11 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 from datetime import UTC, datetime
@@ -21,9 +23,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shared.config import HAPAX_HOME
+
+log = logging.getLogger(__name__)
 
 try:
     from shared import langfuse_config  # noqa: F401
@@ -41,6 +45,7 @@ DEVICE_NAMES: dict[str, str] = {"pw4": "pixel_watch_4", "pixel10": "pixel_10"}
 _WINDOW_MAX_AGE_S = 3600
 _hr_window: deque[tuple[float, float]] = deque()  # (epoch, bpm)
 _hrv_window: deque[tuple[float, float]] = deque()  # (epoch, rmssd_ms)
+_window_lock = threading.Lock()
 
 
 def _get_watch_state_dir() -> Path:
@@ -66,10 +71,10 @@ class SensorReading(BaseModel):
 
 
 class SensorPayload(BaseModel):
-    ts: int  # epoch ms
+    ts: int = Field(ge=0)  # epoch ms, must be non-negative
     device_id: str
     readings: list[SensorReading]
-    battery_pct: int | None = None
+    battery_pct: int | None = Field(default=None, ge=0, le=100)
 
 
 class HealthSummaryPayload(BaseModel):
@@ -158,8 +163,10 @@ def _handle_heart_rate(reading: SensorReading, now: float, source: str = "pixel_
     """Process heart rate reading, update rolling window, write file."""
     if reading.bpm is None:
         return
-    _prune_window(_hr_window, now)
-    _hr_window.append((now, reading.bpm))
+    with _window_lock:
+        _prune_window(_hr_window, now)
+        _hr_window.append((now, reading.bpm))
+        stats = _window_stats(_hr_window)
     _atomic_write(
         _get_watch_state_dir() / "heartrate.json",
         {
@@ -169,7 +176,7 @@ def _handle_heart_rate(reading: SensorReading, now: float, source: str = "pixel_
                 "bpm": reading.bpm,
                 "confidence": reading.confidence or "UNKNOWN",
             },
-            "window_1h": _window_stats(_hr_window),
+            "window_1h": stats,
         },
     )
 
@@ -178,15 +185,17 @@ def _handle_hrv(reading: SensorReading, now: float, source: str = "pixel_watch_4
     """Process HRV reading."""
     if reading.rmssd_ms is None:
         return
-    _prune_window(_hrv_window, now)
-    _hrv_window.append((now, reading.rmssd_ms))
+    with _window_lock:
+        _prune_window(_hrv_window, now)
+        _hrv_window.append((now, reading.rmssd_ms))
+        stats = _window_stats(_hrv_window)
     _atomic_write(
         _get_watch_state_dir() / "hrv.json",
         {
             "source": source,
             "updated_at": datetime.now(UTC).isoformat(),
             "current": {"rmssd_ms": reading.rmssd_ms},
-            "window_1h": _window_stats(_hrv_window),
+            "window_1h": stats,
         },
     )
 
@@ -277,6 +286,10 @@ def create_app() -> FastAPI:
             handler = _HANDLERS.get(reading.type)
             if handler:
                 handler(reading, now, source)
+            else:
+                log.warning(
+                    "Unknown sensor type: %s from device %s", reading.type, payload.device_id
+                )
         return {"status": "ok", "readings_processed": str(len(payload.readings))}
 
     @_app.get("/watch/status")
@@ -284,7 +297,10 @@ def create_app() -> FastAPI:
         conn_file = _get_watch_state_dir() / "connection.json"
         conn = {}
         if conn_file.exists():
-            conn = json.loads(conn_file.read_text())
+            try:
+                conn = json.loads(conn_file.read_text())
+            except (json.JSONDecodeError, OSError) as exc:
+                log.warning("Failed to parse connection.json: %s", exc)
         return {"status": "ok", "connection": conn}
 
     @_app.post("/phone/health-summary")
@@ -341,4 +357,5 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("agents.watch_receiver:app", host="0.0.0.0", port=8042, reload=True)
+    # Bind to localhost only. For remote access (e.g. phone), use Tailscale/WireGuard.
+    uvicorn.run("agents.watch_receiver:app", host="127.0.0.1", port=8042, reload=True)
