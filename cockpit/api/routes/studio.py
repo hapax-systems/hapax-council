@@ -7,8 +7,6 @@ search over the studio_moments Qdrant collection.
 from __future__ import annotations
 
 import asyncio
-import json
-import shutil
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -56,29 +54,6 @@ def _slow_response(data: Any) -> JSONResponse:
 async def get_studio():
     """Combined studio ingestion snapshot."""
     return _slow_response(_to_dict(cache.studio))
-
-
-VISUAL_LAYER_STATE_PATH = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
-
-
-@router.get("/studio/visual-layer")
-async def get_visual_layer():
-    """Current visual communication layer state."""
-    if not VISUAL_LAYER_STATE_PATH.exists():
-        return JSONResponse(
-            {
-                "display_state": "ambient",
-                "signals": {},
-                "zone_opacities": {},
-                "aggregator": "offline",
-            },
-            headers=_NO_CACHE,
-        )
-    try:
-        data = json.loads(VISUAL_LAYER_STATE_PATH.read_text())
-        return JSONResponse(content=data, headers=_NO_CACHE)
-    except (json.JSONDecodeError, OSError):
-        return JSONResponse({"error": "read failed"}, status_code=503, headers=_NO_CACHE)
 
 
 @router.get("/studio/stream/info")
@@ -295,55 +270,33 @@ async def get_consent_status():
         return {"recording_allowed": True, "guest_present": False, "phase": "no_guest"}
 
 
-STATUS_FILE = Path.home() / ".cache" / "hapax-compositor" / "status.json"
-VIDEO_RECORDING_DIR = Path.home() / "video-recording"
-RECORDING_CONTROL_FILE = Path("/dev/shm/hapax-compositor/recording-control.txt")
+@router.get("/studio/visual-layer")
+async def get_visual_layer_state():
+    """Current visual layer state from the aggregator.
 
+    Returns the display state machine output: display state, zone opacities,
+    active signals per category, and ambient shader parameters.
+    """
+    import json
 
-@router.get("/studio/compositor/live")
-async def compositor_live():
-    """Direct status.json read for low-latency polling."""
-    if not STATUS_FILE.exists():
-        return JSONResponse({"state": "unknown"}, status_code=503)
+    vl_path = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
+    if not vl_path.exists():
+        return {
+            "available": False,
+            "display_state": "ambient",
+            "zone_opacities": {},
+            "signals": {},
+            "ambient_params": {},
+        }
     try:
-        data = json.loads(STATUS_FILE.read_text())
+        data = json.loads(vl_path.read_text())
+        data["available"] = True
         return data
     except (json.JSONDecodeError, OSError):
-        return JSONResponse({"error": "read failed"}, status_code=503)
-
-
-@router.get("/studio/disk")
-async def studio_disk():
-    """Disk usage for ~/video-recording."""
-    path = VIDEO_RECORDING_DIR
-    if not path.exists():
-        path = Path.home()
-    usage = shutil.disk_usage(path)
-    return {
-        "path": str(VIDEO_RECORDING_DIR),
-        "total_gb": round(usage.total / (1024**3), 1),
-        "used_gb": round(usage.used / (1024**3), 1),
-        "free_gb": round(usage.free / (1024**3), 1),
-    }
-
-
-@router.post("/studio/recording/enable")
-async def enable_recording():
-    """Request compositor to enable recording."""
-    try:
-        RECORDING_CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
-        RECORDING_CONTROL_FILE.write_text("enable")
-        return {"status": "requested", "command": "enable"}
-    except OSError:
-        return JSONResponse({"error": "write failed"}, status_code=503)
-
-
-@router.post("/studio/recording/disable")
-async def disable_recording():
-    """Request compositor to disable recording."""
-    try:
-        RECORDING_CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
-        RECORDING_CONTROL_FILE.write_text("disable")
-        return {"status": "requested", "command": "disable"}
-    except OSError:
-        return JSONResponse({"error": "write failed"}, status_code=503)
+        return {
+            "available": False,
+            "display_state": "ambient",
+            "zone_opacities": {},
+            "signals": {},
+            "ambient_params": {},
+        }

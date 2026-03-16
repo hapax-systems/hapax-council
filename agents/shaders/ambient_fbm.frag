@@ -1,54 +1,47 @@
-/* Ambient fBM flow field — generative background for visual communication layer.
- *
- * Perlin noise fractional Brownian motion. Parameters driven by system state:
- *   u_speed      — animation rate (0.0-1.0)
- *   u_turbulence — noise octave complexity (0.0-1.0)
- *   u_warmth     — color temperature (0.0=cool teal, 1.0=warm red)
- *   u_brightness — overall output brightness (0.0-1.0)
- */
-
-#version 300 es
+#version 100
+#ifdef GL_ES
 precision mediump float;
+#endif
 
+varying vec2 v_texcoord;
+uniform sampler2D tex;
 uniform float u_time;
-uniform float u_speed;
-uniform float u_turbulence;
-uniform float u_warmth;
-uniform float u_brightness;
-uniform vec2 u_resolution;
 
-out vec4 fragColor;
+// Ambient parameters driven by visual layer state
+uniform float u_ambient_speed;      // 0.0-1.0, default 0.08
+uniform float u_ambient_turbulence; // 0.0-1.0, default 0.1
+uniform float u_ambient_warmth;     // 0.0=cool teal, 1.0=warm red
+uniform float u_ambient_brightness; // 0.0-1.0, default 0.25
 
-// Hash function for pseudo-random gradient
-vec2 hash(vec2 p) {
-    p = vec2(dot(p, vec2(127.1, 311.7)),
-             dot(p, vec2(269.5, 183.3)));
-    return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
+// -- Noise functions (Perlin-style) --
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
-// 2D Perlin noise
 float noise(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);  // smoothstep
+    vec2 u = f * f * (3.0 - 2.0 * f);
 
-    return mix(mix(dot(hash(i + vec2(0.0, 0.0)), f - vec2(0.0, 0.0)),
-                   dot(hash(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0)), u.x),
-               mix(dot(hash(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)),
-                   dot(hash(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0)), u.x), u.y);
+    return mix(
+        mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+        mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+        u.y
+    );
 }
 
-// Fractional Brownian motion
+// Fractal Brownian Motion — multiple octaves of noise
 float fbm(vec2 p) {
+    float turb = max(u_ambient_turbulence, 0.05);
+    int octaves = int(2.0 + turb * 4.0); // 2-6 octaves based on turbulence
     float value = 0.0;
     float amplitude = 0.5;
     float frequency = 1.0;
-    int octaves = 3 + int(u_turbulence * 4.0);  // 3-7 octaves based on turbulence
 
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 6; i++) {
         if (i >= octaves) break;
         value += amplitude * noise(p * frequency);
-        p += vec2(5.2, 1.3);  // domain warp
         frequency *= 2.0;
         amplitude *= 0.5;
     }
@@ -56,29 +49,36 @@ float fbm(vec2 p) {
 }
 
 void main() {
-    vec2 uv = gl_FragCoord.xy / u_resolution;
-    float t = u_time * u_speed * 0.1;
+    vec2 uv = v_texcoord;
 
-    // Flow field: distort UV with fbm
-    vec2 q = vec2(fbm(uv * 3.0 + t), fbm(uv * 3.0 + vec2(1.7, 9.2) + t));
-    vec2 r = vec2(fbm(uv * 3.0 + 4.0 * q + vec2(1.7, 9.2) + t * 0.5),
-                  fbm(uv * 3.0 + 4.0 * q + vec2(8.3, 2.8) + t * 0.3));
+    // Original camera image
+    vec4 cam = texture2D(tex, uv);
 
-    float f = fbm(uv * 3.0 + 4.0 * r);
+    // Time-varying offset for animation
+    float speed = max(u_ambient_speed, 0.01);
+    float t = u_time * speed * 0.3;
 
-    // Color mapping: cool teal → warm red via u_warmth
-    vec3 cool = vec3(0.15, 0.35, 0.45);   // deep teal
-    vec3 warm = vec3(0.45, 0.15, 0.12);   // muted red
+    // Flow field: offset uv by noise gradient for organic movement
+    vec2 flow_uv = uv * 3.0 + vec2(t * 0.7, t * 0.5);
+    float flow = fbm(flow_uv);
+    float flow2 = fbm(flow_uv + vec2(5.2, 1.3) + t * 0.2);
 
-    vec3 base = mix(cool, warm, u_warmth);
-    vec3 highlight = mix(vec3(0.2, 0.5, 0.6), vec3(0.6, 0.3, 0.15), u_warmth);
+    // Color: mix between cool teal and warm red based on warmth uniform
+    vec3 cool = vec3(0.05, 0.15, 0.18);   // deep teal (#0D2730)
+    vec3 warm = vec3(0.25, 0.08, 0.05);   // muted red (#401410)
+    vec3 base_color = mix(cool, warm, u_ambient_warmth);
 
-    vec3 color = mix(base, highlight, clamp(f * 0.5 + 0.5, 0.0, 1.0));
-    color *= u_brightness;
+    // Apply noise as luminance variation
+    float lum = flow * 0.6 + flow2 * 0.4;
+    lum = lum * u_ambient_brightness;
 
-    // Subtle vignette
-    float vignette = 1.0 - 0.3 * length(uv - 0.5);
-    color *= vignette;
+    vec3 ambient = base_color + vec3(lum * 0.3, lum * 0.25, lum * 0.35);
 
-    fragColor = vec4(color, 1.0);
+    // Blend: ambient layer sits BEHIND the camera image
+    // When camera is active, the ambient is very subtle (barely visible)
+    // The visual layer zones render on TOP via Cairo overlay
+    float blend = 0.15; // subtle ambient undertone
+    vec3 result = mix(cam.rgb, ambient, blend);
+
+    gl_FragColor = vec4(result, 1.0);
 }
