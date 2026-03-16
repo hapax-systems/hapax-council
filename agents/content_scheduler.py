@@ -257,6 +257,8 @@ class SchedulerContext(BaseModel):
     trend_flow: float = 0.0  # flow_score trend (slope/s)
     trend_audio: float = 0.0  # audio_energy trend (slope/s)
     perception_age_s: float = 0.0  # staleness of perception data
+    # WS2: system self-state
+    stimmung_stance: str = "nominal"
 
 
 class ContentPools(BaseModel):
@@ -359,8 +361,11 @@ class ContentScheduler:
         return decision
 
     def _compute_density(self, ctx: SchedulerContext) -> DisplayDensity:
-        """Derive display density from context + temporal trends."""
+        """Derive display density from context + temporal trends + stimmung."""
         if ctx.activity in ("in a meeting", "presenting"):
+            return DisplayDensity.PRESENTING
+        # WS2: stressed system → quiet down
+        if ctx.stimmung_stance in ("degraded", "critical"):
             return DisplayDensity.PRESENTING
         if ctx.flow_score >= 0.6 or ctx.activity in ("coding", "deep work"):
             return DisplayDensity.FOCUSED
@@ -433,6 +438,13 @@ class ContentScheduler:
         actual_share = count / total
         if actual_share > expected_share * 2:
             score *= 0.5
+
+        # WS2: cautious+ stance → boost calming sources
+        if ctx.stimmung_stance in ("cautious", "degraded", "critical") and source in (
+            ContentSource.SHADER_VARIATION,
+            ContentSource.TIME_OF_DAY,
+        ):
+            score *= 1.4
 
         # Phase 6: stale perception → reduced scheduling confidence
         if ctx.perception_age_s > 10.0:

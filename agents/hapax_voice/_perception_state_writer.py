@@ -119,6 +119,37 @@ def _snapshot_voice_session(
     }
 
 
+# ── Perception confidence (WS2) ──────────────────────────────────────────
+
+
+def _compute_aggregate_confidence(perception: PerceptionEngine) -> float:
+    """Compute aggregate confidence from registered backend availability.
+
+    Returns 1.0 when all backends are contributing fresh data,
+    lower when backends are missing or stale. Uses getattr for
+    backward compat with perception engines that lack the method.
+    """
+    backends = getattr(perception, "registered_backends", None)
+    if not backends or not callable(getattr(backends, "__len__", None)):
+        # Fallback: if backends is a property returning dict
+        try:
+            backend_dict = backends if isinstance(backends, dict) else {}
+        except Exception:
+            return 1.0
+    else:
+        backend_dict = backends
+
+    if not backend_dict:
+        return 0.5  # no backends registered = reduced confidence
+
+    available_count = 0
+    for backend in backend_dict.values():
+        if getattr(backend, "available", lambda: True)():
+            available_count += 1
+
+    return round(available_count / len(backend_dict), 3)
+
+
 # ── Main writer ───────────────────────────────────────────────────────────
 
 
@@ -187,6 +218,8 @@ def write_perception_state(
         "voice_session": _snapshot_voice_session(session, pipeline),
         # Supplementary content (Batch B)
         "voice_content": _get_live_content(),
+        # WS2: aggregate perception confidence
+        "aggregate_confidence": _compute_aggregate_confidence(perception),
         "timestamp": time.time(),
     }
 
