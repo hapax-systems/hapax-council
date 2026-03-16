@@ -25,7 +25,7 @@ Vite proxies `/api` requests to `http://127.0.0.1:8051` in dev mode.
 - **Vite 7** with `@vitejs/plugin-react`
 - **Tailwind CSS 4** via `@tailwindcss/vite`
 - **TanStack React Query** for server state
-- **React Router 7** (BrowserRouter, 3 routes)
+- **React Router 7** (BrowserRouter, 5 routes)
 - **Recharts** for health history charts
 - **Lucide React** for icons
 - **react-markdown** + remark-gfm for markdown rendering
@@ -44,20 +44,23 @@ src/
     demos/        Demo list and detail views
     layout/       App layout shell, manual drawer, health toast watcher
     shared/       Reusable: command palette, error boundary, modals, markdown, toasts
+    studio/       Studio live grid, sidebar, composite canvas, effects
     sidebar/      15 sidebar panels (health, VRAM, containers, timers, briefing,
                   goals, scout, cost, drift, management, accommodations, freshness)
   hooks/          useHealthToasts, useInputHistory, useKeyboardShortcuts, useSSE
-  pages/          DashboardPage, ChatPage, DemosPage
+  pages/          DashboardPage, ChatPage, InsightPage, DemosPage, StudioPage
   utils.ts        Shared utilities
 ```
 
 ## Routes
 
 | Path | Page | Purpose |
-|------|------|---------|
+|------|------|----------|
 | `/` | DashboardPage | Health, agents, nudges, sidebar panels |
 | `/chat` | ChatPage | Streaming chat with cockpit backend |
+| `/insight` | InsightPage | Insight analysis and exploration |
 | `/demos` | DemosPage | Browse and view generated demos |
+| `/studio` | StudioPage | Multi-camera studio, effects, recording |
 
 ## API Layer
 
@@ -81,6 +84,9 @@ All backend calls go through `src/api/client.ts` which hits `/api/*` (proxied to
 - Vite dev server proxies `/api` to cockpit backend at :8051
 - Recharts used exclusively for health history visualization
 - Lucide React for all UI icons
+- HLS streaming via hls.js for studio live view
+- Studio sidebar with 7 sections: VIEW, PRESET, FILTERS, OVERLAYS, RECORDING, STREAM, LAYOUT
+- Consent status indicator in studio sidebar
 
 ### Key Conventions
 - All backend types defined in `src/api/types.ts` must mirror cockpit Python dataclasses
@@ -91,7 +97,7 @@ All backend calls go through `src/api/client.ts` which hits `/api/*` (proxied to
 - markdown rendering via react-markdown + remark-gfm plugin
 
 ### Architecture Notes
-- Single-page app with 3 main routes: dashboard, chat, demos
+- Single-page app with 5 main routes: dashboard, chat, insight, demos, studio
 - Layout shell in `components/layout/` manages app chrome and drawer
 - Error boundaries in shared components for resilience
 - Command palette in shared components for navigation

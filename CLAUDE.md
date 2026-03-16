@@ -15,11 +15,36 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 
 **Reactive engine** (`cockpit/engine/`): inotify watcher → 12 rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).
 
-**Infrastructure**: Qdrant (4 collections), LiteLLM (:4000), Ollama (RTX 3090), PostgreSQL, Langfuse, ntfy (push notifications).
+**Infrastructure**: Qdrant (4 collections), LiteLLM (:4000), Ollama (RTX 3090), PostgreSQL, Langfuse, ntfy (push notifications), kokoro (TTS), faster-whisper (STT).
+
+## Studio Compositor
+
+Unified GStreamer pipeline for multi-camera studio streaming, recording, and effects (`agents/studio_compositor.py`).
+
+- **Pipeline**: All cameras in single GStreamer pipeline with per-camera tee elements. Output tee after cairooverlay feeds HLS, snapshots, v4l2loopback (/dev/video50), and MJPEG.
+- **Effects**: 9 visual presets (Ghost, Trails, Screwed, Datamosh, VHS, Neon, Trap, Diff, Clean). Canvas-based rendering via `agents/studio_effects.py`. 19 independent filters per source. Beat-reactive modulation from perception audio_energy_rms.
+- **Recording**: Segment management via splitmuxsink. Consent-aware — valves gate flow based on `interpersonal_transparency` axiom.
+- **Consent overlay**: Tri-state per-camera badges (REC/PAUSED/NO-REC). Center banner when consent-blocked. Audit trail at `~/.cache/hapax-compositor/consent-audit.jsonl`.
+- **Person detection**: `agents/studio_person_detector.py` for consent-aware presence tracking.
+- **Snapshots**: Direct write from GStreamer mapped memory to `/dev/shm` at 15fps.
+- **Camera auto-reconnect**: Handles USB camera disconnects gracefully.
+
+## Consent Enforcement
+
+Full enforcement chain for the `interpersonal_transparency` axiom:
+
+- **Contracts**: `shared/consent.py` — `ConsentContract`, `ConsentRegistry`, `contract_check()`
+- **Studio valves**: GStreamer valve elements gate recording/HLS based on `persistence_allowed` predicate
+- **Audit**: `agents/consent_audit.py` — JSONL audit trail, MKV segments tagged with contract IDs
+- **Revocation**: `RevocationPropagator` cascade to carrier registry. `POST /consent/revoke/{person_id}`.
+- **Child principals**: Simon and Agatha as sovereign child principals with guardian-granted contracts. `child_mode` parameter on `get_policy()`.
+- **Multi-speaker gate**: Audio processor blocks multi-speaker transcripts from personal RAG without consent.
+- **Voice tools**: `check_consent_status`, `describe_consent_flow`, `check_governance_health` for verbal inspection.
+- **Conversational policy scenarios**: 10 physical scenarios with scripts, cast requirements, verification checklists.
 
 ## Cockpit API
 
-FastAPI on `:8051`. `uv run cockpit-api` to start. Containers: `docker compose up -d`.
+FastAPI on `:8051`. `uv run cockpit-api` to start. Containers: `docker compose up -d`. 16 route modules: agents, chat, consent, copilot, cycle_mode, data, demos, engine, governance, nudges, profile, query, scout, studio, accommodations.
 
 ## Council-Specific Conventions
 
@@ -54,10 +79,13 @@ LLM-driven lifecycle via GitHub Actions: Triage → Plan → Implement → Adver
 - **`shared/dimensions.py`** — 11 profile dimensions. Sync agents produce behavioral facts only.
 - **`shared/consent.py`** — `ConsentContract`, `ConsentRegistry`, `contract_check()`
 - **`shared/agent_registry.py`** — `AgentManifest` (4-layer schema), query by category/capability/RACI
+- **`agents/watch_receiver.py`** — Receives biometric sensor data (HR, HRV, skin temp, sleep) from hapax-watch Wear OS app
 
 ## Composition Ladder Protocol (hapax_voice)
 
 Bottom-up building discipline for the hapax_voice type system. 10 layers (L0–L9), all proven. 7-dimension test matrix per layer. Gate rule: no new composition on layer N unless N-1 is matrix-complete. See `agents/hapax_voice/LAYER_STATUS.yaml` for current status and `tests/hapax_voice/test_type_system_matrix*.py` for the 192 matrix tests.
+
+**Lightweight conversation pipeline** (replaced Pipecat): `conversation_buffer.py` (VAD-gated audio, 300ms pre-roll, TTS echo suppression), `resident_stt.py` (faster-whisper resident in VRAM), `conversation_pipeline.py` (async state machine: IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING). Mic stays shared — wake word, VAD, and presence detection continue during conversation. Interview-derived conversational policy across 10 dimensions.
 
 **3-question heuristic** before every change:
 1. What layer does this touch?
