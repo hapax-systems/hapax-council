@@ -54,6 +54,7 @@ log = logging.getLogger(__name__)
 
 CACHE_DIR = Path.home() / ".cache" / "hapax-compositor"
 STATUS_FILE = CACHE_DIR / "status.json"
+CONSENT_AUDIT_PATH = CACHE_DIR / "consent-audit.jsonl"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "hapax-compositor" / "config.yaml"
 SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
 
@@ -1348,6 +1349,28 @@ class StudioCompositor:
 
     # -- Consent enforcement ----------------------------------------------
 
+    def _log_consent_event(self, event: str, allowed: bool) -> None:
+        """Append a consent event to the JSONL audit trail."""
+
+        with self._overlay_state._lock:
+            contracts = list(self._overlay_state._data.active_contracts)
+
+        entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "event": event,
+            "consent_allowed": allowed,
+            "active_contracts": contracts,
+            "recording_cameras": list(self._recording_valves.keys()),
+            "hls_active": self._hls_valve is not None,
+        }
+
+        try:
+            CONSENT_AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(CONSENT_AUDIT_PATH, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError:
+            log.debug("Failed to write consent audit log")
+
     def _disable_persistence(self) -> None:
         """Consent withdrawn — finalize segments then drop recording/HLS buffers."""
         log.warning("Consent persistence DENIED — stopping recording and HLS")
@@ -1365,6 +1388,7 @@ class StudioCompositor:
         with self._recording_status_lock:
             for role in self._recording_status:
                 self._recording_status[role] = "consent-blocked"
+        self._log_consent_event("recording_paused", allowed=False)
 
     def _enable_persistence(self) -> None:
         """Consent restored — resume recording and HLS."""
@@ -1377,6 +1401,115 @@ class StudioCompositor:
             for role in self._recording_status:
                 if self._recording_status[role] == "consent-blocked":
                     self._recording_status[role] = "active"
+        self._log_consent_event("recording_resumed", allowed=True)
+
+        # Tag new MKV segments with consent provenance
+        Gst = self._Gst
+        if Gst is None:
+            return
+        with self._overlay_state._lock:
+            contracts = list(self._overlay_state._data.active_contracts)
+        contract_str = ",".join(contracts) if contracts else "operator-only"
+
+        for role, mux in self._recording_muxes.items():
+            try:
+                # splitmuxsink wraps a muxer — get the internal matroskamux
+                inner_mux = mux.get_property("muxer")
+                if inner_mux is None:
+                    inner_mux = mux
+                tag_list = Gst.TagList.new_empty()
+                tag_list.add_value(
+                    Gst.TagMergeMode.REPLACE,
+                    Gst.TAG_EXTENDED_COMMENT,
+                    f"consent-contracts={contract_str}",
+                )
+                tag_list.add_value(
+                    Gst.TagMergeMode.REPLACE,
+                    Gst.TAG_COMMENT,
+                    f"Consent: {'granted' if contracts else 'operator-only'}",
+                )
+                inner_mux.merge_tags(tag_list, Gst.TagMergeMode.REPLACE)
+            except Exception:
+                log.debug("Failed to set consent tags on %s", role)
+
+    def _purge_video_recordings(self, contract_id: str) -> int:
+        """Purge video recording segments associated with a revoked consent contract.
+
+        Scans the consent audit log to find recording segments that were created
+        while the revoked contract was active, then deletes those files.
+        Returns the number of files purged.
+        """
+
+        purged = 0
+        rec_dir = Path(self.config.recording.output_dir)
+
+        # Find time ranges when this contract was active from the audit log
+        active_ranges: list[tuple[str, str | None]] = []
+        current_start: str | None = None
+
+        try:
+            if CONSENT_AUDIT_PATH.exists():
+                for line in CONSENT_AUDIT_PATH.read_text().splitlines():
+                    if not line.strip():
+                        continue
+                    entry = json.loads(line)
+                    if contract_id in entry.get("active_contracts", []):
+                        if entry["event"] == "recording_resumed" and current_start is None:
+                            current_start = entry["timestamp"]
+                        elif entry["event"] == "recording_paused" and current_start:
+                            active_ranges.append((current_start, entry["timestamp"]))
+                            current_start = None
+                if current_start:
+                    active_ranges.append((current_start, None))  # still active
+        except Exception:
+            log.warning("Failed to read consent audit for purge")
+            return 0
+
+        if not active_ranges:
+            return 0
+
+        # Scan MKV recording files and delete those within active ranges
+        if rec_dir.exists():
+            for role_dir in rec_dir.iterdir():
+                if not role_dir.is_dir():
+                    continue
+                for mkv_file in role_dir.glob("*.mkv"):
+                    try:
+                        name_parts = mkv_file.stem.split("_")
+                        ts_str = name_parts[-2]  # YYYYMMDD-HHMMSS
+                        file_time = datetime.strptime(ts_str, "%Y%m%d-%H%M%S").replace(tzinfo=UTC)
+                        file_iso = file_time.isoformat()
+
+                        for start, end in active_ranges:
+                            if file_iso >= start and (end is None or file_iso <= end):
+                                mkv_file.unlink()
+                                purged += 1
+                                log.info(
+                                    "Purged recording: %s (contract %s revoked)",
+                                    mkv_file,
+                                    contract_id,
+                                )
+                                break
+                    except (ValueError, IndexError):
+                        continue
+
+        # Purge HLS segments written during the contract period
+        hls_dir = Path(self.config.hls.output_dir)
+        if hls_dir.exists():
+            for ts_file in hls_dir.glob("*.ts"):
+                try:
+                    mtime = datetime.fromtimestamp(ts_file.stat().st_mtime, tz=UTC)
+                    mtime_iso = mtime.isoformat()
+                    for start, end in active_ranges:
+                        if mtime_iso >= start and (end is None or mtime_iso <= end):
+                            ts_file.unlink()
+                            purged += 1
+                            log.info("Purged HLS segment: %s", ts_file)
+                            break
+                except OSError:
+                    continue
+
+        return purged
 
     # -- Error handling ---------------------------------------------------
 
@@ -1869,6 +2002,21 @@ class StudioCompositor:
 
         self._running = True
         self._write_status("running")
+        self._log_consent_event("pipeline_start", allowed=self._consent_recording_allowed)
+
+        # Register video recording purge handler with RevocationPropagator
+        try:
+            import shared.governance.revocation as _rev_mod
+            from shared.governance.revocation import RevocationPropagator  # noqa: F811
+
+            for attr in dir(_rev_mod):
+                obj = getattr(_rev_mod, attr, None)
+                if isinstance(obj, RevocationPropagator):
+                    obj.register_handler("video_recordings", self._purge_video_recordings)
+                    log.info("Registered video recording purge handler")
+                    break
+        except Exception:
+            log.debug("RevocationPropagator not available — video purge disabled")
 
         self.loop = GLib.MainLoop()
 
@@ -1901,6 +2049,7 @@ class StudioCompositor:
         """Stop the pipeline cleanly."""
         if not self._running:
             return
+        self._log_consent_event("pipeline_stop", allowed=self._consent_recording_allowed)
         self._running = False
         log.info("Stopping compositor pipeline")
 
