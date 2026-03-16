@@ -317,6 +317,9 @@ export interface CompositorStatus {
   recording_cameras: Record<string, string>;
   hls_enabled: boolean;
   hls_url: string;
+  consent_recording_allowed: boolean;
+  guest_present: boolean;
+  consent_phase: string;
 }
 
 export interface StudioSnapshot {

@@ -249,3 +249,22 @@ async def select_effect(req: EffectSelectRequest):
         return {"status": "requested", "preset": req.preset}
     except OSError:
         return JSONResponse({"error": "write failed"}, status_code=503)
+
+
+@router.get("/studio/consent")
+async def get_consent_status():
+    """Current consent state for video recording."""
+    import json
+
+    status_file = Path.home() / ".cache" / "hapax-compositor" / "status.json"
+    if not status_file.exists():
+        return {"recording_allowed": True, "guest_present": False, "phase": "no_guest"}
+    try:
+        data = json.loads(status_file.read_text())
+        return {
+            "recording_allowed": data.get("consent_recording_allowed", True),
+            "guest_present": data.get("guest_present", False),
+            "phase": data.get("consent_phase", "no_guest"),
+        }
+    except (json.JSONDecodeError, OSError):
+        return {"recording_allowed": True, "guest_present": False, "phase": "no_guest"}

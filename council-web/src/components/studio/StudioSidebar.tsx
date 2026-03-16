@@ -314,6 +314,33 @@ export function StudioSidebar({
           ) : (
             <p className="text-[10px] text-zinc-600">No cameras</p>
           )}
+          {/* Consent status */}
+          <div className="mt-2 flex items-center gap-2">
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${
+                compositor?.consent_phase === "consent_refused"
+                  ? "bg-red-500"
+                  : compositor?.consent_phase === "consent_pending"
+                    ? "bg-orange-500 animate-pulse"
+                    : compositor?.consent_phase === "guest_detected"
+                      ? "bg-yellow-500 animate-pulse"
+                      : compositor?.consent_recording_allowed !== false
+                        ? "bg-green-500"
+                        : "bg-orange-500 animate-pulse"
+              }`}
+            />
+            <span className="text-[10px] text-zinc-400">
+              {compositor?.consent_phase === "consent_refused"
+                ? "Guest refused"
+                : compositor?.consent_phase === "consent_pending"
+                  ? "Consent pending"
+                  : compositor?.consent_phase === "guest_detected"
+                    ? "Guest detected"
+                    : compositor?.consent_phase === "consent_granted"
+                      ? "Guest consented"
+                      : "Consent OK"}
+            </span>
+          </div>
         </section>
 
         {/* STREAM */}

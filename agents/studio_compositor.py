@@ -297,6 +297,8 @@ class OverlayData(BaseModel):
     audio_energy_rms: float = 0.0
     active_contracts: list[str] = Field(default_factory=list)
     persistence_allowed: bool = True
+    guest_present: bool = False
+    consent_phase: str = "no_guest"
     timestamp: float = 0.0
 
 
@@ -1576,6 +1578,9 @@ class StudioCompositor:
             cameras = dict(self._camera_status)
         with self._recording_status_lock:
             recording_cameras = dict(self._recording_status)
+        with self._overlay_state._lock:
+            guest_present = self._overlay_state._data.guest_present
+            consent_phase = self._overlay_state._data.consent_phase
         active_count = sum(1 for s in cameras.values() if s == "active")
         hls_url = ""
         if self.config.hls.enabled:
@@ -1594,6 +1599,8 @@ class StudioCompositor:
             "hls_url": hls_url,
             "camera_profile": self._active_profile_name,
             "consent_recording_allowed": self._consent_recording_allowed,
+            "guest_present": guest_present,
+            "consent_phase": consent_phase,
             "timestamp": time.time(),
         }
         tmp = STATUS_FILE.with_suffix(".tmp")
@@ -1748,16 +1755,24 @@ class StudioCompositor:
                 ctx.move_to(tile.x + pad * 2, tile.y + pad + extents.height + pad)
                 ctx.show_text(text)
 
-                recording_active = state.persistence_allowed and self.config.recording.enabled
-                if recording_active:
-                    badge_color = (0.2, 0.8, 0.2, 0.9)  # green
-                    badge_text = "REC"
-                elif self.config.recording.enabled:
-                    badge_color = (0.9, 0.3, 0.1, 0.9)  # orange/red — consent-blocked
-                    badge_text = "PAUSED"
-                else:
+                if not self.config.recording.enabled:
                     badge_color = (0.5, 0.5, 0.5, 0.7)  # gray — recording disabled
                     badge_text = "NO-REC"
+                elif state.consent_phase == "guest_detected":
+                    badge_color = (1.0, 0.9, 0.2, 0.9)  # yellow — debouncing
+                    badge_text = "DETECTING"
+                elif state.consent_phase == "consent_pending":
+                    badge_color = (1.0, 0.6, 0.1, 0.9)  # orange — awaiting consent
+                    badge_text = "PENDING"
+                elif state.consent_phase == "consent_refused":
+                    badge_color = (0.9, 0.2, 0.1, 0.9)  # red — guest refused
+                    badge_text = "PAUSED"
+                elif state.persistence_allowed:
+                    badge_color = (0.2, 0.8, 0.2, 0.9)  # green — all clear
+                    badge_text = "REC"
+                else:
+                    badge_color = (0.9, 0.3, 0.1, 0.9)  # orange/red — consent-blocked
+                    badge_text = "PAUSED"
                 ctx.set_font_size(12)
                 be = ctx.text_extents(badge_text)
                 bx = tile.x + tile.w - be.width - pad * 3

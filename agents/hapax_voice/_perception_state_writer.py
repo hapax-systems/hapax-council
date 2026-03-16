@@ -67,6 +67,8 @@ def write_perception_state(
         "audio_energy_rms": float(_bval("audio_energy_rms", 0.0)),
         "active_contracts": active_contracts,
         "persistence_allowed": consent_tracker.persistence_allowed if consent_tracker else True,
+        "guest_present": consent_tracker.phase.value != "no_guest" if consent_tracker else False,
+        "consent_phase": consent_tracker.phase.value if consent_tracker else "no_guest",
         "timestamp": time.time(),
     }
 
