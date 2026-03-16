@@ -295,6 +295,7 @@ class OverlayData(BaseModel):
     emotion_arousal: float = 0.0
     audio_energy_rms: float = 0.0
     active_contracts: list[str] = Field(default_factory=list)
+    persistence_allowed: bool = True
     timestamp: float = 0.0
 
 
@@ -463,6 +464,11 @@ class StudioCompositor:
         self._active_profile_name: str = ""
         self._camera_profiles = load_camera_profiles(config.camera_profiles)
         self._status_dir_exists = False
+        # Consent enforcement — valve elements gate recording/HLS persistence
+        self._recording_valves: dict[str, Any] = {}
+        self._recording_muxes: dict[str, Any] = {}
+        self._hls_valve: Any = None
+        self._consent_recording_allowed: bool = True
         # Overlay surface cache -- avoids full Cairo redraw when state unchanged
         self._overlay_cache_surface: Any = None
         self._overlay_cache_timestamp: float = 0.0
@@ -1234,6 +1240,8 @@ class StudioCompositor:
         queue.set_property("leaky", 2)  # downstream
         queue.set_property("max-size-buffers", 30)
         queue.set_property("max-size-time", 5 * 1_000_000_000)  # 5 seconds in ns
+        valve = Gst.ElementFactory.make("valve", f"rec-valve-{role}")
+        valve.set_property("drop", not self._consent_recording_allowed)
         convert = Gst.ElementFactory.make("videoconvert", f"rec-convert-{role}")
         nv12_caps = Gst.ElementFactory.make("capsfilter", f"rec-nv12caps-{role}")
         nv12_caps.set_property(
@@ -1263,11 +1271,12 @@ class StudioCompositor:
 
         mux_sink.connect("format-location-full", lambda s, fid, _sample: _format_location(s, fid))
 
-        elements = [queue, convert, nv12_caps, encoder, parser, mux_sink]
+        elements = [queue, valve, convert, nv12_caps, encoder, parser, mux_sink]
         for el in elements:
             pipeline.add(el)
 
-        queue.link(convert)
+        queue.link(valve)
+        valve.link(convert)
         convert.link(nv12_caps)
         nv12_caps.link(encoder)
         encoder.link(parser)
@@ -1277,6 +1286,9 @@ class StudioCompositor:
         tee_pad = camera_tee.request_pad(camera_tee.get_pad_template("src_%u"), None, None)
         queue_sink = queue.get_static_pad("sink")
         tee_pad.link(queue_sink)
+
+        self._recording_valves[cam.role] = valve
+        self._recording_muxes[cam.role] = mux_sink
 
         with self._recording_status_lock:
             self._recording_status[cam.role] = "active"
@@ -1290,6 +1302,8 @@ class StudioCompositor:
         queue.set_property("leaky", 2)  # downstream
         queue.set_property("max-size-buffers", 60)
         queue.set_property("max-size-time", 3 * 1_000_000_000)  # 3 seconds in ns
+        valve = Gst.ElementFactory.make("valve", "hls-valve")
+        valve.set_property("drop", not self._consent_recording_allowed)
         convert = Gst.ElementFactory.make("videoconvert", "hls-convert")
         nv12_caps = Gst.ElementFactory.make("capsfilter", "hls-nv12caps")
         nv12_caps.set_property(
@@ -1314,11 +1328,14 @@ class StudioCompositor:
         hls_sink.set_property("playlist-location", str(hls_dir / "stream.m3u8"))
         hls_sink.set_property("async-handling", True)
 
-        elements = [queue, convert, nv12_caps, encoder, parser, hls_sink]
+        elements = [queue, valve, convert, nv12_caps, encoder, parser, hls_sink]
         for el in elements:
             pipeline.add(el)
 
-        queue.link(convert)
+        self._hls_valve = valve
+
+        queue.link(valve)
+        valve.link(convert)
         convert.link(nv12_caps)
         nv12_caps.link(encoder)
         encoder.link(parser)
@@ -1328,6 +1345,38 @@ class StudioCompositor:
         tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
         queue_sink = queue.get_static_pad("sink")
         tee_pad.link(queue_sink)
+
+    # -- Consent enforcement ----------------------------------------------
+
+    def _disable_persistence(self) -> None:
+        """Consent withdrawn — finalize segments then drop recording/HLS buffers."""
+        log.warning("Consent persistence DENIED — stopping recording and HLS")
+        # Emit split-now BEFORE closing valves so pending buffers flush cleanly
+        for _role, mux in self._recording_muxes.items():
+            try:
+                mux.emit("split-now")
+            except Exception:
+                pass
+        # Close valves
+        for valve in self._recording_valves.values():
+            valve.set_property("drop", True)
+        if self._hls_valve is not None:
+            self._hls_valve.set_property("drop", True)
+        with self._recording_status_lock:
+            for role in self._recording_status:
+                self._recording_status[role] = "consent-blocked"
+
+    def _enable_persistence(self) -> None:
+        """Consent restored — resume recording and HLS."""
+        log.info("Consent persistence ALLOWED — resuming recording and HLS")
+        for valve in self._recording_valves.values():
+            valve.set_property("drop", False)
+        if self._hls_valve is not None:
+            self._hls_valve.set_property("drop", False)
+        with self._recording_status_lock:
+            for role in self._recording_status:
+                if self._recording_status[role] == "consent-blocked":
+                    self._recording_status[role] = "active"
 
     # -- Error handling ---------------------------------------------------
 
@@ -1411,6 +1460,7 @@ class StudioCompositor:
             "hls_enabled": self.config.hls.enabled,
             "hls_url": hls_url,
             "camera_profile": self._active_profile_name,
+            "consent_recording_allowed": self._consent_recording_allowed,
             "timestamp": time.time(),
         }
         tmp = STATUS_FILE.with_suffix(".tmp")
@@ -1558,7 +1608,7 @@ class StudioCompositor:
                 ctx.move_to(tile.x + pad * 2, tile.y + pad + extents.height + pad)
                 ctx.show_text(text)
 
-                has_consent = any("consent" in c for c in state.active_contracts)
+                has_consent = state.persistence_allowed
                 badge_color = (0.2, 0.8, 0.2, 0.9) if has_consent else (0.8, 0.2, 0.2, 0.9)
                 badge_text = "REC" if has_consent else "NO-REC"
                 ctx.set_font_size(12)
@@ -1694,6 +1744,18 @@ class StudioCompositor:
                 log.debug("Failed to read perception state: %s", exc)
                 self._overlay_state.mark_stale()
 
+            # Consent enforcement: toggle recording/HLS valves
+            with self._overlay_state._lock:
+                consent_ok = self._overlay_state._data.persistence_allowed
+            if consent_ok != self._consent_recording_allowed:
+                self._consent_recording_allowed = consent_ok
+                GLib = self._GLib
+                if GLib:
+                    if consent_ok:
+                        GLib.idle_add(self._enable_persistence)
+                    else:
+                        GLib.idle_add(self._disable_persistence)
+
             # Evaluate camera profiles every 10 iterations (~10s)
             profile_check_counter += 1
             if profile_check_counter >= 10:
@@ -1742,6 +1804,22 @@ class StudioCompositor:
                 self._camera_status[cam.role] = "starting"
 
         self.pipeline = self._build_pipeline()
+
+        # Read initial consent state — close valves before PLAYING if needed
+        try:
+            if PERCEPTION_STATE_PATH.exists():
+                raw = PERCEPTION_STATE_PATH.read_text()
+                initial = json.loads(raw)
+                if time.time() - initial.get("timestamp", 0) < 10:
+                    if not initial.get("persistence_allowed", True):
+                        self._consent_recording_allowed = False
+                        for valve in self._recording_valves.values():
+                            valve.set_property("drop", True)
+                        if self._hls_valve is not None:
+                            self._hls_valve.set_property("drop", True)
+                        log.warning("Starting with recording BLOCKED (consent not available)")
+        except Exception:
+            log.debug("Failed to read initial consent state", exc_info=True)
 
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()

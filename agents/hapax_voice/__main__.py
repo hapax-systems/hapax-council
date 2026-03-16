@@ -1182,9 +1182,6 @@ class VoiceDaemon:
                 # Update context gate with backend Behaviors
                 self.gate.set_behaviors(self.perception.behaviors)
 
-                # Write perception state for external consumers (compositor overlay)
-                write_perception_state(self.perception, self.consent_registry)
-
                 # Consent state tracking (interpersonal_transparency axiom)
                 # Pure function: no I/O, no blocking, just state transitions
                 try:
@@ -1207,6 +1204,10 @@ class VoiceDaemon:
                         asyncio.create_task(self._run_consent_session())
                 except Exception:
                     log.debug("Consent tracker error (non-fatal)", exc_info=True)
+
+                # Write perception state AFTER consent tick so published state
+                # reflects the current consent decision
+                write_perception_state(self.perception, self.consent_registry, self.consent_tracker)
 
             except asyncio.CancelledError:
                 break

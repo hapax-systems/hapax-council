@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from agents.hapax_voice.consent_state import ConsentStateTracker
     from agents.hapax_voice.perception import PerceptionEngine
     from shared.governance.consent import ConsentRegistry
 
@@ -25,6 +26,7 @@ PERCEPTION_STATE_FILE = PERCEPTION_STATE_DIR / "perception-state.json"
 def write_perception_state(
     perception: PerceptionEngine,
     consent_registry: ConsentRegistry,
+    consent_tracker: ConsentStateTracker | None = None,
 ) -> None:
     """Snapshot current perception state and write atomically to disk.
 
@@ -64,6 +66,7 @@ def write_perception_state(
         "emotion_arousal": float(_bval("emotion_arousal", 0.0)),
         "audio_energy_rms": float(_bval("audio_energy_rms", 0.0)),
         "active_contracts": active_contracts,
+        "persistence_allowed": consent_tracker.persistence_allowed if consent_tracker else True,
         "timestamp": time.time(),
     }
 
