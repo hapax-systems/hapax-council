@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 
 from cockpit.api.cache import cache
 
@@ -154,6 +155,52 @@ def _search_moments_sync(query: str, limit: int) -> list[dict]:
 
 
 FX_SNAPSHOT_PATH = Path("/dev/shm/hapax-compositor/fx-snapshot.jpg")
+
+MJPEG_BOUNDARY = "hapax-frame"
+
+
+async def _mjpeg_generator(path: Path, fps: float = 12.0):  # noqa: ANN201
+    interval = 1.0 / fps
+    last_mtime_ns = 0
+    while True:
+        try:
+            st = path.stat()
+            if st.st_mtime_ns != last_mtime_ns:
+                data = path.read_bytes()
+                last_mtime_ns = st.st_mtime_ns
+                if len(data) > 100:
+                    yield (
+                        (
+                            f"--{MJPEG_BOUNDARY}\r\n"
+                            f"Content-Type: image/jpeg\r\n"
+                            f"Content-Length: {len(data)}\r\n"
+                            f"\r\n"
+                        ).encode()
+                        + data
+                        + b"\r\n"
+                    )
+        except OSError:
+            pass
+        await asyncio.sleep(interval)
+
+
+@router.get("/studio/stream/live/{feed}")
+async def mjpeg_stream(feed: str, fps: float = 12.0):
+    """MJPEG multipart stream for any feed (composite, fx, or camera role)."""
+    feed_paths = {
+        "composite": SNAPSHOT_PATH,
+        "fx": FX_SNAPSHOT_PATH,
+    }
+    path = feed_paths.get(feed)
+    if path is None:
+        path = Path(f"/dev/shm/hapax-compositor/{feed}.jpg")
+    if not path.exists():
+        return JSONResponse({"error": f"feed '{feed}' not available"}, status_code=404)
+    fps = min(max(fps, 1.0), 30.0)
+    return StreamingResponse(
+        _mjpeg_generator(path, fps),
+        media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}",
+    )
 
 
 @router.get("/studio/stream/fx")

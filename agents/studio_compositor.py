@@ -463,6 +463,10 @@ class StudioCompositor:
         self._active_profile_name: str = ""
         self._camera_profiles = load_camera_profiles(config.camera_profiles)
         self._status_dir_exists = False
+        # Overlay surface cache -- avoids full Cairo redraw when state unchanged
+        self._overlay_cache_surface: Any = None
+        self._overlay_cache_timestamp: float = 0.0
+        self._overlay_cache_cam_hash: str = ""
 
     def _build_pipeline(self) -> Any:
         """Build the full GStreamer pipeline."""
@@ -1208,6 +1212,16 @@ class StudioCompositor:
         # Per-camera snapshot branch
         self._add_camera_snapshot_branch(pipeline, camera_tee, cam)
 
+        # Track elements for auto-reconnect
+        if not hasattr(self, "_camera_elements"):
+            self._camera_elements: dict[str, dict[str, Any]] = {}
+            self._camera_specs: dict[str, CameraSpec] = {}
+        self._camera_elements[cam.role] = {
+            "src": src,
+            "tee": camera_tee,
+        }
+        self._camera_specs[cam.role] = cam
+
     def _add_recording_branch(
         self, pipeline: Any, camera_tee: Any, cam: CameraSpec, fps: int
     ) -> None:
@@ -1483,95 +1497,136 @@ class StudioCompositor:
         if w[0] and h[0]:
             self._overlay_canvas_size = (w[1], h[1])
             log.debug("Overlay canvas: %dx%d", w[1], h[1])
+        self._overlay_cache_surface = None  # force re-render on caps change
 
     def _on_draw(self, overlay: Any, cr: Any, timestamp: int, duration: int) -> None:
-        """Cairo draw callback -- renders text overlays on the composited frame."""
+        """Cairo draw callback -- renders text overlays on the composited frame.
+
+        Uses a cached ImageSurface to avoid full redraw every frame.  The cache
+        is invalidated when the overlay state timestamp or camera status hash
+        changes.
+        """
         if not self.config.overlay_enabled:
             return
 
         import cairo  # type: ignore[import-untyped]
 
         canvas_w, canvas_h = self._overlay_canvas_size
+
         # Read overlay data directly under lock instead of model_copy() every frame
         with self._overlay_state._lock:
             state = self._overlay_state._data
-        cr.select_font_face("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-        pad = 4
 
-        for role, tile in self._tile_layout.items():
-            cr.set_font_size(14)
-            text = role
-            extents = cr.text_extents(text)
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.6)
-            cr.rectangle(
-                tile.x + pad, tile.y + pad, extents.width + pad * 2, extents.height + pad * 2
-            )
-            cr.fill()
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
-            cr.move_to(tile.x + pad * 2, tile.y + pad + extents.height + pad)
-            cr.show_text(text)
+        # Build a cheap hash of camera status for cache invalidation
+        with self._camera_status_lock:
+            cam_hash = "|".join(f"{r}:{s}" for r, s in sorted(self._camera_status.items()))
 
-            has_consent = any("consent" in c for c in state.active_contracts)
-            badge_color = (0.2, 0.8, 0.2, 0.9) if has_consent else (0.8, 0.2, 0.2, 0.9)
-            badge_text = "REC" if has_consent else "NO-REC"
-            cr.set_font_size(12)
-            be = cr.text_extents(badge_text)
-            bx = tile.x + tile.w - be.width - pad * 3
-            by = tile.y + pad
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.6)
-            cr.rectangle(bx, by, be.width + pad * 2, be.height + pad * 2)
-            cr.fill()
-            cr.set_source_rgba(*badge_color)
-            cr.move_to(bx + pad, by + be.height + pad)
-            cr.show_text(badge_text)
+        cur_ts = state.timestamp
+        cache_valid = (
+            self._overlay_cache_surface is not None
+            and cur_ts == self._overlay_cache_timestamp
+            and cam_hash == self._overlay_cache_cam_hash
+        )
 
-            with self._camera_status_lock:
-                cam_status = self._camera_status.get(role, "unknown")
-            if cam_status == "offline":
-                cr.set_font_size(24)
-                cr.set_source_rgba(1.0, 0.3, 0.3, 0.8)
-                ot = "OFFLINE"
-                oe = cr.text_extents(ot)
-                cr.move_to(tile.x + (tile.w - oe.width) / 2, tile.y + (tile.h + oe.height) / 2)
-                cr.show_text(ot)
+        if not cache_valid:
+            # Create / clear the cached surface and redraw everything onto it
+            surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, canvas_w, canvas_h)
+            ctx = cairo.Context(surf)
+            ctx.set_operator(cairo.OPERATOR_CLEAR)
+            ctx.paint()
+            ctx.set_operator(cairo.OPERATOR_OVER)
 
-        if state.flow_state:
-            cr.set_font_size(20)
-            flow_text = f"FLOW: {state.flow_state.upper()} ({state.flow_score:.0%})"
-            fe = cr.text_extents(flow_text)
-            fx = (canvas_w - fe.width) / 2
-            fy = 8
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.6)
-            cr.rectangle(fx - 6, fy, fe.width + 12, fe.height + 12)
-            cr.fill()
-            if state.flow_state == "active":
-                cr.set_source_rgba(0.2, 1.0, 0.4, 0.95)
-            elif state.flow_state == "warming":
-                cr.set_source_rgba(1.0, 0.9, 0.2, 0.95)
-            else:
-                cr.set_source_rgba(0.8, 0.8, 0.8, 0.95)
-            cr.move_to(fx, fy + fe.height + 4)
-            cr.show_text(flow_text)
+            ctx.select_font_face("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+            pad = 4
 
-        if state.production_activity or state.music_genre:
-            cr.set_font_size(14)
-            tags = " | ".join(filter(None, [state.production_activity, state.music_genre]))
-            te = cr.text_extents(tags)
-            tx = 8
-            ty = canvas_h - 28
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.5)
-            cr.rectangle(tx - 4, ty - te.height - 4, te.width + 8, te.height + 8)
-            cr.fill()
-            cr.set_source_rgba(0.9, 0.9, 0.9, 0.85)
-            cr.move_to(tx, ty)
-            cr.show_text(tags)
+            for role, tile in self._tile_layout.items():
+                ctx.set_font_size(14)
+                text = role
+                extents = ctx.text_extents(text)
+                ctx.set_source_rgba(0.0, 0.0, 0.0, 0.6)
+                ctx.rectangle(
+                    tile.x + pad,
+                    tile.y + pad,
+                    extents.width + pad * 2,
+                    extents.height + pad * 2,
+                )
+                ctx.fill()
+                ctx.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+                ctx.move_to(tile.x + pad * 2, tile.y + pad + extents.height + pad)
+                ctx.show_text(text)
 
-        if state.audio_energy_rms > 0:
-            bar_h = 4
-            bar_w = int(canvas_w * min(state.audio_energy_rms * 10, 1.0))
-            cr.set_source_rgba(0.3, 0.8, 0.3, 0.7)
-            cr.rectangle(0, canvas_h - bar_h, bar_w, bar_h)
-            cr.fill()
+                has_consent = any("consent" in c for c in state.active_contracts)
+                badge_color = (0.2, 0.8, 0.2, 0.9) if has_consent else (0.8, 0.2, 0.2, 0.9)
+                badge_text = "REC" if has_consent else "NO-REC"
+                ctx.set_font_size(12)
+                be = ctx.text_extents(badge_text)
+                bx = tile.x + tile.w - be.width - pad * 3
+                by = tile.y + pad
+                ctx.set_source_rgba(0.0, 0.0, 0.0, 0.6)
+                ctx.rectangle(bx, by, be.width + pad * 2, be.height + pad * 2)
+                ctx.fill()
+                ctx.set_source_rgba(*badge_color)
+                ctx.move_to(bx + pad, by + be.height + pad)
+                ctx.show_text(badge_text)
+
+                with self._camera_status_lock:
+                    cam_status = self._camera_status.get(role, "unknown")
+                if cam_status == "offline":
+                    ctx.set_font_size(24)
+                    ctx.set_source_rgba(1.0, 0.3, 0.3, 0.8)
+                    ot = "OFFLINE"
+                    oe = ctx.text_extents(ot)
+                    ctx.move_to(
+                        tile.x + (tile.w - oe.width) / 2,
+                        tile.y + (tile.h + oe.height) / 2,
+                    )
+                    ctx.show_text(ot)
+
+            if state.flow_state:
+                ctx.set_font_size(20)
+                flow_text = f"FLOW: {state.flow_state.upper()} ({state.flow_score:.0%})"
+                fe = ctx.text_extents(flow_text)
+                fx = (canvas_w - fe.width) / 2
+                fy = 8
+                ctx.set_source_rgba(0.0, 0.0, 0.0, 0.6)
+                ctx.rectangle(fx - 6, fy, fe.width + 12, fe.height + 12)
+                ctx.fill()
+                if state.flow_state == "active":
+                    ctx.set_source_rgba(0.2, 1.0, 0.4, 0.95)
+                elif state.flow_state == "warming":
+                    ctx.set_source_rgba(1.0, 0.9, 0.2, 0.95)
+                else:
+                    ctx.set_source_rgba(0.8, 0.8, 0.8, 0.95)
+                ctx.move_to(fx, fy + fe.height + 4)
+                ctx.show_text(flow_text)
+
+            if state.production_activity or state.music_genre:
+                ctx.set_font_size(14)
+                tags = " | ".join(filter(None, [state.production_activity, state.music_genre]))
+                te = ctx.text_extents(tags)
+                tx = 8
+                ty = canvas_h - 28
+                ctx.set_source_rgba(0.0, 0.0, 0.0, 0.5)
+                ctx.rectangle(tx - 4, ty - te.height - 4, te.width + 8, te.height + 8)
+                ctx.fill()
+                ctx.set_source_rgba(0.9, 0.9, 0.9, 0.85)
+                ctx.move_to(tx, ty)
+                ctx.show_text(tags)
+
+            if state.audio_energy_rms > 0:
+                bar_h = 4
+                bar_w = int(canvas_w * min(state.audio_energy_rms * 10, 1.0))
+                ctx.set_source_rgba(0.3, 0.8, 0.3, 0.7)
+                ctx.rectangle(0, canvas_h - bar_h, bar_w, bar_h)
+                ctx.fill()
+
+            self._overlay_cache_surface = surf
+            self._overlay_cache_timestamp = cur_ts
+            self._overlay_cache_cam_hash = cam_hash
+
+        # Blit cached surface onto the cairooverlay context
+        cr.set_source_surface(self._overlay_cache_surface, 0, 0)
+        cr.paint()
 
     # -- State reader -----------------------------------------------------
 
@@ -1591,9 +1646,36 @@ class StudioCompositor:
             self._active_profile_name = profile.name
             apply_camera_profile(profile)
 
+    def _try_reconnect_camera(self, role: str) -> bool:
+        """Attempt to reconnect an offline camera."""
+        spec = self._camera_specs.get(role) if hasattr(self, "_camera_specs") else None
+        if not spec or not Path(spec.device).exists():
+            return False
+
+        elements = self._camera_elements.get(role, {}) if hasattr(self, "_camera_elements") else {}
+        src = elements.get("src")
+        if src is None:
+            return False
+
+        # Reset the source element: NULL -> PLAYING
+        src.set_state(self._Gst.State.NULL)
+        time.sleep(0.5)
+        ret = src.set_state(self._Gst.State.PLAYING)
+
+        if ret == self._Gst.StateChangeReturn.FAILURE:
+            log.warning("Failed to reconnect camera %s", role)
+            return False
+
+        with self._camera_status_lock:
+            self._camera_status[role] = "active"
+        log.info("Camera %s reconnected", role)
+        self._write_status("running")
+        return True
+
     def _state_reader_loop(self) -> None:
         """Daemon thread: read perception-state.json every 1s."""
         profile_check_counter = 0
+        reconnect_counter = 0
         while self._running:
             try:
                 if PERCEPTION_STATE_PATH.exists():
@@ -1617,6 +1699,18 @@ class StudioCompositor:
                     self._evaluate_camera_profile()
                 except Exception as exc:
                     log.debug("Failed to evaluate camera profile: %s", exc)
+
+                # Attempt reconnection of offline cameras every 30s (3 x 10s)
+                reconnect_counter += 1
+                if reconnect_counter >= 3:
+                    reconnect_counter = 0
+                    with self._camera_status_lock:
+                        offline = [r for r, s in self._camera_status.items() if s == "offline"]
+                    for role in offline:
+                        try:
+                            self._try_reconnect_camera(role)
+                        except Exception as exc:
+                            log.debug("Camera reconnect failed for %s: %s", role, exc)
 
             # Check for FX preset switch requests
             fx_request_path = SNAPSHOT_DIR / "fx-request.txt"
