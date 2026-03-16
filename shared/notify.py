@@ -20,6 +20,13 @@ import json as _json
 import logging
 import os
 import subprocess
+
+
+def _run_subprocess(*args, **kwargs):
+    """Wrapper for subprocess.run, patchable without global side effects."""
+    return subprocess.run(*args, **kwargs)  # noqa: S603
+
+
 import time
 from pathlib import Path
 from urllib.error import URLError
@@ -344,7 +351,7 @@ def _send_desktop(title: str, message: str, *, priority: str = "default") -> boo
         message,
     ]
     try:
-        result = subprocess.run(cmd, timeout=5, capture_output=True)
+        result = _run_subprocess(cmd, timeout=5, capture_output=True)
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False

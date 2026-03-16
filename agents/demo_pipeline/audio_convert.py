@@ -54,6 +54,11 @@ def wav_to_mp3(
         log.error("ffmpeg stderr: %s", result.stderr)
         raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
 
+    if not mp3_path.exists():
+        log.error("ffmpeg returned 0 but output file not created: %s", mp3_path)
+        msg = f"ffmpeg did not create output file: {mp3_path}"
+        raise FileNotFoundError(msg)
+
     log.info(
         "Converted %s (%.1f KB -> %.1f KB)",
         wav_path.name,
