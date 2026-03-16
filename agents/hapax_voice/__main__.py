@@ -589,29 +589,77 @@ class VoiceDaemon:
         else:
             await self._start_conversation_pipeline()
 
+    def _precompute_pipeline_deps(self) -> None:
+        """Precompute pipeline dependencies at startup so session open is instant.
+
+        Called once during daemon init. Tools, consent reader, and callbacks
+        are stable across sessions. Only the system prompt needs refreshing
+        per session (policy + screen context depend on current environment).
+        """
+        from agents.hapax_voice.conversational_policy import get_policy
+        from agents.hapax_voice.env_context import serialize_environment
+        from agents.hapax_voice.tools_openai import get_openai_tools
+
+        # Tools (stable across sessions for operator mode)
+        self._precomputed_tools = None
+        self._precomputed_handlers: dict = {}
+        if self.cfg.tools_enabled:
+            tool_kwargs: dict = {
+                "guest_mode": False,
+                "config": self.cfg,
+                "webcam_capturer": getattr(self.workspace_monitor, "_webcam_capturer", None),
+                "screen_capturer": getattr(self.workspace_monitor, "_screen_capturer", None),
+            }
+            vfx = getattr(self.tts, "vocal_fx", None)
+            if vfx is not None:
+                import inspect
+
+                sig = inspect.signature(get_openai_tools)
+                if "vocal_fx" in sig.parameters:
+                    tool_kwargs["vocal_fx"] = vfx
+            self._precomputed_tools, self._precomputed_handlers = get_openai_tools(**tool_kwargs)
+
+        # Consent reader (stable, reloads contracts on session start)
+        self._precomputed_consent_reader = None
+        try:
+            from shared.governance.consent_reader import ConsentGatedReader
+
+            self._precomputed_consent_reader = ConsentGatedReader.create()
+        except Exception:
+            log.warning("ConsentGatedReader unavailable, proceeding without consent filtering")
+
+        # Callbacks (closures over self — stable)
+        self._env_context_fn = lambda: serialize_environment(
+            self.perception.latest or EnvironmentState(timestamp=0),
+            self.workspace_monitor.latest_analysis,
+            self.gate._ambient_result,
+            perception_tier=self._perception_tier.value,
+        )
+        self._ambient_fn = lambda: self.gate._ambient_result
+        self._policy_fn = lambda: get_policy(
+            env=self.perception.latest,
+            guest_mode=self.session.is_guest_mode,
+        )
+
+        log.info("Pipeline dependencies precomputed")
+
     async def _start_conversation_pipeline(self) -> None:
         """Start the lightweight conversation pipeline.
 
-        No mic handoff — the mic stays shared. Models stay resident.
-        The conversation buffer accumulates speech from _audio_loop().
+        Most dependencies are precomputed at startup. This method only builds
+        the fresh system prompt (policy + screen context) and creates the
+        pipeline object. Should complete in <50ms.
         """
         from agents.hapax_voice.conversation_pipeline import ConversationPipeline
         from agents.hapax_voice.conversational_policy import get_policy
         from agents.hapax_voice.persona import screen_context_block, system_prompt
         from agents.hapax_voice.tools_openai import get_openai_tools
 
-        # Load STT model on first use (stays resident)
-        if not self._resident_stt.is_loaded:
-            log.info("Loading resident STT model (first session)...")
-            self._resident_stt.load()
-
-        # Build conversational policy from profile + environment
+        # Fresh system prompt (only part that changes per session)
         policy_block = get_policy(
             env=self.perception.latest,
             guest_mode=self.session.is_guest_mode,
         )
-
-        # Build system prompt with policy and screen context
         prompt = system_prompt(
             guest_mode=self.session.is_guest_mode,
             policy_block=policy_block,
@@ -620,45 +668,17 @@ class VoiceDaemon:
         if screen_ctx:
             prompt += screen_ctx
 
-        # Load tools (respects tools_enabled config and guest mode)
-        tools, tool_handlers = (None, {})
-        if self.cfg.tools_enabled:
+        # Guest mode needs fresh tools (restricted set)
+        if self.session.is_guest_mode and self.cfg.tools_enabled:
             tools, tool_handlers = get_openai_tools(
-                guest_mode=self.session.is_guest_mode,
+                guest_mode=True,
                 config=self.cfg,
                 webcam_capturer=getattr(self.workspace_monitor, "_webcam_capturer", None),
                 screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
-                vocal_fx=getattr(self.tts, "vocal_fx", None),
             )
-
-        consent_reader = None
-        if not self.session.is_guest_mode:
-            try:
-                from shared.governance.consent_reader import ConsentGatedReader
-
-                consent_reader = ConsentGatedReader.create()
-            except Exception:
-                log.warning("ConsentGatedReader unavailable, proceeding without consent filtering")
-
-        # Build environment context callback for per-turn injection
-        from agents.hapax_voice.env_context import serialize_environment
-
-        def _get_env_context() -> str:
-            return serialize_environment(
-                self.perception.latest or EnvironmentState(timestamp=0),
-                self.workspace_monitor.latest_analysis,
-                self.gate._ambient_result,
-                perception_tier=self._perception_tier.value,
-            )
-
-        def _get_ambient():
-            return self.gate._ambient_result
-
-        def _get_policy() -> str:
-            return get_policy(
-                env=self.perception.latest,
-                guest_mode=self.session.is_guest_mode,
-            )
+        else:
+            tools = self._precomputed_tools
+            tool_handlers = self._precomputed_handlers
 
         self._conversation_pipeline = ConversationPipeline(
             stt=self._resident_stt,
@@ -669,10 +689,10 @@ class VoiceDaemon:
             llm_model=self.cfg.llm_model,
             event_log=self.event_log,
             conversation_buffer=self._conversation_buffer,
-            consent_reader=consent_reader,
-            env_context_fn=_get_env_context,
-            ambient_fn=_get_ambient,
-            policy_fn=_get_policy,
+            consent_reader=self._precomputed_consent_reader,
+            env_context_fn=self._env_context_fn,
+            ambient_fn=self._ambient_fn,
+            policy_fn=self._policy_fn,
         )
 
         await self._conversation_pipeline.start()
@@ -1275,6 +1295,16 @@ class VoiceDaemon:
 
         # Load wake word model (non-blocking, logs warning if unavailable)
         self.wake_word.load()
+
+        # Preload STT + TTS models at startup so first wake word is instant.
+        # These stay resident in GPU memory for the daemon's lifetime.
+        if not self._resident_stt.is_loaded:
+            log.info("Preloading STT model at startup...")
+            self._resident_stt.load()
+        self.tts.preload()
+
+        # Precompute pipeline dependencies (tools, consent, callbacks)
+        self._precompute_pipeline_deps()
 
         # Load chime sounds
         if self.cfg.chime_enabled:
