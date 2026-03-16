@@ -41,12 +41,28 @@ class ProtentionEntry(BaseModel, frozen=True):
     basis: str  # what observation drove this prediction
 
 
+class SurpriseField(BaseModel, frozen=True):
+    """A single surprising observation in the primal impression."""
+
+    field: str
+    observed: str  # what actually happened
+    expected: str  # what was predicted
+    surprise: float  # 0.0 (confirmed) to 1.0 (maximally surprising)
+    note: str = ""  # human-readable explanation
+
+
 class TemporalBands(BaseModel, frozen=True):
     """Complete temporal structure: retention → impression → protention."""
 
     retention: list[RetentionEntry] = Field(default_factory=list)
     impression: dict[str, Any] = Field(default_factory=dict)
     protention: list[ProtentionEntry] = Field(default_factory=list)
+    surprises: list[SurpriseField] = Field(default_factory=list)
+
+    @property
+    def max_surprise(self) -> float:
+        """Highest surprise score across all fields. 0.0 if none."""
+        return max((s.surprise for s in self.surprises), default=0.0)
 
 
 # ── Formatter ────────────────────────────────────────────────────────────────
@@ -62,6 +78,7 @@ class TemporalBandFormatter:
 
     def __init__(self, protention_engine: ProtentionEngine | None = None) -> None:
         self._protention_engine = protention_engine
+        self._last_protention: list[ProtentionEntry] = []
 
     def format(self, ring: PerceptionRing) -> TemporalBands:
         """Build temporal bands from the ring buffer state."""
@@ -72,12 +89,19 @@ class TemporalBandFormatter:
         now = current.get("ts", 0.0)
         retention = self._build_retention(ring, now)
         impression = self._build_impression(current)
+
+        # Compute surprise against last tick's protention before generating new ones
+        surprises = self._compute_surprise(current, self._last_protention)
+
         protention = self._build_protention(ring)
+        # Store for next tick's surprise comparison
+        self._last_protention = protention
 
         return TemporalBands(
             retention=retention,
             impression=impression,
             protention=protention,
+            surprises=surprises,
         )
 
     def format_xml(self, bands: TemporalBands) -> str:
@@ -95,8 +119,16 @@ class TemporalBandFormatter:
 
         if bands.impression:
             parts.append("  <impression>")
+            surprise_map = {s.field: s for s in bands.surprises}
             for key, val in bands.impression.items():
-                parts.append(f"    <{key}>{val}</{key}>")
+                sf = surprise_map.get(key)
+                if sf and sf.surprise > 0.3:
+                    parts.append(
+                        f'    <{key} surprise="{sf.surprise:.2f}" '
+                        f'expected="{sf.expected}">{val}</{key}>'
+                    )
+                else:
+                    parts.append(f"    <{key}>{val}</{key}>")
             parts.append("  </impression>")
 
         if bands.protention:
@@ -180,6 +212,106 @@ class TemporalBandFormatter:
             "heart_rate": int(current.get("heart_rate_bpm", 0)),
             "consent_phase": current.get("consent_phase", "no_guest"),
         }
+
+    def _compute_surprise(
+        self, current: dict[str, Any], last_protention: list[ProtentionEntry]
+    ) -> list[SurpriseField]:
+        """Compare current state against previous protention predictions.
+
+        Surprise = high-confidence prediction that was wrong.
+        Confirmation = high-confidence prediction that was right (surprise=0).
+        Fields not predicted have no surprise score.
+        """
+        if not last_protention:
+            return []
+
+        surprises: list[SurpriseField] = []
+
+        flow_score = current.get("flow_score", 0.0)
+        flow_state = "active" if flow_score >= 0.6 else ("warming" if flow_score >= 0.3 else "idle")
+        activity = current.get("production_activity", "")
+
+        for pred in last_protention:
+            # Match prediction to observed state
+            if pred.predicted_state in ("entering_deep_work", "flow_continuing"):
+                observed_matches = flow_state == "active"
+                surprises.append(
+                    SurpriseField(
+                        field="flow_state",
+                        observed=flow_state,
+                        expected="active",
+                        surprise=0.0 if observed_matches else pred.confidence,
+                        note="" if observed_matches else f"predicted {pred.predicted_state}",
+                    )
+                )
+            elif pred.predicted_state == "flow_breaking" or pred.predicted_state == "flow_ending":
+                observed_matches = flow_state != "active"
+                surprises.append(
+                    SurpriseField(
+                        field="flow_state",
+                        observed=flow_state,
+                        expected="idle",
+                        surprise=0.0 if observed_matches else pred.confidence,
+                        note="" if observed_matches else "flow persisted despite prediction",
+                    )
+                )
+            elif pred.predicted_state == "break_likely":
+                observed_matches = activity in ("", "idle", "browsing")
+                surprises.append(
+                    SurpriseField(
+                        field="activity",
+                        observed=activity or "idle",
+                        expected="break",
+                        surprise=0.0 if observed_matches else pred.confidence,
+                        note="" if observed_matches else f"still {activity}",
+                    )
+                )
+            elif pred.predicted_state == "stress_rising":
+                hr = current.get("heart_rate_bpm", 0)
+                observed_matches = hr > 85
+                surprises.append(
+                    SurpriseField(
+                        field="heart_rate",
+                        observed=str(hr),
+                        expected=">85",
+                        surprise=0.0 if observed_matches else pred.confidence,
+                        note="" if observed_matches else "HR stabilized",
+                    )
+                )
+            elif pred.predicted_state == "sustained_activity":
+                observed_matches = activity == pred.basis.split()[-2] if pred.basis else True
+                surprises.append(
+                    SurpriseField(
+                        field="activity",
+                        observed=activity or "idle",
+                        expected="sustained",
+                        surprise=0.0 if observed_matches else pred.confidence * 0.5,
+                        note="" if observed_matches else "activity changed unexpectedly",
+                    )
+                )
+            # Engine-sourced activity predictions
+            elif pred.predicted_state not in (
+                "flow_likely",
+                "sustained_activity",
+            ):
+                # Generic activity prediction from Markov chain
+                if activity and activity != pred.predicted_state:
+                    surprises.append(
+                        SurpriseField(
+                            field="activity",
+                            observed=activity,
+                            expected=pred.predicted_state,
+                            surprise=pred.confidence * 0.7,
+                            note=f"predicted {pred.predicted_state}, got {activity}",
+                        )
+                    )
+
+        # Deduplicate by field (keep highest surprise)
+        seen: dict[str, SurpriseField] = {}
+        for s in surprises:
+            if s.field not in seen or s.surprise > seen[s.field].surprise:
+                seen[s.field] = s
+        return list(seen.values())
 
     def _build_protention(self, ring: PerceptionRing) -> list[ProtentionEntry]:
         """Statistical predictions from protention engine, with trend fallback."""
