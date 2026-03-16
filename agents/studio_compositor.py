@@ -503,15 +503,7 @@ class StudioCompositor:
                 continue
             self._add_camera_branch(pipeline, compositor, cam, tile, fps)
 
-        # CUDA-memory tee: fork before any download so FX branch can tap CUDA memory
-        cuda_tee = Gst.ElementFactory.make("tee", "cuda-tee")
-        if cuda_tee is None:
-            raise RuntimeError("Failed to create cuda-tee element")
-        pipeline.add(cuda_tee)
-        if not compositor.link(cuda_tee):
-            raise RuntimeError("Failed to link compositor -> cuda-tee")
-
-        # Branch 1 (clean output): cudadownload -> BGRA -> cairooverlay -> output-tee
+        # Output chain: compositor -> cudadownload -> BGRA -> cairooverlay -> tee
         download = Gst.ElementFactory.make("cudadownload", "download")
         convert_bgra = Gst.ElementFactory.make("videoconvert", "convert-bgra")
         bgra_caps = Gst.ElementFactory.make("capsfilter", "bgra-caps")
@@ -530,23 +522,18 @@ class StudioCompositor:
         # Tee after overlay for v4l2sink + HLS + snapshot branches
         output_tee = Gst.ElementFactory.make("tee", "output-tee")
 
-        clean_branch = [download, convert_bgra, bgra_caps, overlay, output_tee]
-        for el in clean_branch:
+        elements_pre = [download, convert_bgra, bgra_caps, overlay, output_tee]
+        for el in elements_pre:
             if el is None:
                 raise RuntimeError("Failed to create GStreamer element")
             pipeline.add(el)
 
-        # Link clean branch as chain
-        prev_el = download
-        for el in clean_branch[1:]:
-            if not prev_el.link(el):
-                raise RuntimeError(f"Failed to link {prev_el.get_name()} -> {el.get_name()}")
-            prev_el = el
-
-        # Explicit cuda-tee -> download pad link (Branch 1)
-        cuda_tee_pad1 = cuda_tee.request_pad(cuda_tee.get_pad_template("src_%u"), None, None)
-        download_sink = download.get_static_pad("sink")
-        cuda_tee_pad1.link(download_sink)
+        # Link compositor -> download -> convert_bgra -> bgra_caps -> overlay -> tee
+        prev = compositor
+        for el in elements_pre:
+            if not prev.link(el):
+                raise RuntimeError(f"Failed to link {prev.get_name()} -> {el.get_name()}")
+            prev = el
 
         # v4l2sink branch via tee
         queue_v4l2 = Gst.ElementFactory.make("queue", "queue-v4l2")
@@ -585,8 +572,8 @@ class StudioCompositor:
         # Snapshot branch
         self._add_snapshot_branch(pipeline, output_tee)
 
-        # GPU effects branch — taps from CUDA memory (zero-copy, no CPU roundtrip)
-        self._add_effects_branch(pipeline, cuda_tee)
+        # GPU effects branch
+        self._add_effects_branch(pipeline, output_tee)
 
         return pipeline
 
@@ -664,14 +651,10 @@ class StudioCompositor:
     def _add_effects_branch(self, pipeline: Any, tee: Any) -> None:
         """Add GPU-accelerated visual effects branch.
 
-        Pipeline: cuda-tee → queue → stutter → cudadownload(GLMemory) →
-                  glcolorconvert → glshader chain → trail mixer → post_proc →
-                  glcolorconvert → gldownload → fx-output-tee
-                    ├─ Branch 1: snap_queue → convert → scale → rate → jpeg → appsink
-                    └─ Branch 2: shm_queue → shmsink (/tmp/hapax-fx-shm)
-
-        Zero-copy path: CUDA memory → GL memory via cudadownload with GLMemory capsfilter,
-        eliminating the previous CUDA→CPU→GL roundtrip.
+        Pipeline: tee → queue → videoconvert(RGBA) → glupload → glcolorconvert →
+                  glshader(color_grade) → [gleffects] → glshader(post_process) →
+                  glcolorconvert → gldownload → videoconvert → videoscale → videorate →
+                  jpegenc → appsink (fx snapshot to /dev/shm)
         """
         Gst = self._Gst
 
@@ -685,27 +668,20 @@ class StudioCompositor:
         queue.set_property("leaky", 2)
         queue.set_property("max-size-buffers", 2)
 
-        # Stutter element — operates on CUDA-memory buffers (holds GstBuffer refs,
-        # never maps pixel data, so CUDA memory is fine)
+        # Stutter element (freeze/replay) — before GL upload
         from agents.studio_stutter import StutterElement
 
         stutter_el = StutterElement()
         stutter_el.set_property("check-interval", 999)  # disabled by default
         stutter_el.set_property("freeze-chance", 0.0)
 
-        # CUDA→GL zero-copy path: cudadownload with GLMemory capsfilter
-        # The capsfilter forces cudadownload to output GL memory instead of system memory
-        fx_download = Gst.ElementFactory.make("cudadownload", "fx-cudadownload")
-        fx_gl_caps = Gst.ElementFactory.make("capsfilter", "fx-gl-caps")
-        fx_gl_caps.set_property(
-            "caps",
-            Gst.Caps.from_string(
-                f"video/x-raw(memory:GLMemory),format=RGBA,"
-                f"width={self.config.output_width},height={self.config.output_height}"
-            ),
-        )
+        # Convert to RGBA for GL upload
+        convert_rgba = Gst.ElementFactory.make("videoconvert", "fx-convert-rgba")
+        rgba_caps = Gst.ElementFactory.make("capsfilter", "fx-rgba-caps")
+        rgba_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,format=RGBA"))
 
-        # GL color convert (already in GL memory from cudadownload)
+        # GL upload + color convert
+        glupload = Gst.ElementFactory.make("glupload", "fx-glupload")
         glcolorconvert_in = Gst.ElementFactory.make("glcolorconvert", "fx-glcc-in")
 
         # Color grade shader
@@ -823,34 +799,13 @@ class StudioCompositor:
         fx_sink.set_property("emit-signals", True)
         fx_sink.connect("new-sample", _on_fx_sample)
 
-        # --- FX output tee: split after gldownload into snapshot + shmsink branches ---
-        fx_output_tee = Gst.ElementFactory.make("tee", "fx-output-tee")
-
-        # Branch 1: JPEG snapshot (existing path)
-        fx_snap_queue = Gst.ElementFactory.make("queue", "fx-snap-queue")
-        fx_snap_queue.set_property("leaky", 2)
-        fx_snap_queue.set_property("max-size-buffers", 2)
-
-        # Branch 2: shmsink for zero-copy IPC to v4l2loopback consumer
-        fx_shmsink = Gst.ElementFactory.make("shmsink", "fx-shmsink")
-        fx_shm_queue = None
-        if fx_shmsink:
-            fx_shm_queue = Gst.ElementFactory.make("queue", "fx-shm-queue")
-            fx_shm_queue.set_property("leaky", 2)
-            fx_shm_queue.set_property("max-size-buffers", 2)
-            fx_shmsink.set_property("socket-path", "/tmp/hapax-fx-shm")
-            fx_shmsink.set_property("shm-size", 20_000_000)  # 20MB
-            fx_shmsink.set_property("wait-for-connection", False)
-            fx_shmsink.set_property("sync", False)
-        else:
-            log.warning("shmsink element not available — FX shm output disabled")
-
         # Add all elements to pipeline
         elements = [
             queue,
             stutter_el,
-            fx_download,
-            fx_gl_caps,
+            convert_rgba,
+            rgba_caps,
+            glupload,
             glcolorconvert_in,
             color_grade,
             vhs_shader,
@@ -859,8 +814,6 @@ class StudioCompositor:
             post_proc,
             glcolorconvert_out,
             gldownload,
-            fx_output_tee,
-            fx_snap_queue,
             fx_convert,
             fx_scale,
             fx_scale_caps,
@@ -869,17 +822,16 @@ class StudioCompositor:
             fx_jpeg,
             fx_sink,
         ]
-        if fx_shmsink and fx_shm_queue:
-            elements.extend([fx_shm_queue, fx_shmsink])
         for el in elements:
             if el is None:
                 log.error("Failed to create FX pipeline element")
                 return
             pipeline.add(el)
 
-        # Link chain: cudadownload → GLMemory caps → glcolorconvert
-        fx_download.link(fx_gl_caps)
-        fx_gl_caps.link(glcolorconvert_in)
+        # Link chain
+        convert_rgba.link(rgba_caps)
+        rgba_caps.link(glupload)
+        glupload.link(glcolorconvert_in)
         glcolorconvert_in.link(color_grade)
         color_grade.link(vhs_shader)
         vhs_shader.link(warp_shader)
@@ -933,12 +885,7 @@ class StudioCompositor:
         trail_mixer.link(post_proc)
         post_proc.link(glcolorconvert_out)
         glcolorconvert_out.link(gldownload)
-        gldownload.link(fx_output_tee)
-
-        # Branch 1: fx_output_tee → snap_queue → convert → scale → rate → jpeg → appsink
-        tee_snap = fx_output_tee.request_pad(fx_output_tee.get_pad_template("src_%u"), None, None)
-        tee_snap.link(fx_snap_queue.get_static_pad("sink"))
-        fx_snap_queue.link(fx_convert)
+        gldownload.link(fx_convert)
         fx_convert.link(fx_scale)
         fx_scale.link(fx_scale_caps)
         fx_scale_caps.link(fx_rate)
@@ -946,18 +893,9 @@ class StudioCompositor:
         fx_rate_caps.link(fx_jpeg)
         fx_jpeg.link(fx_sink)
 
-        # Branch 2: fx_output_tee → shm_queue → shmsink (if available)
-        if fx_shmsink and fx_shm_queue:
-            tee_shm = fx_output_tee.request_pad(
-                fx_output_tee.get_pad_template("src_%u"), None, None
-            )
-            tee_shm.link(fx_shm_queue.get_static_pad("sink"))
-            fx_shm_queue.link(fx_shmsink)
-            log.info("FX shmsink: raw frames → /tmp/hapax-fx-shm")
-
-        # Link queue → stutter → cudadownload (first in chain after queue)
+        # Link queue to convert (first in chain after queue)
         queue.link(stutter_el)
-        stutter_el.link(fx_download)
+        stutter_el.link(convert_rgba)
 
         # Explicit tee → queue pad link
         tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)

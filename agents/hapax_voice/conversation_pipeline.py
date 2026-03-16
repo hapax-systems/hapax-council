@@ -200,8 +200,10 @@ class ConversationPipeline:
         # Refresh environment context before LLM call
         self._update_system_context()
 
-        # LLM → TTS
+        # Bridge phrase: acknowledge before thinking so there's no dead air.
+        # Vary the phrase so it doesn't feel robotic.
         self.state = ConvState.THINKING
+        await self._speak_bridge()
         await self._generate_and_speak()
 
         # Check limits
@@ -250,6 +252,10 @@ class ConversationPipeline:
             self.state = ConvState.SPEAKING
             if self.buffer:
                 self.buffer.set_speaking(True)
+                # Flush any audio captured before the flag was set —
+                # it's from the gap between utterance end and LLM response start,
+                # or from the bridge phrase echo. All of it is garbage.
+                self.buffer.get_utterance()
 
             async for chunk in response:
                 delta = chunk.choices[0].delta if chunk.choices else None
@@ -315,6 +321,13 @@ class ConversationPipeline:
             log.exception("LLM generation failed")
             await self._speak_sentence("Sorry, something went wrong.")
         finally:
+            # Guard period: keep mic suppressed while audio output drains
+            # and room echo decays. Without this, the Yeti picks up the tail
+            # of TTS playback and feeds it back as a user utterance.
+            await asyncio.sleep(1.0)
+            # Flush any echo audio that accumulated during the guard
+            if self.buffer:
+                self.buffer.get_utterance()
             if self.buffer:
                 self.buffer.set_speaking(False)
 
@@ -368,6 +381,50 @@ class ConversationPipeline:
 
         # Generate follow-up response with tool results
         await self._generate_and_speak()
+
+    # ── Bridge Phrases ────────────────────────────────────────────────
+
+    _GREETING_BRIDGES = ("Hey.", "Yep.", "Mm-hmm.", "Yeah.")
+    _THINKING_BRIDGES = (
+        "Let me think.",
+        "One sec.",
+        "Hmm.",
+        "Give me a moment.",
+        "On it.",
+        "Thinking.",
+        "Let me check.",
+    )
+    _bridge_idx: int = 0
+
+    async def _speak_bridge(self) -> None:
+        """Speak a brief bridge phrase to fill dead air during LLM processing.
+
+        First turn gets a greeting acknowledgment ("Hey.", "Yep.").
+        Subsequent turns get a thinking bridge ("Let me think.", "One sec.").
+        Skipped when the previous response was very recent (rapid back-and-forth).
+        """
+        # Skip if last response was < 2s ago (rapid exchange, no dead air)
+        if self._last_assistant_end > 0:
+            gap = time.monotonic() - self._last_assistant_end
+            if gap < 2.0:
+                return
+
+        # Pick appropriate phrase
+        if self.turn_count <= 1:
+            phrases = self._GREETING_BRIDGES
+        else:
+            phrases = self._THINKING_BRIDGES
+        phrase = phrases[self._bridge_idx % len(phrases)]
+        self._bridge_idx += 1
+
+        # Suppress mic during bridge to prevent echo feedback
+        if self.buffer:
+            self.buffer.set_speaking(True)
+        await self._speak_sentence(phrase)
+        await asyncio.sleep(0.6)
+        if self.buffer:
+            self.buffer.get_utterance()  # flush echo
+            self.buffer.set_speaking(False)
 
     # ── Observation Signals (Batch 4) ──────────────────────────────────
 
