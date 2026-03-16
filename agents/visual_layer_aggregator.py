@@ -31,6 +31,7 @@ from agents.content_scheduler import (
     SchedulerContext,
     SchedulerDecision,
 )
+from agents.protention_engine import ProtentionEngine
 from agents.visual_layer_state import (
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
@@ -464,6 +465,11 @@ class VisualLayerAggregator:
         self._stimmung_collector = StimmungCollector()
         self._stimmung: SystemStimmung | None = None
 
+        # Protention engine (WS1): statistical transition predictions
+        self._protention = ProtentionEngine()
+        self._protention.load()  # restore learned state
+        self._last_protention_save: float = 0.0
+
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
         try:
@@ -542,6 +548,13 @@ class VisualLayerAggregator:
 
             # Biometrics (Batch E)
             self._biometrics = map_biometrics(data)
+
+            # WS1: feed protention engine
+            self._protention.observe(
+                activity=data.get("production_activity", ""),
+                flow_score=data.get("flow_score", 0.0),
+                hour=datetime.now().hour,
+            )
 
         except (FileNotFoundError, json.JSONDecodeError):
             pass  # perception daemon may not be running
@@ -1025,6 +1038,11 @@ class VisualLayerAggregator:
             if now - last_ambient >= AMBIENT_CONTENT_INTERVAL_S:
                 await self.poll_ambient_content()
                 last_ambient = now
+
+            # WS1: persist protention engine state every 5 min
+            if now - self._last_protention_save >= 300.0:
+                self._protention.save()
+                self._last_protention_save = now
 
             # Sleep at the fastest sub-interval to stay responsive
             await asyncio.sleep(5.0)

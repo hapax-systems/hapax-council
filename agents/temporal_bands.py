@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from agents.hapax_voice.perception_ring import PerceptionRing
+from agents.protention_engine import ProtentionEngine
 
 # ── Data Models ──────────────────────────────────────────────────────────────
 
@@ -56,8 +57,11 @@ class TemporalBandFormatter:
 
     Retention: 3 entries sampled from ring (recent, mid, far).
     Impression: current snapshot.
-    Protention: simple conditional predictions from trends.
+    Protention: statistical predictions from engine (with trend fallback).
     """
+
+    def __init__(self, protention_engine: ProtentionEngine | None = None) -> None:
+        self._protention_engine = protention_engine
 
     def format(self, ring: PerceptionRing) -> TemporalBands:
         """Build temporal bands from the ring buffer state."""
@@ -178,15 +182,48 @@ class TemporalBandFormatter:
         }
 
     def _build_protention(self, ring: PerceptionRing) -> list[ProtentionEntry]:
-        """Simple conditional predictions from ring trends."""
-        predictions: list[ProtentionEntry] = []
-
-        # Flow trend
-        flow_trend = ring.trend("flow_score", window_s=20.0)
+        """Statistical predictions from protention engine, with trend fallback."""
         current = ring.current()
         if current is None:
-            return predictions
+            return []
 
+        predictions: list[ProtentionEntry] = []
+
+        # Use protention engine if available and has learned data
+        if self._protention_engine is not None:
+            from datetime import datetime
+
+            snapshot = self._protention_engine.predict(
+                current_activity=current.get("production_activity", ""),
+                flow_score=current.get("flow_score", 0.0),
+                hour=datetime.now().hour,
+            )
+            for pred in snapshot.top_predictions:
+                predictions.append(
+                    ProtentionEntry(
+                        predicted_state=pred.predicted_value,
+                        confidence=pred.probability,
+                        basis=pred.basis,
+                    )
+                )
+
+        # Trend-based fallback/supplement (always runs, engine predictions take priority)
+        trend_predictions = self._trend_protention(ring, current)
+        # Only add trend predictions for dimensions not already covered by engine
+        engine_dimensions = {p.predicted_state for p in predictions}
+        for tp in trend_predictions:
+            if tp.predicted_state not in engine_dimensions:
+                predictions.append(tp)
+
+        return predictions[:5]  # cap total predictions
+
+    def _trend_protention(
+        self, ring: PerceptionRing, current: dict
+    ) -> list[ProtentionEntry]:
+        """Simple trend-based predictions as fallback."""
+        predictions: list[ProtentionEntry] = []
+
+        flow_trend = ring.trend("flow_score", window_s=20.0)
         flow_score = current.get("flow_score", 0.0)
 
         if flow_trend > 0.01 and flow_score > 0.3:
