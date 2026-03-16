@@ -11,10 +11,14 @@ import pytest
 try:
     import imageio_ffmpeg
 
-    _HAS_FFMPEG = bool(imageio_ffmpeg.get_ffmpeg_exe())
+    _ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    import subprocess as _sp
+
+    _r = _sp.run([_ffmpeg_exe, "-encoders"], capture_output=True, text=True)
+    _HAS_FFMPEG = bool(_ffmpeg_exe) and "libmp3lame" in _r.stdout
 except (ModuleNotFoundError, RuntimeError):
     _HAS_FFMPEG = False
-pytestmark = pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg not available")
+pytestmark = pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg with MP3 encoding not available")
 
 from agents.demo_pipeline.audio_convert import (  # noqa: E402
     convert_all_wav_to_mp3,

@@ -36,6 +36,7 @@ RNNOISE_VST3 = Path("/usr/lib/vst3/rnnoise.vst3")
 
 # ── Built-in effect constructors ─────────────────────────────────────────────
 
+
 def _build_builtin(name: str, params: dict[str, Any]) -> Any:
     """Construct a pedalboard built-in effect by name."""
     import pedalboard as pb
@@ -77,13 +78,17 @@ def _build_vst3(plugin_path: str, plugin_name: str | None, params: dict[str, Any
         if hasattr(plugin, key) or key in plugin.parameters:
             setattr(plugin, key, value)
         else:
-            log.warning("VST3 %s: unknown parameter %r (available: %s)",
-                        plugin_name or plugin_path, key,
-                        list(plugin.parameters.keys())[:10])
+            log.warning(
+                "VST3 %s: unknown parameter %r (available: %s)",
+                plugin_name or plugin_path,
+                key,
+                list(plugin.parameters.keys())[:10],
+            )
     return plugin
 
 
 # ── Preset schema ────────────────────────────────────────────────────────────
+
 
 @dataclass
 class EffectSpec:
@@ -107,12 +112,14 @@ class VocalPreset:
     def from_dict(data: dict[str, Any]) -> VocalPreset:
         effects = []
         for fx in data.get("effects", []):
-            effects.append(EffectSpec(
-                type=fx.get("type", "builtin"),
-                name=fx["name"],
-                params=fx.get("params", {}),
-                plugin_path=fx.get("plugin_path", ""),
-            ))
+            effects.append(
+                EffectSpec(
+                    type=fx.get("type", "builtin"),
+                    name=fx["name"],
+                    params=fx.get("params", {}),
+                    plugin_path=fx.get("plugin_path", ""),
+                )
+            )
         return VocalPreset(
             name=data["name"],
             description=data.get("description", ""),
@@ -128,24 +135,57 @@ _DEFAULT_PRESETS: dict[str, dict] = {
         "description": "Gentle warmth and presence for natural conversation",
         "effects": [
             {"type": "builtin", "name": "highpass", "params": {"cutoff_frequency_hz": 80}},
-            {"type": "builtin", "name": "noise_gate", "params": {
-                "threshold_db": -40, "release_ms": 100,
-            }},
-            {"type": "builtin", "name": "compressor", "params": {
-                "threshold_db": -18, "ratio": 2.5, "attack_ms": 8, "release_ms": 100,
-            }},
-            {"type": "builtin", "name": "low_shelf", "params": {
-                "cutoff_frequency_hz": 200, "gain_db": 1.5,
-            }},
-            {"type": "builtin", "name": "peak", "params": {
-                "cutoff_frequency_hz": 3000, "gain_db": 2.0, "q": 1.0,
-            }},
-            {"type": "builtin", "name": "high_shelf", "params": {
-                "cutoff_frequency_hz": 8000, "gain_db": 1.5,
-            }},
-            {"type": "builtin", "name": "reverb", "params": {
-                "room_size": 0.12, "wet_level": 0.06,
-            }},
+            {
+                "type": "builtin",
+                "name": "noise_gate",
+                "params": {
+                    "threshold_db": -40,
+                    "release_ms": 100,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "compressor",
+                "params": {
+                    "threshold_db": -18,
+                    "ratio": 2.5,
+                    "attack_ms": 8,
+                    "release_ms": 100,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "low_shelf",
+                "params": {
+                    "cutoff_frequency_hz": 200,
+                    "gain_db": 1.5,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "peak",
+                "params": {
+                    "cutoff_frequency_hz": 3000,
+                    "gain_db": 2.0,
+                    "q": 1.0,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "high_shelf",
+                "params": {
+                    "cutoff_frequency_hz": 8000,
+                    "gain_db": 1.5,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "reverb",
+                "params": {
+                    "room_size": 0.12,
+                    "wet_level": 0.06,
+                },
+            },
             {"type": "builtin", "name": "limiter", "params": {"threshold_db": -1.0}},
             {"type": "builtin", "name": "gain", "params": {"gain_db": -1.0}},
         ],
@@ -155,15 +195,33 @@ _DEFAULT_PRESETS: dict[str, dict] = {
         "description": "Crisp and present for short alerts — cuts through ambient",
         "effects": [
             {"type": "builtin", "name": "highpass", "params": {"cutoff_frequency_hz": 120}},
-            {"type": "builtin", "name": "compressor", "params": {
-                "threshold_db": -14, "ratio": 4.0, "attack_ms": 3, "release_ms": 60,
-            }},
-            {"type": "builtin", "name": "peak", "params": {
-                "cutoff_frequency_hz": 2500, "gain_db": 3.0, "q": 0.8,
-            }},
-            {"type": "builtin", "name": "high_shelf", "params": {
-                "cutoff_frequency_hz": 6000, "gain_db": 2.5,
-            }},
+            {
+                "type": "builtin",
+                "name": "compressor",
+                "params": {
+                    "threshold_db": -14,
+                    "ratio": 4.0,
+                    "attack_ms": 3,
+                    "release_ms": 60,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "peak",
+                "params": {
+                    "cutoff_frequency_hz": 2500,
+                    "gain_db": 3.0,
+                    "q": 0.8,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "high_shelf",
+                "params": {
+                    "cutoff_frequency_hz": 6000,
+                    "gain_db": 2.5,
+                },
+            },
             {"type": "builtin", "name": "limiter", "params": {"threshold_db": -0.5}},
             {"type": "builtin", "name": "gain", "params": {"gain_db": -0.5}},
         ],
@@ -173,28 +231,67 @@ _DEFAULT_PRESETS: dict[str, dict] = {
         "description": "Radio/podcast quality for longer spoken content",
         "effects": [
             {"type": "builtin", "name": "highpass", "params": {"cutoff_frequency_hz": 80}},
-            {"type": "builtin", "name": "noise_gate", "params": {
-                "threshold_db": -45, "release_ms": 150,
-            }},
-            {"type": "builtin", "name": "compressor", "params": {
-                "threshold_db": -20, "ratio": 3.0, "attack_ms": 5, "release_ms": 80,
-            }},
-            {"type": "builtin", "name": "low_shelf", "params": {
-                "cutoff_frequency_hz": 180, "gain_db": 2.0,
-            }},
-            {"type": "builtin", "name": "peak", "params": {
-                "cutoff_frequency_hz": 2800, "gain_db": 2.5, "q": 1.2,
-            }},
-            {"type": "builtin", "name": "peak", "params": {
-                "cutoff_frequency_hz": 5000, "gain_db": 1.5, "q": 0.8,
-            }},
-            {"type": "builtin", "name": "high_shelf", "params": {
-                "cutoff_frequency_hz": 10000, "gain_db": 1.0,
-            }},
+            {
+                "type": "builtin",
+                "name": "noise_gate",
+                "params": {
+                    "threshold_db": -45,
+                    "release_ms": 150,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "compressor",
+                "params": {
+                    "threshold_db": -20,
+                    "ratio": 3.0,
+                    "attack_ms": 5,
+                    "release_ms": 80,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "low_shelf",
+                "params": {
+                    "cutoff_frequency_hz": 180,
+                    "gain_db": 2.0,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "peak",
+                "params": {
+                    "cutoff_frequency_hz": 2800,
+                    "gain_db": 2.5,
+                    "q": 1.2,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "peak",
+                "params": {
+                    "cutoff_frequency_hz": 5000,
+                    "gain_db": 1.5,
+                    "q": 0.8,
+                },
+            },
+            {
+                "type": "builtin",
+                "name": "high_shelf",
+                "params": {
+                    "cutoff_frequency_hz": 10000,
+                    "gain_db": 1.0,
+                },
+            },
             {"type": "builtin", "name": "distortion", "params": {"drive_db": 1.5}},
-            {"type": "builtin", "name": "reverb", "params": {
-                "room_size": 0.2, "wet_level": 0.1,
-            }},
+            {
+                "type": "builtin",
+                "name": "reverb",
+                "params": {
+                    "room_size": 0.2,
+                    "wet_level": 0.1,
+                },
+            },
             {"type": "builtin", "name": "limiter", "params": {"threshold_db": -1.0}},
             {"type": "builtin", "name": "gain", "params": {"gain_db": -1.5}},
         ],
@@ -216,6 +313,7 @@ _USE_CASE_PRESETS: dict[str, str] = {
 
 
 # ── Processor ────────────────────────────────────────────────────────────────
+
 
 class VocalFXProcessor:
     """Applies a vocal effects chain to TTS audio.

@@ -390,9 +390,7 @@ class TestPipelineHypothesis(unittest.TestCase):
         try:
             from cockpit.engine.reactive_rules import _handle_carrier_intake
 
-            asyncio.get_event_loop().run_until_complete(
-                _handle_carrier_intake(path=str(path), principal_id="operator")
-            )
+            asyncio.run(_handle_carrier_intake(path=str(path), principal_id="operator"))
 
             # Revoke
             prop.revoke("subject")
@@ -438,9 +436,7 @@ class TestPipelineHypothesis(unittest.TestCase):
                     provenance=[contract_id],
                 )
                 paths.append(p)
-                asyncio.get_event_loop().run_until_complete(
-                    _handle_carrier_intake(path=str(p), principal_id="operator")
-                )
+                asyncio.run(_handle_carrier_intake(path=str(p), principal_id="operator"))
 
             # Intake 1 fact without provenance (should survive)
             p_public = _make_carrier_file(
@@ -448,9 +444,7 @@ class TestPipelineHypothesis(unittest.TestCase):
                 carrier_value="harmless",
             )
             paths.append(p_public)
-            asyncio.get_event_loop().run_until_complete(
-                _handle_carrier_intake(path=str(p_public), principal_id="operator")
-            )
+            asyncio.run(_handle_carrier_intake(path=str(p_public), principal_id="operator"))
 
             assert len(carrier_reg.facts("operator")) == n_facts + 1
 
