@@ -200,3 +200,96 @@ class TestPolicyFormat:
         assert "Baseline:" in policy
         assert "Socrates" in policy  # operator style
         assert "Environment:" in policy
+
+
+# ── Child Interaction Policy ─────────────────────────────────────────────────
+
+
+class TestChildPolicy:
+    def test_child_mode_activates_child_style(self):
+        """Child mode produces child-specific interaction guidance."""
+        policy = get_policy(guest_mode=True, child_mode=True)
+        assert "sovereign principals" in policy.lower()
+        assert "intelligent humans" in policy.lower()
+
+    def test_child_mode_respects_intelligence(self):
+        """Child policy never talks down."""
+        policy = get_policy(guest_mode=True, child_mode=True)
+        assert "Never talk down" in policy
+        assert "Respect their intelligence" in policy
+
+    def test_child_mode_allows_productive_confusion(self):
+        """Confusion is a pedagogical tool, not a failure state."""
+        policy = get_policy(guest_mode=True, child_mode=True)
+        assert "confuse them purposefully" in policy.lower()
+
+    def test_child_mode_no_personal_data(self):
+        """Children should not see personal data or system internals."""
+        policy = get_policy(guest_mode=True, child_mode=True)
+        assert "personal data" in policy.lower()
+
+    def test_child_mode_has_dignity_floor(self):
+        """Dignity floor still applies to children."""
+        policy = get_policy(guest_mode=True, child_mode=True)
+        assert "truthful" in policy
+
+    def test_child_mode_no_operator_style(self):
+        """Child mode should not include operator-specific style."""
+        policy = get_policy(guest_mode=True, child_mode=True)
+        assert "Socrates" not in policy
+
+    def test_non_child_guest_mode_unchanged(self):
+        """Regular guest mode (not child) still works as before."""
+        policy = get_policy(guest_mode=True, child_mode=False)
+        assert "Guest mode" in policy
+        assert "sovereign principals" not in policy.lower()
+
+
+# ── Registered Child Principals (Consent) ────────────────────────────────────
+
+
+class TestChildConsent:
+    def test_registered_children(self):
+        """Simon and Agatha are registered child principals."""
+        from shared.governance.consent import REGISTERED_CHILD_PRINCIPALS
+
+        assert "simon" in REGISTERED_CHILD_PRINCIPALS
+        assert "agatha" in REGISTERED_CHILD_PRINCIPALS
+
+    def test_only_two_registered(self):
+        """No other children should be registered."""
+        from shared.governance.consent import REGISTERED_CHILD_PRINCIPALS
+
+        assert len(REGISTERED_CHILD_PRINCIPALS) == 2
+
+    def test_contracts_exist_on_disk(self):
+        """Consent contracts for Simon and Agatha exist as YAML files."""
+        from pathlib import Path
+
+        contracts_dir = Path("axioms/contracts")
+        assert (contracts_dir / "contract-simon.yaml").exists()
+        assert (contracts_dir / "contract-agatha.yaml").exists()
+
+    def test_contracts_loadable(self):
+        """Contracts can be loaded by the ConsentRegistry."""
+        from shared.governance.consent import load_contracts
+
+        registry = load_contracts()
+        simon = registry.get_contract_for("simon")
+        agatha = registry.get_contract_for("agatha")
+        assert simon is not None
+        assert agatha is not None
+        assert simon.active
+        assert agatha.active
+
+    def test_children_have_full_perception_scope(self):
+        """Children have audio, presence, transcription, video scope."""
+        from shared.governance.consent import load_contracts
+
+        registry = load_contracts()
+        simon = registry.get_contract_for("simon")
+        assert simon is not None
+        assert "audio" in simon.scope
+        assert "presence" in simon.scope
+        assert "transcription" in simon.scope
+        assert "video" in simon.scope
