@@ -283,6 +283,7 @@ def compute_tile_layout(
 # ---------------------------------------------------------------------------
 
 PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+VISUAL_LAYER_STATE_PATH = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
 
 
 class OverlayData(BaseModel):
@@ -476,6 +477,14 @@ class StudioCompositor:
         self._overlay_cache_surface: Any = None
         self._overlay_cache_timestamp: float = 0.0
         self._overlay_cache_cam_hash: str = ""
+        # Visual layer state (read from aggregator JSON)
+        self._vl_state: dict | None = None
+        self._vl_state_lock = threading.Lock()
+        self._vl_state_timestamp: float = 0.0
+        # Visual layer zone opacity interpolation (current values, lerped per frame)
+        self._vl_zone_opacities: dict[str, float] = {}
+        self._vl_cache_surface: Any = None
+        self._vl_cache_timestamp: float = 0.0
 
     def _build_pipeline(self) -> Any:
         """Build the full GStreamer pipeline."""
@@ -1899,6 +1908,136 @@ class StudioCompositor:
         cr.set_source_surface(self._overlay_cache_surface, 0, 0)
         cr.paint()
 
+        # Visual layer zones — render on top of existing overlay
+        self._render_visual_layer(cr, canvas_w, canvas_h)
+
+    # -- Visual layer zone rendering ----------------------------------------
+
+    # Zone color palettes (RGBA, desaturated 30% for neurodivergent-safe display)
+    _VL_ZONE_COLORS: dict[str, tuple[float, float, float]] = {
+        "context_time": (0.4, 0.6, 0.85),  # soft blue
+        "governance": (0.3, 0.7, 0.7),  # teal
+        "work_tasks": (0.85, 0.65, 0.3),  # amber
+        "health_infra": (0.3, 0.8, 0.3),  # green (shifts to red at high severity)
+        "profile_state": (0.9, 0.9, 0.9),  # white/neutral
+        "ambient_sensor": (0.6, 0.6, 0.7),  # muted lavender
+    }
+
+    # Zone layout as fractions of canvas (matching visual_layer_state.py ZONE_LAYOUT)
+    _VL_ZONES: dict[str, tuple[float, float, float, float]] = {
+        "context_time": (0.01, 0.03, 0.25, 0.12),
+        "governance": (0.74, 0.03, 0.25, 0.12),
+        "work_tasks": (0.01, 0.20, 0.18, 0.45),
+        "health_infra": (0.78, 0.78, 0.21, 0.18),
+        "profile_state": (0.35, 0.01, 0.30, 0.06),
+        "ambient_sensor": (0.01, 0.92, 0.75, 0.06),
+    }
+
+    _VL_LERP_RATE = 3.0  # opacity units per second (full 0→1 in ~333ms)
+    _VL_LAST_FRAME_TIME: float = 0.0
+
+    def _render_visual_layer(self, cr: Any, canvas_w: int, canvas_h: int) -> None:
+        """Render visual layer zones with per-zone opacity interpolation."""
+        import cairo  # type: ignore[import-untyped]
+
+        with self._vl_state_lock:
+            vl = self._vl_state
+
+        if vl is None:
+            return
+
+        zone_opacities = vl.get("zone_opacities", {})
+        signals = vl.get("signals", {})
+
+        if not zone_opacities and not signals:
+            return
+
+        # Time-based opacity interpolation
+        now = time.monotonic()
+        dt = min(now - self._VL_LAST_FRAME_TIME, 0.1) if self._VL_LAST_FRAME_TIME > 0 else 0.016
+        self._VL_LAST_FRAME_TIME = now
+
+        # Lerp current opacities toward targets
+        for zone_name, target in zone_opacities.items():
+            current = self._vl_zone_opacities.get(zone_name, 0.0)
+            if abs(current - target) < 0.01:
+                self._vl_zone_opacities[zone_name] = target
+            else:
+                step = self._VL_LERP_RATE * dt
+                if target > current:
+                    self._vl_zone_opacities[zone_name] = min(target, current + step)
+                else:
+                    self._vl_zone_opacities[zone_name] = max(target, current - step)
+
+        # Render each zone
+        pad = 6
+        cr.select_font_face("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+
+        for zone_name, (zx, zy, zw, zh) in self._VL_ZONES.items():
+            opacity = self._vl_zone_opacities.get(zone_name, 0.0)
+            if opacity < 0.02:
+                continue
+
+            zone_signals = signals.get(zone_name, [])
+            if not zone_signals:
+                continue
+
+            # Zone pixel coordinates
+            x = int(zx * canvas_w)
+            y = int(zy * canvas_h)
+            w = int(zw * canvas_w)
+            h = int(zh * canvas_h)
+
+            # Zone background pill
+            r, g, b = self._VL_ZONE_COLORS.get(zone_name, (0.5, 0.5, 0.5))
+
+            # Severity-based color shift for health_infra
+            if zone_name == "health_infra" and zone_signals:
+                max_sev = max(s.get("severity", 0) for s in zone_signals)
+                if max_sev > 0.7:
+                    r, g, b = (0.9, 0.2, 0.1)  # red
+                elif max_sev > 0.4:
+                    r, g, b = (0.85, 0.65, 0.2)  # amber
+
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.45 * opacity)
+            self._rounded_rect(cr, x, y, w, h, 8)
+            cr.fill()
+
+            # Render signal titles
+            cr.set_font_size(13)
+            text_y = y + pad + 13
+            for sig in zone_signals[:3]:  # Max 3 per zone
+                title = sig.get("title", "")[:40]
+                if not title:
+                    continue
+
+                cr.set_source_rgba(r, g, b, 0.9 * opacity)
+                cr.move_to(x + pad, text_y)
+                cr.show_text(title)
+
+                detail = sig.get("detail", "")[:50]
+                if detail:
+                    text_y += 14
+                    cr.set_font_size(11)
+                    cr.set_source_rgba(0.79, 0.82, 0.85, 0.7 * opacity)
+                    cr.move_to(x + pad, text_y)
+                    cr.show_text(detail)
+                    cr.set_font_size(13)
+
+                text_y += 18
+
+    @staticmethod
+    def _rounded_rect(cr: Any, x: float, y: float, w: float, h: float, radius: float) -> None:
+        """Draw a rounded rectangle path."""
+        import math
+
+        cr.new_sub_path()
+        cr.arc(x + w - radius, y + radius, radius, -math.pi / 2, 0)
+        cr.arc(x + w - radius, y + h - radius, radius, 0, math.pi / 2)
+        cr.arc(x + radius, y + h - radius, radius, math.pi / 2, math.pi)
+        cr.arc(x + radius, y + radius, radius, math.pi, 3 * math.pi / 2)
+        cr.close_path()
+
     # -- State reader -----------------------------------------------------
 
     def _evaluate_camera_profile(self) -> None:
@@ -1961,6 +2100,17 @@ class StudioCompositor:
             except (json.JSONDecodeError, OSError, ValueError) as exc:
                 log.debug("Failed to read perception state: %s", exc)
                 self._overlay_state.mark_stale()
+
+            # Read visual layer state (from aggregator)
+            try:
+                if VISUAL_LAYER_STATE_PATH.exists():
+                    vl_raw = VISUAL_LAYER_STATE_PATH.read_text()
+                    vl_data = json.loads(vl_raw)
+                    with self._vl_state_lock:
+                        self._vl_state = vl_data
+                        self._vl_state_timestamp = vl_data.get("timestamp", 0.0)
+            except (json.JSONDecodeError, OSError):
+                pass  # Aggregator may not be running
 
             # Consent enforcement: toggle recording/HLS valves
             with self._overlay_state._lock:
