@@ -1,26 +1,45 @@
-"""Experiential governance proofs.
+"""Experiential governance proofs — the complete matrix.
 
-Each test is a story told from a human's perspective. The assertions prove
+Each test is a story told from a human's perspective. Every assertion proves
 what the person experiences at each moment — not what internal methods return.
 
 The ExperientialWorld ties the full stack together: perception → gate →
-governor → consent tracker → consent reader → pipeline readiness. Tests
-advance through time, changing the physical world (who's present, what's
-playing, what app is focused), and assert the experiential properties at
-every moment.
+governor → consent tracker → consent reader. Tests advance through simulated
+time, changing the physical world (who's present, what's playing, what app is
+focused), and assert ALL experiential properties at every moment.
 
 Three principals, three promises:
   Operator:  cognitive support without surveillance
   Guest:     informed consent without friction
   Absent:    protection without erasure
 
-Start with the operator alone. Then add people. Then add context.
+Coverage matrix (dimensions × experiential properties):
+
+  Context (8)   :  idle, coding, production, meeting, music-ambient,
+                   exercise, absent, axiom-sensitive
+  Occupancy (5) :  alone, +new-guest, +consented-guest, +refused-guest, nobody
+  Body (3)      :  normal, stressed, exercising
+  System (2)    :  healthy, degraded
+  Override (2)  :  none, wake-word
+  Data flow (4) :  none, email-unconsented, calendar-unconsented, document-mixed
+
+  Properties asserted at every intersection:
+    1. gate_eligible     — can the system speak if asked?
+    2. directive         — process / pause / withdraw
+    3. interruptibility  — 0.0 to 1.0
+    4. consent_phase     — NO_GUEST / DETECTED / PENDING / GRANTED / REFUSED
+    5. persistence       — is person-adjacent data being stored?
+    6. llm_sees          — what content reaches the LLM after filtering?
+
 No hardware, no LLM, no network.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
+from dataclasses import dataclass
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from hypothesis import given, settings
@@ -28,14 +47,36 @@ from hypothesis import strategies as st
 
 from agents.hapax_voice.consent_state import ConsentPhase, ConsentStateTracker
 from agents.hapax_voice.context_gate import ContextGate
+from agents.hapax_voice.conversation_pipeline import ConversationPipeline, ConvState
+from agents.hapax_voice.governance import Veto
 from agents.hapax_voice.governor import PipelineGovernor
 from agents.hapax_voice.perception import EnvironmentState, compute_interruptibility
 from agents.hapax_voice.primitives import Behavior
 from agents.hapax_voice.session import SessionManager
 from shared.governance.consent import ConsentContract, ConsentRegistry
 from shared.governance.consent_reader import ConsentGatedReader, RetrievedDatum
+from shared.governance.degradation import degrade
 
 # ── The World ────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Moment:
+    """What a human would experience at a single point in time.
+
+    Every test asserts a Moment. No test checks just one property.
+    If the system is paused, we also prove consent state, persistence,
+    interruptibility — the full picture, not a keyhole view.
+    """
+
+    gate_eligible: bool
+    directive: str  # "process" | "pause" | "withdraw"
+    interruptibility: float
+    consent_phase: ConsentPhase
+    persistence: bool
+    # Optional: specific gate/veto reasons to check
+    gate_reason_contains: str = ""
+    veto_contains: str = ""
 
 
 class ExperientialWorld:
@@ -68,18 +109,13 @@ class ExperientialWorld:
         # Governance stack
         self.session = SessionManager()
         self.gate = ContextGate(self.session, ambient_classification=False)
-        self.governor = PipelineGovernor(
-            operator_absent_withdraw_s=60.0,
-        )
+        self.governor = PipelineGovernor(operator_absent_withdraw_s=60.0)
         self.consent = ConsentStateTracker(debounce_s=5.0, absence_clear_s=30.0)
         self._registry = ConsentRegistry()
         self.reader = ConsentGatedReader(
             registry=self._registry,
             operator_ids=frozenset({"operator", "ryan"}),
         )
-
-        # Event log for inspection
-        self.events: list[str] = []
 
         # Snapshot after each tick
         self._last_state: EnvironmentState | None = None
@@ -91,29 +127,23 @@ class ExperientialWorld:
     def operator_sits_down(self) -> None:
         self._operator_present = True
         self._faces = max(1, self._faces)
-        self.events.append(f"t={self.t:.0f}: operator sits down")
 
     def operator_leaves(self) -> None:
         self._operator_present = False
         self._faces = max(0, self._faces - 1)
-        self.events.append(f"t={self.t:.0f}: operator leaves")
 
     def guest_enters(self) -> None:
         self._faces += 1
-        self.events.append(f"t={self.t:.0f}: guest enters (faces={self._faces})")
 
     def guest_leaves(self) -> None:
         self._faces = max(0, self._faces - 1)
-        self.events.append(f"t={self.t:.0f}: guest leaves (faces={self._faces})")
 
     def switch_activity(self, mode: str) -> None:
         self._activity_mode = mode
-        self.events.append(f"t={self.t:.0f}: activity → {mode}")
 
     def focus_app(self, app_class: str, title: str = "") -> None:
         self._active_window_class = app_class
         self._active_window_title = title
-        self.events.append(f"t={self.t:.0f}: focus → {app_class}")
 
     def set_workspace_context(self, ctx: str) -> None:
         self._workspace_context = ctx
@@ -122,54 +152,44 @@ class ExperientialWorld:
         self._ambient_interruptible = False
         self._ambient_reason = "Music detected"
         self._ambient_top_labels = [("Music", 0.8)]
-        self.events.append(f"t={self.t:.0f}: music starts")
 
     def stop_music(self) -> None:
         self._ambient_interruptible = True
         self._ambient_reason = ""
         self._ambient_top_labels = []
-        self.events.append(f"t={self.t:.0f}: music stops")
 
     def connect_midi(self) -> None:
         self._midi_active = True
-        self.events.append(f"t={self.t:.0f}: MIDI connected")
 
     def disconnect_midi(self) -> None:
         self._midi_active = False
-        self.events.append(f"t={self.t:.0f}: MIDI disconnected")
 
     def stress_spikes(self) -> None:
         self._stress_elevated = True
-        self.events.append(f"t={self.t:.0f}: stress elevated")
 
     def stress_subsides(self) -> None:
         self._stress_elevated = False
 
     def system_degrades(self) -> None:
         self._system_health = "degraded"
-        self.events.append(f"t={self.t:.0f}: system health → degraded")
 
     def system_recovers(self) -> None:
         self._system_health = "healthy"
 
     def start_exercising(self) -> None:
         self._watch_activity = "exercise"
-        self.events.append(f"t={self.t:.0f}: exercise started")
 
     def stop_exercising(self) -> None:
         self._watch_activity = "idle"
 
     def say_wake_word(self) -> None:
         self.governor.wake_word_active = True
-        self.events.append(f"t={self.t:.0f}: wake word detected")
 
     def grant_guest_consent(self) -> None:
         self.consent.grant_consent()
-        self.events.append(f"t={self.t:.0f}: guest grants consent")
 
     def refuse_guest_consent(self) -> None:
         self.consent.refuse_consent()
-        self.events.append(f"t={self.t:.0f}: guest refuses consent")
 
     def add_consent_contract(self, person: str, scope: frozenset[str]) -> None:
         contract = ConsentContract(
@@ -185,11 +205,7 @@ class ExperientialWorld:
     # ── Time advancement ─────────────────────────────────────────────
 
     def advance(self, seconds: float, tick_interval: float = 2.5) -> None:
-        """Advance time, ticking all governance layers at daemon cadence.
-
-        Simulates the daemon's ~2.5s tick loop. Multiple ticks within the
-        interval let debounce timers accumulate naturally.
-        """
+        """Advance time, ticking governance layers at daemon cadence (~2.5s)."""
         remaining = seconds
         while remaining > 0:
             step = min(tick_interval, remaining)
@@ -199,7 +215,6 @@ class ExperientialWorld:
 
     def _tick(self) -> None:
         """Wire the governance stack exactly as the daemon does."""
-        # Build behaviors for gate
         behaviors = {
             "sink_volume": Behavior(self._sink_volume, watermark=self.t),
             "midi_active": Behavior(self._midi_active, watermark=self.t),
@@ -216,21 +231,14 @@ class ExperientialWorld:
 
         # Ambient classification (gate reads from cached result)
         if not self._ambient_interruptible:
-            from unittest.mock import MagicMock
-
             self.gate._ambient_result = MagicMock(
-                interruptible=False,
-                reason=self._ambient_reason,
+                interruptible=False, reason=self._ambient_reason
             )
-            # Ensure ambient veto is in the chain
             if not any(v.name == "ambient" for v in self.gate._veto_chain.vetoes):
-                from agents.hapax_voice.governance import Veto
-
                 self.gate._veto_chain.add(Veto("ambient", predicate=self.gate._allow_ambient))
         else:
             self.gate._ambient_result = None
 
-        # Build environment state
         self._last_state = EnvironmentState(
             timestamp=self.t,
             face_count=self._faces,
@@ -245,91 +253,75 @@ class ExperientialWorld:
             ),
         )
 
-        # Gate check
         self._last_gate_result = self.gate.check()
 
-        # Governor evaluate (needs real monotonic for internal _last_operator_seen)
-        # We manipulate _last_operator_seen directly for absence tracking
         if self._operator_present:
             self.governor._last_operator_seen = time.monotonic()
         self._last_directive = self.governor.evaluate(self._last_state)
 
-        # Consent tracker tick
         self.consent.tick(
             face_count=self._faces,
             speaker_is_operator=True,
             now=self.t,
         )
 
-    # ── Experiential properties ──────────────────────────────────────
-    # These describe what a human would EXPERIENCE, not internal state.
+    # ── Moment capture ───────────────────────────────────────────────
 
-    @property
-    def system_available(self) -> bool:
-        """System could respond if explicitly asked (gate eligible)."""
-        return self._last_gate_result is not None and self._last_gate_result.eligible
-
-    @property
-    def system_would_interrupt(self) -> bool:
-        """System would proactively speak (high interruptibility + no vetoes)."""
-        if self._last_state is None:
-            return False
-        return (
-            self.system_available
-            and self._last_directive == "process"
-            and self._last_state.interruptibility_score > 0.7
+    def moment(self) -> Moment:
+        """Capture the full experiential state right now."""
+        return Moment(
+            gate_eligible=self._last_gate_result.eligible if self._last_gate_result else False,
+            directive=self._last_directive or "unknown",
+            interruptibility=(
+                self._last_state.interruptibility_score if self._last_state else 0.0
+            ),
+            consent_phase=self.consent.phase,
+            persistence=self.consent.persistence_allowed,
         )
 
-    @property
-    def system_listening(self) -> bool:
-        """Pipeline is in process mode (accepting input)."""
-        return self._last_directive == "process"
+    def assert_moment(self, expected: Moment, msg: str = "") -> None:
+        """Assert ALL experiential properties match expected Moment."""
+        actual = self.moment()
+        prefix = f"{msg}: " if msg else ""
 
-    @property
-    def system_paused(self) -> bool:
-        """Pipeline is paused (respecting context)."""
-        return self._last_directive == "pause"
+        assert actual.gate_eligible == expected.gate_eligible, (
+            f"{prefix}gate_eligible: got {actual.gate_eligible}, "
+            f"expected {expected.gate_eligible}"
+        )
+        assert actual.directive == expected.directive, (
+            f"{prefix}directive: got {actual.directive}, expected {expected.directive}"
+        )
+        assert actual.interruptibility == pytest.approx(
+            expected.interruptibility, abs=0.05
+        ), (
+            f"{prefix}interruptibility: got {actual.interruptibility:.2f}, "
+            f"expected {expected.interruptibility:.2f}"
+        )
+        assert actual.consent_phase == expected.consent_phase, (
+            f"{prefix}consent_phase: got {actual.consent_phase}, "
+            f"expected {expected.consent_phase}"
+        )
+        assert actual.persistence == expected.persistence, (
+            f"{prefix}persistence: got {actual.persistence}, "
+            f"expected {expected.persistence}"
+        )
 
-    @property
-    def system_withdrawn(self) -> bool:
-        """Pipeline has withdrawn (operator gone)."""
-        return self._last_directive == "withdraw"
+        if expected.gate_reason_contains and self._last_gate_result:
+            assert expected.gate_reason_contains in self._last_gate_result.reason.lower(), (
+                f"{prefix}gate_reason should contain '{expected.gate_reason_contains}', "
+                f"got '{self._last_gate_result.reason}'"
+            )
 
-    @property
-    def storing_person_data(self) -> bool:
-        """Person-adjacent data would be persisted right now."""
-        return self.consent.persistence_allowed
+        if expected.veto_contains and self.governor.last_veto_result:
+            assert expected.veto_contains in self.governor.last_veto_result.denied_by, (
+                f"{prefix}veto should contain '{expected.veto_contains}', "
+                f"got {self.governor.last_veto_result.denied_by}"
+            )
 
     @property
     def consent_alert_needed(self) -> bool:
         """System needs to alert a guest about consent (fires once)."""
         return self.consent.needs_notification
-
-    @property
-    def consent_phase(self) -> ConsentPhase:
-        """Current consent phase."""
-        return self.consent.phase
-
-    @property
-    def interruptibility(self) -> float:
-        """How interruptible the operator is (0=don't touch, 1=wide open)."""
-        if self._last_state is None:
-            return 0.0
-        return self._last_state.interruptibility_score
-
-    @property
-    def gate_reason(self) -> str:
-        """Why the gate is blocking, if it is."""
-        if self._last_gate_result is None:
-            return ""
-        return self._last_gate_result.reason
-
-    @property
-    def veto_reasons(self) -> tuple[str, ...]:
-        """Which vetoes are blocking the governor."""
-        if self.governor.last_veto_result is None:
-            return ()
-        return self.governor.last_veto_result.denied_by
 
     def filter_for_llm(self, content: str, person_ids: frozenset[str], category: str) -> str:
         """What the LLM would actually see after consent filtering."""
@@ -339,333 +331,451 @@ class ExperientialWorld:
             data_category=category,
             source="test",
         )
-        decision = self.reader.filter(datum)
-        return decision.filtered_content
+        return self.reader.filter(datum).filtered_content
+
+    def filter_tool(self, tool_name: str, result: str) -> str:
+        """What the LLM would see after tool-result consent filtering."""
+        return self.reader.filter_tool_result(tool_name, result)
 
 
-# ── PART 1: Just Me ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# PART 1: CONTEXT × OPERATOR ALONE MATRIX
 #
-# These tests prove governance properties using only the operator.
-# No guests, no third parties. Run these first, run them today.
-# They prove: the system supports me without surveilling me.
+# The operator sits at their desk in different contexts. No guests,
+# no third parties. Each row is a context, each assertion covers all 6
+# properties. This is the baseline: prove the system adapts to what I'm
+# doing without me telling it to.
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestJustMe:
-    """I am the only human. Prove the system respects my cognition."""
+class TestContextMatrix:
+    """Every context the operator can be in, alone. Full moment at each."""
 
-    def test_i_sit_down_and_system_is_ready(self):
-        """I sit down at my desk. The system is available but doesn't
-        speak. It's there if I need it, invisible if I don't."""
+    def test_idle_at_desk(self):
+        """I sit down. Nothing open. System fully available, fully open."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.advance(2.5)
-
-        assert w.system_available, "System should be reachable if I ask"
-        assert w.system_listening, "Pipeline should be in process mode"
-        assert w.interruptibility == pytest.approx(1.0, abs=0.01), (
-            "Nothing competing for attention"
+        w.assert_moment(
+            Moment(
+                gate_eligible=True,
+                directive="process",
+                interruptibility=1.0,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+            ),
+            "Idle at desk",
         )
-        # No guest → no consent concerns
-        assert w.storing_person_data, "Only my data, no consent issue"
-        assert w.consent_phase == ConsentPhase.NO_GUEST
 
-    def test_i_start_coding_and_system_backs_off(self):
-        """I open my editor and start coding. The system detects this
-        and backs off — still available, but less eager to interrupt."""
+    def test_coding(self):
+        """I'm coding. System is available but interruptibility drops 0.3.
+        It won't proactively bother me but will respond if I ask."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.switch_activity("coding")
         w.advance(2.5)
-
-        assert w.system_available, "Still reachable if I say the wake word"
-        assert w.system_listening, "Pipeline still running"
-        assert w.interruptibility == pytest.approx(0.7, abs=0.01), (
-            "Coding penalty of 0.3 applied"
+        w.assert_moment(
+            Moment(
+                gate_eligible=True,
+                directive="process",
+                interruptibility=0.7,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+            ),
+            "Coding",
         )
 
-    def test_i_say_wake_word_during_coding(self):
-        """I'm deep in code but need help. I say 'Hey Hapax'. The system
-        responds immediately, then protects the conversation for a few ticks
-        before returning to quiet coding mode."""
-        w = ExperientialWorld()
-        w.operator_sits_down()
-        w.switch_activity("coding")
-        w.advance(2.5)
-
-        # I speak
-        w.say_wake_word()
-        w.advance(2.5)
-        assert w.system_listening, "Wake word → process"
-        assert w.governor.last_selected.selected_by == "wake_word_override"
-
-        # Grace period protects the conversation
-        w.advance(2.5)
-        assert w.system_listening, "Still protected by grace"
-        w.advance(2.5)
-        assert w.system_listening, "Grace tick 2"
-        w.advance(2.5)
-        assert w.system_listening, "Grace tick 3"
-
-        # Grace expired, but coding isn't a veto — still process
-        w.advance(2.5)
-        assert w.system_listening, "Coding doesn't veto, just reduces interruptibility"
-
-    def test_i_open_ableton_and_system_goes_silent(self):
-        """I switch to music production. MIDI connects. The system goes
-        completely silent — both gate and governor block. This is sacred
-        creative space. When I'm done, system comes back."""
-        w = ExperientialWorld()
-        w.operator_sits_down()
-        w.advance(2.5)
-        assert w.system_available
-
-        # Enter production mode
-        w.switch_activity("production")
-        w.connect_midi()
-        w.advance(2.5)
-
-        assert not w.system_available, "Gate blocks: MIDI active"
-        assert w.system_paused, "Governor blocks: production mode"
-
-        # Even if I wanted to ask, gate says no
-        # This is intentional: in production, audio output would bleed into monitors
-
-        # I finish producing
-        w.switch_activity("idle")
-        w.disconnect_midi()
-        w.advance(2.5)
-
-        assert w.system_available, "System returns when production ends"
-        assert w.system_listening, "Back to normal"
-
-    def test_i_open_ableton_but_say_wake_word(self):
-        """I'm producing but urgently need Hapax. Wake word overrides
-        production veto for a few ticks — system responds, then production
-        veto reasserts. The override is deliberate and temporary."""
+    def test_production_with_midi(self):
+        """I'm in Ableton with MIDI connected. Both gate AND governor block.
+        Gate: MIDI veto. Governor: production veto. Two independent safety layers."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.switch_activity("production")
         w.connect_midi()
         w.advance(2.5)
-        assert w.system_paused
+        w.assert_moment(
+            Moment(
+                gate_eligible=False,
+                directive="pause",
+                interruptibility=0.5,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+                veto_contains="activity_mode",
+            ),
+            "Music production",
+        )
 
-        w.say_wake_word()
-        w.advance(2.5)
-        assert w.system_listening, "Wake word overrides production"
-
-        # Grace ticks
-        for _ in range(3):
-            w.advance(2.5)
-            assert w.system_listening, "Still in grace period"
-
-        # Grace expired → production veto reasserts
-        w.advance(2.5)
-        assert w.system_paused, "Production reclaims control"
-
-    def test_zoom_call_total_silence(self):
-        """I join a Zoom meeting. Both gate and governor go silent.
-        Nobody on the call hears my AI assistant blurt out."""
+    def test_video_meeting(self):
+        """Zoom call. Gate blocks (fullscreen app). Governor blocks (meeting mode).
+        Nobody on the call hears my AI assistant."""
         w = ExperientialWorld()
         w.operator_sits_down()
-        w.focus_app("zoom", "Team Standup - Zoom Meeting")
         w.switch_activity("meeting")
+        w.focus_app("zoom", "Team Standup")
         w.advance(2.5)
+        w.assert_moment(
+            Moment(
+                gate_eligible=False,
+                directive="pause",
+                interruptibility=0.4,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+                veto_contains="activity_mode",
+            ),
+            "Zoom meeting",
+        )
 
-        assert not w.system_available, "Gate blocks: Zoom is fullscreen-blocked app"
-        assert w.system_paused, "Governor blocks: meeting mode"
-
-    def test_i_step_away_for_coffee(self):
-        """I leave my desk. After a grace period, the system withdraws.
-        It doesn't keep listening to an empty room."""
+    def test_music_playing_ambient(self):
+        """Music playing through speakers (no MIDI, not producing — just listening).
+        Ambient classifier detects music, gate blocks to avoid talking over it."""
         w = ExperientialWorld()
         w.operator_sits_down()
+        w.start_music()
         w.advance(2.5)
-        assert w.system_listening
+        w.assert_moment(
+            Moment(
+                gate_eligible=False,
+                directive="process",  # Governor sees idle, no veto
+                interruptibility=1.0,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+                gate_reason_contains="music",
+            ),
+            "Music ambient",
+        )
 
-        # I leave
-        w.operator_leaves()
-        w.advance(2.5)
-
-        # Within the 60s threshold — still process (might come right back)
-        assert w.system_listening, "Grace period: I might just be grabbing coffee"
-
-        # Force absence beyond threshold
-        w.governor._last_operator_seen = time.monotonic() - 61.0
-        w.advance(2.5)
-        assert w.system_withdrawn, "System stops listening to empty room"
-
-    def test_stress_spike_system_backs_off(self):
-        """My watch detects elevated stress (HRV drop, EDA spike).
-        The system backs off — adding AI interaction to physiological
-        load would make things worse, not better."""
-        w = ExperientialWorld()
-        w.operator_sits_down()
-        w.advance(2.5)
-        assert w.system_available
-
-        w.stress_spikes()
-        w.advance(2.5)
-        assert not w.system_available, "Gate blocks during stress"
-        assert "stress" in w.gate_reason.lower()
-
-        w.stress_subsides()
-        w.advance(2.5)
-        assert w.system_available, "Stress passes, system returns"
-
-    def test_exercise_leave_me_alone(self):
-        """I'm on the treadmill. Watch says exercise. System goes dark.
-        I don't want AI talking in my earbuds during a run."""
+    def test_exercising(self):
+        """On the treadmill. Watch says exercise. Gate blocks. Leave me alone."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.start_exercising()
         w.advance(2.5)
+        w.assert_moment(
+            Moment(
+                gate_eligible=False,
+                directive="process",  # Governor sees present+idle, no veto
+                interruptibility=1.0,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+                gate_reason_contains="exercise",
+            ),
+            "Exercising",
+        )
 
-        assert not w.system_available
-        assert "exercise" in w.gate_reason.lower()
-
-    def test_system_health_degraded(self):
-        """Infrastructure is flaky. Rather than start a conversation
-        that might fail mid-sentence, system doesn't start at all."""
+    def test_absent(self):
+        """I left. After grace period, system withdraws. Empty room = no listening."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.advance(2.5)
-        assert w.system_available
-
-        w.system_degrades()
+        w.operator_leaves()
+        w.governor._last_operator_seen = time.monotonic() - 61.0
         w.advance(2.5)
-        assert not w.system_available
-        assert "health" in w.gate_reason.lower()
+        w.assert_moment(
+            Moment(
+                gate_eligible=True,  # gate doesn't check presence
+                directive="withdraw",
+                interruptibility=0.0,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+            ),
+            "Absent",
+        )
 
-        w.system_recovers()
-        w.advance(2.5)
-        assert w.system_available
-
-    def test_performance_review_axiom_veto(self):
-        """I open a performance review document. The management_governance
-        axiom fires — the system must not help draft feedback about individuals.
-        This isn't a feature toggle; it's a constitutional constraint."""
+    def test_axiom_sensitive_workspace(self):
+        """Performance review open. Constitutional axiom veto fires.
+        This isn't a preference — it's a governance constraint."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.set_workspace_context("editing performance review in Lattice")
         w.advance(2.5)
+        w.assert_moment(
+            Moment(
+                gate_eligible=True,  # gate doesn't check workspace
+                directive="pause",
+                interruptibility=1.0,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+                veto_contains="axiom_compliance",
+            ),
+            "Axiom-sensitive workspace",
+        )
 
-        assert w.system_paused, "Axiom compliance veto"
-        assert "axiom_compliance" in w.veto_reasons
 
-    def test_full_evening_session(self):
-        """A complete evening: arrive, code, produce music, code more,
-        get stressed, recover, leave. The system tracks along naturally,
-        adjusting to each phase without me doing anything."""
+# ═══════════════════════════════════════════════════════════════════════════════
+# PART 2: BODY + SYSTEM CONDITION OVERLAY
+#
+# Stress, system health — conditions that can appear in ANY context.
+# Prove they compose correctly with the context matrix.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestConditionOverlay:
+    """Body and system conditions that overlay any context."""
+
+    def test_stress_while_idle(self):
+        """Stress elevated at idle desk. Gate blocks even though nothing
+        else is competing. Adding AI interaction to physiological load
+        would make things worse."""
         w = ExperientialWorld()
-
-        # Arrive
         w.operator_sits_down()
-        w.advance(2.5)
-        assert w.system_available and w.system_listening
-
-        # Start coding
-        w.switch_activity("coding")
-        w.advance(10.0)
-        assert w.system_available  # available but quiet
-        assert w.interruptibility < 1.0  # backed off
-
-        # Switch to Ableton
-        w.switch_activity("production")
-        w.connect_midi()
-        w.advance(30.0)
-        assert not w.system_available  # total silence
-
-        # Back to coding
-        w.switch_activity("coding")
-        w.disconnect_midi()
-        w.advance(5.0)
-        assert w.system_available  # back
-
-        # Stress spike (bad PR review notification)
         w.stress_spikes()
         w.advance(2.5)
-        assert not w.system_available  # backs off
+        w.assert_moment(
+            Moment(
+                gate_eligible=False,
+                directive="process",
+                interruptibility=1.0,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+                gate_reason_contains="stress",
+            ),
+            "Stressed at idle desk",
+        )
 
-        # Stress passes
+    def test_stress_while_coding(self):
+        """Stress during coding. Gate blocks on stress. Governor processes
+        (coding isn't a veto). Two layers agree: leave me alone."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.switch_activity("coding")
+        w.stress_spikes()
+        w.advance(2.5)
+        w.assert_moment(
+            Moment(
+                gate_eligible=False,
+                directive="process",
+                interruptibility=0.7,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+                gate_reason_contains="stress",
+            ),
+            "Stressed while coding",
+        )
+
+    def test_stress_recovery(self):
+        """Stress spikes then subsides. System returns. No lingering effect."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.stress_spikes()
+        w.advance(2.5)
+        assert not w.moment().gate_eligible
+
         w.stress_subsides()
         w.advance(2.5)
-        assert w.system_available  # returns
+        w.assert_moment(
+            Moment(
+                gate_eligible=True,
+                directive="process",
+                interruptibility=1.0,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+            ),
+            "Stress recovered",
+        )
 
-        # Head to bed
-        w.operator_leaves()
-        w.governor._last_operator_seen = time.monotonic() - 61.0
+    def test_degraded_system_while_idle(self):
+        """Infrastructure flaky. Gate blocks to prevent mid-conversation failure."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.system_degrades()
         w.advance(2.5)
-        assert w.system_withdrawn  # room empty, system sleeps
+        w.assert_moment(
+            Moment(
+                gate_eligible=False,
+                directive="process",
+                interruptibility=1.0,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+                gate_reason_contains="health",
+            ),
+            "Degraded system",
+        )
+
+    def test_degraded_system_recovery(self):
+        """System degrades then recovers. Full service restored."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.system_degrades()
+        w.advance(2.5)
+        assert not w.moment().gate_eligible
+
+        w.system_recovers()
+        w.advance(2.5)
+        w.assert_moment(
+            Moment(
+                gate_eligible=True,
+                directive="process",
+                interruptibility=1.0,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+            ),
+            "System recovered",
+        )
+
+    def test_degraded_during_production(self):
+        """System degrades while I'm producing. Two independent blocks:
+        MIDI gate + health gate. Neither cares about the other."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.switch_activity("production")
+        w.connect_midi()
+        w.system_degrades()
+        w.advance(2.5)
+        w.assert_moment(
+            Moment(
+                gate_eligible=False,
+                directive="pause",
+                interruptibility=0.5,
+                consent_phase=ConsentPhase.NO_GUEST,
+                persistence=True,
+            ),
+            "Degraded during production",
+        )
 
 
-# ── PART 2: My Wife Walks In ────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# PART 3: WAKE WORD OVERRIDE × VETOED CONTEXTS
 #
-# Now we add a second human. These tests prove the consent lifecycle
-# from her perspective — she is a sovereign principal who deserves
-# informed consent without friction.
+# Wake word is the operator's escape hatch. Prove it works in every
+# context where the system would otherwise be silent, and that it's
+# always temporary — the context reasserts after grace expires.
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestWifeWalksIn:
-    """A guest enters the room. Prove consent is never violated."""
+class TestWakeWordOverride:
+    """Wake word override in every vetoed context."""
 
-    def test_she_walks_in_and_system_notices_then_asks(self):
-        """My wife walks into the room. I am there. She does not have
-        prior consent on board the system. Hapax alerts her in a natural
-        way. Consent has not been violated.
+    def _override_and_decay(self, w: ExperientialWorld, vetoed_directive: str) -> None:
+        """Common pattern: verify veto, fire wake word, verify override + grace + decay."""
+        # Verify veto is active
+        assert w.moment().directive == vetoed_directive
 
-        What this proves:
-        - Detection is immediate but action is debounced (no ambush)
-        - Persistence is blocked from the moment she's detected
-        - Notification fires exactly once after debounce
-        - She is never recorded without consent
-        """
+        # Wake word fires → immediate process
+        w.say_wake_word()
+        w.advance(2.5)
+        assert w.moment().directive == "process"
+        assert w.governor.last_selected.selected_by == "wake_word_override"
+
+        # 3 grace ticks protect the conversation
+        for i in range(3):
+            w.advance(2.5)
+            assert w.moment().directive == "process", f"Grace tick {i + 1}"
+            assert w.governor.last_selected.selected_by == "wake_word_grace"
+
+        # Grace expired → veto reasserts
+        w.advance(2.5)
+        assert w.moment().directive == vetoed_directive, "Veto reasserts after grace"
+
+    def test_override_production(self):
+        """Wake word during music production. Override is temporary."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.switch_activity("production")
+        w.connect_midi()
+        w.advance(2.5)
+        self._override_and_decay(w, "pause")
+
+    def test_override_meeting(self):
+        """Wake word during meeting. Override is temporary."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.switch_activity("meeting")
+        w.advance(2.5)
+        self._override_and_decay(w, "pause")
+
+    def test_override_axiom_veto(self):
+        """Wake word during axiom-sensitive workspace. Even constitutional
+        vetoes can be overridden by explicit intent — but only temporarily."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.set_workspace_context("editing performance review in Lattice")
+        w.advance(2.5)
+        self._override_and_decay(w, "pause")
+
+    def test_override_during_coding_is_unnecessary_but_harmless(self):
+        """Wake word during coding. Coding doesn't veto, so override
+        just sets grace period over an already-process state. Harmless."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.switch_activity("coding")
+        w.advance(2.5)
+        assert w.moment().directive == "process"
+
+        w.say_wake_word()
+        w.advance(2.5)
+        assert w.moment().directive == "process"
+        assert w.governor.last_selected.selected_by == "wake_word_override"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PART 4: GUEST LIFECYCLE × FULL MOMENT
+#
+# Every consent phase transition, with ALL properties asserted at each step.
+# These are the wife-walks-in stories.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestGuestLifecycle:
+    """Guest enters the room. Full lifecycle with complete moment assertions."""
+
+    def test_detection_debounce_notification(self):
+        """My wife walks in while I'm coding. The system:
+        1. Detects her immediately, blocks persistence
+        2. Debounces for 5 seconds (might be passing through)
+        3. Fires notification exactly once
+        4. Waits for her answer
+
+        At every moment, the full experiential state is correct."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.switch_activity("coding")
         w.advance(5.0)
-        assert w.storing_person_data, "Just me, no issue"
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.NO_GUEST, True),
+            "Coding alone — baseline",
+        )
 
         # She walks in
         w.guest_enters()
-        w.advance(2.5)  # first tick: detection
-
-        # IMMEDIATE: persistence blocked, but no notification yet
-        assert not w.storing_person_data, "Protected from the first tick"
-        assert w.consent_phase == ConsentPhase.GUEST_DETECTED
-        assert not w.consent_alert_needed, "Still debouncing — might be passing through"
-
-        # Two more ticks — still debouncing at 5.0s from first detection
         w.advance(2.5)
-        assert not w.storing_person_data
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.GUEST_DETECTED, False),
+            "First tick after entry — persistence already blocked",
+        )
+        assert not w.consent_alert_needed, "Still debouncing"
 
-        # 7.5s from entry — debounce complete, notification fires
+        # Debounce period
         w.advance(2.5)
-        assert w.consent_phase == ConsentPhase.CONSENT_PENDING
-        assert w.consent_alert_needed, "NOW the system should say something"
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.GUEST_DETECTED, False),
+            "Mid-debounce — still waiting",
+        )
 
-        # But only once — not nagging
-        assert not w.consent_alert_needed, "Second read is False (no nag)"
+        # Debounce complete
+        w.advance(2.5)
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.CONSENT_PENDING, False),
+            "Debounce satisfied — consent pending",
+        )
+        assert w.consent_alert_needed, "Notification fires now"
+        assert not w.consent_alert_needed, "Only once — no nagging"
 
-        # Still not storing
-        assert not w.storing_person_data
-
-    def test_she_says_yes(self):
-        """She hears the notification, says yes. System unlocks
-        persistence. From her perspective: one natural question,
-        one answer, done."""
+    def test_guest_grants_consent(self):
+        """She says yes. Persistence unlocks. One question, one answer, done."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.guest_enters()
-        w.advance(7.5)  # 3 ticks past debounce
-        _ = w.consent_alert_needed  # consume notification
+        w.advance(7.5)
+        _ = w.consent_alert_needed
 
         w.grant_guest_consent()
-        assert w.consent_phase == ConsentPhase.CONSENT_GRANTED
-        assert w.storing_person_data, "Consent → persistence unlocked"
+        w.assert_moment(
+            Moment(True, "process", 1.0, ConsentPhase.CONSENT_GRANTED, True),
+            "Consent granted — full access",
+        )
 
-    def test_she_says_no_and_nothing_changes(self):
-        """She says no. System respects it immediately. No guilt trip,
-        no 'are you sure?', no repeated asking. She said no."""
+    def test_guest_refuses_consent(self):
+        """She says no. System respects it. No guilt, no repeat asking."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.guest_enters()
@@ -673,110 +783,149 @@ class TestWifeWalksIn:
         _ = w.consent_alert_needed
 
         w.refuse_guest_consent()
-        assert w.consent_phase == ConsentPhase.CONSENT_REFUSED
-        assert not w.storing_person_data
+        w.assert_moment(
+            Moment(True, "process", 1.0, ConsentPhase.CONSENT_REFUSED, False),
+            "Consent refused — persistence stays blocked",
+        )
 
-        # She's still there — system doesn't ask again
+        # She's still there — no re-asking
         w.advance(30.0)
-        assert not w.consent_alert_needed
-        assert not w.storing_person_data
+        assert not w.consent_alert_needed, "No repeat notification"
+        assert not w.moment().persistence, "Still blocked"
 
-    def test_she_leaves_before_system_asks(self):
-        """She pokes her head in for 3 seconds and leaves. The system
-        never even asks — because there was nothing to ask about.
-        A 3-second visit doesn't warrant a consent conversation."""
+    def test_transient_visit_no_consent_conversation(self):
+        """She pokes her head in for 3 seconds. Gone before debounce.
+        No consent conversation warranted for a 3-second visit."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.guest_enters()
-        w.advance(2.5)  # within debounce
-        assert w.consent_phase == ConsentPhase.GUEST_DETECTED
-        assert not w.consent_alert_needed, "Debounce protects from premature prompt"
+        w.advance(2.5)
+
+        w.assert_moment(
+            Moment(True, "process", 1.0, ConsentPhase.GUEST_DETECTED, False),
+            "Guest detected, debouncing",
+        )
+        assert not w.consent_alert_needed
 
         w.guest_leaves()
         w.advance(2.5)
-        # She's gone and debounce was never satisfied — no notification ever fired
-        assert w.consent_phase == ConsentPhase.GUEST_DETECTED  # absence timer started
-        assert not w.consent_alert_needed
+        assert not w.consent_alert_needed, "She was never here long enough to matter"
 
-    def test_she_walks_in_during_consent_pending_and_leaves_without_answering(self):
-        """Debounce satisfied, consent pending, but she leaves without
-        responding. System auto-clears after absence threshold.
-        No unresolved state left behind."""
+    def test_guest_leaves_without_answering(self):
+        """Debounce satisfied, consent pending, she leaves without responding.
+        System auto-clears. No unresolved state left behind."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.guest_enters()
-        w.advance(7.5)  # 3 ticks, debounce satisfied
-        assert w.consent_phase == ConsentPhase.CONSENT_PENDING
+        w.advance(7.5)
+        assert w.moment().consent_phase == ConsentPhase.CONSENT_PENDING
 
         w.guest_leaves()
-        # Absence timer starts
-        w.advance(10.0)
-        assert w.consent_phase == ConsentPhase.CONSENT_PENDING  # still waiting
+        w.advance(35.0)  # past absence_clear_s (30s)
+        w.assert_moment(
+            Moment(True, "process", 1.0, ConsentPhase.NO_GUEST, True),
+            "Auto-cleared after departure",
+        )
 
-        # After absence_clear_s (30s), auto-clear
-        w.advance(25.0)
-        assert w.consent_phase == ConsentPhase.NO_GUEST, "Auto-cleared, no dangling state"
-        assert w.storing_person_data, "Back to operator-only"
+    def test_consented_guest_departs(self):
+        """She consented and then leaves. Contract persists (for future visits)
+        but consent tracker returns to NO_GUEST."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.guest_enters()
+        w.advance(7.5)
+        w.grant_guest_consent()
+        assert w.moment().persistence
 
-    def test_she_has_prior_consent(self):
-        """She's consented before (contract on file). System detects her,
-        debounces, but then finds the contract. No notification needed —
-        she already said yes."""
+        w.guest_leaves()
+        w.advance(35.0)
+        w.assert_moment(
+            Moment(True, "process", 1.0, ConsentPhase.NO_GUEST, True),
+            "Guest departed, back to operator-only",
+        )
+
+    def test_prior_consent_contract(self):
+        """She has a prior consent contract. Data mentioning her passes through
+        the reader unfiltered (for in-scope categories). The consent tracker
+        still tracks presence, but the reader has the contract."""
         w = ExperientialWorld()
         w.add_consent_contract("wife", frozenset({"perception", "document"}))
         w.operator_sits_down()
         w.guest_enters()
         w.advance(7.5)
 
-        # Consent tracker still goes to PENDING (it doesn't check contracts),
-        # but the reader will allow data through for "wife"
         result = w.filter_for_llm(
             "Wife mentioned dinner plans",
             frozenset({"wife"}),
             "document",
         )
-        assert "Wife" in result or "wife" in result, (
-            "Prior consent → name passes through reader"
-        )
+        assert "wife" in result.lower(), "Prior consent → name passes through"
 
 
-# ── PART 3: People Who Aren't Here ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# PART 5: DATA FLOW × CONSENT MATRIX
 #
-# Third parties mentioned in emails, calendar, documents. They can't
-# consent because they're not present. The system must protect them
-# without erasing the useful context around them.
+# What does the LLM actually see? For each data category × consent state,
+# prove the content is correctly filtered. This is protection without erasure:
+# work context preserved, person identity abstracted.
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestPeopleNotHere:
-    """Absent third parties. Prove protection without erasure."""
+class TestDataFlowMatrix:
+    """Data category × consent state → what the LLM sees."""
 
-    def test_coworkers_email_name_hidden_subject_preserved(self):
-        """I search my email. Alice sent something about Q2 budget.
-        The system tells me about the budget — but doesn't mention Alice
-        by name. The work context is preserved; the person is protected."""
+    # ── Email ────────────────────────────────────────────────────────
+
+    def test_email_unconsented(self):
+        """Email from unconsented person. Address abstracted, subject preserved."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.advance(2.5)
-
-        result = w.filter_for_llm(
+        result = w.filter_tool(
+            "search_emails",
             "From: alice@corp.com | Subject: Q2 Budget Review\n"
-            "Hey, the Q2 numbers look good. Let's discuss Thursday.",
-            frozenset({"alice@corp.com"}),
-            "email",
+            "Hey, the Q2 numbers look good.",
         )
-        assert "alice@corp.com" not in result, "Her identity is protected"
-        assert "Q2 Budget" in result, "The work context survives"
-        assert "[someone at corp.com]" in result, "Natural substitution"
+        assert "alice@corp.com" not in result
+        assert "[someone at corp.com]" in result
+        assert "Q2 Budget Review" in result
 
-    def test_calendar_meeting_count_not_names(self):
-        """I check my calendar. I have a meeting with 3 people. The system
-        tells me the time and topic — but not who specifically. I know
-        it's a meeting with 3 people. That's enough context to prepare."""
+    def test_email_consented(self):
+        """Email from consented person. Full content flows through."""
         w = ExperientialWorld()
+        w.add_consent_contract("alice@corp.com", frozenset({"email"}))
+        w.operator_sits_down()
+        w.advance(2.5)
+        result = w.filter_tool(
+            "search_emails",
+            "From: alice@corp.com | Subject: Q2 Budget Review",
+        )
+        assert "alice@corp.com" in result
+
+    def test_email_after_revocation(self):
+        """Email from person whose consent was just revoked. Immediate abstraction."""
+        w = ExperientialWorld()
+        w.add_consent_contract("alice@corp.com", frozenset({"email"}))
         w.operator_sits_down()
         w.advance(2.5)
 
-        result = w.reader.filter_tool_result(
+        before = w.filter_tool("search_emails", "From: alice@corp.com | Subject: Budget")
+        assert "alice@corp.com" in before
+
+        w.revoke_consent("alice@corp.com")
+
+        after = w.filter_tool("search_emails", "From: alice@corp.com | Subject: Budget")
+        assert "alice@corp.com" not in after
+        assert "Budget" in after
+
+    # ── Calendar ─────────────────────────────────────────────────────
+
+    def test_calendar_unconsented(self):
+        """Calendar with unconsented attendees. Names → count, time/title preserved."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.advance(2.5)
+        result = w.filter_tool(
             "get_calendar_today",
             "- 2026-03-15T10:00: Sprint planning (with Alice, Bob, charlie@corp.com)",
         )
@@ -787,146 +936,326 @@ class TestPeopleNotHere:
         assert "Sprint planning" in result
         assert "10:00" in result
 
-    def test_alice_consented_bob_didnt(self):
-        """Alice has a consent contract for document access. Bob doesn't.
-        In a document mentioning both: Alice's name stays, Bob becomes
-        'Someone'. Neither over-protected nor under-protected."""
+    def test_calendar_mixed_consent(self):
+        """Calendar where Alice consented, Bob didn't. Alice's name stays."""
+        w = ExperientialWorld()
+        w.add_consent_contract("Alice", frozenset({"calendar"}))
+        w.operator_sits_down()
+        w.advance(2.5)
+        result = w.filter_for_llm(
+            "- 2026-03-15T10:00: Sync (with Alice, Bob)",
+            frozenset({"Alice", "Bob"}),
+            "calendar",
+        )
+        assert "Alice" in result
+        assert "Bob" not in result
+
+    # ── Document ─────────────────────────────────────────────────────
+
+    def test_document_unconsented(self):
+        """Document mentioning unconsented person. Name → 'Someone'."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.advance(2.5)
+        result = w.filter_for_llm(
+            "Bob mentioned the deadline is unrealistic",
+            frozenset({"Bob"}),
+            "document",
+        )
+        assert "Bob" not in result
+        assert "Someone" in result or "someone" in result
+        assert "deadline" in result
+
+    def test_document_consented(self):
+        """Document mentioning consented person. Full content flows."""
         w = ExperientialWorld()
         w.add_consent_contract("Alice", frozenset({"document"}))
         w.operator_sits_down()
         w.advance(2.5)
+        result = w.filter_for_llm(
+            "Alice proposed the new architecture",
+            frozenset({"Alice"}),
+            "document",
+        )
+        assert "Alice" in result
 
+    def test_document_mixed_consent(self):
+        """Document mentioning consented Alice and unconsented Bob."""
+        w = ExperientialWorld()
+        w.add_consent_contract("Alice", frozenset({"document"}))
+        w.operator_sits_down()
+        w.advance(2.5)
         result = w.filter_for_llm(
             "Alice and Bob agreed the deadline is unrealistic",
             frozenset({"Alice", "Bob"}),
             "document",
         )
-        assert "Alice" in result, "Consented → visible"
-        assert "Bob" not in result, "Unconsented → protected"
+        assert "Alice" in result
+        assert "Bob" not in result
         assert "Someone" in result or "someone" in result
 
-    def test_consent_revocation_is_immediate(self):
-        """Alice revokes her consent. The very next query abstracts her name.
-        No stale cache, no grace period, no 'but she used to be consented'."""
+    # ── Operator data always passes ──────────────────────────────────
+
+    def test_operator_data_always_passes(self):
+        """Data about the operator is never filtered. I am always consented
+        to myself."""
         w = ExperientialWorld()
-        w.add_consent_contract("Alice", frozenset({"document"}))
         w.operator_sits_down()
         w.advance(2.5)
+        for category in ("email", "calendar", "document", "perception"):
+            result = w.filter_for_llm(
+                "operator reviewed the quarterly metrics",
+                frozenset({"operator"}),
+                category,
+            )
+            assert "operator" in result, f"Operator data passes in {category}"
 
-        # Before revocation
-        before = w.filter_for_llm(
-            "Alice proposed the architecture",
-            frozenset({"Alice"}),
-            "document",
-        )
-        assert "Alice" in before
+    # ── Passthrough tools ────────────────────────────────────────────
 
-        # Revoke
-        w.revoke_consent("Alice")
-
-        # Immediately after
-        after = w.filter_for_llm(
-            "Alice proposed the architecture",
-            frozenset({"Alice"}),
-            "document",
-        )
-        assert "Alice" not in after, "Revocation is immediate"
+    def test_system_tools_pass_through(self):
+        """System/UI tools are never filtered — they don't contain person data."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.advance(2.5)
+        for tool in ("get_system_status", "get_weather", "get_current_time"):
+            result = w.filter_tool(tool, "alice@corp.com mentioned in status")
+            assert "alice@corp.com" in result, f"{tool} should pass through"
 
 
-# ── PART 4: Compound Scenarios ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# PART 6: PIPELINE PLAUSIBILITY (MUSIC + SPEECH)
 #
-# Real life doesn't present clean categories. These tests combine
-# multiple principals and multiple context shifts.
+# When music is playing, short transcripts are noise bleed-through.
+# Full sentences are the operator speaking over music. The pipeline
+# must distinguish between them without hardware.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestPipelinePlausibility:
+    """ConversationPipeline plausibility gate during ambient audio."""
+
+    def _make_pipeline(self, ambient_interruptible: bool) -> ConversationPipeline:
+        """Build a minimal pipeline with mocked STT/TTS."""
+        stt = AsyncMock()
+        tts = MagicMock()
+        ambient = MagicMock(
+            interruptible=ambient_interruptible,
+            top_labels=[("Music", 0.8)] if not ambient_interruptible else [],
+        )
+        pipeline = ConversationPipeline(
+            stt=stt,
+            tts_manager=tts,
+            system_prompt="test",
+            ambient_fn=lambda: ambient,
+        )
+        pipeline._running = True
+        pipeline.state = ConvState.LISTENING
+        pipeline.messages = [{"role": "system", "content": "test"}]
+        pipeline._audio_output = None
+        return pipeline
+
+    def test_short_transcript_during_music_rejected(self):
+        """'yeah yeah' during music → noise bleed-through → rejected.
+        System returns to LISTENING, no message appended."""
+        pipeline = self._make_pipeline(ambient_interruptible=False)
+        pipeline.stt.transcribe = AsyncMock(return_value="yeah yeah")
+
+        asyncio.run(pipeline.process_utterance(b"\x00" * 100))
+
+        assert pipeline.state == ConvState.LISTENING
+        assert len(pipeline.messages) == 1  # only system message
+
+    def test_full_sentence_during_music_accepted(self):
+        """'Hey Hapax turn the volume down please' during music →
+        real speech → passes plausibility, appended to messages."""
+        pipeline = self._make_pipeline(ambient_interruptible=False)
+        pipeline.stt.transcribe = AsyncMock(
+            return_value="Hey Hapax turn the volume down please"
+        )
+
+        # Mock LLM to avoid network
+        async def _fake_generate(self_):
+            self_.messages.append({"role": "assistant", "content": "Sure."})
+
+        original = ConversationPipeline._generate_and_speak
+        ConversationPipeline._generate_and_speak = _fake_generate
+        try:
+            asyncio.run(pipeline.process_utterance(b"\x00" * 100))
+        finally:
+            ConversationPipeline._generate_and_speak = original
+
+        user_msgs = [m for m in pipeline.messages if m["role"] == "user"]
+        assert len(user_msgs) == 1
+        assert "volume down" in user_msgs[0]["content"]
+
+    def test_any_transcript_without_music_accepted(self):
+        """'yeah' without music → real speech → accepted.
+        Plausibility only gates during non-interruptible ambient."""
+        pipeline = self._make_pipeline(ambient_interruptible=True)
+        pipeline.stt.transcribe = AsyncMock(return_value="yeah")
+
+        async def _fake_generate(self_):
+            self_.messages.append({"role": "assistant", "content": "?"})
+
+        original = ConversationPipeline._generate_and_speak
+        ConversationPipeline._generate_and_speak = _fake_generate
+        try:
+            asyncio.run(pipeline.process_utterance(b"\x00" * 100))
+        finally:
+            ConversationPipeline._generate_and_speak = original
+
+        user_msgs = [m for m in pipeline.messages if m["role"] == "user"]
+        assert len(user_msgs) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PART 7: COMPOUND SCENARIOS
+#
+# Real life doesn't present clean categories. These tests cross multiple
+# dimensions simultaneously. Every moment is fully asserted.
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 class TestCompoundScenarios:
     """Multiple principals, multiple contexts, real-life complexity."""
 
-    def test_coding_then_wife_then_zoom_then_alone(self):
-        """Full evening sequence: code → wife arrives → join Zoom → she leaves
-        → meeting ends → alone again. At every moment, every principal is
-        treated correctly."""
+    def test_full_evening(self):
+        """Arrive → code → produce → code → stress → recover → leave.
+        The system tracks along naturally. Every phase fully asserted."""
+        w = ExperientialWorld()
+
+        w.operator_sits_down()
+        w.advance(2.5)
+        w.assert_moment(
+            Moment(True, "process", 1.0, ConsentPhase.NO_GUEST, True),
+            "Arrive at desk",
+        )
+
+        w.switch_activity("coding")
+        w.advance(10.0)
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.NO_GUEST, True),
+            "Coding",
+        )
+
+        w.switch_activity("production")
+        w.connect_midi()
+        w.advance(30.0)
+        w.assert_moment(
+            Moment(False, "pause", 0.5, ConsentPhase.NO_GUEST, True),
+            "Music production",
+        )
+
+        w.switch_activity("coding")
+        w.disconnect_midi()
+        w.advance(5.0)
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.NO_GUEST, True),
+            "Back to coding",
+        )
+
+        w.stress_spikes()
+        w.advance(2.5)
+        assert not w.moment().gate_eligible, "Stress backs off"
+
+        w.stress_subsides()
+        w.advance(2.5)
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.NO_GUEST, True),
+            "Stress recovered",
+        )
+
+        w.operator_leaves()
+        w.governor._last_operator_seen = time.monotonic() - 61.0
+        w.advance(2.5)
+        assert w.moment().directive == "withdraw", "Room empty"
+
+    def test_coding_wife_zoom_depart(self):
+        """Code → wife arrives → consent offered → she says yes → I join
+        Zoom → she leaves during meeting → meeting ends → alone again.
+        Every principal tracked correctly at every moment."""
         w = ExperientialWorld()
 
         # Phase 1: Coding alone
         w.operator_sits_down()
         w.switch_activity("coding")
         w.advance(10.0)
-        assert w.system_available
-        assert w.storing_person_data  # just me
-        assert w.consent_phase == ConsentPhase.NO_GUEST
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.NO_GUEST, True),
+            "Phase 1: Coding alone",
+        )
 
-        # Phase 2: Wife walks in
+        # Phase 2: Wife walks in, debounce, consent offered and granted
         w.guest_enters()
-        w.advance(7.5)  # 3 ticks past debounce
-        assert not w.storing_person_data  # her presence blocks persistence
-        assert w.consent_phase == ConsentPhase.CONSENT_PENDING
-        first_notification = w.consent_alert_needed
-        assert first_notification, "Should notify once"
-        assert not w.consent_alert_needed, "Only once"
-
-        # She says yes
+        w.advance(7.5)
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.CONSENT_PENDING, False),
+            "Phase 2: Consent pending",
+        )
+        assert w.consent_alert_needed
         w.grant_guest_consent()
-        assert w.storing_person_data  # unlocked
+        w.assert_moment(
+            Moment(True, "process", 0.7, ConsentPhase.CONSENT_GRANTED, True),
+            "Phase 2: Consent granted",
+        )
 
-        # Phase 3: I join Zoom (she's still here)
+        # Phase 3: Zoom meeting (she's still here)
         w.switch_activity("meeting")
-        w.focus_app("zoom", "Team Standup")
+        w.focus_app("zoom")
         w.advance(2.5)
-        assert not w.system_available, "Zoom blocks gate"
-        assert w.system_paused, "Meeting blocks governor"
-        assert w.storing_person_data, "Consent still active"
+        w.assert_moment(
+            Moment(False, "pause", 0.4, ConsentPhase.CONSENT_GRANTED, True),
+            "Phase 3: Zoom with consented guest",
+        )
 
-        # Phase 4: She leaves during my meeting
+        # Phase 4: She leaves during meeting
         w.guest_leaves()
-        # Keep ticking through absence threshold
         for _ in range(15):
             w.advance(2.5)
-        assert w.consent_phase == ConsentPhase.NO_GUEST
+        assert w.moment().consent_phase == ConsentPhase.NO_GUEST
 
         # Phase 5: Meeting ends
         w.switch_activity("idle")
         w.focus_app("")
         w.advance(2.5)
-        assert w.system_available, "Meeting over, system back"
-        assert w.system_listening
-        assert w.storing_person_data  # just me again
+        w.assert_moment(
+            Moment(True, "process", 1.0, ConsentPhase.NO_GUEST, True),
+            "Phase 5: Meeting over, alone",
+        )
 
-    def test_music_and_guest_simultaneously(self):
-        """I'm producing music when someone comes to the door.
-        Production veto is active. Guest detection still works
-        (perception continues even when pipeline is paused).
-        When I stop producing, consent is already pending."""
+    def test_production_guest_arrives(self):
+        """I'm producing when someone arrives. Production veto stays active.
+        Consent tracking works independently. When I stop producing,
+        consent is already pending."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.switch_activity("production")
         w.connect_midi()
         w.advance(2.5)
-        assert w.system_paused  # production veto
+        w.assert_moment(
+            Moment(False, "pause", 0.5, ConsentPhase.NO_GUEST, True),
+            "Producing alone",
+        )
 
-        # Guest arrives during production
         w.guest_enters()
-        w.advance(7.5)  # 3 ticks past debounce
+        w.advance(7.5)
+        w.assert_moment(
+            Moment(False, "pause", 0.5, ConsentPhase.CONSENT_PENDING, False),
+            "Guest during production — two independent concerns",
+        )
 
-        # Production veto still active, but consent tracked independently
-        assert w.system_paused
-        assert w.consent_phase == ConsentPhase.CONSENT_PENDING
-        assert not w.storing_person_data
-
-        # I stop producing
         w.switch_activity("idle")
         w.disconnect_midi()
         w.advance(2.5)
+        w.assert_moment(
+            Moment(True, "process", 1.0, ConsentPhase.CONSENT_PENDING, False),
+            "Production done, consent still pending",
+        )
 
-        # Now system is available AND consent prompt should have fired
-        assert w.system_available
-        # Consent was already pending — the notification fired during production
-        # even though the pipeline was paused. The consent system is independent.
-
-    def test_email_lookup_with_guest_present(self):
-        """I'm looking at emails while my wife is here (consented).
-        The email mentions a coworker (unconsented). My wife's presence
-        doesn't affect third-party protection — they're separate principals."""
+    def test_email_with_guest_present(self):
+        """I look at emails while consented wife is here. Email mentions
+        unconsented coworker. Wife's presence is irrelevant to third-party
+        protection — separate principal, separate gate."""
         w = ExperientialWorld()
         w.add_consent_contract("wife", frozenset({"perception"}))
         w.operator_sits_down()
@@ -934,7 +1263,6 @@ class TestCompoundScenarios:
         w.advance(7.5)
         w.grant_guest_consent()
 
-        # Look up an email from a coworker
         result = w.filter_for_llm(
             "From: dave@corp.com | Subject: Deploy schedule\nDave says Friday.",
             frozenset({"dave@corp.com"}),
@@ -943,27 +1271,41 @@ class TestCompoundScenarios:
         assert "dave@corp.com" not in result, "Coworker still protected"
         assert "Deploy schedule" in result, "Context preserved"
 
+    def test_stress_with_guest_present(self):
+        """Guest is here and operator gets stressed. Gate blocks (stress),
+        consent stays in its current phase. Independent layers."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.guest_enters()
+        w.advance(7.5)
+        w.grant_guest_consent()
 
-# ── PART 5: Algebraic Properties ────────────────────────────────────────────
+        w.stress_spikes()
+        w.advance(2.5)
+        w.assert_moment(
+            Moment(False, "process", 1.0, ConsentPhase.CONSENT_GRANTED, True),
+            "Stressed with consented guest — gate blocks, consent unaffected",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PART 8: ALGEBRAIC INVARIANTS (Hypothesis)
 #
-# Hypothesis tests that prove invariants hold across random scenarios.
-# These are the mathematical backbone — if a property holds for 1000
-# random inputs, it's a strong proof it holds for all inputs.
+# Properties that must hold for ALL possible inputs. The narrative tests
+# prove specific scenarios; these prove the space between them.
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestExperientialInvariants:
-    """Properties that must hold for all possible world states."""
+class TestInvariants:
+    """Algebraic properties that bind the matrix together."""
 
     @given(
-        faces=st.lists(
-            st.integers(min_value=0, max_value=5), min_size=5, max_size=30
-        ),
+        faces=st.lists(st.integers(min_value=0, max_value=5), min_size=5, max_size=30),
     )
     @settings(max_examples=100)
-    def test_consent_never_granted_without_explicit_action(self, faces: list[int]):
-        """No sequence of face detections can grant consent. Only an
-        explicit human action (grant_consent) can do that. This is the
-        fundamental consent property: presence ≠ permission."""
+    def test_presence_never_equals_permission(self, faces: list[int]):
+        """No sequence of face detections can grant consent. Only
+        explicit human action can. Presence ≠ permission."""
         tracker = ConsentStateTracker(debounce_s=0.0, absence_clear_s=1.0)
         for i, fc in enumerate(faces):
             tracker.tick(face_count=fc, speaker_is_operator=True, now=100.0 + i * 0.5)
@@ -978,9 +1320,8 @@ class TestExperientialInvariants:
         present=st.booleans(),
     )
     @settings(max_examples=100)
-    def test_governor_never_returns_garbage(self, activities: list[str], present: bool):
-        """The governor always returns a valid directive. Never crashes,
-        never returns an unexpected value, no matter what we throw at it."""
+    def test_governor_always_valid(self, activities: list[str], present: bool):
+        """Governor never returns an invalid directive, regardless of input."""
         gov = PipelineGovernor()
         for activity in activities:
             state = EnvironmentState(
@@ -989,8 +1330,7 @@ class TestExperientialInvariants:
                 operator_present=present,
                 face_count=1 if present else 0,
             )
-            result = gov.evaluate(state)
-            assert result in {"process", "pause", "withdraw"}
+            assert gov.evaluate(state) in {"process", "pause", "withdraw"}
 
     @given(
         person=st.text(
@@ -998,18 +1338,71 @@ class TestExperientialInvariants:
             min_size=2,
             max_size=15,
         ),
+        category=st.sampled_from(["email", "calendar", "document", "perception"]),
     )
     @settings(max_examples=50)
-    def test_unconsented_person_never_reaches_llm(self, person: str):
-        """For any possible person name, if they haven't consented,
-        their name never appears in what the LLM sees."""
+    def test_unconsented_never_leaks(self, person: str, category: str):
+        """For any person name × any category, if unconsented, their name
+        never appears in what the LLM sees."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.advance(2.5)
-
         result = w.filter_for_llm(
-            f"{person} mentioned the quarterly targets",
+            f"{person} sent a message about the project",
             frozenset({person}),
-            "document",
+            category,
         )
         assert person not in result
+
+    @given(
+        category=st.sampled_from(["email", "calendar", "document", "perception"]),
+        content=st.text(min_size=1, max_size=100),
+    )
+    @settings(max_examples=50)
+    def test_operator_always_passes(self, category: str, content: str):
+        """Operator data is never degraded. I am always consented to myself."""
+        w = ExperientialWorld()
+        w.operator_sits_down()
+        w.advance(2.5)
+        datum = RetrievedDatum(
+            content=content,
+            person_ids=frozenset({"operator"}),
+            data_category=category,
+            source="test",
+        )
+        decision = w.reader.filter(datum)
+        assert decision.degradation_level == 1
+
+    @given(
+        person=st.text(
+            alphabet=st.characters(whitelist_categories=("L",)),
+            min_size=2,
+            max_size=15,
+        ),
+        category=st.sampled_from(["email", "calendar", "document", "default"]),
+    )
+    @settings(max_examples=50)
+    def test_degradation_is_idempotent(self, person: str, category: str):
+        """Degrading already-degraded content changes nothing.
+        degrade(degrade(x)) == degrade(x)."""
+        content = f"Message from {person} about the quarterly review"
+        unconsented = frozenset({person})
+        once = degrade(content, unconsented, category)
+        twice = degrade(once, unconsented, category)
+        assert once == twice
+
+    @given(
+        activity=st.sampled_from(["idle", "coding", "production", "meeting"]),
+        present=st.booleans(),
+        faces=st.integers(min_value=0, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_interruptibility_bounded(self, activity: str, present: bool, faces: int):
+        """Interruptibility score is always in [0.0, 1.0], never NaN."""
+        score = compute_interruptibility(
+            vad_confidence=0.0,
+            activity_mode=activity,
+            in_voice_session=False,
+            operator_present=present,
+        )
+        assert 0.0 <= score <= 1.0

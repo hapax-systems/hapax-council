@@ -1368,6 +1368,9 @@ class StudioCompositor:
             if role is not None:
                 log.error("Camera %s error (element %s): %s", role, src_name, err.message)
                 self._mark_camera_offline(role)
+            elif src_name.startswith("fx-v4l2"):
+                # FX v4l2sink errors are non-fatal — device may be busy or unavailable
+                log.warning("FX v4l2sink error (non-fatal): %s", err.message)
             else:
                 log.error("Pipeline error from %s: %s (debug: %s)", src_name, err.message, debug)
                 self.stop()
