@@ -90,63 +90,74 @@ class EffectPreset:
 PRESETS: dict[str, EffectPreset] = {
     "ghost": EffectPreset(
         name="ghost",
-        color_grade=ColorGradeConfig(saturation=0.85, brightness=0.9),
-        trail=TrailConfig(count=4, opacity=0.4, blend_mode="add", drift_x=18, drift_y=24),
-        warp=WarpConfig(pan_x=4, pan_y=3, rotation=0.005, zoom=1.01, zoom_breath=0.005),
+        # Desaturated, slightly cool — phosphor persistence feel
+        color_grade=ColorGradeConfig(saturation=0.6, brightness=1.0, contrast=1.15, hue_rotate=-10),
+        # 5 taps with exponential decay — visible layered persistence
+        trail=TrailConfig(count=5, opacity=0.6, blend_mode="add", drift_x=4, drift_y=5),
+        warp=WarpConfig(pan_x=2, pan_y=2, rotation=0.003, zoom=1.008, zoom_breath=0.004),
         post_process=PostProcessConfig(vignette_strength=0.35),
-        use_sobel=True,
+        # Use glow instead of sobel — soft edge glow without destroying the image
+        use_glow=True,
     ),
     "trails": EffectPreset(
         name="trails",
         color_grade=ColorGradeConfig(saturation=0.7, brightness=1.15, sepia=0.1, hue_rotate=20),
         trail=TrailConfig(
-            count=10,
-            opacity=0.65,
+            count=5,
+            opacity=0.35,
             blend_mode="add",
             drift_x=6,
             drift_y=8,
-            filter_params={"saturation": 0.8, "brightness": 1.8, "sepia": 0.15, "hue_rotate": 45},
+            # Trails progressively warm and dim — film long-exposure reciprocity
+            filter_params={"saturation": 0.7, "brightness": 0.9, "sepia": 0.2, "hue_rotate": 35},
         ),
         warp=WarpConfig(pan_x=3, pan_y=2, rotation=0.004, zoom=1.01, zoom_breath=0.005),
     ),
     "screwed": EffectPreset(
         name="screwed",
+        # Purple should emerge from shadows, not overlay everything
+        # Lower hue rotation, use sepia as warmth base, let shadows go purple
         color_grade=ColorGradeConfig(
-            saturation=0.55, brightness=0.9, contrast=1.05, sepia=0.4, hue_rotate=250
+            saturation=0.45, brightness=0.85, contrast=1.1, sepia=0.25, hue_rotate=270
         ),
+        # Heavy temporal smear — slow, syrupy trails (not choppy stutter)
         trail=TrailConfig(
-            count=3,
-            opacity=0.2,
+            count=5,
+            opacity=0.7,
             blend_mode="add",
-            drift_y=6,
-            filter_params={"saturation": 0.3, "brightness": 0.5, "sepia": 0.6, "hue_rotate": 250},
+            drift_x=1,
+            drift_y=3,
+            # Trails go deeper purple and darker — time dragging
+            filter_params={"saturation": 0.25, "brightness": 0.6, "sepia": 0.5, "hue_rotate": 280},
         ),
+        # Slow, heavy motion — breathe at ~60 BPM (1Hz)
         warp=WarpConfig(
-            pan_x=20,
-            pan_y=22,
-            rotation=0.025,
-            zoom=1.06,
-            zoom_breath=0.04,
-            slice_count=24,
-            slice_amplitude=6,
+            pan_x=6,
+            pan_y=8,
+            rotation=0.008,
+            zoom=1.04,
+            zoom_breath=0.025,  # slow zoom breath
+            slice_count=8,
+            slice_amplitude=3,
         ),
+        # Reduce stutter drastically — screwed is SLOW not glitchy
         stutter=StutterConfig(
-            check_interval=10, freeze_chance=0.5, freeze_min=3, freeze_max=10, replay_frames=3
+            check_interval=30, freeze_chance=0.15, freeze_min=5, freeze_max=15, replay_frames=2
         ),
         post_process=PostProcessConfig(
-            vignette_strength=0.3,
-            scanline_alpha=0.12,
-            band_chance=0.18,
-            band_max_shift=15,
+            vignette_strength=0.55,  # tunnel vision
+            scanline_alpha=0.08,
+            band_chance=0.08,
+            band_max_shift=8,
             syrup_gradient=True,
-            syrup_color=(0.24, 0.08, 0.31),
+            syrup_color=(0.18, 0.05, 0.25),  # deeper purple
         ),
     ),
     "datamosh": EffectPreset(
         name="datamosh",
         color_grade=ColorGradeConfig(saturation=0.6, brightness=1.15, contrast=1.8, hue_rotate=40),
         trail=TrailConfig(
-            count=7,
+            count=5,
             opacity=0.95,
             blend_mode="difference",
             drift_x=8,
@@ -186,35 +197,41 @@ PRESETS: dict[str, EffectPreset] = {
     ),
     "neon": EffectPreset(
         name="neon",
-        color_grade=ColorGradeConfig(saturation=3.5, brightness=1.45, contrast=1.5),
+        # Key insight: neon looks best as vivid lights against muted surroundings
+        # Moderate sat boost preserves color variety instead of blowing to monochrome
+        color_grade=ColorGradeConfig(saturation=1.6, brightness=1.1, contrast=1.4),
         trail=TrailConfig(
-            count=8,
-            opacity=0.6,
+            count=4,
+            opacity=0.3,
             blend_mode="add",
-            drift_x=3,
-            drift_y=4,
-            filter_params={"saturation": 4.0, "brightness": 1.9, "contrast": 1.3},
+            drift_x=2,
+            drift_y=2,
+            # Trail sat slightly higher than base — creates color glow on bright areas
+            # Slight warm hue shift for halation-like warm glow
+            filter_params={"saturation": 2.0, "brightness": 1.3, "contrast": 1.1, "hue_rotate": 10},
         ),
-        warp=WarpConfig(pan_x=4, pan_y=3, rotation=0.008, zoom=1.02, zoom_breath=0.012),
-        post_process=PostProcessConfig(vignette_strength=0.5),
+        warp=WarpConfig(pan_x=2, pan_y=2, rotation=0.004, zoom=1.01, zoom_breath=0.006),
+        post_process=PostProcessConfig(vignette_strength=0.4),
         use_glow=True,
     ),
     "trap": EffectPreset(
         name="trap",
+        # Desaturated with green-teal push in shadows, but VISIBLE
         color_grade=ColorGradeConfig(
-            saturation=0.2, brightness=0.65, contrast=1.3, sepia=0.4, hue_rotate=160
+            saturation=0.35, brightness=0.85, contrast=1.25, sepia=0.25, hue_rotate=160
         ),
+        # Fewer multiply trails, lower opacity — heavy but not invisible
         trail=TrailConfig(
-            count=4,
-            opacity=0.55,
+            count=3,
+            opacity=0.35,
             blend_mode="multiply",
             drift_x=1,
-            drift_y=4,
-            filter_params={"saturation": 0.15, "brightness": 0.4, "sepia": 0.5, "hue_rotate": 180},
+            drift_y=2,
+            filter_params={"saturation": 0.2, "brightness": 0.6, "sepia": 0.35, "hue_rotate": 170},
         ),
         warp=WarpConfig(pan_x=1, pan_y=1, rotation=0.002, zoom=1.005, zoom_breath=0.003),
         post_process=PostProcessConfig(
-            vignette_strength=0.55,
+            vignette_strength=0.45,
             syrup_gradient=True,
             syrup_color=(0.04, 0.02, 0.06),
         ),
