@@ -94,7 +94,9 @@ PRESETS: dict[str, EffectPreset] = {
         color_grade=ColorGradeConfig(saturation=0.55, brightness=0.9, contrast=1.1, hue_rotate=-10),
         # Moderate feedback with dim decay — persistence without blowout
         trail=TrailConfig(
-            count=5, opacity=0.45, blend_mode="add",
+            count=5,
+            opacity=0.45,
+            blend_mode="add",
             filter_params={"brightness": 0.75, "hue_rotate": -5},
         ),
         warp=WarpConfig(pan_x=2, pan_y=2, rotation=0.003, zoom=1.008, zoom_breath=0.004),

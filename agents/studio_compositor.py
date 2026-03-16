@@ -994,9 +994,7 @@ class StudioCompositor:
                     "difference": 2,
                     "source-over": 3,
                 }
-                self._fx_temporal.set_property(
-                    "blend-mode", blend_map.get(trail.blend_mode, 0)
-                )
+                self._fx_temporal.set_property("blend-mode", blend_map.get(trail.blend_mode, 0))
             else:
                 self._fx_temporal.set_property("feedback-amount", 0.0)
 
