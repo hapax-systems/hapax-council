@@ -693,6 +693,7 @@ class VoiceDaemon:
             env_context_fn=self._env_context_fn,
             ambient_fn=self._ambient_fn,
             policy_fn=self._policy_fn,
+            screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
         )
 
         await self._conversation_pipeline.start()
@@ -1227,7 +1228,13 @@ class VoiceDaemon:
 
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision
-                write_perception_state(self.perception, self.consent_registry, self.consent_tracker)
+                write_perception_state(
+                    self.perception,
+                    self.consent_registry,
+                    self.consent_tracker,
+                    session=self.session,
+                    pipeline=self._conversation_pipeline,
+                )
 
             except asyncio.CancelledError:
                 break
