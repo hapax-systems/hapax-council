@@ -604,7 +604,11 @@ class StudioCompositor:
                 try:
                     tmp = SNAPSHOT_DIR / "snapshot.jpg.tmp"
                     final = SNAPSHOT_DIR / "snapshot.jpg"
-                    tmp.write_bytes(bytes(mapinfo.data))
+                    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+                    try:
+                        os.write(fd, mapinfo.data)
+                    finally:
+                        os.close(fd)
                     tmp.rename(final)
                 finally:
                     buf.unmap(mapinfo)
@@ -767,7 +771,11 @@ class StudioCompositor:
                 try:
                     tmp = SNAPSHOT_DIR / "fx-snapshot.jpg.tmp"
                     final = SNAPSHOT_DIR / "fx-snapshot.jpg"
-                    tmp.write_bytes(bytes(mapinfo.data))
+                    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+                    try:
+                        os.write(fd, mapinfo.data)
+                    finally:
+                        os.close(fd)
                     tmp.rename(final)
                 except OSError:
                     pass
@@ -1037,7 +1045,7 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=60/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=15/1"),
         )
         scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
         # Use native resolution
@@ -1067,7 +1075,11 @@ class StudioCompositor:
                 try:
                     tmp = SNAPSHOT_DIR / f"{snap_role}.jpg.tmp"
                     final = SNAPSHOT_DIR / f"{snap_role}.jpg"
-                    tmp.write_bytes(bytes(mapinfo.data))
+                    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+                    try:
+                        os.write(fd, mapinfo.data)
+                    finally:
+                        os.close(fd)
                     tmp.rename(final)
                 finally:
                     buf.unmap(mapinfo)
@@ -1480,7 +1492,9 @@ class StudioCompositor:
         import cairo  # type: ignore[import-untyped]
 
         canvas_w, canvas_h = self._overlay_canvas_size
-        state = self._overlay_state.data
+        # Read overlay data directly under lock instead of model_copy() every frame
+        with self._overlay_state._lock:
+            state = self._overlay_state._data
         cr.select_font_face("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
         pad = 4
 
