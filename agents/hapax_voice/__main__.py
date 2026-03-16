@@ -26,7 +26,7 @@ from agents.hapax_voice.governor import PipelineGovernor
 from agents.hapax_voice.hotkey import HotkeyServer
 from agents.hapax_voice.notification_queue import NotificationQueue
 from agents.hapax_voice.ntfy_listener import subscribe_ntfy
-from agents.hapax_voice.perception import PerceptionEngine
+from agents.hapax_voice.perception import EnvironmentState, PerceptionEngine
 from agents.hapax_voice.persona import format_notification, session_end_message
 from agents.hapax_voice.presence import PresenceDetector
 from agents.hapax_voice.primitives import Event
@@ -247,6 +247,7 @@ class VoiceDaemon:
         )
         self.consent_tracker.set_event_log(self.event_log)
         self._consent_session_active = False
+        self._perception_tier = self.cfg.perception_tier
 
         # Lightweight voice pipeline (replaces Pipecat)
         from agents.hapax_voice.conversation_buffer import ConversationBuffer
@@ -628,6 +629,20 @@ class VoiceDaemon:
             except Exception:
                 log.warning("ConsentGatedReader unavailable, proceeding without consent filtering")
 
+        # Build environment context callback for per-turn injection
+        from agents.hapax_voice.env_context import serialize_environment
+
+        def _get_env_context() -> str:
+            return serialize_environment(
+                self.perception.latest or EnvironmentState(timestamp=0),
+                self.workspace_monitor.latest_analysis,
+                self.gate._ambient_result,
+                perception_tier=self._perception_tier.value,
+            )
+
+        def _get_ambient():
+            return self.gate._ambient_result
+
         self._conversation_pipeline = ConversationPipeline(
             stt=self._resident_stt,
             tts_manager=self.tts,
@@ -638,6 +653,8 @@ class VoiceDaemon:
             event_log=self.event_log,
             conversation_buffer=self._conversation_buffer,
             consent_reader=consent_reader,
+            env_context_fn=_get_env_context,
+            ambient_fn=_get_ambient,
         )
 
         await self._conversation_pipeline.start()
@@ -806,12 +823,32 @@ class VoiceDaemon:
             await self._handle_scan()
         elif cmd == "status":
             log.info(
-                "Status: session=%s presence=%s queue=%d pipeline=%s",
+                "Status: session=%s presence=%s queue=%d pipeline=%s tier=%s",
                 self.session.state,
                 self.presence.score,
                 self.notifications.pending_count,
                 "running" if self._pipeline_task is not None else "idle",
+                self._perception_tier.value,
             )
+        elif cmd.startswith("perception:"):
+            tier_name = cmd.split(":", 1)[1].strip()
+            self._set_perception_tier(tier_name)
+
+    def _set_perception_tier(self, tier_name: str) -> None:
+        """Switch perception tier (voice/hotkey command)."""
+        from agents.hapax_voice.config import PerceptionTier
+
+        try:
+            new_tier = PerceptionTier(tier_name)
+        except ValueError:
+            log.warning("Unknown perception tier: %s", tier_name)
+            return
+        old_tier = self._perception_tier
+        self._perception_tier = new_tier
+        log.info("Perception tier: %s → %s", old_tier.value, new_tier.value)
+        self.event_log.emit("perception_tier_changed", old=old_tier.value, new=new_tier.value)
+
+        # Tier restrictions applied in _perception_loop via self._perception_tier
 
     async def _close_session(self, reason: str) -> None:
         """Close the active session and stop the pipeline."""
@@ -1064,9 +1101,15 @@ class VoiceDaemon:
 
     async def _perception_loop(self) -> None:
         """Run perception fast tick + governor evaluation on cadence."""
+        from agents.hapax_voice.config import PerceptionTier
+
         while self._running:
             try:
                 await asyncio.sleep(self.cfg.perception_fast_tick_s)
+
+                # Skip perception entirely in dormant mode
+                if self._perception_tier == PerceptionTier.DORMANT:
+                    continue
 
                 # Update perception with session state before tick
                 self.perception.set_voice_session_active(self.session.is_active)

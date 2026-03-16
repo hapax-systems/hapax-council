@@ -1020,6 +1020,20 @@ class ChatSession:
         if not old_text.strip():
             return
 
+        # Pre-compress old text with LLMLingua-2 before LLM summarization
+        # This reduces token cost of the summary call itself
+        try:
+            from shared.context_compression import _get_compressor
+
+            compressor = _get_compressor()
+            if compressor is not None:
+                result_compressed = compressor.compress_prompt_llmlingua2(
+                    [old_text], rate=0.5, force_tokens=["\n", "[", "]"]
+                )
+                old_text = result_compressed.get("compressed_prompt", old_text)
+        except Exception:
+            pass  # Use uncompressed text
+
         summary_prompt = (
             "Summarize this conversation so far, preserving key facts, decisions, "
             "tool results, and context. Be concise but don't lose important details.\n\n"
