@@ -472,10 +472,18 @@ class StudioCompositor:
         self._recording_muxes: dict[str, Any] = {}
         self._hls_valve: Any = None
         self._consent_recording_allowed: bool = True
+        self._person_detection: dict[str, Any] = {}
         # Overlay surface cache -- avoids full Cairo redraw when state unchanged
         self._overlay_cache_surface: Any = None
         self._overlay_cache_timestamp: float = 0.0
         self._overlay_cache_cam_hash: str = ""
+
+        # Visual layer state (read from /dev/shm/hapax-compositor/visual-layer-state.json)
+        self._visual_layer_state: dict | None = None
+        self._visual_layer_lock = threading.Lock()
+        self._vl_cache_surface: Any = None
+        self._vl_cache_timestamp: float = 0.0
+        self._vl_zone_opacities: dict[str, float] = {}  # Current interpolated opacities
 
     def _build_pipeline(self) -> Any:
         """Build the full GStreamer pipeline."""
@@ -1434,6 +1442,33 @@ class StudioCompositor:
             except Exception:
                 log.debug("Failed to set consent tags on %s", role)
 
+    def _enable_user_recording(self) -> bool:
+        """User-requested recording enable — open valves and update status."""
+        log.info("User requested recording ENABLE")
+        for valve in self._recording_valves.values():
+            valve.set_property("drop", False)
+        with self._recording_status_lock:
+            for role in self._recording_status:
+                self._recording_status[role] = "active"
+        self._write_status("running")
+        return False  # GLib.idle_add one-shot
+
+    def _disable_user_recording(self) -> bool:
+        """User-requested recording disable — close valves and update status."""
+        log.info("User requested recording DISABLE")
+        for _role, mux in self._recording_muxes.items():
+            try:
+                mux.emit("split-now")
+            except Exception:
+                pass
+        for valve in self._recording_valves.values():
+            valve.set_property("drop", True)
+        with self._recording_status_lock:
+            for role in self._recording_status:
+                self._recording_status[role] = "user-stopped"
+        self._write_status("running")
+        return False  # GLib.idle_add one-shot
+
     def _purge_video_recordings(self, contract_id: str) -> int:
         """Purge video recording segments associated with a revoked consent contract.
 
@@ -1581,6 +1616,7 @@ class StudioCompositor:
         with self._overlay_state._lock:
             guest_present = self._overlay_state._data.guest_present
             consent_phase = self._overlay_state._data.consent_phase
+            audio_energy_rms = self._overlay_state._data.audio_energy_rms
         active_count = sum(1 for s in cameras.values() if s == "active")
         hls_url = ""
         if self.config.hls.enabled:
@@ -1601,6 +1637,10 @@ class StudioCompositor:
             "consent_recording_allowed": self._consent_recording_allowed,
             "guest_present": guest_present,
             "consent_phase": consent_phase,
+            "audio_energy_rms": audio_energy_rms,
+            "person_detection": {
+                role: d.get("person_count", 0) for role, d in self._person_detection.items()
+            },
             "timestamp": time.time(),
         }
         tmp = STATUS_FILE.with_suffix(".tmp")
@@ -1899,6 +1939,124 @@ class StudioCompositor:
         cr.set_source_surface(self._overlay_cache_surface, 0, 0)
         cr.paint()
 
+        # Visual layer zone rendering
+        self._render_visual_layer(cr, canvas_w, canvas_h)
+
+    def _render_visual_layer(self, cr: Any, w: int, h: int) -> None:
+        """Render visual communication layer zones on top of existing overlays."""
+        with self._visual_layer_lock:
+            vl = self._visual_layer_state
+        if not vl:
+            return
+
+        import cairo  # type: ignore[import-untyped]
+
+        target_opacities = vl.get("zone_opacities", {})
+        signals = vl.get("signals", {})
+        display_state = vl.get("display_state", "ambient")
+
+        if display_state == "ambient" and not any(v > 0.01 for v in target_opacities.values()):
+            return
+
+        # Interpolate opacities (lerp toward target, ~500ms transition at 30fps)
+        lerp_rate = 0.06  # ~500ms to reach target at 30fps
+        for zone, target in target_opacities.items():
+            current = self._vl_zone_opacities.get(zone, 0.0)
+            self._vl_zone_opacities[zone] = current + (target - current) * lerp_rate
+
+        # Zone layout (fractions of canvas)
+        zone_layout = {
+            "context_time": (0.01, 0.03, 0.25, 0.12),
+            "governance": (0.74, 0.03, 0.25, 0.12),
+            "work_tasks": (0.01, 0.20, 0.18, 0.45),
+            "health_infra": (0.78, 0.78, 0.21, 0.18),
+            "profile_state": (0.35, 0.01, 0.30, 0.06),
+            "ambient_sensor": (0.01, 0.92, 0.75, 0.06),
+        }
+
+        # Color palette (desaturated, neurodivergent-safe)
+        zone_colors = {
+            "context_time": (0.4, 0.6, 0.85),
+            "governance": (0.3, 0.7, 0.7),
+            "work_tasks": (0.85, 0.65, 0.3),
+            "health_infra": (0.3, 0.8, 0.4),  # green base, shifts to red at high severity
+            "profile_state": (0.6, 0.6, 0.8),
+            "ambient_sensor": (0.5, 0.5, 0.6),
+        }
+
+        cr.select_font_face("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+
+        for zone_name, (zx, zy, zw, zh) in zone_layout.items():
+            opacity = self._vl_zone_opacities.get(zone_name, 0.0)
+            if opacity < 0.02:
+                continue
+
+            zone_signals = signals.get(zone_name, [])
+            if not zone_signals:
+                continue
+
+            px, py = int(zx * w), int(zy * h)
+            pw, ph = int(zw * w), int(zh * h)
+            r, g, b = zone_colors.get(zone_name, (0.5, 0.5, 0.5))
+
+            # Background pill
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.5 * opacity)
+            self._rounded_rect(cr, px, py, pw, ph, 6)
+            cr.fill()
+
+            # Zone title bar
+            cr.set_font_size(10)
+            label = zone_name.replace("_", " ").upper()
+            cr.set_source_rgba(r, g, b, 0.6 * opacity)
+            cr.move_to(px + 6, py + 12)
+            cr.show_text(label)
+
+            # Signal entries
+            cr.set_font_size(12)
+            y_offset = py + 24
+            max_entries = min(len(zone_signals), 3)
+
+            for entry in zone_signals[:max_entries]:
+                if y_offset + 16 > py + ph:
+                    break
+
+                title = entry.get("title", "")[:40]
+                severity = entry.get("severity", 0.0)
+
+                # Severity-aware color for health_infra
+                if zone_name == "health_infra" and severity > 0.6:
+                    sr = min(1.0, severity * 1.2)
+                    sg = max(0.0, 0.8 - severity)
+                    cr.set_source_rgba(sr, sg, 0.2, opacity)
+                else:
+                    # Text: #C9D1D9 (not pure white)
+                    cr.set_source_rgba(0.79, 0.82, 0.85, opacity)
+
+                cr.move_to(px + 8, y_offset)
+                cr.show_text(title)
+                y_offset += 16
+
+                detail = entry.get("detail", "")
+                if detail and y_offset + 12 <= py + ph:
+                    cr.set_font_size(9)
+                    cr.set_source_rgba(0.6, 0.6, 0.65, 0.7 * opacity)
+                    cr.move_to(px + 12, y_offset)
+                    cr.show_text(detail[:50])
+                    y_offset += 14
+                    cr.set_font_size(12)
+
+    @staticmethod
+    def _rounded_rect(cr: Any, x: int, y: int, w: int, h: int, r: int) -> None:
+        """Draw a rounded rectangle path."""
+        import math as _m
+
+        cr.new_sub_path()
+        cr.arc(x + w - r, y + r, r, -_m.pi / 2, 0)
+        cr.arc(x + w - r, y + h - r, r, 0, _m.pi / 2)
+        cr.arc(x + r, y + h - r, r, _m.pi / 2, _m.pi)
+        cr.arc(x + r, y + r, r, _m.pi, 3 * _m.pi / 2)
+        cr.close_path()
+
     # -- State reader -----------------------------------------------------
 
     def _evaluate_camera_profile(self) -> None:
@@ -1962,6 +2120,29 @@ class StudioCompositor:
                 log.debug("Failed to read perception state: %s", exc)
                 self._overlay_state.mark_stale()
 
+            # Read person detection results
+            detection_path = SNAPSHOT_DIR / "person-detection.json"
+            if detection_path.exists():
+                try:
+                    det_raw = detection_path.read_text()
+                    det = json.loads(det_raw)
+                    if time.time() - det.get("timestamp", 0) < 5:
+                        self._person_detection = det.get("cameras", {})
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # Read visual layer state
+            vl_path = SNAPSHOT_DIR / "visual-layer-state.json"
+            if vl_path.exists():
+                try:
+                    vl_raw = vl_path.read_text()
+                    vl_data = json.loads(vl_raw)
+                    if time.time() - vl_data.get("timestamp", 0) < 30:
+                        with self._visual_layer_lock:
+                            self._visual_layer_state = vl_data
+                except (json.JSONDecodeError, OSError):
+                    pass
+
             # Consent enforcement: toggle recording/HLS valves
             with self._overlay_state._lock:
                 consent_ok = self._overlay_state._data.persistence_allowed
@@ -2005,6 +2186,23 @@ class StudioCompositor:
                     fx_request_path.unlink()
                 except Exception as exc:
                     log.debug("Failed to process FX request: %s", exc)
+
+            # Check for recording control requests
+            rec_control_path = SNAPSHOT_DIR / "recording-control.txt"
+            if rec_control_path.exists():
+                try:
+                    command = rec_control_path.read_text().strip()
+                    rec_control_path.unlink()
+                    GLib = self._GLib
+                    if GLib and command in ("enable", "disable"):
+                        if command == "enable" and self._consent_recording_allowed:
+                            GLib.idle_add(self._enable_user_recording)
+                        elif command == "disable":
+                            GLib.idle_add(self._disable_user_recording)
+                        else:
+                            log.warning("Recording enable blocked — consent not allowed")
+                except Exception as exc:
+                    log.debug("Failed to process recording control: %s", exc)
             time.sleep(1.0)
 
     # -- Lifecycle --------------------------------------------------------

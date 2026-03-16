@@ -236,6 +236,12 @@ PRESETS: dict[str, EffectPreset] = {
         trail=TrailConfig(count=2, opacity=0.15, blend_mode="source-over"),
         post_process=PostProcessConfig(vignette_strength=0.12),
     ),
+    "ambient": EffectPreset(
+        name="ambient",
+        color_grade=ColorGradeConfig(saturation=0.15, brightness=0.3),
+        trail=TrailConfig(count=2, opacity=0.1, blend_mode="add"),
+        post_process=PostProcessConfig(vignette_strength=0.3),
+    ),
 }
 
 
