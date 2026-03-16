@@ -1,0 +1,15 @@
+[Unit]
+Description=Audio archive value assessment — composite scoring and lifecycle
+After=network.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/operator/.local/bin/uv run --directory /home/operator/projects/hapax-council python -m agents.storage_arbiter --run
+Environment=PATH=/home/operator/.local/bin:/home/operator/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+MemoryMax=512M
+CPUQuota=50%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=storage-arbiter

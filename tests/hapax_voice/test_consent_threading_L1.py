@@ -13,7 +13,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from agents.hapax_voice.primitives import Behavior, Stamped
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 from tests.consent_strategies import st_consent_label
 
 # ── Dimension A: Construction ────────────────────────────────────────

@@ -6,15 +6,15 @@ import unittest
 
 from hypothesis import given
 
-from shared.consent_label import ConsentLabel
-from shared.governor import (
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.governor import (
     GovernorPolicy,
     GovernorResult,
     GovernorWrapper,
     consent_input_policy,
     consent_output_policy,
 )
-from shared.labeled import Labeled
+from shared.governance.labeled import Labeled
 from tests.consent_strategies import st_consent_label, st_labeled
 
 # ── Helpers ──────────────────────────────────────────────────────────

@@ -19,7 +19,7 @@ from agents.hapax_voice.feedback import wire_feedback_behaviors
 from agents.hapax_voice.frame_gate import FrameGate
 from agents.hapax_voice.governance import VetoResult
 from agents.hapax_voice.primitives import Event
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 
 # --- Shared test data ---
 
@@ -138,9 +138,7 @@ class TestFeedbackConsentPropagation(unittest.TestCase):
         label: ConsentLabel | None,
         timestamp: float = 1.0,
     ) -> None:
-        event = ActuationEvent(
-            action=action, wall_time=timestamp, consent_label=label
-        )
+        event = ActuationEvent(action=action, wall_time=timestamp, consent_label=label)
         actuation_event.emit(timestamp, event)
 
     def test_mc_fire_propagates_consent_label(self):

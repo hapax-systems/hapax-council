@@ -1,0 +1,12 @@
+[Unit]
+Description=Weather sync — fetch current conditions for energy/mood correlation
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/operator/.local/bin/uv run --directory /home/operator/projects/hapax-council python -m agents.weather_sync
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=weather-sync

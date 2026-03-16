@@ -180,7 +180,7 @@ def get_system_prompt_fragment(agent_name: str) -> str:
     operator_name = operator.get("name", "Unknown")
     lines.append(f"Operator: {operator_name} — {operator.get('role', '')}")
     lines.append(operator.get("context", ""))
-    # Axiom injection — prefer full text from registry, fall back to booleans
+    # Axiom injection — TOON format for token efficiency, fall back to prose
     axioms = data.get("axioms", {})
     try:
         from shared.axiom_registry import load_axioms as _load_axioms
@@ -188,14 +188,27 @@ def get_system_prompt_fragment(agent_name: str) -> str:
         registry_axioms = _load_axioms()
         if registry_axioms:
             lines.append("")
-            lines.append(
-                "System axioms (check_axiom_compliance tool available for compliance checks):"
-            )
-            for ax in registry_axioms:
-                lines.append(f"- [{ax.id}] {ax.text.strip()}")
+            try:
+                from shared.context_compression import to_toon
+
+                axiom_data = {
+                    "axioms": [
+                        {"id": ax.id, "w": ax.weight, "rule": ax.text.strip()}
+                        for ax in registry_axioms
+                    ]
+                }
+                lines.append(
+                    "System axioms (check_axiom_compliance tool available):\n" + to_toon(axiom_data)
+                )
+            except Exception:
+                lines.append(
+                    "System axioms (check_axiom_compliance tool available for compliance checks):"
+                )
+                for ax in registry_axioms:
+                    lines.append(f"- [{ax.id}] {ax.text.strip()}")
         else:
             raise ImportError("No axioms in registry")
-    except Exception:
+    except ImportError:
         # Fall back to boolean axiom injection
         if axioms.get("single_user"):
             lines.append(

@@ -1,3 +1,7 @@
+networks:
+  hapax-internal:
+    driver: bridge
+
 services:
   cockpit-api:
     build:
@@ -5,9 +9,16 @@ services:
       dockerfile: Dockerfile.cockpit-api
     image: hapax-agents-api:latest
     container_name: hapax-agents-api
-    network_mode: host
+    networks:
+      - hapax-internal
+    # Bind to 127.0.0.1 only — not exposed to the network.
+    # The container binds 0.0.0.0 internally so Docker port forwarding works.
+    ports:
+      - "127.0.0.1:8051:8051"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      - LITELLM_BASE_URL=http://127.0.0.1:4000
+      - LITELLM_BASE_URL=http://host.docker.internal:4000
       - LITELLM_API_KEY=${LITELLM_API_KEY}
     volumes:
       - ./profiles:/app/profiles
@@ -15,6 +26,8 @@ services:
       - ${HOME}/Documents/Work:/root/Documents/Work:ro
       - ${HOME}/.cache/cockpit:/root/.cache/cockpit
       - ${HOME}/.cache/hapax:/root/.cache/hapax:ro
+    mem_limit: 512m
+    cpus: 0.5
     restart: unless-stopped
 
   sync-pipeline:
@@ -24,21 +37,26 @@ services:
     image: hapax-sync-pipeline:latest
     container_name: hapax-sync-pipeline
     init: true
-    network_mode: host
+    networks:
+      - hapax-internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - CYCLE_MODE=${CYCLE_MODE:-prod}
     volumes:
       # Read-write: state + RAG output
       - ${HOME}/.cache:/root/.cache
       - ${HOME}/documents/rag-sources:/root/documents/rag-sources
-      # Read-write: OAuth token refresh
-      - ${HOME}/.password-store:/root/.password-store
-      # Read-write: GPG needs lock files (host agent does the actual crypto)
-      - ${HOME}/.gnupg:/root/.gnupg
+      # Read-only: OAuth token refresh (limit blast radius of container compromise)
+      - ${HOME}/.password-store:/root/.password-store:ro
+      # Read-only: GPG keyring (host agent does the actual crypto via socket)
+      - ${HOME}/.gnupg:/root/.gnupg:ro
       # GPG agent socket (forwards to host gpg-agent — must be running and unlocked)
       - /run/user/1000/gnupg/S.gpg-agent:/root/.gnupg/S.gpg-agent
       # Read-only: data sources
       - ${HOME}/Documents/Personal:/root/Documents/Personal:ro
       - ${HOME}/.claude:/root/.claude:ro
       - ${HOME}/.config/google-chrome:/root/.config/google-chrome:ro
+    mem_limit: 1g
+    cpus: 1
     restart: unless-stopped

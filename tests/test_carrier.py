@@ -7,13 +7,13 @@ import unittest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from shared.carrier import (
+from shared.governance.carrier import (
     CarrierFact,
     CarrierRegistry,
     epistemic_contradiction_veto,
 )
-from shared.consent_label import ConsentLabel
-from shared.labeled import Labeled
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.labeled import Labeled
 from tests.consent_strategies import st_labeled
 
 # ── Helpers ──────────────────────────────────────────────────────────

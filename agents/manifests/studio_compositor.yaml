@@ -1,0 +1,72 @@
+id: studio_compositor
+name: Studio Compositor
+version: "1.0.0"
+category: interaction
+reports_to: operator
+peers: [hapax_voice, video_capture]
+depends_on: [hapax_voice]
+
+purpose: Tile all studio camera feeds into a single 1080p composited output with real-time ML annotation overlays.
+inputs:
+  - camera feeds (v4l2 devices)
+  - perception state (filesystem-as-bus from hapax_voice)
+outputs:
+  - composited video feed (/dev/video42, v4l2loopback)
+  - status file (~/.cache/hapax-compositor/status.json)
+capabilities:
+  - video_compositing
+  - overlay_rendering
+  - camera_monitoring
+schedule:
+  type: daemon
+  systemd_unit: studio-compositor.service
+model: null
+
+autonomy: full
+decision_scope: Tile and overlay camera feeds. Cannot control cameras or modify perception state.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: single_user
+    implications: [su-privacy-001]
+    role: subject
+  - axiom_id: interpersonal_transparency
+    implications: [it-consent-001]
+    role: enforcer
+raci:
+  - task: video_compositing
+    role: responsible
+  - task: camera_monitoring
+    role: responsible
+  - task: consent_display
+    role: informed
+
+health_group: studio
+service_tier: 2
+
+narrative: |
+  The Studio Compositor reads all studio camera feeds via GStreamer, tiles them
+  into a single 1080p output using GPU-accelerated cudacompositor, and overlays
+  real-time annotation data (flow state, consent badges, audio energy) sourced
+  from the hapax_voice perception engine via filesystem-as-bus. The composited
+  output appears as /dev/video42 (v4l2loopback), consumable by OBS, browsers,
+  or the ingestion pipeline.
+
+short_description: GPU-composited camera tiling with ML overlays
+
+cli:
+  command: "uv run python -m agents.studio_compositor"
+  module: agents.studio_compositor
+  flags:
+    - flag: "--config"
+      description: "Path to config YAML"
+      flag_type: value
+      metavar: PATH
+    - flag: "--default-config"
+      description: "Print default config and exit"
+      flag_type: bool
+    - flag: "--no-overlay"
+      description: "Disable overlay rendering"
+      flag_type: bool
+    - flag: "-v"
+      description: "Verbose logging"
+      flag_type: bool

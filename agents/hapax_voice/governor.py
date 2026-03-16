@@ -148,7 +148,7 @@ class PipelineGovernor:
         # Wake word always overrides — immediate process + grace period
         if self.wake_word_active:
             self.wake_word_active = False
-            self._wake_word_grace_remaining = 3  # 3 ticks × ~2.5s = ~7.5s protection
+            self._wake_word_grace_remaining = 8  # 8 ticks × ~2.5s = ~20s protection
             self._conversation_first_seen = None
             self._paused_by_conversation = False
             self._conversation_cleared_at = None
@@ -232,7 +232,14 @@ class PipelineGovernor:
         return result.compliant
 
     def _is_operator_absent(self, state: EnvironmentState) -> bool:
-        """Check if operator has been absent long enough to withdraw."""
+        """Check if operator has been absent long enough to withdraw.
+
+        An active voice session suppresses absence withdrawal — the operator
+        explicitly triggered the session (wake word / hotkey), so they're
+        present even if the camera can't see them (under desk, lights off, etc).
+        """
+        if state.in_voice_session:
+            return False
         if state.operator_present or state.face_count > 0:
             return False
         absent_s = time.monotonic() - self._last_operator_seen

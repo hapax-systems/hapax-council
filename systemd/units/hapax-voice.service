@@ -28,6 +28,10 @@ Environment=GNUPGHOME=/home/operator/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/operator/.password-store
 Environment=LITELLM_BASE_URL=http://127.0.0.1:4000
 Environment=LANGFUSE_HOST=http://127.0.0.1:3000
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+Environment=OPENBLAS_NUM_THREADS=2
+Environment=ONNXRUNTIME_INTRA_OP_NUM_THREADS=2
 MemoryMax=8G
 SyslogIdentifier=hapax-voice
 

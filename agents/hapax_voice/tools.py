@@ -72,6 +72,12 @@ _search_documents = FunctionSchema(
                 "obsidian",
                 "chrome",
                 "claude-code",
+                "weather",
+                "git",
+                "langfuse",
+                "ambient-audio",
+                "health_connect",
+                "youtube",
             ],
             "description": "Optional: filter results to a specific source",
         },
@@ -213,6 +219,68 @@ _generate_image = FunctionSchema(
     required=["prompt"],
 )
 
+# ── Consent query tools ────────────────────────────────────────────────
+
+_check_consent_status = FunctionSchema(
+    name="check_consent_status",
+    description=(
+        "Check a person's consent status — whether they have an active "
+        "consent contract, what scope it covers, and what happens if they "
+        "enter the room. Use when the operator asks about consent for a "
+        "specific person (e.g. 'what's my wife's consent status?')."
+    ),
+    properties={
+        "person_id": {
+            "type": "string",
+            "description": "Person identifier (e.g. 'wife', 'friend', 'guest')",
+        },
+    },
+    required=["person_id"],
+)
+
+_describe_consent_flow = FunctionSchema(
+    name="describe_consent_flow",
+    description=(
+        "Describe what happens when a new person enters the room — the "
+        "consent detection, offering, and resolution flow. Use when the "
+        "operator asks 'what happens if someone walks in?'"
+    ),
+    properties={},
+    required=[],
+)
+
+_check_governance_health = FunctionSchema(
+    name="check_governance_health",
+    description=(
+        "Check the governance heartbeat — overall consent and authority "
+        "health score. Use when the operator asks about governance status, "
+        "consent coverage, or system health."
+    ),
+    properties={},
+    required=[],
+)
+
+_get_current_time = FunctionSchema(
+    name="get_current_time",
+    description="Get the current date and time",
+    properties={},
+    required=[],
+)
+
+_get_weather = FunctionSchema(
+    name="get_weather",
+    description="Get the latest weather conditions",
+    properties={},
+    required=[],
+)
+
+_get_briefing = FunctionSchema(
+    name="get_briefing",
+    description="Get today's system briefing summary and action items",
+    properties={},
+    required=[],
+)
+
 TOOL_SCHEMAS: list[FunctionSchema] = [
     _search_documents,
     _search_drive,
@@ -223,6 +291,12 @@ TOOL_SCHEMAS: list[FunctionSchema] = [
     _analyze_scene,
     _get_system_status,
     _generate_image,
+    _get_current_time,
+    _get_weather,
+    _get_briefing,
+    _check_consent_status,
+    _describe_consent_flow,
+    _check_governance_health,
 ]
 
 
@@ -239,14 +313,21 @@ def get_tool_schemas(guest_mode: bool = False) -> ToolsSchema | None:
 
 _DOCUMENTS_COLLECTION = "documents"
 _DEFAULT_MAX_RESULTS = 5
+_MAX_MAX_RESULTS = 20
 _SCORE_THRESHOLD = 0.3
+
+# Legacy source_service values that should be included when filtering.
+# The ingest pipeline changed tag names over time; OR-match covers both.
+_SOURCE_ALIASES: dict[str, list[str]] = {
+    "gdrive": ["gdrive", "drive"],
+}
 
 
 async def handle_search_documents(params) -> None:
     """Search Qdrant documents collection with semantic similarity."""
     query = params.arguments["query"]
     source = params.arguments.get("source_filter")
-    max_results = params.arguments.get("max_results", _DEFAULT_MAX_RESULTS)
+    max_results = min(params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS)
 
     try:
         vector = embed(query, prefix="search_query")
@@ -254,9 +335,18 @@ async def handle_search_documents(params) -> None:
 
         query_filter = None
         if source:
-            query_filter = Filter(
-                must=[FieldCondition(key="source_service", match=MatchValue(value=source))]
-            )
+            aliases = _SOURCE_ALIASES.get(source, [source])
+            if len(aliases) == 1:
+                query_filter = Filter(
+                    must=[FieldCondition(key="source_service", match=MatchValue(value=aliases[0]))]
+                )
+            else:
+                query_filter = Filter(
+                    should=[
+                        FieldCondition(key="source_service", match=MatchValue(value=v))
+                        for v in aliases
+                    ]
+                )
 
         results = client.query_points(
             _DOCUMENTS_COLLECTION,
@@ -351,7 +441,7 @@ async def handle_get_calendar_today(params) -> None:
 async def handle_search_emails(params) -> None:
     """Search emails via Qdrant or Gmail API."""
     query = params.arguments["query"]
-    max_results = params.arguments.get("max_results", _DEFAULT_MAX_RESULTS)
+    max_results = min(params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS)
     recent_only = params.arguments.get("recent_only", False)
 
     try:
@@ -477,6 +567,7 @@ async def handle_send_sms(params) -> None:
         "phone": phone,
         "message": message,
         "recipient": recipient,
+        "created_at": time.monotonic(),
     }
 
     await params.result_callback(
@@ -490,6 +581,9 @@ async def handle_send_sms(params) -> None:
     )
 
 
+_PENDING_TTL_S = 120  # Pending confirmations expire after 2 minutes
+
+
 async def handle_confirm_send_sms(params) -> None:
     """Confirm and send a previously prepared SMS."""
     confirmation_id = params.arguments["confirmation_id"]
@@ -501,6 +595,13 @@ async def handle_confirm_send_sms(params) -> None:
                 "status": "error",
                 "detail": "Confirmation not found or expired.",
             }
+        )
+        return
+
+    # Check expiry
+    if time.monotonic() - pending.get("created_at", 0) > _PENDING_TTL_S:
+        await params.result_callback(
+            {"status": "error", "detail": "Confirmation expired. Please prepare the SMS again."}
         )
         return
 
@@ -690,9 +791,45 @@ async def handle_get_system_status(params) -> None:
 
 
 async def handle_search_drive(params) -> None:
-    """Search Google Drive documents — thin wrapper around search_documents."""
-    params.arguments["source_filter"] = "gdrive"
-    await handle_search_documents(params)
+    """Search Google Drive documents — queries both 'gdrive' and legacy 'drive' tags."""
+    query = params.arguments["query"]
+    max_results = min(params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS)
+
+    try:
+        vector = embed(query, prefix="search_query")
+        client = get_qdrant()
+
+        query_filter = Filter(
+            should=[
+                FieldCondition(key="source_service", match=MatchValue(value="gdrive")),
+                FieldCondition(key="source_service", match=MatchValue(value="drive")),
+            ]
+        )
+
+        results = client.query_points(
+            _DOCUMENTS_COLLECTION,
+            query=vector,
+            query_filter=query_filter,
+            limit=max_results,
+            score_threshold=_SCORE_THRESHOLD,
+        )
+
+        if not results.points:
+            await params.result_callback("No Drive documents found.")
+            return
+
+        chunks = []
+        for p in results.points:
+            filename = p.payload.get("filename", "unknown")
+            text = p.payload.get("text", "")
+            source_svc = p.payload.get("source_service", "")
+            chunks.append(f"[{filename} ({source_svc}), relevance={p.score:.2f}]\n{text}")
+
+        await params.result_callback("\n\n---\n\n".join(chunks))
+
+    except Exception as exc:
+        log.exception("search_drive failed")
+        await params.result_callback(f"Drive search failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +913,200 @@ async def handle_generate_image(params) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Utility tool handlers
+# ---------------------------------------------------------------------------
+
+_WEATHER_DIR = Path.home() / "documents" / "rag-sources" / "weather"
+_BRIEFING_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "briefing.md"
+_BRIEFING_MAX_CHARS = 2000
+
+
+async def handle_get_current_time(params) -> None:
+    """Return the current date and time in a spoken-natural format."""
+    now = datetime.now()
+    formatted = now.strftime("%A, %B %d, %Y at %-I:%M %p")
+    await params.result_callback(formatted)
+
+
+async def handle_get_weather(params) -> None:
+    """Return the latest weather observation from disk."""
+    try:
+        weather_files = sorted(_WEATHER_DIR.glob("weather-*.md"))
+        if not weather_files:
+            await params.result_callback("No weather data available.")
+            return
+
+        latest = weather_files[-1]
+        content = latest.read_text()
+
+        # Return the markdown body (after frontmatter)
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            await params.result_callback(parts[2].strip())
+        else:
+            await params.result_callback(content.strip())
+
+    except Exception as exc:
+        log.exception("get_weather failed")
+        await params.result_callback(f"Weather lookup failed: {exc}")
+
+
+async def handle_get_briefing(params) -> None:
+    """Return today's system briefing summary."""
+    try:
+        if not _BRIEFING_PATH.exists():
+            await params.result_callback("No briefing available today.")
+            return
+
+        content = _BRIEFING_PATH.read_text()
+        if len(content) > _BRIEFING_MAX_CHARS:
+            content = content[:_BRIEFING_MAX_CHARS] + "\n\n[truncated]"
+        await params.result_callback(content)
+
+    except Exception as exc:
+        log.exception("get_briefing failed")
+        await params.result_callback(f"Briefing lookup failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Consent query handlers
+# ---------------------------------------------------------------------------
+
+
+async def handle_check_consent_status(params) -> None:
+    """Check consent status for a specific person."""
+    person_id = params.arguments.get("person_id", "")
+    try:
+        from shared.governance.consent import load_contracts
+        from shared.governance.consent_channels import GuestContext, build_channel_menu
+
+        registry = load_contracts()
+        contract = registry.get_contract_for(person_id)
+
+        if contract and contract.active:
+            result = (
+                f"{person_id} has an active consent contract.\n"
+                f"Scope: {', '.join(sorted(contract.scope))}.\n"
+                f"Created: {contract.created_at}.\n"
+                f"If they enter the room, the system will recognize their consent "
+                f"and operate normally for the consented data categories."
+            )
+        else:
+            menu = build_channel_menu(guest=GuestContext())
+            available = [o for o in menu.offers if o.available]
+            channels = ", ".join(o.channel.name for o in available[:3])
+            result = (
+                f"{person_id} does NOT have an active consent contract.\n"
+                f"If they enter the room:\n"
+                f"1. The system detects their presence within ~5 seconds\n"
+                f"2. All data persistence pauses immediately\n"
+                f"3. The system offers consent via voice conversation\n"
+                f"4. Available channels: {channels}\n"
+                f"5. If they accept, a contract is created and data flows normally\n"
+                f"6. If they refuse, everything captured during their visit is deleted"
+            )
+
+        # Check blast radius if contract exists
+        if contract and contract.active:
+            try:
+                from cockpit.data.governance import collect_revocation_blast_radius
+
+                blast = collect_revocation_blast_radius(person_id)
+                if blast.total_items > 0:
+                    result += (
+                        f"\n\nRevocation impact: {blast.total_items} items would be purged "
+                        f"({blast.qdrant_points} Qdrant points, {blast.carrier_facts} carrier facts)."
+                    )
+            except Exception:
+                pass
+
+    except Exception as e:
+        result = f"Error checking consent status: {e}"
+
+    await params.result_callback(result)
+
+
+async def handle_describe_consent_flow(params) -> None:
+    """Describe the consent detection and offering flow."""
+    try:
+        from shared.governance.consent_channels import build_channel_menu, check_channel_sufficiency
+
+        sufficient, uncovered = check_channel_sufficiency()
+        menu = build_channel_menu()
+        available = [o for o in menu.offers if o.available]
+
+        result = (
+            "When someone enters this room, here's what happens:\n\n"
+            "1. DETECTION: The camera detects a new face (face count goes above 1) "
+            "or the microphone detects a non-operator voice. This takes ~2.5 seconds.\n\n"
+            "2. DEBOUNCE: The system waits 5 seconds of sustained presence to avoid "
+            "false triggers from someone just popping their head in.\n\n"
+            "3. CURTAILMENT: All data persistence pauses immediately. The system "
+            "continues perceiving (face detection, audio classification) but does NOT "
+            "store, transcribe, or index anything about the guest.\n\n"
+            "4. OFFERING: The system speaks through the speakers, explaining what it "
+            "records and asking if the guest is comfortable. The guest can say yes, no, "
+            "or ask questions. An LLM understands their natural language response.\n\n"
+            "5. RESOLUTION:\n"
+            "   - Accept: A consent contract is created. Data flows normally.\n"
+            "   - Refuse: Everything captured during the visit is deleted.\n"
+            "   - Questions: The system answers up to 3 clarifications.\n\n"
+            f"Available consent channels ({len(available)}):\n"
+        )
+        for o in available:
+            result += f"  - {o.channel.name} (friction: {o.friction.total:.1f})\n"
+        result += f"\nChannel sufficiency: {'adequate' if sufficient else f'gaps in: {uncovered}'}"
+
+    except Exception as e:
+        result = f"Error describing consent flow: {e}"
+
+    await params.result_callback(result)
+
+
+async def handle_check_governance_health(params) -> None:
+    """Check governance heartbeat and consent coverage."""
+    try:
+        from cockpit.data.governance import collect_governance_heartbeat
+
+        hb = collect_governance_heartbeat()
+        result = f"Governance health: {hb.label.upper()} ({hb.score})\n\nComponents:\n"
+        for name, score in sorted(hb.components.items()):
+            result += f"  - {name}: {score}\n"
+        if hb.issues:
+            result += "\nIssues:\n"
+            for issue in hb.issues:
+                result += f"  - {issue}\n"
+        if hb.coverage:
+            result += (
+                f"\nConsent coverage:\n"
+                f"  - Active contracts: {hb.coverage.active_contracts}\n"
+                f"  - Persons covered: {', '.join(hb.coverage.persons_covered) or 'none'}\n"
+            )
+
+    except Exception as e:
+        result = f"Error checking governance health: {e}"
+
+    await params.result_callback(result)
+
+
+# ---------------------------------------------------------------------------
+# Module-level state initialization
+# ---------------------------------------------------------------------------
+
+
+def init_tool_state(config: VoiceConfig, webcam_capturer=None, screen_capturer=None) -> None:
+    """Initialize module-level state needed by tool handlers.
+
+    Called by both register_tool_handlers (Pipecat path) and
+    get_openai_tools (conversation pipeline path).
+    """
+    global _voice_config, _webcam_capturer, _screen_capturer
+    _voice_config = config
+    _webcam_capturer = webcam_capturer
+    _screen_capturer = screen_capturer
+
+
+# ---------------------------------------------------------------------------
 # Tool registration
 # ---------------------------------------------------------------------------
 
@@ -798,10 +1129,7 @@ def register_tool_handlers(
         log.info("Tools disabled by config")
         return
 
-    global _voice_config, _webcam_capturer, _screen_capturer
-    _voice_config = config
-    _webcam_capturer = webcam_capturer
-    _screen_capturer = screen_capturer
+    init_tool_state(config, webcam_capturer, screen_capturer)
 
     llm.register_function("search_documents", handle_search_documents)
     llm.register_function("get_calendar_today", handle_get_calendar_today)
@@ -812,11 +1140,19 @@ def register_tool_handlers(
     llm.register_function("analyze_scene", handle_analyze_scene)
     llm.register_function("get_system_status", handle_get_system_status)
     llm.register_function("generate_image", handle_generate_image)
+    llm.register_function("get_current_time", handle_get_current_time)
+    llm.register_function("get_weather", handle_get_weather)
+    llm.register_function("get_briefing", handle_get_briefing)
 
     llm.register_function("focus_window", handle_focus_window)
     llm.register_function("switch_workspace", handle_switch_workspace)
     llm.register_function("open_app", handle_open_app)
     llm.register_function("confirm_open_app", handle_confirm_open_app)
     llm.register_function("get_desktop_state", handle_get_desktop_state)
+
+    # Consent query tools
+    llm.register_function("check_consent_status", handle_check_consent_status)
+    llm.register_function("describe_consent_flow", handle_describe_consent_flow)
+    llm.register_function("check_governance_health", handle_check_governance_health)
 
     log.info("Registered %d voice tools", len(TOOL_SCHEMAS) + len(DESKTOP_TOOL_SCHEMAS))

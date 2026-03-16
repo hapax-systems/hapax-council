@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -38,6 +39,7 @@ class PresenceDetector:
     def __init__(self, window_minutes: float = 5, vad_threshold: float = 0.4) -> None:
         self.window_minutes = window_minutes
         self.vad_threshold = vad_threshold
+        self._lock = threading.Lock()
         self._events: deque[float] = deque()
         self._vad_model: Any | None = None
         self._face_detected: bool = False
@@ -96,8 +98,10 @@ class PresenceDetector:
         """Record a VAD event if confidence meets threshold."""
         if confidence < self.vad_threshold:
             return
-        self._events.append(time.monotonic())
-        log.debug("VAD event recorded (confidence=%.2f, count=%d)", confidence, len(self._events))
+        with self._lock:
+            self._events.append(time.monotonic())
+            count = len(self._events)
+        log.debug("VAD event recorded (confidence=%.2f, count=%d)", confidence, count)
 
     def set_event_log(self, event_log: Any) -> None:
         """Set the event log for emitting presence transition events."""
@@ -184,8 +188,9 @@ class PresenceDetector:
     @property
     def score(self) -> str:
         """Return composite presence score fusing VAD events and face detection."""
-        self._prune_old_events()
-        count = len(self._events)
+        with self._lock:
+            self._prune_old_events()
+            count = len(self._events)
         face = self.face_detected
 
         if count >= 5:
@@ -218,5 +223,6 @@ class PresenceDetector:
     @property
     def event_count(self) -> int:
         """Return number of events in the current window."""
-        self._prune_old_events()
-        return len(self._events)
+        with self._lock:
+            self._prune_old_events()
+            return len(self._events)

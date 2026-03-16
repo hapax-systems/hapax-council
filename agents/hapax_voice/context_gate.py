@@ -65,6 +65,9 @@ class ContextGate:
         # Behavior references (set by PerceptionEngine backends)
         self._behaviors: dict[str, Behavior] = {}
 
+        # Cached ambient classification result (updated async, read sync)
+        self._ambient_result = None
+
         # Denial reasons stored during predicate evaluation
         self._denial_reasons: dict[str, str] = {}
 
@@ -153,6 +156,8 @@ class ContextGate:
         b = self._behaviors.get("active_window_class")
         if b is None:
             return True  # fail-open: activity_mode catches meetings via slow-tick
+        if not isinstance(b.value, (str, int, float, bool)):
+            return True  # non-simple type, skip veto check
         window_class = str(b.value).lower()
         if window_class in self._fullscreen_block_classes:
             self._denial_reasons["fullscreen_app"] = f"Blocked: fullscreen app '{b.value}'"
@@ -276,18 +281,30 @@ class ContextGate:
         return None
 
     def _check_ambient(self) -> tuple[bool, str]:
-        """Check ambient audio for music, speech, or other non-interruptible sounds.
+        """Check ambient audio using cached classification result.
 
-        Uses PANNs (Pre-trained Audio Neural Networks) for AudioSet classification.
-        Fails closed — if the model is unavailable or inference fails, blocks.
+        The actual PANNs inference runs asynchronously via
+        refresh_ambient_cache() to avoid blocking the event loop.
+        This method reads from the cache (instant, non-blocking).
+        """
+        if self._ambient_result is None:
+            # No classification yet — fail-open (first tick)
+            return True, ""
+        if not self._ambient_result.interruptible:
+            return False, self._ambient_result.reason
+        return True, ""
+
+    async def refresh_ambient_cache(self) -> None:
+        """Run PANNs classification in executor thread and cache result.
+
+        Call this from a background task, NOT from the perception loop.
+        The veto predicate reads from the cache, keeping the loop fast.
         """
         try:
-            from agents.hapax_voice.ambient_classifier import classify
+            from agents.hapax_voice.ambient_classifier import async_classify
 
-            result = classify(block_threshold=self.ambient_block_threshold)
-            if not result.interruptible:
-                return False, result.reason
-            return True, ""
+            self._ambient_result = await async_classify(
+                block_threshold=self.ambient_block_threshold,
+            )
         except Exception as exc:
             log.warning("Ambient classification failed: %s", exc)
-            return False, "Ambient classification unavailable (fail-closed)"

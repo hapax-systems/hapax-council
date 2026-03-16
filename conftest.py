@@ -1,0 +1,39 @@
+"""Root conftest — prevent real notifications from leaking during tests.
+
+This patches the I/O layer (urlopen, subprocess.run) inside shared.notify
+so that tests which exercise the engine/delivery path without explicit mocks
+cannot send real ntfy or desktop notifications.
+
+Tests that explicitly mock these functions (e.g. test_notify.py) will see
+their own mocks take precedence over this session-scoped patch.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+@pytest.fixture(autouse=True, scope="function")
+def _block_real_notifications():
+    """Prevent shared.notify from making real HTTP or subprocess calls.
+
+    Individual tests can override by patching the same targets themselves —
+    the innermost mock wins.
+    """
+    mock_urlopen = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
+    mock_run = MagicMock()
+    mock_run.return_value = MagicMock(returncode=0)
+
+    with (
+        patch("shared.notify.urlopen", mock_urlopen),
+        patch("shared.notify.subprocess.run", mock_run),
+    ):
+        yield

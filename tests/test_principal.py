@@ -6,7 +6,7 @@ import unittest
 
 from hypothesis import given
 
-from shared.principal import Principal, PrincipalKind
+from shared.governance.principal import Principal, PrincipalKind
 from tests.consent_strategies import safe_ids, scope_items, st_sovereign
 
 

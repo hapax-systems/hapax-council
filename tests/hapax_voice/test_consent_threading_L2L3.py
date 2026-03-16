@@ -19,7 +19,7 @@ from agents.hapax_voice.governance import (
     consent_veto,
 )
 from agents.hapax_voice.primitives import Behavior, Event, Stamped
-from shared.consent_label import ConsentLabel
+from shared.governance.consent_label import ConsentLabel
 from tests.consent_strategies import st_consent_label
 
 # ── L2: FusedContext consent_label ───────────────────────────────────

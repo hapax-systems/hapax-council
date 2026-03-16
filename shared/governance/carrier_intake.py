@@ -21,10 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shared.carrier import CarrierFact, CarrierRegistry, DisplacementResult
-from shared.consent_label import ConsentLabel
 from shared.frontmatter import extract_consent_label, extract_provenance, parse_frontmatter
-from shared.labeled import Labeled
+from shared.governance.carrier import CarrierFact, CarrierRegistry, DisplacementResult
+from shared.governance.consent_label import ConsentLabel
+from shared.governance.governor import GovernorWrapper
+from shared.governance.labeled import Labeled
 
 _log = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ def intake_carrier_fact(
     registry: CarrierRegistry,
     *,
     required_label: ConsentLabel | None = None,
+    governor: GovernorWrapper | None = None,
     now: float | None = None,
 ) -> CarrierIntakeResult:
     """Parse, validate, and register a carrier fact from a file.
@@ -129,6 +131,21 @@ def intake_carrier_fact(
                 principal_id=principal_id,
                 source_domain=fact.source_domain,
                 rejection_reason="consent label flow violation",
+            )
+
+    # Governor policy check (AMELI boundary enforcement)
+    if governor is not None:
+        result = governor.check_input(fact.labeled)
+        if not result.allowed:
+            denial = result.denial
+            reason = denial.reason if denial else "governor denied"
+            _log.info("Carrier fact from %s denied by governor: %s", path, reason)
+            return CarrierIntakeResult(
+                accepted=False,
+                path=str(path),
+                principal_id=principal_id,
+                source_domain=fact.source_domain,
+                rejection_reason=f"governor: {reason}",
             )
 
     # Offer to registry (handles capacity, displacement, dedup)

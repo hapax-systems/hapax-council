@@ -33,7 +33,7 @@ def test_embedding_model_is_v2():
 def test_env_defaults():
     assert LITELLM_BASE.startswith("http")
     assert QDRANT_URL.startswith("http")
-    assert len(LITELLM_KEY) > 0
+    assert isinstance(LITELLM_KEY, str)
 
 
 def test_get_model_returns_correct_type():

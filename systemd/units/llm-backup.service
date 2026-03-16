@@ -5,7 +5,7 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'eval "$(<$HOME/projects/hapax-council/.envrc)" && exec /home/operator/Scripts/setup/llm-stack-scripts/llm-stack/scripts/backup.sh'
+ExecStart=/bin/bash -c 'set -a && source $HOME/projects/hapax-council/.envrc && set +a && exec /home/operator/Scripts/setup/llm-stack-scripts/llm-stack/scripts/backup.sh'
 WorkingDirectory=/home/operator/llm-stack
 Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax

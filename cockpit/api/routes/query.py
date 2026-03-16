@@ -86,11 +86,11 @@ async def run_query_endpoint(req: QueryRunRequest):
                     }
                 ),
             }
-        except Exception as e:
+        except Exception:
             log.exception("Query failed")
             yield {
                 "event": "error",
-                "data": json.dumps({"message": str(e)}),
+                "data": json.dumps({"message": "Internal error processing query"}),
             }
 
     return EventSourceResponse(event_generator())
@@ -130,11 +130,11 @@ async def refine_query_endpoint(req: QueryRefineRequest):
                     }
                 ),
             }
-        except Exception as e:
+        except Exception:
             log.exception("Refine query failed")
             yield {
                 "event": "error",
-                "data": json.dumps({"message": str(e)}),
+                "data": json.dumps({"message": "Internal error processing query"}),
             }
 
     return EventSourceResponse(event_generator())

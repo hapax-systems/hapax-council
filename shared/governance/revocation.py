@@ -17,9 +17,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from shared.carrier import CarrierRegistry
-from shared.consent import ConsentRegistry
-from shared.labeled import Labeled
+from shared.governance.carrier import CarrierRegistry
+from shared.governance.consent import ConsentRegistry
+from shared.governance.labeled import Labeled
 
 
 @dataclass(frozen=True)

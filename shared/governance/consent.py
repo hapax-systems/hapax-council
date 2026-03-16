@@ -17,7 +17,12 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-_CONTRACTS_DIR = Path(__file__).parent.parent / "axioms" / "contracts"
+_CONTRACTS_DIR = Path(__file__).parent.parent.parent / "axioms" / "contracts"
+
+# Registered child principals — ONLY these children may have consent contracts.
+# All other children are categorically excluded from system participation.
+# Guardian-granted consent: operator is legal guardian.
+REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"simon", "agatha"})
 
 
 @dataclass(frozen=True)
@@ -137,6 +142,57 @@ class ConsentRegistry:
                 revoked.append(contract_id)
                 log.info("Revoked contract %s for %s", contract_id, person_id)
         return revoked
+
+    def create_contract(
+        self,
+        person_id: str,
+        scope: frozenset[str],
+        *,
+        contract_id: str | None = None,
+        direction: str = "one_way",
+        visibility_mechanism: str = "on_request",
+        contracts_dir: Path | None = None,
+    ) -> ConsentContract:
+        """Create and activate a new consent contract at runtime.
+
+        Writes the contract to axioms/contracts/ as YAML (filesystem-as-bus)
+        and registers it in the in-memory registry. Returns the new contract.
+
+        The contract is immediately active — no confirmation step needed
+        because the operator or guest already confirmed via the facilitation UI.
+        """
+        import yaml
+
+        now = datetime.now().isoformat()
+        cid = contract_id or f"contract-{person_id}-{now[:10]}"
+
+        contract = ConsentContract(
+            id=cid,
+            parties=("operator", person_id),
+            scope=scope,
+            direction=direction,
+            visibility_mechanism=visibility_mechanism,
+            created_at=now,
+        )
+
+        # Persist to filesystem (the canonical store)
+        directory = contracts_dir or _CONTRACTS_DIR
+        directory.mkdir(parents=True, exist_ok=True)
+        contract_path = directory / f"{cid}.yaml"
+        contract_data = {
+            "id": contract.id,
+            "parties": list(contract.parties),
+            "scope": sorted(contract.scope),
+            "direction": contract.direction,
+            "visibility_mechanism": contract.visibility_mechanism,
+            "created_at": contract.created_at,
+        }
+        contract_path.write_text(yaml.dump(contract_data, default_flow_style=False))
+        log.info("Created consent contract %s for %s at %s", cid, person_id, contract_path)
+
+        # Register in memory
+        self._contracts[cid] = contract
+        return contract
 
     @property
     def active_contracts(self) -> list[ConsentContract]:
