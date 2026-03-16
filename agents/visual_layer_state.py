@@ -153,6 +153,32 @@ class BiometricState(BaseModel):
     watch_activity: str = "unknown"
 
 
+# ── Temporal Context (WS1+WS5) ──────────────────────────────────────────────
+
+
+class TemporalContext(BaseModel):
+    """Temporal thickness from perception ring buffer.
+
+    Provides trends and staleness for the aggregator fast loop.
+    """
+
+    trend_flow: float = 0.0  # flow_score trend (slope/s)
+    trend_audio: float = 0.0  # audio_energy_rms trend (slope/s)
+    trend_hr: float = 0.0  # heart_rate_bpm trend (slope/s)
+    perception_age_s: float = 0.0  # seconds since last perception update
+    ring_depth: int = 0  # how many snapshots in the ring
+
+
+class SignalStaleness(BaseModel):
+    """Per-source staleness for opacity decay."""
+
+    perception_s: float = 0.0
+    health_s: float = 0.0
+    gpu_s: float = 0.0
+    nudges_s: float = 0.0
+    briefing_s: float = 0.0
+
+
 # ── Visual Layer State (output model) ────────────────────────────────────────
 
 
@@ -176,6 +202,8 @@ class VisualLayerState(BaseModel):
     activity_detail: str = ""  # Supporting detail (app, genre, etc.)
     display_density: str = "ambient"  # Content density mode from scheduler
     scheduler_source: str = ""  # Last content source the scheduler selected
+    temporal_context: TemporalContext = Field(default_factory=TemporalContext)
+    signal_staleness: SignalStaleness = Field(default_factory=SignalStaleness)
     timestamp: float = 0.0
 
 
@@ -249,6 +277,7 @@ class DisplayStateMachine:
         self.state = DisplayState.AMBIENT
         self._last_escalation_time: float = 0.0
         self._deescalation_timer: float = 0.0
+        self._staleness: SignalStaleness | None = None
 
     def tick(
         self,
@@ -278,7 +307,7 @@ class DisplayStateMachine:
         self.state = new_state
 
         categorized = self._categorize_signals(signals)
-        zone_opacities = self._compute_opacities(new_state, categorized)
+        zone_opacities = self._compute_opacities(new_state, categorized, self._staleness)
         ambient = self._compute_ambient_params(max_severity, flow_score, audio_energy)
 
         return VisualLayerState(
@@ -368,6 +397,7 @@ class DisplayStateMachine:
         self,
         state: DisplayState,
         categorized: dict[str, list[SignalEntry]],
+        staleness: SignalStaleness | None = None,
     ) -> dict[str, float]:
         base = dict(_OPACITY_TARGETS[state])
 
@@ -385,7 +415,15 @@ class DisplayStateMachine:
             if not categorized.get(cat):
                 base[cat] = min(base[cat], 0.0)
 
+        # Phase 3: staleness-weighted decay — stale data fades, fresh stays vivid
+        if staleness is not None:
+            _apply_staleness_decay(base, staleness)
+
         return base
+
+    def set_staleness(self, staleness: SignalStaleness) -> None:
+        """Set staleness for the next tick's opacity computation."""
+        self._staleness = staleness
 
     def _compute_ambient_params(
         self,
@@ -415,3 +453,31 @@ class DisplayStateMachine:
             color_warmth=round(warmth, 3),
             brightness=round(brightness, 3),
         )
+
+
+# ── Staleness Decay (Phase 3) ───────────────────────────────────────────────
+
+# Category → (staleness field, max age before full decay)
+_STALENESS_MAP: dict[str, tuple[str, float]] = {
+    SignalCategory.HEALTH_INFRA: ("health_s", 60.0),
+    SignalCategory.WORK_TASKS: ("nudges_s", 120.0),
+    SignalCategory.CONTEXT_TIME: ("briefing_s", 120.0),
+    SignalCategory.PROFILE_STATE: ("perception_s", 30.0),
+    SignalCategory.AMBIENT_SENSOR: ("perception_s", 30.0),
+    SignalCategory.GOVERNANCE: ("nudges_s", 120.0),
+    SignalCategory.VOICE_SESSION: ("perception_s", 15.0),
+}
+
+
+def _apply_staleness_decay(opacities: dict[str, float], staleness: SignalStaleness) -> None:
+    """Multiply zone opacities by a decay factor based on data staleness.
+
+    decay = max(0.3, 1.0 - staleness_s / max_staleness_s)
+    Never below 0.3 — signals always minimally visible.
+    """
+    for cat, (field, max_age) in _STALENESS_MAP.items():
+        if cat not in opacities or opacities[cat] <= 0.0:
+            continue
+        age = getattr(staleness, field, 0.0)
+        decay = max(0.3, 1.0 - age / max_age)
+        opacities[cat] = round(opacities[cat] * decay, 3)

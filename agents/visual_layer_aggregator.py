@@ -4,9 +4,9 @@ Standalone async process. Reads signals from the cockpit API and perception
 state file, runs the DisplayStateMachine, and writes VisualLayerState
 atomically to /dev/shm for the studio compositor to render.
 
-Two cadences:
-  Fast (15s): health, GPU, infrastructure
-  Slow (60s): nudges, briefing, drift, goals, copilot
+Decoupled dual-loop architecture (WS5):
+  State tick (3s, adaptive 0.5-5s): perception → state machine → scheduler → write
+  API poll: 15s health/GPU, 60s nudges/briefing, 45s ambient content
 
 Entry point: uv run python -m agents.visual_layer_aggregator
 """
@@ -41,7 +41,9 @@ from agents.visual_layer_state import (
     InjectedFeed,
     SignalCategory,
     SignalEntry,
+    SignalStaleness,
     SupplementaryContent,
+    TemporalContext,
     VisualLayerState,
     VoiceSessionState,
 )
@@ -56,9 +58,15 @@ OUTPUT_FILE = OUTPUT_DIR / "visual-layer-state.json"
 
 # ── Cadences ─────────────────────────────────────────────────────────────────
 
-FAST_INTERVAL_S = 15.0
-SLOW_INTERVAL_S = 60.0
-AMBIENT_CONTENT_INTERVAL_S = 45.0  # New ambient content every 30-90s (avg 45)
+STATE_TICK_BASE_S = 3.0  # Base state tick (adaptive: 0.5-5.0s)
+HEALTH_POLL_S = 15.0  # Health + GPU
+SLOW_POLL_S = 60.0  # Nudges, briefing, drift, goals, copilot
+AMBIENT_CONTENT_INTERVAL_S = 45.0  # Ambient content pool refresh
+AMBIENT_POOL_REFRESH_S = 300.0  # Full pool refresh every 5 min
+
+# Legacy alias for backward compat with tests
+FAST_INTERVAL_S = STATE_TICK_BASE_S
+SLOW_INTERVAL_S = SLOW_POLL_S
 
 # ── API ──────────────────────────────────────────────────────────────────────
 
@@ -414,6 +422,17 @@ class VisualLayerAggregator:
         self._last_ambient_fetch: float = 0.0
         self._injected_feeds: list[InjectedFeed] = []
 
+        # Staleness tracking (Phase 3)
+        self._ts_perception: float = 0.0
+        self._ts_health: float = 0.0
+        self._ts_gpu: float = 0.0
+        self._ts_nudges: float = 0.0
+        self._ts_briefing: float = 0.0
+
+        # Adaptive cadence state (Phase 5)
+        self._prev_display_state: str = "ambient"
+        self._last_perception_data: dict[str, Any] = {}
+
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
         try:
@@ -427,28 +446,34 @@ class VisualLayerAggregator:
     async def poll_fast(self) -> None:
         """Poll fast-cadence endpoints (health, GPU)."""
         signals: list[SignalEntry] = []
+        now = time.monotonic()
 
         health = await self._fetch_json("/health")
         if isinstance(health, dict):
             signals.extend(map_health(health))
+            self._ts_health = now
 
         gpu = await self._fetch_json("/gpu")
         if isinstance(gpu, dict):
             signals.extend(map_gpu(gpu))
+            self._ts_gpu = now
 
         self._fast_signals = signals
 
     async def poll_slow(self) -> None:
         """Poll slow-cadence endpoints (nudges, briefing, drift, goals, copilot)."""
         signals: list[SignalEntry] = []
+        now = time.monotonic()
 
         nudges = await self._fetch_json("/nudges")
         if isinstance(nudges, list):
             signals.extend(map_nudges(nudges))
+            self._ts_nudges = now
 
         briefing = await self._fetch_json("/briefing")
         if isinstance(briefing, dict):
             signals.extend(map_briefing(briefing))
+            self._ts_briefing = now
 
         drift = await self._fetch_json("/drift")
         if isinstance(drift, dict):
@@ -473,6 +498,8 @@ class VisualLayerAggregator:
             self._flow_score = flow
             self._audio_energy = audio
             self._production_active = prod
+            self._ts_perception = time.monotonic()
+            self._last_perception_data = data
 
             # Voice session (Batch A)
             voice_signals, voice_state = map_voice_session(data)
@@ -487,6 +514,81 @@ class VisualLayerAggregator:
 
         except (FileNotFoundError, json.JSONDecodeError):
             pass  # perception daemon may not be running
+
+    def _compute_staleness(self) -> SignalStaleness:
+        """Compute per-source staleness from last-update timestamps."""
+        now = time.monotonic()
+        return SignalStaleness(
+            perception_s=round(now - self._ts_perception, 1) if self._ts_perception else 0.0,
+            health_s=round(now - self._ts_health, 1) if self._ts_health else 0.0,
+            gpu_s=round(now - self._ts_gpu, 1) if self._ts_gpu else 0.0,
+            nudges_s=round(now - self._ts_nudges, 1) if self._ts_nudges else 0.0,
+            briefing_s=round(now - self._ts_briefing, 1) if self._ts_briefing else 0.0,
+        )
+
+    def _compute_temporal_context(self) -> TemporalContext:
+        """Build temporal context from the perception ring buffer."""
+        try:
+            from agents.hapax_voice._perception_state_writer import get_perception_ring
+        except ImportError:
+            return TemporalContext()
+
+        ring = get_perception_ring()
+        if ring is None or len(ring) < 2:
+            return TemporalContext(
+                perception_age_s=round(
+                    time.monotonic() - self._ts_perception, 1
+                )
+                if self._ts_perception
+                else 0.0,
+            )
+
+        return TemporalContext(
+            trend_flow=round(ring.trend("flow_score", window_s=15.0), 4),
+            trend_audio=round(ring.trend("audio_energy_rms", window_s=15.0), 4),
+            trend_hr=round(ring.trend("heart_rate_bpm", window_s=20.0), 4),
+            perception_age_s=round(
+                time.monotonic() - self._ts_perception, 1
+            )
+            if self._ts_perception
+            else 0.0,
+            ring_depth=len(ring),
+        )
+
+    def _adaptive_tick_interval(self, state: VisualLayerState) -> float:
+        """Compute adaptive tick interval based on volatility. Bounded [0.5, 5.0].
+
+        Speeds up for: state transitions, voice active, perception trends changing.
+        Slows down for: sustained ambient, operator absent, presenting.
+        """
+        interval = STATE_TICK_BASE_S  # 3.0s base
+
+        # State transition just happened → fast updates
+        if state.display_state != self._prev_display_state:
+            return 0.5
+
+        # Voice active → responsive
+        if self._voice_session.active:
+            return 1.0
+
+        # Perception trends changing → track closely
+        tc = state.temporal_context
+        if abs(tc.trend_flow) > 0.01 or abs(tc.trend_audio) > 0.01:
+            return 1.5
+
+        # Sustained ambient → slow down
+        if state.display_state == "ambient" and not self._production_active:
+            interval = 5.0
+
+        # Presenting mode → minimal updates
+        if state.display_density == "presenting":
+            interval = 4.0
+
+        # Operator absent (no perception updates for >10s)
+        if tc.perception_age_s > 10.0:
+            interval = 5.0
+
+        return max(0.5, min(5.0, interval))
 
     async def poll_ambient_content(self) -> None:
         """Fetch ambient content from cockpit API (profile facts, moments, nudges)."""
@@ -517,6 +619,7 @@ class VisualLayerAggregator:
         ]
 
         activity_label, _ = self._infer_activity()
+        tc = state.temporal_context if state.temporal_context else TemporalContext()
         ctx = SchedulerContext(
             activity=activity_label,
             flow_score=self._flow_score,
@@ -528,6 +631,10 @@ class VisualLayerAggregator:
             display_state=state.display_state,
             hour=datetime.now().hour,
             signal_count=sum(len(v) for v in state.signals.values()),
+            # Phase 6: temporal context from perception ring
+            trend_flow=tc.trend_flow,
+            trend_audio=tc.trend_audio,
+            perception_age_s=tc.perception_age_s,
         )
 
         pools = ContentPools(
@@ -695,6 +802,10 @@ class VisualLayerAggregator:
             self._fast_signals + self._slow_signals + self._perception_signals + self._voice_signals
         )
 
+        # Phase 3: set staleness before tick so opacity computation uses it
+        staleness = self._compute_staleness()
+        self._sm.set_staleness(staleness)
+
         state = self._sm.tick(
             signals=all_signals,
             flow_score=self._flow_score,
@@ -720,6 +831,13 @@ class VisualLayerAggregator:
         state.activity_label = activity_label
         state.activity_detail = activity_detail
 
+        # Phase 2+3: temporal context and staleness
+        state.temporal_context = self._compute_temporal_context()
+        state.signal_staleness = staleness
+
+        # Track for adaptive cadence
+        self._prev_display_state = state.display_state
+
         # Atomic write
         try:
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -731,42 +849,60 @@ class VisualLayerAggregator:
 
         return state
 
-    async def run(self) -> None:
-        """Main loop: dual-cadence polling."""
-        log.info("Visual layer aggregator starting")
-        last_slow = 0.0
-        last_ambient = 0.0
+    async def _state_tick_loop(self) -> None:
+        """Fast state loop: perception → state machine → scheduler → write.
+
+        Adaptive cadence: 0.5s during transitions, 5s when ambient-quiet.
+        """
+        tick_interval = STATE_TICK_BASE_S
 
         while True:
-            now = time.monotonic()
-
-            # Always: read perception state (local file, fast)
+            # Read perception (local file, microseconds)
             self.poll_perception()
-
-            # Fast cadence: health, GPU
-            await self.poll_fast()
-
-            # Slow cadence: nudges, briefing, drift, goals
-            if now - last_slow >= SLOW_INTERVAL_S:
-                await self.poll_slow()
-                last_slow = now
-
-            # Ambient content refresh
-            if now - last_ambient >= AMBIENT_CONTENT_INTERVAL_S:
-                await self.poll_ambient_content()
-                last_ambient = now
 
             # Compute and write
             state = self.compute_and_write()
             log.debug(
-                "State: %s, signals: %d, flow: %.2f, voice: %s",
+                "Tick %.1fs | %s | signals: %d | flow: %.2f | voice: %s",
+                tick_interval,
                 state.display_state,
                 sum(len(v) for v in state.signals.values()),
                 self._flow_score,
-                state.voice_session.state if state.voice_session.active else "inactive",
+                state.voice_session.state if state.voice_session.active else "off",
             )
 
-            await asyncio.sleep(FAST_INTERVAL_S)
+            # Phase 5: adaptive cadence
+            tick_interval = self._adaptive_tick_interval(state)
+            await asyncio.sleep(tick_interval)
+
+    async def _api_poll_loop(self) -> None:
+        """Slow API loop: health/GPU at 15s, slow endpoints at 60s, ambient at 45s."""
+        last_health: float = 0.0
+        last_slow: float = 0.0
+        last_ambient: float = 0.0
+
+        while True:
+            now = time.monotonic()
+
+            if now - last_health >= HEALTH_POLL_S:
+                await self.poll_fast()
+                last_health = now
+
+            if now - last_slow >= SLOW_POLL_S:
+                await self.poll_slow()
+                last_slow = now
+
+            if now - last_ambient >= AMBIENT_CONTENT_INTERVAL_S:
+                await self.poll_ambient_content()
+                last_ambient = now
+
+            # Sleep at the fastest sub-interval to stay responsive
+            await asyncio.sleep(5.0)
+
+    async def run(self) -> None:
+        """Main entry: two concurrent loops, no locking needed (single-threaded asyncio)."""
+        log.info("Visual layer aggregator starting (decoupled fast/slow loops)")
+        await asyncio.gather(self._state_tick_loop(), self._api_poll_loop())
 
     async def close(self) -> None:
         await self._client.aclose()
