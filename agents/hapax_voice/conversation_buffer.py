@@ -7,8 +7,11 @@ detected. Runs inline — no extra task, no mic ownership.
 Pre-roll: captures 300ms of audio before speech onset so word
 beginnings aren't clipped.
 
-Suppresses accumulation during SPEAKING state to prevent echo from
-being transcribed (defense in depth behind PipeWire AEC).
+During SPEAKING state: audio accumulation is suppressed (prevents echo
+transcription), but VAD continues to run. If sustained speech is
+detected while the system is speaking, a barge-in flag is set —
+the pipeline can check this to cut TTS short and process the
+operator's interruption.
 """
 
 from __future__ import annotations
@@ -27,6 +30,11 @@ SPEECH_START_CONSECUTIVE = 3  # ~90ms
 SPEECH_END_PROB = 0.3
 SPEECH_END_CONSECUTIVE = 20  # ~600ms
 
+# Barge-in requires stronger signal — higher threshold, more consecutive frames
+# to avoid false triggers from TTS echo
+BARGE_IN_PROB = 0.7
+BARGE_IN_CONSECUTIVE = 6  # ~180ms of strong speech during TTS
+
 
 class ConversationBuffer:
     """Accumulates audio during speech for STT transcription.
@@ -37,6 +45,10 @@ class ConversationBuffer:
         utterance = buffer.get_utterance()
         if utterance is not None:
             transcript = await stt.transcribe(utterance)
+
+    Barge-in: while speaking, VAD still runs. If the operator talks
+    over TTS output, barge_in_detected goes True. The pipeline can
+    poll this to cut playback and switch to listening.
     """
 
     def __init__(self, max_duration_s: float = 30.0) -> None:
@@ -49,6 +61,10 @@ class ConversationBuffer:
         self._active = False
         self._speaking = False
         self._pending_utterance: bytes | None = None
+
+        # Barge-in detection (active during SPEAKING state)
+        self._barge_in_speech_count = 0
+        self.barge_in_detected = False
 
     @property
     def is_active(self) -> bool:
@@ -64,12 +80,25 @@ class ConversationBuffer:
 
     def set_speaking(self, speaking: bool) -> None:
         self._speaking = speaking
+        if speaking:
+            # Reset barge-in state when TTS starts
+            self._barge_in_speech_count = 0
+            self.barge_in_detected = False
+        else:
+            # TTS finished — if audio was captured during barge-in, start
+            # accumulating from the pre-roll so the utterance isn't lost
+            if self.barge_in_detected and not self._speech_active:
+                self._speech_active = True
+                self._speech_frames = list(self._pre_roll)
+                log.debug("Barge-in: started accumulating post-TTS speech")
 
     def feed_audio(self, frame: bytes) -> None:
         if not self._active:
             return
         self._pre_roll.append(frame)
         if self._speaking:
+            # During TTS: still capture to pre-roll (above) for barge-in
+            # recovery, but don't accumulate into speech frames
             return
         if self._speech_active:
             self._speech_frames.append(frame)
@@ -77,7 +106,19 @@ class ConversationBuffer:
                 self._emit_utterance()
 
     def update_vad(self, probability: float) -> None:
-        if not self._active or self._speaking:
+        if not self._active:
+            return
+
+        # During TTS: track VAD for barge-in detection only
+        if self._speaking:
+            if probability >= BARGE_IN_PROB:
+                self._barge_in_speech_count += 1
+                if self._barge_in_speech_count >= BARGE_IN_CONSECUTIVE:
+                    if not self.barge_in_detected:
+                        log.info("Barge-in detected: operator speaking over TTS")
+                    self.barge_in_detected = True
+            else:
+                self._barge_in_speech_count = max(0, self._barge_in_speech_count - 1)
             return
 
         if probability >= SPEECH_START_PROB:
@@ -115,3 +156,5 @@ class ConversationBuffer:
         self._consecutive_silence = 0
         self._pending_utterance = None
         self._speaking = False
+        self._barge_in_speech_count = 0
+        self.barge_in_detected = False

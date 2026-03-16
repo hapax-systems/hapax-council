@@ -52,10 +52,10 @@ class SignalCategory(StrEnum):
 class ZoneSpec(BaseModel, frozen=True):
     """Zone position as fractions of canvas dimensions."""
 
-    x: float  # Left edge (0.0-1.0)
-    y: float  # Top edge (0.0-1.0)
-    w: float  # Width fraction
-    h: float  # Height fraction
+    x: float
+    y: float
+    w: float
+    h: float
 
 
 ZONE_LAYOUT: dict[str, ZoneSpec] = {
@@ -78,7 +78,7 @@ class SignalEntry(BaseModel, frozen=True):
     severity: float  # 0.0 (info) to 1.0 (critical)
     title: str
     detail: str = ""
-    source_id: str = ""  # For dedup and dismissal tracking
+    source_id: str = ""
 
 
 # ── Ambient Parameters ───────────────────────────────────────────────────────
@@ -87,10 +87,10 @@ class SignalEntry(BaseModel, frozen=True):
 class AmbientParams(BaseModel):
     """Parameters for the generative ambient shader."""
 
-    speed: float = 0.08  # Animation speed (0.0-1.0)
-    turbulence: float = 0.1  # Noise complexity (0.0-1.0)
+    speed: float = 0.08
+    turbulence: float = 0.1
     color_warmth: float = 0.0  # 0.0 = cool teal, 1.0 = warm red
-    brightness: float = 0.25  # Overall brightness
+    brightness: float = 0.25
 
 
 # ── Visual Layer State (output model) ────────────────────────────────────────
@@ -112,18 +112,8 @@ class VisualLayerState(BaseModel):
 
 # ── Opacity Targets per State ────────────────────────────────────────────────
 
-# Each state defines target opacity for each zone category.
-# The renderer interpolates toward these targets at ≥500ms rate.
-
 _OPACITY_TARGETS: dict[DisplayState, dict[str, float]] = {
-    DisplayState.AMBIENT: {
-        SignalCategory.CONTEXT_TIME: 0.0,
-        SignalCategory.GOVERNANCE: 0.0,
-        SignalCategory.WORK_TASKS: 0.0,
-        SignalCategory.HEALTH_INFRA: 0.0,
-        SignalCategory.PROFILE_STATE: 0.0,
-        SignalCategory.AMBIENT_SENSOR: 0.0,
-    },
+    DisplayState.AMBIENT: {cat: 0.0 for cat in SignalCategory},
     DisplayState.PERIPHERAL: {
         SignalCategory.CONTEXT_TIME: 0.4,
         SignalCategory.GOVERNANCE: 0.4,
@@ -144,28 +134,20 @@ _OPACITY_TARGETS: dict[DisplayState, dict[str, float]] = {
         SignalCategory.CONTEXT_TIME: 0.5,
         SignalCategory.GOVERNANCE: 0.5,
         SignalCategory.WORK_TASKS: 0.4,
-        SignalCategory.HEALTH_INFRA: 0.9,  # Health alerts are the primary alert source
+        SignalCategory.HEALTH_INFRA: 0.9,
         SignalCategory.PROFILE_STATE: 0.3,
         SignalCategory.AMBIENT_SENSOR: 0.3,
     },
-    DisplayState.PERFORMATIVE: {
-        SignalCategory.CONTEXT_TIME: 0.0,
-        SignalCategory.GOVERNANCE: 0.0,
-        SignalCategory.WORK_TASKS: 0.0,
-        SignalCategory.HEALTH_INFRA: 0.0,  # Even health fades — only critical survives via alert
-        SignalCategory.PROFILE_STATE: 0.0,
-        SignalCategory.AMBIENT_SENSOR: 0.0,
-    },
+    DisplayState.PERFORMATIVE: {cat: 0.0 for cat in SignalCategory},
 }
 
 # ── Severity Thresholds ──────────────────────────────────────────────────────
 
-SEVERITY_CRITICAL = 0.85  # Triggers ALERT state
-SEVERITY_HIGH = 0.70  # Nudge priority "critical" or "high"
-SEVERITY_MEDIUM = 0.40  # Visible in INFORMATIONAL
-SEVERITY_LOW = 0.20  # Visible in PERIPHERAL only if space
+SEVERITY_CRITICAL = 0.85
+SEVERITY_HIGH = 0.70
+SEVERITY_MEDIUM = 0.40
+SEVERITY_LOW = 0.20
 
-# Max signals per zone (attention budget — ADHD research: 3-5 chunks)
 MAX_SIGNALS_PER_ZONE = 3
 MAX_TOTAL_VISIBLE_SIGNALS = 5
 
@@ -180,19 +162,12 @@ _DEESCALATION_COOLDOWN: dict[tuple[DisplayState, DisplayState], float] = {
     (DisplayState.PERIPHERAL, DisplayState.AMBIENT): 10.0,
 }
 
-# Performative transitions are smoother
-_PERFORMATIVE_ENTER_S = 2.0
-_PERFORMATIVE_EXIT_S = 5.0
-
 
 # ── Display State Machine ────────────────────────────────────────────────────
 
 
 class DisplayStateMachine:
     """Pure-logic state machine for the visual layer display mode.
-
-    No I/O. Takes signal summaries and perception state, produces
-    the next display state and zone opacities.
 
     Escalation is immediate — critical signals appear within one tick.
     De-escalation requires sustained quiet (cooldown timers).
@@ -211,18 +186,7 @@ class DisplayStateMachine:
         production_active: bool = False,
         now: float | None = None,
     ) -> VisualLayerState:
-        """Compute next state from current signals and perception.
-
-        Args:
-            signals: All active signals from the aggregator.
-            flow_score: 0.0-1.0 from perception (flow_state_score behavior).
-            audio_energy: 0.0-1.0 RMS audio energy.
-            production_active: True if production_activity != "idle".
-            now: Monotonic timestamp (defaults to time.monotonic()).
-
-        Returns:
-            Complete VisualLayerState for rendering.
-        """
+        """Compute next state from current signals and perception."""
         if now is None:
             now = time.monotonic()
 
@@ -230,7 +194,6 @@ class DisplayStateMachine:
         signal_count = len(signals)
         deep_flow = flow_score >= 0.6
 
-        # Determine target state
         target = self._compute_target_state(
             max_severity=max_severity,
             signal_count=signal_count,
@@ -239,17 +202,11 @@ class DisplayStateMachine:
             audio_energy=audio_energy,
         )
 
-        # Apply transition rules
         new_state = self._apply_transition(target, now)
         self.state = new_state
 
-        # Categorize signals into zones
         categorized = self._categorize_signals(signals)
-
-        # Compute zone opacities
         zone_opacities = self._compute_opacities(new_state, categorized)
-
-        # Compute ambient shader parameters
         ambient = self._compute_ambient_params(max_severity, flow_score, audio_energy)
 
         return VisualLayerState(
@@ -269,79 +226,53 @@ class DisplayStateMachine:
         production_active: bool,
         audio_energy: float,
     ) -> DisplayState:
-        """Determine what state we WANT to be in based on current conditions."""
-        # Performative: production + music + flow
         if production_active and audio_energy > 0.05 and deep_flow:
             return DisplayState.PERFORMATIVE
-
-        # Alert: critical signal, even during flow
         if max_severity >= SEVERITY_CRITICAL:
             return DisplayState.ALERT
-
-        # Deep flow: suppress everything below critical
         if deep_flow:
             return DisplayState.AMBIENT
-
-        # Alert: high severity when not in flow
         if max_severity >= SEVERITY_HIGH:
             return DisplayState.ALERT
-
-        # Informational: multiple signals or medium severity
         if signal_count >= 3 or max_severity >= SEVERITY_MEDIUM:
             return DisplayState.INFORMATIONAL
-
-        # Peripheral: some signals
         if signal_count > 0:
             return DisplayState.PERIPHERAL
-
-        # Nothing to show
         return DisplayState.AMBIENT
 
     def _apply_transition(self, target: DisplayState, now: float) -> DisplayState:
-        """Apply hysteresis rules to state transitions.
-
-        Escalation (toward higher urgency) is immediate.
-        De-escalation requires sustained quiet for a cooldown period.
-        """
         if target == self.state:
             self._deescalation_timer = now
             return self.state
 
-        # Escalation order: AMBIENT < PERIPHERAL < INFORMATIONAL < ALERT
-        # PERFORMATIVE is orthogonal
         escalation_order = {
             DisplayState.AMBIENT: 0,
             DisplayState.PERIPHERAL: 1,
             DisplayState.INFORMATIONAL: 2,
             DisplayState.ALERT: 3,
-            DisplayState.PERFORMATIVE: -1,  # Special
+            DisplayState.PERFORMATIVE: -1,
         }
 
         current_level = escalation_order[self.state]
         target_level = escalation_order[target]
 
-        # Performative transitions: always allowed (with smooth crossfade handled by renderer)
         if target == DisplayState.PERFORMATIVE or self.state == DisplayState.PERFORMATIVE:
             self._deescalation_timer = now
             return target
 
-        # Escalation: immediate
         if target_level > current_level:
             self._last_escalation_time = now
             self._deescalation_timer = now
             return target
 
-        # De-escalation: requires cooldown
         cooldown = _DEESCALATION_COOLDOWN.get((self.state, target), 10.0)
         elapsed = now - self._deescalation_timer
         if elapsed >= cooldown:
             return target
 
-        # Not enough time has passed — stay in current state
         return self.state
 
     def _categorize_signals(self, signals: list[SignalEntry]) -> dict[str, list[SignalEntry]]:
-        """Group signals by category, sorted by severity, capped per zone."""
         categorized: dict[str, list[SignalEntry]] = {cat.value: [] for cat in SignalCategory}
 
         for signal in sorted(signals, key=lambda s: s.severity, reverse=True):
@@ -349,7 +280,6 @@ class DisplayStateMachine:
             if len(categorized[cat]) < MAX_SIGNALS_PER_ZONE:
                 categorized[cat].append(signal)
 
-        # Global attention budget: trim total visible signals
         all_signals = []
         for entries in categorized.values():
             all_signals.extend(entries)
@@ -367,10 +297,8 @@ class DisplayStateMachine:
         state: DisplayState,
         categorized: dict[str, list[SignalEntry]],
     ) -> dict[str, float]:
-        """Compute target opacity per zone based on state and signal presence."""
         base = dict(_OPACITY_TARGETS[state])
 
-        # In ALERT state, boost the zone that contains the highest-severity signal
         if state == DisplayState.ALERT:
             max_cat = ""
             max_sev = 0.0
@@ -381,7 +309,6 @@ class DisplayStateMachine:
             if max_cat:
                 base[max_cat] = 0.95
 
-        # Zero out zones with no signals (don't show empty zone chrome)
         for cat in base:
             if not categorized.get(cat):
                 base[cat] = min(base[cat], 0.0)
@@ -394,30 +321,20 @@ class DisplayStateMachine:
         flow_score: float,
         audio_energy: float,
     ) -> AmbientParams:
-        """Map system state to generative shader parameters.
-
-        Healthy/calm = slow, cool, dim.
-        Degraded = faster, warmer, brighter.
-        Flow = minimal movement.
-        """
-        # Base: slow, cool, dim
         speed = 0.08
         turbulence = 0.1
         warmth = 0.0
         brightness = 0.25
 
-        # Severity drives warmth and speed
         if max_severity > 0.0:
             warmth = min(1.0, max_severity)
             speed = 0.08 + 0.3 * max_severity
             turbulence = 0.1 + 0.3 * max_severity
 
-        # Flow reduces movement (stability supports flow)
         if flow_score > 0.3:
             speed *= max(0.3, 1.0 - flow_score)
             turbulence *= max(0.3, 1.0 - flow_score)
 
-        # Audio energy adds subtle life
         brightness = max(0.15, 0.25 + 0.1 * audio_energy)
 
         return AmbientParams(
