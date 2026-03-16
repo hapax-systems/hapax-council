@@ -10,11 +10,13 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from agents.hapax_voice.consent_state import ConsentStateTracker
+    from agents.hapax_voice.conversation_pipeline import ConversationPipeline
     from agents.hapax_voice.perception import PerceptionEngine
+    from agents.hapax_voice.session import VoiceLifecycle
     from shared.governance.consent import ConsentRegistry
 
 log = logging.getLogger(__name__)
@@ -22,11 +24,110 @@ log = logging.getLogger(__name__)
 PERCEPTION_STATE_DIR = Path.home() / ".cache" / "hapax-voice"
 PERCEPTION_STATE_FILE = PERCEPTION_STATE_DIR / "perception-state.json"
 
+# ── Supplementary content ring buffer ─────────────────────────────────────
+
+_MAX_CONTENT_ITEMS = 5
+_CONTENT_TTL_S = 60.0
+_supplementary_content: list[dict[str, Any]] = []
+
+
+def push_supplementary_content(
+    content_type: str,
+    title: str,
+    body: str = "",
+    image_path: str = "",
+) -> None:
+    """Push a supplementary content item from tool execution.
+
+    Called by tool handlers during voice conversation to surface results
+    visually on the Hapax Corpora canvas.
+    """
+    item = {
+        "content_type": content_type,
+        "title": title,
+        "body": body[:200],
+        "image_path": image_path,
+        "timestamp": time.time(),
+    }
+    _supplementary_content.append(item)
+    # Trim to max
+    while len(_supplementary_content) > _MAX_CONTENT_ITEMS:
+        _supplementary_content.pop(0)
+
+
+def _get_live_content() -> list[dict[str, Any]]:
+    """Return non-expired supplementary content items."""
+    now = time.time()
+    live = [c for c in _supplementary_content if now - c["timestamp"] < _CONTENT_TTL_S]
+    # Prune expired from the source list too
+    _supplementary_content[:] = live
+    return live
+
+
+# ── Voice session snapshot ────────────────────────────────────────────────
+
+
+def _snapshot_voice_session(
+    session: VoiceLifecycle | None,
+    pipeline: ConversationPipeline | None,
+) -> dict[str, Any]:
+    """Build voice_session block from daemon state."""
+    if session is None or not session.is_active:
+        return {"active": False}
+
+    # Determine pipeline phase
+    state = "listening"
+    active_tool: str | None = None
+    barge_in = False
+    last_utterance = ""
+    last_response = ""
+    turn_count = 0
+
+    if pipeline is not None and pipeline.is_active:
+        state = pipeline.state.value  # idle/listening/transcribing/thinking/speaking
+        turn_count = pipeline.turn_count
+        barge_in = bool(pipeline.buffer and pipeline.buffer.barge_in_detected)
+
+        # Extract last utterance and response from message history
+        for msg in reversed(pipeline.messages):
+            if msg["role"] == "user" and not last_utterance:
+                last_utterance = str(msg.get("content", ""))[:80]
+            elif msg["role"] == "assistant" and not last_response:
+                content = msg.get("content") or ""
+                last_response = str(content)[:80]
+            if last_utterance and last_response:
+                break
+
+        # Check for active tool execution
+        for msg in reversed(pipeline.messages):
+            if msg["role"] == "assistant" and msg.get("tool_calls"):
+                calls = msg["tool_calls"]
+                if calls:
+                    last_call = calls[-1]
+                    fn = last_call.get("function", {})
+                    active_tool = fn.get("name")
+                break
+
+    return {
+        "active": True,
+        "state": state,
+        "turn_count": turn_count,
+        "last_utterance": last_utterance,
+        "last_response": last_response,
+        "active_tool": active_tool,
+        "barge_in": barge_in,
+    }
+
+
+# ── Main writer ───────────────────────────────────────────────────────────
+
 
 def write_perception_state(
     perception: PerceptionEngine,
     consent_registry: ConsentRegistry,
     consent_tracker: ConsentStateTracker | None = None,
+    session: VoiceLifecycle | None = None,
+    pipeline: ConversationPipeline | None = None,
 ) -> None:
     """Snapshot current perception state and write atomically to disk.
 
@@ -57,7 +158,14 @@ def write_perception_state(
     except Exception:
         pass  # consent registry may not be loaded yet
 
-    state = {
+    # Biometric data from watch backend
+    heart_rate = int(_bval("heart_rate_bpm", 0))
+    stress_elevated = bool(_bval("stress_elevated", False))
+    physiological_load = float(_bval("physiological_load", 0.0))
+    sleep_quality = float(_bval("sleep_quality", 1.0))
+    watch_activity = str(_bval("watch_activity_state", "unknown"))
+
+    state: dict[str, Any] = {
         "production_activity": str(_bval("production_activity", "")),
         "music_genre": str(_bval("music_genre", "")),
         "flow_state": flow_state,
@@ -69,6 +177,16 @@ def write_perception_state(
         "persistence_allowed": consent_tracker.persistence_allowed if consent_tracker else True,
         "guest_present": consent_tracker.phase.value != "no_guest" if consent_tracker else False,
         "consent_phase": consent_tracker.phase.value if consent_tracker else "no_guest",
+        # Biometrics (Batch E)
+        "heart_rate_bpm": heart_rate,
+        "stress_elevated": stress_elevated,
+        "physiological_load": physiological_load,
+        "sleep_quality": sleep_quality,
+        "watch_activity_state": watch_activity,
+        # Voice session (Batch A)
+        "voice_session": _snapshot_voice_session(session, pipeline),
+        # Supplementary content (Batch B)
+        "voice_content": _get_live_content(),
         "timestamp": time.time(),
     }
 
