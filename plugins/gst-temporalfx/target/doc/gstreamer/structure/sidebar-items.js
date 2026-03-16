@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["GetError"],"struct":["Builder","FieldIterator","Iter","Structure","StructureRef"]};
