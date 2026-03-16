@@ -1936,9 +1936,19 @@ class StudioCompositor:
     _VL_LERP_RATE = 3.0  # opacity units per second (full 0→1 in ~333ms)
     _VL_LAST_FRAME_TIME: float = 0.0
 
+    _VL_TOGGLE_PATH = Path("/dev/shm/hapax-compositor/visual-layer-enabled.txt")
+
     def _render_visual_layer(self, cr: Any, canvas_w: int, canvas_h: int) -> None:
         """Render visual layer zones with per-zone opacity interpolation."""
         import cairo  # type: ignore[import-untyped]
+
+        # Check toggle — defaults to enabled
+        try:
+            if self._VL_TOGGLE_PATH.exists():
+                if self._VL_TOGGLE_PATH.read_text().strip() == "false":
+                    return
+        except OSError:
+            pass
 
         with self._vl_state_lock:
             vl = self._vl_state
