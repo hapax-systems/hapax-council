@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["tags"],"struct":["ParamsIter","VideoAffineTransformationMeta","VideoCropMeta","VideoMeta","VideoMetaTransformScale","VideoOverlayCompositionMeta","VideoRegionOfInterestMeta"]};

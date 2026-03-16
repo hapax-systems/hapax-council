@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAJOR_VERSION","MINOR_VERSION"],"enum":["FlowError"],"mod":["prelude"],"struct":["CatchPanic","DeviceProviderMetadata","ElementMetadata","TaskPoolFunction"]};
