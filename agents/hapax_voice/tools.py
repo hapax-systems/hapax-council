@@ -327,9 +327,7 @@ async def handle_search_documents(params) -> None:
     """Search Qdrant documents collection with semantic similarity."""
     query = params.arguments["query"]
     source = params.arguments.get("source_filter")
-    max_results = min(
-        params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS
-    )
+    max_results = min(params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS)
 
     try:
         vector = embed(query, prefix="search_query")
@@ -340,11 +338,7 @@ async def handle_search_documents(params) -> None:
             aliases = _SOURCE_ALIASES.get(source, [source])
             if len(aliases) == 1:
                 query_filter = Filter(
-                    must=[
-                        FieldCondition(
-                            key="source_service", match=MatchValue(value=aliases[0])
-                        )
-                    ]
+                    must=[FieldCondition(key="source_service", match=MatchValue(value=aliases[0]))]
                 )
             else:
                 query_filter = Filter(
@@ -447,9 +441,7 @@ async def handle_get_calendar_today(params) -> None:
 async def handle_search_emails(params) -> None:
     """Search emails via Qdrant or Gmail API."""
     query = params.arguments["query"]
-    max_results = min(
-        params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS
-    )
+    max_results = min(params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS)
     recent_only = params.arguments.get("recent_only", False)
 
     try:
@@ -801,9 +793,7 @@ async def handle_get_system_status(params) -> None:
 async def handle_search_drive(params) -> None:
     """Search Google Drive documents — queries both 'gdrive' and legacy 'drive' tags."""
     query = params.arguments["query"]
-    max_results = min(
-        params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS
-    )
+    max_results = min(params.arguments.get("max_results", _DEFAULT_MAX_RESULTS), _MAX_MAX_RESULTS)
 
     try:
         vector = embed(query, prefix="search_query")

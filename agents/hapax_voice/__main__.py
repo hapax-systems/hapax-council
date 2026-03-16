@@ -596,6 +596,7 @@ class VoiceDaemon:
         The conversation buffer accumulates speech from _audio_loop().
         """
         from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+        from agents.hapax_voice.conversational_policy import get_policy
         from agents.hapax_voice.persona import screen_context_block, system_prompt
         from agents.hapax_voice.tools_openai import get_openai_tools
 
@@ -604,8 +605,17 @@ class VoiceDaemon:
             log.info("Loading resident STT model (first session)...")
             self._resident_stt.load()
 
-        # Build system prompt with screen context if available
-        prompt = system_prompt(guest_mode=self.session.is_guest_mode)
+        # Build conversational policy from profile + environment
+        policy_block = get_policy(
+            env=self.perception.latest,
+            guest_mode=self.session.is_guest_mode,
+        )
+
+        # Build system prompt with policy and screen context
+        prompt = system_prompt(
+            guest_mode=self.session.is_guest_mode,
+            policy_block=policy_block,
+        )
         screen_ctx = screen_context_block(self.workspace_monitor.latest_analysis)
         if screen_ctx:
             prompt += screen_ctx
@@ -618,6 +628,7 @@ class VoiceDaemon:
                 config=self.cfg,
                 webcam_capturer=getattr(self.workspace_monitor, "_webcam_capturer", None),
                 screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
+                vocal_fx=getattr(self.tts, "vocal_fx", None),
             )
 
         consent_reader = None
@@ -643,6 +654,12 @@ class VoiceDaemon:
         def _get_ambient():
             return self.gate._ambient_result
 
+        def _get_policy() -> str:
+            return get_policy(
+                env=self.perception.latest,
+                guest_mode=self.session.is_guest_mode,
+            )
+
         self._conversation_pipeline = ConversationPipeline(
             stt=self._resident_stt,
             tts_manager=self.tts,
@@ -655,6 +672,7 @@ class VoiceDaemon:
             consent_reader=consent_reader,
             env_context_fn=_get_env_context,
             ambient_fn=_get_ambient,
+            policy_fn=_get_policy,
         )
 
         await self._conversation_pipeline.start()
@@ -665,10 +683,18 @@ class VoiceDaemon:
 
     async def _start_gemini_session(self) -> None:
         """Connect and start a Gemini Live session."""
+        from agents.hapax_voice.conversational_policy import get_policy
         from agents.hapax_voice.gemini_live import GeminiLiveSession
         from agents.hapax_voice.persona import system_prompt
 
-        prompt = system_prompt(guest_mode=self.session.is_guest_mode)
+        policy_block = get_policy(
+            env=self.perception.latest,
+            guest_mode=self.session.is_guest_mode,
+        )
+        prompt = system_prompt(
+            guest_mode=self.session.is_guest_mode,
+            policy_block=policy_block,
+        )
         session = GeminiLiveSession(
             model=self.cfg.gemini_model,
             system_prompt=prompt,

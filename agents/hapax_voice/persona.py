@@ -64,11 +64,16 @@ _GUEST_PROMPT = (
 _NOTIFICATION_TEMPLATE = "Hey {name} — {summary}"
 
 
-def system_prompt(guest_mode: bool = False) -> str:
-    """Return the system prompt for the current session mode."""
+def system_prompt(guest_mode: bool = False, policy_block: str = "") -> str:
+    """Return the system prompt for the current session mode.
+
+    Args:
+        guest_mode: Whether in guest mode (non-operator primary speaker).
+        policy_block: Optional conversational policy block from get_policy().
+    """
     if guest_mode:
-        return _GUEST_PROMPT
-    return _SYSTEM_PROMPT.format(name=operator_name())
+        return _GUEST_PROMPT + policy_block
+    return _SYSTEM_PROMPT.format(name=operator_name()) + policy_block
 
 
 def voice_greeting() -> str:

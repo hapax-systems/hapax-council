@@ -225,10 +225,20 @@ class TestUtilityHandlers(unittest.TestCase):
         result = asyncio.run(run())
         self.assertIsInstance(result, str)
         # Should contain day of week and time
-        self.assertTrue(any(day in result for day in [
-            "Monday", "Tuesday", "Wednesday", "Thursday",
-            "Friday", "Saturday", "Sunday",
-        ]))
+        self.assertTrue(
+            any(
+                day in result
+                for day in [
+                    "Monday",
+                    "Tuesday",
+                    "Wednesday",
+                    "Thursday",
+                    "Friday",
+                    "Saturday",
+                    "Sunday",
+                ]
+            )
+        )
 
 
 if __name__ == "__main__":
