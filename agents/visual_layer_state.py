@@ -7,7 +7,7 @@ Architecture:
   Signal Aggregator (polls API) → VisualLayerState (this module's output)
   → Studio Compositor (reads JSON, renders Cairo overlay)
 
-Five display states, six signal categories, opacity-driven transitions.
+Five display states, seven signal categories, opacity-driven transitions.
 Designed for ADHD/autism operator: muted palette, ≥500ms transitions,
 max 5 simultaneous info chunks, flow-state-gated escalation.
 """
@@ -44,6 +44,7 @@ class SignalCategory(StrEnum):
     HEALTH_INFRA = "health_infra"  # Bottom-right: system health, GPU, containers
     PROFILE_STATE = "profile_state"  # Center-top: flow state, activity mode
     AMBIENT_SENSOR = "ambient_sensor"  # Bottom strip: audio energy, genre
+    VOICE_SESSION = "voice_session"  # Bottom-center: voice conversation state
 
 
 # ── Zone Layout ──────────────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ ZONE_LAYOUT: dict[str, ZoneSpec] = {
     SignalCategory.HEALTH_INFRA: ZoneSpec(x=0.78, y=0.78, w=0.21, h=0.18),
     SignalCategory.PROFILE_STATE: ZoneSpec(x=0.35, y=0.01, w=0.30, h=0.06),
     SignalCategory.AMBIENT_SENSOR: ZoneSpec(x=0.01, y=0.92, w=0.75, h=0.06),
+    SignalCategory.VOICE_SESSION: ZoneSpec(x=0.25, y=0.88, w=0.50, h=0.10),
 }
 
 
@@ -93,6 +95,64 @@ class AmbientParams(BaseModel):
     brightness: float = 0.25
 
 
+# ── Injected Camera Feed ────────────────────────────────────────────────────
+
+
+class InjectedFeed(BaseModel):
+    """A camera feed injected into the canvas by the aggregator."""
+
+    role: str  # e.g. "brio-operator", "c920-room"
+    x: float = 0.6
+    y: float = 0.3
+    w: float = 0.35
+    h: float = 0.35
+    opacity: float = 0.7
+    css_filter: str = "sepia(0.5) contrast(1.2)"
+    duration_s: float = 45.0
+    injected_at: float = 0.0
+
+
+# ── Voice Session State ─────────────────────────────────────────────────────
+
+
+class VoiceSessionState(BaseModel):
+    """Voice conversation state forwarded from perception state."""
+
+    active: bool = False
+    state: str = "idle"  # listening | transcribing | thinking | speaking
+    turn_count: int = 0
+    last_utterance: str = ""
+    last_response: str = ""
+    active_tool: str | None = None
+    barge_in: bool = False
+
+
+# ── Supplementary Content ────────────────────────────────────────────────────
+
+
+class SupplementaryContent(BaseModel):
+    """A content card surfaced from voice tool execution."""
+
+    content_type: str  # image | text | weather | calendar | status
+    title: str
+    body: str = ""
+    image_path: str = ""
+    timestamp: float = 0.0
+
+
+# ── Biometric State ─────────────────────────────────────────────────────────
+
+
+class BiometricState(BaseModel):
+    """Physiological signals from smartwatch — drives ambient modulation."""
+
+    heart_rate_bpm: int = 0
+    stress_elevated: bool = False
+    physiological_load: float = 0.0
+    sleep_quality: float = 1.0
+    watch_activity: str = "unknown"
+
+
 # ── Visual Layer State (output model) ────────────────────────────────────────
 
 
@@ -107,6 +167,13 @@ class VisualLayerState(BaseModel):
     zone_opacities: dict[str, float] = Field(default_factory=dict)
     signals: dict[str, list[SignalEntry]] = Field(default_factory=dict)
     ambient_params: AmbientParams = Field(default_factory=AmbientParams)
+    voice_session: VoiceSessionState = Field(default_factory=VoiceSessionState)
+    voice_content: list[SupplementaryContent] = Field(default_factory=list)
+    biometrics: BiometricState = Field(default_factory=BiometricState)
+    injected_feeds: list[InjectedFeed] = Field(default_factory=list)
+    ambient_text: str = ""  # Dynamic ambient fragment (replaces hardcoded list)
+    activity_label: str = ""  # What Hapax thinks operator is doing
+    activity_detail: str = ""  # Supporting detail (app, genre, etc.)
     timestamp: float = 0.0
 
 
@@ -121,6 +188,7 @@ _OPACITY_TARGETS: dict[DisplayState, dict[str, float]] = {
         SignalCategory.HEALTH_INFRA: 0.3,
         SignalCategory.PROFILE_STATE: 0.2,
         SignalCategory.AMBIENT_SENSOR: 0.15,
+        SignalCategory.VOICE_SESSION: 0.6,
     },
     DisplayState.INFORMATIONAL: {
         SignalCategory.CONTEXT_TIME: 0.75,
@@ -129,6 +197,7 @@ _OPACITY_TARGETS: dict[DisplayState, dict[str, float]] = {
         SignalCategory.HEALTH_INFRA: 0.7,
         SignalCategory.PROFILE_STATE: 0.6,
         SignalCategory.AMBIENT_SENSOR: 0.5,
+        SignalCategory.VOICE_SESSION: 0.8,
     },
     DisplayState.ALERT: {
         SignalCategory.CONTEXT_TIME: 0.5,
@@ -137,6 +206,7 @@ _OPACITY_TARGETS: dict[DisplayState, dict[str, float]] = {
         SignalCategory.HEALTH_INFRA: 0.9,
         SignalCategory.PROFILE_STATE: 0.3,
         SignalCategory.AMBIENT_SENSOR: 0.3,
+        SignalCategory.VOICE_SESSION: 0.7,
     },
     DisplayState.PERFORMATIVE: {cat: 0.0 for cat in SignalCategory},
 }

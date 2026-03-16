@@ -300,3 +300,84 @@ async def get_visual_layer_state():
             "signals": {},
             "ambient_params": {},
         }
+
+
+@router.get("/studio/ambient-content")
+async def get_ambient_content():
+    """Ambient content pool for the visual layer aggregator.
+
+    Sources profile facts from Qdrant and recent studio moments.
+    Called infrequently (~every 5 min) by the aggregator to refresh its pool.
+    """
+    facts: list[str] = []
+    moments: list[str] = []
+
+    # Profile facts from Qdrant
+    try:
+        from shared.config import get_qdrant
+
+        client = get_qdrant()
+        # Scroll random points from profile-facts collection
+        result = client.scroll(
+            collection_name="profile-facts",
+            limit=30,
+            with_payload=True,
+        )
+        points = result[0] if result else []
+        for point in points:
+            payload = point.payload or {}
+            text = payload.get("text", payload.get("fact", ""))
+            if text and len(text) > 10:
+                facts.append(text[:100])
+    except Exception:
+        pass  # Qdrant may not be available
+
+    # Studio moments (recent CLAP classifications)
+    try:
+        from shared.config import STUDIO_MOMENTS_COLLECTION, get_qdrant
+
+        client = get_qdrant()
+        result = client.scroll(
+            collection_name=STUDIO_MOMENTS_COLLECTION,
+            limit=10,
+            with_payload=True,
+        )
+        points = result[0] if result else []
+        for point in points:
+            payload = point.payload or {}
+            labels = payload.get("top_labels", [])
+            if labels:
+                moments.append(", ".join(labels[:3]))
+    except Exception:
+        pass
+
+    return {"facts": facts, "moments": moments}
+
+
+class ActivityCorrectionRequest(BaseModel):
+    label: str
+    detail: str = ""
+
+
+@router.post("/studio/activity-correction")
+async def correct_activity(req: ActivityCorrectionRequest):
+    """Operator corrects what Hapax thinks they are doing.
+
+    Writes a correction file that the aggregator reads to override
+    its activity inference for 30 minutes.
+    """
+    import json as _json
+    import time as _time
+
+    correction = {
+        "label": req.label,
+        "detail": req.detail,
+        "timestamp": _time.time(),
+        "ttl_s": 1800,  # 30 minutes
+    }
+    correction_path = Path("/dev/shm/hapax-compositor/activity-correction.json")
+    try:
+        correction_path.write_text(_json.dumps(correction))
+        return {"status": "corrected", "label": req.label}
+    except OSError:
+        return JSONResponse({"error": "write failed"}, status_code=503)
