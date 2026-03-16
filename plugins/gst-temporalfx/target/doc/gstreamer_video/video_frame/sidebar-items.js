@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["Readable","Writable"],"struct":["VideoFrame","VideoFrameRef"],"trait":["IsVideoFrame","VideoBufferExt","VideoFrameExt"]};

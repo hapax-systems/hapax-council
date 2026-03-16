@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"static":["CAPS_FEATURES_MEMORY_GL_MEMORY"]};

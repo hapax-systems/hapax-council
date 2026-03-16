@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"trait":["ColorBalanceChannelExt","ColorBalanceExt","NavigationExt","VideoBufferPoolConfig","VideoDecoderExt","VideoDecoderExtManual","VideoEncoderExt","VideoEncoderExtManual","VideoFilterExtManual","VideoFormatIteratorExt","VideoOrientationExt","VideoOverlayExt","VideoOverlayExtManual","VideoSinkExt"]};
