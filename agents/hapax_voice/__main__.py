@@ -693,6 +693,7 @@ class VoiceDaemon:
             env_context_fn=self._env_context_fn,
             ambient_fn=self._ambient_fn,
             policy_fn=self._policy_fn,
+            screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
         )
 
         await self._conversation_pipeline.start()
