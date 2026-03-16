@@ -79,7 +79,7 @@ export function CompositeCanvas({
       if (available < 3) return;
 
       tick++;
-      hueAccum += 2; // degrees per tick for neon hue rotation
+      hueAccum += 4; // degrees per tick for neon hue rotation
 
       // --- Stutter engine ---
       const stutter = p.stutter;
@@ -146,19 +146,28 @@ export function CompositeCanvas({
       const main = frameRing[idx];
       if (!main) return;
 
+      // For Neon, inject cycling hue-rotate into the main colorFilter
+      const isNeon = p.name === "Neon";
+      let mainFilter = p.colorFilter;
+      if (isNeon && mainFilter !== "none") {
+        mainFilter = `${mainFilter} hue-rotate(${hueAccum}deg)`;
+      }
+
       const warpCfg = p.warp;
       if (warpCfg && warpCfg.sliceCount > 0) {
         // Warp with horizontal slices
         const t = tick * 0.04;
         const panX = Math.sin(t) * warpCfg.panX;
-        const panY = Math.sin(t * 0.7) * (warpCfg.panY * 0.64) + Math.sin(t * 0.3) * (warpCfg.panY * 0.36);
+        const panY =
+          Math.sin(t * 0.7) * (warpCfg.panY * 0.64) +
+          Math.sin(t * 0.3) * (warpCfg.panY * 0.36);
         const rot = Math.sin(t * 0.5) * warpCfg.rotate;
         const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
         const sliceH = Math.ceil(h / warpCfg.sliceCount);
 
         ctx.save();
-        if (p.colorFilter !== "none") {
-          ctx.filter = p.colorFilter;
+        if (mainFilter !== "none") {
+          ctx.filter = mainFilter;
         }
 
         for (let s = 0; s < warpCfg.sliceCount; s++) {
@@ -191,8 +200,8 @@ export function CompositeCanvas({
         const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
 
         ctx.save();
-        if (p.colorFilter !== "none") {
-          ctx.filter = p.colorFilter;
+        if (mainFilter !== "none") {
+          ctx.filter = mainFilter;
         }
         ctx.translate(w / 2, h / 2);
         ctx.rotate(rot);
@@ -203,8 +212,8 @@ export function CompositeCanvas({
       } else {
         // No warp — simple draw
         ctx.save();
-        if (p.colorFilter !== "none") {
-          ctx.filter = p.colorFilter;
+        if (mainFilter !== "none") {
+          ctx.filter = mainFilter;
         }
         ctx.drawImage(main, 0, 0, w, h);
         ctx.restore();
@@ -216,8 +225,12 @@ export function CompositeCanvas({
         const delayed = frameRing[delayIdx];
         if (delayed) {
           ctx.save();
-          if (p.overlay.filter !== "none") {
-            ctx.filter = p.overlay.filter;
+          let overlayFilter = p.overlay.filter;
+          if (isNeon && overlayFilter !== "none") {
+            overlayFilter = `${overlayFilter} hue-rotate(${hueAccum + 120}deg)`;
+          }
+          if (overlayFilter !== "none") {
+            ctx.filter = overlayFilter;
           }
           ctx.globalAlpha = p.overlay.alpha;
           ctx.globalCompositeOperation = p.overlay.blendMode as GlobalCompositeOperation;
@@ -254,8 +267,8 @@ export function CompositeCanvas({
         const shift =
           (Math.random() > 0.5 ? 1 : -1) * (5 + Math.random() * fx.bandMaxShift);
         ctx.save();
-        if (p.colorFilter !== "none") {
-          ctx.filter = p.colorFilter;
+        if (mainFilter !== "none") {
+          ctx.filter = mainFilter;
         }
         ctx.beginPath();
         ctx.rect(0, bandY, w, bandH);
