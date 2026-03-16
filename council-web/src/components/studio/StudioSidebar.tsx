@@ -86,7 +86,6 @@ export function StudioSidebar({
   useEffect(() => {
     if (!isRecording) {
       recStartRef.current = null;
-      setRecElapsed("");
       return;
     }
     if (!recStartRef.current) recStartRef.current = Date.now();
@@ -96,32 +95,41 @@ export function StudioSidebar({
       const m = Math.floor(s / 60);
       setRecElapsed(`${m}:${String(s % 60).padStart(2, "0")}`);
     };
-    tick();
     const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      setRecElapsed("");
+    };
   }, [isRecording]);
-  const [expandToSection, setExpandToSection] = useState<string | null>(null);
-  const sectionRefs = {
-    view: useRef<HTMLElement>(null),
-    recording: useRef<HTMLElement>(null),
-    stream: useRef<HTMLElement>(null),
-    layout: useRef<HTMLElement>(null),
-    visualLayer: useRef<HTMLElement>(null),
-    audio: useRef<HTMLElement>(null),
-  };
+  const expandToSectionRef = useRef<string | null>(null);
+  const viewRef = useRef<HTMLElement>(null);
+  const recordingRef = useRef<HTMLElement>(null);
+  const streamRef = useRef<HTMLElement>(null);
+  const layoutRef = useRef<HTMLElement>(null);
+  const visualLayerRef = useRef<HTMLElement>(null);
+  const audioRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    if (!collapsed && expandToSection) {
-      const ref = sectionRefs[expandToSection as keyof typeof sectionRefs];
+    const section = expandToSectionRef.current;
+    if (!collapsed && section) {
+      const refMap: Record<string, React.RefObject<HTMLElement | null>> = {
+        view: viewRef,
+        recording: recordingRef,
+        stream: streamRef,
+        layout: layoutRef,
+        visualLayer: visualLayerRef,
+        audio: audioRef,
+      };
+      const ref = refMap[section];
       if (ref?.current) {
         ref.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
-      setExpandToSection(null);
+      expandToSectionRef.current = null;
     }
-  }, [collapsed, expandToSection]);
+  }, [collapsed]);
 
   const expandTo = (section: string) => {
-    setExpandToSection(section);
+    expandToSectionRef.current = section;
     setCollapsed(false);
   };
 
@@ -210,7 +218,7 @@ export function StudioSidebar({
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto">
         {/* VIEW */}
-        <section ref={sectionRefs.view} className="border-b border-zinc-700/40 px-3 py-2.5">
+        <section ref={viewRef} className="border-b border-zinc-700/40 px-3 py-2.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             View
           </h3>
@@ -354,7 +362,7 @@ export function StudioSidebar({
         )}
 
         {/* RECORDING */}
-        <section ref={sectionRefs.recording} className="border-b border-zinc-700/40 px-3 py-2.5">
+        <section ref={recordingRef} className="border-b border-zinc-700/40 px-3 py-2.5">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
               Recording
@@ -460,7 +468,7 @@ export function StudioSidebar({
         </section>
 
         {/* STREAM */}
-        <section ref={sectionRefs.stream} className="border-b border-zinc-700/40 px-3 py-2.5">
+        <section ref={streamRef} className="border-b border-zinc-700/40 px-3 py-2.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Stream
           </h3>
@@ -485,7 +493,7 @@ export function StudioSidebar({
         </section>
 
         {/* LAYOUT */}
-        <section ref={sectionRefs.layout} className="border-b border-zinc-700/40 px-3 py-2.5">
+        <section ref={layoutRef} className="border-b border-zinc-700/40 px-3 py-2.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Layout
           </h3>
@@ -513,7 +521,7 @@ export function StudioSidebar({
         </section>
 
         {/* VISUAL LAYER */}
-        <section ref={sectionRefs.visualLayer} className="border-b border-zinc-700/40 px-3 py-2.5">
+        <section ref={visualLayerRef} className="border-b border-zinc-700/40 px-3 py-2.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Visual Layer
           </h3>
@@ -521,7 +529,7 @@ export function StudioSidebar({
         </section>
 
         {/* AUDIO */}
-        <section ref={sectionRefs.audio} className="px-3 py-2.5">
+        <section ref={audioRef} className="px-3 py-2.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Audio
           </h3>

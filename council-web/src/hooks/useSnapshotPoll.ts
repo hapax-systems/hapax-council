@@ -9,14 +9,13 @@ export function useSnapshotPoll(
   intervalMs: number,
 ): { imgRef: React.RefObject<HTMLImageElement | null>; isStale: boolean } {
   const imgRef = useRef<HTMLImageElement | null>(null);
-  const lastSuccess = useRef(Date.now());
+  const lastSuccess = useRef(0);
   const [isStale, setIsStale] = useState(false);
 
   useEffect(() => {
     let running = true;
     let pending = false;
     lastSuccess.current = Date.now();
-    setIsStale(false);
 
     const pull = () => {
       if (!running || pending) return;

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from agents.visual_layer_aggregator import (
@@ -22,7 +23,6 @@ from agents.visual_layer_aggregator import (
     _map_nudges,
 )
 from agents.visual_layer_state import SignalCategory
-
 
 # ── Health Mapping ──────────────────────────────────────────────────────────
 
@@ -188,7 +188,7 @@ class TestAggregator:
         """Verify graceful degradation on API errors."""
         agg = SignalAggregator()
         mock_client = AsyncMock()
-        mock_client.get.side_effect = Exception("connection refused")
+        mock_client.get.side_effect = httpx.ConnectError("connection refused")
         agg._client = mock_client
 
         await agg.poll_fast()
@@ -199,7 +199,7 @@ class TestAggregator:
         """Verify graceful degradation on slow API errors."""
         agg = SignalAggregator()
         mock_client = AsyncMock()
-        mock_client.get.side_effect = Exception("connection refused")
+        mock_client.get.side_effect = httpx.ConnectError("connection refused")
         agg._client = mock_client
 
         await agg.poll_slow()
