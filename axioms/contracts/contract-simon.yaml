@@ -1,0 +1,19 @@
+id: contract-simon
+parties:
+  - operator
+  - simon
+scope:
+  - audio
+  - presence
+  - transcription
+  - video
+direction: one_way
+visibility_mechanism: guardian_mediated
+created_at: '2026-03-16T00:00:00'
+# Guardian-granted consent: operator is guardian.
+# Simon is a sovereign principal with full dignity rights.
+# This contract permits the system to perceive and interact with Simon.
+# It does NOT permit profiling, behavioral modeling, or data accumulation
+# beyond ephemeral session state.
+principal_class: child
+guardian: operator

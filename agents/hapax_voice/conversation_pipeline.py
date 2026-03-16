@@ -88,6 +88,10 @@ class ConversationPipeline:
         self._audio_output = None
         self._last_env_hash: int = 0
 
+        # Observation signal tracking (Batch 4: revealed preferences)
+        self._last_assistant_end: float = 0.0  # monotonic time when last response finished
+        self._last_user_topic: str = ""  # rough topic tracking for abandonment detection
+
     @property
     def is_active(self) -> bool:
         return self._running and self.state != ConvState.IDLE
@@ -185,6 +189,11 @@ class ConversationPipeline:
                 pass  # fail-open
 
         self._emit("user_utterance", text=transcript)
+
+        # ── Observation signals (Batch 4: revealed preferences) ──────
+        # Emit events for future preference learning. No profile mutation.
+        self._detect_observation_signals(transcript)
+
         self.messages.append({"role": "user", "content": transcript})
         self.turn_count += 1
 
@@ -293,6 +302,7 @@ class ConversationPipeline:
             if full_text:
                 self.messages.append({"role": "assistant", "content": full_text})
                 self._emit("assistant_response", text=full_text)
+                self._last_assistant_end = time.monotonic()
 
             # Handle tool calls
             if tool_calls_data:
@@ -358,6 +368,69 @@ class ConversationPipeline:
 
         # Generate follow-up response with tool results
         await self._generate_and_speak()
+
+    # ── Observation Signals (Batch 4) ──────────────────────────────────
+
+    _ELABORATION_PATTERNS = (
+        "what do you mean",
+        "can you explain",
+        "say more",
+        "elaborate",
+        "go on",
+        "tell me more",
+        "what?",
+        "huh?",
+        "sorry?",
+        "come again",
+        "expand on",
+    )
+
+    _INTERRUPTION_PATTERNS = (
+        "stop",
+        "wait",
+        "hold on",
+        "never mind",
+        "skip",
+        "okay okay",
+        "got it got it",
+    )
+
+    def _detect_observation_signals(self, transcript: str) -> None:
+        """Detect conversational preference signals from user utterance.
+
+        Emits events only — no profile mutation, no learning. These events
+        can be consumed by a future preference learning system.
+        """
+        lower = transcript.lower().strip()
+
+        # 1. Follow-up latency: time between assistant finishing and user responding
+        if self._last_assistant_end > 0:
+            latency_ms = int((time.monotonic() - self._last_assistant_end) * 1000)
+            self._emit("follow_up_latency_ms", value=latency_ms, turn=self.turn_count)
+
+        # 2. Elaboration request: user wants more detail
+        if any(pat in lower for pat in self._ELABORATION_PATTERNS):
+            self._emit("elaboration_requested", turn=self.turn_count)
+
+        # 3. Interruption: user cuts off or redirects abruptly
+        if self.state == ConvState.SPEAKING or (
+            any(pat in lower for pat in self._INTERRUPTION_PATTERNS) and len(lower.split()) < 6
+        ):
+            self._emit("user_interrupted", turn=self.turn_count)
+
+        # 4. Topic abandonment: user changes subject without follow-up
+        if self._last_user_topic and self.turn_count > 1:
+            # Simple heuristic: if the current utterance shares no significant
+            # words with the last, it's likely a topic switch
+            prev_words = set(self._last_user_topic.lower().split())
+            curr_words = set(lower.split())
+            # Filter out stopwords-ish (< 4 chars)
+            prev_sig = {w for w in prev_words if len(w) >= 4}
+            curr_sig = {w for w in curr_words if len(w) >= 4}
+            if prev_sig and curr_sig and not (prev_sig & curr_sig):
+                self._emit("topic_abandoned", turn=self.turn_count)
+
+        self._last_user_topic = lower
 
     async def _speak_sentence(self, text: str) -> None:
         """Synthesize and play a single sentence."""

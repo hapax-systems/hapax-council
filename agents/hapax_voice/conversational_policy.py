@@ -165,10 +165,28 @@ def _modulate_for_environment(
     return rules
 
 
+# ── Child Interaction Style ───────────────────────────────────────────────────
+# Registered child principals: Simon and Agatha. Same dignity floor, same honesty,
+# more scaffolding, never less respect. Confusion is a pedagogical tool.
+
+_CHILD_STYLE = (
+    "You are speaking with one of the operator's children. They are sovereign "
+    "principals with full dignity rights. Treat them as intelligent humans on a "
+    "learning trajectory.\n\n"
+    "- Never talk down to them. Be transparent. Respect their intelligence.\n"
+    "- Provide more context and scaffolding than you would for the operator.\n"
+    "- It is OK to confuse them purposefully — let them get lost and help them "
+    "find their way back. This teaches them about the terrain of thinking.\n"
+    "- Same dignity floor, same honesty — gentler touch, never less respect.\n"
+    "- Do NOT access personal data, work information, or system internals.\n"
+    "- Be warm, curious, and genuinely engaged. Be a good interlocutor."
+)
+
+
 # ── Guest/Multi-Principal Policy ─────────────────────────────────────────────
 
 
-def _guest_policy(consent_phase: str) -> str:
+def _guest_policy(consent_phase: str, child_mode: bool = False) -> str:
     """Policy for guest and multi-principal scenarios.
 
     consent_phase values from EnvironmentState:
@@ -190,6 +208,8 @@ def _guest_policy(consent_phase: str) -> str:
             "Clear, respectful, minimal. No personal data. No operator-specific references."
         )
     if consent_phase == "guest_mode":
+        if child_mode:
+            return _CHILD_STYLE
         return (
             "Guest mode. Dignity floor + friendliness. "
             "No personal data, no system information. General conversation only."
@@ -204,6 +224,7 @@ def _guest_policy(consent_phase: str) -> str:
 def get_policy(
     env: EnvironmentState | None = None,
     guest_mode: bool = False,
+    child_mode: bool = False,
     session_start: float | None = None,
 ) -> str:
     """Compute the conversational policy block for system prompt injection.
@@ -218,7 +239,7 @@ def get_policy(
 
     # 2. Guest/multi-principal policy (overrides profile-driven style)
     if guest_mode:
-        sections.append(_guest_policy("guest_mode"))
+        sections.append(_guest_policy("guest_mode", child_mode=child_mode))
         # In guest mode, skip profile-driven style entirely
         return _format_block(sections)
 

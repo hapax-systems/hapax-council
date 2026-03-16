@@ -17,7 +17,12 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-_CONTRACTS_DIR = Path(__file__).parent.parent / "axioms" / "contracts"
+_CONTRACTS_DIR = Path(__file__).parent.parent.parent / "axioms" / "contracts"
+
+# Registered child principals — ONLY these children may have consent contracts.
+# All other children are categorically excluded from system participation.
+# Guardian-granted consent: operator is legal guardian.
+REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"simon", "agatha"})
 
 
 @dataclass(frozen=True)
