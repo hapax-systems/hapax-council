@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,8 @@ class ConversationPipeline:
         conversation_buffer=None,  # ConversationBuffer
         timeout_s: float = _SILENCE_TIMEOUT_S,
         consent_reader=None,  # ConsentGatedReader | None
+        env_context_fn: Callable[[], str] | None = None,
+        ambient_fn: Callable[[], object | None] | None = None,
     ) -> None:
         self.stt = stt
         self.tts = tts_manager
@@ -72,6 +75,8 @@ class ConversationPipeline:
         self.buffer = conversation_buffer
         self.timeout_s = timeout_s
         self._consent_reader = consent_reader
+        self._env_context_fn = env_context_fn
+        self._ambient_fn = ambient_fn
 
         self.state = ConvState.IDLE
         self.messages: list[dict] = []
@@ -79,6 +84,7 @@ class ConversationPipeline:
         self._running = False
         self._task: asyncio.Task | None = None
         self._audio_output = None
+        self._last_env_hash: int = 0
 
     @property
     def is_active(self) -> bool:
@@ -114,6 +120,25 @@ class ConversationPipeline:
         self._emit("conversation_end", turns=self.turn_count)
         log.info("Conversation pipeline stopped (%d turns)", self.turn_count)
 
+    def _update_system_context(self) -> None:
+        """Refresh system message with current environment TOON block."""
+        if self._env_context_fn is None or not self.messages:
+            return
+        try:
+            env_toon = self._env_context_fn()
+            if not env_toon:
+                return
+            env_hash = hash(env_toon)
+            if env_hash == self._last_env_hash:
+                return
+            self._last_env_hash = env_hash
+            # Mutate system message in-place: base prompt + env block
+            self.messages[0]["content"] = (
+                self.system_prompt + "\n\n## Current Environment\n" + env_toon
+            )
+        except Exception:
+            log.debug("env_context_fn failed (non-fatal)", exc_info=True)
+
     async def process_utterance(self, audio_bytes: bytes) -> None:
         """Process a complete utterance through STT → LLM → TTS.
 
@@ -129,9 +154,28 @@ class ConversationPipeline:
             self.state = ConvState.LISTENING
             return
 
+        # Utterance plausibility: reject likely music/noise bleed-through
+        if self._ambient_fn is not None:
+            try:
+                ambient = self._ambient_fn()
+                if (
+                    ambient is not None
+                    and getattr(ambient, "top_labels", None)
+                    and not getattr(ambient, "interruptible", True)
+                    and len(transcript.split()) < 4
+                ):
+                    log.debug("Rejecting short transcript during music: %r", transcript)
+                    self.state = ConvState.LISTENING
+                    return
+            except Exception:
+                pass  # fail-open
+
         self._emit("user_utterance", text=transcript)
         self.messages.append({"role": "user", "content": transcript})
         self.turn_count += 1
+
+        # Refresh environment context before LLM call
+        self._update_system_context()
 
         # LLM → TTS
         self.state = ConvState.THINKING
@@ -151,6 +195,15 @@ class ConversationPipeline:
             import os
 
             import litellm
+
+            # Compress history if it's grown long enough
+            if self.turn_count > 6:
+                try:
+                    from shared.context_compression import compress_history
+
+                    self.messages = compress_history(self.messages, keep_recent=4)
+                except Exception:
+                    log.debug("History compression failed (non-fatal)", exc_info=True)
 
             kwargs = {
                 "model": f"openai/{self.llm_model}",
