@@ -10,6 +10,44 @@ import {
 } from "../components/studio/StudioStatusGrid";
 import { StudioSidebar } from "../components/studio/StudioSidebar";
 import { useStudio } from "../api/hooks";
+import { api } from "../api/client";
+
+/* ---------- GPU FX snapshot viewer ---------- */
+function FxView() {
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  useEffect(() => {
+    let running = true;
+    let pending = false;
+    const pull = () => {
+      if (!running || pending) return;
+      pending = true;
+      const loader = new Image();
+      loader.onload = () => {
+        if (running && imgRef.current) imgRef.current.src = loader.src;
+        pending = false;
+      };
+      loader.onerror = () => {
+        pending = false;
+      };
+      loader.src = `/api/studio/stream/fx?_t=${Date.now()}`;
+    };
+    pull();
+    const timer = setInterval(pull, 80);
+    return () => {
+      running = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  return (
+    <img
+      ref={imgRef}
+      className="h-full w-full rounded-lg bg-black object-contain"
+      alt="GPU FX"
+    />
+  );
+}
 
 type ViewMode = "grid" | "composite" | "smooth";
 
@@ -100,6 +138,11 @@ export function StudioPage() {
     setLiveFilterIdx(0);
     setTrailFilterIdx(0);
     setEffectOverrides(null);
+    // Switch the GPU pipeline when a preset is selected
+    const presetName = PRESETS[i].name.toLowerCase();
+    api.selectEffect(presetName).catch(() => {
+      /* GPU pipeline may not be running — ignore */
+    });
   }, []);
 
   const handleEffectToggle = useCallback(
@@ -183,27 +226,41 @@ export function StudioPage() {
             <CameraSoloView role={focusedCamera} onClose={() => setFocusedCamera(null)} />
           ) : (
             <>
-              <div className={viewMode === "smooth" ? "hidden" : "h-full"}>
+              {viewMode === "grid" ? (
                 <StudioLiveGrid
                   cameraOrder={cameraOrder}
                   onReorder={setUserOrder}
                   onFocusCamera={setFocusedCamera}
                   preset={effectivePreset}
                 />
-              </div>
-              <video
-                ref={videoRef}
-                className={`h-full w-full rounded-lg bg-black object-contain ${viewMode !== "smooth" ? "invisible absolute inset-0" : ""}`}
-                muted
-                playsInline
-              />
-              {viewMode === "smooth" && !hlsReady && (
-                <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/80">
-                  <div className="flex flex-col items-center gap-2 text-zinc-500">
-                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
-                    <span className="text-[10px]">Buffering stream...</span>
-                  </div>
-                </div>
+              ) : viewMode === "composite" ? (
+                <FxView />
+              ) : (
+                <>
+                  <video
+                    ref={videoRef}
+                    className="h-full w-full rounded-lg bg-black object-contain"
+                    muted
+                    playsInline
+                  />
+                  {!hlsReady && (
+                    <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/80">
+                      <div className="flex flex-col items-center gap-2 text-zinc-500">
+                        <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
+                        <span className="text-[10px]">Buffering stream...</span>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+              {/* Hidden video element keeps HLS pre-buffered regardless of view mode */}
+              {viewMode !== "smooth" && (
+                <video
+                  ref={videoRef}
+                  className="invisible absolute inset-0 h-0 w-0"
+                  muted
+                  playsInline
+                />
               )}
             </>
           )}

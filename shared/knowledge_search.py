@@ -83,18 +83,35 @@ def search_documents(
             filter_desc = f" (filters: {', '.join(filters)})" if filters else ""
             return f"No documents found matching '{query}'{filter_desc}."
 
-        lines = [f"Found {len(results.points)} results for '{query}':", ""]
-        for i, pt in enumerate(results.points, 1):
-            p = pt.payload
-            text = p.get("text", "")[:300]
-            source = p.get("source", "unknown")
-            service = p.get("source_service", "unknown")
-            lines.append(f"**Result {i}** (score: {pt.score:.2f}, source: {service})")
-            lines.append(f"  File: {source}")
-            lines.append(f"  {text}")
-            lines.append("")
+        try:
+            from shared.context_compression import to_toon
 
-        return "\n".join(lines)
+            result_data = {
+                "results": [
+                    {
+                        "file": pt.payload.get("source", "?"),
+                        "src": pt.payload.get("source_service", "?"),
+                        "score": round(pt.score, 2),
+                        "text": pt.payload.get("text", "")[:300],
+                    }
+                    for pt in results.points
+                ]
+            }
+            return f"Found {len(results.points)} results for '{query}':\n{to_toon(result_data)}"
+        except Exception:
+            # Fall back to markdown formatting
+            lines = [f"Found {len(results.points)} results for '{query}':", ""]
+            for i, pt in enumerate(results.points, 1):
+                p = pt.payload
+                text = p.get("text", "")[:300]
+                source = p.get("source", "unknown")
+                service = p.get("source_service", "unknown")
+                lines.append(f"**Result {i}** (score: {pt.score:.2f}, source: {service})")
+                lines.append(f"  File: {source}")
+                lines.append(f"  {text}")
+                lines.append("")
+
+            return "\n".join(lines)
 
 
 def search_profile(

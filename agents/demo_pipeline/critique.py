@@ -1065,8 +1065,26 @@ async def critique_and_revise(
 
     current_script = script
 
+    # Compress research context for iterations > 0 (it doesn't change)
+    _compressed_research: str | None = None
+
     for iteration in range(MAX_ITERATIONS):
         progress(f"Quality evaluation (iteration {iteration + 1}/{MAX_ITERATIONS})...")
+
+        # After first iteration, use compressed research context
+        if iteration > 0 and _compressed_research is None:
+            try:
+                from shared.context_compression import _get_compressor
+
+                compressor = _get_compressor()
+                if compressor is not None:
+                    result_c = compressor.compress_prompt_llmlingua2(
+                        [research_context[:3000]], rate=0.5
+                    )
+                    _compressed_research = result_c.get("compressed_prompt", research_context)
+            except Exception:
+                pass
+        effective_research = _compressed_research if _compressed_research else research_context
 
         # Deterministic pre-checks (inject into LLM report)
         word_check = _check_word_count(current_script, target_seconds)
@@ -1083,7 +1101,7 @@ async def critique_and_revise(
         # LLM Critique
         critique_prompt = _build_critique_prompt(
             current_script,
-            research_context,
+            effective_research,
             style_guide,
             framework,
             target_seconds,
@@ -1118,7 +1136,7 @@ async def critique_and_revise(
         revision_prompt = _build_revision_prompt(
             current_script,
             report,
-            research_context,
+            effective_research,
             style_guide,
             framework,
             target_seconds,
