@@ -1467,6 +1467,13 @@ class StudioCompositor:
         tmp.write_text(json.dumps(status, indent=2))
         tmp.rename(STATUS_FILE)
 
+        # Write consent sidecar for snapshot consumers (ephemeral, in /dev/shm)
+        try:
+            consent_file = SNAPSHOT_DIR / "consent-state.txt"
+            consent_file.write_text("allowed" if self._consent_recording_allowed else "blocked")
+        except OSError:
+            pass  # SNAPSHOT_DIR may not exist yet during early startup
+
     def _fx_tick_callback(self) -> bool:
         """GLib timeout: update time-varying FX shader uniforms at ~30fps."""
         if not self._running:
@@ -1608,9 +1615,16 @@ class StudioCompositor:
                 ctx.move_to(tile.x + pad * 2, tile.y + pad + extents.height + pad)
                 ctx.show_text(text)
 
-                has_consent = state.persistence_allowed
-                badge_color = (0.2, 0.8, 0.2, 0.9) if has_consent else (0.8, 0.2, 0.2, 0.9)
-                badge_text = "REC" if has_consent else "NO-REC"
+                recording_active = state.persistence_allowed and self.config.recording.enabled
+                if recording_active:
+                    badge_color = (0.2, 0.8, 0.2, 0.9)  # green
+                    badge_text = "REC"
+                elif self.config.recording.enabled:
+                    badge_color = (0.9, 0.3, 0.1, 0.9)  # orange/red — consent-blocked
+                    badge_text = "PAUSED"
+                else:
+                    badge_color = (0.5, 0.5, 0.5, 0.7)  # gray — recording disabled
+                    badge_text = "NO-REC"
                 ctx.set_font_size(12)
                 be = ctx.text_extents(badge_text)
                 bx = tile.x + tile.w - be.width - pad * 3
@@ -1672,6 +1686,20 @@ class StudioCompositor:
                 ctx.set_source_rgba(0.3, 0.8, 0.3, 0.7)
                 ctx.rectangle(0, canvas_h - bar_h, bar_w, bar_h)
                 ctx.fill()
+
+            # Consent-blocked banner — prominent center notice when recording is paused
+            if not state.persistence_allowed and self.config.recording.enabled:
+                ctx.set_font_size(18)
+                banner = "RECORDING PAUSED \u2014 CONSENT REQUIRED"
+                be = ctx.text_extents(banner)
+                bx = (canvas_w - be.width) / 2
+                by = canvas_h - 50
+                ctx.set_source_rgba(0.0, 0.0, 0.0, 0.7)
+                ctx.rectangle(bx - 8, by - be.height - 6, be.width + 16, be.height + 12)
+                ctx.fill()
+                ctx.set_source_rgba(1.0, 0.3, 0.1, 0.95)
+                ctx.move_to(bx, by)
+                ctx.show_text(banner)
 
             self._overlay_cache_surface = surf
             self._overlay_cache_timestamp = cur_ts
