@@ -100,7 +100,7 @@ function CameraCell({
   const imgRef = useRef<HTMLImageElement>(null);
   const cellRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const lastSuccess = useRef(Date.now());
+  const lastSuccess = useRef(0);
   const [isStale, setIsStale] = useState(false);
 
   const toggleFullscreen = useCallback(() => {

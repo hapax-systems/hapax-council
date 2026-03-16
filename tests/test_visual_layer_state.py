@@ -23,9 +23,7 @@ from agents.visual_layer_state import (
     SignalCategory,
     SignalEntry,
     VisualLayerState,
-    ZoneSpec,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
