@@ -190,6 +190,9 @@ def write_perception_state(
         "timestamp": time.time(),
     }
 
+    # Push to ring buffer for temporal depth (WS1)
+    _push_to_ring(state)
+
     try:
         PERCEPTION_STATE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = PERCEPTION_STATE_FILE.with_suffix(".tmp")
@@ -197,3 +200,24 @@ def write_perception_state(
         tmp.rename(PERCEPTION_STATE_FILE)
     except OSError:
         log.debug("Failed to write perception state", exc_info=True)
+
+
+# ── Perception Ring Buffer (WS1) ────────────────────────────────────────────
+
+_perception_ring: Any = None  # Lazy init to avoid import cycles
+
+
+def _push_to_ring(state: dict[str, Any]) -> None:
+    """Push snapshot to the shared perception ring buffer."""
+    global _perception_ring
+    if _perception_ring is None:
+        from agents.hapax_voice.perception_ring import PerceptionRing
+
+        _perception_ring = PerceptionRing()
+    snapshot = {**state, "ts": state.get("timestamp", time.time())}
+    _perception_ring.push(snapshot)
+
+
+def get_perception_ring() -> Any:
+    """Return the global perception ring (or None if not yet initialized)."""
+    return _perception_ring

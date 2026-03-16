@@ -253,6 +253,10 @@ class SchedulerContext(BaseModel):
     display_state: str = "ambient"
     hour: int = 12
     signal_count: int = 0
+    # Phase 6: temporal context from perception ring
+    trend_flow: float = 0.0  # flow_score trend (slope/s)
+    trend_audio: float = 0.0  # audio_energy trend (slope/s)
+    perception_age_s: float = 0.0  # staleness of perception data
 
 
 class ContentPools(BaseModel):
@@ -355,11 +359,17 @@ class ContentScheduler:
         return decision
 
     def _compute_density(self, ctx: SchedulerContext) -> DisplayDensity:
-        """Derive display density from context."""
+        """Derive display density from context + temporal trends."""
         if ctx.activity in ("in a meeting", "presenting"):
             return DisplayDensity.PRESENTING
         if ctx.flow_score >= 0.6 or ctx.activity in ("coding", "deep work"):
             return DisplayDensity.FOCUSED
+        # Phase 6: rising flow → preemptive FOCUSED shift
+        if ctx.trend_flow > 0.01 and ctx.flow_score > 0.3:
+            return DisplayDensity.FOCUSED
+        # Phase 6: falling flow → RECEPTIVE (operator disengaging)
+        if ctx.trend_flow < -0.02 and ctx.flow_score < 0.4:
+            return DisplayDensity.RECEPTIVE
         if ctx.activity in ("present", "browsing", "listening") or ctx.flow_score < 0.2:
             return DisplayDensity.RECEPTIVE
         return DisplayDensity.AMBIENT
@@ -423,6 +433,11 @@ class ContentScheduler:
         actual_share = count / total
         if actual_share > expected_share * 2:
             score *= 0.5
+
+        # Phase 6: stale perception → reduced scheduling confidence
+        if ctx.perception_age_s > 10.0:
+            stale_penalty = max(0.3, 1.0 - ctx.perception_age_s / 60.0)
+            score *= stale_penalty
 
         return max(score, 0.001)  # floor to avoid zero
 
