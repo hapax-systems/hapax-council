@@ -48,8 +48,7 @@ _SYSTEM_PROMPT = (
     "System:\n"
     "- get_system_status: health checks (docker, gpu, services, network, voice).\n"
     "- check_consent_status, describe_consent_flow, check_governance_health.\n\n"
-    "You can search documents, emails, calendar, and Drive — but you do NOT have "
-    "access to the operator profile, conversation memory, or governance precedents.\n"
+    "You can search documents, emails, calendar, and Drive. "
     "Use tools proactively — don't guess when you can look it up."
 )
 
