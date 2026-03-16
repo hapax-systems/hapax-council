@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["PromiseError"],"struct":["Promise","PromiseFuture","PromiseReply"]};
