@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["AnyFeatures","CapsFilterMapAction","HasFeatures","NoFeature","SomeFeatures"],"struct":["Builder","BuilderFull","Caps","CapsRef","Iter","IterFeatures","IterFeaturesMut","IterMut"]};

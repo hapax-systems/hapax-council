@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["sealed"],"struct":["GLBufferPool"],"trait":["GLBufferPoolExt"]};
