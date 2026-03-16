@@ -39,7 +39,7 @@ class TestModels:
         assert len(DisplayState) == 5
 
     def test_signal_category_values(self):
-        assert len(SignalCategory) == 6
+        assert len(SignalCategory) == 7
 
     def test_zone_layout_covers_all_categories(self):
         for cat in SignalCategory:

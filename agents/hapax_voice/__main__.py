@@ -1227,7 +1227,13 @@ class VoiceDaemon:
 
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision
-                write_perception_state(self.perception, self.consent_registry, self.consent_tracker)
+                write_perception_state(
+                    self.perception,
+                    self.consent_registry,
+                    self.consent_tracker,
+                    session=self.session,
+                    pipeline=self._conversation_pipeline,
+                )
 
             except asyncio.CancelledError:
                 break
