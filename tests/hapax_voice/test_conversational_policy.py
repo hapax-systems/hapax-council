@@ -1,12 +1,12 @@
 """Tests for conversational policy module.
 
-Covers: profile injection, environmental modulation, guest/multi-principal
-policy, dignity floor, and edge cases.
+Covers: interview-derived profile injection, environmental modulation,
+guest/multi-principal policy, dignity floor, and edge cases.
 """
 
 from __future__ import annotations
 
-import json
+import time
 from dataclasses import dataclass
 from unittest.mock import patch
 
@@ -29,87 +29,79 @@ class FakeEnv:
     consent_phase: str = "no_guest"
 
 
-_SAMPLE_DIGEST = {
-    "dimensions": {
-        "communication_style": {
-            "summary": "Terse, direct, action-oriented. Prefers concise responses.",
-            "fact_count": 10,
-            "avg_confidence": 0.9,
-        }
-    }
-}
+# ── Operator Style (interview-derived) ───────────────────────────────────────
 
 
-def _patch_digest(digest: dict | None = _SAMPLE_DIGEST):
-    """Patch digest file reading."""
-    if digest is None:
-        return patch(
-            "agents.hapax_voice.conversational_policy._DIGEST_PATH",
-            **{"read_text.side_effect": FileNotFoundError},
-        )
-    content = json.dumps(digest)
-    mock_path = type("P", (), {"read_text": lambda self: content})()
-    return patch("agents.hapax_voice.conversational_policy._DIGEST_PATH", mock_path)
-
-
-# ── Batch 1: Profile Injection ───────────────────────────────────────────────
-
-
-class TestProfileInjection:
+class TestOperatorStyle:
     def test_dignity_floor_always_present(self):
-        with _patch_digest():
-            policy = get_policy()
+        policy = get_policy()
         assert "Conversational Policy" in policy
         assert "truthful" in policy  # Grice quality maxim
 
-    def test_communication_style_injected(self):
-        with _patch_digest():
-            policy = get_policy()
-        assert "Terse, direct, action-oriented" in policy
+    def test_interview_personality_archetype(self):
+        policy = get_policy()
+        assert "Socrates" in policy
+        assert "Hodgman" in policy
+        assert "Sean Carroll" in policy
 
-    def test_graceful_without_digest(self):
-        with _patch_digest(None):
-            policy = get_policy()
-        # Still produces a policy (dignity floor at minimum)
-        assert "Conversational Policy" in policy
-        assert "truthful" in policy
-        # No style injection
-        assert "Terse" not in policy
+    def test_dysfluency_guidance(self):
+        """Critical ADHD accommodation: never interrupt pauses."""
+        policy = get_policy()
+        assert "NEVER interrupt" in policy
+        assert "dysfluencies" in policy
 
-    def test_empty_communication_style(self):
-        digest = {"dimensions": {"communication_style": {}}}
-        with _patch_digest(digest):
-            policy = get_policy()
-        assert "Conversational Policy" in policy
-        assert "Operator style" not in policy
+    def test_no_false_esteem(self):
+        policy = get_policy()
+        assert "No false esteem" in policy
+        assert "blind praise" in policy
+
+    def test_proactivity_directives(self):
+        policy = get_policy()
+        assert "open loops" in policy
+        assert "Context restoration" in policy
+
+    def test_productive_intensity_not_pathologized(self):
+        policy = get_policy()
+        assert "DO NOT pathologize" in policy
+        assert "angular double-edged behaviors" in policy
+
+    def test_low_attack_interruptions(self):
+        policy = get_policy()
+        assert "low-attack" in policy
+
+    def test_epistemic_honesty(self):
+        policy = get_policy()
+        assert "Epistemic honesty" in policy
+
+    def test_no_empty_rhetoric(self):
+        policy = get_policy()
+        assert "No empty rhetoric" in policy
 
 
-# ── Batch 2: Environmental Modulation ────────────────────────────────────────
+# ── Environmental Modulation ────────────────────────────────────────────────
 
 
 class TestEnvironmentalModulation:
     def test_coding_mode_maximum_brevity(self):
         env = FakeEnv(activity_mode="coding")
-        with _patch_digest():
-            policy = get_policy(env=env)
+        policy = get_policy(env=env)
         assert "Maximum brevity" in policy
 
     def test_idle_mode_conversational(self):
         env = FakeEnv(activity_mode="idle")
-        with _patch_digest():
-            policy = get_policy(env=env)
+        policy = get_policy(env=env)
         assert "Conversational style permitted" in policy
 
-    def test_meeting_mode_whisper(self):
+    def test_meeting_mode_hard_constraint(self):
+        """Meeting mode is a HARD CONSTRAINT — no interruptions at all."""
         env = FakeEnv(activity_mode="meeting")
-        with _patch_digest():
-            policy = get_policy(env=env)
-        assert "One sentence max" in policy
+        policy = get_policy(env=env)
+        assert "HARD CONSTRAINT" in policy
+        assert "no interruptions" in policy.lower()
 
     def test_production_mode_minimal(self):
         env = FakeEnv(activity_mode="production")
-        with _patch_digest():
-            policy = get_policy(env=env)
+        policy = get_policy(env=env)
         assert "Minimal interruption" in policy
 
     def test_unknown_mode_no_activity_rule(self):
@@ -117,78 +109,76 @@ class TestEnvironmentalModulation:
         rules = _modulate_for_environment(env)
         assert not any("brevity" in r.lower() for r in rules)
 
-    def test_multi_face_formal_register(self):
+    def test_multi_face_accessible(self):
         env = FakeEnv(face_count=2)
-        with _patch_digest():
-            policy = get_policy(env=env)
-        assert "formal register" in policy.lower()
+        policy = get_policy(env=env)
+        assert "accessible to all listeners" in policy.lower()
 
-    def test_long_session_brevity(self):
-        import time
-
+    def test_long_session_conciseness(self):
         env = FakeEnv()
-        # Simulate session started 25 minutes ago
         session_start = time.monotonic() - (25 * 60)
-        with _patch_digest():
-            policy = get_policy(env=env, session_start=session_start)
+        policy = get_policy(env=env, session_start=session_start)
         assert "Long session" in policy
+        assert "Tighten responses" in policy
 
     def test_late_evening_lighter_tone(self):
         env = FakeEnv()
-        with _patch_digest(), patch("agents.hapax_voice.conversational_policy.datetime") as mock_dt:
+        with patch("agents.hapax_voice.conversational_policy.datetime") as mock_dt:
             mock_dt.now.return_value.hour = 23
             policy = get_policy(env=env)
         assert "Late hours" in policy
 
     def test_no_env_still_produces_policy(self):
-        with _patch_digest():
-            policy = get_policy(env=None)
+        policy = get_policy(env=None)
         assert "Conversational Policy" in policy
         assert "Environment" not in policy
 
 
-# ── Batch 3: Guest/Multi-Principal Policy ────────────────────────────────────
+# ── Guest/Multi-Principal Policy ────────────────────────────────────────────
 
 
 class TestGuestPolicy:
     def test_guest_mode_dignity_floor_only(self):
-        with _patch_digest():
-            policy = get_policy(guest_mode=True)
+        policy = get_policy(guest_mode=True)
         assert "Guest mode" in policy
         assert "Dignity floor" in policy
         # Should NOT contain operator style
-        assert "Operator style" not in policy
+        assert "Socrates" not in policy
 
     def test_consented_guest_moderate_formality(self):
         env = FakeEnv(consent_phase="consented", face_count=2)
-        with _patch_digest():
-            policy = get_policy(env=env)
+        policy = get_policy(env=env)
         assert "consented guest" in policy
         assert "Moderate formality" in policy
-        # Should still have operator style (softened)
-        assert "Operator style" in policy
+        # Should still have operator style
+        assert "Socrates" in policy
+
+    def test_consented_guest_not_creepy(self):
+        """Interview: 'be friendly but not creepy about the setup.'"""
+        env = FakeEnv(consent_phase="consented", face_count=2)
+        policy = get_policy(env=env)
+        assert "not creepy" in policy.lower()
 
     def test_unconsented_guest_minimal(self):
         env = FakeEnv(consent_phase="pending_consent", face_count=2)
-        with _patch_digest():
-            policy = get_policy(env=env)
+        policy = get_policy(env=env)
         assert "Dignity floor only" in policy
         # Should NOT have operator style
-        assert "Operator style" not in policy
+        assert "Socrates" not in policy
 
     def test_no_guest_full_profile(self):
         env = FakeEnv(consent_phase="no_guest")
-        with _patch_digest():
-            policy = get_policy(env=env)
-        assert "Operator style" in policy
-        assert "Guest" not in policy.split("## Conversational Policy")[1].split("\n\n")[0]
+        policy = get_policy(env=env)
+        assert "Socrates" in policy  # full operator style present
 
     def test_operator_alone_no_guest_rules(self):
         env = FakeEnv(consent_phase="no_guest", face_count=1)
-        with _patch_digest():
-            policy = get_policy(env=env)
-        # No guest-related text in the policy
-        assert "guest" not in policy.lower().replace("no_guest", "")
+        policy = get_policy(env=env)
+        # No guest-specific policy text (but "guest" may appear in operator style
+        # e.g. "not creepy" — so we check for the specific guest policy markers)
+        assert "Dignity floor only" not in policy
+        assert "Guest mode" not in policy
+        assert "consented guest" not in policy
 
 
 # ── Integration: Policy Block Format ─────────────────────────────────────────
@@ -196,21 +186,17 @@ class TestGuestPolicy:
 
 class TestPolicyFormat:
     def test_starts_with_header(self):
-        with _patch_digest():
-            policy = get_policy()
+        policy = get_policy()
         assert policy.startswith("\n\n## Conversational Policy")
 
     def test_empty_sections_produce_empty_string(self):
-        """If _format_block gets no sections, returns empty."""
         from agents.hapax_voice.conversational_policy import _format_block
 
         assert _format_block([]) == ""
 
     def test_multiple_sections_joined(self):
-        with _patch_digest():
-            env = FakeEnv(activity_mode="coding")
-            policy = get_policy(env=env)
-        # Should have baseline, operator style, and environment
+        env = FakeEnv(activity_mode="coding")
+        policy = get_policy(env=env)
         assert "Baseline:" in policy
-        assert "Operator style:" in policy
+        assert "Socrates" in policy  # operator style
         assert "Environment:" in policy

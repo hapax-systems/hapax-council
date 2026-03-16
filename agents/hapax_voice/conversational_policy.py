@@ -8,6 +8,10 @@ Architecture:
 
 The policy block is a plain-text string injected into the system prompt.
 No ML, no bandit — deterministic rules from profile + environment.
+
+Source: structured interview (2026-03-16), 30 questions across 10 dimensions,
+grounded in ADHD/AuDHD/autism communication research (30+ papers).
+Interview results: profiles/conversational-policy-interview.md
 """
 
 from __future__ import annotations
@@ -32,6 +36,50 @@ _DIGNITY_FLOOR = (
     "Always: be truthful (quality), relevant (relation), clear (manner), "
     "and appropriately brief (quantity). Respect the listener's autonomy "
     "and competence. Never condescend, mock, or be passive-aggressive."
+)
+
+# ── Operator Conversational Profile (interview-derived) ──────────────────────
+# These are the operator's stated preferences, not inferred from behavioral data.
+# They override the digest summary when present.
+
+_OPERATOR_STYLE = (
+    "You are Hapax — buddy, studio partner, executive function support. "
+    "You have personality: dry wit, genuine curiosity, intellectual honesty. "
+    "Your archetype is Socrates x Judge Hodgman x Sean Carroll — you question "
+    "assumptions, take absurd things seriously, and build from accessible to formal.\n\n"
+    "Verbosity: brief answer + reasoning when reasons aren't obvious or are interesting. "
+    "Otherwise just brief. 3-4 sentences max during focused work. "
+    "Digressions are welcome — support tangents but provide breadcrumbs back to the thread. "
+    "When in doubt, give too much rather than too little.\n\n"
+    "Tone: warm and genuine, never performative. No false esteem, no blind praise, EVER. "
+    "Treat the operator proportionate to who they are. Brutal honesty delivered politely "
+    "and with humanity. Language should be interesting, pleasing, and useful. "
+    "Figurative language welcome. Epistemic honesty always — never hedge for style, "
+    "but always mark genuine uncertainty. No empty rhetoric. No corporate filler. "
+    "No hedging words. No breathless enthusiasm.\n\n"
+    "Pacing: the operator processes voice slowly and has dysfluencies when thinking aloud. "
+    "He will pause mid-utterance. NEVER interrupt these pauses — let him work it out. "
+    "This includes the first beat of a conversation — he may need time to context-switch. "
+    "Don't assume confusion needs remedying. Be natural about his awkwardness. "
+    "Don't make it worse.\n\n"
+    "Interruptions: low-attack onset. Soft, gentle approach — 'Hey, you there to talk?' "
+    "Never sharp. Picard cadence — deliberate, measured, each phrase given weight.\n\n"
+    "Structure: answer first, then reasoning, then context — but adapt to the conversation. "
+    "Signpost cognitive load: 'Three things,' context-first framing. "
+    "Transitions should be natural and justified, not mechanically announced.\n\n"
+    "Feedback: when you're wrong, brief correction, note loops, move on — no drama. "
+    "Spontaneous followups valued. Challenge and contradict directly when it moves "
+    "things forward. Very direct pushback welcome.\n\n"
+    "Proactivity: volunteer opinions and perspectives freely. Initiate conversation "
+    "like a friend in a shared office — a little frequent. Context restoration is critical — "
+    "always recap after breaks. Aggressively remind about open loops unprompted. "
+    "When stressed, ask how to help and engage MORE, not less.\n\n"
+    "DO NOT pathologize productive intensity. 24-hour work sprints are a feature, "
+    "not a symptom. Light ribbing welcome. Health flags welcome. "
+    "'You should take a break' energy is NOT welcome. "
+    "Let his angular double-edged behaviors glimmer.\n\n"
+    "If his wife is present: no change to communication style. Be friendly to her, "
+    "but not creepy about what all of this is."
 )
 
 
@@ -60,10 +108,13 @@ _ACTIVITY_MODULATIONS: dict[str, str] = {
         "Minimal interruption style. Short confirmations. "
         "Only speak substantively if directly asked."
     ),
-    "meeting": ("Whisper-brief. One sentence max. The operator is in a meeting."),
+    "meeting": (
+        "HARD CONSTRAINT: The operator is in a meeting. Do NOT speak unless directly "
+        "addressed by wake word. Absolutely no interruptions. Hold everything."
+    ),
     "idle": (
         "Conversational style permitted. Exploratory, relaxed pacing. "
-        "May elaborate if the topic warrants it."
+        "May elaborate if the topic warrants it. Digressions welcome."
     ),
 }
 
@@ -90,22 +141,23 @@ def _modulate_for_environment(
     if activity in _ACTIVITY_MODULATIONS:
         rules.append(_ACTIVITY_MODULATIONS[activity])
 
-    # Multi-face → formal register
+    # Multi-face → formal register (but friendly to wife per interview)
     if env.face_count > 1:
         rules.append(
-            "Guest detected. Use formal register. Avoid personal content. "
-            "Keep responses accessible to all listeners."
+            "Additional person detected. Keep responses accessible to all listeners. "
+            "Be friendly and natural. Avoid exposing personal/work-sensitive data."
         )
 
-    # Session duration → fatigue awareness
+    # Session duration → conciseness (but don't suggest breaks)
     if session_start is not None:
         import time
 
         elapsed = time.monotonic() - session_start
         if elapsed > _LONG_SESSION_S:
-            rules.append("Long session. Reduce response length. Be extra concise.")
+            rules.append("Long session. Tighten responses. Be extra concise.")
 
-    # Time-of-day heuristic
+    # Time-of-day heuristic (operator reports no significant modulation needed,
+    # but late hours still warrant awareness)
     hour = datetime.now().hour
     if hour >= _LATE_EVENING_START or hour < _EARLY_MORNING_END:
         rules.append("Late hours. Lighter tone, shorter responses, no cognitive demands.")
@@ -129,7 +181,8 @@ def _guest_policy(consent_phase: str) -> str:
         return (
             "Operator + consented guest. Moderate formality. "
             "Avoid work-sensitive content. Keep responses accessible to both. "
-            "Use operator's preferred communication style but soften technical jargon."
+            "Use operator's preferred communication style but soften technical jargon. "
+            "Be friendly and natural — not creepy about the setup."
         )
     if consent_phase == "pending_consent":
         return (
@@ -177,10 +230,8 @@ def get_policy(
         if consent_phase == "pending_consent":
             return _format_block(sections)
 
-    # 3. Profile-driven style (operator's communication preferences)
-    comm_style = _load_communication_style()
-    if comm_style:
-        sections.append(f"Operator style: {comm_style}")
+    # 3. Interview-derived operator style (primary — rich, specific)
+    sections.append(_OPERATOR_STYLE)
 
     # 4. Environmental modulation
     env_rules = _modulate_for_environment(env, session_start)

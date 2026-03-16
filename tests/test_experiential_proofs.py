@@ -1451,14 +1451,14 @@ class TestPolicyExperiential:
         assert "Maximum brevity" in policy
         assert "Technical register" in policy
 
-    def test_meeting_whisper(self):
-        """Operator in meeting — one sentence max."""
+    def test_meeting_hard_constraint(self):
+        """Operator in meeting — hard constraint, no interruptions."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.switch_activity("meeting")
         w.advance(2.5)
         policy = w.policy()
-        assert "One sentence max" in policy
+        assert "HARD CONSTRAINT" in policy
 
     def test_production_minimal(self):
         """Operator in production — minimal interruption."""
@@ -1469,23 +1469,23 @@ class TestPolicyExperiential:
         policy = w.policy()
         assert "Minimal interruption" in policy
 
-    def test_guest_detected_formal_register(self):
-        """Guest enters — policy shifts to formal register."""
+    def test_guest_detected_accessible(self):
+        """Guest enters — policy ensures accessible responses."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.guest_enters()
         w.advance(2.5)
         policy = w.policy()
-        assert "formal register" in policy.lower()
+        assert "accessible to all listeners" in policy.lower()
 
-    def test_guest_detected_no_personal_content(self):
-        """Guest present — policy forbids personal content."""
+    def test_guest_detected_data_protection(self):
+        """Guest present — policy avoids exposing sensitive data."""
         w = ExperientialWorld()
         w.operator_sits_down()
         w.guest_enters()
         w.advance(2.5)
         policy = w.policy()
-        assert "personal content" in policy.lower()
+        assert "sensitive data" in policy.lower() or "personal" in policy.lower()
 
     def test_unconsented_guest_dignity_floor(self):
         """Unconsented guest — dignity floor only, no operator profile."""
@@ -1499,7 +1499,7 @@ class TestPolicyExperiential:
         state_with_consent = replace(w._last_state, consent_phase="pending_consent")
         policy = get_policy(env=state_with_consent)
         assert "Dignity floor only" in policy
-        assert "Operator style" not in policy
+        assert "Socrates" not in policy  # no operator personality in unconsented mode
 
     def test_consented_guest_moderate_formality(self):
         """Consented guest — moderate formality, operator style softened."""
