@@ -96,8 +96,9 @@ export function StudioPage() {
     };
   }, [viewMode, basePreset, liveFilter.css, trailFilter.css, effectOverrides]);
 
-  // HLS pre-buffering
+  // HLS — only initialize when in smooth mode (saves decode resources)
   useEffect(() => {
+    if (viewMode !== "smooth") return;
     const hlsUrl = "/api/studio/hls/stream.m3u8";
     const video = videoRef.current;
     if (!video) return;
@@ -129,7 +130,7 @@ export function StudioPage() {
       hlsRef.current = null;
       setHlsReady(false);
     };
-  }, []);
+  }, [viewMode]);
 
   // --- Callbacks for sidebar ---
 
