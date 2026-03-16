@@ -47,6 +47,7 @@ from agents.visual_layer_state import (
     VisualLayerState,
     VoiceSessionState,
 )
+from shared.stimmung import StimmungCollector, SystemStimmung
 
 log = logging.getLogger("visual_layer_aggregator")
 
@@ -55,6 +56,14 @@ log = logging.getLogger("visual_layer_aggregator")
 PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
 OUTPUT_DIR = Path("/dev/shm/hapax-compositor")
 OUTPUT_FILE = OUTPUT_DIR / "visual-layer-state.json"
+STIMMUNG_DIR = Path("/dev/shm/hapax-stimmung")
+STIMMUNG_FILE = STIMMUNG_DIR / "state.json"
+
+# ── Stimmung data source paths ─────────────────────────────────────────────
+
+HEALTH_HISTORY_PATH = Path("profiles/health-history.jsonl")
+INFRA_SNAPSHOT_PATH = Path("profiles/infra-snapshot.json")
+LANGFUSE_STATE_PATH = Path.home() / ".cache" / "langfuse-sync" / "state.json"
 
 # ── Cadences ─────────────────────────────────────────────────────────────────
 
@@ -357,6 +366,24 @@ def map_voice_content(data: dict) -> list[SupplementaryContent]:
     ]
 
 
+def map_stimmung(stimmung: SystemStimmung) -> list[SignalEntry]:
+    """Map non-nominal stimmung dimensions to system_state signals."""
+    signals: list[SignalEntry] = []
+    for name, dim in stimmung.non_nominal_dimensions.items():
+        severity = min(1.0, dim.value)
+        label = name.replace("_", " ")
+        trend_suffix = f" ({dim.trend})" if dim.trend != "stable" else ""
+        signals.append(
+            SignalEntry(
+                category=SignalCategory.SYSTEM_STATE,
+                severity=severity,
+                title=f"{label}: {dim.value:.0%}{trend_suffix}",
+                source_id=f"stimmung-{name}",
+            )
+        )
+    return signals
+
+
 def map_biometrics(data: dict) -> BiometricState:
     """Map biometric fields from perception state."""
     return BiometricState(
@@ -432,6 +459,10 @@ class VisualLayerAggregator:
         # Adaptive cadence state (Phase 5)
         self._prev_display_state: str = "ambient"
         self._last_perception_data: dict[str, Any] = {}
+
+        # Stimmung (WS2): system self-state
+        self._stimmung_collector = StimmungCollector()
+        self._stimmung: SystemStimmung | None = None
 
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
@@ -514,6 +545,81 @@ class VisualLayerAggregator:
 
         except (FileNotFoundError, json.JSONDecodeError):
             pass  # perception daemon may not be running
+
+    def _update_stimmung(self) -> None:
+        """Collect stimmung readings from all available data sources.
+
+        Best-effort: each source silently falls back to defaults on error.
+        Called from _api_poll_loop every 15s alongside health/GPU polls.
+        """
+        # 1. Health history — last line of JSONL
+        try:
+            text = HEALTH_HISTORY_PATH.read_text(encoding="utf-8").strip()
+            if text:
+                last_line = text.split("\n")[-1]
+                h = json.loads(last_line)
+                healthy = h.get("healthy", 0)
+                total = h.get("total", 0)
+                self._stimmung_collector.update_health(healthy, total)
+        except (OSError, json.JSONDecodeError, IndexError):
+            pass
+
+        # 2. Infra snapshot → GPU
+        try:
+            infra = json.loads(INFRA_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+            gpu = infra.get("gpu", {})
+            used = gpu.get("used_mb", 0)
+            total = gpu.get("total_mb", 0)
+            if total > 0:
+                self._stimmung_collector.update_gpu(used, total)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        # 3. Langfuse sync state
+        try:
+            lf = json.loads(LANGFUSE_STATE_PATH.read_text(encoding="utf-8"))
+            daily_costs = lf.get("daily_costs", {})
+            # Sum today's cost (keys are date strings)
+            from datetime import date
+
+            today = date.today().isoformat()
+            daily_cost = daily_costs.get(today, 0.0) if isinstance(daily_costs, dict) else 0.0
+            self._stimmung_collector.update_langfuse(
+                daily_cost=float(daily_cost),
+                error_count=int(lf.get("error_count", 0)),
+                total_traces=int(lf.get("total_traces_synced", 0)),
+            )
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        # 4. Engine status via API — done in poll_fast already, use cached response
+        # (avoid double HTTP call — we'll update from _api_poll_loop directly)
+
+        # 5. Perception freshness + confidence
+        now = time.monotonic()
+        perception_age = now - self._ts_perception if self._ts_perception else 60.0
+        confidence = self._last_perception_data.get("aggregate_confidence", 1.0)
+        self._stimmung_collector.update_perception(
+            freshness_s=perception_age, confidence=float(confidence)
+        )
+
+        # 6. Snapshot
+        self._stimmung = self._stimmung_collector.snapshot()
+
+        # 7. Write atomically
+        self._write_stimmung()
+
+    def _write_stimmung(self) -> None:
+        """Write stimmung state to /dev/shm for external consumers."""
+        if self._stimmung is None:
+            return
+        try:
+            STIMMUNG_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = STIMMUNG_FILE.with_suffix(".tmp")
+            tmp.write_text(self._stimmung.model_dump_json(), encoding="utf-8")
+            tmp.rename(STIMMUNG_FILE)
+        except OSError:
+            log.debug("Failed to write stimmung state", exc_info=True)
 
     def _compute_staleness(self) -> SignalStaleness:
         """Compute per-source staleness from last-update timestamps."""
@@ -635,6 +741,10 @@ class VisualLayerAggregator:
             trend_flow=tc.trend_flow,
             trend_audio=tc.trend_audio,
             perception_age_s=tc.perception_age_s,
+            # WS2: stimmung stance
+            stimmung_stance=self._stimmung.overall_stance.value
+            if self._stimmung
+            else "nominal",
         )
 
         pools = ContentPools(
@@ -802,6 +912,12 @@ class VisualLayerAggregator:
             self._fast_signals + self._slow_signals + self._perception_signals + self._voice_signals
         )
 
+        # WS2: add stimmung signals
+        stimmung_stance = "nominal"
+        if self._stimmung is not None:
+            all_signals = all_signals + map_stimmung(self._stimmung)
+            stimmung_stance = self._stimmung.overall_stance.value
+
         # Phase 3: set staleness before tick so opacity computation uses it
         staleness = self._compute_staleness()
         self._sm.set_staleness(staleness)
@@ -811,6 +927,7 @@ class VisualLayerAggregator:
             flow_score=self._flow_score,
             audio_energy=self._audio_energy,
             production_active=self._production_active,
+            stimmung_stance=stimmung_stance,
         )
 
         # Content scheduler: intelligent text rotation + camera injection + shader nudges
@@ -834,6 +951,9 @@ class VisualLayerAggregator:
         # Phase 2+3: temporal context and staleness
         state.temporal_context = self._compute_temporal_context()
         state.signal_staleness = staleness
+
+        # WS2: attach stimmung stance
+        state.stimmung_stance = stimmung_stance
 
         # Track for adaptive cadence
         self._prev_display_state = state.display_state
@@ -886,6 +1006,16 @@ class VisualLayerAggregator:
 
             if now - last_health >= HEALTH_POLL_S:
                 await self.poll_fast()
+                # Feed engine status to stimmung (piggyback on health poll)
+                engine = await self._fetch_json("/engine/status")
+                if isinstance(engine, dict):
+                    self._stimmung_collector.update_engine(
+                        events_processed=int(engine.get("events_processed", 0)),
+                        actions_executed=int(engine.get("actions_executed", 0)),
+                        errors=int(engine.get("errors", 0)),
+                        uptime_s=float(engine.get("uptime_s", 0)),
+                    )
+                self._update_stimmung()
                 last_health = now
 
             if now - last_slow >= SLOW_POLL_S:
