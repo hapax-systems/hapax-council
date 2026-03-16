@@ -209,8 +209,8 @@ def _fit_16x9(w: int, h: int) -> tuple[int, int, int, int]:
         # slot is taller than 16:9 — width is the constraint
         fit_w = w
         fit_h = int(w / target_ratio)
-    x_off = 0
-    y_off = 0
+    x_off = (w - fit_w) // 2
+    y_off = (h - fit_h) // 2
     return x_off, y_off, fit_w, fit_h
 
 
