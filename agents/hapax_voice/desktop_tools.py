@@ -87,12 +87,58 @@ _get_desktop_state = FunctionSchema(
     required=[],
 )
 
+_move_window = FunctionSchema(
+    name="move_window",
+    description=(
+        "Move the active window to a position on screen or to a workspace. "
+        "Examples: move to workspace 3, move to left half, move to center."
+    ),
+    properties={
+        "workspace": {
+            "type": "integer",
+            "description": "Target workspace number (moves window to that workspace)",
+        },
+        "position": {
+            "type": "string",
+            "description": "Position: 'left', 'right', 'center', 'top-left', 'top-right', 'bottom-left', 'bottom-right'",
+        },
+    },
+    required=[],
+)
+
+_resize_window = FunctionSchema(
+    name="resize_window",
+    description="Resize the active window. Use 'fullscreen', 'half', or pixel adjustments.",
+    properties={
+        "mode": {
+            "type": "string",
+            "description": "'fullscreen', 'maximize', 'half-left', 'half-right', 'float', or 'restore'",
+        },
+    },
+    required=["mode"],
+)
+
+_close_window = FunctionSchema(
+    name="close_window",
+    description="Close the active window or a window by class name.",
+    properties={
+        "target": {
+            "type": "string",
+            "description": "Optional: application class name to close. If omitted, closes active window.",
+        },
+    },
+    required=[],
+)
+
 DESKTOP_TOOL_SCHEMAS = [
     _focus_window,
     _switch_workspace,
     _open_app,
     _confirm_open_app,
     _get_desktop_state,
+    _move_window,
+    _resize_window,
+    _close_window,
 ]
 
 
@@ -157,6 +203,61 @@ async def handle_confirm_open_app(params) -> None:
 
     status = "launched" if ok else "failed"
     await params.result_callback({"status": status, "command": command})
+
+
+async def handle_move_window(params) -> None:
+    workspace = params.arguments.get("workspace")
+    position = params.arguments.get("position")
+
+    if workspace:
+        ok = _ipc.dispatch("movetoworkspacesilent", str(workspace))
+        status = "moved" if ok else "failed"
+        await params.result_callback({"status": status, "workspace": workspace})
+        return
+
+    # Position-based moves using Hyprland layout
+    position_dispatches = {
+        "left": ("movefocus", "l"),
+        "right": ("movefocus", "r"),
+        "center": ("centerwindow", ""),
+    }
+
+    if position and position in position_dispatches:
+        cmd, arg = position_dispatches[position]
+        ok = _ipc.dispatch(cmd, arg)
+    else:
+        ok = False
+    status = "moved" if ok else "failed"
+    await params.result_callback({"status": status, "position": position})
+
+
+async def handle_resize_window(params) -> None:
+    mode = params.arguments["mode"]
+
+    dispatch_map = {
+        "fullscreen": ("fullscreen", "0"),
+        "maximize": ("fullscreen", "1"),
+        "half-left": ("splitratio", "-0.5"),
+        "half-right": ("splitratio", "0.5"),
+        "float": ("togglefloating", ""),
+        "restore": ("fullscreen", "0"),  # toggle back
+    }
+
+    cmd, arg = dispatch_map.get(mode, ("fullscreen", "0"))
+    ok = _ipc.dispatch(cmd, arg)
+    status = "resized" if ok else "failed"
+    await params.result_callback({"status": status, "mode": mode})
+
+
+async def handle_close_window(params) -> None:
+    target = params.arguments.get("target")
+
+    if target:
+        # Focus first, then close
+        _ipc.dispatch("focuswindow", f"class:{target}")
+    ok = _ipc.dispatch("killactive", "")
+    status = "closed" if ok else "failed"
+    await params.result_callback({"status": status, "target": target or "active"})
 
 
 async def handle_get_desktop_state(params) -> None:
