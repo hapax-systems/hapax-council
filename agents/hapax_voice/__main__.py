@@ -595,22 +595,49 @@ class VoiceDaemon:
         The conversation buffer accumulates speech from _audio_loop().
         """
         from agents.hapax_voice.conversation_pipeline import ConversationPipeline
-        from agents.hapax_voice.persona import system_prompt
+        from agents.hapax_voice.persona import screen_context_block, system_prompt
+        from agents.hapax_voice.tools_openai import get_openai_tools
 
         # Load STT model on first use (stays resident)
         if not self._resident_stt.is_loaded:
             log.info("Loading resident STT model (first session)...")
             self._resident_stt.load()
 
+        # Build system prompt with screen context if available
         prompt = system_prompt(guest_mode=self.session.is_guest_mode)
+        screen_ctx = screen_context_block(self.workspace_monitor.latest_analysis)
+        if screen_ctx:
+            prompt += screen_ctx
+
+        # Load tools (respects tools_enabled config and guest mode)
+        tools, tool_handlers = (None, {})
+        if self.cfg.tools_enabled:
+            tools, tool_handlers = get_openai_tools(
+                guest_mode=self.session.is_guest_mode,
+                config=self.cfg,
+                webcam_capturer=getattr(self.workspace_monitor, "_webcam_capturer", None),
+                screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
+            )
+
+        consent_reader = None
+        if not self.session.is_guest_mode:
+            try:
+                from shared.governance.consent_reader import ConsentGatedReader
+
+                consent_reader = ConsentGatedReader.create()
+            except Exception:
+                log.warning("ConsentGatedReader unavailable, proceeding without consent filtering")
 
         self._conversation_pipeline = ConversationPipeline(
             stt=self._resident_stt,
             tts_manager=self.tts,
             system_prompt=prompt,
+            tools=tools or None,
+            tool_handlers=tool_handlers,
             llm_model=self.cfg.llm_model,
             event_log=self.event_log,
             conversation_buffer=self._conversation_buffer,
+            consent_reader=consent_reader,
         )
 
         await self._conversation_pipeline.start()
@@ -735,6 +762,7 @@ class VoiceDaemon:
             self.governor.wake_word_active = True
             self._frame_gate.set_directive("process")
             self.session.open(trigger="wake_word")
+            self.session.set_speaker("operator", confidence=1.0)  # Wake word implies operator
             log.info("Session opened via wake word")
             self.event_log.set_session_id(self.session.session_id)
             self.event_log.emit("session_lifecycle", action="opened", trigger="wake_word")
@@ -754,6 +782,7 @@ class VoiceDaemon:
                     return
                 self._acknowledge("activation")
                 self.session.open(trigger="hotkey")
+                self.session.set_speaker("operator", confidence=1.0)  # Physical access = operator
                 self.event_log.set_session_id(self.session.session_id)
                 self.event_log.emit("session_lifecycle", action="opened", trigger="hotkey")
                 await self._start_pipeline()
@@ -767,6 +796,7 @@ class VoiceDaemon:
                 return
             self._acknowledge("activation")
             self.session.open(trigger="hotkey")
+            self.session.set_speaker("operator", confidence=1.0)  # Physical access = operator
             self.event_log.set_session_id(self.session.session_id)
             self.event_log.emit("session_lifecycle", action="opened", trigger="hotkey")
             await self._start_pipeline()

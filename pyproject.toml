@@ -32,6 +32,8 @@ dependencies = [
     "openwakeword>=0.4.0",
     "litellm>=1.82.2",
     "kokoro>=0.9.4",
+    "python-toon>=0.1.3",
+    "llmlingua>=0.2.2",
 ]
 
 [project.optional-dependencies]

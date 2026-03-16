@@ -151,3 +151,54 @@ def _search_moments_sync(query: str, limit: int) -> list[dict]:
         ]
     except (ValueError, KeyError, TypeError, RuntimeError, OSError):
         return []
+
+
+FX_SNAPSHOT_PATH = Path("/dev/shm/hapax-compositor/fx-snapshot.jpg")
+
+
+@router.get("/studio/stream/fx")
+async def fx_snapshot():
+    """Single JPEG snapshot of the GPU-effected compositor output."""
+    if not FX_SNAPSHOT_PATH.exists():
+        return JSONResponse({"error": "FX pipeline not running"}, status_code=503)
+    try:
+        data = FX_SNAPSHOT_PATH.read_bytes()
+    except OSError:
+        return JSONResponse({"error": "read failed"}, status_code=503)
+    from starlette.responses import Response
+
+    return Response(content=data, media_type="image/jpeg", headers=_NO_CACHE)
+
+
+@router.get("/studio/effect/current")
+async def get_current_effect():
+    """Return the currently active visual effect preset name."""
+    return {
+        "preset": "clean",
+        "available": [
+            "ghost",
+            "trails",
+            "screwed",
+            "datamosh",
+            "vhs",
+            "neon",
+            "trap",
+            "diff",
+            "clean",
+        ],
+    }
+
+
+class EffectSelectRequest(BaseModel):
+    preset: str
+
+
+@router.post("/studio/effect/select")
+async def select_effect(req: EffectSelectRequest):
+    """Request the compositor to switch to a different visual effect preset."""
+    fx_request = Path("/dev/shm/hapax-compositor/fx-request.txt")
+    try:
+        fx_request.write_text(req.preset)
+        return {"status": "requested", "preset": req.preset}
+    except OSError:
+        return JSONResponse({"error": "write failed"}, status_code=503)
