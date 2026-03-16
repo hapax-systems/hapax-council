@@ -25,6 +25,44 @@
   100% { transform: translate(0, 0); }
 }
 
+/* SCREWED: the defining visual — heavy, sinking, stuttering */
+
+@keyframes studio-screwed-drift {
+  0% { transform: translate(0, 0) rotate(0deg) scale(1); }
+  20% { transform: translate(1px, 3px) rotate(0.3deg) scale(1.005); }
+  40% { transform: translate(-1px, 5px) rotate(-0.4deg) scale(1.01); }
+  60% { transform: translate(2px, 4px) rotate(0.5deg) scale(1.008); }
+  80% { transform: translate(-1px, 6px) rotate(-0.3deg) scale(1.012); }
+  100% { transform: translate(0, 0) rotate(0deg) scale(1); }
+}
+
+@keyframes studio-screwed-bands {
+  0%, 85%, 100% { clip-path: inset(0); transform: translateX(0); }
+  87% { clip-path: inset(20% 0 60% 0); transform: translateX(4px); }
+  89% { clip-path: inset(50% 0 30% 0); transform: translateX(-6px); }
+  91% { clip-path: inset(70% 0 10% 0); transform: translateX(3px); }
+  93% { clip-path: inset(0); transform: translateX(0); }
+}
+
+@keyframes studio-screwed-stutter {
+  0%, 100% { opacity: 1; }
+  /* hold frame */
+  10% { opacity: 1; }
+  11% { opacity: 0.7; }
+  12% { opacity: 1; }
+  /* stutter repeat */
+  13% { opacity: 0.6; }
+  15% { opacity: 1; }
+  /* normal */
+  50% { opacity: 1; }
+  /* another hold-stutter */
+  60% { opacity: 1; }
+  61% { opacity: 0.7; }
+  63% { opacity: 1; }
+  64% { opacity: 0.5; }
+  66% { opacity: 1; }
+}
+
 .studio-drift {
   animation: studio-drift 8s ease-in-out infinite alternate;
 }
@@ -39,4 +77,8 @@
 
 .studio-noise {
   animation: studio-noise 0.15s steps(4) infinite;
+}
+
+.studio-screwed {
+  animation: studio-screwed-drift 25s cubic-bezier(0.4, 0.0, 0.2, 1.0) infinite alternate;
 }

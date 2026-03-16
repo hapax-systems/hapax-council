@@ -1,0 +1,220 @@
+import { useEffect, useRef } from "react";
+
+interface Props {
+  role: string;
+  className?: string;
+}
+
+export function ScrewedCanvas({ role, className }: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let running = true;
+    let pending = false;
+    const frameRing: HTMLImageElement[] = [];
+    const RING_SIZE = 16;
+    let writeHead = 0;
+
+    let displayIdx = 0;
+    let tick = 0;
+    let holdTicks = 0;
+    let phase: "play" | "freeze" | "replay" = "play";
+    let freezeFor = 0;
+    let replayFrom = 0;
+    let replayStep = 0;
+
+    const fetchFrame = () => {
+      if (!running || pending) return;
+      pending = true;
+      const loader = new Image();
+      loader.crossOrigin = "anonymous";
+      loader.onload = () => {
+        if (!running) { pending = false; return; }
+        frameRing[writeHead % RING_SIZE] = loader;
+        writeHead++;
+        if (canvas.width !== loader.naturalWidth) {
+          canvas.width = loader.naturalWidth;
+          canvas.height = loader.naturalHeight;
+        }
+        pending = false;
+      };
+      loader.onerror = () => { pending = false; };
+      loader.src = `/api/studio/stream/camera/${role}?_t=${Date.now()}`;
+    };
+
+    const render = () => {
+      if (!running) return;
+      const w = canvas.width;
+      const h = canvas.height;
+      if (w === 0) return;
+      const available = Math.min(writeHead, RING_SIZE);
+      if (available < 3) return;
+
+      tick++;
+
+      if (phase === "play") {
+        displayIdx = (writeHead - 1) % RING_SIZE;
+        if (tick % 10 === 0 && Math.random() < 0.50) {
+          phase = "freeze";
+          freezeFor = 3 + Math.floor(Math.random() * 8);
+          holdTicks = 0;
+        }
+      } else if (phase === "freeze") {
+        holdTicks++;
+        if (holdTicks >= freezeFor) {
+          phase = "replay";
+          replayFrom = displayIdx;
+          replayStep = 0;
+          holdTicks = 0;
+        }
+      } else if (phase === "replay") {
+        holdTicks++;
+        if (holdTicks >= 2) {
+          holdTicks = 0;
+          replayStep++;
+          displayIdx = (replayFrom - 3 + replayStep + RING_SIZE * 10) % RING_SIZE;
+          if (replayStep >= 3) {
+            phase = "play";
+          }
+        }
+      }
+
+      const idx = Math.abs(displayIdx) % available;
+      ctx.clearRect(0, 0, w, h);
+
+      // Ghost trails — purple-filtered older frames drifting down
+      for (let g = 3; g >= 1; g--) {
+        const gi = (idx - g * 2 + available * 100) % available;
+        const ghost = frameRing[gi];
+        if (!ghost) continue;
+        ctx.save();
+        ctx.filter = "saturate(0.3) brightness(0.5) sepia(0.6) hue-rotate(250deg)";
+        ctx.globalAlpha = 0.18 + (3 - g) * 0.1;
+        ctx.drawImage(ghost, g * 0.7, g * 6, w, h);
+        ctx.restore();
+      }
+
+      // Main frame — screwed filter + warp pan + horizontal slice deformation
+      const main = frameRing[idx];
+      if (main) {
+        const t = tick * 0.04;
+        const panX = Math.sin(t) * 20;
+        const panY = Math.sin(t * 0.7) * 14 + Math.sin(t * 0.3) * 8;
+        const rot = Math.sin(t * 0.5) * 0.025;
+        const scale = 1.06 + Math.sin(t * 0.2) * 0.04;
+
+        // Draw in horizontal slices with per-slice displacement (liquid warp)
+        const SLICES = 24;
+        const sliceH = Math.ceil(h / SLICES);
+        ctx.save();
+        ctx.filter = "saturate(0.55) sepia(0.4) hue-rotate(250deg) contrast(1.05) brightness(0.9)";
+
+        for (let s = 0; s < SLICES; s++) {
+          const sy = s * sliceH;
+          const slicePhase = t + s * 0.15;
+          // Each slice gets its own horizontal wobble + slight vertical stretch
+          const sliceShift = Math.sin(slicePhase) * 6 + Math.sin(slicePhase * 2.3) * 3;
+          const sliceStretch = 1 + Math.sin(slicePhase * 0.8) * 0.008;
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, sy, w, sliceH + 1);
+          ctx.clip();
+
+          ctx.translate(w / 2, h / 2);
+          ctx.rotate(rot);
+          ctx.scale(scale, scale * sliceStretch);
+          ctx.translate(-w / 2 + panX + sliceShift, -h / 2 + panY);
+          ctx.drawImage(main, 0, 0, w, h);
+
+          ctx.restore();
+        }
+
+        ctx.restore();
+      }
+
+      // Delayed overlay — older frame composited on top, clearly visible
+      const delayOffset = 10;
+      const delayIdx = (idx - delayOffset + available * 100) % available;
+      const delayed = frameRing[delayIdx];
+      if (delayed && available > delayOffset) {
+        ctx.save();
+        ctx.filter = "saturate(0.4) sepia(0.6) hue-rotate(280deg) brightness(1.2) contrast(1.1)";
+        ctx.globalAlpha = 0.45;
+        ctx.globalCompositeOperation = "lighter";
+        const dt = tick * 0.03;
+        ctx.drawImage(delayed, Math.sin(dt) * 5, 8 + Math.sin(dt * 0.6) * 4, w, h);
+        ctx.restore();
+      }
+
+      // Syrup gradient
+      ctx.save();
+      ctx.filter = "none";
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, "rgba(50, 15, 70, 0.0)");
+      grad.addColorStop(0.5, "rgba(60, 20, 80, 0.1)");
+      grad.addColorStop(1, "rgba(40, 10, 60, 0.25)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+      ctx.restore();
+
+      // Vignette
+      const vig = ctx.createRadialGradient(w / 2, h / 2, w * 0.3, w / 2, h / 2, w * 0.7);
+      vig.addColorStop(0, "rgba(0,0,0,0)");
+      vig.addColorStop(1, "rgba(0,0,0,0.3)");
+      ctx.fillStyle = vig;
+      ctx.fillRect(0, 0, w, h);
+
+      // Scanlines
+      ctx.save();
+      ctx.globalAlpha = 0.12;
+      for (let y = 0; y < h; y += 4) {
+        ctx.fillStyle = "rgba(0,0,0,1)";
+        ctx.fillRect(0, y + 2, w, 1.5);
+      }
+      ctx.restore();
+
+      // Band displacement
+      if (Math.random() < 0.18 && main) {
+        const bandY = Math.floor(Math.random() * h * 0.6) + h * 0.2;
+        const bandH = 4 + Math.floor(Math.random() * 16);
+        const shift = (Math.random() > 0.5 ? 1 : -1) * (5 + Math.random() * 15);
+        ctx.save();
+        ctx.filter = "saturate(0.55) sepia(0.4) hue-rotate(250deg) contrast(1.05) brightness(0.9)";
+        ctx.beginPath();
+        ctx.rect(0, bandY, w, bandH);
+        ctx.clip();
+        ctx.drawImage(main, shift, 0, w, h);
+        ctx.restore();
+      }
+
+      // Freeze indicator
+      if (phase === "freeze") {
+        ctx.fillStyle = "rgba(80, 30, 120, 0.18)";
+        ctx.fillRect(0, 0, w, h);
+      }
+    };
+
+    fetchFrame();
+    const fetchTimer = setInterval(fetchFrame, 100);
+    const renderTimer = setInterval(render, 70);
+
+    return () => {
+      running = false;
+      clearInterval(fetchTimer);
+      clearInterval(renderTimer);
+    };
+  }, [role]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className={className ?? "h-full w-full bg-black object-contain"}
+    />
+  );
+}

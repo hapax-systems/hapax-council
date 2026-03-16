@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Maximize, Minimize } from "lucide-react";
 import Hls from "hls.js";
 import { StudioLiveGrid } from "../components/studio/StudioLiveGrid";
-import { PRESETS, type CompositePreset, type OverlayType } from "../components/studio/compositePresets";
+import { PRESETS, type CompositePreset } from "../components/studio/compositePresets";
 import { SOURCE_FILTERS } from "../components/studio/compositeFilters";
 import {
   StudioStatusGrid,
@@ -15,7 +15,7 @@ type ViewMode = "grid" | "composite" | "smooth";
 
 export function StudioPage() {
   const { data: studio } = useStudio();
-  
+
   const compositor = studio?.compositor;
   const [focusedCamera, setFocusedCamera] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
@@ -23,7 +23,9 @@ export function StudioPage() {
   const [presetIdx, setPresetIdx] = useState(0);
   const [liveFilterIdx, setLiveFilterIdx] = useState(0);
   const [trailFilterIdx, setTrailFilterIdx] = useState(0);
-  const [overlayOverrides, setOverlayOverrides] = useState<OverlayType[] | null>(null);
+  const [effectOverrides, setEffectOverrides] = useState<Partial<CompositePreset["effects"]> | null>(
+    null,
+  );
   const videoRef = useRef<HTMLVideoElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const [pageFullscreen, setPageFullscreen] = useState(false);
@@ -40,22 +42,23 @@ export function StudioPage() {
   const liveFilter = SOURCE_FILTERS[liveFilterIdx];
   const trailFilter = SOURCE_FILTERS[trailFilterIdx];
 
-  // Build effective preset with user filter + overlay overrides
+  // Build effective preset with user filter + effect overrides merged in
   const effectivePreset: CompositePreset | undefined = useMemo(() => {
     if (viewMode !== "composite") return undefined;
     return {
       ...basePreset,
-      liveFilter: liveFilter.css !== "none" ? liveFilter.css : basePreset.liveFilter,
+      colorFilter: liveFilter.css !== "none" ? liveFilter.css : basePreset.colorFilter,
       trail: {
         ...basePreset.trail,
         filter: trailFilter.css !== "none" ? trailFilter.css : basePreset.trail.filter,
       },
-      overlays: overlayOverrides ?? basePreset.overlays,
+      effects: effectOverrides
+        ? { ...basePreset.effects, ...effectOverrides }
+        : basePreset.effects,
     };
-  }, [viewMode, basePreset, liveFilter.css, trailFilter.css, overlayOverrides]);
+  }, [viewMode, basePreset, liveFilter.css, trailFilter.css, effectOverrides]);
 
-
-  // HLS pre-buffering — start immediately, don't wait for stream info
+  // HLS pre-buffering
   useEffect(() => {
     const hlsUrl = "/api/studio/hls/stream.m3u8";
     const video = videoRef.current;
@@ -71,7 +74,10 @@ export function StudioPage() {
     hls.loadSource(hlsUrl);
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      video.play().then(() => setHlsReady(true)).catch(() => {});
+      video
+        .play()
+        .then(() => setHlsReady(true))
+        .catch(() => {});
     });
     const sync = setInterval(() => {
       if (hls.liveSyncPosition && video.currentTime > 0) {
@@ -79,8 +85,13 @@ export function StudioPage() {
         if (drift > 3) video.currentTime = hls.liveSyncPosition;
       }
     }, 2000);
-    return () => { clearInterval(sync); hls.destroy(); hlsRef.current = null; setHlsReady(false); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => {
+      clearInterval(sync);
+      hls.destroy();
+      hlsRef.current = null;
+      setHlsReady(false);
+    };
+  }, []);
 
   // --- Callbacks for sidebar ---
 
@@ -88,21 +99,25 @@ export function StudioPage() {
     setPresetIdx(i);
     setLiveFilterIdx(0);
     setTrailFilterIdx(0);
-    setOverlayOverrides(null);
+    setEffectOverrides(null);
   }, []);
 
-  const handleOverlayToggle = useCallback(
-    (ov: OverlayType) => {
-      setOverlayOverrides((prev) => {
-        const current = prev ?? PRESETS[presetIdx].overlays;
-        return current.includes(ov) ? current.filter((o) => o !== ov) : [...current, ov];
+  const handleEffectToggle = useCallback(
+    (key: keyof CompositePreset["effects"]) => {
+      setEffectOverrides((prev) => {
+        const current = prev ? { ...PRESETS[presetIdx].effects, ...prev } : PRESETS[presetIdx].effects;
+        const val = current[key];
+        if (typeof val === "boolean") {
+          return { ...(prev ?? {}), [key]: !val };
+        }
+        return prev;
       });
     },
     [presetIdx],
   );
 
-  const handleOverlayReset = useCallback(() => {
-    setOverlayOverrides(null);
+  const handleEffectReset = useCallback(() => {
+    setEffectOverrides(null);
   }, []);
 
   const heroRole = cameraOrder.length > 0 ? cameraOrder[0] : null;
@@ -141,7 +156,7 @@ export function StudioPage() {
     <div ref={pageRef} className={`flex flex-1 overflow-hidden ${pageFullscreen ? "bg-zinc-950" : ""}`}>
       {/* Main content */}
       <div className="flex min-w-0 flex-1 flex-col gap-2 p-3">
-        {/* Header — title + camera count only */}
+        {/* Header */}
         <div className="flex shrink-0 items-center justify-between">
           <h1 className="text-sm font-semibold text-zinc-100">Studio</h1>
           {compositor && compositor.state !== "unknown" && (
@@ -154,7 +169,11 @@ export function StudioPage() {
             className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
             title={pageFullscreen ? "Exit fullscreen" : "Fullscreen studio"}
           >
-            {pageFullscreen ? <Minimize className="h-3.5 w-3.5" /> : <Maximize className="h-3.5 w-3.5" />}
+            {pageFullscreen ? (
+              <Minimize className="h-3.5 w-3.5" />
+            ) : (
+              <Maximize className="h-3.5 w-3.5" />
+            )}
           </button>
         </div>
 
@@ -206,9 +225,10 @@ export function StudioPage() {
         onLiveFilterChange={setLiveFilterIdx}
         trailFilterIdx={trailFilterIdx}
         onTrailFilterChange={setTrailFilterIdx}
-        overlayOverrides={overlayOverrides}
-        onOverlayToggle={handleOverlayToggle}
-        onOverlayReset={handleOverlayReset}
+        effectOverrides={effectOverrides}
+        baseEffects={basePreset.effects}
+        onEffectToggle={handleEffectToggle}
+        onEffectReset={handleEffectReset}
         heroRole={heroRole}
         onHeroChange={handleHeroChange}
         onOrderReset={handleOrderReset}

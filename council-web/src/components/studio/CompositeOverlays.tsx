@@ -1,4 +1,5 @@
 import type { OverlayType } from "./compositePresets";
+import "./studio-animations.css";
 
 /** Render visual overlay effects as CSS-only layers. */
 export function CompositeOverlay({ type }: { type: OverlayType }) {
@@ -37,6 +38,8 @@ export function CompositeOverlay({ type }: { type: OverlayType }) {
           }}
         />
       );
+    case "screwed":
+      return <ScrewedOverlay />;
     case "noise":
       return (
         <div
@@ -52,6 +55,38 @@ export function CompositeOverlay({ type }: { type: OverlayType }) {
     default:
       return null;
   }
+}
+
+/** Screwed overlay — horizontal band displacement + syrup gradient */
+function ScrewedOverlay() {
+  return (
+    <>
+      {/* Syrup settling gradient — purple fading down like lean in a cup */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: "linear-gradient(180deg, transparent 30%, rgba(75, 0, 90, 0.4) 60%, rgba(40, 0, 50, 0.65) 100%)",
+          mixBlendMode: "multiply",
+        }}
+      />
+      {/* Horizontal band glitch — VHS tracking displacement */}
+      <div
+        className="pointer-events-none absolute inset-0 studio-screwed-bands"
+        style={{
+          background: "inherit",
+          mixBlendMode: "normal",
+          opacity: 0.15,
+        }}
+      />
+      {/* Heavy vignette — 2AM darkness */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: "radial-gradient(ellipse at center, transparent 20%, rgba(0,0,0,0.5) 60%, rgba(0,0,0,0.85) 100%)",
+        }}
+      />
+    </>
+  );
 }
 
 /** RGB chromatic aberration — 2 offset color-shifted copies */
