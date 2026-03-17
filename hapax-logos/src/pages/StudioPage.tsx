@@ -1,20 +1,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Maximize, Minimize } from "lucide-react";
+import { AlertTriangle, Maximize, Minimize } from "lucide-react";
 import Hls from "hls.js";
 import { StudioLiveGrid } from "../components/studio/StudioLiveGrid";
-import { CompositeCanvas } from "../components/studio/CompositeCanvas";
 import { PRESETS, type CompositePreset } from "../components/studio/compositePresets";
-
-import { SOURCE_FILTERS } from "../components/studio/compositeFilters";
 import {
   StudioStatusGrid,
   CameraSoloView,
 } from "../components/studio/StudioStatusGrid";
 import { StudioSidebar } from "../components/studio/StudioSidebar";
-import { useStudio } from "../api/hooks";
+import { useStudio, useStudioStreamInfo } from "../api/hooks";
+import { useSnapshotPoll } from "../hooks/useSnapshotPoll";
+import { useStudioShortcuts } from "../hooks/useStudioShortcuts";
 import { api } from "../api/client";
 
+/* ---------- GPU FX snapshot viewer ---------- */
+function FxView() {
+  const { imgRef, isStale } = useSnapshotPoll("/api/studio/stream/fx", 80);
 
+  return (
+    <div className="relative h-full w-full">
+      <img
+        ref={imgRef}
+        className="h-full w-full rounded-lg bg-black object-contain"
+        alt="GPU FX"
+      />
+      {isStale && (
+        <div className="absolute inset-x-0 top-2 flex justify-center">
+          <div className="flex items-center gap-1.5 rounded-full bg-amber-900/80 px-3 py-1 text-[11px] font-medium text-amber-200 backdrop-blur-sm">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            FX pipeline stale
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 type ViewMode = "grid" | "composite" | "smooth";
 
@@ -27,10 +47,6 @@ export function StudioPage() {
   const [userOrder, setUserOrder] = useState<string[] | null>(null);
   const [presetIdx, setPresetIdx] = useState(0);
   const [liveFilterIdx, setLiveFilterIdx] = useState(0);
-  const [smoothSourceId, setSmoothSourceId] = useState("camera");
-  const [smoothEnabled, setSmoothEnabled] = useState(false);
-  // TODO: wire setSmoothSourceId to sidebar source selector
-  void setSmoothSourceId;
   const [trailFilterIdx, setTrailFilterIdx] = useState(0);
   const [effectOverrides, setEffectOverrides] = useState<Partial<CompositePreset["effects"]> | null>(
     null,
@@ -39,7 +55,9 @@ export function StudioPage() {
   const pageRef = useRef<HTMLDivElement>(null);
   const [pageFullscreen, setPageFullscreen] = useState(false);
   const [hlsReady, setHlsReady] = useState(false);
+  const [hlsError, setHlsError] = useState(false);
   const hlsRef = useRef<Hls | null>(null);
+  const { data: streamInfo } = useStudioStreamInfo();
 
   const defaultOrder = useMemo(
     () => (compositor ? Object.keys(compositor.cameras) : []),
@@ -48,32 +66,24 @@ export function StudioPage() {
   );
   const cameraOrder = userOrder ?? defaultOrder;
   const basePreset = PRESETS[presetIdx];
-  const liveFilter = SOURCE_FILTERS[liveFilterIdx];
-  const trailFilter = SOURCE_FILTERS[trailFilterIdx];
-
-  // Build effective preset with user filter + effect overrides merged in
-  const effectivePreset: CompositePreset | undefined = useMemo(() => {
-    // Preset always available — enables Canvas trails/filters in all view modes
-    return {
-      ...basePreset,
-      colorFilter: liveFilter.css !== "none" ? liveFilter.css : basePreset.colorFilter,
-      trail: {
-        ...basePreset.trail,
-        filter: trailFilter.css !== "none" ? trailFilter.css : basePreset.trail.filter,
-      },
-      effects: effectOverrides
-        ? { ...basePreset.effects, ...effectOverrides }
-        : basePreset.effects,
-    };
-  }, [viewMode, basePreset, liveFilter.css, trailFilter.css, effectOverrides]);
 
   // HLS — only initialize when in smooth mode (saves decode resources)
   useEffect(() => {
     if (viewMode !== "smooth") return;
-    const hlsUrl = "/api/studio/hls/stream.m3u8";
+    setHlsError(false);
+    setHlsReady(false);
+
+    // Skip HLS init entirely if stream is known to be offline
+    if (streamInfo && !streamInfo.hls_enabled) {
+      setHlsError(true);
+      return;
+    }
+
     const video = videoRef.current;
     if (!video) return;
     if (!Hls.isSupported()) return;
+
+    const hlsUrl = "/api/studio/hls/stream.m3u8";
     const hls = new Hls({
       liveSyncDurationCount: 3,
       liveMaxLatencyDurationCount: 5,
@@ -83,12 +93,24 @@ export function StudioPage() {
     hlsRef.current = hls;
     hls.loadSource(hlsUrl);
     hls.attachMedia(video);
+
+    let manifestParsed = false;
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      manifestParsed = true;
       video
         .play()
         .then(() => setHlsReady(true))
         .catch(() => {});
     });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal) setHlsError(true);
+    });
+
+    // 8s timeout — if no manifest parsed, show error
+    const timeout = setTimeout(() => {
+      if (!manifestParsed) setHlsError(true);
+    }, 8_000);
+
     const sync = setInterval(() => {
       if (hls.liveSyncPosition && video.currentTime > 0) {
         const drift = hls.liveSyncPosition - video.currentTime;
@@ -96,12 +118,13 @@ export function StudioPage() {
       }
     }, 2000);
     return () => {
+      clearTimeout(timeout);
       clearInterval(sync);
       hls.destroy();
       hlsRef.current = null;
       setHlsReady(false);
     };
-  }, [viewMode]);
+  }, [viewMode, streamInfo?.hls_enabled]);
 
   // --- Callbacks for sidebar ---
 
@@ -112,7 +135,9 @@ export function StudioPage() {
     setEffectOverrides(null);
     // Switch the GPU pipeline when a preset is selected
     const presetName = PRESETS[i].name.toLowerCase();
-    api.selectEffect(presetName + (smoothEnabled ? "+smooth" : "")).catch(() => {});
+    api.selectEffect(presetName).catch(() => {
+      /* GPU pipeline may not be running — ignore */
+    });
   }, []);
 
   const handleEffectToggle = useCallback(
@@ -128,16 +153,6 @@ export function StudioPage() {
     },
     [presetIdx],
   );
-
-  const handleSmoothToggle = useCallback(() => {
-    setSmoothEnabled((prev) => {
-      const next = !prev;
-      // Re-send current preset with new smooth state
-      const presetName = PRESETS[presetIdx].name.toLowerCase();
-      api.selectEffect(presetName + (next ? "+smooth" : "-smooth")).catch(() => {});
-      return next;
-    });
-  }, [presetIdx]);
 
   const handleEffectReset = useCallback(() => {
     setEffectOverrides(null);
@@ -175,6 +190,13 @@ export function StudioPage() {
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
+  // Keyboard shortcuts
+  useStudioShortcuts({
+    onViewMode: setViewMode,
+    onPreset: handlePresetChange,
+    onFullscreen: togglePageFullscreen,
+  });
+
   return (
     <div ref={pageRef} className={`flex flex-1 overflow-hidden ${pageFullscreen ? "bg-zinc-950" : ""}`}>
       {/* Main content */}
@@ -211,17 +233,14 @@ export function StudioPage() {
                   cameraOrder={cameraOrder}
                   onReorder={setUserOrder}
                   onFocusCamera={setFocusedCamera}
-                  preset={effectivePreset}
-                  smoothSourceId={smoothSourceId}
                 />
               ) : viewMode === "composite" ? (
-                <CompositeCanvas
-                  role="fx-active"
-                  preset={effectivePreset!}
-                  liveSource={"/api/studio/stream/live/fx-active"}
-                  smoothSource={smoothSourceId !== "camera" ? "/api/studio/stream/live/" + smoothSourceId : undefined}
-                  className="h-full w-full rounded-lg bg-black object-contain"
-                />
+                <div className="relative h-full w-full">
+                  <FxView />
+                  <div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 text-[10px] font-medium text-purple-300 backdrop-blur-sm">
+                    {PRESETS[presetIdx].name}
+                  </div>
+                </div>
               ) : (
                 <>
                   <video
@@ -232,10 +251,23 @@ export function StudioPage() {
                   />
                   {!hlsReady && (
                     <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/80">
-                      <div className="flex flex-col items-center gap-2 text-zinc-500">
-                        <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
-                        <span className="text-[10px]">Buffering stream...</span>
-                      </div>
+                      {hlsError ? (
+                        <div className="flex flex-col items-center gap-3 text-zinc-400">
+                          <AlertTriangle className="h-6 w-6 text-amber-500" />
+                          <span className="text-xs">HLS stream unavailable</span>
+                          <button
+                            onClick={() => setViewMode("grid")}
+                            className="rounded bg-zinc-700 px-3 py-1 text-[11px] font-medium text-zinc-200 hover:bg-zinc-600"
+                          >
+                            Switch to Grid
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center gap-2 text-zinc-500">
+                          <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
+                          <span className="text-[10px]">Buffering stream...</span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </>
@@ -277,8 +309,6 @@ export function StudioPage() {
         onHeroChange={handleHeroChange}
         onOrderReset={handleOrderReset}
         cameraRoles={cameraOrder}
-        smoothEnabled={smoothEnabled}
-        onSmoothToggle={handleSmoothToggle}
       />
     </div>
   );

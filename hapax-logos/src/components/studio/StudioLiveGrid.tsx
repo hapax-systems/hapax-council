@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Maximize, Minimize, GripVertical } from "lucide-react";
-import type { CompositePreset } from "./compositePresets";
-import { CompositeCanvas } from "./CompositeCanvas";
-import { sourceUrl } from "./effectSources";
+import { AlertTriangle, Maximize, Minimize, GripVertical } from "lucide-react";
 
 interface Props {
   cameraOrder: string[];
   onReorder: (order: string[]) => void;
   onFocusCamera: (role: string) => void;
-  preset?: CompositePreset;
-  smoothSourceId?: string;
 }
 
-export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera, preset, smoothSourceId }: Props) {
+export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera }: Props) {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
 
@@ -54,8 +49,6 @@ export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera, preset, 
         onDrop={handleDrop}
         onDragEnd={handleDragEnd}
         onFocus={onFocusCamera}
-        preset={preset}
-        smoothSourceId={smoothSourceId}
       />
       {others.length > 0 && (
         <div className="flex w-1/3 flex-col gap-1">
@@ -71,8 +64,6 @@ export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera, preset, 
               onDrop={handleDrop}
               onDragEnd={handleDragEnd}
               onFocus={onFocusCamera}
-              preset={preset}
-              smoothSourceId={smoothSourceId}
             />
           ))}
         </div>
@@ -92,8 +83,6 @@ interface CameraCellProps {
   onDrop: (idx: number) => void;
   onDragEnd: () => void;
   onFocus: (role: string) => void;
-  preset?: CompositePreset;
-  smoothSourceId?: string;
 }
 
 function CameraCell({
@@ -107,12 +96,12 @@ function CameraCell({
   onDrop,
   onDragEnd,
   onFocus,
-  preset,
-  smoothSourceId,
 }: CameraCellProps) {
   const imgRef = useRef<HTMLImageElement>(null);
   const cellRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const lastSuccess = useRef(0);
+  const [isStale, setIsStale] = useState(false);
 
   const toggleFullscreen = useCallback(() => {
     const el = cellRef.current;
@@ -127,9 +116,8 @@ function CameraCell({
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
-  // Simple live feed pull — only used when no preset (grid mode)
+  // Live feed snapshot pull
   useEffect(() => {
-    if (preset) return; // Canvas handles its own fetching
     const img = imgRef.current;
     if (!img) return;
     let running = true;
@@ -141,6 +129,8 @@ function CameraCell({
       const loader = new Image();
       loader.onload = () => {
         if (running && img) img.src = loader.src;
+        lastSuccess.current = Date.now();
+        setIsStale(false);
         pending = false;
       };
       loader.onerror = () => {
@@ -149,13 +139,18 @@ function CameraCell({
       loader.src = `/api/studio/stream/camera/${role}?_t=${Date.now()}`;
     };
     pull();
+    lastSuccess.current = Date.now();
     const rate = isHero ? 80 : 120;
     const timer = setInterval(pull, rate);
+    const staleTimer = setInterval(() => {
+      if (Date.now() - lastSuccess.current > 10_000) setIsStale(true);
+    }, 2_000);
     return () => {
       running = false;
       clearInterval(timer);
+      clearInterval(staleTimer);
     };
-  }, [role, isHero, preset]);
+  }, [role, isHero]);
 
   const isDragging = dragIdx === idx;
   const isOver = overIdx === idx && dragIdx !== idx;
@@ -179,27 +174,24 @@ function CameraCell({
               : ""
       }`}
     >
-      {/* Composite canvas or plain img */}
-      {preset ? (
-        <CompositeCanvas
-          role={role}
-          preset={preset}
-          isHero={isHero}
-          smoothSource={smoothSourceId && smoothSourceId !== "camera" ? sourceUrl(smoothSourceId, role) : undefined}
-          className={`bg-black object-contain ${isFullscreen ? "max-h-screen max-w-full" : "h-full w-full"}`}
-        />
-      ) : (
-        <img
-          ref={imgRef}
-          alt={role}
-          crossOrigin="anonymous"
-          className={`bg-black object-contain ${isFullscreen ? "max-h-screen max-w-full" : "h-full w-full"}`}
-        />
-      )}
+      <img
+        ref={imgRef}
+        alt={role}
+        crossOrigin="anonymous"
+        className={`bg-black object-contain ${isFullscreen ? "max-h-screen max-w-full" : "h-full w-full"}`}
+      />
 
       {/* Labels + controls */}
-      <div className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 backdrop-blur-sm">
-        {role}
+      <div className="absolute left-1 top-1 flex items-center gap-1">
+        <span className="rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 backdrop-blur-sm">
+          {role}
+        </span>
+        {isStale && (
+          <span className="flex items-center gap-0.5 rounded bg-amber-900/80 px-1.5 py-0.5 text-[9px] font-medium text-amber-200 backdrop-blur-sm">
+            <AlertTriangle className="h-2.5 w-2.5" />
+            Stale
+          </span>
+        )}
       </div>
       <div className="absolute right-1 top-1 flex items-center gap-0.5">
         {!isFullscreen && (
