@@ -37,6 +37,7 @@ def _make_state(**overrides) -> EnvironmentState:
         speech_detected=False,
         vad_confidence=0.0,
         face_count=1,
+        guest_count=0,
         operator_present=True,
         activity_mode="idle",
         workspace_context="",
@@ -54,6 +55,8 @@ def _make_engine(face_detected: bool = False, face_count: int = 0, vad: float = 
     presence.latest_vad_confidence = vad
     presence.face_detected = face_detected
     presence.face_count = face_count
+    presence.guest_count = max(0, face_count - 1)
+    presence.operator_visible = face_detected
 
     workspace_monitor = MagicMock()
     return PerceptionEngine(presence, workspace_monitor)
@@ -206,6 +209,7 @@ class TestGovernorObservability:
         conv_state = _make_state(
             activity_mode="idle",
             face_count=2,
+            guest_count=1,
             speech_detected=True,
         )
         result = gov.evaluate(conv_state)
@@ -227,11 +231,11 @@ class TestGovernorObservability:
         assert result3 == "process"
 
     def test_operator_present_key_aligns_engine_to_state(self):
-        """S5, S7, A4: PerceptionEngine exposes 'operator_present' behavior, not 'face_detected'."""
+        """S5, S7, A4: PerceptionEngine exposes 'operator_present' and 'face_detected' behaviors."""
         engine = _make_engine(face_detected=True, face_count=1, vad=0.0)
 
         assert "operator_present" in engine.behaviors
-        assert "face_detected" not in engine.behaviors
+        assert "face_detected" in engine.behaviors
 
         # Tick to update behaviors
         state = engine.tick()

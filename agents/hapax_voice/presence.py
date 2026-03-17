@@ -44,6 +44,8 @@ class PresenceDetector:
         self._vad_model: Any | None = None
         self._face_detected: bool = False
         self._face_count: int = 0
+        self._operator_visible: bool = False
+        self._guest_count: int = 0
         self._last_face_time: float = 0.0
         self._face_decay_s: float = 30.0
         self._event_log: Any | None = None
@@ -107,10 +109,28 @@ class PresenceDetector:
         """Set the event log for emitting presence transition events."""
         self._event_log = event_log
 
-    def record_face_event(self, detected: bool, count: int = 0) -> None:
-        """Record a face detection result from the webcam."""
+    def record_face_event(
+        self,
+        detected: bool,
+        count: int = 0,
+        *,
+        operator_visible: bool | None = None,
+        guest_count: int | None = None,
+    ) -> None:
+        """Record a face detection result from the webcam.
+
+        Args:
+            detected: Whether any face was detected.
+            count: Total face count (legacy, kept for compatibility).
+            operator_visible: Whether the operator was identified (fused detection).
+            guest_count: Deduplicated non-operator face count (fused detection).
+        """
         self._face_detected = detected
         self._face_count = count if detected else 0
+        if operator_visible is not None:
+            self._operator_visible = operator_visible
+        if guest_count is not None:
+            self._guest_count = guest_count
         if detected:
             self._last_face_time = time.monotonic()
 
@@ -178,6 +198,20 @@ class PresenceDetector:
     def face_count(self) -> int:
         """Number of faces detected in the most recent frame."""
         return self._face_count if self.face_detected else 0
+
+    @property
+    def operator_visible(self) -> bool:
+        """Whether the operator was identified by any camera (within decay window)."""
+        if not self.face_detected:
+            return False
+        return self._operator_visible
+
+    @property
+    def guest_count(self) -> int:
+        """Deduplicated non-operator face count (within decay window)."""
+        if not self.face_detected:
+            return 0
+        return self._guest_count
 
     def _prune_old_events(self) -> None:
         """Remove events older than the sliding window."""

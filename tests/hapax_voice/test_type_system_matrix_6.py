@@ -33,6 +33,7 @@ def _make_state(**overrides) -> EnvironmentState:
         speech_detected=False,
         vad_confidence=0.0,
         face_count=1,
+        guest_count=0,
         operator_present=True,
         activity_mode="idle",
         workspace_context="",
@@ -49,6 +50,8 @@ def _make_engine(face_detected: bool = False, face_count: int = 0, vad: float = 
     presence.latest_vad_confidence = vad
     presence.face_detected = face_detected
     presence.face_count = face_count
+    presence.guest_count = max(0, face_count - 1)
+    presence.operator_visible = face_detected
     return PerceptionEngine(presence, MagicMock())
 
 
@@ -191,8 +194,9 @@ class TestBehaviorPerturbation:
 
         cmd1 = Command(action="process", params={"step": 1})
 
-        # Perturbation: bump face_count to 2
+        # Perturbation: bump face_count to 2 (1 guest)
         engine._presence.face_count = 2
+        engine._presence.guest_count = 1
         engine.tick()
         state2 = engine.latest
         assert state2.conversation_detected is True
@@ -526,6 +530,7 @@ class TestGovernorStatePerturbation:
 
         # Perturbation: conversation clears
         engine._presence.face_count = 1
+        engine._presence.guest_count = 0
         engine._presence.latest_vad_confidence = 0.0
         engine.tick()
         state2 = engine.latest

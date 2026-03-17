@@ -35,6 +35,7 @@ def _make_state(**overrides) -> EnvironmentState:
         speech_detected=False,
         vad_confidence=0.0,
         face_count=1,
+        guest_count=0,
         operator_present=True,
         activity_mode="idle",
         workspace_context="",
@@ -52,6 +53,8 @@ def _make_engine(face_detected: bool = False, face_count: int = 0, vad: float = 
     presence.latest_vad_confidence = vad
     presence.face_detected = face_detected
     presence.face_count = face_count
+    presence.guest_count = max(0, face_count - 1)
+    presence.operator_visible = face_detected
 
     workspace_monitor = MagicMock()
     return PerceptionEngine(presence, workspace_monitor)
@@ -301,6 +304,7 @@ class TestDenyWinsExhaustive:
         state = _make_state(
             activity_mode="production",
             face_count=2,
+            guest_count=1,
             speech_detected=True,
         )
         # First eval to set _paused_by_conversation
@@ -359,6 +363,7 @@ class TestDenyWinsExhaustive:
         state = _make_state(
             activity_mode="production",
             face_count=2,
+            guest_count=1,
             speech_detected=True,
             operator_present=True,
         )
@@ -409,6 +414,7 @@ class TestDenyWinsExhaustive:
         state = _make_state(
             activity_mode="production",
             face_count=2,
+            guest_count=1,
             speech_detected=True,
         )
         # First eval to set conversation state

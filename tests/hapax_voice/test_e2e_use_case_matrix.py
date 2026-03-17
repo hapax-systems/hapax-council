@@ -40,6 +40,7 @@ def _make_state(**overrides) -> EnvironmentState:
         speech_detected=False,
         vad_confidence=0.0,
         face_count=1,
+        guest_count=0,
         operator_present=True,
         activity_mode="idle",
         workspace_context="",
@@ -56,6 +57,8 @@ def _make_engine(face_detected: bool = False, face_count: int = 0, vad: float = 
     presence.latest_vad_confidence = vad
     presence.face_detected = face_detected
     presence.face_count = face_count
+    presence.guest_count = max(0, face_count - 1)
+    presence.operator_visible = face_detected
     return PerceptionEngine(presence, MagicMock())
 
 
@@ -189,13 +192,13 @@ class TestWakeWordUseCases:
         gov = PipelineGovernor(conversation_debounce_s=0.0)
 
         # Drive into conversation pause
-        s1 = _make_state(face_count=2, speech_detected=True)
+        s1 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         gov.evaluate(s1)
         assert gov._paused_by_conversation is True
 
         # Wake word
         gov.wake_word_active = True
-        s2 = _make_state(face_count=2, speech_detected=True)
+        s2 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r2 = gov.evaluate(s2)
 
         # Use-case: processing despite conversation
@@ -290,7 +293,7 @@ class TestGovernanceUseCases:
         assert gate.directive == "process"
 
         # Conversation detected → pause (debounce_s=0)
-        s2 = _make_state(face_count=2, speech_detected=True)
+        s2 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r2 = gov.evaluate(s2)
         cmd2 = Command(action=r2, governance_result=gov.last_veto_result)
         gate.apply_command(cmd2)

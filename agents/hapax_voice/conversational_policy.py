@@ -145,8 +145,8 @@ def _modulate_for_environment(
     if activity in _ACTIVITY_MODULATIONS:
         rules.append(_ACTIVITY_MODULATIONS[activity])
 
-    # Multi-face → formal register (but friendly to wife per interview)
-    if env.face_count > 1:
+    # Guest present → formal register (but friendly to wife per interview)
+    if getattr(env, "guest_count", 0) > 0 or env.face_count > 1:
         rules.append(
             "Additional person detected. Keep responses accessible to all listeners. "
             "Be friendly and natural. Avoid exposing personal/work-sensitive data."

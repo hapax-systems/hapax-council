@@ -29,6 +29,7 @@ def _make_state(
     *,
     activity_mode: str = "idle",
     face_count: int = 1,
+    guest_count: int = 0,
     operator_present: bool = True,
     speech_detected: bool = False,
     vad_confidence: float = 0.0,
@@ -38,6 +39,7 @@ def _make_state(
         timestamp=time.monotonic(),
         activity_mode=activity_mode,
         face_count=face_count,
+        guest_count=guest_count,
         operator_present=operator_present,
         speech_detected=speech_detected,
         vad_confidence=vad_confidence,
@@ -107,7 +109,7 @@ class TestGraceProtectsAgainstConversationDebounce:
         gov.evaluate(_make_state())  # consume wake word
 
         # Conversation tick during grace — should still process
-        result = gov.evaluate(_make_state(face_count=2, speech_detected=True, vad_confidence=0.9))
+        result = gov.evaluate(_make_state(face_count=2, guest_count=1, speech_detected=True, vad_confidence=0.9))
         assert result == "process"
         assert gov.last_selected.selected_by == "wake_word_grace"
 
@@ -123,7 +125,7 @@ class TestGraceProtectsAgainstConversationDebounce:
             gov.evaluate(_make_state())
 
         # Now conversation should trigger debounce → pause
-        conv_state = _make_state(face_count=2, speech_detected=True, vad_confidence=0.9)
+        conv_state = _make_state(face_count=2, guest_count=1, speech_detected=True, vad_confidence=0.9)
         result = gov.evaluate(conv_state)
         assert result == "pause"
 
@@ -197,7 +199,7 @@ class TestGraceMultiplePerceptionTicks:
 
         # Conversation tick
         assert (
-            gov.evaluate(_make_state(face_count=2, speech_detected=True, vad_confidence=0.9))
+            gov.evaluate(_make_state(face_count=2, guest_count=1, speech_detected=True, vad_confidence=0.9))
             == "process"
         )
 
