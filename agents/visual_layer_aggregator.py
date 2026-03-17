@@ -55,6 +55,13 @@ from shared.active_correction import CorrectionSeeker
 from shared.correction_memory import CorrectionStore, check_for_corrections
 from shared.episodic_memory import EpisodeBuilder, EpisodeStore
 from shared.stimmung import StimmungCollector, SystemStimmung
+from shared.telemetry import (
+    hapax_interaction,
+    trace_episode_closed,
+    trace_prediction_tick,
+    trace_stimmung_update,
+    trace_visual_tick,
+)
 
 log = logging.getLogger("visual_layer_aggregator")
 
@@ -625,6 +632,12 @@ class VisualLayerAggregator:
                         episode.duration_s,
                         episode.snapshot_count,
                     )
+                    trace_episode_closed(
+                        activity=episode.activity,
+                        duration_s=episode.duration_s,
+                        flow_state=episode.flow_state,
+                        snapshot_count=episode.snapshot_count,
+                    )
             except Exception:
                 log.debug("Episode recording failed", exc_info=True)
 
@@ -711,9 +724,22 @@ class VisualLayerAggregator:
         )
 
         # 6. Snapshot
+        prev_stance = self._stimmung.overall_stance.value if self._stimmung else "nominal"
         self._stimmung = self._stimmung_collector.snapshot()
 
-        # 7. Write atomically
+        # 7. Telemetry
+        trace_stimmung_update(
+            stance=self._stimmung.overall_stance.value,
+            health=self._stimmung.health.value,
+            resource_pressure=self._stimmung.resource_pressure.value,
+            error_rate=self._stimmung.error_rate.value,
+            throughput=self._stimmung.processing_throughput.value,
+            perception_confidence=self._stimmung.perception_confidence.value,
+            llm_cost=self._stimmung.llm_cost_pressure.value,
+            prev_stance=prev_stance,
+        )
+
+        # 8. Write atomically
         self._write_stimmung()
 
     def _write_stimmung(self) -> None:
@@ -1113,6 +1139,28 @@ class VisualLayerAggregator:
             current_audio=self._audio_energy,
             stimmung_stance=stimmung_stance,
         )
+
+        # Telemetry: visual tick + prediction cycle
+        trace_visual_tick(
+            display_state=state.display_state,
+            signal_count=sum(len(v) for v in state.signals.values()),
+            tick_interval=self._adaptive_tick_interval(state),
+            stimmung_stance=stimmung_stance,
+            cache_hit=cache_hit is not None,
+            scheduler_source=state.scheduler_source,
+        )
+        trace_prediction_tick(
+            predictions=len(protention_snap.predictions),
+            cache_hit=cache_hit is not None,
+            cache_hit_rate=self._predictive_cache.hit_rate,
+        )
+
+        # Log stimmung → engine modulation interaction
+        if stimmung_stance in ("degraded", "critical"):
+            hapax_interaction(
+                "stimmung", "visual", "ambient_modulation",
+                metadata={"stance": stimmung_stance},
+            )
 
         # Atomic write
         try:

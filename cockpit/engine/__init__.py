@@ -23,6 +23,7 @@ from cockpit.engine.watcher import DirectoryWatcher
 from shared.config import AI_AGENTS_DIR, PROFILES_DIR, RAG_SOURCES_DIR
 from shared.cycle_mode import CycleMode, get_cycle_mode
 from shared.stimmung import Stance
+from shared.telemetry import hapax_event, hapax_interaction
 
 # ── Persistent Event Counters (WS2) ─────────────────────────────────────────
 
@@ -299,6 +300,10 @@ class ReactiveEngine:
                     stance,
                     skipped,
                 )
+                hapax_interaction(
+                    "stimmung", "engine", "phase_gating",
+                    metadata={"stance": stance, "skipped_actions": skipped},
+                )
             if not plan.actions:
                 return
 
@@ -337,6 +342,11 @@ class ReactiveEngine:
         # Flag novel patterns (first or second occurrence)
         if prev_count == 0:
             _log.info("NOVEL event pattern (first occurrence): %s", pattern_key)
+            hapax_event(
+                "prediction", "novel_pattern",
+                metadata={"pattern": pattern_key, "occurrence": 1},
+                level="WARNING",
+            )
         elif prev_count == 1:
             _log.info("Rare event pattern (second occurrence): %s", pattern_key)
 
