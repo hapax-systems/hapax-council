@@ -373,12 +373,13 @@ async def run_consolidation(
 
     # Decay old patterns
     for existing_pat in pattern_store.get_active():
+        prev_confidence = existing_pat.confidence
         if existing_pat.last_confirmed > 0:
             days_since = (now - existing_pat.last_confirmed) / 86400
         else:
             days_since = (now - existing_pat.created_at) / 86400
         existing_pat.decay(days_since)
-        if not existing_pat.active or existing_pat.confidence != existing_pat.confidence:
+        if not existing_pat.active or existing_pat.confidence != prev_confidence:
             pattern_store.record(existing_pat)  # update in Qdrant
 
     log.info(
