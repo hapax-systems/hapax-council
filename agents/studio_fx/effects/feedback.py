@@ -75,7 +75,7 @@ class FeedbackEffect(BaseEffect):
 
         # Composite
         m3 = mask[:, :, np.newaxis]
-        out = (frame.astype(np.float32) * m3 + warped.astype(np.float32) * (1.0 - m3))
+        out = frame.astype(np.float32) * m3 + warped.astype(np.float32) * (1.0 - m3)
         out = np.clip(out, 0, 255).astype(np.uint8)
 
         self._accum = out.copy()

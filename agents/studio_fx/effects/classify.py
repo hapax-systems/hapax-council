@@ -31,16 +31,16 @@ log = logging.getLogger(__name__)
 
 # YOLO class colors — muted palette for professional look
 _CLASS_COLORS = {
-    "person": (100, 220, 100),     # green
-    "keyboard": (220, 180, 80),    # teal
-    "chair": (80, 140, 200),       # warm blue
-    "book": (200, 120, 200),       # mauve
-    "monitor": (120, 200, 220),    # light cyan
-    "laptop": (100, 180, 220),     # blue
-    "mouse": (180, 180, 100),      # olive
-    "cell phone": (220, 140, 100), # orange-blue
-    "cup": (140, 200, 140),        # light green
-    "bottle": (200, 160, 120),     # tan
+    "person": (100, 220, 100),  # green
+    "keyboard": (220, 180, 80),  # teal
+    "chair": (80, 140, 200),  # warm blue
+    "book": (200, 120, 200),  # mauve
+    "monitor": (120, 200, 220),  # light cyan
+    "laptop": (100, 180, 220),  # blue
+    "mouse": (180, 180, 100),  # olive
+    "cell phone": (220, 140, 100),  # orange-blue
+    "cup": (140, 200, 140),  # light green
+    "bottle": (200, 160, 120),  # tan
 }
 _DEFAULT_COLOR = (180, 180, 180)  # grey for unknown classes
 
@@ -110,16 +110,22 @@ class ClassifyEffect(BaseEffect):
         # Build labels
         labels = []
         for i in range(len(detections)):
-            class_name = detections.data.get("class_name", [""])[i] if "class_name" in detections.data else ""
+            class_name = (
+                detections.data.get("class_name", [""])[i]
+                if "class_name" in detections.data
+                else ""
+            )
             conf = detections.confidence[i] if detections.confidence is not None else 0
             labels.append(f"{class_name} {conf:.0%}")
 
         # Annotate: halo on persons first (background glow)
         if self._halo_annotator is not None:
-            person_mask = np.array([
-                detections.data.get("class_name", [""])[i] == "person"
-                for i in range(len(detections))
-            ])
+            person_mask = np.array(
+                [
+                    detections.data.get("class_name", [""])[i] == "person"
+                    for i in range(len(detections))
+                ]
+            )
             if person_mask.any():
                 person_dets = detections[person_mask]
                 out = self._halo_annotator.annotate(out, person_dets)
@@ -225,6 +231,12 @@ class ClassifyEffect(BaseEffect):
                 (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
                 cv2.rectangle(frame, (x1 + 2, by - th - 2), (x1 + tw + 8, by + 3), (0, 0, 0), -1)
                 cv2.putText(
-                    frame, label, (x1 + 5, by),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA,
+                    frame,
+                    label,
+                    (x1 + 5, by),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.35,
+                    color,
+                    1,
+                    cv2.LINE_AA,
                 )
