@@ -98,7 +98,9 @@ def check_readiness(
     try:
         import urllib.request
 
-        urllib.request.urlopen("http://localhost:8051/api/health", timeout=5)
+        from shared.config import COCKPIT_API_URL
+
+        urllib.request.urlopen(f"{COCKPIT_API_URL}/health", timeout=5)
         progress("Cockpit API: OK")
     except Exception:
         issues.append(

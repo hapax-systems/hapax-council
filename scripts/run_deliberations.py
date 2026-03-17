@@ -14,7 +14,8 @@ from pathlib import Path
 import httpx
 import yaml
 
-LITELLM_URL = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
+from shared.config import LITELLM_BASE as LITELLM_URL
+
 LITELLM_KEY = os.environ.get(
     "LITELLM_API_KEY",
     "8245aa0186ae16702c62d264931020199fa89a841cbb25fdf1504866d0d8b5b3",
