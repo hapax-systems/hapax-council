@@ -2057,7 +2057,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hapax-cockpit"
+name = "hapax-logos"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
