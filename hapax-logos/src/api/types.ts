@@ -320,6 +320,29 @@ export interface CompositorStatus {
   consent_recording_allowed: boolean;
   guest_present: boolean;
   consent_phase: string;
+  audio_energy_rms: number;
+}
+
+export interface LiveCompositorStatus {
+  state: string;
+  cameras: Record<string, string>;
+  active_cameras: number;
+  total_cameras: number;
+  recording_enabled: boolean;
+  recording_cameras: Record<string, string>;
+  hls_enabled: boolean;
+  consent_recording_allowed: boolean;
+  guest_present: boolean;
+  consent_phase: string;
+  audio_energy_rms: number;
+  timestamp: number;
+}
+
+export interface StudioDisk {
+  path: string;
+  total_gb: number;
+  used_gb: number;
+  free_gb: number;
 }
 
 export interface StudioSnapshot {
@@ -353,7 +376,36 @@ export interface Demo {
   has_audio?: boolean;
 }
 
-// --- Perception (restored for overlay system) ---
+// --- Visual Layer ---
+
+export interface VisualLayerSignal {
+  category: string;
+  severity: number;
+  title: string;
+  detail: string;
+  source_id: string;
+}
+
+export type SignalEntry = VisualLayerSignal;
+
+export interface AmbientParams {
+  speed: number;
+  turbulence: number;
+  color_warmth: number;
+  brightness: number;
+}
+
+export interface VisualLayerState {
+  available: boolean;
+  display_state: "ambient" | "peripheral" | "informational" | "alert" | "performative";
+  zone_opacities: Record<string, number>;
+  signals: Record<string, VisualLayerSignal[]>;
+  ambient_params: AmbientParams;
+  timestamp: number;
+  aggregator?: string;
+}
+
+// --- Perception ---
 
 export interface PerceptionState {
   available: boolean;
@@ -392,28 +444,4 @@ export interface PerceptionState {
   usb_devices: string;
   bluetooth_nearby: string;
   network_devices: string;
-}
-
-export interface SignalEntry {
-  category: string;
-  severity: number;
-  title: string;
-  detail: string;
-  source_id: string;
-}
-
-export interface AmbientParams {
-  speed: number;
-  turbulence: number;
-  color_warmth: number;
-  brightness: number;
-}
-
-export interface VisualLayerState {
-  available: boolean;
-  display_state: string;
-  zone_opacities: Record<string, number>;
-  signals: Record<string, SignalEntry[]>;
-  ambient_params: AmbientParams;
-  timestamp: number;
 }

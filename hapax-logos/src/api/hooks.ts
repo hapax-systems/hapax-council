@@ -129,6 +129,25 @@ export const useStudio = () =>
 export const useStudioStreamInfo = () =>
   useQuery({ queryKey: ["studioStreamInfo"], queryFn: api.studioStreamInfo, refetchInterval: FAST });
 
+const FAST_POLL = 2_000; // 2s
+
+export const useCompositorLive = () =>
+  useQuery({ queryKey: ["compositorLive"], queryFn: api.compositorLive, refetchInterval: FAST_POLL });
+
+export const useStudioDisk = () =>
+  useQuery({ queryKey: ["studioDisk"], queryFn: api.studioDisk, refetchInterval: FAST });
+
+export function useRecordingToggle() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (enable: boolean) => (enable ? api.enableRecording() : api.disableRecording()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["compositorLive"] });
+      queryClient.invalidateQueries({ queryKey: ["studio"] });
+    },
+  });
+}
+
 // --- Demos ---
 
 export const useDemos = () =>
