@@ -47,6 +47,22 @@ fn main() {
             visual::control::get_visual_surface_state,
             visual::control::set_visual_layer_param,
             visual::control::get_visual_surface_snapshot,
+            // Introspection: Hapax self-manipulation
+            commands::introspect::navigate,
+            commands::introspect::toggle_panel,
+            commands::introspect::show_toast,
+            commands::introspect::show_modal,
+            commands::introspect::dismiss_modal,
+            commands::introspect::highlight_element,
+            commands::introspect::set_status,
+            commands::introspect::get_window_state,
+            commands::introspect::set_window_position,
+            commands::introspect::set_window_fullscreen,
+            commands::introspect::set_window_always_on_top,
+            commands::introspect::focus_window,
+            commands::introspect::set_visual_stance,
+            commands::introspect::visual_ping,
+            commands::introspect::ui_directive,
         ])
         .setup(|app| {
             // Spawn the wgpu visual surface on a dedicated thread
@@ -54,5 +70,5 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running hapax-cockpit");
+        .expect("error while running hapax-logos");
 }

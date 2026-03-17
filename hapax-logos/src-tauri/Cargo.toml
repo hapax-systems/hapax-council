@@ -1,7 +1,7 @@
 [package]
-name = "hapax-cockpit"
+name = "hapax-logos"
 version = "0.1.0"
-description = "Hapax Cockpit — native desktop app for the Hapax agent system"
+description = "Hapax Logos — native desktop app for the Hapax agent system"
 authors = ["hapax"]
 license = "MIT"
 edition = "2021"

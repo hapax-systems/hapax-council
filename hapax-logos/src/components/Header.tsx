@@ -4,9 +4,10 @@ import { useHealth, useCycleMode, useSetCycleMode } from "../api/hooks";
 
 interface HeaderProps {
   onManualToggle?: () => void;
+  hapaxStatus?: { text: string; level: string } | null;
 }
 
-export function Header({ onManualToggle }: HeaderProps) {
+export function Header({ onManualToggle, hapaxStatus }: HeaderProps) {
   const { data: health } = useHealth();
   const { data: cycleMode } = useCycleMode();
   const setCycleMode = useSetCycleMode();
@@ -34,7 +35,7 @@ export function Header({ onManualToggle }: HeaderProps) {
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
           <Activity className="h-5 w-5 text-zinc-400" />
-          <span className="text-sm font-medium text-zinc-200">cockpit</span>
+          <span className="text-sm font-medium text-zinc-200">logos</span>
         </div>
         <nav className="flex items-center gap-1" aria-label="Main navigation">
           <NavLink to="/" end className={navLinkClass}>
@@ -58,6 +59,19 @@ export function Header({ onManualToggle }: HeaderProps) {
         </nav>
       </div>
       <div className="flex items-center gap-3 text-xs">
+        {hapaxStatus && (
+          <span
+            className={`rounded px-2 py-0.5 text-[10px] ${
+              hapaxStatus.level === "warning"
+                ? "bg-amber-900/40 text-amber-400"
+                : hapaxStatus.level === "error"
+                  ? "bg-red-900/40 text-red-400"
+                  : "bg-zinc-800 text-zinc-300"
+            }`}
+          >
+            {hapaxStatus.text}
+          </span>
+        )}
         <span className={statusColor}>
           {health ? `${health.healthy}/${health.total_checks} checks` : "loading..."}
         </span>

@@ -2,6 +2,7 @@ pub mod agents;
 pub mod cost;
 pub mod governance;
 pub mod health;
+pub mod introspect;
 pub mod state;
 pub mod studio;
 
