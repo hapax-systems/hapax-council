@@ -26,6 +26,12 @@ pollster = "0.4"
 log = "0.4"
 env_logger = "0.11"
 
+# Browser engine (agent-controlled web access)
+chromiumoxide = "0.9"
+futures = "0.3"
+base64 = "0.22"
+dirs = "6"
+
 # Tier 2: Qdrant + Langfuse direct access
 qdrant-client = "1"
 reqwest = { version = "0.12", features = ["json"] }

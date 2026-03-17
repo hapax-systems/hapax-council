@@ -64,6 +64,21 @@ class UiDirective(BaseModel):
     visual_ping_y: float | None = None
     visual_ping_energy: float | None = None
 
+    # Browser (agent-controlled web access)
+    browser_navigate: str | None = Field(None, description="URL to navigate the headless browser to")
+    browser_eval: str | None = Field(None, description="JavaScript expression to evaluate")
+    browser_screenshot: bool = False
+    browser_extract_a11y: bool = False
+    browser_click: str | None = Field(None, description="CSS selector to click")
+    browser_fill_selector: str | None = Field(None, description="CSS selector for form field")
+    browser_fill_text: str | None = Field(None, description="Text to type into the form field")
+    browser_press_key: str | None = Field(None, description="Key to press (e.g. Enter, Tab)")
+    browser_service: str | None = Field(None, description="Service name for URL resolution")
+    browser_pattern: str | None = Field(None, description="URL pattern within the service")
+    browser_params: dict[str, str] | None = Field(
+        None, description="Parameters for URL pattern resolution"
+    )
+
     # Metadata
     source: str | None = Field(None, description="Agent name or source identifier")
 
