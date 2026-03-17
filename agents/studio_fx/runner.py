@@ -29,7 +29,7 @@ TIER_WARM_H = 270
 
 # Smooth mode: ring buffer for delayed frames
 SMOOTH_RING_SIZE = 15  # ~1 second at 15fps
-SMOOTH_DELAY = 10      # frames of delay (~0.7s)
+SMOOTH_DELAY = 10  # frames of delay (~0.7s)
 SMOOTH_BLEND_ALPHA = 0.80  # blend weight for smooth layer
 
 
@@ -261,8 +261,7 @@ class EffectRunner:
         if not hasattr(self, "_preview_idx"):
             self._preview_idx = 0
         preview_names = [
-            n for n, s in self._slots.items()
-            if s.tier == Tier.PREVIEW and n != self._active_name
+            n for n, s in self._slots.items() if s.tier == Tier.PREVIEW and n != self._active_name
         ]
         if preview_names:
             preview_name = preview_names[self._preview_idx % len(preview_names)]
