@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStudio } from "../../api/hooks";
-import { Camera, X, Maximize, GripVertical } from "lucide-react";
+import { AlertTriangle, Camera, X, Maximize, GripVertical } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-green-500",
@@ -115,12 +115,15 @@ export function CameraSoloView({
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const lastSuccess = useRef(0);
+  const [isStale, setIsStale] = useState(false);
 
   useEffect(() => {
     const img = imgRef.current;
     if (!img) return;
     let running = true;
     let pending = false;
+    lastSuccess.current = Date.now();
 
     const pull = () => {
       if (!running || pending) return;
@@ -128,6 +131,8 @@ export function CameraSoloView({
       const loader = new Image();
       loader.onload = () => {
         if (running && img) img.src = loader.src;
+        lastSuccess.current = Date.now();
+        setIsStale(false);
         pending = false;
       };
       loader.onerror = () => {
@@ -138,9 +143,13 @@ export function CameraSoloView({
 
     pull();
     const timer = setInterval(pull, 120);
+    const staleTimer = setInterval(() => {
+      if (Date.now() - lastSuccess.current > 10_000) setIsStale(true);
+    }, 2_000);
     return () => {
       running = false;
       clearInterval(timer);
+      clearInterval(staleTimer);
     };
   }, [role]);
 
@@ -171,9 +180,17 @@ export function CameraSoloView({
         alt={role}
         className="aspect-video w-full rounded-lg bg-black object-contain"
       />
-      <div className="absolute left-2 top-2 flex items-center gap-1 rounded bg-black/60 px-2 py-1 text-[10px] font-medium text-amber-300 backdrop-blur-sm">
-        <Camera className="h-3 w-3" />
-        {role}
+      <div className="absolute left-2 top-2 flex items-center gap-1.5">
+        <span className="flex items-center gap-1 rounded bg-black/60 px-2 py-1 text-[10px] font-medium text-amber-300 backdrop-blur-sm">
+          <Camera className="h-3 w-3" />
+          {role}
+        </span>
+        {isStale && (
+          <span className="flex items-center gap-1 rounded bg-amber-900/80 px-2 py-1 text-[10px] font-medium text-amber-200 backdrop-blur-sm">
+            <AlertTriangle className="h-3 w-3" />
+            Stale
+          </span>
+        )}
       </div>
       <div className="absolute right-2 top-2 flex items-center gap-1">
         <button
