@@ -126,6 +126,55 @@ def get_model(alias_or_id: str = "balanced") -> OpenAIChatModel:
     )
 
 
+def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
+    """Stimmung-aware model selection — downgrades when system is stressed.
+
+    Reads live stimmung from /dev/shm. When cost pressure or resource pressure
+    is high, routes to cheaper/local models instead of the requested tier.
+
+    Downgrade rules:
+    - llm_cost_pressure > 0.6: balanced→fast, fast stays fast
+    - resource_pressure > 0.7: balanced→fast, fast→local-fast
+    - critical stance: everything→local-fast
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        raw = json.loads(Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
+        stance = raw.get("overall_stance", "nominal")
+        cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
+        resource = raw.get("resource_pressure", {}).get("value", 0.0)
+
+        if stance == "critical":
+            _log.debug("Stimmung critical → routing to local-fast")
+            return get_model("local-fast")
+
+        if resource > 0.7:
+            downgraded = {"balanced": "fast", "fast": "local-fast", "reasoning": "local-fast"}
+            if alias in downgraded:
+                _log.debug(
+                    "Resource pressure %.2f → %s downgraded to %s",
+                    resource,
+                    alias,
+                    downgraded[alias],
+                )
+                return get_model(downgraded[alias])
+
+        if cost > 0.6:
+            downgraded = {"balanced": "fast", "reasoning": "fast"}
+            if alias in downgraded:
+                _log.debug(
+                    "Cost pressure %.2f → %s downgraded to %s", cost, alias, downgraded[alias]
+                )
+                return get_model(downgraded[alias])
+
+    except Exception:
+        pass  # stimmung unavailable → use requested model
+
+    return get_model(alias)
+
+
 @functools.lru_cache(maxsize=1)
 def get_qdrant() -> QdrantClient:
     """Return a QdrantClient connected to the configured URL (singleton)."""

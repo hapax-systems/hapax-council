@@ -87,6 +87,10 @@ class WorkspaceMonitor:
         # Force Gemini every N cycles even when local is confident (drift prevention)
         self._force_cloud_every_n = 5
         self._cycles_since_cloud = 0
+        # WS5 refinement: adaptive threshold from disagreement history
+        self._disagreement_count = 0
+        self._agreement_count = 0
+        self._threshold_adjust_interval = 10  # re-evaluate every 10 cloud calls
         self._event_log = None
 
         if self._listener is not None:
@@ -340,6 +344,7 @@ class WorkspaceMonitor:
                 return
 
             if local_activity != cloud_activity:
+                self._disagreement_count += 1
                 log.info(
                     "WS4: model disagreement — local=%s (conf=%.2f) vs cloud=%s",
                     local_activity,
@@ -360,8 +365,55 @@ class WorkspaceMonitor:
                         }
                     )
                 )
+            else:
+                self._agreement_count += 1
+
+            # Adaptive threshold: adjust based on disagreement rate
+            self._maybe_adjust_threshold()
         except Exception:
             pass  # best-effort, don't break the main loop
+
+    def _maybe_adjust_threshold(self) -> None:
+        """Adjust local confidence threshold based on disagreement history.
+
+        Every N cloud calls, check the disagreement rate:
+        - High agreement (>80%) → lower threshold (trust local more, skip 0.6+)
+        - High disagreement (>40%) → raise threshold (trust local less, skip 0.85+)
+        - Otherwise → drift toward default (0.7)
+
+        Bounded to [0.5, 0.9] to prevent extreme values.
+        """
+        total = self._agreement_count + self._disagreement_count
+        if total < self._threshold_adjust_interval:
+            return
+
+        agreement_rate = self._agreement_count / total
+        old_threshold = self._local_confidence_threshold
+
+        if agreement_rate > 0.8:
+            # Local model is reliable → lower threshold (more skips)
+            self._local_confidence_threshold = max(0.5, old_threshold - 0.05)
+        elif agreement_rate < 0.6:
+            # Local model is unreliable → raise threshold (fewer skips)
+            self._local_confidence_threshold = min(0.9, old_threshold + 0.05)
+        else:
+            # Drift toward default
+            self._local_confidence_threshold += (0.7 - old_threshold) * 0.1
+
+        self._local_confidence_threshold = round(self._local_confidence_threshold, 2)
+
+        if old_threshold != self._local_confidence_threshold:
+            log.info(
+                "WS5: adaptive threshold %.2f → %.2f (agreement=%.0f%%, n=%d)",
+                old_threshold,
+                self._local_confidence_threshold,
+                agreement_rate * 100,
+                total,
+            )
+
+        # Reset counters for next window
+        self._agreement_count = 0
+        self._disagreement_count = 0
 
     @staticmethod
     def _infer_activity_from_analysis(analysis: WorkspaceAnalysis) -> str:
