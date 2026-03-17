@@ -1,7 +1,7 @@
 """Local LLM perception backend — fast activity/flow classification.
 
-WS5 Tier 2: uses a small local model (qwen2.5:3b via Ollama) for
-perception classification. ~200ms on RTX 3090, ~2-3GB VRAM, coexists
+WS5 Tier 2: uses a small local model (qwen3:4b via Ollama) for
+perception classification. ~200-400ms on RTX 3090, ~2.5GB VRAM, coexists
 with everything else.
 
 Provides:
@@ -11,6 +11,10 @@ Provides:
 
 Runs on the SLOW tier (every slow tick, ~12s). Falls back gracefully
 when Ollama is unavailable.
+
+When confidence is high (≥0.7), the workspace monitor skips the Gemini
+Flash cloud call (~2-5s), dropping perception latency from ~5s to ~300ms.
+Cloud is forced every 5th cycle for drift prevention.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from agents.hapax_voice.primitives import Behavior
 
 log = logging.getLogger(__name__)
 
-_MODEL = "qwen2.5:3b"
+_MODEL = "qwen3:4b"
 _OLLAMA_TIMEOUT = 5.0  # seconds — hard cap for classification latency
 
 _SYSTEM_PROMPT = """\
@@ -42,13 +46,15 @@ Rules:
 - "light" flow = engaged but interruptible
 - "none" = idle, between tasks, or distracted
 - confidence reflects how certain you are (0.3 = guessing, 0.9 = obvious)
+- The "active_window" field is the strongest signal — if it shows a code editor, \
+the activity is almost certainly coding. If it shows a browser, it's browsing.
 """
 
 
 class LocalLLMBackend:
     """PerceptionBackend that classifies activity/flow via local LLM.
 
-    Uses qwen2.5:3b via Ollama for fast (~200ms) structured classification.
+    Uses qwen3:4b via Ollama for fast (~200-400ms) structured classification.
     Falls back to no-op when Ollama is unavailable.
     """
 
@@ -147,25 +153,63 @@ class LocalLLMBackend:
         return self._available
 
     def _gather_context(self, behaviors: dict[str, Behavior]) -> dict | None:
-        """Build a minimal context dict for classification."""
+        """Build a minimal context dict for classification.
+
+        Includes Hyprland desktop context (active window/app) when available —
+        this is the single strongest signal for activity classification.
+        """
         # Prefer the full perception snapshot if available
         if self._last_snapshot:
-            return {
+            ctx = {
                 "activity": self._last_snapshot.get("production_activity", ""),
                 "flow_score": self._last_snapshot.get("flow_score", 0.0),
                 "audio_energy": self._last_snapshot.get("audio_energy_rms", 0.0),
                 "music_genre": self._last_snapshot.get("music_genre", ""),
                 "heart_rate": self._last_snapshot.get("heart_rate_bpm", 0),
                 "hour": self._last_snapshot.get("hour", 0),
+                "person_count": self._last_snapshot.get("person_count", 0),
+                "operator_present": self._last_snapshot.get("operator_present", False),
+                "scene_type": self._last_snapshot.get("scene_type", "unknown"),
             }
+        else:
+            # Fall back to behavior values
+            ctx = {}
+            for key in ("production_activity", "flow_state_score", "audio_energy_rms"):
+                b = behaviors.get(key)
+                if b is not None:
+                    ctx[key] = b.value
 
-        # Fall back to behavior values
-        ctx = {}
-        for key in ("production_activity", "flow_state_score", "audio_energy_rms"):
-            b = behaviors.get(key)
-            if b is not None:
-                ctx[key] = b.value
-        return ctx if ctx else None
+        if not ctx:
+            return None
+
+        # Add Hyprland desktop context — strongest signal for activity
+        desktop = self._get_desktop_context()
+        if desktop:
+            ctx.update(desktop)
+
+        return ctx
+
+    @staticmethod
+    def _get_desktop_context() -> dict:
+        """Get active window info from Hyprland IPC (deterministic, <1ms)."""
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                ["hyprctl", "activewindow", "-j"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                return {
+                    "active_window": data.get("title", ""),
+                    "active_app": data.get("class", ""),
+                }
+        except Exception:
+            pass
+        return {}
 
     def _classify(self, snapshot: dict) -> dict | None:
         """Run classification via Ollama. Returns parsed result or None."""
