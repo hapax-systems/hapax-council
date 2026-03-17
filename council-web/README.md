@@ -50,6 +50,7 @@ uv run cockpit-api
 | `/insight` | InsightPage | Analysis and insights |
 | `/demos` | DemosPage | Browse and view generated capability demos |
 | `/studio` | StudioPage | Studio control panel for visual effects and camera management |
+| `/hapax` | HapaxPage | Hapax Corpora — full-screen generative visual canvas (the agent's visual body) |
 
 ## Stack
 
