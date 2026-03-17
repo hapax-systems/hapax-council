@@ -113,8 +113,9 @@ class PipelineGovernor:
                 ),
                 Veto(
                     name="consent_pending",
-                    predicate=lambda s: s.consent_phase
-                    not in ("consent_pending", "consent_refused"),
+                    predicate=lambda s: (
+                        s.consent_phase not in ("consent_pending", "consent_refused")
+                    ),
                     axiom="interpersonal_transparency",
                 ),
                 Veto(
