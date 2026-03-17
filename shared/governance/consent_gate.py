@@ -29,6 +29,7 @@ from typing import Any
 
 from shared.governance.consent import ConsentRegistry, load_contracts
 from shared.governance.consent_label import ConsentLabel
+from shared.governance.gate_token import GateToken
 from shared.governance.governor import GovernorWrapper, consent_output_policy
 from shared.governance.labeled import Labeled
 from shared.governance.revocation import check_provenance
@@ -46,6 +47,7 @@ class GateDecision:
     person_ids: tuple[str, ...] = ()
     provenance: tuple[str, ...] = ()
     timestamp: str = ""
+    token: GateToken | None = None
 
 
 @dataclass
@@ -56,11 +58,16 @@ class ConsentGatedWriter:
     labels and provenance before allowing persistence. Denied writes
     produce structured GateDecision objects for audit.
 
+    Every check() mints a GateToken — an unforgeable proof of gate passage.
+    Downstream code can require a GateToken to structurally enforce that
+    consent was checked.
+
     The audit log is append-only and survives process restarts (JSONL on disk).
     """
 
     _registry: ConsentRegistry
     _governor: GovernorWrapper
+    _gate_id: str = "consent-gate"
     _audit_path: Path | None = None
     _decisions: list[GateDecision] = field(default_factory=list)
 
@@ -76,6 +83,7 @@ class ConsentGatedWriter:
         return ConsentGatedWriter(
             _registry=registry,
             _governor=governor,
+            _gate_id=agent_id,
             _audit_path=audit_path,
         )
 
@@ -88,7 +96,8 @@ class ConsentGatedWriter:
     ) -> GateDecision:
         """Check whether data can be persisted. Does NOT write.
 
-        Returns GateDecision with allowed=True/False and reason.
+        Returns GateDecision with allowed=True/False, reason, and a
+        GateToken (unforgeable proof of gate passage).
         """
         now = datetime.now(UTC).isoformat()
 
@@ -96,12 +105,11 @@ class ConsentGatedWriter:
         active_ids = frozenset(cid for cid, c in self._registry._contracts.items() if c.active)
         if data.provenance and not check_provenance(data, active_ids):
             revoked = data.provenance - active_ids
-            decision = GateDecision(
-                allowed=False,
+            decision = self._deny(
                 reason=f"Provenance contains revoked contracts: {sorted(revoked)}",
                 data_category=data_category,
                 person_ids=person_ids,
-                provenance=tuple(sorted(data.provenance)),
+                provenance=data.provenance,
                 timestamp=now,
             )
             self._record(decision)
@@ -111,12 +119,11 @@ class ConsentGatedWriter:
         result = self._governor.check_output(data)
         if not result.allowed:
             denial = result.denial
-            decision = GateDecision(
-                allowed=False,
+            decision = self._deny(
                 reason=denial.reason if denial else "Governor denied output",
                 data_category=data_category,
                 person_ids=person_ids,
-                provenance=tuple(sorted(data.provenance)),
+                provenance=data.provenance,
                 timestamp=now,
             )
             self._record(decision)
@@ -127,31 +134,83 @@ class ConsentGatedWriter:
             if person_id == "operator":
                 continue
             if not self._registry.contract_check(person_id, data_category):
-                decision = GateDecision(
-                    allowed=False,
+                decision = self._deny(
                     reason=(
                         f"No active consent contract for person '{person_id}' "
                         f"in category '{data_category}'"
                     ),
                     data_category=data_category,
                     person_ids=person_ids,
-                    provenance=tuple(sorted(data.provenance)),
+                    provenance=data.provenance,
                     timestamp=now,
                 )
                 self._record(decision)
                 return decision
 
         # All checks passed
-        decision = GateDecision(
-            allowed=True,
-            reason="All consent checks passed",
+        decision = self._allow(
             data_category=data_category,
             person_ids=person_ids,
-            provenance=tuple(sorted(data.provenance)),
+            provenance=data.provenance,
             timestamp=now,
         )
         self._record(decision)
         return decision
+
+    def _allow(
+        self,
+        *,
+        data_category: str,
+        person_ids: tuple[str, ...],
+        provenance: frozenset[str],
+        timestamp: str,
+    ) -> GateDecision:
+        """Build an allow decision with minted GateToken."""
+        token = GateToken._mint(
+            allowed=True,
+            reason="All consent checks passed",
+            data_category=data_category,
+            person_ids=person_ids,
+            provenance=tuple(sorted(provenance)),
+            gate_id=self._gate_id,
+        )
+        return GateDecision(
+            allowed=True,
+            reason="All consent checks passed",
+            data_category=data_category,
+            person_ids=person_ids,
+            provenance=tuple(sorted(provenance)),
+            timestamp=timestamp,
+            token=token,
+        )
+
+    def _deny(
+        self,
+        *,
+        reason: str,
+        data_category: str,
+        person_ids: tuple[str, ...],
+        provenance: frozenset[str],
+        timestamp: str,
+    ) -> GateDecision:
+        """Build a deny decision with minted GateToken."""
+        token = GateToken._mint(
+            allowed=False,
+            reason=reason,
+            data_category=data_category,
+            person_ids=person_ids,
+            provenance=tuple(sorted(provenance)),
+            gate_id=self._gate_id,
+        )
+        return GateDecision(
+            allowed=False,
+            reason=reason,
+            data_category=data_category,
+            person_ids=person_ids,
+            provenance=tuple(sorted(provenance)),
+            timestamp=timestamp,
+            token=token,
+        )
 
     def check_and_write(
         self,
