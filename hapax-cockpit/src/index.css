@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/jetbrains-mono/700.css";
+
+@theme {
+  /* Gruvbox Dark palette — overrides zinc scale */
+  --color-zinc-950: #1d2021;
+  --color-zinc-900: #282828;
+  --color-zinc-800: #3c3836;
+  --color-zinc-700: #504945;
+  --color-zinc-600: #665c54;
+  --color-zinc-500: #928374;
+  --color-zinc-400: #bdae93;
+  --color-zinc-300: #d5c4a1;
+  --color-zinc-200: #ebdbb2;
+  --color-zinc-100: #fbf1c7;
+  --color-zinc-50: #fdf4c9;
+
+  /* Gruvbox semantic — green */
+  --color-green-300: #b8bb26;
+  --color-green-400: #b8bb26;
+  --color-green-500: #98971a;
+  --color-green-600: #79740e;
+
+  /* Gruvbox semantic — red */
+  --color-red-300: #fb4934;
+  --color-red-400: #fb4934;
+  --color-red-500: #cc241d;
+  --color-red-600: #9d0006;
+
+  /* Gruvbox semantic — yellow */
+  --color-yellow-300: #fabd2f;
+  --color-yellow-400: #fabd2f;
+  --color-yellow-500: #d79921;
+  --color-yellow-600: #b57614;
+
+  /* Gruvbox semantic — blue */
+  --color-blue-300: #83a598;
+  --color-blue-400: #83a598;
+  --color-blue-500: #458588;
+  --color-blue-600: #076678;
+
+  /* Gruvbox semantic — orange */
+  --color-orange-300: #fe8019;
+  --color-orange-400: #fe8019;
+  --color-orange-500: #d65d0e;
+  --color-orange-600: #af3a03;
+
+  /* Gruvbox semantic — fuchsia/purple */
+  --color-fuchsia-300: #d3869b;
+  --color-fuchsia-400: #d3869b;
+  --color-fuchsia-500: #b16286;
+  --color-fuchsia-600: #8f3f71;
+
+  /* Gruvbox semantic — emerald/aqua */
+  --color-emerald-300: #8ec07c;
+  --color-emerald-400: #8ec07c;
+  --color-emerald-500: #689d6a;
+  --color-emerald-600: #427b58;
+
+  /* Gruvbox semantic — cyan/aqua */
+  --color-cyan-300: #8ec07c;
+  --color-cyan-400: #8ec07c;
+  --color-cyan-500: #689d6a;
+  --color-cyan-600: #427b58;
+
+  /* JetBrains Mono for everything */
+  --font-sans: "JetBrains Mono", ui-monospace, monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
