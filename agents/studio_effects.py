@@ -90,13 +90,17 @@ class EffectPreset:
 PRESETS: dict[str, EffectPreset] = {
     "ghost": EffectPreset(
         name="ghost",
-        # Desaturated, slightly cool — phosphor persistence feel
-        color_grade=ColorGradeConfig(saturation=0.6, brightness=1.0, contrast=1.15, hue_rotate=-10),
-        # 5 taps with exponential decay — visible layered persistence
-        trail=TrailConfig(count=5, opacity=0.6, blend_mode="add", drift_x=4, drift_y=5),
+        # Desaturated, slightly cool — dim to prevent face bloom at close range
+        color_grade=ColorGradeConfig(saturation=0.55, brightness=0.9, contrast=1.1, hue_rotate=-10),
+        # Moderate feedback with dim decay — persistence without blowout
+        trail=TrailConfig(
+            count=5,
+            opacity=0.45,
+            blend_mode="add",
+            filter_params={"brightness": 0.75, "hue_rotate": -5},
+        ),
         warp=WarpConfig(pan_x=2, pan_y=2, rotation=0.003, zoom=1.008, zoom_breath=0.004),
         post_process=PostProcessConfig(vignette_strength=0.35),
-        # Use glow instead of sobel — soft edge glow without destroying the image
         use_glow=True,
     ),
     "trails": EffectPreset(
@@ -104,12 +108,12 @@ PRESETS: dict[str, EffectPreset] = {
         color_grade=ColorGradeConfig(saturation=0.7, brightness=1.15, sepia=0.1, hue_rotate=20),
         trail=TrailConfig(
             count=5,
-            opacity=0.35,
+            opacity=0.3,
             blend_mode="add",
             drift_x=6,
             drift_y=8,
-            # Trails progressively warm and dim — film long-exposure reciprocity
-            filter_params={"saturation": 0.7, "brightness": 0.9, "sepia": 0.2, "hue_rotate": 35},
+            # Trails dim faster to prevent additive blowout on faces
+            filter_params={"saturation": 0.65, "brightness": 0.7, "sepia": 0.2, "hue_rotate": 30},
         ),
         warp=WarpConfig(pan_x=3, pan_y=2, rotation=0.004, zoom=1.01, zoom_breath=0.005),
     ),
@@ -197,18 +201,17 @@ PRESETS: dict[str, EffectPreset] = {
     ),
     "neon": EffectPreset(
         name="neon",
-        # Key insight: neon looks best as vivid lights against muted surroundings
-        # Moderate sat boost preserves color variety instead of blowing to monochrome
-        color_grade=ColorGradeConfig(saturation=1.6, brightness=1.1, contrast=1.4),
+        # Neon: vivid highlights against slightly muted surroundings
+        # Lower base sat, higher contrast — lets bright colored areas pop
+        color_grade=ColorGradeConfig(saturation=1.4, brightness=1.05, contrast=1.5),
         trail=TrailConfig(
             count=4,
-            opacity=0.3,
+            opacity=0.25,
             blend_mode="add",
             drift_x=2,
             drift_y=2,
-            # Trail sat slightly higher than base — creates color glow on bright areas
-            # Slight warm hue shift for halation-like warm glow
-            filter_params={"saturation": 2.0, "brightness": 1.3, "contrast": 1.1, "hue_rotate": 10},
+            # Warm glow on trails — halation effect
+            filter_params={"saturation": 1.5, "brightness": 0.9, "contrast": 1.1, "hue_rotate": 8},
         ),
         warp=WarpConfig(pan_x=2, pan_y=2, rotation=0.004, zoom=1.01, zoom_breath=0.006),
         post_process=PostProcessConfig(vignette_strength=0.4),
