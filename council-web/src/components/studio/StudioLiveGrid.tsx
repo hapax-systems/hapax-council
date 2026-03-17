@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DetectionOverlay } from "./DetectionOverlay";
 import { AlertTriangle, Maximize, Minimize, GripVertical } from "lucide-react";
 
 interface Props {
   cameraOrder: string[];
   onReorder: (order: string[]) => void;
   onFocusCamera: (role: string) => void;
+  detectionsEnabled?: boolean;
 }
 
-export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera }: Props) {
+export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera, detectionsEnabled = true }: Props) {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
 
@@ -49,6 +51,7 @@ export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera }: Props)
         onDrop={handleDrop}
         onDragEnd={handleDragEnd}
         onFocus={onFocusCamera}
+        detectionsEnabled={detectionsEnabled}
       />
       {others.length > 0 && (
         <div className="flex w-1/3 flex-col gap-1">
@@ -64,6 +67,7 @@ export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera }: Props)
               onDrop={handleDrop}
               onDragEnd={handleDragEnd}
               onFocus={onFocusCamera}
+              detectionsEnabled={detectionsEnabled}
             />
           ))}
         </div>
@@ -83,6 +87,9 @@ interface CameraCellProps {
   onDrop: (idx: number) => void;
   onDragEnd: () => void;
   onFocus: (role: string) => void;
+  preset?: import("./compositePresets").CompositePreset;
+  smoothSourceId?: string;
+  detectionsEnabled?: boolean;
 }
 
 function CameraCell({
@@ -96,6 +103,9 @@ function CameraCell({
   onDrop,
   onDragEnd,
   onFocus,
+  preset: _preset,
+  smoothSourceId: _smoothSourceId,
+  detectionsEnabled = true,
 }: CameraCellProps) {
   const imgRef = useRef<HTMLImageElement>(null);
   const cellRef = useRef<HTMLDivElement>(null);
@@ -180,6 +190,9 @@ function CameraCell({
         crossOrigin="anonymous"
         className={`bg-black object-contain ${isFullscreen ? "max-h-screen max-w-full" : "h-full w-full"}`}
       />
+
+      {/* Detection overlay on all tiles */}
+      {detectionsEnabled && <DetectionOverlay containerRef={cellRef} cameraRole={role} />}
 
       {/* Labels + controls */}
       <div className="absolute left-1 top-1 flex items-center gap-1">
