@@ -43,6 +43,10 @@ fn main() {
             commands::governance::get_briefing,
             // Cost (Tier 2: Langfuse)
             commands::cost::get_cost,
+            // Visual surface control
+            visual::control::get_visual_surface_state,
+            visual::control::set_visual_layer_param,
+            visual::control::get_visual_surface_snapshot,
         ])
         .setup(|app| {
             // Spawn the wgpu visual surface on a dedicated thread
