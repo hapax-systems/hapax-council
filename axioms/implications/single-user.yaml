@@ -1,7 +1,8 @@
 axiom_id: single_user
 derived_at: '2026-03-03'
+amended_at: '2026-03-17'
 model: balanced
-derivation_version: 1
+derivation_version: 2
 implications:
 - id: su-auth-001
   tier: T0
