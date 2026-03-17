@@ -1,7 +1,8 @@
 # Interpersonal Transparency — Axiom Evaluation
 
 **Date:** 2026-03-13
-**Status:** Evaluation / Pre-ratification
+**Ratified:** 2026-03-17
+**Status:** Ratified — all immediate actions complete
 **Depends on:** Spatial awareness research (2026-03-13), axiom registry
 
 ---
@@ -196,11 +197,19 @@ The system enforces contracts at two levels:
 **Ratify `interpersonal_transparency` as a constitutional axiom at weight 88, hardcoded.**
 
 Immediate actions:
-1. Add to `axioms/registry.yaml`
-2. Derive implications (T0: no persistent third-party state without contract; T1: inspection mechanism required; T1: revocation purges; T2: contract audit trail)
-3. Amend `su-privacy-001` to explicitly scope to operator data
-4. Create `axioms/contracts/` directory with schema
-5. Implement `shared/consent.py` — `contract_check()`, `load_contracts()`, `purge_subject()`
+1. ✅ Add to `axioms/registry.yaml` (2026-03-13)
+2. ✅ Derive implications — 9 implications: 3 T0, 3 T1, 3 T2 (2026-03-13)
+3. ✅ Amend `su-privacy-001` to explicitly scope to operator data (v2, 2026-03-17)
+4. ✅ Create `axioms/contracts/` directory with schema (2026-03-13)
+5. ✅ Implement `shared/governance/consent.py` — full governance package with ConsentContract, ConsentRegistry, ConsentGatedWriter, ConsentLabel (DLM), Labeled[T], Principal, revocation cascade, channel selection, guest detection (PRs #74-109, #154)
+
+Runtime enforcement:
+- ✅ ConsentGatedWriter blocks unconsented persistent writes (it-consent-001)
+- ✅ Consent voice session requires explicit opt-in (it-consent-002)
+- ✅ Revocation cascade purges subject data (it-revoke-001)
+- ✅ PipelineGovernor pauses during consent_pending/refused (#154)
+- ✅ Visual layer shows consent phase with escalating severity (#154)
+- ✅ Audio processor gates multi-speaker persistence (#102)
 
 Deferred actions (blocked on contract with wife):
 6. Create first contract (operator + wife, scope: coarse_location)
