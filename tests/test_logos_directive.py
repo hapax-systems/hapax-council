@@ -4,11 +4,10 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from cockpit.api.routes.logos import DIRECTIVE_FILE, router
-
-from fastapi import FastAPI
+from cockpit.api.routes.logos import router
 
 app = FastAPI()
 app.include_router(router)
@@ -18,8 +17,9 @@ client = TestClient(app)
 class TestDirectiveEndpoint:
     def test_post_directive_navigate(self, tmp_path: Path):
         directive_file = tmp_path / "directives.jsonl"
-        with patch("cockpit.api.routes.logos.DIRECTIVE_DIR", tmp_path), patch(
-            "cockpit.api.routes.logos.DIRECTIVE_FILE", directive_file
+        with (
+            patch("cockpit.api.routes.logos.DIRECTIVE_DIR", tmp_path),
+            patch("cockpit.api.routes.logos.DIRECTIVE_FILE", directive_file),
         ):
             resp = client.post(
                 "/api/logos/directive",
@@ -39,8 +39,9 @@ class TestDirectiveEndpoint:
 
     def test_post_directive_toast(self, tmp_path: Path):
         directive_file = tmp_path / "directives.jsonl"
-        with patch("cockpit.api.routes.logos.DIRECTIVE_DIR", tmp_path), patch(
-            "cockpit.api.routes.logos.DIRECTIVE_FILE", directive_file
+        with (
+            patch("cockpit.api.routes.logos.DIRECTIVE_DIR", tmp_path),
+            patch("cockpit.api.routes.logos.DIRECTIVE_FILE", directive_file),
         ):
             resp = client.post(
                 "/api/logos/directive",
@@ -57,8 +58,9 @@ class TestDirectiveEndpoint:
 
     def test_post_directive_composite(self, tmp_path: Path):
         directive_file = tmp_path / "directives.jsonl"
-        with patch("cockpit.api.routes.logos.DIRECTIVE_DIR", tmp_path), patch(
-            "cockpit.api.routes.logos.DIRECTIVE_FILE", directive_file
+        with (
+            patch("cockpit.api.routes.logos.DIRECTIVE_DIR", tmp_path),
+            patch("cockpit.api.routes.logos.DIRECTIVE_FILE", directive_file),
         ):
             resp = client.post(
                 "/api/logos/directive",
@@ -78,8 +80,9 @@ class TestDirectiveEndpoint:
 
     def test_post_directive_empty_is_valid(self, tmp_path: Path):
         directive_file = tmp_path / "directives.jsonl"
-        with patch("cockpit.api.routes.logos.DIRECTIVE_DIR", tmp_path), patch(
-            "cockpit.api.routes.logos.DIRECTIVE_FILE", directive_file
+        with (
+            patch("cockpit.api.routes.logos.DIRECTIVE_DIR", tmp_path),
+            patch("cockpit.api.routes.logos.DIRECTIVE_FILE", directive_file),
         ):
             resp = client.post("/api/logos/directive", json={})
             assert resp.status_code == 200
