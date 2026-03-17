@@ -115,6 +115,8 @@ class ConversationPipeline:
         self._salience_router = None  # set externally if salience routing enabled
         self._salience_diagnostics = None  # set externally for activation history
         self._context_distillation: str = ""  # refreshed on perception tick
+        self._guest_mode: bool = False  # synced from session on perception tick
+        self._face_count: int = 0  # synced from perception on perception tick
 
         # Observation signal tracking (Batch 4: revealed preferences)
         self._last_assistant_end: float = 0.0  # monotonic time when last response finished
@@ -262,8 +264,8 @@ class ConversationPipeline:
                 turn_count=self.turn_count,
                 activity_mode=self._activity_mode,
                 consent_phase=self._consent_phase,
-                guest_mode=False,  # TODO: wire from session
-                face_count=0,  # TODO: wire from perception
+                guest_mode=self._guest_mode,
+                face_count=self._face_count,
                 has_tools=bool(self.tools),
             )
         else:
@@ -274,8 +276,8 @@ class ConversationPipeline:
                 turn_count=self.turn_count,
                 activity_mode=self._activity_mode,
                 consent_phase=self._consent_phase,
-                guest_mode=False,
-                face_count=0,
+                guest_mode=self._guest_mode,
+                face_count=self._face_count,
                 has_tools=bool(self.tools),
                 prev_tier=self._prev_tier,
             )
