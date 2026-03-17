@@ -56,7 +56,7 @@ def _registry() -> RuleRegistry:
 class TestRegistration:
     def test_registers_all_rules(self):
         reg = _registry()
-        assert len(reg) == 9
+        assert len(reg) == 10
 
     def test_rule_names(self):
         reg = _registry()
@@ -69,6 +69,7 @@ class TestRegistration:
             "carrier-intake",
             "knowledge-maintenance",
             "pattern-consolidation",
+            "correction-synthesis",
             "audio-archive-sidecar",
             "audio-clap-indexed",
         }
@@ -86,10 +87,11 @@ class TestRegistration:
 
     def test_phase_two_rules(self):
         phase2 = [r for r in ALL_RULES if r.phase == 2]
-        assert len(phase2) == 2
+        assert len(phase2) == 3
         phase2_names = {r.name for r in phase2}
         assert "knowledge-maintenance" in phase2_names
         assert "pattern-consolidation" in phase2_names
+        assert "correction-synthesis" in phase2_names
 
 
 # ── TestCollectorRefreshRule ────────────────────────────────────────────────
