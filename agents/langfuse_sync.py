@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 # ── Constants ────────────────────────────────────────────────────────────────
 
 LANGFUSE_BASE_URL = os.environ.get("LANGFUSE_BASE_URL", "http://localhost:3000")
-LITELLM_BASE_URL = os.environ.get("LITELLM_API_BASE", "http://localhost:4000")
+from shared.config import LITELLM_BASE as LITELLM_BASE_URL
 
 CACHE_DIR = Path.home() / ".cache" / "langfuse-sync"
 STATE_FILE = CACHE_DIR / "state.json"

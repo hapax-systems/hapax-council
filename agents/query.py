@@ -102,7 +102,7 @@ def main():
         "query.search",
         attributes={"agent.name": "query", "agent.repo": "hapax-council"},
     ):
-        vec = embed(args.query)
+        vec = embed(args.query, prefix="search_query")
         results = search(vec, args.collection, args.limit)
 
         if args.json:

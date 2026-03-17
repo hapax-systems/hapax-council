@@ -22,6 +22,42 @@ from cockpit.engine.rules import RuleRegistry, evaluate_rules
 from cockpit.engine.watcher import DirectoryWatcher
 from shared.config import AI_AGENTS_DIR, PROFILES_DIR, RAG_SOURCES_DIR
 from shared.cycle_mode import CycleMode, get_cycle_mode
+from shared.stimmung import Stance
+from shared.telemetry import hapax_event, hapax_interaction
+
+# ── Persistent Event Counters (WS2) ─────────────────────────────────────────
+
+_COUNTERS_PATH = Path("profiles/engine-counters.json")
+
+
+def _load_counters(path: Path = _COUNTERS_PATH) -> dict[str, int]:
+    """Load persistent event pattern counters."""
+    import json
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_counters(counters: dict[str, int], path: Path = _COUNTERS_PATH) -> None:
+    """Save persistent event pattern counters atomically."""
+    import json
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(counters, indent=2), encoding="utf-8")
+        tmp.rename(path)
+    except OSError:
+        _log.debug("Failed to save engine counters", exc_info=True)
+
+
+def _event_pattern_key(event_type: str, doc_type: str | None, rules: list[str]) -> str:
+    """Build a hashable key for an event pattern."""
+    rules_str = "+".join(sorted(rules)) if rules else "none"
+    return f"{event_type}|{doc_type or 'unknown'}|{rules_str}"
+
 
 _log = logging.getLogger(__name__)
 
@@ -109,6 +145,11 @@ class ReactiveEngine:
         # History ring buffer
         self._history: deque[_HistoryEntry] = deque(maxlen=100)
 
+        # Persistent event pattern counters (WS2 novelty detection)
+        self._pattern_counters: dict[str, int] = _load_counters()
+        self._counter_save_interval = 50  # save every N events
+        self._events_since_save = 0
+
     @property
     def registry(self) -> RuleRegistry:
         """Expose rule registry for external registration."""
@@ -126,7 +167,31 @@ class ReactiveEngine:
             "rules_evaluated": self._rules_evaluated,
             "actions_executed": self._actions_executed,
             "errors": self._error_count,
+            "unique_patterns": len(self._pattern_counters),
+            "novelty_score": self.novelty_score,
         }
+
+    @property
+    def novelty_score(self) -> float:
+        """Fraction of recent events that are novel (seen <= 2 times).
+
+        0.0 = all patterns are well-known. 1.0 = all patterns are novel.
+        Used by stimmung collector for processing_throughput dimension.
+        """
+        if not self._history:
+            return 0.0
+        recent = list(self._history)[-20:]  # last 20 events
+        novel = 0
+        for entry in recent:
+            key = _event_pattern_key(
+                "modified",  # history doesn't store event_type, approximate
+                entry.doc_type,
+                entry.rules_matched,
+            )
+            count = self._pattern_counters.get(key, 0)
+            if count <= 2:
+                novel += 1
+        return round(novel / len(recent), 2)
 
     @property
     def history(self) -> list[_HistoryEntry]:
@@ -167,6 +232,7 @@ class ReactiveEngine:
             self._watcher = None
 
         self._running = False
+        _save_counters(self._pattern_counters)
         _log.info("Reactive engine stopped")
 
     def pause(self) -> None:
@@ -184,8 +250,24 @@ class ReactiveEngine:
         if self._watcher is not None:
             self._watcher.ignore_fn(path)
 
+    def _read_stimmung_stance(self) -> str:
+        """Read current stimmung stance from /dev/shm. Returns 'nominal' on error."""
+        import json
+
+        stimmung_path = Path("/dev/shm/hapax-stimmung/state.json")
+        try:
+            data = json.loads(stimmung_path.read_text(encoding="utf-8"))
+            return data.get("overall_stance", "nominal")
+        except (OSError, json.JSONDecodeError):
+            return "nominal"
+
     async def _handle_change(self, event: ChangeEvent) -> None:
-        """Core event handler: evaluate rules → execute plan → log results."""
+        """Core event handler: evaluate rules → execute plan → log results.
+
+        WS2: stimmung-modulated processing. When system is degraded/critical,
+        skip non-critical GPU/LLM actions (phase 1+2) to conserve resources.
+        Phase 0 (deterministic) always runs.
+        """
         if self._paused:
             _log.debug("Paused, ignoring event: %s", event.path)
             return
@@ -207,6 +289,27 @@ class ReactiveEngine:
             _log.debug("No rules matched for %s", event.path)
             return
 
+        # WS2: stimmung modulation — skip expensive phases when system is stressed
+        stance = self._read_stimmung_stance()
+        if stance in (Stance.DEGRADED, Stance.CRITICAL):
+            original_count = len(plan.actions)
+            plan.actions = [a for a in plan.actions if a.phase == 0]
+            skipped = original_count - len(plan.actions)
+            if skipped > 0:
+                _log.info(
+                    "Stimmung %s: skipped %d non-critical action(s)",
+                    stance,
+                    skipped,
+                )
+                hapax_interaction(
+                    "stimmung",
+                    "engine",
+                    "phase_gating",
+                    metadata={"stance": stance, "skipped_actions": skipped},
+                )
+            if not plan.actions:
+                return
+
         _log.info(
             "Matched %d action(s): %s",
             len(plan.actions),
@@ -222,13 +325,37 @@ class ReactiveEngine:
             _log.warning("Action errors: %s", plan.errors)
 
         # Record history
+        matched_rules = [a.name for a in plan.actions]
         self._history.append(
             _HistoryEntry(
                 timestamp=event.timestamp,
                 event_path=str(event.path),
                 doc_type=event.doc_type,
-                rules_matched=[a.name for a in plan.actions],
+                rules_matched=matched_rules,
                 actions=list(plan.results.keys()),
                 errors=list(plan.errors.keys()),
             )
         )
+
+        # WS2: track event pattern for novelty detection
+        pattern_key = _event_pattern_key(event.event_type, event.doc_type, matched_rules)
+        prev_count = self._pattern_counters.get(pattern_key, 0)
+        self._pattern_counters[pattern_key] = prev_count + 1
+
+        # Flag novel patterns (first or second occurrence)
+        if prev_count == 0:
+            _log.info("NOVEL event pattern (first occurrence): %s", pattern_key)
+            hapax_event(
+                "prediction",
+                "novel_pattern",
+                metadata={"pattern": pattern_key, "occurrence": 1},
+                level="WARNING",
+            )
+        elif prev_count == 1:
+            _log.info("Rare event pattern (second occurrence): %s", pattern_key)
+
+        # Periodic save
+        self._events_since_save += 1
+        if self._events_since_save >= self._counter_save_interval:
+            _save_counters(self._pattern_counters)
+            self._events_since_save = 0

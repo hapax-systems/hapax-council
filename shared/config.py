@@ -28,6 +28,8 @@ if not LITELLM_KEY:
         stacklevel=1,
     )
 QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
+OLLAMA_URL: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+COCKPIT_API_URL: str = os.environ.get("COCKPIT_BASE_URL", "http://localhost:8051/api")
 
 # ── Canonical paths ─────────────────────────────────────────────────────────
 
@@ -282,7 +284,7 @@ def validate_embed_dimensions() -> None:
     Call on startup from agents that depend on correct embedding dimensions.
     Raises RuntimeError if dimensions don't match.
     """
-    test = embed("dimension check")
+    test = embed("dimension check", prefix="search_query")
     if len(test) != EXPECTED_EMBED_DIMENSIONS:
         raise RuntimeError(
             f"Embedding model returned {len(test)}d, expected {EXPECTED_EMBED_DIMENSIONS}d. "
