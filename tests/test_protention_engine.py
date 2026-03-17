@@ -158,15 +158,17 @@ class TestProtentionEngine:
 
     def test_flow_timing_prediction(self):
         engine = ProtentionEngine()
-        now = time.monotonic()
-        # Teach it 5 flow sessions of ~30 min
+        # Use fixed timestamps to avoid monotonic clock issues
+        base_time = 100000.0
+        # Teach it 5 flow sessions of ~30 min (1800s)
         for i in range(5):
-            base = now + i * 5000
-            engine._flow_timing.observe("active", base)
-            engine._flow_timing.observe("idle", base + 1800)
-        # Now predict while in active flow for 26 min (remaining < 300s triggers prediction)
+            t = base_time + i * 5000
+            engine._flow_timing.observe("active", t)
+            engine._flow_timing.observe("idle", t + 1800)
+        # Predict while 28 min into flow (remaining ~120s < 300s threshold)
+        now = base_time + 30000
         engine._last_flow_state = "active"
-        engine._flow_session_start = now - 1560
+        engine._flow_session_start = now - 1680  # 28 min elapsed
         snap = engine.predict("coding", 0.7, 14, now=now)
         flow_preds = [p for p in snap.predictions if p.dimension == "flow"]
         assert len(flow_preds) >= 1
