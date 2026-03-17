@@ -117,13 +117,15 @@ class RevocationPropagator:
 def check_provenance(data: Labeled[Any], active_contract_ids: frozenset[str]) -> bool:
     """Check if labeled data's provenance is still valid.
 
-    Returns True if ALL contracts in the data's provenance are still active.
-    Returns True if provenance is empty (public data, no contract dependency).
-    Returns False if any contract in provenance has been revoked.
+    Uses semiring evaluation when structured provenance is available,
+    falls back to flat subset check for backwards compatibility.
 
-    This is the DD-8 evaluation: PosBool(X) with revoked contract set to false.
-    At current scale, this is simple set membership.
+    Returns True if the data's provenance is satisfied given active contracts.
+    Returns True if provenance is empty (public data, no contract dependency).
+    Returns False if any required contract has been revoked.
+
+    This is the DD-8 evaluation: PosBool(X) semiring with revoked contracts
+    evaluated to false.
     """
-    if not data.provenance:
-        return True
-    return data.provenance <= active_contract_ids
+    # Use semiring evaluation (handles both structured and flat provenance)
+    return data.evaluate_provenance(active_contract_ids)
