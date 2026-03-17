@@ -18,6 +18,8 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
+from agents.hapax_voice.config import LITELLM_BASE as _voice_litellm_base
+
 log = logging.getLogger(__name__)
 
 _tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
@@ -65,6 +67,7 @@ class ConversationPipeline:
         env_context_fn: Callable[[], str] | None = None,
         ambient_fn: Callable[[], object | None] | None = None,
         policy_fn: Callable[[], str] | None = None,
+        screen_capturer=None,  # ScreenCapturer | None
     ) -> None:
         self.stt = stt
         self.tts = tts_manager
@@ -79,6 +82,7 @@ class ConversationPipeline:
         self._env_context_fn = env_context_fn
         self._ambient_fn = ambient_fn
         self._policy_fn = policy_fn
+        self._screen_capturer = screen_capturer
 
         self.state = ConvState.IDLE
         self.messages: list[dict] = []
@@ -194,7 +198,24 @@ class ConversationPipeline:
         # Emit events for future preference learning. No profile mutation.
         self._detect_observation_signals(transcript)
 
-        self.messages.append({"role": "user", "content": transcript})
+        # Deictic reference detection — auto-inject screen capture
+        # when the operator references something visible ("that", "this", etc.)
+        screen_injected = self._maybe_inject_screen(transcript)
+        if screen_injected:
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{screen_injected}"},
+                        },
+                        {"type": "text", "text": transcript},
+                    ],
+                }
+            )
+        else:
+            self.messages.append({"role": "user", "content": transcript})
         self.turn_count += 1
 
         # Refresh environment context before LLM call
@@ -234,7 +255,7 @@ class ConversationPipeline:
                 "stream": True,
                 "max_tokens": _MAX_RESPONSE_TOKENS,
                 "temperature": 0.7,
-                "api_base": os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000"),
+                "api_base": _voice_litellm_base,
                 "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
             }
             if self.tools:
@@ -424,6 +445,57 @@ class ConversationPipeline:
             self.buffer.set_speaking(False)
 
     # ── Observation Signals (Batch 4) ──────────────────────────────────
+
+    # ── Deictic Screen Injection ───────────────────────────────────
+
+    _DEICTIC_PATTERNS = (
+        "what's that",
+        "what is that",
+        "what's this",
+        "what is this",
+        "look at this",
+        "look at that",
+        "see this",
+        "see that",
+        "what do you see",
+        "what am i looking at",
+        "what's on my screen",
+        "what's on screen",
+        "on the screen",
+        "on my screen",
+        "this thing",
+        "that thing",
+        "what's happening here",
+        "tell me about this",
+        "tell me about that",
+        "what does this say",
+        "what does that say",
+        "can you read",
+        "read this",
+        "read that",
+        "check this",
+        "check that",
+    )
+
+    def _maybe_inject_screen(self, transcript: str) -> str | None:
+        """If the utterance contains a deictic reference, capture the screen.
+
+        Returns base64 PNG or None. This lets the operator say "what's that?"
+        and Hapax sees their actual screen without needing to call a tool.
+        """
+        if self._screen_capturer is None:
+            return None
+
+        lower = transcript.lower().strip()
+        if not any(pat in lower for pat in self._DEICTIC_PATTERNS):
+            return None
+
+        self._screen_capturer.reset_cooldown()
+        screen_b64 = self._screen_capturer.capture()
+        if screen_b64:
+            self._emit("screen_injected", trigger=lower[:40])
+            log.info("Auto-injected screen capture for deictic reference")
+        return screen_b64
 
     _ELABORATION_PATTERNS = (
         "what do you mean",

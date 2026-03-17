@@ -510,6 +510,66 @@ AUDIO_CLAP_INDEXED_RULE = Rule(
 )
 
 
+# ── Phase 2: Pattern consolidation (WS3 L3) ────────────────────────────────
+
+_consolidation_scheduler = QuietWindowScheduler(quiet_window_s=300)
+
+
+async def _handle_pattern_consolidation(*, ignore_fn=None) -> str:
+    """Run WS3 L3 pattern consolidation after episodes accumulate."""
+    from shared.correction_memory import CorrectionStore
+    from shared.episodic_memory import EpisodeStore
+    from shared.pattern_consolidation import PatternStore, run_consolidation
+
+    _consolidation_scheduler.consume()
+
+    episode_store = EpisodeStore()
+    correction_store = CorrectionStore()
+    pattern_store = PatternStore()
+    pattern_store.ensure_collection()
+
+    result = await run_consolidation(episode_store, correction_store, pattern_store)
+    _log.info(
+        "Pattern consolidation: %d new patterns, summary: %s",
+        len(result.patterns),
+        result.summary[:80],
+    )
+    return f"consolidation:patterns={len(result.patterns)}"
+
+
+def _consolidation_filter(event: ChangeEvent) -> bool:
+    """Trigger consolidation after perception state changes settle.
+
+    Uses a 5-minute quiet window. Fires at most once per day (cooldown_s=86400).
+    """
+    if event.path.name != "perception-state.json":
+        return False
+    _consolidation_scheduler.record(str(event.path))
+    return _consolidation_scheduler.should_fire()
+
+
+def _consolidation_produce(event: ChangeEvent) -> list[Action]:
+    return [
+        Action(
+            name="pattern-consolidation",
+            handler=_handle_pattern_consolidation,
+            args={},
+            phase=2,
+            priority=90,
+        )
+    ]
+
+
+PATTERN_CONSOLIDATION_RULE = Rule(
+    name="pattern-consolidation",
+    description="Run WS3 pattern consolidation after episodes accumulate (daily)",
+    trigger_filter=_consolidation_filter,
+    produce=_consolidation_produce,
+    phase=2,
+    cooldown_s=86400,  # once per day
+)
+
+
 # ── Registration ────────────────────────────────────────────────────────────
 
 ALL_RULES: list[Rule] = [
@@ -540,6 +600,7 @@ ALL_RULES: list[Rule] = [
     AUDIO_CLAP_INDEXED_RULE,
     CARRIER_INTAKE_RULE,
     KNOWLEDGE_MAINT_RULE,
+    PATTERN_CONSOLIDATION_RULE,
 ]
 
 # Backwards compat alias

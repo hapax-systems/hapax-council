@@ -47,7 +47,9 @@ uv run cockpit-api
 |------|------|---------|
 | `/` | DashboardPage | Health overview, agent grid, nudge list, sidebar panels |
 | `/chat` | ChatPage | Streaming chat with tool call rendering |
+| `/insight` | InsightPage | Analysis and insights |
 | `/demos` | DemosPage | Browse and view generated capability demos |
+| `/studio` | StudioPage | Studio control panel for visual effects and camera management |
 
 ## Stack
 

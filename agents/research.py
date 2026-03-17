@@ -105,7 +105,7 @@ async def search_knowledge_base(ctx, query: str) -> str:
         attributes={"query.text": query[:100]},
     ):
         # Embed query
-        query_vec = embed(query, model=ctx.deps.embedding_model)
+        query_vec = embed(query, model=ctx.deps.embedding_model, prefix="search_query")
 
         # Search Qdrant
         results = ctx.deps.qdrant.query_points(
@@ -140,7 +140,7 @@ async def search_samples(ctx, query: str) -> str:
         "research.search_samples",
         attributes={"query.text": query[:100]},
     ):
-        query_vec = embed(query, model=ctx.deps.embedding_model)
+        query_vec = embed(query, model=ctx.deps.embedding_model, prefix="search_query")
 
         results = ctx.deps.qdrant.query_points(
             "samples",

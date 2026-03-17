@@ -578,7 +578,7 @@ def test_gather_profile_facts_rich_deduplicates():
 
     call_count = 0
 
-    def mock_embed(text):
+    def mock_embed(text, **kwargs):
         return [0.1] * 768
 
     def mock_query_points(collection_name, query, limit):

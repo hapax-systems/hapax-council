@@ -88,3 +88,12 @@ Beyond the formal types above, this directory contains:
 - **notify.py** — ntfy + desktop notifications
 - **document_registry.py** — Document type classification
 - **service_tiers.py** — Infrastructure service dependency tiers
+- **stimmung.py** — SystemStimmung self-state vector (6 dimensions, stance levels, trend tracking)
+- **operator.py** — Stimmung-aware system prompt injection for agents
+- **telemetry.py** — Circulatory system telemetry wiring (Langfuse as live system map)
+- **correction_memory.py** — L1 operator correction store in Qdrant
+- **episodic_memory.py** — L2 perception episode store in Qdrant
+- **pattern_consolidation.py** — L3 LLM-driven if-then rule extraction from episodes
+- **active_correction.py** — L4 active correction seeking (system asks when uncertain)
+- **spec_principles_audit.py** — First-principles operational audit (8 principles, automated discovery)
+- **spec_audit.py** — Spec registry audit against operational surface

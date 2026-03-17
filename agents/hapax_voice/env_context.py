@@ -82,6 +82,11 @@ def serialize_environment(
     if perception_tier and perception_tier != "full":
         data["perception"] = perception_tier
 
+    # Visual layer state (what's currently on the Corpora screen)
+    corpora = _read_corpora_state()
+    if corpora:
+        data["corpora"] = corpora
+
     # Change detection
     content_hash = hash(str(sorted(data.items())))
     if content_hash == _last_hash:
@@ -89,3 +94,52 @@ def serialize_environment(
     _last_hash = content_hash
 
     return to_toon(data)
+
+
+def _read_corpora_state() -> dict | None:
+    """Read current visual layer state for voice context injection.
+
+    Lets Hapax voice reference what's currently on the Corpora screen:
+    signals, activity label, voice content, etc.
+    """
+    import json
+    from pathlib import Path
+
+    vl_path = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
+    try:
+        data = json.loads(vl_path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+    result: dict = {}
+
+    # Current display state
+    display_state = data.get("display_state", "ambient")
+    if display_state != "ambient":
+        result["state"] = display_state
+
+    # What Hapax thinks operator is doing
+    activity = data.get("activity_label", "")
+    if activity:
+        result["activity"] = activity
+        detail = data.get("activity_detail", "")
+        if detail:
+            result["activity_detail"] = detail
+
+    # Active signals (what's showing on screen)
+    signals = data.get("signals", {})
+    visible = []
+    for entries in signals.values():
+        for sig in entries:
+            title = sig.get("title", "")
+            if title:
+                visible.append(title)
+    if visible:
+        result["showing"] = visible[:5]
+
+    # Ambient text fragment currently displayed
+    ambient_text = data.get("ambient_text", "")
+    if ambient_text:
+        result["fragment"] = ambient_text
+
+    return result if result else None
