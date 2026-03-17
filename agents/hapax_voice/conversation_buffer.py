@@ -42,7 +42,11 @@ BARGE_IN_CONSECUTIVE = 8
 # Short post-TTS cooldown: AEC handles most echo but room reflections
 # from the Yeti at close range still trigger VAD for ~200ms after TTS.
 # Reduced from 500ms (pre-AEC) — AEC cuts the needed cooldown by 60%.
-POST_TTS_COOLDOWN_S = 0.2
+# Post-TTS cooldown: the Yeti picks up TTS bleed-through that survives AEC.
+# 200ms was too short — room reflections arrive 1-3s after TTS ends.
+# 2.0s covers the echo tail in a room with a condenser mic at ~1m.
+# This is a hard gate — no audio processing during cooldown at all.
+POST_TTS_COOLDOWN_S = 2.0
 
 
 class ConversationBuffer:

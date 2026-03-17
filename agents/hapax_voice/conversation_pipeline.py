@@ -118,6 +118,10 @@ class ConversationPipeline:
         self._guest_mode: bool = False  # synced from session on perception tick
         self._face_count: int = 0  # synced from perception on perception tick
 
+        # Echo detection: track recent TTS output to detect mic picking up Hapax's own voice
+        self._recent_tts_texts: list[str] = []  # last N sentences spoken by Hapax
+        self._max_tts_history: int = 10
+
         # Observation signal tracking (Batch 4: revealed preferences)
         self._last_assistant_end: float = 0.0  # monotonic time when last response finished
         self._last_user_topic: str = ""  # rough topic tracking for abandonment detection
@@ -229,6 +233,13 @@ class ConversationPipeline:
 
         _t_stt = time.monotonic()
         log.info("TIMING stt=%.0fms transcript=%r", (_t_stt - _t_start) * 1000, transcript[:60])
+
+        # ── Echo detection: reject if transcript matches recent TTS output ──
+        if self._is_echo(transcript):
+            log.info("Echo rejected: %r", transcript[:60])
+            self.state = ConvState.LISTENING
+            return
+
         self._emit("user_utterance", text=transcript)
 
         # ── Observation signals (Batch 4: revealed preferences) ──────
@@ -643,6 +654,41 @@ class ConversationPipeline:
             if self.buffer:
                 self.buffer.set_speaking(False)
 
+    # ── Echo Detection ──────────────────────────────────────────────────
+
+    def _is_echo(self, transcript: str) -> bool:
+        """Detect if a transcript is Hapax's own TTS output echoed back.
+
+        Compares the transcript against recent TTS sentences using
+        substring matching. STT may truncate or slightly garble the echo,
+        so we check for significant overlap rather than exact match.
+
+        This is a structural defense independent of speaker identity —
+        works for any operator, any mic, any room.
+        """
+        if not self._recent_tts_texts:
+            return False
+
+        # Also reject if it arrives within the assistant speaking window
+        if self._last_assistant_end > 0:
+            gap = time.monotonic() - self._last_assistant_end
+            if gap < 3.0 and len(transcript.split()) <= 6:
+                # Short utterance very close to TTS end — likely echo
+                norm = transcript.lower().strip().rstrip(".,!?")
+                for tts_text in self._recent_tts_texts:
+                    # Substring match: echo might be partial
+                    if norm in tts_text or tts_text in norm:
+                        return True
+                    # Word overlap: STT may rephrase slightly
+                    tts_words = set(tts_text.split())
+                    transcript_words = set(norm.split())
+                    if len(tts_words) >= 2 and len(transcript_words) >= 2:
+                        overlap = len(tts_words & transcript_words)
+                        if overlap >= min(len(tts_words), len(transcript_words)) * 0.7:
+                            return True
+
+        return False
+
     # ── Observation Signals (Batch 4) ──────────────────────────────────
 
     # ── Deictic Screen Injection ───────────────────────────────────
@@ -767,6 +813,11 @@ class ConversationPipeline:
         """
         if not self._running:
             return
+
+        # Track for echo detection
+        self._recent_tts_texts.append(text.lower().strip().rstrip(".,!?"))
+        if len(self._recent_tts_texts) > self._max_tts_history:
+            self._recent_tts_texts.pop(0)
 
         try:
             _t0 = time.monotonic()
