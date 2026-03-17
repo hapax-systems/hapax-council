@@ -91,6 +91,12 @@ export const api = {
   // --- Tier 2: Tauri commands (Qdrant/Langfuse direct) ---
   cost: () => tauriOrHttp<import("./types").CostSnapshot>("get_cost", "/cost"),
 
+  // --- Studio (HTTP-only until Tauri commands added) ---
+  compositorLive: () => get<import("./types").LiveCompositorStatus>("/studio/compositor/live"),
+  studioDisk: () => get<import("./types").StudioDisk>("/studio/disk"),
+  enableRecording: () => post<{ status: string }>("/studio/recording/enable"),
+  disableRecording: () => post<{ status: string }>("/studio/recording/disable"),
+
   // --- Tier 3: Always HTTP (LLM orchestration) ---
   copilot: () => get<import("./types").CopilotResponse>("/copilot"),
   scoutDecide: (component: string, decision: string, notes?: string) =>
