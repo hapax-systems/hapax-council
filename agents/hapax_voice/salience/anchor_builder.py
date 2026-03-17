@@ -1,17 +1,22 @@
 """Build concern anchors from existing infrastructure.
 
 Gathers keywords/phrases from workspace analysis, calendar, goals,
-notifications, profile dimensions, and conversation history, then
-returns them as ConcernAnchor objects ready for embedding.
+notifications, profile dimensions, conversation history, and temporal
+bands (Husserlian retention/impression/protention/surprise) to build
+the operator's concern graph for salience-based routing.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 from agents.hapax_voice.salience.concern_graph import ConcernAnchor
 
 log = logging.getLogger(__name__)
+
+_TEMPORAL_PATH = Path("/dev/shm/hapax-temporal/bands.json")
 
 # Consent-related terms always get highest weight
 _CONSENT_TERMS = [
@@ -93,12 +98,114 @@ def build_anchors(
         for topic in recent_topics[-5:]:
             anchors.append(ConcernAnchor(text=topic, source="conversation", weight=0.5))
 
+    # Temporal bands (Husserlian retention/impression/protention/surprise)
+    anchors.extend(_read_temporal_anchors())
+
     log.debug(
         "Built %d concern anchors: %s",
         len(anchors),
         {a.source for a in anchors},
     )
     return anchors
+
+
+def _read_temporal_anchors() -> list[ConcernAnchor]:
+    """Extract concern anchors from Husserlian temporal bands.
+
+    Reads /dev/shm/hapax-temporal/bands.json (written by visual_layer_aggregator
+    every perception tick). Extracts anchors from:
+      - Impression: current activity, flow state, music genre
+      - Retention: recent activities (what operator was doing)
+      - Protention: predicted states (what's coming next)
+      - Surprises: prediction mismatches (inherently salient)
+
+    Staleness check: >30s → skip. Graceful degradation if file missing.
+    """
+    import time
+
+    try:
+        raw = json.loads(_TEMPORAL_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    except Exception:
+        log.debug("Failed to read temporal bands", exc_info=True)
+        return []
+
+    # Staleness check
+    ts = raw.get("timestamp", 0)
+    if ts > 0 and (time.time() - ts) > 30:
+        return []
+
+    anchors: list[ConcernAnchor] = []
+
+    # Parse the XML temporal context to extract structured data.
+    # The raw JSON also has metadata fields we can use directly.
+    xml = raw.get("xml", "")
+    if not xml:
+        return []
+
+    # Extract from XML using simple string parsing (no XML library needed
+    # for these predictable formats — avoids import overhead on hot path)
+
+    # Impression: current activity and flow state
+    activity = _xml_tag_content(xml, "activity")
+    if activity and activity != "idle":
+        anchors.append(ConcernAnchor(text=activity, source="temporal", weight=1.2))
+
+    flow_state = _xml_tag_content(xml, "flow_state")
+    if flow_state and flow_state != "idle":
+        anchors.append(ConcernAnchor(text=f"{flow_state} flow state", source="temporal", weight=0.8))
+
+    music_genre = _xml_tag_content(xml, "music_genre")
+    if music_genre:
+        anchors.append(ConcernAnchor(text=music_genre, source="temporal", weight=0.4))
+
+    # Retention: recent activities from memory tags
+    # Format: <memory age_s="5" flow="active" activity="coding">coding, 78bpm</memory>
+    for activity_attr in _xml_attr_values(xml, "memory", "activity"):
+        if activity_attr and activity_attr != "idle":
+            anchors.append(ConcernAnchor(text=activity_attr, source="temporal", weight=0.7))
+
+    # Protention: predicted states
+    # Format: <prediction state="entering_deep_work" confidence="0.72">basis</prediction>
+    for state in _xml_attr_values(xml, "prediction", "state"):
+        if state:
+            # Convert snake_case to readable: "entering_deep_work" → "entering deep work"
+            readable = state.replace("_", " ")
+            anchors.append(ConcernAnchor(text=readable, source="protention", weight=0.9))
+
+    # Surprises: prediction mismatches are inherently salient
+    max_surprise = raw.get("max_surprise", 0.0)
+    if max_surprise > 0.3:
+        # Extract surprise observations from XML
+        for observed in _xml_attr_values(xml, "surprise", "observed"):
+            if observed:
+                anchors.append(ConcernAnchor(text=observed, source="surprise", weight=1.5))
+
+    # Deduplicate by text (temporal data repeats across bands)
+    seen: set[str] = set()
+    unique: list[ConcernAnchor] = []
+    for a in anchors:
+        if a.text not in seen:
+            seen.add(a.text)
+            unique.append(a)
+
+    return unique
+
+
+def _xml_tag_content(xml: str, tag: str) -> str:
+    """Extract text content of a simple XML tag. Returns '' if not found."""
+    import re
+
+    m = re.search(rf"<{tag}>(.*?)</{tag}>", xml)
+    return m.group(1).strip() if m else ""
+
+
+def _xml_attr_values(xml: str, tag: str, attr: str) -> list[str]:
+    """Extract all values of an attribute from matching XML tags."""
+    import re
+
+    return re.findall(rf'<{tag}\b[^>]*\b{attr}="([^"]*)"', xml)
 
 
 def _extract_phrases(text: str, max_phrases: int = 10) -> list[str]:
@@ -160,6 +267,25 @@ def build_context_distillation(
         parts.append(f"Next: {next_meeting}")
     else:
         parts.append("No meetings today")
+
+    # Flow state from temporal bands
+    try:
+        raw = json.loads(_TEMPORAL_PATH.read_text(encoding="utf-8"))
+        xml = raw.get("xml", "")
+        if xml:
+            flow = _xml_tag_content(xml, "flow_state")
+            if flow and flow != "idle":
+                parts.append(f"Flow: {flow}")
+            flow_score = _xml_tag_content(xml, "flow_score")
+            if flow_score:
+                try:
+                    fs = float(flow_score)
+                    if fs > 0.6:
+                        parts.append("Deep focus")
+                except ValueError:
+                    pass
+    except Exception:
+        pass  # graceful degradation
 
     # System state
     status_parts = []
