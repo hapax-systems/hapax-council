@@ -761,11 +761,11 @@ class VoiceDaemon:
 
             env = self.perception.latest if hasattr(self, "perception") else None
 
-            # Gather notification texts
+            # Gather notification texts (read-only peek into queue)
             notif_texts: list[str] = []
             if hasattr(self, "notifications"):
-                for n in self.notifications.peek(5):
-                    notif_texts.append(getattr(n, "text", str(n)))
+                for n in self.notifications._items[:5]:
+                    notif_texts.append(getattr(n, "message", str(n)))
 
             anchors = build_anchors(
                 env_state=env,
@@ -785,7 +785,7 @@ class VoiceDaemon:
             from agents.hapax_voice.salience.anchor_builder import build_context_distillation
 
             env = self.perception.latest if hasattr(self, "perception") else None
-            notif_count = len(self.notifications.peek(100)) if hasattr(self, "notifications") else 0
+            notif_count = self.notifications.pending_count if hasattr(self, "notifications") else 0
 
             self._context_distillation = build_context_distillation(
                 env_state=env,
@@ -949,6 +949,12 @@ class VoiceDaemon:
                 pass
             self._pipeline_task = None
             log.info("Conversation pipeline stopped")
+
+        # Clear session-scoped salience state so next session starts fresh
+        if self._salience_router is not None:
+            self._salience_router._recent_turns.clear()
+        if self._salience_concern_graph is not None:
+            self._salience_concern_graph._recent_utterances.clear()
 
         # Resume vision now that conversation is done
         self._resume_vision_after_conversation()
@@ -1418,6 +1424,27 @@ class VoiceDaemon:
                 if self._salience_router is not None:
                     self._refresh_concern_graph()
                     self._refresh_context_distillation()
+
+                # Sync perception state to conversation pipeline for routing
+                if self._conversation_pipeline is not None:
+                    self._conversation_pipeline._activity_mode = state.activity_mode
+                    # Map ConsentPhase enum to routing phase strings
+                    _cp = (
+                        self.consent_tracker.phase.value
+                        if hasattr(self.consent_tracker, "phase")
+                        else "none"
+                    )
+                    # Normalize to routing expectations: pending/active/refused/none
+                    _phase_map = {
+                        "no_guest": "none",
+                        "guest_detected": "none",
+                        "consent_pending": "pending",
+                        "consent_granted": "active",
+                        "consent_refused": "refused",
+                    }
+                    self._conversation_pipeline._consent_phase = _phase_map.get(_cp, "none")
+                    self._conversation_pipeline._guest_mode = self.session.is_guest_mode
+                    self._conversation_pipeline._face_count = state.face_count
 
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision
