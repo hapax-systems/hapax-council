@@ -6,7 +6,7 @@ if CUDA is unavailable.
 
 Usage in effects:
     from agents.studio_fx.gpu import GpuAccel
-    
+
     gpu = GpuAccel()
     gf = gpu.upload(frame)
     gf = gpu.cvt_color(gf, cv2.COLOR_BGR2GRAY)
@@ -124,20 +124,23 @@ class GpuAccel:
             return cv2.resize(mat, dsize, interpolation=cv2.INTER_AREA)
         return cv2.cuda.resize(mat, dsize, interpolation=cv2.INTER_AREA)
 
-    def optical_flow_farneback(
-        self, prev_gray: object, curr_gray: object
-    ) -> np.ndarray:
+    def optical_flow_farneback(self, prev_gray: object, curr_gray: object) -> np.ndarray:
         """Compute dense optical flow. Returns numpy flow array (H, W, 2)."""
         if not self._cuda:
             return cv2.calcOpticalFlowFarneback(
-                prev_gray, curr_gray, None,
-                pyr_scale=0.5, levels=3, winsize=15,
-                iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
+                prev_gray,
+                curr_gray,
+                None,
+                pyr_scale=0.5,
+                levels=3,
+                winsize=15,
+                iterations=3,
+                poly_n=5,
+                poly_sigma=1.2,
+                flags=0,
             )
         if self._farneback is None:
-            self._farneback = cv2.cuda.FarnebackOpticalFlow.create(
-                3, 0.5, False, 15, 3, 5, 1.2, 0
-            )
+            self._farneback = cv2.cuda.FarnebackOpticalFlow.create(3, 0.5, False, 15, 3, 5, 1.2, 0)
         # Ensure inputs are on GPU
         if isinstance(prev_gray, np.ndarray):
             g1 = cv2.cuda_GpuMat()
@@ -159,9 +162,7 @@ class GpuAccel:
             result = filt.apply(result)
         return result
 
-    def accumulate_weighted(
-        self, src: object, accum: np.ndarray, alpha: float
-    ) -> np.ndarray:
+    def accumulate_weighted(self, src: object, accum: np.ndarray, alpha: float) -> np.ndarray:
         """accumulateWeighted — always CPU (no CUDA equivalent). Returns numpy."""
         if not isinstance(src, np.ndarray):
             src = self.download(src)

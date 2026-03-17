@@ -56,9 +56,7 @@ class ScrewedEffect(BaseEffect):
             self._trail = cv2.resize(self._trail, (width, height)).astype(np.float32)
         if self._frozen_frame is not None:
             self._frozen_frame = cv2.resize(self._frozen_frame, (width, height))
-        self._replay_buffer = [
-            cv2.resize(f, (width, height)) for f in self._replay_buffer
-        ]
+        self._replay_buffer = [cv2.resize(f, (width, height)) for f in self._replay_buffer]
 
     def reset(self) -> None:
         self._trail = None
@@ -80,9 +78,6 @@ class ScrewedEffect(BaseEffect):
         # Purple intensity: deeper flow = deeper purple
         purple_strength = 0.3 + p.flow_score * 0.4
 
-        # Freeze chance: low interruptibility = more chops
-        freeze_chance = 0.04 + (1.0 - p.interruptibility) * 0.12
-
         # No stutter/freeze — pure syrupy temporal smear only
 
         # --- Heavy temporal accumulation (syrupy trails) ---
@@ -96,11 +91,13 @@ class ScrewedEffect(BaseEffect):
         # --- PURPLE COLOR GRADING (DISTINCT) ---
         # Push into purple: boost blue + red, crush green
         # Stronger purple in shadows, subtler in highlights
-        luma = (out[:, :, 0] * 0.114 + out[:, :, 1] * 0.587 + out[:, :, 2] * 0.299)
+        luma = out[:, :, 0] * 0.114 + out[:, :, 1] * 0.587 + out[:, :, 2] * 0.299
         shadow_mask = 1.0 - (luma / 255.0)  # stronger in darks
 
         out[:, :, 0] = np.clip(out[:, :, 0] + shadow_mask * 40 * purple_strength, 0, 255)  # B hard
-        out[:, :, 1] = np.clip(out[:, :, 1] * (1.0 - 0.35 * purple_strength), 0, 255)  # G crush hard
+        out[:, :, 1] = np.clip(
+            out[:, :, 1] * (1.0 - 0.35 * purple_strength), 0, 255
+        )  # G crush hard
         out[:, :, 2] = np.clip(out[:, :, 2] + shadow_mask * 18 * purple_strength, 0, 255)  # R
 
         # Desaturate slightly for that drugged-out, faded quality
@@ -128,7 +125,7 @@ class ScrewedEffect(BaseEffect):
         vy, vx = np.mgrid[0:h, 0:w].astype(np.float32)
         cx, cy = w / 2, h / 2
         dist = np.sqrt((vx - cx) ** 2 + (vy - cy) ** 2)
-        max_dist = np.sqrt(cx ** 2 + cy ** 2)
+        max_dist = np.sqrt(cx**2 + cy**2)
         vignette = 1.0 - (dist / max_dist) ** 1.5 * 0.5
         for c in range(3):
             result[:, :, c] = (result[:, :, c].astype(np.float32) * vignette).astype(np.uint8)

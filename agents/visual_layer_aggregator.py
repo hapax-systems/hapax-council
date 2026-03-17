@@ -299,14 +299,26 @@ def map_perception(data: dict) -> tuple[list[SignalEntry], float, float, bool]:
     production = data.get("production_activity", "idle")
     production_active = production not in ("idle", "")
 
-    # Consent phase as governance signal
+    # Consent phase as governance signal — escalating severity by phase
     consent = data.get("consent_phase", "no_guest")
     if consent not in ("no_guest", ""):
+        consent_severity = {
+            "guest_detected": SEVERITY_LOW,
+            "consent_pending": SEVERITY_HIGH,
+            "consent_refused": SEVERITY_CRITICAL,
+            "consent_granted": SEVERITY_LOW,
+        }
+        consent_titles = {
+            "guest_detected": "Guest detected — identifying",
+            "consent_pending": "Consent pending — data curtailed",
+            "consent_refused": "Consent refused — data purged",
+            "consent_granted": "Guest consented",
+        }
         signals.append(
             SignalEntry(
                 category=SignalCategory.GOVERNANCE,
-                severity=SEVERITY_MEDIUM if consent == "pending_consent" else SEVERITY_LOW,
-                title=f"Consent: {consent.replace('_', ' ')}",
+                severity=consent_severity.get(consent, SEVERITY_MEDIUM),
+                title=consent_titles.get(consent, f"Consent: {consent.replace('_', ' ')}"),
                 source_id="consent-phase",
             )
         )

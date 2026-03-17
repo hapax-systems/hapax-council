@@ -523,6 +523,7 @@ class WorkspaceMonitor:
                 if frame_b64 is None:
                     import base64 as _b64
                     from pathlib import Path as _Path
+
                     _shm = _Path("/dev/shm/hapax-compositor/brio-operator.jpg")
                     if _shm.exists():
                         try:

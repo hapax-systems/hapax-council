@@ -64,9 +64,7 @@ class GhostEffect(BaseEffect):
         dy = round(2.0 * np.sin(drift_angle))
         if dx != 0 or dy != 0:
             m = np.float32([[1, 0, dx], [0, 1, dy]])
-            self._accum = cv2.warpAffine(
-                self._accum, m, (w, h), borderMode=cv2.BORDER_REFLECT
-            )
+            self._accum = cv2.warpAffine(self._accum, m, (w, h), borderMode=cv2.BORDER_REFLECT)
 
         accum_u8 = np.clip(self._accum, 0, 255).astype(np.uint8)
 
@@ -74,7 +72,9 @@ class GhostEffect(BaseEffect):
         # This is the key — the ghost/trail IS the image, current frame just updates it
         trail_weight = 0.70  # accumulator dominates
         current_weight = 0.30
-        out_f = accum_u8.astype(np.float32) * trail_weight + frame.astype(np.float32) * current_weight
+        out_f = (
+            accum_u8.astype(np.float32) * trail_weight + frame.astype(np.float32) * current_weight
+        )
 
         # Desaturate for ethereal/spectral quality
         out = np.clip(out_f, 0, 255).astype(np.uint8)
