@@ -519,6 +519,16 @@ class WorkspaceMonitor:
         while True:
             try:
                 frame_b64 = self._webcam_capturer.capture("operator")
+                # Fallback: read from compositor snapshot if camera locked
+                if frame_b64 is None:
+                    import base64 as _b64
+                    from pathlib import Path as _Path
+                    _shm = _Path("/dev/shm/hapax-compositor/brio-operator.jpg")
+                    if _shm.exists():
+                        try:
+                            frame_b64 = _b64.b64encode(_shm.read_bytes()).decode("ascii")
+                        except OSError:
+                            pass
                 if frame_b64 is not None:
                     t0 = time.monotonic()
                     result = self._face_detector.detect_from_base64(frame_b64)
