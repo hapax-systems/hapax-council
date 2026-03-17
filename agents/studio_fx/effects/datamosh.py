@@ -84,6 +84,8 @@ class DatamoshEffect(BaseEffect):
         flow = self._gpu.optical_flow_farneback(self._prev_gray, gray)
 
         # Accumulate flow aggressively
+        if self._accum_flow is None:
+            self._accum_flow = np.zeros((h, w, 2), dtype=np.float32)
         self._accum_flow += flow * intensity
 
         # --- Remap reference through accumulated flow ---
@@ -93,12 +95,14 @@ class DatamoshEffect(BaseEffect):
         # Red channel gets slightly more displacement, blue slightly less
         offsets = [0.85, 1.0, 1.15]  # B, G, R multipliers
         channels = []
+        assert self._ref_frame is not None  # guaranteed by needs_reset check above
         for c in range(3):
             mx = map_x + self._accum_flow[:, :, 0] * offsets[c]
             my = map_y + self._accum_flow[:, :, 1] * offsets[c]
             ch = cv2.remap(
                 self._ref_frame[:, :, c],
-                mx, my,
+                mx,
+                my,
                 interpolation=cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_REFLECT,
             )
@@ -114,9 +118,7 @@ class DatamoshEffect(BaseEffect):
 
         # Slight saturation boost for vivid color smearing
         hsv = cv2.cvtColor(moshed, cv2.COLOR_BGR2HSV)
-        hsv[:, :, 1] = np.clip(hsv[:, :, 1].astype(np.float32) * 1.3, 0, 255).astype(
-            np.uint8
-        )
+        hsv[:, :, 1] = np.clip(hsv[:, :, 1].astype(np.float32) * 1.3, 0, 255).astype(np.uint8)
         moshed = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
         # Blend: heavy mosh with slight current bleed-through for orientation

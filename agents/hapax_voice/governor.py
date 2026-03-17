@@ -112,6 +112,13 @@ class PipelineGovernor:
                     predicate=lambda _: not self._paused_by_conversation,
                 ),
                 Veto(
+                    name="consent_pending",
+                    predicate=lambda s: (
+                        s.consent_phase not in ("consent_pending", "consent_refused")
+                    ),
+                    axiom="interpersonal_transparency",
+                ),
+                Veto(
                     name="axiom_compliance",
                     predicate=self._check_compliance,
                     axiom="constitutional",
