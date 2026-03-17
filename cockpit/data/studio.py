@@ -102,6 +102,7 @@ class CompositorStatus:
     recording_cameras: dict[str, str] = field(default_factory=dict)  # role -> active|offline
     hls_enabled: bool = False
     hls_url: str = ""
+    audio_energy_rms: float = 0.0
 
 
 @dataclass
@@ -316,6 +317,7 @@ def _collect_compositor_status() -> CompositorStatus:
             recording_cameras=data.get("recording_cameras", {}),
             hls_enabled=data.get("hls_enabled", False),
             hls_url=data.get("hls_url", ""),
+            audio_energy_rms=data.get("audio_energy_rms", 0.0),
         )
     except (json.JSONDecodeError, OSError) as exc:
         log.warning("Failed to read compositor status: %s", exc)

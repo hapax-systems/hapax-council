@@ -315,3 +315,118 @@ async def get_visual_layer_state():
             "signals": {},
             "ambient_params": {},
         }
+
+
+@router.get("/studio/ambient-content")
+async def get_ambient_content():
+    """Ambient content pool for the visual layer aggregator.
+
+    Sources profile facts from Qdrant and recent studio moments.
+    Called infrequently (~every 5 min) by the aggregator to refresh its pool.
+    """
+    facts: list[str] = []
+    moments: list[str] = []
+
+    # Profile facts from Qdrant
+    try:
+        from shared.config import get_qdrant
+
+        client = get_qdrant()
+        # Scroll random points from profile-facts collection
+        result = client.scroll(
+            collection_name="profile-facts",
+            limit=30,
+            with_payload=True,
+        )
+        points = result[0] if result else []
+        for point in points:
+            payload = point.payload or {}
+            text = payload.get("text", payload.get("fact", ""))
+            if text and len(text) > 10:
+                facts.append(text[:100])
+    except Exception:
+        pass  # Qdrant may not be available
+
+    # Studio moments (recent CLAP classifications)
+    try:
+        from shared.config import STUDIO_MOMENTS_COLLECTION, get_qdrant
+
+        client = get_qdrant()
+        result = client.scroll(
+            collection_name=STUDIO_MOMENTS_COLLECTION,
+            limit=10,
+            with_payload=True,
+        )
+        points = result[0] if result else []
+        for point in points:
+            payload = point.payload or {}
+            labels = payload.get("top_labels", [])
+            if labels:
+                moments.append(", ".join(labels[:3]))
+    except Exception:
+        pass
+
+    # Nudge titles for ambient text display
+    nudge_titles: list[str] = []
+    try:
+        nudges_data = cache.slow.get("nudges", [])
+        if isinstance(nudges_data, list):
+            for nudge in nudges_data[:5]:
+                title = nudge.get("title", "")
+                if title:
+                    nudge_titles.append(title[:80])
+    except Exception:
+        pass
+
+    # Weather conditions (if available from perception or cache)
+    weather: str = ""
+    try:
+        import json as _json
+
+        weather_path = Path.home() / ".cache" / "hapax" / "weather.json"
+        if weather_path.exists():
+            w = _json.loads(weather_path.read_text())
+            condition = w.get("condition", "")
+            temp = w.get("temperature_c")
+            if condition:
+                weather = f"{condition}"
+                if temp is not None:
+                    weather += f" {temp}°C"
+    except Exception:
+        pass
+
+    return {
+        "facts": facts,
+        "moments": moments,
+        "nudge_titles": nudge_titles,
+        "weather": weather,
+    }
+
+
+class ActivityCorrectionRequest(BaseModel):
+    label: str
+    detail: str = ""
+
+
+@router.post("/studio/activity-correction")
+async def correct_activity(req: ActivityCorrectionRequest):
+    """Operator corrects what Hapax thinks they are doing.
+
+    Writes a correction file that the aggregator reads to override
+    its activity inference for 30 minutes.
+    """
+    import json as _json
+    import time as _time
+
+    correction = {
+        "label": req.label,
+        "detail": req.detail,
+        "timestamp": _time.time(),
+        "ttl_s": 1800,  # 30 minutes
+    }
+    correction_path = Path("/dev/shm/hapax-compositor/activity-correction.json")
+    try:
+        correction_path.write_text(_json.dumps(correction))
+        return {"status": "corrected", "label": req.label}
+    except OSError:
+        return JSONResponse({"error": "write failed"}, status_code=503)

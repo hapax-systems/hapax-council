@@ -209,8 +209,8 @@ def _fit_16x9(w: int, h: int) -> tuple[int, int, int, int]:
         # slot is taller than 16:9 — width is the constraint
         fit_w = w
         fit_h = int(w / target_ratio)
-    x_off = 0
-    y_off = 0
+    x_off = (w - fit_w) // 2
+    y_off = (h - fit_h) // 2
     return x_off, y_off, fit_w, fit_h
 
 
@@ -845,53 +845,22 @@ class StudioCompositor:
         color_grade.link(vhs_shader)
         vhs_shader.link(warp_shader)
         warp_shader.link(glow_effect)
-        # Trail echo via glvideomixer — mix current frame with delayed copy
-        trail_tee = Gst.ElementFactory.make("tee", "fx-trail-tee")
-        trail_queue = Gst.ElementFactory.make("queue", "fx-trail-queue")
-        trail_queue.set_property("leaky", 2)
-        trail_queue.set_property("max-size-buffers", 8)
-        trail_queue.set_property("min-threshold-time", 200 * 1_000_000)  # 200ms delay
-
-        trail_color = Gst.ElementFactory.make("glshader", "fx-trail-color")
-        trail_color_frag = load_shader("color_grade.frag")
-        if trail_color_frag:
-            trail_color.set_property("fragment", trail_color_frag)
-            # Trail defaults: dim and slightly shifted
-            trail_u = Gst.Structure.from_string(
-                "uniforms, u_saturation=(float)0.7, u_brightness=(float)0.5, "
-                "u_contrast=(float)1.0, u_sepia=(float)0.0, u_hue_rotate=(float)0.0"
-            )
-            trail_color.set_property("uniforms", trail_u[0])
-
-        trail_mixer = Gst.ElementFactory.make("glvideomixer", "fx-trail-mixer")
-
-        for el in [trail_tee, trail_queue, trail_color, trail_mixer]:
-            if el:
-                pipeline.add(el)
-
-        # Link: glow_effect → trail_tee
-        glow_effect.link(trail_tee)
-
-        # Branch 1 (main): trail_tee → trail_mixer pad 0 (alpha=1.0)
-        main_pad = trail_mixer.request_pad_simple("sink_%u")
-        main_pad.set_property("alpha", 1.0)
-        tee_src1 = trail_tee.request_pad(trail_tee.get_pad_template("src_%u"), None, None)
-        tee_src1.link(main_pad)
-
-        # Branch 2 (delayed trail): trail_tee → queue(delay) → trail_color → trail_mixer pad 1
-        tee_src2 = trail_tee.request_pad(trail_tee.get_pad_template("src_%u"), None, None)
-        trail_q_sink = trail_queue.get_static_pad("sink")
-        tee_src2.link(trail_q_sink)
-        trail_queue.link(trail_color)
-        trail_pad = trail_mixer.request_pad_simple("sink_%u")
-        trail_pad.set_property("alpha", 0.3)
-        # For additive blending: src=one, dst=one
-        trail_pad.set_property("blend-function-src-rgb", 1)  # one
-        trail_pad.set_property("blend-function-dst-rgb", 1)  # one
-        trail_color.get_static_pad("src").link(trail_pad)
-
-        # trail_mixer → post_proc
-        trail_mixer.link(post_proc)
+        # Temporal feedback via custom Rust GstGLFilter plugin (FBO ping-pong)
+        #
+        # Single element replaces the entire multi-tap trail system.
+        # Maintains a persistent accumulation texture — each frame blends
+        # with the decayed previous output, creating true compounding trails.
+        temporal_fx = Gst.ElementFactory.make("temporalfx", "fx-temporal")
+        if temporal_fx is None:
+            log.error("temporalfx plugin not found! Install libgsttemporalfx.so")
+            # Fallback: direct passthrough
+            glow_effect.link(post_proc)
+        else:
+            pipeline.add(temporal_fx)
+            # Default: no feedback (clean preset)
+            temporal_fx.set_property("feedback-amount", 0.0)
+            glow_effect.link(temporal_fx)
+            temporal_fx.link(post_proc)
         post_proc.link(glcolorconvert_out)
         glcolorconvert_out.link(gldownload)
         gldownload.link(fx_convert)
@@ -912,9 +881,7 @@ class StudioCompositor:
         tee_pad.link(queue_sink)
 
         # Store references for runtime preset switching
-        self._fx_trail_queue = trail_queue
-        self._fx_trail_color = trail_color
-        self._fx_trail_pad = trail_pad
+        self._fx_temporal = temporal_fx
         self._fx_stutter = stutter_el
         self._fx_color_grade = color_grade
         self._fx_vhs_shader = vhs_shader
@@ -1003,40 +970,33 @@ class StudioCompositor:
         )
         self._fx_post_proc.set_property("uniforms", pp_uniforms[0])
 
-        # Update trail echo
+        # Update temporal feedback (Rust FBO ping-pong plugin)
         trail = preset.trail
-        if trail.count > 0 and trail.opacity > 0:
-            # Configure trail delay and alpha
-            delay_ns = int(200 * 1_000_000)  # base 200ms delay
-            self._fx_trail_queue.set_property("min-threshold-time", delay_ns)
-            self._fx_trail_pad.set_property("alpha", trail.opacity)
+        if self._fx_temporal is not None:
+            if trail.count > 0 and trail.opacity > 0:
+                self._fx_temporal.set_property("feedback-amount", trail.opacity)
 
-            # Configure trail color treatment
-            trail_u = Gst.Structure.from_string(
-                f"uniforms, u_saturation=(float){trail.filter_params.get('saturation', 0.7)}, "
-                f"u_brightness=(float){trail.filter_params.get('brightness', 0.5)}, "
-                f"u_contrast=(float){trail.filter_params.get('contrast', 1.0)}, "
-                f"u_sepia=(float){trail.filter_params.get('sepia', 0.0)}, "
-                f"u_hue_rotate=(float){trail.filter_params.get('hue_rotate', 0.0)}"
-            )
-            self._fx_trail_color.set_property("uniforms", trail_u[0])
+                # Decay from filter_params brightness (lower = faster fade)
+                fp = trail.filter_params
+                decay_base = fp.get("brightness", 0.7)
+                # Per-channel decay for color shift effects
+                self._fx_temporal.set_property("decay-r", min(decay_base * 1.0, 0.99))
+                self._fx_temporal.set_property("decay-g", min(decay_base * 0.98, 0.99))
+                self._fx_temporal.set_property("decay-b", min(decay_base * 0.96, 0.99))
 
-            # Set blend mode: additive for most, multiply for trap
-            if trail.blend_mode == "multiply":
-                # dst * src → multiply-like via dst-color blend
-                self._fx_trail_pad.set_property("blend-function-src-rgb", 4)  # dst-color
-                self._fx_trail_pad.set_property("blend-function-dst-rgb", 0)  # zero
-            elif trail.blend_mode == "difference":
-                # Approximation: subtract mode isn't available, use additive
-                self._fx_trail_pad.set_property("blend-function-src-rgb", 1)  # one
-                self._fx_trail_pad.set_property("blend-function-dst-rgb", 1)  # one
+                # Hue shift from filter_params
+                self._fx_temporal.set_property("hue-shift", fp.get("hue_rotate", 0.0))
+
+                # Blend mode
+                blend_map = {
+                    "add": 0,
+                    "multiply": 1,
+                    "difference": 2,
+                    "source-over": 3,
+                }
+                self._fx_temporal.set_property("blend-mode", blend_map.get(trail.blend_mode, 0))
             else:
-                # Additive (lighter) — default for most presets
-                self._fx_trail_pad.set_property("blend-function-src-rgb", 1)  # one
-                self._fx_trail_pad.set_property("blend-function-dst-rgb", 1)  # one
-        else:
-            # Disable trail: set alpha to 0
-            self._fx_trail_pad.set_property("alpha", 0.0)
+                self._fx_temporal.set_property("feedback-amount", 0.0)
 
         # Update stutter element
         st = preset.stutter

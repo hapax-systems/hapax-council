@@ -92,10 +92,13 @@ def get_openai_tools(
 
     from agents.hapax_voice.desktop_tools import (
         DESKTOP_TOOL_SCHEMAS,
+        handle_close_window,
         handle_confirm_open_app,
         handle_focus_window,
         handle_get_desktop_state,
+        handle_move_window,
         handle_open_app,
+        handle_resize_window,
         handle_switch_workspace,
     )
     from agents.hapax_voice.tools import (
@@ -144,6 +147,9 @@ def get_openai_tools(
         "open_app": handle_open_app,
         "confirm_open_app": handle_confirm_open_app,
         "get_desktop_state": handle_get_desktop_state,
+        "move_window": handle_move_window,
+        "resize_window": handle_resize_window,
+        "close_window": handle_close_window,
     }
 
     # Convert schemas to OpenAI format

@@ -110,7 +110,9 @@ class InfrastructureManifest(BaseModel):
 
 # ── Collectors ───────────────────────────────────────────────────────────────
 
+from shared.config import LITELLM_BASE as _litellm_base
 from shared.config import LLM_STACK_DIR, PASSWORD_STORE_DIR, PROFILES_DIR
+from shared.config import OLLAMA_URL as _ollama_url
 
 COMPOSE_FILE = LLM_STACK_DIR / "docker-compose.yml"
 PASSWORD_STORE = PASSWORD_STORE_DIR
@@ -281,7 +283,7 @@ async def collect_qdrant() -> list[QdrantCollection]:
 
 
 async def collect_ollama() -> list[OllamaModel]:
-    code, body = await http_get("http://localhost:11434/api/tags")
+    code, body = await http_get(f"{_ollama_url}/api/tags")
     if code != 200:
         return []
 
@@ -327,7 +329,7 @@ async def collect_gpu() -> GpuInfo | None:
         return None
 
     # Get loaded models
-    code, body = await http_get("http://localhost:11434/api/ps", timeout=2.0)
+    code, body = await http_get(f"{_ollama_url}/api/ps", timeout=2.0)
     if code == 200:
         try:
             models = json.loads(body).get("models", [])
@@ -347,7 +349,7 @@ async def collect_litellm_routes() -> list[LiteLLMRoute]:
 
     def _fetch():
         req = Request(
-            "http://localhost:4000/v1/models",
+            f"{_litellm_base}/v1/models",
             headers={"Authorization": f"Bearer {api_key}"},
         )
         try:

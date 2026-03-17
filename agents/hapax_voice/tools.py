@@ -651,7 +651,9 @@ async def handle_confirm_send_sms(params) -> None:
 
 def _vision_analyze(images: list[str], question: str) -> str:
     """Send base64 images to Gemini Flash for visual analysis via LiteLLM."""
-    base_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000")
+    from agents.hapax_voice.config import LITELLM_BASE
+
+    base_url = LITELLM_BASE
     api_key = os.environ.get("LITELLM_API_KEY", "not-set")
     client = OpenAI(base_url=base_url, api_key=api_key)
 
