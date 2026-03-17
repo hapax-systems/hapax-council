@@ -257,7 +257,7 @@ def _gather_profile_facts(scope: str) -> str:
         from shared.config import embed, get_qdrant
 
         client = get_qdrant()
-        vector = embed(f"profile facts about {scope}")
+        vector = embed(f"profile facts about {scope}", prefix="search_query")
         results = client.query_points(
             collection_name="profile-facts",
             query=vector,
@@ -387,7 +387,7 @@ def _gather_profile_facts_rich(scope: str, audience: str = "") -> str:
         seen: set[tuple[str, str]] = set()
         facts: list[str] = []
         for q in queries:
-            vector = embed(q)
+            vector = embed(q, prefix="search_query")
             results = client.query_points(
                 collection_name="profile-facts",
                 query=vector,
@@ -512,7 +512,7 @@ def _gather_architecture_rag(scope: str, limit: int = 10) -> str:
         seen_ids: set[str] = set()
         chunks: list[str] = []
         for q in queries:
-            vector = embed(q)
+            vector = embed(q, prefix="search_query")
             results = client.query_points(
                 collection_name="documents",
                 query=vector,

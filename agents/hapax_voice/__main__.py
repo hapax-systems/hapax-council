@@ -460,6 +460,16 @@ class VoiceDaemon:
         except Exception:
             log.info("StudioIngestionBackend not available, skipping")
 
+        # Local LLM backend (WS5: fast perception classification)
+        try:
+            from agents.hapax_voice.backends.local_llm import LocalLLMBackend
+
+            self._local_llm_backend = LocalLLMBackend()
+            self.perception.register_backend(self._local_llm_backend)
+        except Exception:
+            self._local_llm_backend = None
+            log.info("LocalLLMBackend not available, skipping")
+
         # MIDI clock backend (for MC governance)
         try:
             from agents.hapax_voice.backends.midi_clock import MidiClockBackend
@@ -693,6 +703,7 @@ class VoiceDaemon:
             env_context_fn=self._env_context_fn,
             ambient_fn=self._ambient_fn,
             policy_fn=self._policy_fn,
+            screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
         )
 
         await self._conversation_pipeline.start()
@@ -1225,9 +1236,25 @@ class VoiceDaemon:
                 except Exception:
                     log.debug("Consent tracker error (non-fatal)", exc_info=True)
 
+                # Feed perception snapshot to local LLM backend (WS5)
+                if self._local_llm_backend is not None:
+                    from agents.hapax_voice._perception_state_writer import (
+                        get_perception_ring,
+                    )
+
+                    ring = get_perception_ring()
+                    if ring is not None and ring.current() is not None:
+                        self._local_llm_backend.set_perception_snapshot(ring.current())
+
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision
-                write_perception_state(self.perception, self.consent_registry, self.consent_tracker)
+                write_perception_state(
+                    self.perception,
+                    self.consent_registry,
+                    self.consent_tracker,
+                    session=self.session,
+                    pipeline=self._conversation_pipeline,
+                )
 
             except asyncio.CancelledError:
                 break

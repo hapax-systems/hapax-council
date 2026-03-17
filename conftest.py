@@ -34,6 +34,6 @@ def _block_real_notifications():
 
     with (
         patch("shared.notify.urlopen", mock_urlopen),
-        patch("shared.notify.subprocess.run", mock_run),
+        patch("shared.notify._run_subprocess", mock_run),
     ):
         yield

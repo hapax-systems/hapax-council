@@ -12,6 +12,13 @@ from pydantic import BaseModel, model_validator
 
 log = logging.getLogger(__name__)
 
+# Single source of truth for LiteLLM URL within the voice package.
+# Avoids importing shared.config (circular dep risk) while satisfying P8.
+LITELLM_BASE: str = os.environ.get(
+    "LITELLM_API_BASE",
+    os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000"),
+)
+
 
 class PerceptionTier(StrEnum):
     """Privacy-aware perception level, switchable via voice or hotkey."""
