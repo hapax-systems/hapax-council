@@ -185,6 +185,46 @@ def _read_stimmung_block() -> str:
         return ""
 
 
+def _read_temporal_block() -> str:
+    """Read temporal bands from /dev/shm and format for prompt injection.
+
+    Provides Husserlian temporal context: retention (fading past),
+    impression (vivid present), protention (anticipated future),
+    and surprise (prediction mismatches).
+
+    Returns empty string if temporal data is missing or stale (>30s).
+    Always injected when available — temporal context is always valuable,
+    unlike stimmung which is skipped when nominal.
+    """
+    from pathlib import Path
+
+    temporal_path = Path("/dev/shm/hapax-temporal/bands.json")
+    try:
+        import time
+
+        raw = json.loads(temporal_path.read_text(encoding="utf-8"))
+        ts = raw.get("timestamp", 0)
+        if ts > 0 and (time.time() - ts) > 30:
+            return ""
+
+        xml = raw.get("xml", "")
+        if not xml or xml == "<temporal_context>\n</temporal_context>":
+            return ""
+
+        max_surprise = raw.get("max_surprise", 0.0)
+        preamble = (
+            "Temporal context (retention = fading past, impression = vivid present, "
+            "protention = anticipated near-future"
+        )
+        if max_surprise > 0.3:
+            preamble += f", SURPRISE detected: {max_surprise:.2f}"
+        preamble += "):"
+
+        return preamble + "\n" + xml
+    except Exception:
+        return ""
+
+
 def get_system_prompt_fragment(agent_name: str) -> str:
     """Build a system prompt fragment for a specific agent.
 
@@ -312,6 +352,12 @@ def get_system_prompt_fragment(agent_name: str) -> str:
     stimmung_block = _read_stimmung_block()
     if stimmung_block:
         lines.append(stimmung_block)
+        lines.append("")
+
+    # WS1: Temporal context — retention/impression/protention
+    temporal_block = _read_temporal_block()
+    if temporal_block:
+        lines.append(temporal_block)
         lines.append("")
 
     return "\n".join(lines)

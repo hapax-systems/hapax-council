@@ -32,6 +32,7 @@ from agents.content_scheduler import (
 )
 from agents.predictive_cache import PredictiveCache
 from agents.protention_engine import ProtentionEngine
+from agents.temporal_bands import TemporalBandFormatter
 from agents.temporal_scales import MultiScaleAggregator
 from agents.visual_layer_state import (
     SEVERITY_CRITICAL,
@@ -71,6 +72,8 @@ OUTPUT_DIR = Path("/dev/shm/hapax-compositor")
 OUTPUT_FILE = OUTPUT_DIR / "visual-layer-state.json"
 STIMMUNG_DIR = Path("/dev/shm/hapax-stimmung")
 STIMMUNG_FILE = STIMMUNG_DIR / "state.json"
+TEMPORAL_DIR = Path("/dev/shm/hapax-temporal")
+TEMPORAL_FILE = TEMPORAL_DIR / "bands.json"
 
 # ── Stimmung data source paths ─────────────────────────────────────────────
 
@@ -488,6 +491,9 @@ class VisualLayerAggregator:
         # Multi-scale temporal aggregator (WS1)
         self._multi_scale = MultiScaleAggregator()
 
+        # WS1: temporal band formatter — retention/impression/protention for LLM prompts
+        self._temporal_formatter = TemporalBandFormatter(protention_engine=self._protention)
+
         # WS3: experiential learning pipeline
         self._episode_builder = EpisodeBuilder()
         self._episode_store: EpisodeStore | None = None
@@ -741,6 +747,9 @@ class VisualLayerAggregator:
         # 8. Write atomically
         self._write_stimmung()
 
+        # 9. WS1: compute and write temporal bands for LLM prompt injection
+        self._write_temporal_bands()
+
     def _write_stimmung(self) -> None:
         """Write stimmung state to /dev/shm for external consumers."""
         if self._stimmung is None:
@@ -752,6 +761,39 @@ class VisualLayerAggregator:
             tmp.rename(STIMMUNG_FILE)
         except OSError:
             log.debug("Failed to write stimmung state", exc_info=True)
+
+    def _write_temporal_bands(self) -> None:
+        """Compute temporal bands from perception ring and write to shm.
+
+        Agents read this via shared.operator._read_temporal_block() for
+        Husserlian temporal context in LLM prompts.
+        """
+        try:
+            from agents.hapax_voice._perception_state_writer import get_perception_ring
+        except ImportError:
+            return
+
+        ring = get_perception_ring()
+        if ring is None or len(ring) < 2:
+            return
+
+        try:
+            bands = self._temporal_formatter.format(ring)
+            xml = self._temporal_formatter.format_xml(bands)
+            payload = {
+                "xml": xml,
+                "max_surprise": bands.max_surprise,
+                "retention_count": len(bands.retention),
+                "protention_count": len(bands.protention),
+                "surprise_count": len(bands.surprises),
+                "timestamp": time.time(),
+            }
+            TEMPORAL_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = TEMPORAL_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.rename(TEMPORAL_FILE)
+        except Exception:
+            log.debug("Failed to write temporal bands", exc_info=True)
 
     def _compute_staleness(self) -> SignalStaleness:
         """Compute per-source staleness from last-update timestamps."""
