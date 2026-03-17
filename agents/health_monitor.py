@@ -1899,9 +1899,7 @@ async def check_daily_spend() -> list[CheckResult]:
     """Check LiteLLM daily spend against budget."""
     t = time.monotonic()
     try:
-        code, body = await http_get(
-            f"{LITELLM_BASE}/spend/report?group_by=api_key", timeout=5.0
-        )
+        code, body = await http_get(f"{LITELLM_BASE}/spend/report?group_by=api_key", timeout=5.0)
         if code != 200:
             return [
                 CheckResult(
