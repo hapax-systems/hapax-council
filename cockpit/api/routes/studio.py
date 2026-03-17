@@ -270,6 +270,20 @@ async def get_consent_status():
         return {"recording_allowed": True, "guest_present": False, "phase": "no_guest"}
 
 
+@router.post("/studio/visual-layer/toggle")
+async def toggle_visual_layer():
+    """Toggle the visual layer overlay on/off in the compositor."""
+
+    toggle_path = Path("/dev/shm/hapax-compositor/visual-layer-enabled.txt")
+    try:
+        current = toggle_path.read_text().strip() == "true" if toggle_path.exists() else True
+        new_state = not current
+        toggle_path.write_text("true" if new_state else "false")
+        return {"enabled": new_state}
+    except OSError:
+        return JSONResponse({"error": "write failed"}, status_code=503)
+
+
 @router.get("/studio/visual-layer")
 async def get_visual_layer_state():
     """Current visual layer state from the aggregator.
