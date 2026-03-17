@@ -1,0 +1,469 @@
+# Hapax Corpora Operational Specifications
+#
+# These are positive invariants the system must maintain for the Corpora
+# experience to function. Unlike axioms (which prohibit), specs define
+# what each circulatory system IS — its essential properties, cadences,
+# and guarantees. Deviation from spec is operational degradation.
+#
+# Organized by circulatory system, not by module. A spec failure means
+# the system can't perceive, regulate, learn, or respond properly.
+#
+# Tiers:
+#   V0 (vital): Failure renders the Corpora experience non-functional.
+#               The system cannot operate without this.
+#   V1 (essential): Degraded experience. The system works but poorly.
+#                   Operator will notice within minutes.
+#   V2 (quality): Reduced quality. The system works but is less responsive,
+#                 less intelligent, or less smooth. Operator may not notice
+#                 immediately but experience degrades over days.
+#
+# Verification methods:
+#   runtime: Checked during operation (periodic heartbeat)
+#   integration: Checked by integration test
+#   structural: Checked by static analysis / grep
+
+version: 1
+schema_version: "1-0-0"
+
+systems:
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PERCEPTION CIRCULATION
+  # The system's sensory surface. Without this, nothing downstream works.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: perception
+    name: Perception Circulation
+    heartbeat: "2.5s (perception tick)"
+    description: >
+      Fuses audio, visual, and workspace signals into a unified
+      EnvironmentState every fast tick. Feeds all downstream circulations.
+
+    specs:
+      - id: pc-heartbeat-001
+        tier: V0
+        text: >
+          The perception ring buffer must receive a push at least every
+          5 seconds during daemon operation. A gap >10s means the system
+          has lost sensory contact with the environment.
+        properties:
+          - ring buffer depth >= 2 snapshots
+          - newest snapshot age < 5s
+          - each snapshot contains timestamp, flow_score, production_activity
+        verification: runtime
+        measured_by: perception_age_s in TemporalContext
+
+      - id: pc-backend-coverage-001
+        tier: V1
+        text: >
+          At least 3 perception backends must be registered and available.
+          Fewer than 3 means the system is partially blind.
+        properties:
+          - registered_backends count >= 3
+          - each backend.available() returns True
+          - aggregate_confidence >= 0.5
+        verification: runtime
+        measured_by: aggregate_confidence in perception-state.json
+
+      - id: pc-ring-depth-001
+        tier: V2
+        text: >
+          The perception ring buffer should maintain at least 10 snapshots
+          (~25s of history) for meaningful trend computation. Below 5
+          snapshots, temporal bands and protention degrade.
+        properties:
+          - ring.__len__() >= 10 during steady state
+          - trend computation requires >= 2 data points
+        verification: integration
+
+      - id: pc-snapshot-completeness-001
+        tier: V1
+        text: >
+          Each perception snapshot must contain all core fields: timestamp,
+          flow_score, production_activity, audio_energy_rms, heart_rate_bpm,
+          consent_phase. Missing fields cause downstream NoneType errors
+          and incorrect state classification.
+        properties:
+          - "timestamp" key present and > 0
+          - "flow_score" key present (float 0.0-1.0)
+          - "production_activity" key present (string)
+          - "audio_energy_rms" key present (float >= 0)
+          - "consent_phase" key present (string)
+        verification: runtime
+
+  # ═══════════════════════════════════════════════════════════════════
+  # STIMMUNG CIRCULATION
+  # The system's self-awareness. Without this, it can't regulate itself.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: stimmung
+    name: Stimmung Circulation
+    heartbeat: "15s nominal, 5s when stressed"
+    description: >
+      Aggregates health, GPU, engine, perception, and LLM cost into a
+      6-dimension self-state vector. Colors all downstream processing.
+
+    specs:
+      - id: st-heartbeat-001
+        tier: V0
+        text: >
+          The stimmung state file must be written at least every 20s
+          during aggregator operation. Stale stimmung (>120s) causes
+          all dimensions to be excluded from stance computation,
+          collapsing to a false-nominal that masks real problems.
+        properties:
+          - /dev/shm/hapax-stimmung/state.json exists
+          - file modified within last 20s
+          - JSON parses successfully
+          - overall_stance field present
+        verification: runtime
+        measured_by: file mtime
+
+      - id: st-dimension-coverage-001
+        tier: V1
+        text: >
+          All 6 stimmung dimensions must have non-stale readings
+          (freshness_s < 120) during normal operation. A stale dimension
+          is invisible to stance computation — the system can't feel
+          that part of itself.
+        properties:
+          - health.freshness_s < 120
+          - resource_pressure.freshness_s < 120
+          - error_rate.freshness_s < 120
+          - processing_throughput.freshness_s < 120
+          - perception_confidence.freshness_s < 120
+          - llm_cost_pressure.freshness_s < 120
+        verification: runtime
+
+      - id: st-trend-quality-001
+        tier: V2
+        text: >
+          Each dimension should have at least 3 readings in its rolling
+          window for trend detection to work. Below 3, trend is always
+          "stable" regardless of actual trajectory.
+        properties:
+          - rolling window deque length >= 3 per dimension
+          - trend computation produces rising/falling/stable (not just stable)
+        verification: integration
+
+      - id: st-consumer-coverage-001
+        tier: V1
+        text: >
+          Every pydantic-ai agent invocation must have access to current
+          stimmung stance via get_system_prompt_fragment(). An agent
+          without stimmung context will behave the same under stress
+          as under nominal — it can't adapt.
+        properties:
+          - all Agent() constructors use get_system_prompt_fragment()
+          - get_system_prompt_fragment() calls _read_stimmung_block()
+          - _read_stimmung_block() reads /dev/shm/hapax-stimmung/state.json
+        verification: structural
+
+      - id: st-modulation-001
+        tier: V1
+        text: >
+          Stimmung stance must modulate at least: reactive engine phase
+          gating, visual ambient params, content scheduler density, and
+          active correction suppression. Without modulation, stimmung is
+          measured but not felt — data without function.
+        properties:
+          - engine._handle_change checks stance and gates phases
+          - DisplayStateMachine._compute_ambient_params accepts stimmung_stance
+          - ContentScheduler._compute_density checks stimmung_stance
+          - CorrectionSeeker.evaluate checks stimmung_stance
+        verification: structural
+
+      - id: st-adaptive-poll-001
+        tier: V2
+        text: >
+          When stimmung stance is degraded or critical, the health poll
+          interval should decrease to 5s (from 15s) to track recovery
+          faster. The system should be more attentive to itself when sick.
+        properties:
+          - health_interval = 5.0 when stance in (degraded, critical)
+          - health_interval = HEALTH_POLL_S (15.0) otherwise
+        verification: integration
+
+  # ═══════════════════════════════════════════════════════════════════
+  # TEMPORAL CIRCULATION
+  # The system's sense of time. Without this, every moment is flat.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: temporal
+    name: Temporal Circulation
+    heartbeat: "2.5s (tick), 60s (minute), session-bounded"
+    description: >
+      Provides temporal thickness: retention (past), impression (present),
+      protention (future), surprise (deviation from expectation).
+
+    specs:
+      - id: tp-protention-learning-001
+        tier: V1
+        text: >
+          The protention engine must persist learned state at least every
+          5 minutes and on clean shutdown. Lost observations must not
+          exceed 5 minutes of data. Without persistence, the system
+          forgets what usually happens next every time it restarts.
+        properties:
+          - protention state saved every 300s in _api_poll_loop
+          - protention state saved in close()
+          - state file at ~/.cache/hapax-voice/protention-state.json
+          - load() called in __init__
+        verification: integration
+
+      - id: tp-protention-observation-001
+        tier: V1
+        text: >
+          The protention engine must observe every perception tick's
+          activity and flow_score. Gaps in observation degrade Markov
+          chain accuracy and circadian model coverage.
+        properties:
+          - protention.observe() called in poll_perception()
+          - activity comes from best available source (workspace > LLM > empty)
+          - flow_score passed as float
+          - hour passed as int
+        verification: structural
+
+      - id: tp-surprise-continuity-001
+        tier: V2
+        text: >
+          Surprise detection must compare the current tick's state against
+          the previous tick's protention predictions. If _last_protention
+          is lost (e.g., formatter re-instantiated), surprise scoring
+          resets to zero — the system temporarily can't detect deviations.
+        properties:
+          - TemporalBandFormatter retains _last_protention across ticks
+          - _compute_surprise called before _build_protention (order matters)
+          - surprises stored in TemporalBands.surprises field
+        verification: integration
+
+      - id: tp-multiscale-minute-001
+        tier: V2
+        text: >
+          MinuteBuffer must produce a MinuteSummary every 60s ± 5s.
+          Missed minutes leave gaps in the session and day summaries,
+          reducing the system's awareness of longer-term patterns.
+        properties:
+          - MinuteBuffer.tick() called every perception tick
+          - summary produced when elapsed >= 60s
+          - maxlen = 30 (30 minutes of history)
+        verification: integration
+
+      - id: tp-predictive-cache-001
+        tier: V2
+        text: >
+          The predictive cache must precompute after every visual tick
+          and match before every visual tick. Cache hit rate should be
+          logged periodically. Without the cache, visual transitions
+          lag by one full tick interval.
+        properties:
+          - precompute() called after state computation in compute_and_write()
+          - match() called before state computation in compute_and_write()
+          - only predictions with p >= 0.4 cached
+          - cached scenarios have TTL (expected_in_s * 1.5, max 60s)
+        verification: structural
+
+  # ═══════════════════════════════════════════════════════════════════
+  # VISUAL CIRCULATION
+  # The system's expressive surface. Without this, the operator can't
+  # see what the system is feeling/thinking/doing.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: visual
+    name: Visual Circulation
+    heartbeat: "0.5-5s adaptive"
+    description: >
+      Computes display state, ambient params, and signal opacities.
+      Writes atomically for the compositor to render.
+
+    specs:
+      - id: vs-heartbeat-001
+        tier: V0
+        text: >
+          The visual layer state file must be written at least every 6s
+          during aggregator operation. The compositor reads this file
+          to render — stale state means a frozen visual field.
+        properties:
+          - /dev/shm/hapax-compositor/visual-layer-state.json exists
+          - file modified within last 6s
+          - JSON parses to valid VisualLayerState
+        verification: runtime
+
+      - id: vs-adaptive-cadence-001
+        tier: V1
+        text: >
+          The visual tick interval must adapt to system volatility.
+          State transitions → 0.5s. Voice active → 1.0s. Ambient quiet
+          → 5.0s. Without adaptation, the system either wastes compute
+          or responds sluggishly.
+        properties:
+          - _adaptive_tick_interval returns 0.5s on state transition
+          - returns 1.0s when voice active
+          - returns 5.0s in sustained ambient
+          - bounded to [0.5, 5.0]
+        verification: integration
+
+      - id: vs-stimmung-warmth-001
+        tier: V1
+        text: >
+          Ambient field color_warmth must increase with stimmung stance.
+          Cautious: +0.15. Degraded: +0.35. Critical: +0.60. This is
+          how the operator subconsciously perceives system stress —
+          the field literally warms when the system is struggling.
+        properties:
+          - _compute_ambient_params accepts stimmung_stance parameter
+          - nominal → no warmth added
+          - cautious → +0.15 warmth, +0.05 speed
+          - degraded → +0.35 warmth, +0.1 speed, +0.1 turbulence
+          - critical → +0.60 warmth, +0.2 speed, +0.2 turbulence
+        verification: integration
+
+  # ═══════════════════════════════════════════════════════════════════
+  # EXPERIENTIAL CIRCULATION
+  # The system's capacity to learn. Without this, it never gets better.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: experiential
+    name: Experiential Circulation
+    heartbeat: "episode-bounded (variable), daily consolidation"
+    description: >
+      Records corrections, accumulates episodes, consolidates patterns,
+      and proactively seeks operator feedback when uncertain.
+
+    specs:
+      - id: ex-episode-boundary-001
+        tier: V1
+        text: >
+          EpisodeBuilder must detect and record episodes on every
+          activity transition, flow state shift, consent change, and
+          time gap >60s. Missed boundaries mean lost episodes — the
+          system can't learn from experiences it didn't record.
+        properties:
+          - observe() called every perception tick in _tick_experiential
+          - boundary detected on activity change (production_activity)
+          - boundary detected on flow state change (idle/warming/active)
+          - boundary detected on consent_phase change
+          - boundary detected on time gap > 60s
+          - completed episodes recorded to Qdrant operator-episodes
+        verification: integration
+
+      - id: ex-episode-flush-001
+        tier: V2
+        text: >
+          Partial episodes must be flushed on clean shutdown. Without
+          this, the last activity session before every restart is lost.
+        properties:
+          - EpisodeBuilder.flush() called in aggregator.close()
+          - flushed episode recorded to Qdrant if episode_store available
+        verification: structural
+
+      - id: ex-correction-intake-001
+        tier: V1
+        text: >
+          Operator corrections submitted via the activity-correction.json
+          file must be detected and recorded to Qdrant within one
+          perception tick (~2.5s). Late or missed corrections break
+          the feedback loop.
+        properties:
+          - check_for_corrections() called in _tick_experiential
+          - reads /dev/shm/hapax-compositor/activity-correction.json
+          - records to operator-corrections Qdrant collection
+          - ignores corrections older than 5 minutes
+        verification: integration
+
+      - id: ex-consolidation-trigger-001
+        tier: V2
+        text: >
+          Pattern consolidation must run at least once per day when
+          episodes exist. Without consolidation, accumulated episodes
+          never become actionable patterns.
+        properties:
+          - pattern-consolidation reactive rule registered (Phase 2)
+          - cooldown_s = 86400 (daily)
+          - quiet window = 300s (fires after 5 min of perception stability)
+          - run_consolidation fetches episodes, corrections, existing patterns
+          - new patterns stored in operator-patterns Qdrant collection
+        verification: structural
+
+      - id: ex-correction-seeking-001
+        tier: V2
+        text: >
+          The correction seeker must evaluate uncertainty every perception
+          tick and ask questions when confidence is below threshold.
+          Constraints: max 5/day, 10 min cooldown, suppressed when
+          stimmung is degraded/critical, never re-asks same combo.
+        properties:
+          - evaluate() called in _tick_experiential
+          - daily_budget = 5
+          - cooldown_s = 600
+          - confidence_threshold = 0.4
+          - suppressed when stance in (degraded, critical)
+          - writes to /dev/shm/hapax-compositor/correction-question.json
+        verification: integration
+
+      - id: ex-pattern-decay-001
+        tier: V2
+        text: >
+          Pattern confidence must decay when not confirmed. After 30 days
+          unconfirmed, confidence drops 5% per consolidation run. After
+          60 days at <0.1 confidence, the pattern is deactivated. Without
+          decay, obsolete patterns persist forever.
+        properties:
+          - decay() called on each active pattern during consolidation
+          - confidence *= 0.95 after 30 days
+          - active = False when confidence < 0.1 and days > 60
+          - decayed patterns re-saved to Qdrant (was a bug, now fixed)
+        verification: integration
+
+  # ═══════════════════════════════════════════════════════════════════
+  # TELEMETRY CIRCULATION
+  # The system's legibility. Without this, we can't see the circulations.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: telemetry
+    name: Telemetry Circulation
+    heartbeat: "per-tick (piggybacks on other circulations)"
+    description: >
+      Langfuse instrumentation that makes all circulatory systems
+      visible. Each system emits spans, events, and scores.
+
+    specs:
+      - id: tl-system-coverage-001
+        tier: V2
+        text: >
+          Each circulatory system must emit at least one Langfuse span
+          or event per heartbeat cycle. Systems without telemetry are
+          operationally invisible.
+        properties:
+          - stimmung.update span emitted every stimmung update
+          - visual.tick span emitted every visual tick
+          - prediction.tick span emitted every visual tick
+          - experiential.episode_closed event on each episode boundary
+          - stimmung.stance_change event on stance transitions
+        verification: runtime
+        measured_by: Langfuse trace count per system tag
+
+      - id: tl-interaction-visibility-001
+        tier: V2
+        text: >
+          Cross-system interactions must be logged as Langfuse events
+          with source and target tags. Without interaction traces,
+          the circulatory topology is invisible.
+        properties:
+          - stimmung→engine.phase_gating logged when actions skipped
+          - stimmung→visual.ambient_modulation logged when non-nominal
+          - events tagged with both system:source and system:target
+        verification: structural
+
+      - id: tl-graceful-absence-001
+        tier: V0
+        text: >
+          All telemetry calls must be no-ops when Langfuse is unavailable.
+          Telemetry must never block, crash, or slow any circulatory
+          system. The system must run perfectly without Langfuse.
+        properties:
+          - _get_langfuse() returns None when client unavailable
+          - all hapax_span/hapax_event/hapax_score handle None gracefully
+          - no telemetry function raises exceptions
+          - all telemetry wrapped in try/except with silent fallback
+        verification: integration
