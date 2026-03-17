@@ -47,15 +47,15 @@ class ActivationBreakdown:
 
 _DEFAULT_THRESHOLDS: dict[str, float] = {
     "canned_max": 0.15,
-    "local_max": 0.35,
-    "fast_max": 0.55,
-    "strong_max": 0.75,
+    "local_max": 0.45,
+    "fast_max": 0.60,
+    "strong_max": 0.78,
     # above strong_max → CAPABLE
 }
 
 _DEFAULT_WEIGHTS: dict[str, float] = {
-    "concern_overlap": 0.50,
-    "novelty": 0.20,
+    "concern_overlap": 0.55,
+    "novelty": 0.15,
     "dialog_features": 0.30,
 }
 
@@ -170,8 +170,29 @@ class SalienceRouter:
         # Dialog feature score: composite of dialog act, pre-sequences, etc.
         dialog_score = self._dialog_feature_score(features, turn_count)
 
-        # ── Weighted activation ──────────────────────────────────
-        w = self._weights
+        # ── Weighted activation (turn-modulated) ─────────────────
+        # Gradual ramp: early turns rely on dialog structure (concern
+        # graph is noisy for greetings — consent anchors spike on
+        # "you there", "hey"). Concern overlap scales in slowly as the
+        # conversation establishes topic and the novelty signal stabilizes.
+        w = dict(self._weights)  # copy so we don't mutate defaults
+        if turn_count <= 2:
+            # Opening: almost entirely dialog structure
+            w["concern_overlap"] = 0.10
+            w["novelty"] = 0.05
+            w["dialog_features"] = 0.85
+        elif turn_count <= 4:
+            # Warming: dialog still dominant, concern blending in
+            w["concern_overlap"] = 0.25
+            w["novelty"] = 0.10
+            w["dialog_features"] = 0.65
+        elif turn_count <= 7:
+            # Established: balanced blend
+            w["concern_overlap"] = 0.40
+            w["novelty"] = 0.15
+            w["dialog_features"] = 0.45
+        # else: use configured weights (full concern activation)
+
         activation = (
             concern_overlap * w["concern_overlap"]
             + novelty * w["novelty"]
@@ -225,17 +246,23 @@ class SalienceRouter:
         if features.dialog_act == "meta_question":
             score += 0.8
         elif features.dialog_act == "command":
-            score += 0.5
-        elif features.dialog_act in ("wh_question", "open_question"):
             score += 0.4
-        elif features.dialog_act == "yes_no_question":
-            score += 0.2
+        elif features.dialog_act == "wh_question":
+            score += 0.3
+        elif features.dialog_act in ("open_question", "yes_no_question"):
+            # Casual questions — don't escalate unless long
+            if features.word_count >= 10:
+                score += 0.3
+            else:
+                score += 0.1
         elif features.dialog_act == "statement":
             # Longer statements suggest more complex thought
             if features.word_count >= 15:
-                score += 0.6
-            elif features.word_count >= 8:
+                score += 0.5
+            elif features.word_count >= 10:
                 score += 0.3
+            elif features.word_count >= 6:
+                score += 0.1
 
         # Pre-sequences signal upcoming complexity
         if features.is_pre_sequence:
