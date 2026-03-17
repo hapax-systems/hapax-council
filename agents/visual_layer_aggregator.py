@@ -31,12 +31,14 @@ from agents.content_scheduler import (
     SchedulerContext,
     SchedulerDecision,
 )
+from agents.predictive_cache import PredictiveCache
 from agents.protention_engine import ProtentionEngine
 from agents.visual_layer_state import (
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
     SEVERITY_LOW,
     SEVERITY_MEDIUM,
+    AmbientParams,
     BiometricState,
     DisplayStateMachine,
     InjectedFeed,
@@ -469,6 +471,9 @@ class VisualLayerAggregator:
         self._protention = ProtentionEngine()
         self._protention.load()  # restore learned state
         self._last_protention_save: float = 0.0
+
+        # Predictive cache (WS5): pre-computed visual states for likely transitions
+        self._predictive_cache = PredictiveCache()
 
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
@@ -921,6 +926,13 @@ class VisualLayerAggregator:
 
     def compute_and_write(self) -> VisualLayerState:
         """Run state machine and write output atomically."""
+        # WS5: check predictive cache for pre-computed transition
+        cache_hit = self._predictive_cache.match(
+            flow_score=self._flow_score,
+            activity=self._last_perception_data.get("production_activity", ""),
+            heart_rate=self._biometrics.heart_rate_bpm,
+        )
+
         all_signals = (
             self._fast_signals + self._slow_signals + self._perception_signals + self._voice_signals
         )
@@ -946,6 +958,18 @@ class VisualLayerAggregator:
         # Content scheduler: intelligent text rotation + camera injection + shader nudges
         self._run_scheduler(state)
 
+        # WS5: blend cached ambient params on prediction hit (smooth transition)
+        if cache_hit is not None:
+            cached = cache_hit.ambient_params
+            blend = cache_hit.prediction.probability  # blend by confidence
+            ap = state.ambient_params
+            state.ambient_params = AmbientParams(
+                speed=round(ap.speed * (1 - blend) + cached.speed * blend, 3),
+                turbulence=round(ap.turbulence * (1 - blend) + cached.turbulence * blend, 3),
+                color_warmth=round(ap.color_warmth * (1 - blend) + cached.color_warmth * blend, 3),
+                brightness=round(ap.brightness * (1 - blend) + cached.brightness * blend, 3),
+            )
+
         # Apply biometric modulation (Batch E)
         state.ambient_params = self._apply_biometric_modulation(state.ambient_params)
 
@@ -970,6 +994,19 @@ class VisualLayerAggregator:
 
         # Track for adaptive cadence
         self._prev_display_state = state.display_state
+
+        # WS5: precompute next states from protention predictions
+        protention_snap = self._protention.predict(
+            current_activity=self._last_perception_data.get("production_activity", ""),
+            flow_score=self._flow_score,
+            hour=datetime.now().hour,
+        )
+        self._predictive_cache.precompute(
+            protention=protention_snap,
+            current_flow=self._flow_score,
+            current_audio=self._audio_energy,
+            stimmung_stance=stimmung_stance,
+        )
 
         # Atomic write
         try:
