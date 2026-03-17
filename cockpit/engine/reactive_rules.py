@@ -570,6 +570,54 @@ PATTERN_CONSOLIDATION_RULE = Rule(
 )
 
 
+# ── Phase 2: Correction synthesis (WS3 learning loop) ───────────────────────
+
+_correction_synthesis_scheduler = QuietWindowScheduler(quiet_window_s=600)
+
+
+async def _handle_correction_synthesis(*, ignore_fn=None) -> str:
+    """Synthesize accumulated corrections into profile facts."""
+    from shared.correction_synthesis import run_correction_synthesis
+
+    _correction_synthesis_scheduler.consume()
+    result = await run_correction_synthesis()
+    _log.info("Correction synthesis: %s", result[:120])
+    return f"correction-synthesis:{result[:80]}"
+
+
+def _correction_synthesis_filter(event: ChangeEvent) -> bool:
+    """Trigger correction synthesis after perception corrections accumulate.
+
+    Uses a 10-minute quiet window. Fires at most once per day.
+    """
+    if event.path.name != "activity-correction.json":
+        return False
+    _correction_synthesis_scheduler.record(str(event.path))
+    return _correction_synthesis_scheduler.should_fire()
+
+
+def _correction_synthesis_produce(event: ChangeEvent) -> list[Action]:
+    return [
+        Action(
+            name="correction-synthesis",
+            handler=_handle_correction_synthesis,
+            args={},
+            phase=2,
+            priority=85,
+        )
+    ]
+
+
+CORRECTION_SYNTHESIS_RULE = Rule(
+    name="correction-synthesis",
+    description="Synthesize operator corrections into profile facts (daily)",
+    trigger_filter=_correction_synthesis_filter,
+    produce=_correction_synthesis_produce,
+    phase=2,
+    cooldown_s=86400,  # once per day
+)
+
+
 # ── Registration ────────────────────────────────────────────────────────────
 
 ALL_RULES: list[Rule] = [
@@ -601,6 +649,7 @@ ALL_RULES: list[Rule] = [
     CARRIER_INTAKE_RULE,
     KNOWLEDGE_MAINT_RULE,
     PATTERN_CONSOLIDATION_RULE,
+    CORRECTION_SYNTHESIS_RULE,
 ]
 
 # Backwards compat alias
