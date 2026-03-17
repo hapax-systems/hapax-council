@@ -1,0 +1,233 @@
+# Hapax Operational Principles
+#
+# These are the first principles from which all operational invariants derive.
+# Each principle generates concrete specs by automated discovery — the audit
+# finds all instances in the codebase and checks conformity. No hardcoded
+# lists of "these 7 collections" or "these 8 services."
+#
+# A principle answers: "What KIND of thing is this, and what must be true
+# of ALL things of that kind?"
+#
+# Tiers:
+#   V0 (vital): Violation renders the Corpora experience non-functional.
+#   V1 (essential): Degraded experience. Operator notices within minutes.
+#   V2 (quality): Reduced quality. Degrades over days.
+
+version: 1
+schema_version: "1-0-0"
+
+principles:
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: P1
+    name: Service Dependency Graph
+    tier: V0
+    principle: >
+      The system depends on external services. Each service has a health
+      endpoint, a default URL, an env var override, and a graceful
+      degradation path. If a service is unreachable, the system must
+      reduce capability — not crash.
+    discovery: >
+      Find all httpx.AsyncClient base_url assignments, all localhost:PORT
+      references, all os.environ.get calls for URL variables. Each is a
+      service node in the dependency graph.
+    invariants:
+      - Every service client catches connection errors and returns defaults
+      - Every service URL is configurable via environment variable
+      - No service failure propagates as an unhandled exception to a main loop
+      - Health check exists for each service (GET endpoint that returns 200)
+    audit_method: >
+      1. Discover all service URLs in shared/config.py and agent __init__ methods
+      2. For each: attempt health check, report pass/fail
+      3. Grep for bare except-less httpx/requests calls (violations)
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: P2
+    name: Embedding Contract
+    tier: V0
+    principle: >
+      All semantic operations share a single embedding contract: one model,
+      one dimension count, one distance metric, one prefix convention. If
+      any component diverges, similarity scores become meaningless — the
+      most dangerous failure mode because it's silent.
+    discovery: >
+      Find all Qdrant collection creation calls (VectorParams), all embed()
+      calls, all VECTOR_DIM constants. Each is a participant in the
+      embedding contract.
+    invariants:
+      - Embedding model name defined in exactly one place (shared/config.py)
+      - All text collections use identical vector dimensions
+      - embed() validates output dimensions, raises on mismatch
+      - Indexing uses prefix="search_document", queries use prefix="search_query"
+      - CLAP (audio) embeddings are clearly separated (different dimension, different collections)
+    audit_method: >
+      1. Find EMBEDDING_MODEL and EXPECTED_EMBED_DIMENSIONS in shared/config.py
+      2. Find all VECTOR_DIM constants, verify they match
+      3. Find all embed() calls, verify prefix argument present
+      4. Find all VectorParams(), verify size matches expected
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: P3
+    name: Cadence Hierarchy
+    tier: V1
+    principle: >
+      The system operates at multiple temporal scales. Each scale has a
+      producer cadence (how often data is written) and a consumer
+      staleness threshold (how old data can be before it's useless).
+      The staleness threshold must be at least 2x the producer cadence.
+    scales:
+      - name: tick
+        producer_cadence: "2.5s"
+        staleness_threshold: "10s"
+        examples: "perception ring, protention observe, episode builder"
+      - name: fast_poll
+        producer_cadence: "15s"
+        staleness_threshold: "30s"
+        examples: "health, GPU, stimmung update"
+      - name: slow_poll
+        producer_cadence: "60s"
+        staleness_threshold: "120s"
+        examples: "nudges, briefing, drift, goals"
+      - name: content
+        producer_cadence: "45-300s"
+        staleness_threshold: "600s"
+        examples: "ambient content, profile facts"
+      - name: periodic
+        producer_cadence: "15min-12h"
+        staleness_threshold: "2x cadence"
+        examples: "health monitor, profile update, weather"
+      - name: maintenance
+        producer_cadence: "weekly"
+        staleness_threshold: "14 days"
+        examples: "drift detector, knowledge maint, LLM backup"
+    invariants:
+      - Every producer writes at its declared cadence (±jitter)
+      - Every consumer checks freshness before using data
+      - Stale data must produce a visible signal (stimmung dimension, log warning)
+      - No consumer assumes data is fresher than the producer's cadence
+    audit_method: >
+      1. Find all systemd timer intervals, map to cadence scale
+      2. Find all staleness checks (freshness_s, age, time.time() - ts)
+      3. Verify staleness threshold >= 2x producer cadence
+      4. Find producers with no staleness check on their consumers (violations)
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: P4
+    name: Data Contract = Typed Model
+    tier: V1
+    principle: >
+      When two modules share data, the schema is a Pydantic model or a
+      typed dataclass — not ad-hoc dict access. The model IS the spec.
+      If a writer changes the model, all readers get type errors at
+      import time, not silent KeyError at runtime.
+    discovery: >
+      Find all json.loads() calls that aren't followed by model_validate().
+      Find all dict.get() chains on data loaded from files. Each is a
+      potential untyped data access.
+    invariants:
+      - Inter-module state files have a corresponding Pydantic model
+      - Writers serialize via model.model_dump_json()
+      - Readers deserialize via Model.model_validate(data)
+      - Ad-hoc dict.get() chains on shared data are spec violations
+    exceptions:
+      - perception-state.json is a dict (too hot-path for model overhead)
+      - health-history.jsonl lines are simple dicts (append-only, schema stable)
+    audit_method: >
+      1. Find all state files written atomically (tmp+rename pattern)
+      2. For each: check if a Pydantic model exists for its schema
+      3. Find all json.loads() followed by dict.get() chains (potential violations)
+      4. Report untyped data contracts
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: P5
+    name: Atomic State I/O
+    tier: V1
+    principle: >
+      All state files are written atomically (write to .tmp, rename to
+      target). All readers tolerate missing or corrupt files. No reader
+      may see a partially-written file.
+    discovery: >
+      Find all Path.write_text() calls on state files. Each must be
+      preceded by writing to a .tmp file and followed by .rename().
+    invariants:
+      - Every state file write uses tmp+rename pattern
+      - Every state file read catches OSError and json.JSONDecodeError
+      - Missing files produce safe defaults, not crashes
+      - Corrupt files produce safe defaults, not crashes
+    audit_method: >
+      1. Find all .write_text() on /dev/shm/ and profiles/ paths
+      2. Verify tmp+rename pattern (within 3 lines of write_text)
+      3. Find all .read_text() on same paths
+      4. Verify try/except (OSError, json.JSONDecodeError) wrapping
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: P6
+    name: Phase-Ordered Execution
+    tier: V1
+    principle: >
+      Work is classified by cost: deterministic (free), local GPU
+      (moderate), cloud LLM (expensive). Cheap work runs first.
+      Expensive work is gated by system health. When the system is
+      stressed, expensive work is deferred — not dropped, not forced.
+    discovery: >
+      Find all Action(phase=N) assignments. Find all stimmung stance
+      checks that gate execution.
+    invariants:
+      - Phase 0 (deterministic) always runs, regardless of stance
+      - Phase 1 (GPU) runs only when stance is nominal or cautious
+      - Phase 2 (cloud) runs only when stance is nominal or cautious
+      - Deferred work is logged, not silently dropped
+      - Phase ordering is enforced by PhasedExecutor, not by convention
+    audit_method: >
+      1. Find all Action() constructors, collect phase values
+      2. Verify PhasedExecutor.execute() groups by phase
+      3. Verify stimmung gating in _handle_change
+      4. Verify skipped actions are logged
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: P7
+    name: Idempotent Initialization
+    tier: V2
+    principle: >
+      Every resource the system needs is created on first use, not
+      assumed to exist. Collections, directories, config files, state
+      files — all have ensure/create-if-missing patterns. The system
+      must boot from a clean slate without manual setup.
+    discovery: >
+      Find all ensure_collection(), mkdir(parents=True, exist_ok=True),
+      and default value patterns.
+    invariants:
+      - Qdrant collections created via ensure_collection() on first access
+      - Directories created via mkdir(parents=True, exist_ok=True) before first write
+      - Config values have sensible defaults (not empty strings or None)
+      - Missing state files produce defaults, not errors
+    audit_method: >
+      1. Find all Qdrant collection references, verify ensure_collection() called
+      2. Find all Path.write_text() calls, verify parent mkdir exists
+      3. Find all os.environ.get() calls, verify default is not None/empty
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: P8
+    name: Single Source of Truth
+    tier: V2
+    principle: >
+      Every operational constant is defined in exactly one place. Model
+      names, vector dimensions, collection names, port numbers, cadence
+      intervals — if it appears in two files, one of them is wrong
+      (or will be, after the next edit).
+    discovery: >
+      Find constants that appear as literals in multiple files. Each is
+      a candidate for extraction to a single definition.
+    invariants:
+      - Embedding model name defined once (shared/config.py)
+      - Vector dimensions defined once per contract (VECTOR_DIM constants)
+      - Collection names defined once per store module
+      - Service URLs defined once with env var override
+      - Cadence intervals defined once with named constants
+    exceptions:
+      - Test files may reference constants for assertion
+      - Documentation may quote values
+    audit_method: >
+      1. Find all bare literals (768, 512, 6333, etc.) in production code
+      2. Group by value, flag values appearing in >2 non-test files
+      3. For each: verify a named constant exists and is imported

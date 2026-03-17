@@ -46,7 +46,8 @@ _tracer = trace.get_tracer(__name__)
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
-EXPECTED_DIMENSIONS = 768
+from shared.config import EXPECTED_EMBED_DIMENSIONS as EXPECTED_DIMENSIONS
+
 COLLECTIONS = ["documents", "samples", "claude-memory", "profile-facts"]
 DEFAULT_SCORE_THRESHOLD = 0.98
 
