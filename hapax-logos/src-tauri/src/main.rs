@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod browser;
 mod commands;
 mod visual;
 
@@ -63,12 +64,26 @@ fn main() {
             commands::introspect::set_visual_stance,
             commands::introspect::visual_ping,
             commands::introspect::ui_directive,
+            // Browser (agent-controlled web access)
+            browser::commands::browser_navigate,
+            browser::commands::browser_eval,
+            browser::commands::browser_screenshot,
+            browser::commands::browser_get_url,
+            browser::commands::browser_get_title,
+            browser::commands::browser_click,
+            browser::commands::browser_fill,
+            browser::commands::browser_press_key,
+            browser::a11y::browser_a11y_tree,
+            browser::services::browser_get_services,
+            browser::services::browser_resolve_url,
         ])
         .setup(|app| {
             // Spawn the wgpu visual surface on a dedicated thread
             visual::bridge::spawn_visual_surface(app.handle().clone());
             // Spawn the directive watcher (reads agent directives from shm)
             commands::directive_watcher::spawn_directive_watcher(app.handle().clone());
+            // Spawn headless browser engine for agent web access
+            browser::commands::spawn_browser_engine(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
