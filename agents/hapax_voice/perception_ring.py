@@ -26,9 +26,11 @@ class PerceptionRing:
         self._buffer: deque[dict[str, Any]] = deque(maxlen=maxlen)
 
     def push(self, snapshot: dict[str, Any]) -> None:
-        """Add a timestamped snapshot. Adds 'ts' if missing."""
+        """Add a timestamped snapshot. Normalizes timestamp to 'ts' key."""
         if "ts" not in snapshot:
-            snapshot = {**snapshot, "ts": time.time()}
+            # Accept "timestamp" (from perception state writer) or generate
+            ts = snapshot.get("timestamp", time.time())
+            snapshot = {**snapshot, "ts": ts}
         self._buffer.append(snapshot)
 
     def current(self) -> dict[str, Any] | None:

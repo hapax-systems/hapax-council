@@ -51,6 +51,9 @@ from agents.visual_layer_state import (
     VisualLayerState,
     VoiceSessionState,
 )
+from shared.active_correction import CorrectionSeeker
+from shared.correction_memory import CorrectionStore, check_for_corrections
+from shared.episodic_memory import EpisodeBuilder, EpisodeStore
 from shared.stimmung import StimmungCollector, SystemStimmung
 
 log = logging.getLogger("visual_layer_aggregator")
@@ -479,6 +482,13 @@ class VisualLayerAggregator:
         # Multi-scale temporal aggregator (WS1)
         self._multi_scale = MultiScaleAggregator()
 
+        # WS3: experiential learning pipeline
+        self._episode_builder = EpisodeBuilder()
+        self._episode_store: EpisodeStore | None = None
+        self._correction_store: CorrectionStore | None = None
+        self._correction_seeker = CorrectionSeeker()
+        self._ws3_initialized = False
+
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
         try:
@@ -561,15 +571,87 @@ class VisualLayerAggregator:
             # WS1: feed multi-scale aggregator
             self._multi_scale.tick(data)
 
-            # WS1: feed protention engine
+            # WS1: feed protention engine with best available activity
+            # Precedence: workspace monitor > LLM classification > empty
+            best_activity = data.get("production_activity", "")
+            if not best_activity:
+                llm_act = data.get("llm_activity", "")
+                if llm_act and llm_act != "idle":
+                    best_activity = llm_act
             self._protention.observe(
-                activity=data.get("production_activity", ""),
+                activity=best_activity,
                 flow_score=data.get("flow_score", 0.0),
                 hour=datetime.now().hour,
             )
 
+            # WS3: experiential learning pipeline
+            self._tick_experiential(data)
+
         except (FileNotFoundError, json.JSONDecodeError):
             pass  # perception daemon may not be running
+
+    def _init_ws3(self) -> None:
+        """Lazy-init WS3 stores (avoids Qdrant connection at import time)."""
+        if self._ws3_initialized:
+            return
+        self._ws3_initialized = True
+        try:
+            self._correction_store = CorrectionStore()
+            self._correction_store.ensure_collection()
+            self._episode_store = EpisodeStore()
+            self._episode_store.ensure_collection()
+        except Exception:
+            log.debug("WS3 stores unavailable (Qdrant down?)", exc_info=True)
+            self._correction_store = None
+            self._episode_store = None
+
+    def _tick_experiential(self, data: dict) -> None:
+        """Feed perception data to the WS3 experiential pipeline.
+
+        Called every perception tick. Lazy-inits Qdrant stores on first call.
+        All operations are best-effort — failures don't block perception.
+        """
+        self._init_ws3()
+
+        # 1. Episode boundary detection
+        if self._episode_store is not None:
+            try:
+                episode = self._episode_builder.observe(data)
+                if episode is not None:
+                    self._episode_store.record(episode)
+                    log.info(
+                        "Episode recorded: %s (%.0fs, %d snapshots)",
+                        episode.activity,
+                        episode.duration_s,
+                        episode.snapshot_count,
+                    )
+            except Exception:
+                log.debug("Episode recording failed", exc_info=True)
+
+        # 2. Correction intake (check if operator submitted a correction)
+        if self._correction_store is not None:
+            try:
+                check_for_corrections(self._correction_store, data)
+            except Exception:
+                log.debug("Correction intake failed", exc_info=True)
+
+        # 3. Active correction seeking
+        if self._correction_store is not None:
+            try:
+                stimmung_stance = (
+                    self._stimmung.overall_stance.value if self._stimmung else "nominal"
+                )
+                confidence = data.get("aggregate_confidence", 1.0)
+                self._correction_seeker.evaluate(
+                    activity=data.get("production_activity", ""),
+                    flow_score=data.get("flow_score", 0.0),
+                    confidence=float(confidence),
+                    hour=datetime.now().hour,
+                    stimmung_stance=stimmung_stance,
+                    correction_store=self._correction_store,
+                )
+            except Exception:
+                log.debug("Active correction seeking failed", exc_info=True)
 
     def _update_stimmung(self) -> None:
         """Collect stimmung readings from all available data sources.
@@ -911,6 +993,14 @@ class VisualLayerAggregator:
         elif production:
             return production, ""
 
+        # LLM activity classification as fallback (WS5)
+        # Precedence: operator correction > voice > workspace monitor > LLM > flow/music
+        llm_activity = perception_data.get("llm_activity", "")
+        if not production and llm_activity and llm_activity != "idle":
+            llm_confidence = perception_data.get("llm_confidence", 0.0)
+            if llm_confidence >= 0.5:
+                return llm_activity.replace("_", " "), f"(LLM, {llm_confidence:.0%})"
+
         # Fallback: use flow state and music
         if music_genre:
             if flow_state == "active":
@@ -976,6 +1066,15 @@ class VisualLayerAggregator:
                 color_warmth=round(ap.color_warmth * (1 - blend) + cached.color_warmth * blend, 3),
                 brightness=round(ap.brightness * (1 - blend) + cached.brightness * blend, 3),
             )
+            # Log cache hit rate periodically
+            total = self._predictive_cache._hits + self._predictive_cache._misses
+            if total > 0 and total % 20 == 0:
+                log.info(
+                    "Predictive cache hit rate: %.0f%% (%d/%d)",
+                    self._predictive_cache.hit_rate * 100,
+                    self._predictive_cache._hits,
+                    total,
+                )
 
         # Apply biometric modulation (Batch E)
         state.ambient_params = self._apply_biometric_modulation(state.ambient_params)
@@ -1061,7 +1160,15 @@ class VisualLayerAggregator:
         while True:
             now = time.monotonic()
 
-            if now - last_health >= HEALTH_POLL_S:
+            # Adaptive stimmung poll rate: faster when stressed, normal otherwise
+            stimmung_stance = (
+                self._stimmung.overall_stance.value if self._stimmung else "nominal"
+            )
+            health_interval = (
+                5.0 if stimmung_stance in ("degraded", "critical") else HEALTH_POLL_S
+            )
+
+            if now - last_health >= health_interval:
                 await self.poll_fast()
                 # Feed engine status to stimmung (piggyback on health poll)
                 engine = await self._fetch_json("/engine/status")
@@ -1097,6 +1204,17 @@ class VisualLayerAggregator:
         await asyncio.gather(self._state_tick_loop(), self._api_poll_loop())
 
     async def close(self) -> None:
+        # WS3: flush partial episode on shutdown
+        if self._episode_store is not None:
+            episode = self._episode_builder.flush()
+            if episode is not None:
+                try:
+                    self._episode_store.record(episode)
+                    log.info("Flushed partial episode on shutdown: %s", episode.activity)
+                except Exception:
+                    log.debug("Failed to flush episode on shutdown", exc_info=True)
+        # WS1: save protention state
+        self._protention.save()
         await self._client.aclose()
 
 
