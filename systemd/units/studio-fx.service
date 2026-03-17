@@ -1,0 +1,23 @@
+[Unit]
+Description=Studio FX — numpy/OpenCV visual effects pipeline
+After=studio-compositor.service
+Wants=studio-compositor.service
+StartLimitBurst=5
+StartLimitIntervalSec=300
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/operator/projects/hapax-council
+ExecStartPre=/usr/bin/mkdir -p /dev/shm/hapax-compositor
+ExecStart=/usr/bin/python3 -m agents.studio_fx
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+MemoryMax=2G
+SyslogIdentifier=studio-fx
+
+[Install]
+WantedBy=default.target
