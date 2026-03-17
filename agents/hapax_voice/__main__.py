@@ -308,11 +308,15 @@ class VoiceDaemon:
                         router=self._salience_router,
                         concern_graph=self._salience_concern_graph,
                     )
-                    log.info("Salience router initialized (%dd embeddings)", self._salience_embedder.dim)
+                    log.info(
+                        "Salience router initialized (%dd embeddings)", self._salience_embedder.dim
+                    )
                 else:
                     log.warning("Salience embedder unavailable, falling back to heuristic routing")
             except Exception:
-                log.warning("Salience router init failed, falling back to heuristic routing", exc_info=True)
+                log.warning(
+                    "Salience router init failed, falling back to heuristic routing", exc_info=True
+                )
 
         # Actuation layer
         self.schedule_queue = ScheduleQueue()
