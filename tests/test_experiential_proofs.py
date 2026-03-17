@@ -669,8 +669,8 @@ class TestWakeWordOverride:
         assert w.moment().directive == "process"
         assert w.governor.last_selected.selected_by == "wake_word_override"
 
-        # 3 grace ticks protect the conversation
-        for i in range(3):
+        # 8 grace ticks protect the conversation (~20s at 2.5s/tick)
+        for i in range(8):
             w.advance(2.5)
             assert w.moment().directive == "process", f"Grace tick {i + 1}"
             assert w.governor.last_selected.selected_by == "wake_word_grace"
