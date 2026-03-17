@@ -1541,7 +1541,10 @@ class VoiceDaemon:
                     }
                     self._conversation_pipeline._consent_phase = _phase_map.get(_cp, "none")
                     self._conversation_pipeline._guest_mode = self.session.is_guest_mode
-                    self._conversation_pipeline._face_count = state.face_count
+                    # face_count disabled for routing — face detector gives false
+                    # positives (screens, reflections) that trigger governance
+                    # override to CAPABLE. Re-enable after face detector is validated.
+                    # self._conversation_pipeline._face_count = state.face_count
 
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision

@@ -173,13 +173,13 @@ class VoiceConfig(BaseModel):
     salience_model: str = "minishlab/potion-base-8M"
     salience_thresholds: dict[str, float] = {
         "canned_max": 0.15,
-        "local_max": 0.35,
-        "fast_max": 0.55,
-        "strong_max": 0.75,
+        "local_max": 0.45,
+        "fast_max": 0.60,
+        "strong_max": 0.78,
     }
     salience_weights: dict[str, float] = {
-        "concern_overlap": 0.50,
-        "novelty": 0.20,
+        "concern_overlap": 0.55,
+        "novelty": 0.15,
         "dialog_features": 0.30,
     }
     salience_concern_refresh_cadence_s: float = 2.5  # match perception fast tick

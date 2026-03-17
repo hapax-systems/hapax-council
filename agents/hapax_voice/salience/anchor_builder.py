@@ -101,6 +101,9 @@ def build_anchors(
     # Temporal bands (Husserlian retention/impression/protention/surprise)
     anchors.extend(_read_temporal_anchors())
 
+    # Self-band: apperception self-observations with pending actions
+    anchors.extend(_read_apperception_anchors())
+
     log.debug(
         "Built %d concern anchors: %s",
         len(anchors),
@@ -208,6 +211,55 @@ def _xml_attr_values(xml: str, tag: str, attr: str) -> list[str]:
     import re
 
     return re.findall(rf'<{tag}\b[^>]*\b{attr}="([^"]*)"', xml)
+
+
+_APPERCEPTION_PATH = Path("/dev/shm/hapax-apperception/self-band.json")
+
+
+def _read_apperception_anchors() -> list[ConcernAnchor]:
+    """Extract concern anchors from self-band apperception state.
+
+    Self-observations with pending actions become concern anchors (source="self").
+    Dimensions with low confidence (< 0.3) also become anchors — the system
+    is uncertain about an aspect of itself, which is relevant to routing.
+
+    Staleness check: >30s → skip. Graceful degradation if file missing.
+    """
+    import time
+
+    try:
+        raw = json.loads(_APPERCEPTION_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    except Exception:
+        log.debug("Failed to read apperception state", exc_info=True)
+        return []
+
+    # Staleness check
+    ts = raw.get("timestamp", 0)
+    if ts > 0 and (time.time() - ts) > 30:
+        return []
+
+    anchors: list[ConcernAnchor] = []
+    model = raw.get("self_model", {})
+
+    # Pending actions from cascade — high weight (actionable self-observations)
+    for action in raw.get("pending_actions", [])[:5]:
+        anchors.append(ConcernAnchor(text=action, source="self", weight=1.3))
+
+    # Low-confidence dimensions — system is uncertain about itself
+    for name, dim in model.get("dimensions", {}).items():
+        confidence = dim.get("confidence", 0.5)
+        if confidence < 0.3:
+            anchors.append(
+                ConcernAnchor(
+                    text=f"uncertain about {name}",
+                    source="self",
+                    weight=0.8,
+                )
+            )
+
+    return anchors
 
 
 def _extract_phrases(text: str, max_phrases: int = 10) -> list[str]:
