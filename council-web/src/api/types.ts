@@ -401,3 +401,7 @@ export interface VisualLayerState {
   timestamp: number;
   aggregator?: string;
 }
+
+export interface PerceptionState { available: boolean; production_activity: string; music_genre: string; flow_state: string; flow_score: number; emotion_valence: number; emotion_arousal: number; audio_energy_rms: number; face_count: number; vad_confidence: number; activity_mode: string; interruptibility_score: number; presence_score: number; operator_present: boolean; guest_present: boolean; consent_phase: string; timestamp: number; top_emotion: string; detected_objects: string; person_count: number; pose_summary: string; scene_objects: string; scene_type: string; gaze_direction: string; hand_gesture: string; nearest_person_distance: string; speech_emotion: string; audio_events: string; speech_language: string; ambient_brightness: number; color_temperature: string; posture: string; detected_action: string; usb_devices: string; bluetooth_nearby: string; network_devices: string; }
+export interface SignalEntry { category: string; severity: number; title: string; detail: string; source_id: string; }
+export interface AmbientParams { speed: number; turbulence: number; color_warmth: number; brightness: number; }

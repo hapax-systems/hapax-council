@@ -49,6 +49,10 @@ interface Props {
   onHeroChange: (role: string) => void;
   onOrderReset: () => void;
   cameraRoles: string[];
+  smoothEnabled: boolean;
+  onSmoothToggle: () => void;
+  detectionsEnabled: boolean;
+  onDetectionsToggle: () => void;
 }
 
 export function StudioSidebar({
@@ -68,6 +72,10 @@ export function StudioSidebar({
   onHeroChange,
   onOrderReset,
   cameraRoles,
+  smoothEnabled: _smoothEnabled,
+  onSmoothToggle: _onSmoothToggle,
+  detectionsEnabled,
+  onDetectionsToggle,
 }: Props) {
   const { data: studio } = useStudio();
   const { data: streamInfo } = useStudioStreamInfo();
@@ -134,6 +142,7 @@ export function StudioSidebar({
   };
 
   const isComposite = viewMode === "composite";
+  void _smoothEnabled; void _onSmoothToggle;
   const currentEffects = effectOverrides
     ? { ...baseEffects, ...effectOverrides }
     : baseEffects;
@@ -360,6 +369,20 @@ export function StudioSidebar({
             )}
           </section>
         )}
+
+        {/* DETECTION OVERLAY */}
+        <section className="border-b border-zinc-800/50 px-3 py-2">
+          <button
+            onClick={onDetectionsToggle}
+            className={`w-full rounded px-2 py-1.5 text-[10px] font-bold transition-colors ${
+              detectionsEnabled
+                ? "bg-cyan-900/40 text-cyan-300 ring-1 ring-cyan-500/30"
+                : "bg-zinc-800 text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            {detectionsEnabled ? "◉ Detections ON" : "○ Detections OFF"}
+          </button>
+        </section>
 
         {/* RECORDING */}
         <section ref={recordingRef} className="border-b border-zinc-700/40 px-3 py-2.5">
