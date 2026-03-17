@@ -1,4 +1,9 @@
+import { invoke } from "@tauri-apps/api/core";
+
 const BASE = "/api";
+
+// Detect if running inside Tauri webview
+const IS_TAURI = "__TAURI_INTERNALS__" in window;
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
@@ -32,43 +37,67 @@ async function del<T>(path: string): Promise<T> {
   return res.json();
 }
 
+/** Invoke a Tauri command if running in Tauri, otherwise fall back to HTTP. */
+async function tauriOrHttp<T>(command: string, httpPath: string, args?: Record<string, unknown>): Promise<T> {
+  if (IS_TAURI) {
+    return invoke<T>(command, args);
+  }
+  return get<T>(httpPath);
+}
+
 export function sseUrl(path: string): string {
   return `${BASE}${path}`;
 }
 
 export const api = {
-  health: () => get<import("./types").HealthSnapshot | null>("/health"),
-  gpu: () => get<import("./types").VramSnapshot | null>("/gpu"),
-  infrastructure: () => get<import("./types").Infrastructure>("/infrastructure"),
-  nudges: () => get<import("./types").Nudge[]>("/nudges"),
-  briefing: () => get<import("./types").BriefingData | null>("/briefing"),
-  goals: () => get<import("./types").GoalSnapshot>("/goals"),
-  readiness: () => get<import("./types").ReadinessSnapshot>("/readiness"),
-  agents: () => get<import("./types").AgentInfo[]>("/agents"),
-  scout: () => get<import("./types").ScoutData | null>("/scout"),
+  // --- Tier 1: Tauri commands (file I/O) ---
+  health: () => tauriOrHttp<import("./types").HealthSnapshot | null>("get_health", "/health"),
+  gpu: () => tauriOrHttp<import("./types").VramSnapshot | null>("get_gpu", "/gpu"),
+  infrastructure: () => tauriOrHttp<import("./types").Infrastructure>("get_infrastructure", "/infrastructure"),
+  healthHistory: (days = 7) =>
+    IS_TAURI
+      ? invoke<import("./types").HealthHistory>("get_health_history", { days })
+      : get<import("./types").HealthHistory>(`/health/history?days=${days}`),
+  cycleMode: () => tauriOrHttp<import("./types").CycleModeResponse>("get_cycle_mode", "/cycle-mode"),
+  setCycleMode: (mode: "dev" | "prod") =>
+    IS_TAURI
+      ? invoke<import("./types").CycleModeResponse>("set_cycle_mode", { mode })
+      : put<import("./types").CycleModeResponse>("/cycle-mode", { mode }),
+  accommodations: () => tauriOrHttp<import("./types").AccommodationSet>("get_accommodations", "/accommodations"),
+  manual: () => tauriOrHttp<import("./types").ManualResponse>("get_manual", "/manual"),
+  goals: () => tauriOrHttp<import("./types").GoalSnapshot>("get_goals", "/goals"),
+  scout: () => tauriOrHttp<import("./types").ScoutData | null>("get_scout", "/scout"),
+  scoutDecisions: () => tauriOrHttp<import("./types").ScoutDecisionsResponse>("get_scout_decisions", "/scout/decisions"),
+  drift: () => tauriOrHttp<import("./types").DriftSummary | null>("get_drift", "/drift"),
+  management: () => tauriOrHttp<import("./types").ManagementSnapshot>("get_management", "/management"),
+  nudges: () => tauriOrHttp<import("./types").Nudge[]>("get_nudges", "/nudges"),
+  readiness: () => tauriOrHttp<import("./types").ReadinessSnapshot>("get_readiness", "/readiness"),
+  agents: () => tauriOrHttp<import("./types").AgentInfo[]>("get_agents", "/agents"),
+  briefing: () => tauriOrHttp<import("./types").BriefingData | null>("get_briefing", "/briefing"),
+  studio: () => tauriOrHttp<import("./types").StudioSnapshot>("get_studio", "/studio"),
+  studioStreamInfo: () => tauriOrHttp<import("./types").StudioStreamInfo>("get_studio_stream_info", "/studio/stream/info"),
+  perception: () => tauriOrHttp<import("./types").PerceptionState>("get_perception", "/studio/perception"),
+  visualLayer: () => tauriOrHttp<import("./types").VisualLayerState>("get_visual_layer", "/studio/visual-layer"),
+  selectEffect: (preset: string) =>
+    IS_TAURI
+      ? invoke<{ status: string; preset: string }>("select_effect", { preset })
+      : post<{ status: string; preset: string }>("/studio/effect/select", { preset }),
+  demos: () => tauriOrHttp<import("./types").Demo[]>("get_demos", "/demos"),
+  demo: (id: string) =>
+    IS_TAURI
+      ? invoke<import("./types").Demo>("get_demo", { id })
+      : get<import("./types").Demo>(`/demos/${id}`),
+
+  // --- Tier 2: HTTP (Qdrant/Langfuse) — will be ported in Batch 4 ---
   cost: () => get<import("./types").CostSnapshot>("/cost"),
-  drift: () => get<import("./types").DriftSummary | null>("/drift"),
-  management: () => get<import("./types").ManagementSnapshot>("/management"),
-  accommodations: () => get<import("./types").AccommodationSet>("/accommodations"),
-  healthHistory: (days = 7) => get<import("./types").HealthHistory>(`/health/history?days=${days}`),
-  manual: () => get<import("./types").ManualResponse>("/manual"),
+
+  // --- Tier 3: Always HTTP (LLM orchestration) ---
   copilot: () => get<import("./types").CopilotResponse>("/copilot"),
-  cycleMode: () => get<import("./types").CycleModeResponse>("/cycle-mode"),
-  setCycleMode: (mode: "dev" | "prod") => put<import("./types").CycleModeResponse>("/cycle-mode", { mode }),
-  scoutDecisions: () => get<import("./types").ScoutDecisionsResponse>("/scout/decisions"),
   scoutDecide: (component: string, decision: string, notes?: string) =>
     post<import("./types").ScoutDecision>(`/scout/${component}/decide`, { decision, notes: notes ?? "" }),
-  studio: () => get<import("./types").StudioSnapshot>("/studio"),
-  studioStreamInfo: () => get<import("./types").StudioStreamInfo>("/studio/stream/info"),
-  perception: () => get<import("./types").PerceptionState>("/studio/perception"),
-  visualLayer: () => get<import("./types").VisualLayerState>("/studio/visual-layer"),
-  selectEffect: (preset: string) =>
-    post<{ status: string; preset: string }>("/studio/effect/select", { preset }),
-  demos: () => get<import("./types").Demo[]>("/demos"),
-  demo: (id: string) => get<import("./types").Demo>(`/demos/${id}`),
   deleteDemo: (id: string) => del<{ deleted: string }>(`/demos/${id}`),
-  // POST/DELETE helpers exposed for Phase 2+
+
+  // POST/DELETE helpers for mutations
   post,
   del,
 };
-
