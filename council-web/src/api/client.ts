@@ -62,6 +62,11 @@ export const api = {
   studioStreamInfo: () => get<import("./types").StudioStreamInfo>("/studio/stream/info"),
   selectEffect: (preset: string) =>
     post<{ status: string; preset: string }>("/studio/effect/select", { preset }),
+  compositorLive: () => get<import("./types").LiveCompositorStatus>("/studio/compositor/live"),
+  studioDisk: () => get<import("./types").StudioDisk>("/studio/disk"),
+  enableRecording: () => post<{ status: string }>("/studio/recording/enable"),
+  disableRecording: () => post<{ status: string }>("/studio/recording/disable"),
+  visualLayer: () => get<import("./types").VisualLayerState>("/studio/visual-layer"),
   demos: () => get<import("./types").Demo[]>("/demos"),
   demo: (id: string) => get<import("./types").Demo>(`/demos/${id}`),
   deleteDemo: (id: string) => del<{ deleted: string }>(`/demos/${id}`),

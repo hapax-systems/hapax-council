@@ -320,6 +320,29 @@ export interface CompositorStatus {
   consent_recording_allowed: boolean;
   guest_present: boolean;
   consent_phase: string;
+  audio_energy_rms: number;
+}
+
+export interface LiveCompositorStatus {
+  state: string;
+  cameras: Record<string, string>;
+  active_cameras: number;
+  total_cameras: number;
+  recording_enabled: boolean;
+  recording_cameras: Record<string, string>;
+  hls_enabled: boolean;
+  consent_recording_allowed: boolean;
+  guest_present: boolean;
+  consent_phase: string;
+  audio_energy_rms: number;
+  timestamp: number;
+}
+
+export interface StudioDisk {
+  path: string;
+  total_gb: number;
+  used_gb: number;
+  free_gb: number;
 }
 
 export interface StudioSnapshot {
@@ -351,4 +374,30 @@ export interface Demo {
   dir: string;
   has_video?: boolean;
   has_audio?: boolean;
+}
+
+// --- Visual Layer ---
+
+export interface VisualLayerSignal {
+  category: string;
+  severity: number;
+  title: string;
+  detail: string;
+  source_id: string;
+}
+
+export interface AmbientParams {
+  speed: number;
+  turbulence: number;
+  color_warmth: number;
+  brightness: number;
+}
+
+export interface VisualLayerState {
+  display_state: "ambient" | "peripheral" | "informational" | "alert" | "performative";
+  zone_opacities: Record<string, number>;
+  signals: Record<string, VisualLayerSignal[]>;
+  ambient_params: AmbientParams;
+  timestamp: number;
+  aggregator?: string;
 }

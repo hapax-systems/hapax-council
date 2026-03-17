@@ -10,7 +10,8 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-OLLAMA_URL = "http://localhost:11434"
+from shared.config import OLLAMA_URL
+
 TTS_VRAM_MB = 8000
 
 

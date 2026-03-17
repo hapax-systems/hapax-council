@@ -95,9 +95,12 @@ from shared.config import (
     AXIOM_AUDIT_DIR,
     CLAUDE_CONFIG_DIR,
     HAPAX_HOME,
+    LITELLM_BASE,
     LLM_STACK_DIR,
+    OLLAMA_URL,
     PASSWORD_STORE_DIR,
     PROFILES_DIR,
+    QDRANT_URL,
     RAG_INGEST_STATE_DIR,
     RAG_SOURCES_DIR,
     load_expected_timers,
@@ -465,7 +468,7 @@ async def check_gpu_vram() -> list[CheckResult]:
     # Try to get loaded Ollama models for detail
     detail = None
     try:
-        code, body = await http_get("http://localhost:11434/api/ps", timeout=2.0)
+        code, body = await http_get(f"{OLLAMA_URL}/api/ps", timeout=2.0)
         if code == 200:
             data = json.loads(body)
             models = data.get("models", [])
@@ -699,7 +702,7 @@ async def check_systemd_drift() -> list[CheckResult]:
 @check_group("qdrant")
 async def check_qdrant_health() -> list[CheckResult]:
     t = time.monotonic()
-    code, body = await http_get("http://localhost:6333/healthz")
+    code, body = await http_get(f"{QDRANT_URL}/healthz")
     if code == 200:
         return [
             CheckResult(
@@ -726,7 +729,7 @@ async def check_qdrant_health() -> list[CheckResult]:
 @check_group("qdrant")
 async def check_qdrant_collections() -> list[CheckResult]:
     t = time.monotonic()
-    code, body = await http_get("http://localhost:6333/collections")
+    code, body = await http_get(f"{QDRANT_URL}/collections")
     if code != 200:
         return [
             CheckResult(
@@ -758,7 +761,7 @@ async def check_qdrant_collections() -> list[CheckResult]:
         if coll in existing:
             # Fetch point count
             detail = None
-            c2, b2 = await http_get(f"http://localhost:6333/collections/{coll}")
+            c2, b2 = await http_get(f"{QDRANT_URL}/collections/{coll}")
             if c2 == 200:
                 try:
                     cdata = json.loads(b2)
@@ -931,8 +934,8 @@ async def check_profile_staleness() -> list[CheckResult]:
 @check_group("endpoints")
 async def check_service_endpoints() -> list[CheckResult]:
     endpoints = [
-        ("endpoints.litellm", "http://localhost:4000/health/liveliness", True),
-        ("endpoints.ollama", "http://localhost:11434/api/tags", True),
+        ("endpoints.litellm", f"{LITELLM_BASE}/health/liveliness", True),
+        ("endpoints.ollama", f"{OLLAMA_URL}/api/tags", True),
         ("endpoints.langfuse", "http://localhost:3000/", False),
         ("endpoints.open-webui", "http://localhost:8080/health", False),
     ]
@@ -1097,7 +1100,7 @@ EXPECTED_OLLAMA_MODELS = [
 async def check_ollama_models() -> list[CheckResult]:
     """Verify expected Ollama models are pulled."""
     t = time.monotonic()
-    code, body = await http_get("http://localhost:11434/api/tags", timeout=5.0)
+    code, body = await http_get(f"{OLLAMA_URL}/api/tags", timeout=5.0)
     if code != 200:
         return [
             CheckResult(
@@ -1177,7 +1180,7 @@ async def check_litellm_auth() -> list[CheckResult]:
 
     def _check() -> tuple[int, str]:
         req = Request(
-            "http://localhost:4000/v1/models",
+            f"{LITELLM_BASE}/v1/models",
             headers={"Authorization": f"Bearer {api_key}"},
         )
         try:
@@ -1639,9 +1642,9 @@ async def _http_latency_ms(url: str, timeout: float = 3.0) -> float | None:
 
 
 LATENCY_THRESHOLDS = {
-    "latency.litellm": ("http://localhost:4000/health/liveliness", 200.0),
-    "latency.qdrant": ("http://localhost:6333/healthz", 100.0),
-    "latency.ollama": ("http://localhost:11434/api/tags", 500.0),
+    "latency.litellm": (f"{LITELLM_BASE}/health/liveliness", 200.0),
+    "latency.qdrant": (f"{QDRANT_URL}/healthz", 100.0),
+    "latency.ollama": (f"{OLLAMA_URL}/api/tags", 500.0),
 }
 
 
@@ -1896,9 +1899,7 @@ async def check_daily_spend() -> list[CheckResult]:
     """Check LiteLLM daily spend against budget."""
     t = time.monotonic()
     try:
-        code, body = await http_get(
-            "http://localhost:4000/spend/report?group_by=api_key", timeout=5.0
-        )
+        code, body = await http_get(f"{LITELLM_BASE}/spend/report?group_by=api_key", timeout=5.0)
         if code != 200:
             return [
                 CheckResult(
@@ -3100,9 +3101,9 @@ async def quick_check(
     Default services: litellm, qdrant.
     """
     service_urls = {
-        "litellm": "http://localhost:4000/health/liveliness",
-        "qdrant": "http://localhost:6333/healthz",
-        "ollama": "http://localhost:11434/api/tags",
+        "litellm": f"{LITELLM_BASE}/health/liveliness",
+        "qdrant": f"{QDRANT_URL}/healthz",
+        "ollama": f"{OLLAMA_URL}/api/tags",
         "langfuse": "http://localhost:3000/",
         "open-webui": "http://localhost:8080/health",
     }

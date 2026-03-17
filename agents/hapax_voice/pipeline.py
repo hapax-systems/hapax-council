@@ -101,7 +101,9 @@ def _build_llm(model: str, prompt: str) -> OpenAILLMService:
     Returns:
         Configured OpenAILLMService.
     """
-    base_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000")
+    from agents.hapax_voice.config import LITELLM_BASE
+
+    base_url = LITELLM_BASE
     api_key = os.environ.get("LITELLM_API_KEY", "not-set")
 
     return OpenAILLMService(

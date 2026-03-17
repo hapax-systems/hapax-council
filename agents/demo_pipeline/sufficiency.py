@@ -360,7 +360,7 @@ def check_sufficiency(
 
         from shared.config import embed
 
-        arch_vector = embed("system architecture design")
+        arch_vector = embed("system architecture design", prefix="search_query")
         arch_filter = Filter(
             must=[FieldCondition(key="source", match=MatchText(text="hapaxromana"))]
         )

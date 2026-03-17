@@ -71,7 +71,7 @@ if [ -n "$GIT_COMMON_ABS" ]; then
       CONCURRENT="${CONCURRENT}  PID $pid: $cwd [$their_branch]\n"
       CONCURRENT_COUNT=$((CONCURRENT_COUNT + 1))
     fi
-  done < <(pgrep -f '/opt/claude-code/bin/claude' 2>/dev/null)
+  done < <(pgrep -af 'claude-code/bin/claude|/\.local/bin/claude' 2>/dev/null | awk '{print $1}')
 
   if [ "$CONCURRENT_COUNT" -gt 0 ]; then
     echo "CONCURRENT SESSIONS ($CONCURRENT_COUNT other):"
@@ -88,7 +88,7 @@ if [ -n "$GIT_COMMON_ABS" ]; then
         their_branch="$(cd "$cwd" && git branch --show-current 2>/dev/null)"
         [ "$their_branch" = "$BRANCH" ] && SAME_BRANCH=$((SAME_BRANCH + 1))
       fi
-    done < <(pgrep -f '/opt/claude-code/bin/claude' 2>/dev/null)
+    done < <(pgrep -af 'claude-code/bin/claude|/\.local/bin/claude' 2>/dev/null | awk '{print $1}')
     if [ "$SAME_BRANCH" -gt 0 ]; then
       echo "WARNING: $SAME_BRANCH other session(s) on branch '$BRANCH' — high conflict risk"
     fi
