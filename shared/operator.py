@@ -225,6 +225,87 @@ def _read_temporal_block() -> str:
         return ""
 
 
+def _read_apperception_block() -> str:
+    """Read self-band state from /dev/shm and format for prompt injection.
+
+    Provides apperceptive self-awareness: what dimensions Hapax has observed
+    about its own processing, recent self-observations, reflections, and
+    pending actions.
+
+    Returns empty string if apperception data is missing or stale (>30s).
+    Only injects when there's meaningful self-knowledge to report.
+    """
+    from pathlib import Path
+
+    apperception_path = Path("/dev/shm/hapax-apperception/self-band.json")
+    try:
+        import time
+
+        raw = json.loads(apperception_path.read_text(encoding="utf-8"))
+        ts = raw.get("timestamp", 0)
+        if ts > 0 and (time.time() - ts) > 30:
+            return ""
+
+        model = raw.get("self_model", {})
+        dimensions = model.get("dimensions", {})
+        observations = model.get("recent_observations", [])
+        reflections = model.get("recent_reflections", [])
+        coherence = model.get("coherence", 0.7)
+        pending_actions = raw.get("pending_actions", [])
+
+        if not dimensions and not observations:
+            return ""
+
+        lines: list[str] = [
+            "Self-awareness (apperceptive self-observations — "
+            "what I notice about my own processing):"
+        ]
+
+        # Coherence warning
+        if coherence < 0.4:
+            lines.append(
+                f"  ⚠ Self-coherence low ({coherence:.2f}) — "
+                "rebuilding self-model, expect uncertainty"
+            )
+
+        # Dimensions with assessments
+        if dimensions:
+            lines.append("  Self-dimensions:")
+            for name, dim in sorted(dimensions.items()):
+                conf = dim.get("confidence", 0.5)
+                assessment = dim.get("current_assessment", "")
+                affirm = dim.get("affirming_count", 0)
+                prob = dim.get("problematizing_count", 0)
+                desc = f"    {name}: confidence={conf:.2f} (+{affirm}/-{prob})"
+                if assessment:
+                    desc += f" — {assessment}"
+                lines.append(desc)
+
+        # Recent observations (last 5 for token economy)
+        if observations:
+            recent = observations[-5:]
+            lines.append("  Recent self-observations:")
+            for obs in recent:
+                lines.append(f"    - {obs}")
+
+        # Reflections (last 3)
+        if reflections:
+            recent_ref = reflections[-3:]
+            lines.append("  Reflections:")
+            for ref in recent_ref:
+                lines.append(f"    - {ref}")
+
+        # Pending actions
+        if pending_actions:
+            lines.append("  Pending self-actions:")
+            for action in pending_actions[:3]:
+                lines.append(f"    - {action}")
+
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def get_system_prompt_fragment(agent_name: str) -> str:
     """Build a system prompt fragment for a specific agent.
 
@@ -358,6 +439,12 @@ def get_system_prompt_fragment(agent_name: str) -> str:
     temporal_block = _read_temporal_block()
     if temporal_block:
         lines.append(temporal_block)
+        lines.append("")
+
+    # Self-band: apperceptive self-awareness
+    apperception_block = _read_apperception_block()
+    if apperception_block:
+        lines.append(apperception_block)
         lines.append("")
 
     return "\n".join(lines)
