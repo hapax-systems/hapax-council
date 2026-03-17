@@ -30,7 +30,17 @@ _CLAUSE_END = re.compile(r"(?<=[.!?;:])\s+|(?<=\n)|(?<=,)\s+|(?<=—)\s*")
 _MIN_CLAUSE_WORDS = 2
 _MIN_FIRST_CLAUSE_WORDS = 3  # First audio: enough words to avoid false turn-boundary pauses
 _MAX_ACCUMULATION_S = 0.3
-_MAX_RESPONSE_TOKENS = 256
+# Response length per tier — the ramp IS the length. Short casual
+# responses at LOCAL feel like warmup; longer responses at CAPABLE
+# feel like deep engagement. This shapes conversational cadence.
+_TIER_MAX_TOKENS: dict[str, int] = {
+    "CANNED": 0,
+    "LOCAL": 60,  # 1-2 sentences max
+    "FAST": 150,  # 2-4 sentences
+    "STRONG": 256,  # full paragraph
+    "CAPABLE": 512,  # extended thought
+}
+_MAX_RESPONSE_TOKENS = 256  # fallback
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
 
@@ -101,6 +111,9 @@ class ConversationPipeline:
         self._activity_mode: str = "idle"
         self._consent_phase: str = "none"
         self._llm_prewarmed: bool = False
+        self._prev_tier: int = -1  # tier momentum: previous turn's tier (legacy)
+        self._salience_router = None  # set externally if salience routing enabled
+        self._context_distillation: str = ""  # refreshed on perception tick
 
         # Observation signal tracking (Batch 4: revealed preferences)
         self._last_assistant_end: float = 0.0  # monotonic time when last response finished
@@ -240,17 +253,32 @@ class ConversationPipeline:
         self.turn_count += 1
 
         # ── Model routing: pick the right tier for this utterance ────
-        from agents.hapax_voice.model_router import ModelTier, route
+        from agents.hapax_voice.model_router import ModelTier
 
-        routing = route(
-            transcript,
-            turn_count=self.turn_count,
-            activity_mode=self._activity_mode,
-            consent_phase=self._consent_phase,
-            guest_mode=False,  # TODO: wire from session
-            face_count=0,  # TODO: wire from perception
-            has_tools=bool(self.tools),
-        )
+        if self._salience_router is not None:
+            routing = self._salience_router.route(
+                transcript,
+                turn_count=self.turn_count,
+                activity_mode=self._activity_mode,
+                consent_phase=self._consent_phase,
+                guest_mode=False,  # TODO: wire from session
+                face_count=0,  # TODO: wire from perception
+                has_tools=bool(self.tools),
+            )
+        else:
+            from agents.hapax_voice.model_router import route
+
+            routing = route(
+                transcript,
+                turn_count=self.turn_count,
+                activity_mode=self._activity_mode,
+                consent_phase=self._consent_phase,
+                guest_mode=False,
+                face_count=0,
+                has_tools=bool(self.tools),
+                prev_tier=self._prev_tier,
+            )
+        self._prev_tier = routing.tier
         log.info(
             "TIMING route=%s model=%s reason=%s",
             routing.tier.name,
@@ -327,11 +355,34 @@ class ConversationPipeline:
                     log.debug("History compression failed (non-fatal)", exc_info=True)
 
             _model = getattr(self, "_turn_model", self.llm_model)
+            _tier_name = getattr(self, "_turn_model_tier", "")
+
+            # LOCAL tier: context-distilled system prompt — grounded but brief.
+            # Replaces the stripped prompt that made LOCAL sound vapid.
+            _messages = self.messages
+            if _tier_name == "LOCAL" and _messages and _messages[0].get("role") == "system":
+                ctx = self._context_distillation
+                _messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are Hapax, a voice assistant. Be warm, brief, and casual. "
+                            "1-2 short sentences max. Match the operator's energy — if they're "
+                            "just checking in, keep it light. Don't volunteer system status "
+                            "or technical details unless specifically asked."
+                            + (f"\n\nCurrent context: {ctx}" if ctx else "")
+                        ),
+                    },
+                    *_messages[1:],
+                ]
+
             kwargs = {
                 "model": f"openai/{_model}",
-                "messages": self.messages,
+                "messages": _messages,
                 "stream": True,
-                "max_tokens": _MAX_RESPONSE_TOKENS,
+                "max_tokens": _TIER_MAX_TOKENS.get(
+                    getattr(self, "_turn_model_tier", ""), _MAX_RESPONSE_TOKENS
+                ),
                 "temperature": 0.7,
                 "api_base": _voice_litellm_base,
                 "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
@@ -544,6 +595,14 @@ class ConversationPipeline:
         from agents.hapax_voice.bridge_engine import BridgeContext
 
         _tier = getattr(self, "_turn_model_tier", "")
+
+        # Get activation score from salience router if available
+        _activation = -1.0
+        if self._salience_router is not None:
+            breakdown = self._salience_router.last_breakdown
+            if breakdown is not None:
+                _activation = breakdown.final_activation
+
         ctx = BridgeContext(
             turn_position=self.turn_count,
             activity_mode=self._activity_mode,
@@ -551,6 +610,7 @@ class ConversationPipeline:
             response_type="acknowledging" if self.turn_count <= 1 else "thinking",
             session_id=self._session_id,
             model_tier=_tier,
+            activation_score=_activation,
         )
         phrase, pcm = self._bridge_engine.select(ctx)
 

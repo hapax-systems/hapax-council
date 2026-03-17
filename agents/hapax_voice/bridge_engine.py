@@ -58,6 +58,7 @@ class BridgeContext:
     guest_context: bool = False
     session_id: str = ""
     model_tier: str = ""  # "CANNED", "LOCAL", "FAST", "CAPABLE"
+    activation_score: float = -1.0  # -1 = not set (legacy path), 0.0-1.0 = salience
 
 
 # ── Phrase pools by response_type ────────────────────────────────────
@@ -218,15 +219,27 @@ class BridgeEngine:
             phrase = pool[idx % len(pool)]
             return (phrase, self._cache.get(phrase))
 
-        # Layer 2: Base pool by response_type
+        # Layer 2: Base pool — activation-driven when available, else tier-based
         response_type = ctx.response_type
 
-        # STRONG tier: natural dysfluency — complexity ramping up
-        if ctx.model_tier == "STRONG" and ctx.turn_position > 1:
-            response_type = "ramping"
-        # CAPABLE tier: signal that the wait is intentional
-        elif ctx.model_tier == "CAPABLE" and ctx.turn_position > 1:
-            response_type = "deep-thinking"
+        if ctx.activation_score >= 0:
+            # Activation-driven bridge selection (salience router path)
+            if ctx.activation_score < 0.3:
+                response_type = "acknowledging"  # low activation: short, casual
+            elif ctx.activation_score < 0.6:
+                response_type = "thinking"  # medium: standard
+            elif ctx.activation_score < 0.8:
+                response_type = "ramping"  # high: natural dysfluency
+            else:
+                response_type = "deep-thinking"  # very high: intentional
+        else:
+            # Legacy tier-based selection
+            # STRONG tier: natural dysfluency — complexity ramping up
+            if ctx.model_tier == "STRONG" and ctx.turn_position > 1:
+                response_type = "ramping"
+            # CAPABLE tier: signal that the wait is intentional
+            elif ctx.model_tier == "CAPABLE" and ctx.turn_position > 1:
+                response_type = "deep-thinking"
 
         # Layer 3: Turn position filter
         if ctx.turn_position <= 1:

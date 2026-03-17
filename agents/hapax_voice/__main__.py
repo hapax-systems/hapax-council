@@ -278,6 +278,42 @@ class VoiceDaemon:
 
         self._bridge_engine = BridgeEngine()
 
+        # Salience-based model routing
+        self._salience_router = None
+        self._salience_embedder = None
+        self._salience_concern_graph = None
+        self._salience_diagnostics = None
+        self._context_distillation: str = ""
+        if self.cfg.salience_enabled:
+            try:
+                from agents.hapax_voice.salience.concern_graph import ConcernGraph
+                from agents.hapax_voice.salience.embedder import Embedder
+                from agents.hapax_voice.salience_router import SalienceRouter
+
+                self._salience_embedder = Embedder(model_name=self.cfg.salience_model)
+                if self._salience_embedder.available:
+                    self._salience_concern_graph = ConcernGraph(
+                        dim=self._salience_embedder.dim,
+                    )
+                    self._salience_router = SalienceRouter(
+                        embedder=self._salience_embedder,
+                        concern_graph=self._salience_concern_graph,
+                        thresholds=self.cfg.salience_thresholds,
+                        weights=self.cfg.salience_weights,
+                    )
+
+                    from agents.hapax_voice.salience.diagnostics import SalienceDiagnostics
+
+                    self._salience_diagnostics = SalienceDiagnostics(
+                        router=self._salience_router,
+                        concern_graph=self._salience_concern_graph,
+                    )
+                    log.info("Salience router initialized (%dd embeddings)", self._salience_embedder.dim)
+                else:
+                    log.warning("Salience embedder unavailable, falling back to heuristic routing")
+            except Exception:
+                log.warning("Salience router init failed, falling back to heuristic routing", exc_info=True)
+
         # Actuation layer
         self.schedule_queue = ScheduleQueue()
         self.executor_registry = ExecutorRegistry()
@@ -708,6 +744,56 @@ class VoiceDaemon:
                 except Exception:
                     log.debug("Vision resume failed", exc_info=True)
 
+    def _refresh_concern_graph(self) -> None:
+        """Refresh concern anchors from current infrastructure state.
+
+        Called on perception tick cadence and at session start.
+        """
+        if self._salience_embedder is None or self._salience_concern_graph is None:
+            return
+
+        try:
+            from agents.hapax_voice.salience.anchor_builder import build_anchors
+
+            env = self.perception.latest if hasattr(self, "perception") else None
+
+            # Gather notification texts
+            notif_texts: list[str] = []
+            if hasattr(self, "notifications"):
+                for n in self.notifications.peek(5):
+                    notif_texts.append(getattr(n, "text", str(n)))
+
+            anchors = build_anchors(
+                env_state=env,
+                notifications=notif_texts,
+            )
+
+            if anchors:
+                texts = [a.text for a in anchors]
+                embeddings = self._salience_embedder.embed_batch(texts)
+                self._salience_concern_graph.refresh(anchors, embeddings)
+        except Exception:
+            log.debug("Concern graph refresh failed (non-fatal)", exc_info=True)
+
+    def _refresh_context_distillation(self) -> None:
+        """Generate context distillation for LOCAL tier prompts."""
+        try:
+            from agents.hapax_voice.salience.anchor_builder import build_context_distillation
+
+            env = self.perception.latest if hasattr(self, "perception") else None
+            notif_count = len(self.notifications.peek(100)) if hasattr(self, "notifications") else 0
+
+            self._context_distillation = build_context_distillation(
+                env_state=env,
+                notification_count=notif_count,
+            )
+
+            # Push to active pipeline if running
+            if self._conversation_pipeline is not None:
+                self._conversation_pipeline._context_distillation = self._context_distillation
+        except Exception:
+            log.debug("Context distillation refresh failed (non-fatal)", exc_info=True)
+
     async def _start_conversation_pipeline(self) -> None:
         """Start the lightweight conversation pipeline.
 
@@ -767,6 +853,13 @@ class VoiceDaemon:
             echo_canceller=self._echo_canceller,
             bridge_engine=self._bridge_engine,
         )
+
+        # Wire salience router and context distillation into pipeline
+        if self._salience_router is not None:
+            self._conversation_pipeline._salience_router = self._salience_router
+            self._refresh_concern_graph()
+            self._refresh_context_distillation()
+            self._conversation_pipeline._context_distillation = self._context_distillation
 
         # Pause vision to free GPU memory for voice models
         self._pause_vision_for_conversation()
@@ -1315,6 +1408,11 @@ class VoiceDaemon:
                     ring = get_perception_ring()
                     if ring is not None and ring.current() is not None:
                         self._local_llm_backend.set_perception_snapshot(ring.current())
+
+                # Refresh salience concern graph on perception tick cadence
+                if self._salience_router is not None:
+                    self._refresh_concern_graph()
+                    self._refresh_context_distillation()
 
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision
