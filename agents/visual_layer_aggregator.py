@@ -52,6 +52,7 @@ from agents.visual_layer_state import (
     VoiceSessionState,
 )
 from shared.active_correction import CorrectionSeeker
+from shared.apperception import ApperceptionCascade, CascadeEvent, SelfModel
 from shared.correction_memory import CorrectionStore, check_for_corrections
 from shared.episodic_memory import EpisodeBuilder, EpisodeStore
 from shared.stimmung import StimmungCollector, SystemStimmung
@@ -74,6 +75,10 @@ STIMMUNG_DIR = Path("/dev/shm/hapax-stimmung")
 STIMMUNG_FILE = STIMMUNG_DIR / "state.json"
 TEMPORAL_DIR = Path("/dev/shm/hapax-temporal")
 TEMPORAL_FILE = TEMPORAL_DIR / "bands.json"
+APPERCEPTION_DIR = Path("/dev/shm/hapax-apperception")
+APPERCEPTION_FILE = APPERCEPTION_DIR / "self-band.json"
+APPERCEPTION_CACHE_DIR = Path.home() / ".cache" / "hapax-apperception"
+APPERCEPTION_CACHE_FILE = APPERCEPTION_CACHE_DIR / "self-model.json"
 
 # ── Stimmung data source paths ─────────────────────────────────────────────
 
@@ -513,6 +518,11 @@ class VisualLayerAggregator:
         self._correction_seeker = CorrectionSeeker()
         self._ws3_initialized = False
 
+        # Self-band: apperception cascade
+        self._apperception_cascade = self._load_apperception_cascade()
+        self._prev_stimmung_stance: str = "nominal"
+        self._last_apperception_save: float = 0.0
+
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
         try:
@@ -806,6 +816,154 @@ class VisualLayerAggregator:
             tmp.rename(TEMPORAL_FILE)
         except Exception:
             log.debug("Failed to write temporal bands", exc_info=True)
+
+    # ── Self-band: Apperception ────────────────────────────────────────────
+
+    def _load_apperception_cascade(self) -> ApperceptionCascade:
+        """Load self-model from cache or create fresh. Called once at init."""
+        model = SelfModel()
+        try:
+            if APPERCEPTION_CACHE_FILE.exists():
+                data = json.loads(APPERCEPTION_CACHE_FILE.read_text(encoding="utf-8"))
+                model = SelfModel.from_dict(data)
+                log.info("Loaded self-model from cache (%d dimensions)", len(model.dimensions))
+        except Exception:
+            log.debug("Failed to load self-model cache, starting fresh", exc_info=True)
+        return ApperceptionCascade(self_model=model)
+
+    def _tick_apperception(self) -> None:
+        """Collect events from subsystems and feed them to the apperception cascade.
+
+        Called every state tick. Events are sourced from:
+        1. Temporal bands — surprise > 0.3 → PREDICTION_ERROR
+        2. Correction intake — operator corrections → CORRECTION
+        3. Pattern consolidation — protention confirms/contradicts → PATTERN_SHIFT
+        4. Stimmung transitions — stance changes → STIMMUNG_EVENT
+        5. Perception staleness > 30s → ABSENCE
+        """
+        stance = self._stimmung.overall_stance.value if self._stimmung else "nominal"
+        events: list[CascadeEvent] = []
+
+        # 1. Surprise from temporal bands
+        try:
+            if TEMPORAL_FILE.exists():
+                raw = json.loads(TEMPORAL_FILE.read_text(encoding="utf-8"))
+                surprise = raw.get("max_surprise", 0.0)
+                if surprise > 0.3:
+                    events.append(
+                        CascadeEvent(
+                            source="prediction_error",
+                            text=f"temporal surprise {surprise:.2f}",
+                            magnitude=min(surprise, 1.0),
+                        )
+                    )
+        except Exception:
+            pass
+
+        # 2. Correction intake — check if a new correction was recently filed
+        try:
+            correction_path = Path("/dev/shm/hapax-compositor/activity-correction.json")
+            if correction_path.exists():
+                corr = json.loads(correction_path.read_text(encoding="utf-8"))
+                elapsed = time.time() - corr.get("timestamp", 0)
+                if elapsed < 10:  # only fresh corrections (last 10s)
+                    events.append(
+                        CascadeEvent(
+                            source="correction",
+                            text=f"operator corrected: {corr.get('label', 'unknown')}",
+                            magnitude=0.7,
+                        )
+                    )
+        except Exception:
+            pass
+
+        # 3. Pattern shift — protention engine confirmations/contradictions
+        try:
+            predictions = self._protention.last_predictions()
+            for pred in predictions:
+                if hasattr(pred, "outcome") and pred.outcome is not None:
+                    events.append(
+                        CascadeEvent(
+                            source="pattern_shift",
+                            text=f"predicted {pred.state}, outcome: {pred.outcome}",
+                            magnitude=getattr(pred, "confidence", 0.5),
+                            metadata={"confirmed": pred.outcome == pred.state},
+                        )
+                    )
+        except Exception:
+            pass
+
+        # 4. Stimmung transition
+        current_stance = stance
+        if current_stance != self._prev_stimmung_stance:
+            improving = ["nominal", "cautious", "degraded", "critical"].index(current_stance) < [
+                "nominal",
+                "cautious",
+                "degraded",
+                "critical",
+            ].index(self._prev_stimmung_stance)
+            events.append(
+                CascadeEvent(
+                    source="stimmung_event",
+                    text=f"stance: {self._prev_stimmung_stance} → {current_stance}",
+                    magnitude=0.5,
+                    metadata={"direction": "improving" if improving else "degrading"},
+                )
+            )
+            self._prev_stimmung_stance = current_stance
+
+        # 5. Perception staleness (absence)
+        now = time.monotonic()
+        perception_age = now - self._ts_perception if self._ts_perception else 60.0
+        if perception_age > 30.0:
+            events.append(
+                CascadeEvent(
+                    source="absence",
+                    text=f"perception stale ({perception_age:.0f}s)",
+                    magnitude=min(perception_age / 120.0, 1.0),
+                )
+            )
+
+        # Feed all events to cascade
+        pending_actions: list[str] = []
+        for event in events:
+            result = self._apperception_cascade.process(event, stimmung_stance=stance)
+            if result and result.action:
+                pending_actions.append(result.action)
+
+        # Write self-band to shm
+        self._write_apperception(pending_actions)
+
+        # Persist model to cache every 5 min
+        if now - self._last_apperception_save >= 300.0:
+            self._save_apperception_model()
+            self._last_apperception_save = now
+
+    def _write_apperception(self, pending_actions: list[str]) -> None:
+        """Write self-band state to /dev/shm for prompt injection."""
+        try:
+            payload = {
+                "self_model": self._apperception_cascade.model.to_dict(),
+                "pending_actions": pending_actions,
+                "timestamp": time.time(),
+            }
+            APPERCEPTION_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = APPERCEPTION_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.rename(APPERCEPTION_FILE)
+        except OSError:
+            log.debug("Failed to write apperception state", exc_info=True)
+
+    def _save_apperception_model(self) -> None:
+        """Persist self-model to ~/.cache for restart survival."""
+        try:
+            APPERCEPTION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            data = self._apperception_cascade.model.to_dict()
+            tmp = APPERCEPTION_CACHE_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            tmp.rename(APPERCEPTION_CACHE_FILE)
+        except OSError:
+            log.debug("Failed to persist self-model", exc_info=True)
 
     def _compute_staleness(self) -> SignalStaleness:
         """Compute per-source staleness from last-update timestamps."""
@@ -1273,6 +1431,12 @@ class VisualLayerAggregator:
                 state.voice_session.state if state.voice_session.active else "off",
             )
 
+            # Self-band: apperception cascade
+            try:
+                self._tick_apperception()
+            except Exception:
+                log.debug("Apperception tick failed", exc_info=True)
+
             # Phase 5: adaptive cadence
             tick_interval = self._adaptive_tick_interval(state)
             await asyncio.sleep(tick_interval)
@@ -1337,6 +1501,8 @@ class VisualLayerAggregator:
                     log.debug("Failed to flush episode on shutdown", exc_info=True)
         # WS1: save protention state
         self._protention.save()
+        # Self-band: persist self-model on shutdown
+        self._save_apperception_model()
         await self._client.aclose()
 
 
