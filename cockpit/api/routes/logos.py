@@ -65,7 +65,9 @@ class UiDirective(BaseModel):
     visual_ping_energy: float | None = None
 
     # Browser (agent-controlled web access)
-    browser_navigate: str | None = Field(None, description="URL to navigate the headless browser to")
+    browser_navigate: str | None = Field(
+        None, description="URL to navigate the headless browser to"
+    )
     browser_eval: str | None = Field(None, description="JavaScript expression to evaluate")
     browser_screenshot: bool = False
     browser_extract_a11y: bool = False
