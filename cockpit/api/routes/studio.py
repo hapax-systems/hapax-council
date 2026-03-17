@@ -273,7 +273,6 @@ async def get_consent_status():
 @router.post("/studio/visual-layer/toggle")
 async def toggle_visual_layer():
     """Toggle the visual layer overlay on/off in the compositor."""
-    import json
 
     toggle_path = Path("/dev/shm/hapax-compositor/visual-layer-enabled.txt")
     try:
