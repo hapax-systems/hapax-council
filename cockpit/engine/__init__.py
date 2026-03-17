@@ -150,6 +150,11 @@ class ReactiveEngine:
         self._counter_save_interval = 50  # save every N events
         self._events_since_save = 0
 
+        # WS4: time-windowed frequency tracker (distribution shift detection)
+        from shared.frequency_window import FrequencyWindow
+
+        self._frequency_window = FrequencyWindow(window_s=3600.0)  # 1 hour window
+
     @property
     def registry(self) -> RuleRegistry:
         """Expose rule registry for external registration."""
@@ -169,6 +174,8 @@ class ReactiveEngine:
             "errors": self._error_count,
             "unique_patterns": len(self._pattern_counters),
             "novelty_score": self.novelty_score,
+            "shift_score": self.shift_score,
+            "window_events": self._frequency_window.total_in_window,
         }
 
     @property
@@ -192,6 +199,16 @@ class ReactiveEngine:
             if count <= 2:
                 novel += 1
         return round(novel / len(recent), 2)
+
+    @property
+    def shift_score(self) -> float:
+        """Distribution shift between recent (1h) and historical event patterns.
+
+        0.0 = recent patterns match long-term baseline.
+        1.0 = recent patterns are maximally different from baseline.
+        High values signal regime change (new activity, new data sources, etc.).
+        """
+        return self._frequency_window.shift_score(self._pattern_counters)
 
     @property
     def history(self) -> list[_HistoryEntry]:
@@ -337,10 +354,11 @@ class ReactiveEngine:
             )
         )
 
-        # WS2: track event pattern for novelty detection
+        # WS2/WS4: track event pattern for novelty + distribution shift detection
         pattern_key = _event_pattern_key(event.event_type, event.doc_type, matched_rules)
         prev_count = self._pattern_counters.get(pattern_key, 0)
         self._pattern_counters[pattern_key] = prev_count + 1
+        self._frequency_window.record(pattern_key)
 
         # Flag novel patterns (first or second occurrence)
         if prev_count == 0:
@@ -353,6 +371,22 @@ class ReactiveEngine:
             )
         elif prev_count == 1:
             _log.info("Rare event pattern (second occurrence): %s", pattern_key)
+
+        # WS4: check for distribution shift (every 10 events)
+        if self._events_processed % 10 == 0:
+            shift = self.shift_score
+            if shift > 0.5:
+                _log.warning(
+                    "Distribution shift detected (score=%.3f, window=%d events)",
+                    shift,
+                    self._frequency_window.total_in_window,
+                )
+                hapax_event(
+                    "prediction",
+                    "distribution_shift",
+                    metadata={"shift_score": shift},
+                    level="WARNING",
+                )
 
         # Periodic save
         self._events_since_save += 1
