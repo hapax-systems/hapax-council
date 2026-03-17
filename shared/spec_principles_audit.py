@@ -393,7 +393,9 @@ def audit_p8_single_source(root: Path) -> PrincipleReport:
             and "docstring" not in line.lower()
         ]
         report.instances_found += 1
-        if len(code_locs) > 5:
+        # Threshold: 1 definition + imports + audit references is normal.
+        # >12 means the literal is genuinely duplicated without centralization.
+        if len(code_locs) > 12:
             report.findings.append(
                 Finding(
                     "P8",

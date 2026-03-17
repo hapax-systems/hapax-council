@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -93,7 +92,7 @@ SLOW_INTERVAL_S = SLOW_POLL_S
 
 # ── API ──────────────────────────────────────────────────────────────────────
 
-COCKPIT_BASE = os.environ.get("COCKPIT_BASE_URL", "http://127.0.0.1:8051/api")
+from shared.config import COCKPIT_API_URL as COCKPIT_BASE
 
 # ── Camera roles available for injection ─────────────────────────────────────
 

@@ -216,10 +216,9 @@ def nudges_uri() -> str:
 # ── LLM-Enriched Notifications ──────────────────────────────────────────────
 
 # LiteLLM configuration for enrichment calls
-_LITELLM_BASE: str = os.environ.get(
-    "LITELLM_API_BASE",
-    os.environ.get("LITELLM_BASE_URL", "http://localhost:4000"),
-).rstrip("/")
+from shared.config import LITELLM_BASE as _LITELLM_BASE_RAW
+
+_LITELLM_BASE: str = _LITELLM_BASE_RAW.rstrip("/")
 _LITELLM_OPENAI_BASE: str = (
     _LITELLM_BASE if _LITELLM_BASE.endswith("/v1") else f"{_LITELLM_BASE}/v1"
 )
