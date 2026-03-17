@@ -203,7 +203,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         """
         try:
             qdrant = get_qdrant()
-            query_vec = embed(query)
+            query_vec = embed(query, prefix="search_query")
             results = qdrant.query_points("documents", query=query_vec, limit=5)
             if not results.points:
                 return "No relevant documents found."

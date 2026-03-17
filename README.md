@@ -7,10 +7,12 @@ Constitutional governance for personal AI systems. LLM agents handle cognitive w
 ## Key properties
 
 - **Consent as information flow control** — ConsentLabel implements the Decentralized Label Model (Myers & Liskov 2000) as a join-semilattice with bottom. LIO-style floating labels (Stefan et al. 2011) prevent consent laundering through transformation chains.
-- **Constitutional governance with legal interpretation** — Five axioms produce ~90 implications via four interpretive canons from statutory law (textualist, purposivist, absurdity doctrine, omitted-case). Enforcement at four tiers: T0 blocked, T1 flagged, T2 advisory, T3 lint.
+- **Constitutional governance with legal interpretation** — Five axioms produce 90 implications via four interpretive canons from statutory law (textualist, purposivist, absurdity doctrine, omitted-case). Enforcement at four tiers: T0 blocked, T1 flagged, T2 advisory, T3 lint.
 - **Perception type system** — Behavior/Event duality from FRP (Elliott 2009), watermarks from stream processing (Flink), suppression envelopes from DSP. 10-layer composition ladder, each layer proven via 7-dimension test matrix.
+- **Temporal intelligence** — Husserlian retention/impression/protention model gives agents temporal thickness. Protention engine learns activity transition probabilities, flow half-lives, and circadian patterns. SystemStimmung self-regulation modulates system behavior across 6 dimensions (NOMINAL→CRITICAL).
 - **Alignment tax inversion** — Governance overhead ~20% vs. 30-40% literature baseline. LLMs as both governed and governance reduces alignment cost.
-- **4594 tests**, all mocked, no infrastructure needed. 18+ algebraic properties proven via Hypothesis.
+- **First-principles audit** — 8 operational principles (service dependencies, embedding contracts, cadence hierarchy, data contracts, atomic I/O, phase ordering, idempotent init, single source of truth) with automated discovery and conformity checking.
+- **5742 tests**, all mocked, no infrastructure needed. 18+ algebraic properties proven via Hypothesis.
 
 ## Quick start
 
@@ -82,6 +84,8 @@ Dashboard:     React SPA (council-web/)
 Knowledge:     Qdrant (768d nomic-embed-text-v2-moe, 4 collections)
 Inference:     LiteLLM proxy → Anthropic Claude / Google Gemini / Ollama (local RTX 3090)
 Voice:         Always-on daemon (wake word, speaker ID, ambient perception, Gemini Live)
+Perception:    Temporal bands, protention engine, SystemStimmung, content scheduler
+Studio:        GPU-accelerated camera compositor, visual effects, visual layer system
 IDE:           VS Code extension + Claude Code skills and hooks
 ```
 
@@ -91,11 +95,11 @@ Agents coordinate by reading and writing markdown files with YAML frontmatter, n
 
 ### Reactive engine
 
-inotify watches the data directory. Change events are enriched with metadata (document type from frontmatter, file category from path). Rules — pure functions mapping events to actions — evaluate against each event. Actions execute in phases: deterministic work first (unlimited concurrency), then LLM work (semaphore-bounded at 2 concurrent).
+inotify watches the data directory. Change events are enriched with metadata (document type from frontmatter, file category from path). Rules — pure functions mapping events to actions — evaluate against each event. Actions execute in phases: deterministic work first (unlimited concurrency), then LLM work (semaphore-bounded at 2 concurrent). Engine tracks persistent counters and detects novelty (first-seen event types trigger additional processing).
 
 ### Constitutional governance
 
-Five axioms with weighted severity, refined into ~90 implications via four interpretive canons from statutory law. Enforced at four tiers (T0 blocked → T3 advisory). Novel cases produce precedents stored in Qdrant with authority hierarchy (operator 1.0 > agent 0.7 > derived 0.5). See [`axioms/README.md`](axioms/README.md).
+Five axioms with weighted severity, refined into 90 implications via four interpretive canons from statutory law. Enforced at four tiers (T0 blocked → T3 advisory). Novel cases produce precedents stored in Qdrant with authority hierarchy (operator 1.0 > agent 0.7 > derived 0.5). See [`axioms/README.md`](axioms/README.md).
 
 ### Consent framework
 
@@ -105,15 +109,37 @@ ConsentLabel (DLM join-semilattice) → Labeled[T] (LIO functor wrapper) → Gov
 
 10-layer composition ladder fusing signals from sub-millisecond (MIDI clock) to 15-second (LLM workspace analysis) cadences. FRP Behavior/Event duality with stream-processing watermarks and DSP suppression envelopes. See [`agents/hapax_voice/README.md`](agents/hapax_voice/README.md).
 
+### Temporal intelligence and self-regulation
+
+The perception stack extends beyond raw signal fusion into temporal awareness and self-regulation:
+
+- **Temporal bands** — Husserlian retention/impression/protention model gives agents temporal thickness rather than flat snapshots. Retention summarizes fading past, impression captures vivid present, protention anticipates near-future based on learned transition probabilities.
+- **Protention engine** — Statistical transition probability model learning activity Markov chains, flow state half-lives, and circadian baselines from perception history. Pure statistics, no LLM calls.
+- **SystemStimmung** — Unified self-state vector across 6 dimensions (each with value/trend/freshness). Stance levels (NOMINAL → CAUTIOUS → DEGRADED → CRITICAL) modulate reactive engine processing and inject system self-awareness into agent prompts.
+- **Content scheduler** — Weighted softmax sampler replacing random heuristics with intelligent ambient content selection based on activity state, flow, biometrics, and time of day.
+- **Circulatory system telemetry** — Langfuse traces wired as a live system map, tracking signal flow through the perception pipeline.
+
+### Studio compositor and visual layer
+
+GPU-accelerated camera tiling with GStreamer, custom Rust GstGLFilter plugins for temporal feedback effects, and a visual layer system that overlays perception state onto camera feeds. Beat-reactive GPU effects via audio energy RMS. Ambient shaders, multi-tap trail systems, and composite visual presets for live streaming.
+
+### First-principles spec audit
+
+8 operational principles defined in `specs/principles.yaml` with automated discovery and conformity checking. Principles cover service dependency graphs, embedding contracts, cadence hierarchy, data contracts, atomic state I/O, phase-ordered execution, idempotent initialization, and single source of truth. The spec registry (`specs/registry.yaml`) extends coverage to the full operational surface.
+
 ### Agents
 
 | Category | Agents | LLM | Purpose |
 |----------|--------|-----|---------|
 | Management | `management_prep`, `briefing`, `profiler`, `meeting_lifecycle` | Yes | 1:1 context, morning briefings, operator modeling |
-| Sync/RAG | `gdrive_sync`, `gcalendar_sync`, `gmail_sync`, `youtube_sync`, `chrome_sync`, `claude_code_sync`, `obsidian_sync` | No | Seven cron agents keep the knowledge base current |
-| Analysis | `digest`, `scout`, `drift_detector`, `research`, `code_review`, `deliberation_eval` | Yes | Content digestion, fitness scanning, documentation drift |
-| System | `health_monitor`, `introspect`, `knowledge_maint` | No | Health monitoring (deterministic, 15min cadence) |
+| Sync/RAG | `gdrive_sync`, `gcalendar_sync`, `gmail_sync`, `youtube_sync`, `chrome_sync`, `claude_code_sync`, `obsidian_sync`, `weather_sync`, `git_sync`, `langfuse_sync` | No | Ten cron agents keep the knowledge base current |
+| Analysis | `digest`, `scout`, `drift_detector`, `research`, `code_review`, `deliberation_eval`, `contradiction_detector` | Yes | Content digestion, fitness scanning, documentation drift, cross-domain contradiction alerts |
+| System | `health_monitor`, `introspect`, `knowledge_maint`, `context_restore`, `sdlc_metrics` | No | Health monitoring (deterministic, 15min cadence), cognitive state recovery after interruption |
 | Voice | `hapax_voice`, `audio_processor` | Mixed | Always-on daemon, audio processing |
+| Perception | `temporal_bands`, `temporal_scales`, `protention_engine`, `predictive_cache`, `content_scheduler`, `visual_layer_aggregator`, `visual_layer_state` | No | Temporal intelligence, predictive pre-computation, ambient content scheduling |
+| Studio | `studio_compositor`, `studio_effects`, `studio_stutter`, `video_capture`, `video_processor`, `av_correlator` | No | GPU-accelerated camera tiling, visual effects, beat-reactive processing |
+| Governance | `consent_audit`, `alignment_tax_meter`, `retroactive_label`, `storage_arbiter`, `activity_analyzer` | Mixed | Consent audit trail, governance overhead measurement, value arbitration |
+| Biometrics | `watch_receiver`, `health_connect_parser` | No | Wear OS sensor data ingestion, Health Connect parsing |
 
 ### Background
 
@@ -123,17 +149,18 @@ This system exists because conventional productivity tools assume the executive 
 
 ```
 hapax-council/
-├── agents/           26+ agents + 4 agent packages (hapax_voice, demo_pipeline, dev_story, system_ops)
+├── agents/           45+ agents + 4 agent packages (hapax_voice, demo_pipeline, dev_story, system_ops)
 │   └── manifests/    YAML agent manifests (4-layer schema, RACI, axiom bindings)
-├── shared/           68+ shared modules (consent algebra, axiom enforcement, config)
-├── cockpit/          FastAPI API + data collectors + reactive engine
-├── council-web/      React SPA dashboard (health, agents, nudges, chat, demos)
+├── shared/           76+ shared modules (consent algebra, axiom enforcement, stimmung, config)
+├── cockpit/          FastAPI API (15 route modules) + reactive engine (9 rules)
+├── council-web/      React SPA dashboard (health, agents, nudges, chat, demos, studio, insight)
 ├── vscode/           VS Code extension (chat, RAG, management commands)
-├── axioms/           Governance axioms (registry + implications + precedents + contracts)
-├── tests/            4594 tests (all mocked, no infrastructure needed)
-├── docs/             Theory specs, research, exposition, design documents
+├── axioms/           Governance axioms (registry + 90 implications + precedents + contracts)
+├── specs/            Operational principles (8) + spec registry (full surface coverage)
+├── tests/            5742 tests (all mocked, no infrastructure needed)
+├── docs/             Theory specs, 18 research documents, exposition, design documents
 │   └── superpowers/  Formal specifications, prior art survey, publication strategy
-├── skills/           15 Claude Code skills (slash commands)
+├── skills/           17 Claude Code skills (slash commands)
 ├── hooks/            Claude Code hooks (axiom scanning, session context)
 ├── scripts/          SDLC pipeline scripts (triage, plan, review, axiom gate)
 ├── systemd/          Timer and service unit files
@@ -143,8 +170,10 @@ hapax-council/
 ## Ecosystem
 
 - **[hapax-constitution](https://github.com/ryanklee/hapax-constitution)** — The pattern specification. Governance architecture: axioms, implications, interpretive canons, precedent store, filesystem-as-bus.
-- **hapax-council** (this repo) — Reference implementation. 26+ agents, voice daemon, RAG pipeline, reactive cockpit.
+- **hapax-council** (this repo) — Reference implementation. 45+ agents, voice daemon, perception intelligence, studio compositor, RAG pipeline, reactive cockpit.
 - **[hapax-officium](https://github.com/ryanklee/hapax-officium)** — Management-domain extraction. Designed to be forked.
+- **[hapax-watch](https://github.com/ryanklee/hapax-watch)** — Wear OS companion. Streams biometric sensor data to the council cockpit.
+- **[cockpit-mcp](https://github.com/ryanklee/cockpit-mcp)** — MCP server bridging cockpit APIs to Claude Code (34 tools).
 
 ## Citation
 

@@ -20,6 +20,13 @@ import json as _json
 import logging
 import os
 import subprocess
+
+
+def _run_subprocess(*args, **kwargs):
+    """Wrapper for subprocess.run, patchable without global side effects."""
+    return subprocess.run(*args, **kwargs)  # noqa: S603
+
+
 import time
 from pathlib import Path
 from urllib.error import URLError
@@ -209,10 +216,9 @@ def nudges_uri() -> str:
 # ── LLM-Enriched Notifications ──────────────────────────────────────────────
 
 # LiteLLM configuration for enrichment calls
-_LITELLM_BASE: str = os.environ.get(
-    "LITELLM_API_BASE",
-    os.environ.get("LITELLM_BASE_URL", "http://localhost:4000"),
-).rstrip("/")
+from shared.config import LITELLM_BASE as _LITELLM_BASE_RAW
+
+_LITELLM_BASE: str = _LITELLM_BASE_RAW.rstrip("/")
 _LITELLM_OPENAI_BASE: str = (
     _LITELLM_BASE if _LITELLM_BASE.endswith("/v1") else f"{_LITELLM_BASE}/v1"
 )
@@ -344,7 +350,7 @@ def _send_desktop(title: str, message: str, *, priority: str = "default") -> boo
         message,
     ]
     try:
-        result = subprocess.run(cmd, timeout=5, capture_output=True)
+        result = _run_subprocess(cmd, timeout=5, capture_output=True)
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False

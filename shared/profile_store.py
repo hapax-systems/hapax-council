@@ -28,7 +28,7 @@ log = logging.getLogger("shared.profile_store")
 _rag_tracer = trace.get_tracer("hapax.rag")
 
 COLLECTION = "profile-facts"
-VECTOR_DIM = 768
+from shared.config import EXPECTED_EMBED_DIMENSIONS as VECTOR_DIM
 
 
 class ProfileStore:
