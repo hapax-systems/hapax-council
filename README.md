@@ -137,7 +137,7 @@ GPU-accelerated camera tiling with GStreamer, custom Rust GstGLFilter plugins fo
 | System | `health_monitor`, `introspect`, `knowledge_maint`, `context_restore`, `sdlc_metrics` | No | Health monitoring (deterministic, 15min cadence), cognitive state recovery after interruption |
 | Voice | `hapax_voice`, `audio_processor` | Mixed | Always-on daemon, audio processing |
 | Perception | `temporal_bands`, `temporal_scales`, `protention_engine`, `predictive_cache`, `content_scheduler`, `visual_layer_aggregator`, `visual_layer_state` | No | Temporal intelligence, predictive pre-computation, ambient content scheduling |
-| Studio | `studio_compositor`, `studio_effects`, `studio_stutter`, `video_capture`, `video_processor`, `av_correlator` | No | GPU-accelerated camera tiling, visual effects, beat-reactive processing |
+| Studio | `studio_compositor`, `studio_effects`, `studio_stutter`, `studio_person_detector`, `video_capture`, `video_processor`, `av_correlator` | No | GPU-accelerated camera tiling, visual effects, person detection, beat-reactive processing |
 | Governance | `consent_audit`, `alignment_tax_meter`, `retroactive_label`, `storage_arbiter`, `activity_analyzer` | Mixed | Consent audit trail, governance overhead measurement, value arbitration |
 | Biometrics | `watch_receiver`, `health_connect_parser` | No | Wear OS sensor data ingestion, Health Connect parsing |
 
