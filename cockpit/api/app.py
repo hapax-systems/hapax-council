@@ -97,6 +97,7 @@ from cockpit.api.routes.nudges import router as nudges_router
 from cockpit.api.routes.profile import router as profile_router
 from cockpit.api.routes.query import router as query_router
 from cockpit.api.routes.scout import router as scout_router
+from cockpit.api.routes.logos import router as logos_router
 from cockpit.api.routes.studio import router as studio_router
 
 app.include_router(data_router)
@@ -114,6 +115,7 @@ app.include_router(engine_router)
 app.include_router(consent_router)
 app.include_router(governance_router)
 app.include_router(studio_router)
+app.include_router(logos_router)
 
 # Mount HLS segment directory for live stream serving
 from pathlib import Path as _Path
