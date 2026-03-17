@@ -67,6 +67,8 @@ fn main() {
         .setup(|app| {
             // Spawn the wgpu visual surface on a dedicated thread
             visual::bridge::spawn_visual_surface(app.handle().clone());
+            // Spawn the directive watcher (reads agent directives from shm)
+            commands::directive_watcher::spawn_directive_watcher(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

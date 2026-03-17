@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod cost;
+pub mod directive_watcher;
 pub mod governance;
 pub mod health;
 pub mod introspect;
