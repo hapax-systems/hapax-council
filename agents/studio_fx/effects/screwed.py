@@ -80,9 +80,6 @@ class ScrewedEffect(BaseEffect):
         # Purple intensity: deeper flow = deeper purple
         purple_strength = 0.3 + p.flow_score * 0.4
 
-        # Freeze chance: low interruptibility = more chops
-        freeze_chance = 0.04 + (1.0 - p.interruptibility) * 0.12
-
         # No stutter/freeze — pure syrupy temporal smear only
 
         # --- Heavy temporal accumulation (syrupy trails) ---

@@ -87,8 +87,6 @@ interface CameraCellProps {
   onDrop: (idx: number) => void;
   onDragEnd: () => void;
   onFocus: (role: string) => void;
-  preset?: import("./compositePresets").CompositePreset;
-  smoothSourceId?: string;
   detectionsEnabled?: boolean;
 }
 
@@ -103,8 +101,6 @@ function CameraCell({
   onDrop,
   onDragEnd,
   onFocus,
-  preset: _preset,
-  smoothSourceId: _smoothSourceId,
   detectionsEnabled = true,
 }: CameraCellProps) {
   const imgRef = useRef<HTMLImageElement>(null);

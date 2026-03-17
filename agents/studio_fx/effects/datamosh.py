@@ -84,6 +84,8 @@ class DatamoshEffect(BaseEffect):
         flow = self._gpu.optical_flow_farneback(self._prev_gray, gray)
 
         # Accumulate flow aggressively
+        if self._accum_flow is None:
+            self._accum_flow = np.zeros((h, w, 2), dtype=np.float32)
         self._accum_flow += flow * intensity
 
         # --- Remap reference through accumulated flow ---
@@ -93,6 +95,7 @@ class DatamoshEffect(BaseEffect):
         # Red channel gets slightly more displacement, blue slightly less
         offsets = [0.85, 1.0, 1.15]  # B, G, R multipliers
         channels = []
+        assert self._ref_frame is not None  # guaranteed by needs_reset check above
         for c in range(3):
             mx = map_x + self._accum_flow[:, :, 0] * offsets[c]
             my = map_y + self._accum_flow[:, :, 1] * offsets[c]
