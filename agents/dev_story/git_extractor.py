@@ -42,6 +42,7 @@ def extract_commits(
     repo_path: str,
     since: str | None = None,
     after_hash: str | None = None,
+    all_refs: bool = False,
 ) -> tuple[list[Commit], list[CommitFile]]:
     """Extract commits and per-file stats from a git repository.
 
@@ -65,6 +66,8 @@ def extract_commits(
     ]
     if since:
         cmd.append(f"--since={since}")
+    if all_refs:
+        cmd.append("--all")
     if after_hash:
         cmd.append(f"{after_hash}..HEAD")
 
@@ -192,7 +195,7 @@ def extract_commits_from_bundle(
             log.warning("Failed to clone bundle %s: %s", bundle_path, result.stderr[:200])
             return [], []
 
-        commits, commit_files = extract_commits(clone_path, since=since)
+        commits, commit_files = extract_commits(clone_path, since=since, all_refs=True)
 
         # Tag all results with source_repo
         for commit in commits:

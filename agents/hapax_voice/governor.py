@@ -148,7 +148,7 @@ class PipelineGovernor:
         # Wake word always overrides — immediate process + grace period
         if self.wake_word_active:
             self.wake_word_active = False
-            self._wake_word_grace_remaining = 8  # 8 ticks × ~2.5s = ~20s protection
+            self._wake_word_grace_remaining = 3  # 3 ticks × ~2.5s = ~7.5s protection
             self._conversation_first_seen = None
             self._paused_by_conversation = False
             self._conversation_cleared_at = None

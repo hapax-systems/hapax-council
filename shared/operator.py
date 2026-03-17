@@ -151,6 +151,40 @@ def get_neurocognitive_profile() -> dict[str, list[str]]:
     return data.get("neurocognitive", {})
 
 
+def _read_stimmung_block() -> str:
+    """Read current system Stimmung from /dev/shm and format for prompt injection.
+
+    Returns empty string if stimmung file is missing, stale (>5min), or nominal.
+    Only injects when system is non-nominal — zero token cost in the common case.
+    """
+    from pathlib import Path
+
+    stimmung_path = Path("/dev/shm/hapax-stimmung/state.json")
+    try:
+        import time
+
+        raw = json.loads(stimmung_path.read_text(encoding="utf-8"))
+        # Skip if stale (>300s)
+        ts = raw.get("timestamp", 0)
+        if ts > 0 and (time.monotonic() - ts) > 300:
+            return ""
+        stance = raw.get("overall_stance", "nominal")
+        if stance == "nominal":
+            return ""
+
+        # Non-nominal: inject compact self-state block
+        from shared.stimmung import SystemStimmung
+
+        stimmung = SystemStimmung.model_validate(raw)
+        return (
+            "System self-state (adjust behavior accordingly — "
+            "conserve resources when degraded/critical, "
+            "reduce LLM calls when cost pressure is high):\n" + stimmung.format_for_prompt()
+        )
+    except Exception:
+        return ""
+
+
 def get_system_prompt_fragment(agent_name: str) -> str:
     """Build a system prompt fragment for a specific agent.
 
@@ -272,6 +306,12 @@ def get_system_prompt_fragment(agent_name: str) -> str:
     if domain_knowledge:
         lines.append("Domain context:")
         lines.append(domain_knowledge)
+        lines.append("")
+
+    # System self-state (Stimmung) — live interoceptive context
+    stimmung_block = _read_stimmung_block()
+    if stimmung_block:
+        lines.append(stimmung_block)
         lines.append("")
 
     return "\n".join(lines)
