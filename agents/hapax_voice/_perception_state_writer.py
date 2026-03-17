@@ -129,25 +129,16 @@ def _compute_aggregate_confidence(perception: PerceptionEngine) -> float:
     lower when backends are missing or stale. Uses getattr for
     backward compat with perception engines that lack the method.
     """
-    backends = getattr(perception, "registered_backends", None)
-    if not backends or not callable(getattr(backends, "__len__", None)):
-        # Fallback: if backends is a property returning dict
-        try:
-            backend_dict = backends if isinstance(backends, dict) else {}
-        except Exception:
-            return 1.0
-    else:
-        backend_dict = backends
-
-    if not backend_dict:
-        return 0.5  # no backends registered = reduced confidence
-
-    available_count = 0
-    for backend in backend_dict.values():
-        if getattr(backend, "available", lambda: True)():
-            available_count += 1
-
-    return round(available_count / len(backend_dict), 3)
+    try:
+        backends = perception.registered_backends
+        if not isinstance(backends, dict) or not backends:
+            return 0.5  # no backends or not a dict
+        available_count = sum(
+            1 for b in backends.values() if getattr(b, "available", lambda: True)()
+        )
+        return round(available_count / len(backends), 3)
+    except Exception:
+        return 1.0
 
 
 # ── Main writer ───────────────────────────────────────────────────────────

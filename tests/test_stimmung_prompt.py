@@ -61,9 +61,11 @@ class TestStimmungPromptInjection:
         """Stimmung older than 5 minutes is not injected."""
         from shared.stimmung import Stance, SystemStimmung
 
+        # Use a positive timestamp that's clearly >300s in the past
+        stale_ts = max(1.0, time.monotonic() - 400)
         stimmung = SystemStimmung(
             overall_stance=Stance.DEGRADED,
-            timestamp=time.monotonic() - 400,  # 6+ minutes old
+            timestamp=stale_ts,
         )
         raw = stimmung.model_dump_json()
         with patch("pathlib.Path.read_text", return_value=raw):
