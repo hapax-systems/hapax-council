@@ -80,6 +80,8 @@ class TestPerceptionProperties:
         presence.latest_vad_confidence = 0.0
         presence.face_detected = False
         presence.face_count = 0
+        presence.guest_count = 0
+        presence.operator_visible = False
         engine = PerceptionEngine(presence=presence, workspace_monitor=MagicMock())
 
         prev_wm = 0.0

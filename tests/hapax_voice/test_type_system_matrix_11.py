@@ -35,6 +35,7 @@ def _make_state(**overrides) -> EnvironmentState:
         speech_detected=False,
         vad_confidence=0.0,
         face_count=1,
+        guest_count=0,
         operator_present=True,
         activity_mode="idle",
         workspace_context="",
@@ -51,6 +52,8 @@ def _make_engine(face_detected: bool = False, face_count: int = 0, vad: float = 
     presence.latest_vad_confidence = vad
     presence.face_detected = face_detected
     presence.face_count = face_count
+    presence.guest_count = max(0, face_count - 1)
+    presence.operator_visible = face_detected
     return PerceptionEngine(presence, MagicMock())
 
 
@@ -202,13 +205,13 @@ class TestConversationDebounceLifecycle:
         assert r1 == "process"
 
         # Perturbation: conversation starts (face_count > 1 AND speech)
-        s2 = _make_state(face_count=2, speech_detected=True)
+        s2 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r2 = gov.evaluate(s2)
         # debounce_s=0 → pauses immediately
         assert r2 == "pause"
 
         # Feedback: conversation continues → still paused
-        s3 = _make_state(face_count=2, speech_detected=True)
+        s3 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r3 = gov.evaluate(s3)
         assert r3 == "pause"
 
@@ -217,9 +220,9 @@ class TestConversationDebounceLifecycle:
         gov = PipelineGovernor(conversation_debounce_s=0.0, environment_clear_resume_s=0.0)
 
         # Drive into conversation pause
-        s1 = _make_state(face_count=2, speech_detected=True)
+        s1 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         gov.evaluate(s1)
-        s2 = _make_state(face_count=2, speech_detected=True)
+        s2 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         gov.evaluate(s2)
         assert gov._paused_by_conversation is True
 
@@ -234,13 +237,13 @@ class TestConversationDebounceLifecycle:
         gov = PipelineGovernor(conversation_debounce_s=0.0)
 
         # Conversation starts and pauses
-        s1 = _make_state(face_count=2, speech_detected=True)
+        s1 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         gov.evaluate(s1)
         assert gov._paused_by_conversation is True
 
         # Perturbation: wake word
         gov.wake_word_active = True
-        s2 = _make_state(face_count=2, speech_detected=True)
+        s2 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r2 = gov.evaluate(s2)
         assert r2 == "process"
         assert gov._paused_by_conversation is False
@@ -248,13 +251,13 @@ class TestConversationDebounceLifecycle:
 
         # Grace period: 3 ticks protected by wake_word_grace
         for _ in range(3):
-            s_grace = _make_state(face_count=2, speech_detected=True)
+            s_grace = _make_state(face_count=2, guest_count=1, speech_detected=True)
             rg = gov.evaluate(s_grace)
             assert rg == "process"
             assert gov.last_selected.selected_by == "wake_word_grace"
 
         # Feedback: grace exhausted, conversation still happening → re-debounces
-        s3 = _make_state(face_count=2, speech_detected=True)
+        s3 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r3 = gov.evaluate(s3)
         # Will start accumulating again, debounce_s=0 so immediate
         assert r3 == "pause"
@@ -269,6 +272,7 @@ class TestConversationDebounceLifecycle:
             has_conv = i % 2 == 1
             s = _make_state(
                 face_count=2 if has_conv else 1,
+                guest_count=1 if has_conv else 0,
                 speech_detected=has_conv,
             )
             results.append(gov.evaluate(s))

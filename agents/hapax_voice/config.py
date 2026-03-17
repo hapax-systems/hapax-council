@@ -117,6 +117,27 @@ class VoiceConfig(BaseModel):
     timelapse_retention_days: int = 7
     timelapse_path: str = "~/.local/share/hapax-voice/timelapse"
 
+    # Input activity (logind IdleHint)
+    input_idle_threshold_s: float = 5.0
+
+    # Bayesian presence engine
+    presence_bayesian_enabled: bool = True
+    presence_prior: float = 0.5
+    presence_enter_threshold: float = 0.7
+    presence_exit_threshold: float = 0.3
+    presence_exit_ticks: int = 24  # 60s at 2.5s tick
+    presence_enter_ticks: int = 2  # 5s
+    presence_signal_weights: dict[str, tuple[float, float]] = {
+        "operator_face": (0.95, 0.05),
+        "keyboard_active": (0.85, 0.05),
+        "vad_speech": (0.70, 0.20),
+        "speaker_is_operator": (0.95, 0.02),
+        "watch_hr": (0.80, 0.30),
+        "watch_connected": (0.70, 0.40),
+        "desktop_active": (0.75, 0.10),
+        "midi_active": (0.90, 0.02),
+    }
+
     # Perception layer
     perception_tier: PerceptionTier = PerceptionTier.FULL
     perception_fast_tick_s: float = 2.5

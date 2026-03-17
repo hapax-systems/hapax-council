@@ -238,6 +238,10 @@ def write_perception_state(
         "persistence_allowed": consent_tracker.persistence_allowed if consent_tracker else True,
         "guest_present": consent_tracker.phase.value != "no_guest" if consent_tracker else False,
         "consent_phase": consent_tracker.phase.value if consent_tracker else "no_guest",
+        # Bayesian presence
+        "presence_state": str(_bval("presence_state", "")),
+        "presence_probability": float(_bval("presence_probability", 0.0) or 0.0),
+        "guest_count": int(_bval("guest_count", 0) or 0),
         # Biometrics (Batch E)
         "heart_rate_bpm": heart_rate,
         "stress_elevated": stress_elevated,

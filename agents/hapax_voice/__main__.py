@@ -577,6 +577,37 @@ class VoiceDaemon:
         except Exception:
             log.info("MidiClockBackend not available, skipping")
 
+        # Input activity backend (keyboard/mouse via logind)
+        try:
+            from agents.hapax_voice.backends.input_activity import InputActivityBackend
+
+            self.perception.register_backend(
+                InputActivityBackend(idle_threshold_s=self.cfg.input_idle_threshold_s)
+            )
+        except Exception:
+            log.info("InputActivityBackend not available, skipping")
+
+        # Bayesian presence engine (fuses all signals into presence probability)
+        if self.cfg.presence_bayesian_enabled:
+            try:
+                from agents.hapax_voice.presence_engine import PresenceEngine
+
+                self._presence_engine = PresenceEngine(
+                    prior=self.cfg.presence_prior,
+                    enter_threshold=self.cfg.presence_enter_threshold,
+                    exit_threshold=self.cfg.presence_exit_threshold,
+                    enter_ticks=self.cfg.presence_enter_ticks,
+                    exit_ticks=self.cfg.presence_exit_ticks,
+                    signal_weights=self.cfg.presence_signal_weights,
+                )
+                self._presence_engine.set_event_log(self.event_log)
+                self.perception.register_backend(self._presence_engine)
+            except Exception:
+                self._presence_engine = None
+                log.info("PresenceEngine not available, skipping")
+        else:
+            self._presence_engine = None
+
     # ------------------------------------------------------------------
     # Wake word engine selection
     # ------------------------------------------------------------------
@@ -1494,6 +1525,7 @@ class VoiceDaemon:
                     self.consent_tracker.tick(
                         face_count=state.face_count,
                         speaker_is_operator=speaker_is_op,
+                        guest_count=state.guest_count,
                         now=state.timestamp,
                     )
 
@@ -1541,10 +1573,10 @@ class VoiceDaemon:
                     }
                     self._conversation_pipeline._consent_phase = _phase_map.get(_cp, "none")
                     self._conversation_pipeline._guest_mode = self.session.is_guest_mode
-                    # face_count disabled for routing — face detector gives false
-                    # positives (screens, reflections) that trigger governance
-                    # override to CAPABLE. Re-enable after face detector is validated.
-                    # self._conversation_pipeline._face_count = state.face_count
+                    # Re-enabled: guest_count is deduplicated non-operator count
+                    # from Bayesian face fusion (no longer double-counts operator
+                    # across cameras or screen faces)
+                    self._conversation_pipeline._face_count = state.guest_count
 
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision

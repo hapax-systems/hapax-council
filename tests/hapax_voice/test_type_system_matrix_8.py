@@ -32,6 +32,7 @@ def _make_state(**overrides) -> EnvironmentState:
         speech_detected=False,
         vad_confidence=0.0,
         face_count=1,
+        guest_count=0,
         operator_present=True,
         activity_mode="idle",
         workspace_context="",
@@ -48,6 +49,8 @@ def _make_engine(face_detected: bool = False, face_count: int = 0, vad: float = 
     presence.latest_vad_confidence = vad
     presence.face_detected = face_detected
     presence.face_count = face_count
+    presence.guest_count = max(0, face_count - 1)
+    presence.operator_visible = face_detected
     return PerceptionEngine(presence, MagicMock())
 
 
@@ -173,6 +176,7 @@ class TestVetoReconfigurationInvariants:
         state = _make_state(
             activity_mode="production",
             face_count=2,
+            guest_count=1,
             speech_detected=True,
         )
         # First eval to set conversation state
@@ -440,7 +444,9 @@ class TestWakeWordReconfigurationInvariants:
         )
 
         # Drive into conversation pause
-        conv_state = _make_state(activity_mode="idle", face_count=2, speech_detected=True)
+        conv_state = _make_state(
+            activity_mode="idle", face_count=2, guest_count=1, speech_detected=True
+        )
         gov.evaluate(conv_state)
         assert gov._paused_by_conversation is True
 
