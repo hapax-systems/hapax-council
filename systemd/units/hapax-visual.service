@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax Visual — wgpu self-visualization engine
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/hapax/projects/hapax-council/hapax-visual/target/release/hapax-visual
+Environment=RUST_LOG=info
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
