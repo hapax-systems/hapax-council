@@ -60,6 +60,7 @@ export const api = {
     post<import("./types").ScoutDecision>(`/scout/${component}/decide`, { decision, notes: notes ?? "" }),
   studio: () => get<import("./types").StudioSnapshot>("/studio"),
   studioStreamInfo: () => get<import("./types").StudioStreamInfo>("/studio/stream/info"),
+  perception: () => get<import("./types").PerceptionState>("/studio/perception"),
   selectEffect: (preset: string) =>
     post<{ status: string; preset: string }>("/studio/effect/select", { preset }),
   compositorLive: () => get<import("./types").LiveCompositorStatus>("/studio/compositor/live"),

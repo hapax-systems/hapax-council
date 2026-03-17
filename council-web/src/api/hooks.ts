@@ -165,3 +165,6 @@ export function useDeleteDemo() {
     },
   });
 }
+
+export const usePerception = () =>
+  useQuery({ queryKey: ["perception"], queryFn: api.perception, refetchInterval: 3_000 });

@@ -55,6 +55,8 @@ export function StudioPage() {
   const pageRef = useRef<HTMLDivElement>(null);
   const [pageFullscreen, setPageFullscreen] = useState(false);
   const [hlsReady, setHlsReady] = useState(false);
+  const [smoothEnabled, setSmoothEnabled] = useState(false);
+  const [detectionsEnabled, setDetectionsEnabled] = useState(true);
   const [hlsError, setHlsError] = useState(false);
   const hlsRef = useRef<Hls | null>(null);
   const { data: streamInfo } = useStudioStreamInfo();
@@ -154,6 +156,19 @@ export function StudioPage() {
     [presetIdx],
   );
 
+  const handleSmoothToggle = useCallback(() => {
+    setSmoothEnabled((prev: boolean) => {
+      const next = !prev;
+      const presetName = PRESETS[presetIdx].name.toLowerCase();
+      api.selectEffect(presetName + (next ? "+smooth" : "-smooth")).catch(() => {});
+      return next;
+    });
+  }, [presetIdx]);
+
+  const handleDetectionsToggle = useCallback(() => {
+    setDetectionsEnabled((prev) => !prev);
+  }, []);
+
   const handleEffectReset = useCallback(() => {
     setEffectOverrides(null);
   }, []);
@@ -233,6 +248,7 @@ export function StudioPage() {
                   cameraOrder={cameraOrder}
                   onReorder={setUserOrder}
                   onFocusCamera={setFocusedCamera}
+                  detectionsEnabled={detectionsEnabled}
                 />
               ) : viewMode === "composite" ? (
                 <div className="relative h-full w-full">
@@ -309,6 +325,10 @@ export function StudioPage() {
         onHeroChange={handleHeroChange}
         onOrderReset={handleOrderReset}
         cameraRoles={cameraOrder}
+        smoothEnabled={smoothEnabled}
+        onSmoothToggle={handleSmoothToggle}
+        detectionsEnabled={detectionsEnabled}
+        onDetectionsToggle={handleDetectionsToggle}
       />
     </div>
   );
