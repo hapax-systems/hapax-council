@@ -8,10 +8,13 @@ import { ToastProvider } from "../shared/ToastProvider";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { HealthToastWatcher } from "./HealthToastWatcher";
 import { AgentRunProvider } from "../../contexts/AgentRunContext";
+import { useHapaxIntrospection } from "../../hooks/useHapaxIntrospection";
+import { HapaxModal } from "./HapaxModal";
 
 export function Layout() {
   const [manualOpen, setManualOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const { modal, dismissModal, status } = useHapaxIntrospection();
 
   useKeyboardShortcuts({
     onManual: () => setManualOpen((prev) => !prev),
@@ -33,7 +36,10 @@ export function Layout() {
     <ToastProvider>
       <AgentRunProvider>
       <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
-        <Header onManualToggle={() => setManualOpen((prev) => !prev)} />
+        <Header
+          onManualToggle={() => setManualOpen((prev) => !prev)}
+          hapaxStatus={status}
+        />
         <ErrorBoundary>
           <div className="flex flex-1 overflow-hidden">
             <Outlet />
@@ -46,6 +52,13 @@ export function Layout() {
           onManualToggle={() => setManualOpen((prev) => !prev)}
         />
         <HealthToastWatcher />
+        <HapaxModal
+          visible={modal.visible}
+          title={modal.title}
+          content={modal.content}
+          dismissable={modal.dismissable}
+          onDismiss={dismissModal}
+        />
       </div>
       </AgentRunProvider>
     </ToastProvider>
