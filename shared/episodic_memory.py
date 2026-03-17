@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 log = logging.getLogger("episodic_memory")
 
 COLLECTION = "operator-episodes"
-VECTOR_DIM = 768
+from shared.config import EXPECTED_EMBED_DIMENSIONS as VECTOR_DIM
 
 # ── Data Models ──────────────────────────────────────────────────────────────
 

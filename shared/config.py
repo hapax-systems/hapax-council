@@ -282,7 +282,7 @@ def validate_embed_dimensions() -> None:
     Call on startup from agents that depend on correct embedding dimensions.
     Raises RuntimeError if dimensions don't match.
     """
-    test = embed("dimension check")
+    test = embed("dimension check", prefix="search_query")
     if len(test) != EXPECTED_EMBED_DIMENSIONS:
         raise RuntimeError(
             f"Embedding model returned {len(test)}d, expected {EXPECTED_EMBED_DIMENSIONS}d. "

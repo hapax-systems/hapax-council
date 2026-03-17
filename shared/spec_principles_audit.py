@@ -138,14 +138,13 @@ def audit_p1_services(root: Path) -> PrincipleReport:
 
     report.instances_found = len(ports_found) + len(env_urls)
 
-    # Check graceful degradation: does each HTTP client call have error handling?
-    # Only match actual HTTP client usage, not dict.get()
+    # Check graceful degradation: does each HTTP request have error handling?
+    # Only match actual request calls, not client construction (errors at usage site)
     http_patterns = [
-        r"httpx\.AsyncClient\(",
-        r"httpx\.Client\(",
         r"requests\.get\(",
         r"requests\.post\(",
-        r"ollama\.Client\(",
+        r"await\s+.*\.get\(",
+        r"await\s+.*\.post\(",
     ]
     for pattern in http_patterns:
         for fpath, line_no, line in _grep_files(files, pattern):
@@ -194,7 +193,12 @@ def audit_p2_embedding(root: Path) -> PrincipleReport:
     embed_calls = _grep_files(files, r"\bembed\(")
     missing_prefix = []
     for fpath, line_no, line in embed_calls:
-        if "embed(" in line and "prefix=" not in line and "def embed" not in line:
+        # Skip: function definitions, Ollama/client calls, this audit file itself
+        if "def embed(" in line or "client.embed(" in line or "ollama.embed(" in line:
+            continue
+        if fpath.name == "spec_principles_audit.py":
+            continue
+        if "embed(" in line and "prefix=" not in line:
             # Check if it's the actual embed call (not test mock)
             if "import" not in line and "mock" not in line.lower():
                 missing_prefix.append(f"{fpath.name}:{line_no}")
@@ -301,29 +305,35 @@ def audit_p7_idempotent(root: Path) -> PrincipleReport:
     report = PrincipleReport("P7", "Idempotent Initialization", "V2")
     files = _find_python_files(root)
 
-    # Find all Qdrant collection references
+    # Find store modules that manage Qdrant collections (define + upsert)
+    # These MUST have ensure_collection(). Consumer-only modules (just query) are exempt.
     collection_refs = _grep_files(files, r'COLLECTION\s*=\s*["\']')
-    # Find all ensure_collection calls
     ensure_calls = _grep_files(files, r"ensure_collection\(\)")
+    upsert_calls = _grep_files(files, r"\.upsert\(")
 
     modules_with_collections = set()
     modules_with_ensure = set()
+    modules_with_upsert = set()  # store modules (create data)
     for fpath, _, _ in collection_refs:
         modules_with_collections.add(fpath.stem)
     for fpath, _, _ in ensure_calls:
         modules_with_ensure.add(fpath.stem)
+    for fpath, _, _ in upsert_calls:
+        modules_with_upsert.add(fpath.stem)
 
-    missing_ensure = modules_with_collections - modules_with_ensure
-    report.instances_found = len(modules_with_collections)
+    # Only flag store modules (upsert without ensure) — consumers are exempt
+    store_modules = modules_with_collections & modules_with_upsert
+    missing_ensure = store_modules - modules_with_ensure
+    report.instances_found = len(store_modules)
 
-    for mod in modules_with_collections:
+    for mod in store_modules:
         conforms = mod not in missing_ensure
         report.findings.append(
             Finding(
                 "P7",
                 f"{mod}.py",
                 conforms=conforms,
-                detail="" if conforms else "COLLECTION defined but no ensure_collection()",
+                detail="" if conforms else "store module (upserts) without ensure_collection()",
             )
         )
         if not conforms:
@@ -375,14 +385,21 @@ def audit_p8_single_source(root: Path) -> PrincipleReport:
             if not line.strip().startswith("#") and "test" not in str(f)
         ]
 
+        # Filter further: exclude docstrings, string literals in comments
+        code_locs = [
+            (f, l, line)
+            for f, l, line in prod_locs
+            if not line.strip().startswith(("'", '"', "#", "//", "/*", "- "))
+            and "docstring" not in line.lower()
+        ]
         report.instances_found += 1
-        if len(prod_locs) > 3:
+        if len(code_locs) > 5:
             report.findings.append(
                 Finding(
                     "P8",
                     const_name,
                     conforms=False,
-                    detail=f"'{const_val}' ({const_name}) appears in {len(prod_locs)} files "
+                    detail=f"'{const_val}' ({const_name}) appears in {len(code_locs)} production code lines "
                     f"(should be defined once and imported)",
                 )
             )

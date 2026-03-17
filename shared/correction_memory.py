@@ -28,7 +28,7 @@ from pydantic import BaseModel
 log = logging.getLogger("correction_memory")
 
 COLLECTION = "operator-corrections"
-VECTOR_DIM = 768
+from shared.config import EXPECTED_EMBED_DIMENSIONS as VECTOR_DIM
 
 # ── Data Models ──────────────────────────────────────────────────────────────
 
