@@ -7,16 +7,20 @@ detected. Runs inline — no extra task, no mic ownership.
 Pre-roll: captures 300ms of audio before speech onset so word
 beginnings aren't clipped.
 
-During SPEAKING state: audio accumulation is suppressed (prevents echo
-transcription), but VAD continues to run. If sustained speech is
-detected while the system is speaking, a barge-in flag is set —
-the pipeline can check this to cut TTS short and process the
-operator's interruption.
+Application-level AEC (echo_canceller.py) reduces echo but the
+Yeti mic still picks up enough TTS bleed-through at close range
+to trigger VAD. The speaking gate in feed_audio() remains as
+primary defense; AEC is supplementary. Barge-in is enabled at a
+high threshold (0.85) requiring clear operator speech over TTS.
+
+Post-TTS cooldown removed — AEC handles the residual echo tail
+that previously required 500ms of dead time.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 
 log = logging.getLogger(__name__)
@@ -28,12 +32,17 @@ PRE_ROLL_FRAMES = 10  # 300ms before speech onset
 SPEECH_START_PROB = 0.5
 SPEECH_START_CONSECUTIVE = 3  # ~90ms
 SPEECH_END_PROB = 0.3
-SPEECH_END_CONSECUTIVE = 20  # ~600ms
+SPEECH_END_CONSECUTIVE = 15  # ~450ms (reduced from 600ms — AEC handles some echo tail)
 
-# Barge-in requires stronger signal — higher threshold, more consecutive frames
-# to avoid false triggers from TTS echo
-BARGE_IN_PROB = 0.7
-BARGE_IN_CONSECUTIVE = 6  # ~180ms of strong speech during TTS
+# Barge-in: AEC reduces echo but Yeti still picks up bleed-through.
+# Higher threshold than ideal — operator must speak clearly over TTS.
+BARGE_IN_PROB = 0.85
+BARGE_IN_CONSECUTIVE = 8
+
+# Short post-TTS cooldown: AEC handles most echo but room reflections
+# from the Yeti at close range still trigger VAD for ~200ms after TTS.
+# Reduced from 500ms (pre-AEC) — AEC cuts the needed cooldown by 60%.
+POST_TTS_COOLDOWN_S = 0.2
 
 
 class ConversationBuffer:
@@ -46,9 +55,9 @@ class ConversationBuffer:
         if utterance is not None:
             transcript = await stt.transcribe(utterance)
 
-    Barge-in: while speaking, VAD still runs. If the operator talks
-    over TTS output, barge_in_detected goes True. The pipeline can
-    poll this to cut playback and switch to listening.
+    Barge-in: while speaking, VAD still runs at a high threshold. If
+    the operator talks over TTS output, barge_in_detected goes True.
+    The pipeline can poll this to cut playback and switch to listening.
     """
 
     def __init__(self, max_duration_s: float = 30.0) -> None:
@@ -61,6 +70,7 @@ class ConversationBuffer:
         self._active = False
         self._speaking = False
         self._pending_utterance: bytes | None = None
+        self._speaking_ended_at: float = 0.0
 
         # Barge-in detection (active during SPEAKING state)
         self._barge_in_speech_count = 0
@@ -69,6 +79,15 @@ class ConversationBuffer:
     @property
     def is_active(self) -> bool:
         return self._active
+
+    @property
+    def in_cooldown(self) -> bool:
+        """True while short post-TTS echo decay cooldown is active."""
+        if self._speaking:
+            return False
+        if self._speaking_ended_at == 0.0:
+            return False
+        return (time.monotonic() - self._speaking_ended_at) < POST_TTS_COOLDOWN_S
 
     def activate(self) -> None:
         self._active = True
@@ -84,8 +103,11 @@ class ConversationBuffer:
             # Reset barge-in state when TTS starts
             self._barge_in_speech_count = 0
             self.barge_in_detected = False
+            self._speaking_ended_at = 0.0
         else:
-            # TTS finished — if audio was captured during barge-in, start
+            # TTS finished — start short cooldown for residual echo
+            self._speaking_ended_at = time.monotonic()
+            # If audio was captured during barge-in, start
             # accumulating from the pre-roll so the utterance isn't lost
             if self.barge_in_detected and not self._speech_active:
                 self._speech_active = True
@@ -96,9 +118,10 @@ class ConversationBuffer:
         if not self._active:
             return
         self._pre_roll.append(frame)
-        if self._speaking:
-            # During TTS: still capture to pre-roll (above) for barge-in
-            # recovery, but don't accumulate into speech frames
+        if self._speaking or self.in_cooldown:
+            # During TTS and short cooldown: capture to pre-roll only.
+            # AEC reduces echo but the Yeti picks up enough bleed-through
+            # to trigger false speech detection.
             return
         if self._speech_active:
             self._speech_frames.append(frame)
@@ -109,7 +132,7 @@ class ConversationBuffer:
         if not self._active:
             return
 
-        # During TTS: track VAD for barge-in detection only
+        # During TTS: track VAD for barge-in detection only (high threshold)
         if self._speaking:
             if probability >= BARGE_IN_PROB:
                 self._barge_in_speech_count += 1
@@ -119,6 +142,17 @@ class ConversationBuffer:
                     self.barge_in_detected = True
             else:
                 self._barge_in_speech_count = max(0, self._barge_in_speech_count - 1)
+            return
+
+        # During short post-TTS cooldown: track VAD state so speech detection
+        # begins immediately when cooldown ends, but don't emit utterances.
+        if self.in_cooldown:
+            if probability >= SPEECH_START_PROB:
+                self._consecutive_speech += 1
+                self._consecutive_silence = 0
+            else:
+                self._consecutive_speech = 0
+                self._consecutive_silence += 1
             return
 
         if probability >= SPEECH_START_PROB:
@@ -156,5 +190,6 @@ class ConversationBuffer:
         self._consecutive_silence = 0
         self._pending_utterance = None
         self._speaking = False
+        self._speaking_ended_at = 0.0
         self._barge_in_speech_count = 0
         self.barge_in_detected = False

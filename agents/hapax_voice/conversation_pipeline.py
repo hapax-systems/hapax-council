@@ -23,11 +23,13 @@ from agents.hapax_voice.config import LITELLM_BASE as _voice_litellm_base
 log = logging.getLogger(__name__)
 
 _tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
+_audio_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-out")
 
-# Sentence boundary pattern for TTS chunking
-_SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+|(?<=\n)")
-_MIN_SENTENCE_WORDS = 4
-_MAX_ACCUMULATION_S = 2.0
+# Clause boundary pattern for TTS chunking (Phase 3a: clause-level for earlier first audio)
+_CLAUSE_END = re.compile(r"(?<=[.!?;:])\s+|(?<=\n)|(?<=,)\s+|(?<=—)\s*")
+_MIN_CLAUSE_WORDS = 2
+_MIN_FIRST_CLAUSE_WORDS = 3  # First audio: enough words to avoid false turn-boundary pauses
+_MAX_ACCUMULATION_S = 0.3
 _MAX_RESPONSE_TOKENS = 256
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
@@ -68,6 +70,8 @@ class ConversationPipeline:
         ambient_fn: Callable[[], object | None] | None = None,
         policy_fn: Callable[[], str] | None = None,
         screen_capturer=None,  # ScreenCapturer | None
+        echo_canceller=None,  # EchoCanceller | None
+        bridge_engine=None,  # BridgeEngine | None
     ) -> None:
         self.stt = stt
         self.tts = tts_manager
@@ -83,6 +87,8 @@ class ConversationPipeline:
         self._ambient_fn = ambient_fn
         self._policy_fn = policy_fn
         self._screen_capturer = screen_capturer
+        self._echo_canceller = echo_canceller
+        self._bridge_engine = bridge_engine
 
         self.state = ConvState.IDLE
         self.messages: list[dict] = []
@@ -91,6 +97,10 @@ class ConversationPipeline:
         self._task: asyncio.Task | None = None
         self._audio_output = None
         self._last_env_hash: int = 0
+        self._session_id: str = ""
+        self._activity_mode: str = "idle"
+        self._consent_phase: str = "none"
+        self._llm_prewarmed: bool = False
 
         # Observation signal tracking (Batch 4: revealed preferences)
         self._last_assistant_end: float = 0.0  # monotonic time when last response finished
@@ -102,6 +112,9 @@ class ConversationPipeline:
 
     async def start(self) -> None:
         """Start the conversation pipeline."""
+        import uuid
+
+        self._session_id = uuid.uuid4().hex[:12]
         self.messages = [{"role": "system", "content": self.system_prompt}]
         self.turn_count = 0
         self._running = True
@@ -115,6 +128,10 @@ class ConversationPipeline:
             self.buffer.activate()
 
         self._open_audio_output()
+
+        # Phase 3b: Pre-warm LLM connection (fire-and-forget)
+        asyncio.create_task(self._prewarm_llm())
+
         self._emit("conversation_start")
         log.info("Conversation pipeline started")
 
@@ -169,6 +186,8 @@ class ConversationPipeline:
         if not self._running:
             return
 
+        _t_start = time.monotonic()
+
         # STT
         self.state = ConvState.TRANSCRIBING
         transcript = await self.stt.transcribe(audio_bytes)
@@ -192,6 +211,8 @@ class ConversationPipeline:
             except Exception:
                 pass  # fail-open
 
+        _t_stt = time.monotonic()
+        log.info("TIMING stt=%.0fms transcript=%r", (_t_stt - _t_start) * 1000, transcript[:60])
         self._emit("user_utterance", text=transcript)
 
         # ── Observation signals (Batch 4: revealed preferences) ──────
@@ -218,12 +239,68 @@ class ConversationPipeline:
             self.messages.append({"role": "user", "content": transcript})
         self.turn_count += 1
 
+        # ── Model routing: pick the right tier for this utterance ────
+        from agents.hapax_voice.model_router import ModelTier, route
+
+        routing = route(
+            transcript,
+            turn_count=self.turn_count,
+            activity_mode=self._activity_mode,
+            consent_phase=self._consent_phase,
+            guest_mode=False,  # TODO: wire from session
+            face_count=0,  # TODO: wire from perception
+            has_tools=bool(self.tools),
+        )
+        log.info(
+            "TIMING route=%s model=%s reason=%s",
+            routing.tier.name,
+            routing.model or "canned",
+            routing.reason,
+        )
+
+        # Canned response: skip LLM entirely, play from pre-synth cache
+        if routing.tier == ModelTier.CANNED and routing.canned_response:
+            self.state = ConvState.SPEAKING
+            pcm = (
+                self._bridge_engine._cache.get(routing.canned_response)
+                if self._bridge_engine
+                else None
+            )
+            if pcm and self._audio_output:
+                if self.buffer:
+                    self.buffer.set_speaking(True)
+                self._audio_output.write(pcm)
+                if self._echo_canceller:
+                    self._echo_canceller.feed_reference(pcm)
+                if self.buffer:
+                    self.buffer.set_speaking(False)
+            else:
+                await self._speak_sentence(routing.canned_response)
+            self.messages.append({"role": "assistant", "content": routing.canned_response})
+            self._emit("assistant_response", text=routing.canned_response)
+            self._last_assistant_end = time.monotonic()
+            self.state = ConvState.LISTENING
+            return
+
+        # Set model for this turn (may differ from default)
+        self._turn_model = routing.model or self.llm_model
+        self._turn_model_tier = routing.tier.name
+
         # Refresh environment context before LLM call
         self._update_system_context()
 
-        # LLM → TTS
+        # Fire LLM call concurrently with bridge phrase
         self.state = ConvState.THINKING
-        await self._generate_and_speak()
+        llm_task = asyncio.create_task(self._generate_and_speak())
+        await self._speak_bridge()
+        try:
+            await asyncio.wait_for(llm_task, timeout=20.0)
+        except TimeoutError:
+            log.warning("LLM task timed out after 20s")
+            llm_task.cancel()
+            await self._speak_sentence("I'm having trouble connecting right now.")
+        except Exception:
+            log.exception("LLM task failed")
 
         # Check limits
         if self.turn_count >= _MAX_TURNS:
@@ -249,8 +326,9 @@ class ConversationPipeline:
                 except Exception:
                     log.debug("History compression failed (non-fatal)", exc_info=True)
 
+            _model = getattr(self, "_turn_model", self.llm_model)
             kwargs = {
-                "model": f"openai/{self.llm_model}",
+                "model": f"openai/{_model}",
                 "messages": self.messages,
                 "stream": True,
                 "max_tokens": _MAX_RESPONSE_TOKENS,
@@ -258,15 +336,22 @@ class ConversationPipeline:
                 "api_base": _voice_litellm_base,
                 "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
             }
-            if self.tools:
+            # Only pass tools to models that can use them (not local tier)
+            _tier_name = getattr(self, "_turn_model_tier", "")
+            if self.tools and _tier_name not in ("LOCAL", "CANNED"):
                 kwargs["tools"] = self.tools
 
+            kwargs["timeout"] = 15  # seconds — fail fast, don't block conversation
+            _t_llm_start = time.monotonic()
             response = await litellm.acompletion(**kwargs)
 
             full_text = ""
             accumulated = ""
             tool_calls_data: list[dict] = []
             accumulation_start = time.monotonic()
+            _t_first_token = 0.0
+            _t_first_audio = 0.0
+            _first_clause_spoken = False
 
             self.state = ConvState.SPEAKING
             if self.buffer:
@@ -297,27 +382,57 @@ class ConversationPipeline:
                 if not content:
                     continue
 
+                if not _t_first_token:
+                    _t_first_token = time.monotonic()
+                    log.info(
+                        "TIMING llm_ttft=%.0fms",
+                        (_t_first_token - _t_llm_start) * 1000,
+                    )
                 full_text += content
                 accumulated += content
 
-                # Check for sentence boundary
-                parts = _SENTENCE_END.split(accumulated)
-                if len(parts) > 1:
-                    for sentence in parts[:-1]:
-                        sentence = sentence.strip()
-                        if sentence and len(sentence.split()) >= _MIN_SENTENCE_WORDS:
-                            await self._speak_sentence(sentence)
-                            # Barge-in: operator spoke over us — stop and yield
-                            if self.buffer and self.buffer.barge_in_detected:
-                                log.info("Barge-in: cutting response short")
-                                break
-                    accumulated = parts[-1]
-                    accumulation_start = time.monotonic()
-                elif (time.monotonic() - accumulation_start) > _MAX_ACCUMULATION_S:
-                    if accumulated.strip():
+                # Eager flush: speak as soon as possible to minimize dead air.
+                # For the first clause, flush aggressively (2+ words or 400ms).
+                # For subsequent clauses, use clause boundary detection.
+                _elapsed = time.monotonic() - accumulation_start
+                _words = len(accumulated.split())
+
+                if not _first_clause_spoken:
+                    # First audio: flush ASAP to kill dead air
+                    parts = _CLAUSE_END.split(accumulated)
+                    if len(parts) > 1:
+                        to_speak = parts[0].strip()
+                        if to_speak and _words >= _MIN_FIRST_CLAUSE_WORDS:
+                            await self._speak_sentence(to_speak)
+                            _first_clause_spoken = True
+                            accumulated = parts[-1]
+                            accumulation_start = time.monotonic()
+                    elif _elapsed > _MAX_ACCUMULATION_S and _words >= _MIN_FIRST_CLAUSE_WORDS:
                         await self._speak_sentence(accumulated.strip())
+                        _first_clause_spoken = True
                         accumulated = ""
                         accumulation_start = time.monotonic()
+                else:
+                    # Subsequent clauses: clause boundaries or time flush
+                    parts = _CLAUSE_END.split(accumulated)
+                    if len(parts) > 1:
+                        _spoke = False
+                        for sentence in parts[:-1]:
+                            sentence = sentence.strip()
+                            if sentence and len(sentence.split()) >= _MIN_CLAUSE_WORDS:
+                                await self._speak_sentence(sentence)
+                                _spoke = True
+                                if self.buffer and self.buffer.barge_in_detected:
+                                    log.info("Barge-in: cutting response short")
+                                    break
+                        accumulated = parts[-1]
+                        if _spoke:
+                            accumulation_start = time.monotonic()
+                    elif _elapsed > _MAX_ACCUMULATION_S:
+                        if accumulated.strip() and _words >= _MIN_CLAUSE_WORDS:
+                            await self._speak_sentence(accumulated.strip())
+                            accumulated = ""
+                            accumulation_start = time.monotonic()
 
                 # Barge-in: break out of LLM stream
                 if self.buffer and self.buffer.barge_in_detected:
@@ -348,6 +463,10 @@ class ConversationPipeline:
             log.exception("LLM generation failed")
             await self._speak_sentence("Sorry, something went wrong.")
         finally:
+            # Wait for audio executor to finish playing before dropping
+            # the speaking gate — otherwise the buffer picks up TTS tail.
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(_audio_executor, lambda: None)  # drain queue
             if self.buffer:
                 self.buffer.set_speaking(False)
 
@@ -402,47 +521,60 @@ class ConversationPipeline:
         # Generate follow-up response with tool results
         await self._generate_and_speak()
 
-    # ── Bridge Phrases ────────────────────────────────────────────────
-
-    _GREETING_BRIDGES = ("Hey.", "Yep.", "Mm-hmm.", "Yeah.")
-    _THINKING_BRIDGES = (
-        "Let me think.",
-        "One sec.",
-        "Hmm.",
-        "Give me a moment.",
-        "On it.",
-        "Thinking.",
-        "Let me check.",
-    )
-    _bridge_idx: int = 0
+    # ── Bridge Phrases (via BridgeEngine) ─────────────────────────────
 
     async def _speak_bridge(self) -> None:
-        """Speak a brief bridge phrase to fill dead air during LLM processing.
+        """Play a contextual bridge phrase from BridgeEngine.
 
-        First turn gets a greeting acknowledgment ("Hey.", "Yep.").
-        Subsequent turns get a thinking bridge ("Let me think.", "One sec.").
-        Skipped when the previous response was very recent (rapid back-and-forth).
+        Selects based on turn position, activity mode, consent phase, etc.
+        Plays from pre-synthesized cache — no synthesis latency.
         """
-        # Skip if last response was < 2s ago (rapid exchange, no dead air)
-        if self._last_assistant_end > 0:
+        # For STRONG/CAPABLE tiers, always play bridge — it signals
+        # intentional thinking, not just filling dead air.
+        # For lower tiers, skip if last response was very recent.
+        _tier = getattr(self, "_turn_model_tier", "")
+        if _tier not in ("STRONG", "CAPABLE") and self._last_assistant_end > 0:
             gap = time.monotonic() - self._last_assistant_end
             if gap < 2.0:
                 return
 
-        # Pick appropriate phrase
-        if self.turn_count <= 1:
-            phrases = self._GREETING_BRIDGES
-        else:
-            phrases = self._THINKING_BRIDGES
-        phrase = phrases[self._bridge_idx % len(phrases)]
-        self._bridge_idx += 1
+        if self._bridge_engine is None:
+            return
 
-        # Suppress mic during bridge phrase
-        if self.buffer:
-            self.buffer.set_speaking(True)
-        await self._speak_sentence(phrase)
-        if self.buffer:
-            self.buffer.set_speaking(False)
+        from agents.hapax_voice.bridge_engine import BridgeContext
+
+        _tier = getattr(self, "_turn_model_tier", "")
+        ctx = BridgeContext(
+            turn_position=self.turn_count,
+            activity_mode=self._activity_mode,
+            consent_phase=self._consent_phase,
+            response_type="acknowledging" if self.turn_count <= 1 else "thinking",
+            session_id=self._session_id,
+            model_tier=_tier,
+        )
+        phrase, pcm = self._bridge_engine.select(ctx)
+
+        if not phrase:
+            return
+
+        if pcm and self._audio_output:
+            if self.buffer:
+                self.buffer.set_speaking(True)
+            try:
+                self._audio_output.write(pcm)
+                if self._echo_canceller:
+                    self._echo_canceller.feed_reference(pcm)
+            except Exception:
+                log.debug("Bridge playback failed", exc_info=True)
+            finally:
+                if self.buffer:
+                    self.buffer.set_speaking(False)
+        elif phrase:
+            if self.buffer:
+                self.buffer.set_speaking(True)
+            await self._speak_sentence(phrase)
+            if self.buffer:
+                self.buffer.set_speaking(False)
 
     # ── Observation Signals (Batch 4) ──────────────────────────────────
 
@@ -559,11 +691,18 @@ class ConversationPipeline:
         self._last_user_topic = lower
 
     async def _speak_sentence(self, text: str) -> None:
-        """Synthesize and play a single sentence."""
+        """Synthesize and play a single sentence/clause.
+
+        TTS runs in _tts_executor, audio write runs in _audio_executor.
+        Both are single-threaded so clauses play in order, but the async
+        loop resumes immediately after synthesis — tokens keep streaming
+        from the LLM while audio plays.
+        """
         if not self._running:
             return
 
         try:
+            _t0 = time.monotonic()
             loop = asyncio.get_running_loop()
             pcm = await loop.run_in_executor(
                 _tts_executor,
@@ -571,10 +710,64 @@ class ConversationPipeline:
                 text,
                 "conversation",
             )
+            _t_synth = time.monotonic()
             if pcm and self._audio_output:
-                self._audio_output.write(pcm)
+                log.info(
+                    "TIMING tts_synth=%.0fms play=%db text=%r",
+                    (_t_synth - _t0) * 1000,
+                    len(pcm),
+                    text[:40],
+                )
+                # Write audio in background — streaming loop continues
+                # immediately so next clause can start synthesizing.
+                # _audio_executor is single-threaded so writes are ordered.
+                ao = self._audio_output
+                ec = self._echo_canceller
+                loop.run_in_executor(
+                    _audio_executor,
+                    self._write_audio,
+                    ao,
+                    ec,
+                    pcm,
+                )
         except Exception:
             log.debug("TTS/playback failed for: %s", text[:50], exc_info=True)
+
+    @staticmethod
+    def _write_audio(audio_output, echo_canceller, pcm: bytes) -> None:
+        """Write PCM to audio output and feed AEC reference. Runs in _audio_executor."""
+        try:
+            audio_output.write(pcm)
+            if echo_canceller:
+                echo_canceller.feed_reference(pcm)
+        except Exception:
+            pass
+
+    async def _prewarm_llm(self) -> None:
+        """Phase 3b: Pre-warm LLM connection at session start.
+
+        Sends a minimal request to warm TCP + LiteLLM route cache +
+        upstream provider connection. Saves 200-500ms on first LLM call.
+        """
+        if self._llm_prewarmed:
+            return
+        try:
+            import os
+
+            import litellm
+
+            await litellm.acompletion(
+                model=f"openai/{self.llm_model}",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=1,
+                api_base=_voice_litellm_base,
+                api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
+                timeout=5,
+            )
+            self._llm_prewarmed = True
+            log.debug("LLM connection pre-warmed")
+        except Exception:
+            log.debug("LLM prewarm failed (non-fatal)", exc_info=True)
 
     def _open_audio_output(self) -> None:
         """Open PyAudio output stream for TTS playback."""

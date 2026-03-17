@@ -55,7 +55,17 @@ class VoiceConfig(BaseModel):
     context_gate_ambient_block_threshold: float = 0.15
 
     # Audio hardware
-    audio_input_source: str = "echo_cancel_capture"
+    # PipeWire's echo-cancel module is broken on PipeWire 1.6.x
+    # (ENOTSUP on capture node start). Use raw Yeti with application-level
+    # echo suppression: wake word + VAD gated during TTS playback,
+    # post-TTS cooldown to let room reflections decay.
+    audio_input_source: str = (
+        "alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
+    )
+
+    # Echo cancellation (application-level, replaces broken PipeWire AEC)
+    aec_enabled: bool = True
+    aec_tail_ms: int = 200
 
     # Backends
     backend: str = "local"  # "local" or "gemini"
