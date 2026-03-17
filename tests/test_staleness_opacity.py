@@ -12,7 +12,9 @@ from agents.visual_layer_state import (
 )
 
 
-def _signal(cat: SignalCategory = SignalCategory.HEALTH_INFRA, severity: float = 0.5) -> SignalEntry:
+def _signal(
+    cat: SignalCategory = SignalCategory.HEALTH_INFRA, severity: float = 0.5
+) -> SignalEntry:
     return SignalEntry(category=cat, severity=severity, title="test", source_id="test")
 
 

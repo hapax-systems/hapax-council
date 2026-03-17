@@ -349,9 +349,7 @@ class TemporalBandFormatter:
 
         return predictions[:5]  # cap total predictions
 
-    def _trend_protention(
-        self, ring: PerceptionRing, current: dict
-    ) -> list[ProtentionEntry]:
+    def _trend_protention(self, ring: PerceptionRing, current: dict) -> list[ProtentionEntry]:
         """Simple trend-based predictions as fallback."""
         predictions: list[ProtentionEntry] = []
 

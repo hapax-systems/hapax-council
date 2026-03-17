@@ -263,7 +263,12 @@ class PatternStore:
             COLLECTION,
             [PointStruct(id=point_id, vector=vec, payload=pattern.model_dump())],
         )
-        log.debug("Recorded pattern: %s → %s (%.2f)", pattern.condition, pattern.prediction, pattern.confidence)
+        log.debug(
+            "Recorded pattern: %s → %s (%.2f)",
+            pattern.condition,
+            pattern.prediction,
+            pattern.confidence,
+        )
         return pattern.id
 
     def search(
@@ -318,9 +323,7 @@ class PatternStore:
 
         results = self.client.scroll(
             COLLECTION,
-            scroll_filter=Filter(
-                must=[FieldCondition(key="active", match=MatchValue(value=True))]
-            ),
+            scroll_filter=Filter(must=[FieldCondition(key="active", match=MatchValue(value=True))]),
             limit=limit,
             with_vectors=False,
         )

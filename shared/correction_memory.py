@@ -224,7 +224,9 @@ class CorrectionStore:
 CORRECTION_INTAKE_PATH = Path("/dev/shm/hapax-compositor/activity-correction.json")
 
 
-def check_for_corrections(store: CorrectionStore, current_state: dict[str, Any]) -> Correction | None:
+def check_for_corrections(
+    store: CorrectionStore, current_state: dict[str, Any]
+) -> Correction | None:
     """Check if the operator has submitted a correction via the intake file.
 
     The correction file is written by the studio UI when the operator

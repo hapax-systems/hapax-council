@@ -142,5 +142,5 @@ class TestEngineCodeIntegrity:
         source = Path(__file__).parent.parent / "cockpit" / "engine" / "__init__.py"
         text = source.read_text()
         # Key format must match
-        assert 'f"{event_type}|{doc_type or \'unknown\'}|{rules_str}"' in text
+        assert "f\"{event_type}|{doc_type or 'unknown'}|{rules_str}\"" in text
         assert "counter_save_interval" in text

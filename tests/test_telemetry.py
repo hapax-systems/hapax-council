@@ -69,7 +69,9 @@ class TestHapaxInteraction:
     def test_interaction_doesnt_crash(self):
         with patch("shared.telemetry._get_langfuse", return_value=None):
             hapax_interaction(
-                "stimmung", "engine", "phase_gating",
+                "stimmung",
+                "engine",
+                "phase_gating",
                 metadata={"stance": "degraded", "skipped": 2},
             )
 
@@ -80,37 +82,50 @@ class TestConvenienceFunctions:
     def test_trace_perception_tick(self):
         with patch("shared.telemetry._get_langfuse", return_value=None):
             trace_perception_tick(
-                flow_score=0.7, activity="coding",
-                audio_energy=0.01, confidence=0.85,
+                flow_score=0.7,
+                activity="coding",
+                audio_energy=0.01,
+                confidence=0.85,
             )
 
     def test_trace_stimmung_update(self):
         with patch("shared.telemetry._get_langfuse", return_value=None):
             trace_stimmung_update(
-                stance="cautious", health=0.1, resource_pressure=0.3,
-                error_rate=0.0, throughput=0.2, perception_confidence=0.8,
-                llm_cost=0.1, prev_stance="nominal",
+                stance="cautious",
+                health=0.1,
+                resource_pressure=0.3,
+                error_rate=0.0,
+                throughput=0.2,
+                perception_confidence=0.8,
+                llm_cost=0.1,
+                prev_stance="nominal",
             )
 
     def test_trace_visual_tick(self):
         with patch("shared.telemetry._get_langfuse", return_value=None):
             trace_visual_tick(
-                display_state="ambient", signal_count=2,
-                tick_interval=3.0, stimmung_stance="nominal",
+                display_state="ambient",
+                signal_count=2,
+                tick_interval=3.0,
+                stimmung_stance="nominal",
             )
 
     def test_trace_episode_closed(self):
         with patch("shared.telemetry._get_langfuse", return_value=None):
             trace_episode_closed(
-                activity="coding", duration_s=300,
-                flow_state="active", snapshot_count=120,
+                activity="coding",
+                duration_s=300,
+                flow_state="active",
+                snapshot_count=120,
             )
 
     def test_trace_prediction_tick(self):
         with patch("shared.telemetry._get_langfuse", return_value=None):
             trace_prediction_tick(
-                predictions=3, cache_hit=True,
-                cache_hit_rate=0.6, surprise_max=0.3,
+                predictions=3,
+                cache_hit=True,
+                cache_hit_rate=0.6,
+                surprise_max=0.3,
             )
 
 

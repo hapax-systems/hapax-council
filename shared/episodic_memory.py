@@ -154,9 +154,7 @@ class EpisodeBuilder:
             return True
 
         # Consent phase change
-        return current.get("consent_phase", "no_guest") != prev.get(
-            "consent_phase", "no_guest"
-        )
+        return current.get("consent_phase", "no_guest") != prev.get("consent_phase", "no_guest")
 
     def _close_episode(self) -> Episode:
         """Build an Episode from accumulated snapshots."""
@@ -181,9 +179,7 @@ class EpisodeBuilder:
         # Downsample signals to 5 points
         flow_scores = _downsample([s.get("flow_score", 0.0) for s in snaps], 5)
         audio_energy = _downsample([s.get("audio_energy_rms", 0.0) for s in snaps], 5)
-        heart_rates = _downsample(
-            [float(s.get("heart_rate_bpm", 0)) for s in snaps], 5
-        )
+        heart_rates = _downsample([float(s.get("heart_rate_bpm", 0)) for s in snaps], 5)
 
         # Trends (simple: last - first / duration)
         flow_trend = 0.0
@@ -277,7 +273,9 @@ class EpisodeStore:
             COLLECTION,
             [PointStruct(id=point_id, vector=vec, payload=episode.model_dump())],
         )
-        log.debug("Recorded episode: %s (%s, %.0fs)", episode.id, episode.activity, episode.duration_s)
+        log.debug(
+            "Recorded episode: %s (%s, %.0fs)", episode.id, episode.activity, episode.duration_s
+        )
         return episode.id
 
     def search(

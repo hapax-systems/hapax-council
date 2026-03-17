@@ -775,9 +775,7 @@ class VisualLayerAggregator:
         ring = get_perception_ring()
         if ring is None or len(ring) < 2:
             return TemporalContext(
-                perception_age_s=round(
-                    time.monotonic() - self._ts_perception, 1
-                )
+                perception_age_s=round(time.monotonic() - self._ts_perception, 1)
                 if self._ts_perception
                 else 0.0,
             )
@@ -786,9 +784,7 @@ class VisualLayerAggregator:
             trend_flow=round(ring.trend("flow_score", window_s=15.0), 4),
             trend_audio=round(ring.trend("audio_energy_rms", window_s=15.0), 4),
             trend_hr=round(ring.trend("heart_rate_bpm", window_s=20.0), 4),
-            perception_age_s=round(
-                time.monotonic() - self._ts_perception, 1
-            )
+            perception_age_s=round(time.monotonic() - self._ts_perception, 1)
             if self._ts_perception
             else 0.0,
             ring_depth=len(ring),
@@ -875,9 +871,7 @@ class VisualLayerAggregator:
             trend_audio=tc.trend_audio,
             perception_age_s=tc.perception_age_s,
             # WS2: stimmung stance
-            stimmung_stance=self._stimmung.overall_stance.value
-            if self._stimmung
-            else "nominal",
+            stimmung_stance=self._stimmung.overall_stance.value if self._stimmung else "nominal",
         )
 
         pools = ContentPools(
@@ -1158,7 +1152,9 @@ class VisualLayerAggregator:
         # Log stimmung → engine modulation interaction
         if stimmung_stance in ("degraded", "critical"):
             hapax_interaction(
-                "stimmung", "visual", "ambient_modulation",
+                "stimmung",
+                "visual",
+                "ambient_modulation",
                 metadata={"stance": stimmung_stance},
             )
 
@@ -1209,12 +1205,8 @@ class VisualLayerAggregator:
             now = time.monotonic()
 
             # Adaptive stimmung poll rate: faster when stressed, normal otherwise
-            stimmung_stance = (
-                self._stimmung.overall_stance.value if self._stimmung else "nominal"
-            )
-            health_interval = (
-                5.0 if stimmung_stance in ("degraded", "critical") else HEALTH_POLL_S
-            )
+            stimmung_stance = self._stimmung.overall_stance.value if self._stimmung else "nominal"
+            health_interval = 5.0 if stimmung_stance in ("degraded", "critical") else HEALTH_POLL_S
 
             if now - last_health >= health_interval:
                 await self.poll_fast()

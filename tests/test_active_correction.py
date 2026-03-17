@@ -30,14 +30,16 @@ class TestCorrectionSeeker:
     def test_high_confidence_no_question(self):
         seeker = CorrectionSeeker()
         result = seeker.evaluate(
-            activity="coding", confidence=0.8  # high confidence
+            activity="coding",
+            confidence=0.8,  # high confidence
         )
         assert result is None
 
     def test_low_confidence_asks(self):
         seeker = CorrectionSeeker()
         result = seeker.evaluate(
-            activity="coding", confidence=0.2  # low confidence
+            activity="coding",
+            confidence=0.2,  # low confidence
         )
         assert result is not None
         assert result.dimension == "activity"
@@ -82,32 +84,24 @@ class TestCorrectionSeeker:
 
     def test_degraded_stimmung_blocks(self):
         seeker = CorrectionSeeker()
-        result = seeker.evaluate(
-            activity="coding", confidence=0.1, stimmung_stance="degraded"
-        )
+        result = seeker.evaluate(activity="coding", confidence=0.1, stimmung_stance="degraded")
         assert result is None
 
     def test_critical_stimmung_blocks(self):
         seeker = CorrectionSeeker()
-        result = seeker.evaluate(
-            activity="coding", confidence=0.1, stimmung_stance="critical"
-        )
+        result = seeker.evaluate(activity="coding", confidence=0.1, stimmung_stance="critical")
         assert result is None
 
     def test_cautious_stimmung_allows(self):
         seeker = CorrectionSeeker()
-        result = seeker.evaluate(
-            activity="coding", confidence=0.1, stimmung_stance="cautious"
-        )
+        result = seeker.evaluate(activity="coding", confidence=0.1, stimmung_stance="cautious")
         assert result is not None
 
     def test_flow_question_when_activity_already_asked(self):
         seeker = CorrectionSeeker(cooldown_s=0)
         seeker.evaluate(activity="coding", confidence=0.1)
         # Activity already asked, should fall through to flow
-        result = seeker.evaluate(
-            activity="coding", flow_score=0.5, confidence=0.1
-        )
+        result = seeker.evaluate(activity="coding", flow_score=0.5, confidence=0.1)
         assert result is not None
         assert result.dimension == "flow"
 
@@ -140,12 +134,12 @@ class TestCorrectionSeeker:
 
         mock_store = MagicMock()
         mock_store.search_for_dimension.return_value = [
-            MagicMock(), MagicMock(), MagicMock()  # 3 prior corrections
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),  # 3 prior corrections
         ]
 
-        result = seeker.evaluate(
-            activity="coding", confidence=0.1, correction_store=mock_store
-        )
+        result = seeker.evaluate(activity="coding", confidence=0.1, correction_store=mock_store)
         assert result is not None
         assert "often" in result.question  # >= 2 corrections → "often uncertain"
 

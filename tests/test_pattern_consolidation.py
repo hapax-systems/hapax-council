@@ -167,9 +167,7 @@ class TestPatternStore:
     def test_get_active(self):
         client = _mock_qdrant()
         mock_point = SimpleNamespace(
-            payload=Pattern(
-                condition="a", prediction="b", active=True
-            ).model_dump()
+            payload=Pattern(condition="a", prediction="b", active=True).model_dump()
         )
         client.scroll.return_value = ([mock_point], None)
         store = PatternStore(client=client)

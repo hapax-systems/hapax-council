@@ -141,8 +141,11 @@ class TestDaySummary:
         ]
         sessions = [
             SessionSummary(
-                start_ts=100, end_ts=220, duration_s=120,
-                activity="coding", minute_count=2,
+                start_ts=100,
+                end_ts=220,
+                duration_s=120,
+                activity="coding",
+                minute_count=2,
             ),
         ]
         day = compute_day_summary(sessions, minutes)

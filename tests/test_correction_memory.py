@@ -181,9 +181,7 @@ class TestCorrectionStore:
         store.search("test", dimension="flow")
         # Verify filter was passed
         call_args = client.query_points.call_args
-        assert call_args.kwargs.get("query_filter") is not None or (
-            len(call_args[1]) > 0
-        )
+        assert call_args.kwargs.get("query_filter") is not None or (len(call_args[1]) > 0)
 
     @patch("shared.config.embed", side_effect=_mock_embed)
     def test_search_for_dimension(self, mock_embed):
@@ -237,12 +235,14 @@ class TestCheckForCorrections:
 
         correction_file = tmp_path / "correction.json"
         correction_file.write_text(
-            json.dumps({
-                "label": "writing",
-                "detail": "in Obsidian",
-                "timestamp": time.time(),
-                "ttl_s": 1800,
-            })
+            json.dumps(
+                {
+                    "label": "writing",
+                    "detail": "in Obsidian",
+                    "timestamp": time.time(),
+                    "ttl_s": 1800,
+                }
+            )
         )
 
         with patch("shared.correction_memory.CORRECTION_INTAKE_PATH", correction_file):
@@ -259,9 +259,7 @@ class TestCheckForCorrections:
         store = CorrectionStore(client=client)
 
         correction_file = tmp_path / "correction.json"
-        correction_file.write_text(
-            json.dumps({"label": "coding", "timestamp": time.time()})
-        )
+        correction_file.write_text(json.dumps({"label": "coding", "timestamp": time.time()}))
 
         with patch("shared.correction_memory.CORRECTION_INTAKE_PATH", correction_file):
             result = check_for_corrections(store, {"production_activity": "coding"})

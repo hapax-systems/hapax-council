@@ -107,9 +107,7 @@ class TestClassification:
 
         mock_client = MagicMock()
         mock_client.chat.return_value = {
-            "message": {
-                "content": '{"activity": "coding", "flow": "deep", "confidence": 0.85}'
-            }
+            "message": {"content": '{"activity": "coding", "flow": "deep", "confidence": 0.85}'}
         }
 
         with patch("ollama.Client", return_value=mock_client):
@@ -153,9 +151,7 @@ class TestContribute:
 
         mock_client = MagicMock()
         mock_client.chat.return_value = {
-            "message": {
-                "content": '{"activity": "coding", "flow": "deep", "confidence": 0.9}'
-            }
+            "message": {"content": '{"activity": "coding", "flow": "deep", "confidence": 0.9}'}
         }
 
         behaviors: dict[str, Behavior] = {}
@@ -178,9 +174,7 @@ class TestContribute:
 
         mock_client = MagicMock()
         mock_client.chat.return_value = {
-            "message": {
-                "content": '{"activity": "writing", "flow": "light", "confidence": 0.7}'
-            }
+            "message": {"content": '{"activity": "writing", "flow": "light", "confidence": 0.7}'}
         }
 
         with patch("ollama.Client", return_value=mock_client):

@@ -244,9 +244,18 @@ class LocalLLMBackend:
 
         # Validate
         valid_activities = {
-            "coding", "writing", "browsing", "reading", "making_music",
-            "gaming", "meeting", "presenting", "idle", "break",
-            "exercising", "sleeping",
+            "coding",
+            "writing",
+            "browsing",
+            "reading",
+            "making_music",
+            "gaming",
+            "meeting",
+            "presenting",
+            "idle",
+            "break",
+            "exercising",
+            "sleeping",
         }
         if activity not in valid_activities:
             activity = "idle"

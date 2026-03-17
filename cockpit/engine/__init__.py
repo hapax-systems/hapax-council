@@ -58,6 +58,7 @@ def _event_pattern_key(event_type: str, doc_type: str | None, rules: list[str]) 
     rules_str = "+".join(sorted(rules)) if rules else "none"
     return f"{event_type}|{doc_type or 'unknown'}|{rules_str}"
 
+
 _log = logging.getLogger(__name__)
 
 
@@ -301,7 +302,9 @@ class ReactiveEngine:
                     skipped,
                 )
                 hapax_interaction(
-                    "stimmung", "engine", "phase_gating",
+                    "stimmung",
+                    "engine",
+                    "phase_gating",
                     metadata={"stance": stance, "skipped_actions": skipped},
                 )
             if not plan.actions:
@@ -343,7 +346,8 @@ class ReactiveEngine:
         if prev_count == 0:
             _log.info("NOVEL event pattern (first occurrence): %s", pattern_key)
             hapax_event(
-                "prediction", "novel_pattern",
+                "prediction",
+                "novel_pattern",
                 metadata={"pattern": pattern_key, "occurrence": 1},
                 level="WARNING",
             )

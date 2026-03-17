@@ -223,7 +223,9 @@ def trace_perception_tick(
                 "backends_active": backends_active,
             },
         ) as span:
-            span.score(name="perception_confidence", value=round(confidence, 4), data_type="NUMERIC")
+            span.score(
+                name="perception_confidence", value=round(confidence, 4), data_type="NUMERIC"
+            )
     except Exception:
         pass  # never block perception
 
@@ -258,7 +260,9 @@ def trace_stimmung_update(
             metadata=meta,
         ) as span:
             # Score the overall system health (inverted: 1.0 = healthy)
-            worst = max(health, resource_pressure, error_rate, throughput, perception_confidence, llm_cost)
+            worst = max(
+                health, resource_pressure, error_rate, throughput, perception_confidence, llm_cost
+            )
             span.score(name="system_health", value=round(1.0 - worst, 4), data_type="NUMERIC")
 
         # Log stance transition as a separate event
@@ -298,7 +302,9 @@ def trace_visual_tick(
                 "scheduler_source": scheduler_source,
             },
         ) as span:
-            span.score(name="visual_density", value=min(1.0, signal_count / 5.0), data_type="NUMERIC")
+            span.score(
+                name="visual_density", value=min(1.0, signal_count / 5.0), data_type="NUMERIC"
+            )
     except Exception:
         pass
 
@@ -345,7 +351,9 @@ def trace_prediction_tick(
                 "surprise_max": round(surprise_max, 3),
             },
         ) as span:
-            span.score(name="prediction_accuracy", value=round(cache_hit_rate, 4), data_type="NUMERIC")
+            span.score(
+                name="prediction_accuracy", value=round(cache_hit_rate, 4), data_type="NUMERIC"
+            )
             if surprise_max > 0.5:
                 span.score(name="surprise", value=round(surprise_max, 4), data_type="NUMERIC")
     except Exception:

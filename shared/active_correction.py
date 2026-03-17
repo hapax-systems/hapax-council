@@ -115,9 +115,7 @@ class CorrectionSeeker:
             return None
 
         # Find the most uncertain dimension
-        question = self._find_uncertainty(
-            activity, flow_score, confidence, hour, correction_store
-        )
+        question = self._find_uncertainty(activity, flow_score, confidence, hour, correction_store)
         if question is None:
             return None
 
@@ -166,9 +164,7 @@ class CorrectionSeeker:
             similar_corrections = 0
             if correction_store is not None:
                 try:
-                    matches = correction_store.search_for_dimension(
-                        "activity", activity, limit=3
-                    )
+                    matches = correction_store.search_for_dimension("activity", activity, limit=3)
                     similar_corrections = len(matches)
                 except Exception:
                     pass
