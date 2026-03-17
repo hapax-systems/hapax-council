@@ -832,10 +832,12 @@ class VisualLayerAggregator:
         )
 
     def _adaptive_tick_interval(self, state: VisualLayerState) -> float:
-        """Compute adaptive tick interval based on volatility. Bounded [0.5, 5.0].
+        """Compute adaptive tick interval based on volatility + stimmung. Bounded [0.5, 5.0].
 
-        Speeds up for: state transitions, voice active, perception trends changing.
-        Slows down for: sustained ambient, operator absent, presenting.
+        Speeds up for: state transitions, voice active, perception trends changing,
+                       error rate spikes (track recovery).
+        Slows down for: sustained ambient, operator absent, presenting,
+                        resource pressure, degraded/critical stance.
         """
         interval = STATE_TICK_BASE_S  # 3.0s base
 
@@ -852,17 +854,44 @@ class VisualLayerAggregator:
         if abs(tc.trend_flow) > 0.01 or abs(tc.trend_audio) > 0.01:
             return 1.5
 
+        # WS2: Stimmung-driven modulation — system interoception affects tick rate
+        if self._stimmung is not None:
+            stance = self._stimmung.overall_stance.value
+
+            # Critical → conserve aggressively (only state transitions break through above)
+            if stance == "critical":
+                return 5.0
+
+            # Degraded → slow down, preserve resources
+            if stance == "degraded":
+                interval = max(interval, 4.0)
+
+            # High resource pressure → back off even in nominal/cautious
+            if self._stimmung.resource_pressure.value > 0.7:
+                interval = max(interval, 4.0)
+
+            # Error rate spiking → speed up to track recovery
+            if (
+                self._stimmung.error_rate.value > 0.5
+                and self._stimmung.error_rate.trend == "rising"
+            ):
+                interval = min(interval, 1.5)
+
+            # LLM cost pressure high → slow down (fewer ticks = fewer downstream LLM calls)
+            if self._stimmung.llm_cost_pressure.value > 0.6:
+                interval = max(interval, 3.5)
+
         # Sustained ambient → slow down
         if state.display_state == "ambient" and not self._production_active:
-            interval = 5.0
+            interval = max(interval, 5.0)
 
         # Presenting mode → minimal updates
         if state.display_density == "presenting":
-            interval = 4.0
+            interval = max(interval, 4.0)
 
         # Operator absent (no perception updates for >10s)
         if tc.perception_age_s > 10.0:
-            interval = 5.0
+            interval = max(interval, 5.0)
 
         return max(0.5, min(5.0, interval))
 
