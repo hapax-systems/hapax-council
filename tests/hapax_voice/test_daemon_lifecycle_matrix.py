@@ -412,6 +412,8 @@ class TestDaemonCompositionContracts:
         daemon.presence.latest_vad_confidence = 0.0
         daemon.presence.face_detected = False
         daemon.presence.face_count = 0
+        daemon.presence.guest_count = 0
+        daemon.presence.operator_visible = False
         # Tick perception to get environment state
         state = daemon.perception.tick()
         # Governor evaluates state

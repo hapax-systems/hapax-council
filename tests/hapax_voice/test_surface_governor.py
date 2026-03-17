@@ -22,6 +22,7 @@ def _make_state(**overrides) -> EnvironmentState:
         speech_detected=False,
         vad_confidence=0.0,
         face_count=1,
+        guest_count=0,
         operator_present=True,
         activity_mode="idle",
         workspace_context="",
@@ -122,26 +123,26 @@ class TestGovernorConversationDebounce:
     """Conversation detection uses debounce before pausing."""
 
     def test_conversation_detected_property(self):
-        """conversation_detected requires face_count > 1 AND speech_detected."""
-        state = _make_state(face_count=2, speech_detected=True)
+        """conversation_detected requires guest_count > 0 AND speech_detected."""
+        state = _make_state(guest_count=1, speech_detected=True)
         assert state.conversation_detected is True
 
-    def test_conversation_not_detected_single_face(self):
-        state = _make_state(face_count=1, speech_detected=True)
+    def test_conversation_not_detected_no_guests(self):
+        state = _make_state(guest_count=0, speech_detected=True)
         assert state.conversation_detected is False
 
     def test_conversation_not_detected_no_speech(self):
-        state = _make_state(face_count=2, speech_detected=False)
+        state = _make_state(guest_count=1, speech_detected=False)
         assert state.conversation_detected is False
 
     def test_no_pause_before_debounce(self):
         gov = PipelineGovernor(conversation_debounce_s=5.0)
-        state = _make_state(face_count=2, speech_detected=True, operator_present=True)
+        state = _make_state(guest_count=1, speech_detected=True, operator_present=True)
         assert gov.evaluate(state) == "process"
 
     def test_pause_after_debounce(self):
         gov = PipelineGovernor(conversation_debounce_s=0)
-        state = _make_state(face_count=2, speech_detected=True, operator_present=True)
+        state = _make_state(guest_count=1, speech_detected=True, operator_present=True)
         assert gov.evaluate(state) == "pause"
 
     def test_resume_after_conversation_clears(self):
@@ -149,10 +150,10 @@ class TestGovernorConversationDebounce:
             conversation_debounce_s=0,
             environment_clear_resume_s=0,
         )
-        conv_state = _make_state(face_count=2, speech_detected=True, operator_present=True)
+        conv_state = _make_state(guest_count=1, speech_detected=True, operator_present=True)
         assert gov.evaluate(conv_state) == "pause"
 
-        clear_state = _make_state(face_count=1, speech_detected=False, operator_present=True)
+        clear_state = _make_state(guest_count=0, speech_detected=False, operator_present=True)
         assert gov.evaluate(clear_state) == "process"
 
     def test_still_paused_within_clear_delay(self):
@@ -162,21 +163,21 @@ class TestGovernorConversationDebounce:
             environment_clear_resume_s=300,  # long delay
         )
         # Trigger pause via conversation
-        conv_state = _make_state(face_count=2, speech_detected=True, operator_present=True)
+        conv_state = _make_state(guest_count=1, speech_detected=True, operator_present=True)
         assert gov.evaluate(conv_state) == "pause"
 
         # Conversation clears but delay not elapsed → still paused
-        clear_state = _make_state(face_count=1, speech_detected=False, operator_present=True)
+        clear_state = _make_state(guest_count=0, speech_detected=False, operator_present=True)
         assert gov.evaluate(clear_state) == "pause"
 
     def test_conversation_first_seen_resets_on_clear(self):
         """After conversation clears, _conversation_first_seen is reset to None."""
         gov = PipelineGovernor(conversation_debounce_s=5.0)
-        conv_state = _make_state(face_count=2, speech_detected=True)
+        conv_state = _make_state(guest_count=1, speech_detected=True)
         gov.evaluate(conv_state)
         assert gov._conversation_first_seen is not None
 
-        clear_state = _make_state(face_count=1, speech_detected=False)
+        clear_state = _make_state(guest_count=0, speech_detected=False)
         gov.evaluate(clear_state)
         assert gov._conversation_first_seen is None
 

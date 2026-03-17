@@ -83,23 +83,30 @@ class ConsentStateTracker:
 
     def tick(
         self,
-        face_count: int,
-        speaker_is_operator: bool,
+        face_count: int = 0,
+        speaker_is_operator: bool = True,
         *,
+        guest_count: int | None = None,
         now: float | None = None,
     ) -> ConsentPhase:
         """Update state based on current perception tick.
 
         Args:
-            face_count: Number of faces detected this tick.
+            face_count: Total face count (legacy, used if guest_count not provided).
             speaker_is_operator: True if current speaker is identified as operator.
+            guest_count: Deduplicated non-operator face count (preferred over face_count).
             now: Monotonic timestamp (for testing).
 
         Returns:
             Current consent phase after update.
         """
         t = now if now is not None else time.monotonic()
-        guest_present = face_count > 1 or (not speaker_is_operator and face_count >= 1)
+        if guest_count is not None:
+            # Bayesian path: use deduplicated guest count directly
+            guest_present = guest_count > 0
+        else:
+            # Legacy path: infer from raw face count
+            guest_present = face_count > 1 or (not speaker_is_operator and face_count >= 1)
 
         if self._phase == ConsentPhase.NO_GUEST:
             if guest_present:

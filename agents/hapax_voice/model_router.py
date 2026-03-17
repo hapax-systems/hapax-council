@@ -170,7 +170,7 @@ def route(
             canned_response="",
         )
 
-    if guest_mode or face_count > 1:
+    if guest_mode or face_count > 0:
         return RoutingDecision(
             tier=ModelTier.CAPABLE,
             model=TIER_ROUTES[ModelTier.CAPABLE],

@@ -22,6 +22,9 @@ _OPERATOR_SIMILARITY_THRESHOLD = 0.4
 _AUTO_ENROLL_CONFIDENCE = 0.7
 
 
+_DEDUP_SIMILARITY_THRESHOLD = 0.6  # cosine sim above this = same person across cameras
+
+
 @dataclass(frozen=True)
 class FaceResult:
     detected: bool
@@ -29,6 +32,16 @@ class FaceResult:
     boxes: list[list[float]] = field(default_factory=list)
     embeddings: list[np.ndarray] = field(default_factory=list)
     operator_flags: list[bool] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class FusedFaceResult:
+    """Cross-camera deduplicated face detection result."""
+
+    operator_visible: bool
+    guest_count: int
+    operator_confidence: float
+    per_camera_results: dict[str, FaceResult] = field(default_factory=dict)
 
 
 def _normalize_color(image: np.ndarray) -> np.ndarray:
@@ -226,3 +239,87 @@ class FaceDetector:
         except Exception as exc:
             log.debug("Base64 face detection failed: %s", exc)
             return FaceResult(detected=False, count=0)
+
+    def detect_all_cameras(self, frames_b64: dict[str, str | None]) -> FusedFaceResult:
+        """Run face detection on all cameras and deduplicate across them.
+
+        Args:
+            frames_b64: Mapping of camera_role → base64 JPEG frame (or None).
+
+        Returns:
+            FusedFaceResult with deduplicated operator_visible and guest_count.
+        """
+        per_camera: dict[str, FaceResult] = {}
+        all_embeddings: list[np.ndarray] = []
+        all_operator_flags: list[bool] = []
+
+        for role, frame_b64 in frames_b64.items():
+            result = self.detect_from_base64(frame_b64, camera_role=role)
+            per_camera[role] = result
+            for emb, is_op in zip(result.embeddings, result.operator_flags, strict=True):
+                all_embeddings.append(emb)
+                all_operator_flags.append(is_op)
+
+        if not all_embeddings:
+            return FusedFaceResult(
+                operator_visible=False,
+                guest_count=0,
+                operator_confidence=0.0,
+                per_camera_results=per_camera,
+            )
+
+        # Deduplicate by clustering embeddings via cosine similarity
+        n = len(all_embeddings)
+        cluster_ids = list(range(n))  # union-find: each face starts as its own cluster
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                sim = self._cosine_similarity(all_embeddings[i], all_embeddings[j])
+                if sim > _DEDUP_SIMILARITY_THRESHOLD:
+                    # Merge clusters (union)
+                    root_i = self._find_root(cluster_ids, i)
+                    root_j = self._find_root(cluster_ids, j)
+                    if root_i != root_j:
+                        cluster_ids[root_j] = root_i
+
+        # Build unique clusters and determine operator/guest status per cluster
+        clusters: dict[int, bool] = {}  # root → is_operator
+        for idx in range(n):
+            root = self._find_root(cluster_ids, idx)
+            if root not in clusters:
+                clusters[root] = all_operator_flags[idx]
+            else:
+                # Any face in cluster flagged as operator → cluster is operator
+                clusters[root] = clusters[root] or all_operator_flags[idx]
+
+        operator_visible = any(is_op for is_op in clusters.values())
+        guest_count = sum(1 for is_op in clusters.values() if not is_op)
+
+        # Best operator confidence: highest det_score among operator-flagged faces
+        operator_confidence = 0.0
+        for result in per_camera.values():
+            for _i, is_op in enumerate(result.operator_flags):
+                if is_op and result.boxes:
+                    operator_confidence = max(operator_confidence, 1.0)
+
+        return FusedFaceResult(
+            operator_visible=operator_visible,
+            guest_count=guest_count,
+            operator_confidence=operator_confidence,
+            per_camera_results=per_camera,
+        )
+
+    @staticmethod
+    def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a < 1e-6 or norm_b < 1e-6:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+
+    @staticmethod
+    def _find_root(parents: list[int], idx: int) -> int:
+        while parents[idx] != idx:
+            parents[idx] = parents[parents[idx]]  # path compression
+            idx = parents[idx]
+        return idx
