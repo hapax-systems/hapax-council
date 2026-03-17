@@ -28,6 +28,8 @@ if not LITELLM_KEY:
         stacklevel=1,
     )
 QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
+OLLAMA_URL: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+COCKPIT_API_URL: str = os.environ.get("COCKPIT_BASE_URL", "http://localhost:8051/api")
 
 # ── Canonical paths ─────────────────────────────────────────────────────────
 

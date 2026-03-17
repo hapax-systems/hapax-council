@@ -18,6 +18,8 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
+from agents.hapax_voice.config import LITELLM_BASE as _voice_litellm_base
+
 log = logging.getLogger(__name__)
 
 _tts_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
@@ -253,7 +255,7 @@ class ConversationPipeline:
                 "stream": True,
                 "max_tokens": _MAX_RESPONSE_TOKENS,
                 "temperature": 0.7,
-                "api_base": os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000"),
+                "api_base": _voice_litellm_base,
                 "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
             }
             if self.tools:
