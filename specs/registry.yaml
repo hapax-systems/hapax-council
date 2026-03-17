@@ -467,3 +467,336 @@ systems:
           - no telemetry function raises exceptions
           - all telemetry wrapped in try/except with silent fallback
         verification: integration
+
+  # ═══════════════════════════════════════════════════════════════════
+  # SERVICE INFRASTRUCTURE
+  # The system's substrate. These services must be running for any
+  # circulation to function. Failure here is total system failure.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: infrastructure
+    name: Service Infrastructure
+    heartbeat: "continuous (Docker restart policies)"
+    description: >
+      External services the system depends on. Each has a health endpoint,
+      a default port, and an env var override. Degradation must be graceful
+      — a missing service should reduce capability, not crash the system.
+
+    specs:
+      - id: inf-qdrant-001
+        tier: V0
+        text: >
+          Qdrant must be reachable at QDRANT_URL (default localhost:6333).
+          Without Qdrant, the system cannot store or retrieve corrections,
+          episodes, patterns, profile facts, or axiom precedents.
+          All 7 collections must exist.
+        properties:
+          - GET /healthz returns 200
+          - collections exist: documents, profile-facts, axiom-precedents,
+            studio-moments, operator-corrections, operator-episodes, operator-patterns
+          - all text collections use 768-dim cosine vectors
+          - studio-moments uses 512-dim cosine vectors
+        verification: runtime
+
+      - id: inf-ollama-001
+        tier: V0
+        text: >
+          Ollama must be reachable at localhost:11434 with the embedding
+          model loaded. Without Ollama, the system cannot embed text for
+          any Qdrant operation — all semantic search, correction recording,
+          episode storage, and profile indexing stops.
+        properties:
+          - GET /api/tags returns model list
+          - nomic-embed-text-v2-moe available (768-dim embeddings)
+          - embed() call returns exactly 768 floats
+        verification: runtime
+
+      - id: inf-litellm-001
+        tier: V1
+        text: >
+          LiteLLM must be reachable at LITELLM_BASE_URL (default
+          localhost:4000). Without LiteLLM, all LLM agent calls fail —
+          briefing, digest, research, pattern consolidation, code review.
+          The system loses its cognitive layer.
+        properties:
+          - GET /health/liveliness returns 200
+          - model aliases resolve: fast (gemini-flash), balanced (claude-sonnet)
+          - /v1/models returns available models
+        verification: runtime
+
+      - id: inf-cockpit-api-001
+        tier: V1
+        text: >
+          Cockpit API must be reachable at localhost:8051. Without it,
+          the visual layer aggregator cannot poll health, GPU, nudges,
+          briefing, drift, goals, or copilot data. The Corpora visual
+          field loses all signal categories except perception.
+        properties:
+          - GET /api/health returns 200
+          - endpoints available: /health, /gpu, /nudges, /briefing,
+            /drift, /goals, /copilot, /engine/status
+        verification: runtime
+
+      - id: inf-graceful-degradation-001
+        tier: V1
+        text: >
+          When any service is unavailable, the system must degrade
+          gracefully — not crash. Each service client must catch
+          connection errors and return defaults. No exception from a
+          failed HTTP call may propagate to crash a circulation loop.
+        properties:
+          - all _fetch_json() calls catch Exception and return None
+          - all Qdrant operations wrapped in try/except
+          - all Ollama calls wrapped in try/except
+          - embed() failure raises RuntimeError (caller decides policy)
+        verification: structural
+
+  # ═══════════════════════════════════════════════════════════════════
+  # EMBEDDING & VECTOR CONTRACTS
+  # The system's semantic substrate. If dimensions mismatch, everything
+  # silently returns wrong results — the most dangerous failure mode.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: embedding
+    name: Embedding & Vector Contracts
+    heartbeat: "per-operation (no independent cadence)"
+    description: >
+      All semantic search depends on embedding consistency. A dimension
+      mismatch between indexing and querying silently returns garbage.
+      These contracts must be invariant across the entire codebase.
+
+    specs:
+      - id: emb-dimension-001
+        tier: V0
+        text: >
+          All text embedding operations must produce exactly 768
+          dimensions using nomic-embed-text-v2-moe via Ollama. A
+          dimension mismatch between index and query silently returns
+          wrong results — the most dangerous failure mode in the system.
+        properties:
+          - EXPECTED_EMBED_DIMENSIONS = 768 in shared/config.py
+          - embed() validates len(vec) == 768, raises RuntimeError otherwise
+          - VECTOR_DIM = 768 in correction_memory, episodic_memory,
+            pattern_consolidation, profile_store, axiom_precedents
+        verification: structural
+
+      - id: emb-prefix-001
+        tier: V1
+        text: >
+          Text embeddings must use the correct nomic prefix. "search_document"
+          for indexing, "search_query" for retrieval. Mismatched prefixes
+          degrade similarity scores by ~15-20%.
+        properties:
+          - embed(text, prefix="search_document") for all upsert calls
+          - embed(text, prefix="search_query") for all search calls
+          - no embed() calls without explicit prefix
+        verification: structural
+
+      - id: emb-model-singleton-001
+        tier: V1
+        text: >
+          The embedding model name must be defined in exactly one place
+          (shared/config.py EMBEDDING_MODEL). No module may hardcode a
+          different model name. Divergent models produce incompatible
+          vectors in the same collection.
+        properties:
+          - EMBEDDING_MODEL defined once in shared/config.py
+          - all embed() calls use EMBEDDING_MODEL (not hardcoded strings)
+          - CLAP embeddings (512-dim) are separate and clearly marked
+        verification: structural
+
+  # ═══════════════════════════════════════════════════════════════════
+  # DATA FORMAT CONTRACTS
+  # The system's lingua franca. Every file read assumes a schema.
+  # Violations cause silent data loss or KeyError crashes.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: data_formats
+    name: Data Format Contracts
+    heartbeat: "per-read (no independent cadence)"
+    description: >
+      Files are the bus. Every reader assumes a schema. When a writer
+      changes format without updating readers, data is silently lost
+      or misinterpreted.
+
+    specs:
+      - id: df-perception-state-001
+        tier: V0
+        text: >
+          perception-state.json must contain all fields consumed by the
+          visual layer aggregator, stimmung collector, episode builder,
+          and correction seeker. Missing fields cause silent degradation
+          (defaults used) or crashes (KeyError).
+        properties:
+          - required fields: timestamp, flow_score, production_activity,
+            audio_energy_rms, heart_rate_bpm, consent_phase, voice_session,
+            aggregate_confidence
+          - flow_score: float 0.0-1.0
+          - production_activity: string (may be empty)
+          - voice_session: dict with active, state, turn_count
+          - written atomically (tmp + rename) by _perception_state_writer
+        verification: runtime
+
+      - id: df-health-history-001
+        tier: V1
+        text: >
+          health-history.jsonl must contain one JSON object per line with
+          healthy, total, and failed_checks fields. The stimmung collector
+          reads the last line. Malformed lines cause stimmung health
+          dimension to go stale.
+        properties:
+          - each line: {"healthy": int, "total": int, "failed_checks": [...]}
+          - file at profiles/health-history.jsonl
+          - read by StimmungCollector._update_stimmung() (last line only)
+        verification: structural
+
+      - id: df-infra-snapshot-001
+        tier: V1
+        text: >
+          infra-snapshot.json must contain gpu.used_mb and gpu.total_mb.
+          The stimmung collector reads these for resource_pressure.
+          Missing or renamed fields cause the dimension to go stale.
+        properties:
+          - structure: {"gpu": {"used_mb": float, "total_mb": float}}
+          - file at profiles/infra-snapshot.json
+          - read by StimmungCollector._update_stimmung()
+        verification: structural
+
+      - id: df-frontmatter-001
+        tier: V1
+        text: >
+          All markdown files in the vault and RAG sources must use the
+          canonical frontmatter parser (shared/frontmatter.py). No module
+          may implement its own YAML frontmatter parsing. Divergent
+          parsers cause inconsistent metadata extraction.
+        properties:
+          - parse_frontmatter() is the single canonical parser
+          - no other module calls yaml.safe_load on frontmatter
+          - frontmatter schema: type, updated, source, tags (minimum)
+        verification: structural
+
+  # ═══════════════════════════════════════════════════════════════════
+  # TIMING & CADENCE CONTRACTS
+  # The system's rhythms. Each cadence is load-bearing — too fast wastes
+  # resources, too slow causes stale data and missed events.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: timing
+    name: Timing & Cadence Contracts
+    heartbeat: "meta (defines all other heartbeats)"
+    description: >
+      Every interval, timeout, and cadence in the system is a contract
+      between producer and consumer. The producer promises to update at
+      a certain rate. The consumer assumes data is no older than that rate.
+
+    specs:
+      - id: tm-health-monitor-001
+        tier: V1
+        text: >
+          The health monitor must run at least every 15 minutes. Health
+          data feeds stimmung (health dimension), the visual layer
+          (HEALTH_INFRA signals), and the cockpit dashboard. Stale
+          health data causes stimmung to lose its health dimension.
+        properties:
+          - systemd timer: 15min interval with ±1min randomization
+          - writes profiles/health-history.jsonl (append)
+          - writes profiles/infra-snapshot.json (overwrite)
+        verification: runtime
+
+      - id: tm-profile-update-001
+        tier: V2
+        text: >
+          The profile update agent must run at least every 12 hours
+          (prod) or 45 minutes (dev). The operator profile feeds
+          system prompt fragments, ambient content, and profile facts
+          in Qdrant.
+        properties:
+          - systemd timer: 12h (prod), 45min (dev)
+          - writes profiles/operator-profile.json
+          - indexes to Qdrant profile-facts collection
+        verification: runtime
+
+      - id: tm-maintenance-window-001
+        tier: V2
+        text: >
+          The Sunday 02:00-04:30 maintenance window must complete all
+          weekly tasks: LLM backup (02:00), manifest snapshot (02:30),
+          knowledge maintenance (04:30). Tasks must execute in order
+          and complete before the next starts.
+        properties:
+          - llm-backup.timer: Sun 02:00 ±30min
+          - manifest-snapshot.timer: Sun 02:30 ±5min
+          - knowledge-maint.timer: Sun 04:30 ±10min
+          - drift-detector.timer: Sun 03:00 ±10min (also runs)
+        verification: runtime
+
+      - id: tm-cycle-mode-001
+        tier: V1
+        text: >
+          Cycle mode (dev/prod) must be readable from
+          ~/.cache/hapax/cycle-mode. The mode affects timer intervals,
+          debounce settings, and LLM call frequency. An unreadable
+          cycle mode file must default to prod (conservative).
+        properties:
+          - file at ~/.cache/hapax/cycle-mode contains "dev" or "prod"
+          - get_cycle_mode() returns CycleMode enum
+          - default on missing/error: prod
+          - dev mode: shorter intervals, faster debounce
+          - prod mode: longer intervals, conservative thresholds
+        verification: runtime
+
+  # ═══════════════════════════════════════════════════════════════════
+  # REACTIVE ENGINE CONTRACTS
+  # The system's reflexes. Rules must fire in the right order, with
+  # the right cooldowns, gated by the right conditions.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: reactive_engine
+    name: Reactive Engine Contracts
+    heartbeat: "event-driven (inotify)"
+    description: >
+      The reactive engine watches filesystem changes and dispatches
+      actions in phases. Phase ordering, cooldowns, and quiet windows
+      are all load-bearing contracts.
+
+    specs:
+      - id: re-phase-ordering-001
+        tier: V1
+        text: >
+          Actions must execute in phase order: Phase 0 (deterministic)
+          completes before Phase 1 (local GPU) starts, which completes
+          before Phase 2 (cloud LLM) starts. Out-of-order execution
+          causes race conditions between fast and slow actions.
+        properties:
+          - PhasedExecutor groups actions by phase
+          - Phase 0 actions all complete before Phase 1 begins
+          - Phase 1 bounded by gpu_concurrency semaphore (default 1)
+          - Phase 2 bounded by cloud_concurrency semaphore (default 2)
+        verification: structural
+
+      - id: re-rule-count-001
+        tier: V2
+        text: >
+          ALL_RULES must contain exactly 9 rules. A missing rule means
+          a filesystem event goes unhandled. An extra rule means
+          unexpected actions fire.
+        properties:
+          - len(ALL_RULES) == 9
+          - rule names: collector-refresh, config-changed, sdlc-event-logged,
+            rag-source-landed, audio-archive-sidecar, audio-clap-indexed,
+            carrier-intake, knowledge-maintenance, pattern-consolidation
+        verification: integration
+
+      - id: re-stimmung-gating-001
+        tier: V1
+        text: >
+          When stimmung stance is degraded or critical, the engine must
+          skip Phase 1 and Phase 2 actions. Only Phase 0 (deterministic)
+          runs. This prevents expensive GPU/LLM operations when the
+          system is already stressed.
+        properties:
+          - _handle_change reads stimmung stance
+          - if stance in (DEGRADED, CRITICAL): filter to phase == 0
+          - skipped actions logged with count
+          - interaction event emitted to Langfuse
+        verification: structural

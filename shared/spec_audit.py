@@ -268,6 +268,74 @@ def audit_structural(project_root: Path | None = None) -> SpecReport:
         )
     )
 
+    # emb-dimension-001: all stores use 768-dim
+    dim_files = [
+        root / "shared" / "correction_memory.py",
+        root / "shared" / "episodic_memory.py",
+        root / "shared" / "pattern_consolidation.py",
+        root / "shared" / "profile_store.py",
+        root / "shared" / "axiom_precedents.py",
+    ]
+    dim_ok = True
+    dim_missing = []
+    for f in dim_files:
+        if f.exists():
+            ok, _ = _check_file_contains(f, ["VECTOR_DIM = 768"])
+            if not ok:
+                # Also check for 768 as inline
+                ok2, _ = _check_file_contains(f, ["768"])
+                if not ok2:
+                    dim_ok = False
+                    dim_missing.append(f.name)
+    report.results.append(
+        SpecResult(
+            spec_id="emb-dimension-001",
+            system="embedding",
+            tier="V0",
+            passed=dim_ok,
+            details="all stores use 768-dim" if dim_ok else f"missing 768-dim: {dim_missing}",
+        )
+    )
+
+    # df-frontmatter-001: canonical parser used
+    ok, detail = _check_file_contains(
+        root / "shared" / "frontmatter.py",
+        ["def parse_frontmatter"],
+    )
+    report.results.append(
+        SpecResult(
+            spec_id="df-frontmatter-001",
+            system="data_formats",
+            tier="V1",
+            passed=ok,
+            details=f"canonical frontmatter parser: {detail}",
+        )
+    )
+
+    # inf-graceful-degradation-001: fetch_json catches errors
+    ok, detail = _check_file_contains(agg_path, ["except Exception", "return None"])
+    report.results.append(
+        SpecResult(
+            spec_id="inf-graceful-degradation-001",
+            system="infrastructure",
+            tier="V1",
+            passed=ok,
+            details=f"aggregator graceful degradation: {detail}",
+        )
+    )
+
+    # re-phase-ordering-001: PhasedExecutor exists
+    ok, detail = _check_file_contains(engine_path, ["PhasedExecutor", "gpu_concurrency"])
+    report.results.append(
+        SpecResult(
+            spec_id="re-phase-ordering-001",
+            system="reactive_engine",
+            tier="V1",
+            passed=ok,
+            details=f"phased execution: {detail}",
+        )
+    )
+
     # tl-interaction-visibility-001: cross-system interaction logging
     ok, detail = _check_file_contains(
         agg_path,
@@ -433,6 +501,96 @@ def audit_runtime() -> SpecReport:
                 tier="V1",
                 passed=False,
                 details="protention state not found (engine hasn't learned yet)",
+            )
+        )
+
+    # inf-qdrant-001: Qdrant reachable with all collections
+    try:
+        from shared.config import get_qdrant
+
+        client = get_qdrant()
+        collections = [c.name for c in client.get_collections().collections]
+        required = {
+            "documents",
+            "profile-facts",
+            "axiom-precedents",
+            "studio-moments",
+            "operator-corrections",
+            "operator-episodes",
+            "operator-patterns",
+        }
+        missing = required - set(collections)
+        report.results.append(
+            SpecResult(
+                spec_id="inf-qdrant-001",
+                system="infrastructure",
+                tier="V0",
+                passed=len(missing) == 0,
+                details=f"collections present: {len(required) - len(missing)}/{len(required)}"
+                + (f" (missing: {missing})" if missing else ""),
+            )
+        )
+    except Exception as e:
+        report.results.append(
+            SpecResult(
+                spec_id="inf-qdrant-001",
+                system="infrastructure",
+                tier="V0",
+                passed=False,
+                details=f"Qdrant unreachable: {e}",
+            )
+        )
+
+    # inf-ollama-001: Ollama reachable with embedding model
+    try:
+        import ollama
+
+        client = ollama.Client(timeout=3)
+        models = client.list()
+        model_names = [m.get("name", m.get("model", "")) for m in models.get("models", [])]
+        has_nomic = any("nomic" in n for n in model_names)
+        report.results.append(
+            SpecResult(
+                spec_id="inf-ollama-001",
+                system="infrastructure",
+                tier="V0",
+                passed=has_nomic,
+                details=f"nomic model: {'found' if has_nomic else 'MISSING'} "
+                f"(models: {len(model_names)})",
+            )
+        )
+    except Exception as e:
+        report.results.append(
+            SpecResult(
+                spec_id="inf-ollama-001",
+                system="infrastructure",
+                tier="V0",
+                passed=False,
+                details=f"Ollama unreachable: {e}",
+            )
+        )
+
+    # tm-cycle-mode-001: cycle mode readable
+    cycle_path = Path.home() / ".cache" / "hapax" / "cycle-mode"
+    try:
+        mode = cycle_path.read_text().strip()
+        report.results.append(
+            SpecResult(
+                spec_id="tm-cycle-mode-001",
+                system="timing",
+                tier="V1",
+                passed=mode in ("dev", "prod"),
+                details=f"cycle mode: {mode}",
+            )
+        )
+    except OSError:
+        report.results.append(
+            SpecResult(
+                spec_id="tm-cycle-mode-001",
+                system="timing",
+                tier="V1",
+                passed=False,
+                details="cycle mode file not found (defaulting to prod)",
             )
         )
 
