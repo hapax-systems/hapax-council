@@ -135,10 +135,13 @@ class EnvironmentState:
 
     # Visual signals (fast tick)
     face_count: int = 0
+    guest_count: int = 0
     operator_present: bool = False
 
-    # Presence (fast tick, from PresenceDetector)
+    # Presence (fast tick, from PresenceDetector or Bayesian engine)
     presence_score: str = "likely_absent"
+    presence_state: str | None = None  # Bayesian: "PRESENT", "UNCERTAIN", "AWAY"
+    presence_probability: float | None = None  # Bayesian posterior
 
     # Enriched signals (slow tick, carried forward)
     activity_mode: str = "unknown"
@@ -161,8 +164,8 @@ class EnvironmentState:
 
     @property
     def conversation_detected(self) -> bool:
-        """True when multiple faces AND speech detected."""
-        return self.face_count > 1 and self.speech_detected
+        """True when non-operator person(s) present AND speech detected."""
+        return self.guest_count > 0 and self.speech_detected
 
 
 class PerceptionEngine:
@@ -199,6 +202,9 @@ class PerceptionEngine:
         self._b_vad_confidence: Behavior[float] = Behavior(0.0)
         self._b_operator_present: Behavior[bool] = Behavior(False)
         self._b_face_count: Behavior[int] = Behavior(0)
+        self._b_operator_visible: Behavior[bool] = Behavior(False)
+        self._b_face_detected: Behavior[bool] = Behavior(False)
+        self._b_guest_count: Behavior[int] = Behavior(0)
 
         # Phase 2 extension point: all behaviors by name
         self.behaviors: dict[str, Behavior] = {
@@ -210,6 +216,9 @@ class PerceptionEngine:
             "vad_confidence": self._b_vad_confidence,
             "operator_present": self._b_operator_present,
             "face_count": self._b_face_count,
+            "operator_visible": self._b_operator_visible,
+            "face_detected": self._b_face_detected,
+            "guest_count": self._b_guest_count,
         }
 
         # Voice session flag (set by daemon each tick)
@@ -270,15 +279,24 @@ class PerceptionEngine:
         vad_conf = getattr(self._presence, "latest_vad_confidence", 0.0)
         face_detected = getattr(self._presence, "face_detected", False)
         face_count = getattr(self._presence, "face_count", 0)
+        operator_visible = getattr(self._presence, "operator_visible", False)
 
         # Update fast-tick Behaviors
         self._b_vad_confidence.update(vad_conf, now)
         self._b_operator_present.update(face_detected, now)
         self._b_face_count.update(face_count, now)
+        self._b_operator_visible.update(operator_visible, now)
+        self._b_face_detected.update(face_detected, now)
+        self._b_guest_count.update(getattr(self._presence, "guest_count", 0), now)
 
         # Poll registered backends — each gets a view scoped to its declared provides
         # (D5.2: prevents backends from writing to behaviors they don't own)
+        # Fusion backends (presence_engine) run last and receive full behaviors dict.
+        fusion_backends = []
         for name, backend in self._backends.items():
+            if name == "presence_engine":
+                fusion_backends.append((name, backend))
+                continue
             try:
                 scoped = {k: self.behaviors[k] for k in backend.provides if k in self.behaviors}
                 backend.contribute(scoped)
@@ -286,6 +304,13 @@ class PerceptionEngine:
                 for k in backend.provides:
                     if k in scoped and k not in self.behaviors:
                         self.behaviors[k] = scoped[k]
+            except Exception:
+                log.exception("Backend %s contribute failed", name)
+
+        # Fusion backends run after all others, reading from full behaviors dict
+        for name, backend in fusion_backends:
+            try:
+                backend.contribute(self.behaviors)
             except Exception:
                 log.exception("Backend %s contribute failed", name)
 
@@ -302,13 +327,28 @@ class PerceptionEngine:
 
         presence_score = getattr(self._presence, "score", "likely_absent")
 
+        # Bayesian presence engine outputs (if registered)
+        bayesian_state = self._bval("presence_state", None)
+        bayesian_prob = self._bval("presence_probability", None)
+
+        # Deduplicated guest count from fused face detection
+        guest_count = getattr(self._presence, "guest_count", 0)
+
+        # Derive operator_present from Bayesian state when available
+        operator_present = self._b_operator_present.value
+        if bayesian_state is not None:
+            operator_present = bayesian_state in ("PRESENT", "UNCERTAIN")
+
         state = EnvironmentState(
             timestamp=now,
             speech_detected=vad_conf >= self._vad_speech_threshold,
             vad_confidence=self._b_vad_confidence.value,
             face_count=self._b_face_count.value,
-            operator_present=self._b_operator_present.value,
+            guest_count=guest_count,
+            operator_present=operator_present,
             presence_score=presence_score,
+            presence_state=bayesian_state,
+            presence_probability=bayesian_prob,
             activity_mode=self._b_activity_mode.value,
             workspace_context=self._b_workspace_context.value,
             active_window=self._b_active_window.value,

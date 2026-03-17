@@ -56,6 +56,8 @@ class TestDaemonPipelineProperties:
         daemon.presence.latest_vad_confidence = 0.0
         daemon.presence.face_detected = False
         daemon.presence.face_count = 0
+        daemon.presence.guest_count = 0
+        daemon.presence.operator_visible = False
 
         for _ in range(n_ticks):
             state = daemon.perception.tick()
@@ -110,6 +112,8 @@ class TestDaemonPipelineProperties:
         daemon.presence.latest_vad_confidence = 0.0
         daemon.presence.face_detected = False
         daemon.presence.face_count = 0
+        daemon.presence.guest_count = 0
+        daemon.presence.operator_visible = False
 
         for _ in range(n_ticks):
             state = daemon.perception.tick()

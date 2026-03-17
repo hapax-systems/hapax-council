@@ -499,8 +499,29 @@ class WorkspaceMonitor:
                 )
                 return  # One alert per analysis cycle
 
+    def _gather_camera_frames(self) -> dict[str, str | None]:
+        """Capture frames from all available cameras."""
+        import base64 as _b64
+        from pathlib import Path as _Path
+
+        frames: dict[str, str | None] = {}
+        for role in ("operator", "hardware"):
+            if self._webcam_capturer is not None and self._webcam_capturer.has_camera(role):
+                frame = self._webcam_capturer.capture(role)
+                # Fallback: compositor snapshot for operator camera
+                if frame is None and role == "operator":
+                    _shm = _Path("/dev/shm/hapax-compositor/brio-operator.jpg")
+                    if _shm.exists():
+                        try:
+                            frame = _b64.b64encode(_shm.read_bytes()).decode("ascii")
+                        except OSError:
+                            pass
+                if frame is not None:
+                    frames[role] = frame
+        return frames
+
     async def _face_detection_loop(self) -> None:
-        """Periodic face detection from operator camera for presence."""
+        """Periodic face detection from ALL cameras with cross-camera deduplication."""
         if self._webcam_capturer is None or self._presence is None:
             return
         if not self._webcam_capturer.has_camera("operator"):
@@ -518,28 +539,26 @@ class WorkspaceMonitor:
 
         while True:
             try:
-                frame_b64 = self._webcam_capturer.capture("operator")
-                # Fallback: read from compositor snapshot if camera locked
-                if frame_b64 is None:
-                    import base64 as _b64
-                    from pathlib import Path as _Path
-
-                    _shm = _Path("/dev/shm/hapax-compositor/brio-operator.jpg")
-                    if _shm.exists():
-                        try:
-                            frame_b64 = _b64.b64encode(_shm.read_bytes()).decode("ascii")
-                        except OSError:
-                            pass
-                if frame_b64 is not None:
+                frames = self._gather_camera_frames()
+                if frames:
                     t0 = time.monotonic()
-                    result = self._face_detector.detect_from_base64(frame_b64)
+                    fused = self._face_detector.detect_all_cameras(frames)
                     latency_ms = int((time.monotonic() - t0) * 1000)
+
+                    # Total face count for legacy compatibility
+                    total_count = sum(r.count for r in fused.per_camera_results.values())
+                    any_detected = any(r.detected for r in fused.per_camera_results.values())
+
                     self._presence.record_face_event(
-                        detected=result.detected,
-                        count=result.count,
+                        detected=any_detected,
+                        count=total_count,
+                        operator_visible=fused.operator_visible,
+                        guest_count=fused.guest_count,
                     )
                     self._emit_face_event(
-                        detected=result.detected, count=result.count, latency_ms=latency_ms
+                        detected=any_detected,
+                        count=fused.guest_count,
+                        latency_ms=latency_ms,
                     )
             except Exception as exc:
                 log.debug("Face detection loop error: %s", exc)

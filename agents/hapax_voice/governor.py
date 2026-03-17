@@ -241,9 +241,20 @@ class PipelineGovernor:
         An active voice session suppresses absence withdrawal — the operator
         explicitly triggered the session (wake word / hotkey), so they're
         present even if the camera can't see them (under desk, lights off, etc).
+
+        When Bayesian presence is available, uses presence_state directly
+        (hysteresis is handled by the presence engine). Falls back to
+        timer-based absence detection otherwise.
         """
         if state.in_voice_session:
             return False
+
+        # Bayesian path: presence engine handles hysteresis
+        presence_state = getattr(state, "presence_state", None)
+        if presence_state is not None:
+            return presence_state == "AWAY"
+
+        # Legacy path: timer-based
         if state.operator_present or state.face_count > 0:
             return False
         absent_s = time.monotonic() - self._last_operator_seen

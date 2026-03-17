@@ -20,6 +20,7 @@ def _make_state(**overrides) -> EnvironmentState:
         speech_detected=False,
         vad_confidence=0.0,
         face_count=1,
+        guest_count=0,
         operator_present=True,
         activity_mode="idle",
     )
