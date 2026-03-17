@@ -79,6 +79,14 @@ class WorkspaceMonitor:
         self._last_proactive_time: float = 0.0
         self._notification_queue: NotificationQueue | None = None
         self._presence: PresenceDetector | None = None
+
+        # WS5: local LLM confidence gate — skip Gemini when local model is confident
+        self._local_confidence_threshold = 0.7
+        self._local_skip_count = 0
+        self._local_total_count = 0
+        # Force Gemini every N cycles even when local is confident (drift prevention)
+        self._force_cloud_every_n = 5
+        self._cycles_since_cloud = 0
         self._event_log = None
 
         if self._listener is not None:
@@ -197,10 +205,57 @@ class WorkspaceMonitor:
             lines.append(f'  - [{c.app_class}] "{c.title}" on workspace {c.workspace_id}')
         return "\n".join(lines)
 
+    def _should_skip_cloud(self) -> bool:
+        """Check if local LLM confidence is high enough to skip the Gemini call.
+
+        WS5 Tier 2: when the local model is confident about activity/flow,
+        skip the expensive cloud vision call (~2-5s). Force cloud every
+        N cycles to prevent drift.
+        """
+        self._cycles_since_cloud += 1
+        self._local_total_count += 1
+
+        # Force cloud periodically
+        if self._cycles_since_cloud >= self._force_cloud_every_n:
+            return False
+
+        # Read local confidence from perception state
+        try:
+            import json
+            from pathlib import Path
+
+            state_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            confidence = float(data.get("llm_confidence", 0.0))
+            llm_activity = data.get("llm_activity", "")
+
+            if confidence >= self._local_confidence_threshold and llm_activity:
+                self._local_skip_count += 1
+                log.debug(
+                    "WS5: skipping Gemini — local LLM confident (%.2f, activity=%s, "
+                    "skips=%d/%d, cloud in %d)",
+                    confidence,
+                    llm_activity,
+                    self._local_skip_count,
+                    self._local_total_count,
+                    self._force_cloud_every_n - self._cycles_since_cloud,
+                )
+                return True
+        except Exception:
+            pass
+
+        return False
+
     async def _capture_and_analyze(self) -> None:
         """Capture screen (+ webcams if available) and run analysis."""
         if self._screen_capturer is None or self._analyzer is None:
             return
+
+        # WS5: check if local LLM is confident enough to skip cloud
+        if self._should_skip_cloud():
+            return
+
+        self._cycles_since_cloud = 0  # reset counter on cloud call
 
         screen_b64 = self._screen_capturer.capture()
         if screen_b64 is None:
