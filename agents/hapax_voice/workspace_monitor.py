@@ -310,8 +310,91 @@ class WorkspaceMonitor:
             self._route_proactive_issues(analysis)
             self._persist_analysis(analysis)
             self._emit_analysis_event(analysis, latency_ms=latency_ms, images_sent=images_sent)
+            # WS4: check for local vs cloud model disagreement
+            self._check_model_disagreement(analysis)
         else:
             self._emit_analysis_failed("Analysis returned None", latency_ms=latency_ms)
+
+    def _check_model_disagreement(self, cloud_analysis: WorkspaceAnalysis) -> None:
+        """Compare cloud (Gemini) activity with local LLM activity.
+
+        When the local model was confident but Gemini disagrees, log the
+        disagreement as a signal for the correction synthesis pipeline.
+        Writes to /dev/shm so the visual layer aggregator can pick it up.
+        """
+        try:
+            import json
+            from pathlib import Path
+
+            state_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            local_activity = data.get("llm_activity", "")
+            local_confidence = float(data.get("llm_confidence", 0.0))
+
+            if not local_activity or local_confidence < 0.5:
+                return
+
+            # Map cloud app/context to a comparable activity label
+            cloud_activity = self._infer_activity_from_analysis(cloud_analysis)
+            if not cloud_activity:
+                return
+
+            if local_activity != cloud_activity:
+                log.info(
+                    "WS4: model disagreement — local=%s (conf=%.2f) vs cloud=%s",
+                    local_activity,
+                    local_confidence,
+                    cloud_activity,
+                )
+                # Write disagreement to shm for downstream consumption
+                disagreement_path = Path("/dev/shm/hapax-logos/model-disagreement.json")
+                disagreement_path.parent.mkdir(parents=True, exist_ok=True)
+                disagreement_path.write_text(
+                    json.dumps(
+                        {
+                            "local_activity": local_activity,
+                            "local_confidence": local_confidence,
+                            "cloud_activity": cloud_activity,
+                            "cloud_app": cloud_analysis.app,
+                            "timestamp": time.time(),
+                        }
+                    )
+                )
+        except Exception:
+            pass  # best-effort, don't break the main loop
+
+    @staticmethod
+    def _infer_activity_from_analysis(analysis: WorkspaceAnalysis) -> str:
+        """Map a WorkspaceAnalysis to a simple activity label for comparison."""
+        app = (analysis.app or "").lower()
+        activity = (analysis.operator_activity or "").lower()
+
+        # Direct mappings from operator_activity
+        if activity in ("typing",):
+            # Need to disambiguate by app
+            if any(kw in app for kw in ("vim", "nvim", "code", "emacs", "idea", "pycharm")):
+                return "coding"
+            if any(kw in app for kw in ("obsidian", "notion", "docs", "writer", "libreoffice")):
+                return "writing"
+            return "coding"  # default for typing
+        if activity == "reading":
+            return "reading"
+        if activity == "away":
+            return "idle"
+        if activity == "using_hardware":
+            return "making_music"
+
+        # Fall back to app-based inference
+        if any(kw in app for kw in ("firefox", "chrome", "chromium", "brave")):
+            return "browsing"
+        if any(kw in app for kw in ("vim", "nvim", "code", "emacs")):
+            return "coding"
+        if any(kw in app for kw in ("obsidian", "notion")):
+            return "writing"
+        if any(kw in app for kw in ("bitwig", "ableton", "reaper", "ardour")):
+            return "making_music"
+
+        return ""
 
     def _persist_analysis(self, analysis: WorkspaceAnalysis) -> None:
         """Write latest analysis to shared state file for cockpit API."""
