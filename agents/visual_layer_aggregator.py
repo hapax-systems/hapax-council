@@ -33,6 +33,7 @@ from agents.content_scheduler import (
 )
 from agents.predictive_cache import PredictiveCache
 from agents.protention_engine import ProtentionEngine
+from agents.temporal_scales import MultiScaleAggregator
 from agents.visual_layer_state import (
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
@@ -475,6 +476,9 @@ class VisualLayerAggregator:
         # Predictive cache (WS5): pre-computed visual states for likely transitions
         self._predictive_cache = PredictiveCache()
 
+        # Multi-scale temporal aggregator (WS1)
+        self._multi_scale = MultiScaleAggregator()
+
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
         try:
@@ -553,6 +557,9 @@ class VisualLayerAggregator:
 
             # Biometrics (Batch E)
             self._biometrics = map_biometrics(data)
+
+            # WS1: feed multi-scale aggregator
+            self._multi_scale.tick(data)
 
             # WS1: feed protention engine
             self._protention.observe(
