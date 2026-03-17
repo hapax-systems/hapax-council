@@ -164,9 +164,9 @@ class TestProtentionEngine:
             base = now + i * 5000
             engine._flow_timing.observe("active", base)
             engine._flow_timing.observe("idle", base + 1800)
-        # Now predict while in active flow for 25 min
+        # Now predict while in active flow for 26 min (remaining < 300s triggers prediction)
         engine._last_flow_state = "active"
-        engine._flow_session_start = now - 1500
+        engine._flow_session_start = now - 1560
         snap = engine.predict("coding", 0.7, 14, now=now)
         flow_preds = [p for p in snap.predictions if p.dimension == "flow"]
         assert len(flow_preds) >= 1
