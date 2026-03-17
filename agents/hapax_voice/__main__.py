@@ -263,6 +263,21 @@ class VoiceDaemon:
         )
         self._conversation_pipeline = None
 
+        # Application-level echo cancellation (replaces broken PipeWire AEC)
+        self._echo_canceller = None
+        if self.cfg.aec_enabled:
+            try:
+                from agents.hapax_voice.echo_canceller import EchoCanceller
+
+                self._echo_canceller = EchoCanceller(frame_size=480, tail_ms=self.cfg.aec_tail_ms)
+            except Exception:
+                log.warning("Echo canceller init failed, continuing without AEC", exc_info=True)
+
+        # Bridge phrase engine (pre-synthesized contextual gap fillers)
+        from agents.hapax_voice.bridge_engine import BridgeEngine
+
+        self._bridge_engine = BridgeEngine()
+
         # Actuation layer
         self.schedule_queue = ScheduleQueue()
         self.executor_registry = ExecutorRegistry()
@@ -460,6 +475,24 @@ class VoiceDaemon:
         except Exception:
             log.info("StudioIngestionBackend not available, skipping")
 
+        # Vision backend (YOLO object detection + pose + tracking)
+        try:
+            from agents.hapax_voice.backends.vision import VisionBackend
+
+            webcam = getattr(self.workspace_monitor, "_webcam_capturer", None)
+            if webcam is not None:
+                self.perception.register_backend(VisionBackend(webcam_capturer=webcam))
+        except Exception:
+            log.info("VisionBackend not available, skipping")
+
+        # Device state backend (USB, network)
+        try:
+            from agents.hapax_voice.backends.devices import DeviceStateBackend
+
+            self.perception.register_backend(DeviceStateBackend())
+        except Exception:
+            log.info("DeviceStateBackend not available, skipping")
+
         # Local LLM backend (WS5: fast perception classification)
         try:
             from agents.hapax_voice.backends.local_llm import LocalLLMBackend
@@ -547,6 +580,10 @@ class VoiceDaemon:
                     await self._gemini_session.send_audio(frame)
                 except Exception as exc:
                     log.warning("Gemini audio consumer error: %s", exc)
+
+            # AEC: process mic frame through echo canceller before distribution
+            if self._echo_canceller is not None:
+                frame = self._echo_canceller.process(frame)
 
             # Accumulate for exact-sized consumer chunks
             _wake_buf.extend(frame)
@@ -653,6 +690,24 @@ class VoiceDaemon:
 
         log.info("Pipeline dependencies precomputed")
 
+    def _pause_vision_for_conversation(self) -> None:
+        """Pause vision inference to free ~2-3GB VRAM for voice models."""
+        for backend in self.perception.registered_backends.values():
+            if hasattr(backend, "pause_for_conversation"):
+                try:
+                    backend.pause_for_conversation()
+                except Exception:
+                    log.debug("Vision pause failed", exc_info=True)
+
+    def _resume_vision_after_conversation(self) -> None:
+        """Resume vision inference after conversation ends."""
+        for backend in self.perception.registered_backends.values():
+            if hasattr(backend, "resume_after_conversation"):
+                try:
+                    backend.resume_after_conversation()
+                except Exception:
+                    log.debug("Vision resume failed", exc_info=True)
+
     async def _start_conversation_pipeline(self) -> None:
         """Start the lightweight conversation pipeline.
 
@@ -690,6 +745,11 @@ class VoiceDaemon:
             tools = self._precomputed_tools
             tool_handlers = self._precomputed_handlers
 
+        # Pre-synthesize bridge phrases on first session (TTS is warm by now)
+        if not self._bridges_presynthesized:
+            self._bridge_engine.presynthesize_all(self.tts)
+            self._bridges_presynthesized = True
+
         self._conversation_pipeline = ConversationPipeline(
             stt=self._resident_stt,
             tts_manager=self.tts,
@@ -704,7 +764,12 @@ class VoiceDaemon:
             ambient_fn=self._ambient_fn,
             policy_fn=self._policy_fn,
             screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
+            echo_canceller=self._echo_canceller,
+            bridge_engine=self._bridge_engine,
         )
+
+        # Pause vision to free GPU memory for voice models
+        self._pause_vision_for_conversation()
 
         await self._conversation_pipeline.start()
         log.info("Conversation pipeline started (mic stays shared)")
@@ -752,9 +817,11 @@ class VoiceDaemon:
             ):
                 utterance = self._conversation_buffer.get_utterance()
                 if utterance is not None:
+                    self.session.mark_activity()
                     await self._conversation_pipeline.process_utterance(utterance)
+                    self.session.mark_activity()
                 else:
-                    await asyncio.sleep(0.05)  # 50ms poll
+                    await asyncio.sleep(0.01)  # 10ms poll (Phase 3d)
 
                 # Session timeout check
                 if self.session.is_active and self.session.is_timed_out:
@@ -784,6 +851,9 @@ class VoiceDaemon:
                 pass
             self._pipeline_task = None
             log.info("Conversation pipeline stopped")
+
+        # Resume vision now that conversation is done
+        self._resume_vision_after_conversation()
 
         # No need to restore audio input — mic was never stopped
 
@@ -1329,6 +1399,9 @@ class VoiceDaemon:
             log.info("Preloading STT model at startup...")
             self._resident_stt.load()
         self.tts.preload()
+
+        # Bridge presynthesis happens on first session start (after TTS is warm)
+        self._bridges_presynthesized = False
 
         # Precompute pipeline dependencies (tools, consent, callbacks)
         self._precompute_pipeline_deps()

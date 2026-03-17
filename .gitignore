@@ -44,3 +44,14 @@ output/demos/
 data/wake-word-training/
 .hypothesis/
 plugins/gst-temporalfx/target/
+
+# Model weights (large binaries, download on demand)
+*.pt
+*.task
+
+# Screenshots / snapshots (generated)
+*.jpeg
+hapax-visual/
+
+# Temp profiles
+profiles/tmp*

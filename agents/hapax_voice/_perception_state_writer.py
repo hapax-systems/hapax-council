@@ -141,6 +141,21 @@ def _compute_aggregate_confidence(perception: PerceptionEngine) -> float:
         return 1.0
 
 
+# ── Scene inventory helper ────────────────────────────────────────────────
+
+
+def _parse_scene_inventory(raw: object) -> dict[str, Any]:
+    """Parse scene inventory from behavior value (JSON string or dict)."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return {}
+
+
 # ── Main writer ───────────────────────────────────────────────────────────
 
 
@@ -195,6 +210,30 @@ def write_perception_state(
         "emotion_valence": float(_bval("emotion_valence", 0.0)),
         "emotion_arousal": float(_bval("emotion_arousal", 0.0)),
         "audio_energy_rms": float(_bval("audio_energy_rms", 0.0)),
+        # Vision classification
+        "detected_objects": str(_bval("detected_objects", "[]")),
+        "person_count": int(_bval("person_count", 0) or 0),
+        "pose_summary": str(_bval("pose_summary", "unknown")),
+        "scene_objects": str(_bval("scene_objects", "")),
+        "scene_type": str(_bval("scene_type", "unknown")),
+        "gaze_direction": str(_bval("gaze_direction", "unknown")),
+        "hand_gesture": str(_bval("hand_gesture", "none")),
+        "posture": str(_bval("posture", "unknown")),
+        "ambient_brightness": float(_bval("ambient_brightness", 0.0) or 0),
+        "color_temperature": str(_bval("color_temperature", "unknown")),
+        "top_emotion": str(_bval("top_emotion", "neutral")),
+        "face_count": int(_bval("face_count", 0) or 0),
+        "operator_present": bool(_bval("operator_present", False))
+        or int(_bval("person_count", 0) or 0) > 0,
+        "operator_confirmed": bool(_bval("operator_confirmed", False)),
+        "activity_mode": str(_bval("activity_mode", "unknown")),
+        "interruptibility_score": float(_bval("interruptibility_score", 0.9) or 0.9),
+        "vad_confidence": float(_bval("vad_confidence", 0.0) or 0),
+        "presence_score": float(_bval("presence_score", 0.0) or 0),
+        "nearest_person_distance": str(_bval("nearest_person_distance", "none")),
+        "detected_action": str(_bval("detected_action", "unknown")),
+        "usb_devices": str(_bval("usb_devices", "")),
+        "network_devices": str(_bval("network_devices", "")),
         "active_contracts": active_contracts,
         "persistence_allowed": consent_tracker.persistence_allowed if consent_tracker else True,
         "guest_present": consent_tracker.phase.value != "no_guest" if consent_tracker else False,
@@ -205,6 +244,8 @@ def write_perception_state(
         "physiological_load": physiological_load,
         "sleep_quality": sleep_quality,
         "watch_activity_state": watch_activity,
+        # Scene inventory (persistent object tracking)
+        "scene_inventory": _parse_scene_inventory(_bval("scene_inventory", "{}")),
         # Voice session (Batch A)
         "voice_session": _snapshot_voice_session(session, pipeline),
         # Supplementary content (Batch B)
