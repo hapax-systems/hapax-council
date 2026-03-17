@@ -53,9 +53,7 @@ class CleanEffect(BaseEffect):
 
         # === Very subtle saturation boost (keep the warmth, make it richer) ===
         hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV)
-        hsv[:, :, 1] = np.clip(hsv[:, :, 1].astype(np.float32) * 1.06, 0, 255).astype(
-            np.uint8
-        )
+        hsv[:, :, 1] = np.clip(hsv[:, :, 1].astype(np.float32) * 1.06, 0, 255).astype(np.uint8)
         out = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
         return out

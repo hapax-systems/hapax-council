@@ -25,7 +25,7 @@ export const EFFECT_SOURCES: EffectSource[] = [
 ];
 
 /** Convert source ID to fetch URL. "camera" returns undefined (use default). */
-export function sourceUrl(id: string, _role: string): string | undefined {
+export function sourceUrl(id: string): string | undefined {
   if (id === "camera") return undefined;
   return `/api/studio/stream/live/${id}`;
 }

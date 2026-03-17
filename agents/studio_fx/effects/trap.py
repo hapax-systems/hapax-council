@@ -43,13 +43,13 @@ class TrapEffect(BaseEffect):
         highlight_mask = np.clip(gray * 1.8 - 0.8, 0, 1)
 
         # Teal into shadows
-        f[:, :, 0] += shadow_mask * 50   # B
-        f[:, :, 1] += shadow_mask * 25   # G
-        f[:, :, 2] -= shadow_mask * 15   # R
+        f[:, :, 0] += shadow_mask * 50  # B
+        f[:, :, 1] += shadow_mask * 25  # G
+        f[:, :, 2] -= shadow_mask * 15  # R
 
         # Warm into highlights
         f[:, :, 2] += highlight_mask * 30  # R
-        f[:, :, 1] += highlight_mask * 6   # G
+        f[:, :, 1] += highlight_mask * 6  # G
 
         # === 2. DESATURATE (moderate, not total) ===
         out = np.clip(f, 0, 255).astype(np.uint8)
@@ -71,7 +71,7 @@ class TrapEffect(BaseEffect):
         x = np.linspace(-1, 1, w, dtype=np.float32)
         y = np.linspace(-1, 1, h, dtype=np.float32)
         xx, yy = np.meshgrid(x, y)
-        dist = np.sqrt(xx ** 2 + yy ** 2)
+        dist = np.sqrt(xx**2 + yy**2)
         vig = np.clip(1.0 - dist * vstr, 0.15, 1.0)  # floor at 0.15 — never total black
         out_f = out.astype(np.float32) * vig[:, :, np.newaxis]
 

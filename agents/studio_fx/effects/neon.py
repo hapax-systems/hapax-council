@@ -26,28 +26,28 @@ from agents.studio_fx.perception import PerceptionSnapshot
 
 # Synthwave neon palette (BGR) — full spectrum
 _SYNTHWAVE_PALETTE = [
-    (255, 50, 200),    # hot pink / magenta
-    (255, 100, 255),   # pink-purple
-    (200, 50, 255),    # purple
-    (255, 50, 100),    # blue-purple
-    (255, 200, 50),    # cyan
-    (200, 255, 50),    # teal-cyan
-    (100, 255, 100),   # green
-    (50, 255, 200),    # yellow-green
-    (50, 200, 255),    # orange
-    (80, 100, 255),    # hot orange
-    (50, 50, 255),     # red
-    (150, 50, 255),    # red-pink
+    (255, 50, 200),  # hot pink / magenta
+    (255, 100, 255),  # pink-purple
+    (200, 50, 255),  # purple
+    (255, 50, 100),  # blue-purple
+    (255, 200, 50),  # cyan
+    (200, 255, 50),  # teal-cyan
+    (100, 255, 100),  # green
+    (50, 255, 200),  # yellow-green
+    (50, 200, 255),  # orange
+    (80, 100, 255),  # hot orange
+    (50, 50, 255),  # red
+    (150, 50, 255),  # red-pink
 ]
 
 # Emotion → palette index offset (shifts the cycle start point)
 _EMOTION_HUE_OFFSET: dict[str, int] = {
-    "happy": 8,     # warm orange start
+    "happy": 8,  # warm orange start
     "excited": 10,  # hot red start
-    "neutral": 4,   # cool cyan start
-    "sad": 3,       # blue-purple start
-    "angry": 10,    # red start
-    "fear": 2,      # purple start
+    "neutral": 4,  # cool cyan start
+    "sad": 3,  # blue-purple start
+    "angry": 10,  # red start
+    "fear": 2,  # purple start
     "surprise": 6,  # green start
 }
 
