@@ -141,6 +141,7 @@ def _capture_audio(duration_s: float, sample_rate: int = 48000) -> np.ndarray | 
 
     Returns a 1-D float32 numpy array, or None on failure.
     """
+    tmp_path: str | None = None
     try:
         # Use PipeWire's built-in monitor capture via pacat
         import subprocess
@@ -151,27 +152,30 @@ def _capture_audio(duration_s: float, sample_rate: int = 48000) -> np.ndarray | 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
 
-        subprocess.run(
-            [
-                "pacat",
-                "--record",
-                "--format=float32le",
-                "--channels=1",
-                f"--rate={sample_rate}",
-                "--file-format=wav",
-            ],
-            stdout=open(tmp_path, "wb"),
-            timeout=duration_s + 1,
-            check=False,
-        )
+        with open(tmp_path, "wb") as out_fh:
+            subprocess.run(
+                [
+                    "pacat",
+                    "--record",
+                    "--format=float32le",
+                    "--channels=1",
+                    f"--rate={sample_rate}",
+                    "--file-format=wav",
+                ],
+                stdout=out_fh,
+                timeout=duration_s + 1,
+                check=False,
+            )
         data, sr = sf.read(tmp_path, dtype="float32")
-        Path(tmp_path).unlink(missing_ok=True)
         if len(data) == 0:
             return None
         return data if data.ndim == 1 else data[:, 0]
     except Exception as exc:
         log.debug("Audio capture failed: %s", exc)
         return None
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 class StudioIngestionBackend:
