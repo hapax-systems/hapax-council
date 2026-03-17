@@ -273,10 +273,71 @@ class VoiceDaemon:
             except Exception:
                 log.warning("Echo canceller init failed, continuing without AEC", exc_info=True)
 
+        # Speaker identification (operator vs guest voice gating)
+        self._speaker_identifier = None
+        try:
+            from agents.hapax_voice.speaker_id import SpeakerIdentifier
+
+            enrollment_path = Path.home() / ".local/share/hapax-voice/speaker_embedding.npy"
+            if enrollment_path.exists():
+                self._speaker_identifier = SpeakerIdentifier(enrollment_path=enrollment_path)
+                # Pre-load pyannote model at startup (takes ~8s, avoids first-utterance delay)
+                import numpy as np
+
+                _dummy = np.zeros(16000, dtype=np.float32)
+                self._speaker_identifier.extract_embedding(_dummy, 16000)
+                log.info("Speaker identifier loaded from %s (pyannote warm)", enrollment_path)
+            else:
+                log.warning(
+                    "No speaker enrollment found at %s — speaker gating disabled", enrollment_path
+                )
+        except Exception:
+            log.warning("Speaker identifier init failed — speaker gating disabled", exc_info=True)
+
         # Bridge phrase engine (pre-synthesized contextual gap fillers)
         from agents.hapax_voice.bridge_engine import BridgeEngine
 
         self._bridge_engine = BridgeEngine()
+
+        # Salience-based model routing
+        self._salience_router = None
+        self._salience_embedder = None
+        self._salience_concern_graph = None
+        self._salience_diagnostics = None
+        self._context_distillation: str = ""
+        if self.cfg.salience_enabled:
+            try:
+                from agents.hapax_voice.salience.concern_graph import ConcernGraph
+                from agents.hapax_voice.salience.embedder import Embedder
+                from agents.hapax_voice.salience_router import SalienceRouter
+
+                self._salience_embedder = Embedder(model_name=self.cfg.salience_model)
+                if self._salience_embedder.available:
+                    self._salience_concern_graph = ConcernGraph(
+                        dim=self._salience_embedder.dim,
+                    )
+                    self._salience_router = SalienceRouter(
+                        embedder=self._salience_embedder,
+                        concern_graph=self._salience_concern_graph,
+                        thresholds=self.cfg.salience_thresholds,
+                        weights=self.cfg.salience_weights,
+                    )
+
+                    from agents.hapax_voice.salience.diagnostics import SalienceDiagnostics
+
+                    self._salience_diagnostics = SalienceDiagnostics(
+                        router=self._salience_router,
+                        concern_graph=self._salience_concern_graph,
+                    )
+                    log.info(
+                        "Salience router initialized (%dd embeddings)", self._salience_embedder.dim
+                    )
+                else:
+                    log.warning("Salience embedder unavailable, falling back to heuristic routing")
+            except Exception:
+                log.warning(
+                    "Salience router init failed, falling back to heuristic routing", exc_info=True
+                )
 
         # Actuation layer
         self.schedule_queue = ScheduleQueue()
@@ -708,6 +769,56 @@ class VoiceDaemon:
                 except Exception:
                     log.debug("Vision resume failed", exc_info=True)
 
+    def _refresh_concern_graph(self) -> None:
+        """Refresh concern anchors from current infrastructure state.
+
+        Called on perception tick cadence and at session start.
+        """
+        if self._salience_embedder is None or self._salience_concern_graph is None:
+            return
+
+        try:
+            from agents.hapax_voice.salience.anchor_builder import build_anchors
+
+            env = self.perception.latest if hasattr(self, "perception") else None
+
+            # Gather notification texts (read-only peek into queue)
+            notif_texts: list[str] = []
+            if hasattr(self, "notifications"):
+                for n in self.notifications._items[:5]:
+                    notif_texts.append(getattr(n, "message", str(n)))
+
+            anchors = build_anchors(
+                env_state=env,
+                notifications=notif_texts,
+            )
+
+            if anchors:
+                texts = [a.text for a in anchors]
+                embeddings = self._salience_embedder.embed_batch(texts)
+                self._salience_concern_graph.refresh(anchors, embeddings)
+        except Exception:
+            log.debug("Concern graph refresh failed (non-fatal)", exc_info=True)
+
+    def _refresh_context_distillation(self) -> None:
+        """Generate context distillation for LOCAL tier prompts."""
+        try:
+            from agents.hapax_voice.salience.anchor_builder import build_context_distillation
+
+            env = self.perception.latest if hasattr(self, "perception") else None
+            notif_count = self.notifications.pending_count if hasattr(self, "notifications") else 0
+
+            self._context_distillation = build_context_distillation(
+                env_state=env,
+                notification_count=notif_count,
+            )
+
+            # Push to active pipeline if running
+            if self._conversation_pipeline is not None:
+                self._conversation_pipeline._context_distillation = self._context_distillation
+        except Exception:
+            log.debug("Context distillation refresh failed (non-fatal)", exc_info=True)
+
     async def _start_conversation_pipeline(self) -> None:
         """Start the lightweight conversation pipeline.
 
@@ -768,6 +879,14 @@ class VoiceDaemon:
             bridge_engine=self._bridge_engine,
         )
 
+        # Wire salience router and context distillation into pipeline
+        if self._salience_router is not None:
+            self._conversation_pipeline._salience_router = self._salience_router
+            self._conversation_pipeline._salience_diagnostics = self._salience_diagnostics
+            self._refresh_concern_graph()
+            self._refresh_context_distillation()
+            self._conversation_pipeline._context_distillation = self._context_distillation
+
         # Pause vision to free GPU memory for voice models
         self._pause_vision_for_conversation()
 
@@ -808,7 +927,18 @@ class VoiceDaemon:
         Runs while the conversation pipeline is active. Checks every
         50ms for complete utterances from the ConversationBuffer and
         feeds them to the pipeline for processing.
+
+        Speaker verification: accumulates speech audio across utterances
+        until enough is collected (~3s) for reliable pyannote embedding.
+        Once the operator is verified, the session is trusted until it
+        closes. Non-operator audio is dropped.
         """
+        # Session-scoped speaker verification state
+        _speaker_verified = False  # True once operator confirmed
+        _speaker_audio_buf: list[bytes] = []  # accumulate for verification
+        _speaker_audio_samples = 0  # total samples accumulated
+        _VERIFY_MIN_SAMPLES = 16000 * 3  # 3s of 16kHz audio for reliable ID
+
         try:
             while (
                 self._conversation_pipeline is not None
@@ -817,6 +947,41 @@ class VoiceDaemon:
             ):
                 utterance = self._conversation_buffer.get_utterance()
                 if utterance is not None:
+                    # Speaker verification gate
+                    if self._speaker_identifier is not None and not _speaker_verified:
+                        _speaker_audio_buf.append(utterance)
+                        _speaker_audio_samples += len(utterance) // 2  # int16 = 2 bytes/sample
+
+                        if _speaker_audio_samples >= _VERIFY_MIN_SAMPLES:
+                            # Enough audio accumulated — verify speaker
+                            combined = b"".join(_speaker_audio_buf)
+                            speaker = await self._verify_speaker(combined)
+
+                            if speaker == "operator":
+                                _speaker_verified = True
+                                self.session.set_speaker("operator", 0.0)
+                                log.info("Speaker gate: operator verified, session trusted")
+                                # Process all buffered utterances
+                                for buffered in _speaker_audio_buf:
+                                    self.session.mark_activity()
+                                    await self._conversation_pipeline.process_utterance(buffered)
+                                    self.session.mark_activity()
+                                _speaker_audio_buf.clear()
+                                continue
+                            elif speaker == "not_operator":
+                                log.info("Speaker gate: DROPPED — not operator")
+                                _speaker_audio_buf.clear()
+                                _speaker_audio_samples = 0
+                                continue
+                            else:
+                                # Uncertain — keep accumulating, but process
+                                # this utterance (fail-open for operator)
+                                log.info("Speaker gate: uncertain, accumulating more audio")
+                        else:
+                            # Not enough audio yet — process anyway (fail-open)
+                            # but keep accumulating for verification
+                            pass
+
                     self.session.mark_activity()
                     await self._conversation_pipeline.process_utterance(utterance)
                     self.session.mark_activity()
@@ -831,6 +996,36 @@ class VoiceDaemon:
             pass
         except Exception:
             log.exception("Conversation loop error")
+
+    async def _verify_speaker(self, audio_bytes: bytes) -> str:
+        """Run speaker verification on accumulated PCM audio.
+
+        Returns "operator", "not_operator", or "uncertain".
+        Runs pyannote embedding extraction in a thread to avoid blocking.
+        Expects at least 3s of audio for reliable identification.
+        """
+        try:
+            import numpy as np
+
+            audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            if len(audio) < 8000:  # less than 0.5s — too short even for best-effort
+                return "uncertain"
+
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._speaker_identifier.identify_audio(audio, 16000),
+            )
+            log.info(
+                "Speaker verification: %s (confidence=%.3f, audio=%.1fs)",
+                result.label,
+                result.confidence,
+                len(audio) / 16000,
+            )
+            return result.label
+        except Exception:
+            log.debug("Speaker verification failed (fail-open)", exc_info=True)
+            return "uncertain"
 
     async def _stop_pipeline(self) -> None:
         """Stop the active pipeline or Gemini session."""
@@ -851,6 +1046,12 @@ class VoiceDaemon:
                 pass
             self._pipeline_task = None
             log.info("Conversation pipeline stopped")
+
+        # Clear session-scoped salience state so next session starts fresh
+        if self._salience_router is not None:
+            self._salience_router._recent_turns.clear()
+        if self._salience_concern_graph is not None:
+            self._salience_concern_graph._recent_utterances.clear()
 
         # Resume vision now that conversation is done
         self._resume_vision_after_conversation()
@@ -1315,6 +1516,35 @@ class VoiceDaemon:
                     ring = get_perception_ring()
                     if ring is not None and ring.current() is not None:
                         self._local_llm_backend.set_perception_snapshot(ring.current())
+
+                # Refresh salience concern graph on perception tick cadence
+                if self._salience_router is not None:
+                    self._refresh_concern_graph()
+                    self._refresh_context_distillation()
+
+                # Sync perception state to conversation pipeline for routing
+                if self._conversation_pipeline is not None:
+                    self._conversation_pipeline._activity_mode = state.activity_mode
+                    # Map ConsentPhase enum to routing phase strings
+                    _cp = (
+                        self.consent_tracker.phase.value
+                        if hasattr(self.consent_tracker, "phase")
+                        else "none"
+                    )
+                    # Normalize to routing expectations: pending/active/refused/none
+                    _phase_map = {
+                        "no_guest": "none",
+                        "guest_detected": "none",
+                        "consent_pending": "pending",
+                        "consent_granted": "active",
+                        "consent_refused": "refused",
+                    }
+                    self._conversation_pipeline._consent_phase = _phase_map.get(_cp, "none")
+                    self._conversation_pipeline._guest_mode = self.session.is_guest_mode
+                    # face_count disabled for routing — face detector gives false
+                    # positives (screens, reflections) that trigger governance
+                    # override to CAPABLE. Re-enable after face detector is validated.
+                    # self._conversation_pipeline._face_count = state.face_count
 
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision

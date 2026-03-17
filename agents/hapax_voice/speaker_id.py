@@ -72,15 +72,26 @@ class SpeakerIdentifier:
             self._enrolled = np.load(enrollment_path)
             log.info("Loaded speaker enrollment from %s", enrollment_path)
 
-    def identify(self, embedding: np.ndarray) -> SpeakerResult:
-        """Identify speaker by cosine similarity against enrolled embedding."""
+    def identify(
+        self,
+        embedding: np.ndarray,
+        threshold_accept: float = 0.60,
+        threshold_reject: float = 0.35,
+    ) -> SpeakerResult:
+        """Identify speaker by cosine similarity against enrolled embedding.
+
+        Thresholds tuned for Blue Yeti in a room (~1m distance):
+          >= 0.60: operator (enrollment self-similarity is 0.68-0.76)
+          <  0.35: definitely not operator
+          0.35-0.60: uncertain
+        """
         if self._enrolled is None:
             return SpeakerResult(label="uncertain", confidence=0.0)
 
         similarity = _cosine_similarity(embedding, self._enrolled)
-        if similarity >= 0.75:
+        if similarity >= threshold_accept:
             return SpeakerResult(label="operator", confidence=similarity)
-        if similarity < 0.4:
+        if similarity < threshold_reject:
             return SpeakerResult(label="not_operator", confidence=similarity)
         return SpeakerResult(label="uncertain", confidence=similarity)
 

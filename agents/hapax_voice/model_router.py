@@ -145,11 +145,15 @@ def route(
     face_count: int = 0,
     elaboration_requested: bool = False,
     has_tools: bool = True,
+    prev_tier: int = -1,
 ) -> RoutingDecision:
     """Classify an utterance to a model tier.
 
-    Pure function — no side effects, no async, no I/O. Fast enough
-    to call inline before every LLM request (~0.01ms).
+    prev_tier: ModelTier value from previous turn. Enforces tier momentum —
+    can't skip tiers upward (except governance overrides and explicit
+    escalation requests). The conversation must ramp naturally: each turn
+    can go at most one tier up. The FAST response acts as a natural verbal
+    gate before STRONG.
     """
     text = transcript.strip()
     words = len(text.split())
@@ -263,6 +267,12 @@ def route(
         tier = ModelTier.LOCAL
     else:
         tier = ModelTier.FAST
+
+    # ── Tier momentum: can't skip tiers upward ──────────────────
+    # Exception: governance overrides (consent/guest) and explicit
+    # escalation requests ("explain", "think harder") bypass momentum.
+    if prev_tier >= 0 and not hard_escalated and tier > prev_tier + 1:
+        tier = ModelTier(min(prev_tier + 1, ModelTier.CAPABLE))
 
     return RoutingDecision(
         tier=tier,

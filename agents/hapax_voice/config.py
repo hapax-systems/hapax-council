@@ -168,6 +168,22 @@ class VoiceConfig(BaseModel):
     obs_host: str = "localhost"
     obs_port: int = 4455
 
+    # Salience router
+    salience_enabled: bool = True  # False = fall back to model_router.py heuristics
+    salience_model: str = "minishlab/potion-base-8M"
+    salience_thresholds: dict[str, float] = {
+        "canned_max": 0.15,
+        "local_max": 0.45,
+        "fast_max": 0.60,
+        "strong_max": 0.78,
+    }
+    salience_weights: dict[str, float] = {
+        "concern_overlap": 0.55,
+        "novelty": 0.15,
+        "dialog_features": 0.30,
+    }
+    salience_concern_refresh_cadence_s: float = 2.5  # match perception fast tick
+
     # TTS hold-and-release
     tts_bar_aligned: bool = True
     tts_lookahead_bars: int = 2
