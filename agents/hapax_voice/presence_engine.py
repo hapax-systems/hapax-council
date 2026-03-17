@@ -146,9 +146,7 @@ class PresenceEngine:
                         "from": old_state,
                         "to": self._state,
                         "posterior": round(posterior, 4),
-                        "signals": {
-                            k: v for k, v in signal_observations.items() if v is not None
-                        },
+                        "signals": {k: v for k, v in signal_observations.items() if v is not None},
                     },
                 )
         else:

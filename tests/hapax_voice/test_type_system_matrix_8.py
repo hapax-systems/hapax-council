@@ -444,7 +444,9 @@ class TestWakeWordReconfigurationInvariants:
         )
 
         # Drive into conversation pause
-        conv_state = _make_state(activity_mode="idle", face_count=2, guest_count=1, speech_detected=True)
+        conv_state = _make_state(
+            activity_mode="idle", face_count=2, guest_count=1, speech_detected=True
+        )
         gov.evaluate(conv_state)
         assert gov._paused_by_conversation is True
 
