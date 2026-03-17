@@ -1,0 +1,30 @@
+[Unit]
+Description=Hapax Logos — native cockpit + wgpu visual surface
+After=graphical-session.target cockpit-api.service
+Wants=graphical-session.target
+# Replaces standalone hapax-visual (visual surface is now a second window)
+Conflicts=hapax-visual.service
+StartLimitBurst=5
+StartLimitIntervalSec=300
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/mkdir -p /dev/shm/hapax-logos /dev/shm/hapax-visual /dev/shm/hapax-compositor /dev/shm/hapax-stimmung
+ExecStart=/home/hapax/.local/bin/hapax-logos
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=HOME=/home/hapax
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+# WebKit2GTK needs dbus
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+# Vulkan for wgpu visual surface
+Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+MemoryMax=4G
+SyslogIdentifier=hapax-logos
+
+[Install]
+WantedBy=graphical-session.target
