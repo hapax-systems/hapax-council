@@ -77,13 +77,13 @@ class SlitscanEffect(BaseEffect):
         out[:, x0:x1] = frame[:, x0:x1]
         # Add a bright border to the scan line
         if x0 > 0:
-            out[:, x0 - 1 : x0] = np.clip(
-                out[:, x0 - 1 : x0].astype(np.int16) + 60, 0, 255
-            ).astype(np.uint8)
+            out[:, x0 - 1 : x0] = np.clip(out[:, x0 - 1 : x0].astype(np.int16) + 60, 0, 255).astype(
+                np.uint8
+            )
         if x1 < w:
-            out[:, x1 : x1 + 1] = np.clip(
-                out[:, x1 : x1 + 1].astype(np.int16) + 60, 0, 255
-            ).astype(np.uint8)
+            out[:, x1 : x1 + 1] = np.clip(out[:, x1 : x1 + 1].astype(np.int16) + 60, 0, 255).astype(
+                np.uint8
+            )
 
         # Slight desaturation for the ethereal/otherworldly quality
         hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV)

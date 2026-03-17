@@ -101,7 +101,8 @@ class DatamoshEffect(BaseEffect):
             my = map_y + self._accum_flow[:, :, 1] * offsets[c]
             ch = cv2.remap(
                 self._ref_frame[:, :, c],
-                mx, my,
+                mx,
+                my,
                 interpolation=cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_REFLECT,
             )
@@ -117,9 +118,7 @@ class DatamoshEffect(BaseEffect):
 
         # Slight saturation boost for vivid color smearing
         hsv = cv2.cvtColor(moshed, cv2.COLOR_BGR2HSV)
-        hsv[:, :, 1] = np.clip(hsv[:, :, 1].astype(np.float32) * 1.3, 0, 255).astype(
-            np.uint8
-        )
+        hsv[:, :, 1] = np.clip(hsv[:, :, 1].astype(np.float32) * 1.3, 0, 255).astype(np.uint8)
         moshed = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
         # Blend: heavy mosh with slight current bleed-through for orientation

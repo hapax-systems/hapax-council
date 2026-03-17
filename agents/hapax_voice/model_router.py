@@ -85,10 +85,19 @@ _CANNED_PATTERNS: list[tuple[re.Pattern[str], list[str]]] = [
 
 # First-turn greetings — always canned, no LLM adds value here.
 _GREETING_CANNED: list[tuple[re.Pattern[str], list[str]]] = [
-    (re.compile(r"^(you\s+there|are\s+you\s+(there|here|awake|up))\??\.?$", re.I), ["Yep, right here.", "Yeah, what's up?"]),
+    (
+        re.compile(r"^(you\s+there|are\s+you\s+(there|here|awake|up))\??\.?$", re.I),
+        ["Yep, right here.", "Yeah, what's up?"],
+    ),
     (re.compile(r"^(hey|hello|hi|yo|morning|evening)[\.,!]?$", re.I), ["Hey.", "Hey, what's up?"]),
-    (re.compile(r"^what'?s\s+up\??$", re.I), ["Not much. What do you need?", "Hey. What's going on?"]),
-    (re.compile(r"^(how\s+are\s+you|how'?s\s+it\s+going)\??$", re.I), ["Doing well. What's up?", "Good. You?"]),
+    (
+        re.compile(r"^what'?s\s+up\??$", re.I),
+        ["Not much. What do you need?", "Hey. What's going on?"],
+    ),
+    (
+        re.compile(r"^(how\s+are\s+you|how'?s\s+it\s+going)\??$", re.I),
+        ["Doing well. What's up?", "Good. You?"],
+    ),
 ]
 
 # ── Escalation triggers ──────────────────────────────────────────────

@@ -93,7 +93,9 @@ class VhsEffect(BaseEffect):
 
         # === 6. TAPE NOISE ===
         noise_strength = 0.06 if p.operator_present else 0.12
-        noise = self._rng.integers(0, max(1, int(180 * noise_strength)), size=(h, w), dtype=np.uint8)
+        noise = self._rng.integers(
+            0, max(1, int(180 * noise_strength)), size=(h, w), dtype=np.uint8
+        )
         noise_bgr = cv2.cvtColor(noise, cv2.COLOR_GRAY2BGR)
         out = cv2.addWeighted(out, 0.93, noise_bgr, 0.07, 0)
 
