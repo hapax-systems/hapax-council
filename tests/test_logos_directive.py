@@ -106,7 +106,9 @@ class TestDirectiveEndpoint:
             assert "browser_navigate" in body["fields"]
 
             record = json.loads(directive_file.read_text().strip())
-            assert record["browser_navigate"] == "https://github.com/ryanklee/hapax-council/pull/145"
+            assert (
+                record["browser_navigate"] == "https://github.com/ryanklee/hapax-council/pull/145"
+            )
 
     def test_post_directive_browser_eval(self, tmp_path: Path):
         directive_file = tmp_path / "directives.jsonl"
