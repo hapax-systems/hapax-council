@@ -56,6 +56,8 @@ def extract_commits(
     """
     cmd = [
         "git",
+        "-c",
+        "safe.directory=*",
         "-C",
         repo_path,
         "log",
