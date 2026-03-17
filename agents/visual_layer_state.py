@@ -7,7 +7,7 @@ Architecture:
   Signal Aggregator (polls API) → VisualLayerState (this module's output)
   → Studio Compositor (reads JSON, renders Cairo overlay)
 
-Five display states, six signal categories, opacity-driven transitions.
+Five display states, seven signal categories, opacity-driven transitions.
 Designed for ADHD/autism operator: muted palette, ≥500ms transitions,
 max 5 simultaneous info chunks, flow-state-gated escalation.
 """
@@ -44,6 +44,8 @@ class SignalCategory(StrEnum):
     HEALTH_INFRA = "health_infra"  # Bottom-right: system health, GPU, containers
     PROFILE_STATE = "profile_state"  # Center-top: flow state, activity mode
     AMBIENT_SENSOR = "ambient_sensor"  # Bottom strip: audio energy, genre
+    VOICE_SESSION = "voice_session"  # Bottom-center: voice conversation state
+    SYSTEM_STATE = "system_state"  # Bottom-left: system self-state (stimmung)
 
 
 # ── Zone Layout ──────────────────────────────────────────────────────────────
@@ -65,6 +67,8 @@ ZONE_LAYOUT: dict[str, ZoneSpec] = {
     SignalCategory.HEALTH_INFRA: ZoneSpec(x=0.78, y=0.78, w=0.21, h=0.18),
     SignalCategory.PROFILE_STATE: ZoneSpec(x=0.35, y=0.01, w=0.30, h=0.06),
     SignalCategory.AMBIENT_SENSOR: ZoneSpec(x=0.01, y=0.92, w=0.75, h=0.06),
+    SignalCategory.VOICE_SESSION: ZoneSpec(x=0.25, y=0.88, w=0.50, h=0.10),
+    SignalCategory.SYSTEM_STATE: ZoneSpec(x=0.01, y=0.78, w=0.21, h=0.12),
 }
 
 
@@ -93,6 +97,90 @@ class AmbientParams(BaseModel):
     brightness: float = 0.25
 
 
+# ── Injected Camera Feed ────────────────────────────────────────────────────
+
+
+class InjectedFeed(BaseModel):
+    """A camera feed injected into the canvas by the aggregator."""
+
+    role: str  # e.g. "brio-operator", "c920-room"
+    x: float = 0.6
+    y: float = 0.3
+    w: float = 0.35
+    h: float = 0.35
+    opacity: float = 0.7
+    css_filter: str = "sepia(0.5) contrast(1.2)"
+    duration_s: float = 45.0
+    injected_at: float = 0.0
+
+
+# ── Voice Session State ─────────────────────────────────────────────────────
+
+
+class VoiceSessionState(BaseModel):
+    """Voice conversation state forwarded from perception state."""
+
+    active: bool = False
+    state: str = "idle"  # listening | transcribing | thinking | speaking
+    turn_count: int = 0
+    last_utterance: str = ""
+    last_response: str = ""
+    active_tool: str | None = None
+    barge_in: bool = False
+
+
+# ── Supplementary Content ────────────────────────────────────────────────────
+
+
+class SupplementaryContent(BaseModel):
+    """A content card surfaced from voice tool execution."""
+
+    content_type: str  # image | text | weather | calendar | status
+    title: str
+    body: str = ""
+    image_path: str = ""
+    timestamp: float = 0.0
+
+
+# ── Biometric State ─────────────────────────────────────────────────────────
+
+
+class BiometricState(BaseModel):
+    """Physiological signals from smartwatch — drives ambient modulation."""
+
+    heart_rate_bpm: int = 0
+    stress_elevated: bool = False
+    physiological_load: float = 0.0
+    sleep_quality: float = 1.0
+    watch_activity: str = "unknown"
+
+
+# ── Temporal Context (WS1+WS5) ──────────────────────────────────────────────
+
+
+class TemporalContext(BaseModel):
+    """Temporal thickness from perception ring buffer.
+
+    Provides trends and staleness for the aggregator fast loop.
+    """
+
+    trend_flow: float = 0.0  # flow_score trend (slope/s)
+    trend_audio: float = 0.0  # audio_energy_rms trend (slope/s)
+    trend_hr: float = 0.0  # heart_rate_bpm trend (slope/s)
+    perception_age_s: float = 0.0  # seconds since last perception update
+    ring_depth: int = 0  # how many snapshots in the ring
+
+
+class SignalStaleness(BaseModel):
+    """Per-source staleness for opacity decay."""
+
+    perception_s: float = 0.0
+    health_s: float = 0.0
+    gpu_s: float = 0.0
+    nudges_s: float = 0.0
+    briefing_s: float = 0.0
+
+
 # ── Visual Layer State (output model) ────────────────────────────────────────
 
 
@@ -107,6 +195,18 @@ class VisualLayerState(BaseModel):
     zone_opacities: dict[str, float] = Field(default_factory=dict)
     signals: dict[str, list[SignalEntry]] = Field(default_factory=dict)
     ambient_params: AmbientParams = Field(default_factory=AmbientParams)
+    voice_session: VoiceSessionState = Field(default_factory=VoiceSessionState)
+    voice_content: list[SupplementaryContent] = Field(default_factory=list)
+    biometrics: BiometricState = Field(default_factory=BiometricState)
+    injected_feeds: list[InjectedFeed] = Field(default_factory=list)
+    ambient_text: str = ""  # Dynamic ambient fragment (replaces hardcoded list)
+    activity_label: str = ""  # What Hapax thinks operator is doing
+    activity_detail: str = ""  # Supporting detail (app, genre, etc.)
+    display_density: str = "ambient"  # Content density mode from scheduler
+    scheduler_source: str = ""  # Last content source the scheduler selected
+    temporal_context: TemporalContext = Field(default_factory=TemporalContext)
+    signal_staleness: SignalStaleness = Field(default_factory=SignalStaleness)
+    stimmung_stance: str = "nominal"  # System self-state stance (WS2)
     timestamp: float = 0.0
 
 
@@ -121,6 +221,8 @@ _OPACITY_TARGETS: dict[DisplayState, dict[str, float]] = {
         SignalCategory.HEALTH_INFRA: 0.3,
         SignalCategory.PROFILE_STATE: 0.2,
         SignalCategory.AMBIENT_SENSOR: 0.15,
+        SignalCategory.VOICE_SESSION: 0.6,
+        SignalCategory.SYSTEM_STATE: 0.25,
     },
     DisplayState.INFORMATIONAL: {
         SignalCategory.CONTEXT_TIME: 0.75,
@@ -129,6 +231,8 @@ _OPACITY_TARGETS: dict[DisplayState, dict[str, float]] = {
         SignalCategory.HEALTH_INFRA: 0.7,
         SignalCategory.PROFILE_STATE: 0.6,
         SignalCategory.AMBIENT_SENSOR: 0.5,
+        SignalCategory.VOICE_SESSION: 0.8,
+        SignalCategory.SYSTEM_STATE: 0.6,
     },
     DisplayState.ALERT: {
         SignalCategory.CONTEXT_TIME: 0.5,
@@ -137,6 +241,8 @@ _OPACITY_TARGETS: dict[DisplayState, dict[str, float]] = {
         SignalCategory.HEALTH_INFRA: 0.9,
         SignalCategory.PROFILE_STATE: 0.3,
         SignalCategory.AMBIENT_SENSOR: 0.3,
+        SignalCategory.VOICE_SESSION: 0.7,
+        SignalCategory.SYSTEM_STATE: 0.7,
     },
     DisplayState.PERFORMATIVE: {cat: 0.0 for cat in SignalCategory},
 }
@@ -177,6 +283,7 @@ class DisplayStateMachine:
         self.state = DisplayState.AMBIENT
         self._last_escalation_time: float = 0.0
         self._deescalation_timer: float = 0.0
+        self._staleness: SignalStaleness | None = None
 
     def tick(
         self,
@@ -185,6 +292,7 @@ class DisplayStateMachine:
         audio_energy: float = 0.0,
         production_active: bool = False,
         now: float | None = None,
+        stimmung_stance: str = "nominal",
     ) -> VisualLayerState:
         """Compute next state from current signals and perception."""
         if now is None:
@@ -206,8 +314,10 @@ class DisplayStateMachine:
         self.state = new_state
 
         categorized = self._categorize_signals(signals)
-        zone_opacities = self._compute_opacities(new_state, categorized)
-        ambient = self._compute_ambient_params(max_severity, flow_score, audio_energy)
+        zone_opacities = self._compute_opacities(new_state, categorized, self._staleness)
+        ambient = self._compute_ambient_params(
+            max_severity, flow_score, audio_energy, stimmung_stance
+        )
 
         return VisualLayerState(
             display_state=new_state,
@@ -296,6 +406,7 @@ class DisplayStateMachine:
         self,
         state: DisplayState,
         categorized: dict[str, list[SignalEntry]],
+        staleness: SignalStaleness | None = None,
     ) -> dict[str, float]:
         base = dict(_OPACITY_TARGETS[state])
 
@@ -313,13 +424,22 @@ class DisplayStateMachine:
             if not categorized.get(cat):
                 base[cat] = min(base[cat], 0.0)
 
+        # Phase 3: staleness-weighted decay — stale data fades, fresh stays vivid
+        if staleness is not None:
+            _apply_staleness_decay(base, staleness)
+
         return base
+
+    def set_staleness(self, staleness: SignalStaleness) -> None:
+        """Set staleness for the next tick's opacity computation."""
+        self._staleness = staleness
 
     def _compute_ambient_params(
         self,
         max_severity: float,
         flow_score: float,
         audio_energy: float,
+        stimmung_stance: str = "nominal",
     ) -> AmbientParams:
         speed = 0.08
         turbulence = 0.1
@@ -337,9 +457,51 @@ class DisplayStateMachine:
 
         brightness = max(0.15, 0.25 + 0.1 * audio_energy)
 
+        # WS2: Stimmung modulation — system stress warms and quickens the field
+        if stimmung_stance == "cautious":
+            warmth = min(1.0, warmth + 0.15)
+            speed += 0.05
+        elif stimmung_stance == "degraded":
+            warmth = min(1.0, warmth + 0.35)
+            speed += 0.1
+            turbulence += 0.1
+        elif stimmung_stance == "critical":
+            warmth = min(1.0, warmth + 0.6)
+            speed += 0.2
+            turbulence += 0.2
+
         return AmbientParams(
             speed=round(speed, 3),
             turbulence=round(turbulence, 3),
             color_warmth=round(warmth, 3),
             brightness=round(brightness, 3),
         )
+
+
+# ── Staleness Decay (Phase 3) ───────────────────────────────────────────────
+
+# Category → (staleness field, max age before full decay)
+_STALENESS_MAP: dict[str, tuple[str, float]] = {
+    SignalCategory.HEALTH_INFRA: ("health_s", 60.0),
+    SignalCategory.WORK_TASKS: ("nudges_s", 120.0),
+    SignalCategory.CONTEXT_TIME: ("briefing_s", 120.0),
+    SignalCategory.PROFILE_STATE: ("perception_s", 30.0),
+    SignalCategory.AMBIENT_SENSOR: ("perception_s", 30.0),
+    SignalCategory.GOVERNANCE: ("nudges_s", 120.0),
+    SignalCategory.VOICE_SESSION: ("perception_s", 15.0),
+    SignalCategory.SYSTEM_STATE: ("health_s", 60.0),
+}
+
+
+def _apply_staleness_decay(opacities: dict[str, float], staleness: SignalStaleness) -> None:
+    """Multiply zone opacities by a decay factor based on data staleness.
+
+    decay = max(0.3, 1.0 - staleness_s / max_staleness_s)
+    Never below 0.3 — signals always minimally visible.
+    """
+    for cat, (field, max_age) in _STALENESS_MAP.items():
+        if cat not in opacities or opacities[cat] <= 0.0:
+            continue
+        age = getattr(staleness, field, 0.0)
+        decay = max(0.3, 1.0 - age / max_age)
+        opacities[cat] = round(opacities[cat] * decay, 3)

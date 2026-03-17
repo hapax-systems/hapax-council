@@ -1,7 +1,14 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PRESETS, type CompositePreset } from "./compositePresets";
 import { SOURCE_FILTERS } from "./compositeFilters";
-import { useStudio, useStudioStreamInfo } from "../../api/hooks";
+import VisualLayerPanel from "./VisualLayerPanel";
+import {
+  useStudio,
+  useStudioStreamInfo,
+  useCompositorLive,
+  useStudioDisk,
+  useRecordingToggle,
+} from "../../api/hooks";
 import {
   Layers,
   Circle,
@@ -12,6 +19,10 @@ import {
   Clock,
   PanelRightClose,
   PanelRightOpen,
+  LayoutGrid,
+  Sparkles,
+  Video,
+  Square,
 } from "lucide-react";
 
 const EFFECT_TOGGLES: { key: keyof CompositePreset["effects"]; label: string }[] = [
@@ -60,16 +71,73 @@ export function StudioSidebar({
 }: Props) {
   const { data: studio } = useStudio();
   const { data: streamInfo } = useStudioStreamInfo();
+  const { data: liveStatus } = useCompositorLive();
+  const { data: diskInfo } = useStudioDisk();
+  const recordingToggle = useRecordingToggle();
   const compositor = studio?.compositor;
   const capture = studio?.capture;
+  const isRecording = compositor?.recording_enabled ?? false;
   const [collapsed, setCollapsed] = useState(false);
+
+  // Recording timer
+  const [recElapsed, setRecElapsed] = useState("");
+  const recStartRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!isRecording) {
+      recStartRef.current = null;
+      return;
+    }
+    if (!recStartRef.current) recStartRef.current = Date.now();
+    const tick = () => {
+      if (!recStartRef.current) return;
+      const s = Math.floor((Date.now() - recStartRef.current) / 1000);
+      const m = Math.floor(s / 60);
+      setRecElapsed(`${m}:${String(s % 60).padStart(2, "0")}`);
+    };
+    const timer = setInterval(tick, 1000);
+    return () => {
+      clearInterval(timer);
+      setRecElapsed("");
+    };
+  }, [isRecording]);
+  const expandToSectionRef = useRef<string | null>(null);
+  const viewRef = useRef<HTMLElement>(null);
+  const recordingRef = useRef<HTMLElement>(null);
+  const streamRef = useRef<HTMLElement>(null);
+  const layoutRef = useRef<HTMLElement>(null);
+  const visualLayerRef = useRef<HTMLElement>(null);
+  const audioRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const section = expandToSectionRef.current;
+    if (!collapsed && section) {
+      const refMap: Record<string, React.RefObject<HTMLElement | null>> = {
+        view: viewRef,
+        recording: recordingRef,
+        stream: streamRef,
+        layout: layoutRef,
+        visualLayer: visualLayerRef,
+        audio: audioRef,
+      };
+      const ref = refMap[section];
+      if (ref?.current) {
+        ref.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+      expandToSectionRef.current = null;
+    }
+  }, [collapsed]);
+
+  const expandTo = (section: string) => {
+    expandToSectionRef.current = section;
+    setCollapsed(false);
+  };
 
   const isComposite = viewMode === "composite";
   const currentEffects = effectOverrides
     ? { ...baseEffects, ...effectOverrides }
     : baseEffects;
   const recordingCams = compositor?.recording_cameras ?? {};
-  const isRecording = compositor?.recording_enabled ?? false;
 
   // --- Collapsed: icon strip ---
   if (collapsed) {
@@ -83,14 +151,14 @@ export function StudioSidebar({
           <PanelRightClose className="h-3.5 w-3.5" />
         </button>
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={() => expandTo("view")}
           className="text-zinc-500 hover:text-zinc-300"
           title="View"
         >
           <Layers className="h-3.5 w-3.5" />
         </button>
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={() => expandTo("recording")}
           className="relative text-zinc-500 hover:text-zinc-300"
           title="Recording"
         >
@@ -100,7 +168,7 @@ export function StudioSidebar({
           )}
         </button>
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={() => expandTo("stream")}
           className="relative text-zinc-500 hover:text-zinc-300"
           title="Stream"
         >
@@ -110,14 +178,14 @@ export function StudioSidebar({
           )}
         </button>
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={() => expandTo("layout")}
           className="text-zinc-500 hover:text-zinc-300"
           title="Layout"
         >
           <Camera className="h-3.5 w-3.5" />
         </button>
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={() => expandTo("audio")}
           className="relative text-zinc-500 hover:text-zinc-300"
           title="Audio"
         >
@@ -134,7 +202,7 @@ export function StudioSidebar({
   return (
     <div className="flex w-60 shrink-0 flex-col border-l border-zinc-800 bg-zinc-900/50 text-xs">
       {/* Collapse button */}
-      <div className="flex items-center justify-between border-b border-zinc-800/50 px-3 py-2">
+      <div className="flex items-center justify-between border-b border-zinc-700/40 px-3 py-2">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
           Controls
         </span>
@@ -150,22 +218,29 @@ export function StudioSidebar({
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto">
         {/* VIEW */}
-        <section className="border-b border-zinc-800/50 px-3 py-2.5">
+        <section ref={viewRef} className="border-b border-zinc-700/40 px-3 py-2.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             View
           </h3>
           <div className="flex gap-1">
-            {(["grid", "composite", "smooth"] as const).map((m) => (
+            {(
+              [
+                { mode: "grid" as const, label: "Grid", Icon: LayoutGrid },
+                { mode: "composite" as const, label: "FX", Icon: Sparkles },
+                { mode: "smooth" as const, label: "Smooth", Icon: Video },
+              ] as const
+            ).map(({ mode, label, Icon }) => (
               <button
-                key={m}
-                onClick={() => onViewModeChange(m)}
-                className={`flex-1 rounded px-1.5 py-1 text-[10px] font-medium transition-colors ${
-                  viewMode === m
+                key={mode}
+                onClick={() => onViewModeChange(mode)}
+                className={`flex flex-1 items-center justify-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium transition-colors ${
+                  viewMode === mode
                     ? "bg-zinc-700 text-zinc-100"
                     : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300"
                 }`}
               >
-                {m === "grid" ? "Grid" : m === "composite" ? "Composite" : "Smooth"}
+                <Icon className="h-3 w-3" />
+                {label}
               </button>
             ))}
           </div>
@@ -178,7 +253,7 @@ export function StudioSidebar({
 
         {/* PRESET (composite only) */}
         {isComposite && (
-          <section className="border-b border-zinc-800/50 px-3 py-2.5">
+          <section className="border-b border-zinc-700/40 px-3 py-2.5">
             <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
               Preset
             </h3>
@@ -210,7 +285,7 @@ export function StudioSidebar({
 
         {/* FILTERS (composite only) */}
         {isComposite && (
-          <section className="border-b border-zinc-800/50 px-3 py-2.5">
+          <section className="border-b border-zinc-700/40 px-3 py-2.5">
             <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
               Filters
             </h3>
@@ -253,7 +328,7 @@ export function StudioSidebar({
 
         {/* EFFECTS (composite only) */}
         {isComposite && (
-          <section className="border-b border-zinc-800/50 px-3 py-2.5">
+          <section className="border-b border-zinc-700/40 px-3 py-2.5">
             <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
               Effects
             </h3>
@@ -287,13 +362,41 @@ export function StudioSidebar({
         )}
 
         {/* RECORDING */}
-        <section className="border-b border-zinc-800/50 px-3 py-2.5">
-          <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-            Recording
-            {isRecording && (
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
-            )}
-          </h3>
+        <section ref={recordingRef} className="border-b border-zinc-700/40 px-3 py-2.5">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              Recording
+              {isRecording && (
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
+              )}
+              {recElapsed && (
+                <span className="font-mono text-[10px] font-normal text-red-400">
+                  {recElapsed}
+                </span>
+              )}
+            </h3>
+            <button
+              onClick={() => recordingToggle.mutate(!isRecording)}
+              disabled={recordingToggle.isPending}
+              className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                isRecording
+                  ? "bg-red-900/50 text-red-300 hover:bg-red-900/70"
+                  : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+              }`}
+            >
+              {isRecording ? (
+                <>
+                  <Square className="h-2.5 w-2.5" />
+                  Stop
+                </>
+              ) : (
+                <>
+                  <Circle className="h-2.5 w-2.5 fill-current" />
+                  Record
+                </>
+              )}
+            </button>
+          </div>
           {cameraRoles.length > 0 ? (
             <div className="flex flex-col gap-1">
               {cameraRoles.map((role) => {
@@ -313,6 +416,27 @@ export function StudioSidebar({
             </div>
           ) : (
             <p className="text-[10px] text-zinc-600">No cameras</p>
+          )}
+          {/* Disk space */}
+          {diskInfo && (
+            <div className="mt-2">
+              <div className="mb-0.5 flex items-center justify-between text-[10px]">
+                <span className="text-zinc-500">Disk</span>
+                <span className={`${diskInfo.free_gb < diskInfo.total_gb * 0.1 ? "text-red-400" : "text-zinc-400"}`}>
+                  {diskInfo.free_gb}GB free
+                </span>
+              </div>
+              <div className="h-1 overflow-hidden rounded-full bg-zinc-800">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    diskInfo.free_gb < diskInfo.total_gb * 0.1
+                      ? "bg-red-500"
+                      : "bg-zinc-600"
+                  }`}
+                  style={{ width: `${Math.min((diskInfo.used_gb / diskInfo.total_gb) * 100, 100)}%` }}
+                />
+              </div>
+            </div>
           )}
           {/* Consent status */}
           <div className="mt-2 flex items-center gap-2">
@@ -344,7 +468,7 @@ export function StudioSidebar({
         </section>
 
         {/* STREAM */}
-        <section className="border-b border-zinc-800/50 px-3 py-2.5">
+        <section ref={streamRef} className="border-b border-zinc-700/40 px-3 py-2.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Stream
           </h3>
@@ -369,7 +493,7 @@ export function StudioSidebar({
         </section>
 
         {/* LAYOUT */}
-        <section className="border-b border-zinc-800/50 px-3 py-2.5">
+        <section ref={layoutRef} className="border-b border-zinc-700/40 px-3 py-2.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Layout
           </h3>
@@ -396,8 +520,16 @@ export function StudioSidebar({
           </button>
         </section>
 
+        {/* VISUAL LAYER */}
+        <section ref={visualLayerRef} className="border-b border-zinc-700/40 px-3 py-2.5">
+          <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            Visual Layer
+          </h3>
+          <VisualLayerPanel />
+        </section>
+
         {/* AUDIO */}
-        <section className="px-3 py-2.5">
+        <section ref={audioRef} className="px-3 py-2.5">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             Audio
           </h3>
@@ -411,6 +543,25 @@ export function StudioSidebar({
               {capture?.audio_recorder_active ? "Active" : "Inactive"}
             </span>
           </div>
+          {/* VU meter */}
+          {(() => {
+            const energy = liveStatus?.audio_energy_rms ?? 0;
+            const level = Math.min(energy * 4, 1);
+            const pct = level * 100;
+            const color =
+              pct > 80 ? "bg-red-500" : pct > 50 ? "bg-yellow-500" : "bg-green-500";
+            return (
+              <div className="mt-2">
+                <div className="mb-0.5 text-[10px] text-zinc-500">Level</div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className={`h-full rounded-full transition-all duration-150 ${color}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })()}
         </section>
       </div>
     </div>

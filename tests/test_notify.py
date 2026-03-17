@@ -124,7 +124,7 @@ class TestSendNtfy:
 
 
 class TestSendDesktop:
-    @patch("shared.notify.subprocess.run")
+    @patch("shared.notify._run_subprocess")
     def test_success(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
 
@@ -139,7 +139,7 @@ class TestSendDesktop:
         assert "Title" in cmd
         assert "Message" in cmd
 
-    @patch("shared.notify.subprocess.run")
+    @patch("shared.notify._run_subprocess")
     def test_high_priority_urgency(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
 
@@ -147,12 +147,12 @@ class TestSendDesktop:
         cmd = mock_run.call_args[0][0]
         assert "--urgency=critical" in cmd
 
-    @patch("shared.notify.subprocess.run", side_effect=FileNotFoundError)
+    @patch("shared.notify._run_subprocess", side_effect=FileNotFoundError)
     def test_no_notify_send(self, mock_run):
         result = _send_desktop("T", "M")
         assert result is False
 
-    @patch("shared.notify.subprocess.run")
+    @patch("shared.notify._run_subprocess")
     def test_nonzero_exit(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1)
         result = _send_desktop("T", "M")

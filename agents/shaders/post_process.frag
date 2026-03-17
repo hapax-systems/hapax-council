@@ -28,23 +28,31 @@ void main() {
     if (u_band_active > 0.5) {
         float dist = abs(uv.y - u_band_y);
         if (dist < u_band_height * 0.5) {
-            uv.x += u_band_shift;
+            // Softer band edges
+            float edgeFade = smoothstep(0.0, u_band_height * 0.5, u_band_height * 0.5 - dist);
+            uv.x += u_band_shift * edgeFade;
         }
     }
 
     vec4 color = texture2D(tex, uv);
 
-    // Scanlines
+    // Gaussian-profile scanlines (replaces hard-threshold)
     if (u_scanline_alpha > 0.0) {
-        float line = mod(gl_FragCoord.y, 4.0);
-        if (line < 1.5) {
-            color.rgb *= (1.0 - u_scanline_alpha);
-        }
+        float scanPos = mod(gl_FragCoord.y, 4.0);
+        // Cosine profile: bright at scanline center, dark in gaps
+        float scanBright = 0.5 + 0.5 * cos(scanPos * 3.14159 / 2.0);
+        // Bright content bleeds into gaps (phosphor glow simulation)
+        float localBright = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+        float gapFill = localBright * 0.25;
+        float scanMult = mix(1.0 - u_scanline_alpha + gapFill, 1.0, scanBright);
+        color.rgb *= scanMult;
     }
 
-    // Vignette
+    // Vignette — slightly elliptical for 16:9
     if (u_vignette_strength > 0.0) {
         vec2 center = v_texcoord - 0.5;
+        // Elliptical: less vignette on horizontal edges, more in corners
+        center.x *= 0.85;
         float dist = length(center) * 1.5;
         float vig = 1.0 - smoothstep(0.3, 1.0, dist) * u_vignette_strength;
         color.rgb *= vig;

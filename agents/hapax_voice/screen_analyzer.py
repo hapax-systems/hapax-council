@@ -78,7 +78,9 @@ class ScreenAnalyzer:
     def _get_client(self) -> AsyncOpenAI:
         """Return a lazily-initialized AsyncOpenAI client."""
         if self._client is None:
-            base_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000")
+            from agents.hapax_voice.config import LITELLM_BASE
+
+            base_url = LITELLM_BASE
             api_key = os.environ.get("LITELLM_API_KEY", "not-set")
             self._client = AsyncOpenAI(base_url=base_url, api_key=api_key)
         return self._client

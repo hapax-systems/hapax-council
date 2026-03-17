@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 _rag_tracer = trace.get_tracer("hapax.rag")
 
 COLLECTION = "axiom-precedents"
-VECTOR_DIM = 768
+from shared.config import EXPECTED_EMBED_DIMENSIONS as VECTOR_DIM
 
 AUTHORITY_WEIGHTS = {
     "operator": 1.0,
