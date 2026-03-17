@@ -41,6 +41,8 @@ fn main() {
             commands::agents::get_demo,
             // Governance
             commands::governance::get_briefing,
+            // Cost (Tier 2: Langfuse)
+            commands::cost::get_cost,
         ])
         .setup(|app| {
             // Spawn the wgpu visual surface on a dedicated thread

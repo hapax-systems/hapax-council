@@ -88,8 +88,8 @@ export const api = {
       ? invoke<import("./types").Demo>("get_demo", { id })
       : get<import("./types").Demo>(`/demos/${id}`),
 
-  // --- Tier 2: HTTP (Qdrant/Langfuse) — will be ported in Batch 4 ---
-  cost: () => get<import("./types").CostSnapshot>("/cost"),
+  // --- Tier 2: Tauri commands (Qdrant/Langfuse direct) ---
+  cost: () => tauriOrHttp<import("./types").CostSnapshot>("get_cost", "/cost"),
 
   // --- Tier 3: Always HTTP (LLM orchestration) ---
   copilot: () => get<import("./types").CopilotResponse>("/copilot"),
