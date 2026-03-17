@@ -96,10 +96,14 @@ ci = [
     "playwright>=1.49.0",
     "watchdog>=6.0.0",
 ]
+studio = [
+    "ultralytics>=8.3.0",
+]
 host = [
     # Everything — for local development on the host machine
     "hapax-council[ci]",
     "hapax-council[audio]",
+    "hapax-council[studio]",
 ]
 
 [project.scripts]
