@@ -113,6 +113,7 @@ class ConversationPipeline:
         self._llm_prewarmed: bool = False
         self._prev_tier: int = -1  # tier momentum: previous turn's tier (legacy)
         self._salience_router = None  # set externally if salience routing enabled
+        self._salience_diagnostics = None  # set externally for activation history
         self._context_distillation: str = ""  # refreshed on perception tick
 
         # Observation signal tracking (Batch 4: revealed preferences)
@@ -285,6 +286,10 @@ class ConversationPipeline:
             routing.model or "canned",
             routing.reason,
         )
+
+        # Record activation breakdown for diagnostics
+        if self._salience_diagnostics is not None:
+            self._salience_diagnostics.record(transcript)
 
         # Canned response: skip LLM entirely, play from pre-synth cache
         if routing.tier == ModelTier.CANNED and routing.canned_response:

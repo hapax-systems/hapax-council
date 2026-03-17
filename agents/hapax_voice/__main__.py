@@ -861,6 +861,7 @@ class VoiceDaemon:
         # Wire salience router and context distillation into pipeline
         if self._salience_router is not None:
             self._conversation_pipeline._salience_router = self._salience_router
+            self._conversation_pipeline._salience_diagnostics = self._salience_diagnostics
             self._refresh_concern_graph()
             self._refresh_context_distillation()
             self._conversation_pipeline._context_distillation = self._context_distillation
