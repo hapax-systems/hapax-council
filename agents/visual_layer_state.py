@@ -95,6 +95,29 @@ class AmbientParams(BaseModel):
     turbulence: float = 0.1
     color_warmth: float = 0.0  # 0.0 = cool teal, 1.0 = warm red
     brightness: float = 0.25
+    # Corpora next: audio reactivity (direct pass-through for fast shader response)
+    audio_energy: float = 0.0  # raw audio_energy_rms for shader pulsing
+    # Corpora next: noise variant selection
+    noise_variant: str = "fbm"  # fbm | worley | simplex | value
+
+
+class EnvironmentalColor(BaseModel):
+    """Environmental color influence — time of day, season, weather."""
+
+    hue_shift: float = 0.0  # oklch hue offset in degrees
+    chroma_scale: float = 1.0  # multiplier on C
+    lightness_bias: float = 0.0  # additive L adjustment
+    source: str = ""  # dawn | dusk | rain | snow | overcast | clear
+
+
+class TransitionMeta(BaseModel):
+    """Metadata for display state transitions (choreography)."""
+
+    from_state: str = ""
+    to_state: str = ""
+    started_at: float = 0.0
+    duration_s: float = 2.0
+    style: str = "breathe"  # breathe | expand | contract | drift
 
 
 # ── Injected Camera Feed ────────────────────────────────────────────────────
@@ -207,6 +230,13 @@ class VisualLayerState(BaseModel):
     temporal_context: TemporalContext = Field(default_factory=TemporalContext)
     signal_staleness: SignalStaleness = Field(default_factory=SignalStaleness)
     stimmung_stance: str = "nominal"  # System self-state stance (WS2)
+    # Corpora next: environmental color influence
+    environmental_color: EnvironmentalColor = Field(default_factory=EnvironmentalColor)
+    # Corpora next: transition choreography
+    transition: TransitionMeta = Field(default_factory=TransitionMeta)
+    # Corpora next: operator position for parallax (0.5 = centered)
+    operator_x: float = 0.5
+    operator_y: float = 0.5
     timestamp: float = 0.0
 
 
