@@ -302,6 +302,21 @@ class VoiceDaemon:
             except Exception:
                 log.warning("Echo canceller init failed, continuing without AEC", exc_info=True)
 
+        # Audio preprocessing (highpass + noise gate + normalization)
+        from agents.hapax_voice.audio_preprocess import AudioPreprocessor
+
+        self._audio_preprocessor = AudioPreprocessor()
+
+        # Multi-mic noise reference (C920 webcam mics as ambient reference)
+        from agents.hapax_voice.multi_mic import NoiseReference
+
+        self._noise_reference = NoiseReference(
+            room_sources=[
+                "C920_86B6B75F",  # room camera — closest to speakers
+            ],
+        )
+        self._noise_reference.start()
+
         # Speaker identification (operator vs guest voice gating)
         self._speaker_identifier = None
         try:
@@ -705,6 +720,14 @@ class VoiceDaemon:
             # AEC: process mic frame through echo canceller before distribution
             if self._echo_canceller is not None:
                 frame = self._echo_canceller.process(frame)
+
+            # Multi-mic noise subtraction (C920 room reference)
+            if self._noise_reference is not None:
+                frame = self._noise_reference.subtract(frame)
+
+            # Audio preprocessing: highpass + noise gate + normalization
+            if self._audio_preprocessor is not None:
+                frame = self._audio_preprocessor.process(frame)
 
             # Accumulate for exact-sized consumer chunks
             _wake_buf.extend(frame)
