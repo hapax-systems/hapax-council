@@ -259,6 +259,23 @@ def write_perception_state(
         "timestamp": time.time(),
     }
 
+    # Consent curtailment: when guest is present without consent,
+    # redact person-adjacent fields from the persisted snapshot.
+    # The compositor still gets non-person data (flow state, activity, etc).
+    if not (consent_tracker.persistence_allowed if consent_tracker else True):
+        _PERSON_ADJACENT_KEYS = {
+            "voice_session",  # contains last_utterance, last_response
+            "top_emotion",
+            "gaze_direction",
+            "hand_gesture",
+            "posture",
+            "pose_summary",
+        }
+        for key in _PERSON_ADJACENT_KEYS:
+            if key in state:
+                state[key] = "[curtailed]" if isinstance(state[key], str) else {}
+        state["consent_curtailed"] = True
+
     # Push to ring buffer for temporal depth (WS1)
     _push_to_ring(state)
 
