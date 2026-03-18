@@ -1704,6 +1704,20 @@ class VoiceDaemon:
         # Precompute pipeline dependencies (tools, consent, callbacks)
         self._precompute_pipeline_deps()
 
+        # Pin voice LLM model warm in Ollama (prevents 5s cold-start spikes)
+        try:
+            import httpx
+
+            _ollama_model = "gemma3-voice"  # matches LiteLLM local-fast route
+            httpx.post(
+                "http://localhost:11434/api/generate",
+                json={"model": _ollama_model, "prompt": "", "keep_alive": -1},
+                timeout=10,
+            )
+            log.info("Ollama model %s pinned warm (keep_alive=-1)", _ollama_model)
+        except Exception:
+            log.debug("Ollama preload failed (non-fatal)", exc_info=True)
+
         # Load chime sounds
         if self.cfg.chime_enabled:
             self.chime_player.load()
