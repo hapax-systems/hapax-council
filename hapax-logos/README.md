@@ -1,8 +1,6 @@
-# hapax-logos — The Visual Body
+# hapax-logos
 
-Tauri 2 desktop application that serves as Hapax's visual body. A wgpu-powered generative surface renders the system's experiential state as ambient art, while a React control panel provides operational views.
-
-The display IS the agent. When nothing needs attention, Hapax plays — generative, surprising, alive. When signals arise, they layer on top of the visual richness. The operator doesn't read this display. They feel it.
+Tauri 2 desktop application. A wgpu-powered generative surface renders system state as ambient visuals. A React control panel provides operational views and a live system topology.
 
 ## Architecture
 
@@ -21,11 +19,11 @@ The display IS the agent. When nothing needs attention, Hapax plays — generati
 | **Demos** | Demo history and generation |
 | **Studio** | Camera feeds, compositor control |
 | **Visual** | Visual surface parameter control |
-| **Hapax** | Full-screen ambient canvas — the Corpora surface |
+| **Hapax** | Full-screen ambient canvas |
 
 ## System Anatomy (Flow Page)
 
-React Flow visualization of the system's circulatory anatomy. 9 nodes, 16 edges showing data flow topology. Polls every 3s from /dev/shm via Tauri IPC or cockpit HTTP API fallback.
+React Flow visualization of system topology. 9 nodes, 16 edges. Polls every 3s from /dev/shm via Tauri IPC or cockpit HTTP API fallback.
 
 Enrichments: particle-density edges (throughput), breathing nodes (tick cadence), staleness color shift (green → amber), attention decay (unchanged nodes fade), consent state dots, gate barriers.
 
