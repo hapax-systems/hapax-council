@@ -32,9 +32,11 @@ PRE_ROLL_FRAMES = 10  # 300ms before speech onset
 SPEECH_START_PROB = 0.5
 SPEECH_START_CONSECUTIVE = 3  # ~90ms
 SPEECH_END_PROB = 0.3
-# Operator talks a lot and pauses mid-thought. 750ms of silence before
-# deciding they're done (was 450ms — too aggressive, cut mid-sentence).
-SPEECH_END_CONSECUTIVE = 25  # ~750ms
+# Adaptive speech-end: short utterances end quickly, long utterances
+# get more patience for mid-thought pauses.
+SPEECH_END_SHORT = 20  # ~600ms — for utterances < 1s of speech
+SPEECH_END_LONG = 35  # ~1050ms — for utterances > 3s of speech
+SPEECH_END_DEFAULT = 25  # ~750ms — baseline
 
 # Barge-in detection during TTS playback
 BARGE_IN_PROB = 0.85
@@ -76,6 +78,9 @@ class ConversationBuffer:
         self._barge_in_speech_count = 0
         self.barge_in_detected = False
 
+        # Adaptive speech-end: track speech duration for threshold adjustment
+        self._speech_start_time: float = 0.0
+
     @property
     def is_active(self) -> bool:
         return self._active
@@ -113,6 +118,7 @@ class ConversationBuffer:
                 self._speaking_ended_at = 0.0  # no cooldown
                 if not self._speech_active:
                     self._speech_active = True
+                    self._speech_start_time = time.monotonic()
                     self._speech_frames = list(self._pre_roll)
                     self._consecutive_speech = SPEECH_START_CONSECUTIVE  # already speaking
                     self._consecutive_silence = 0
@@ -154,6 +160,7 @@ class ConversationBuffer:
                         # Immediately start speech accumulation
                         if not self._speech_active:
                             self._speech_active = True
+                            self._speech_start_time = time.monotonic()
                             self._speech_frames = list(self._pre_roll)
                             self._consecutive_speech = SPEECH_START_CONSECUTIVE
                             self._consecutive_silence = 0
@@ -178,12 +185,22 @@ class ConversationBuffer:
             self._consecutive_silence = 0
             if not self._speech_active and self._consecutive_speech >= SPEECH_START_CONSECUTIVE:
                 self._speech_active = True
+                self._speech_start_time = time.monotonic()
                 self._speech_frames = list(self._pre_roll) + self._speech_frames
         elif probability < SPEECH_END_PROB:
             self._consecutive_silence += 1
             self._consecutive_speech = 0
-            if self._speech_active and self._consecutive_silence >= SPEECH_END_CONSECUTIVE:
-                self._emit_utterance()
+            if self._speech_active:
+                # Adaptive threshold: long utterances get more patience
+                speech_duration = time.monotonic() - self._speech_start_time
+                if speech_duration > 3.0:
+                    threshold = SPEECH_END_LONG  # ~1050ms
+                elif speech_duration < 1.0:
+                    threshold = SPEECH_END_SHORT  # ~600ms
+                else:
+                    threshold = SPEECH_END_DEFAULT  # ~750ms
+                if self._consecutive_silence >= threshold:
+                    self._emit_utterance()
 
     def get_utterance(self) -> bytes | None:
         utterance = self._pending_utterance
