@@ -184,10 +184,17 @@ class VoiceDaemon:
         # Voice daemon principal — bound, delegated by operator
         self._daemon_principal = self._operator_principal.delegate(
             child_id="hapax-voice",
-            scope=frozenset({
-                "audio", "video", "transcription", "presence",
-                "biometrics", "workspace", "notifications",
-            }),
+            scope=frozenset(
+                {
+                    "audio",
+                    "video",
+                    "transcription",
+                    "presence",
+                    "biometrics",
+                    "workspace",
+                    "notifications",
+                }
+            ),
         )
 
         # Perception layer

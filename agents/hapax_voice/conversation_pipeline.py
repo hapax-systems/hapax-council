@@ -117,7 +117,9 @@ class ConversationPipeline:
         self._context_distillation: str = ""  # refreshed on perception tick
         self._guest_mode: bool = False  # synced from session on perception tick
         self._face_count: int = 0  # synced from perception on perception tick
-        self._last_says: object | None = None  # Says[str] for last utterance (principal attribution)
+        self._last_says: object | None = (
+            None  # Says[str] for last utterance (principal attribution)
+        )
 
         # Echo detection: track recent TTS output to detect mic picking up Hapax's own voice
         self._recent_tts_texts: list[str] = []  # last N sentences spoken by Hapax

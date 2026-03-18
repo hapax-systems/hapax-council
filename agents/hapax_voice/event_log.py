@@ -46,16 +46,30 @@ class EventLog:
         self._consent_fn = fn
 
     # Event types that may contain person-adjacent data
-    _PERSON_ADJACENT_EVENTS: frozenset[str] = frozenset({
-        "user_utterance", "assistant_response", "speaker_identified",
-        "consent_pending", "consent_granted", "consent_refused",
-        "face_event", "presence_transition", "presence_bayesian_transition",
-    })
+    _PERSON_ADJACENT_EVENTS: frozenset[str] = frozenset(
+        {
+            "user_utterance",
+            "assistant_response",
+            "speaker_identified",
+            "consent_pending",
+            "consent_granted",
+            "consent_refused",
+            "face_event",
+            "presence_transition",
+            "presence_bayesian_transition",
+        }
+    )
 
     # Fields that should be redacted when consent is not granted
-    _REDACT_FIELDS: frozenset[str] = frozenset({
-        "text", "transcript", "response", "utterance", "speaker",
-    })
+    _REDACT_FIELDS: frozenset[str] = frozenset(
+        {
+            "text",
+            "transcript",
+            "response",
+            "utterance",
+            "speaker",
+        }
+    )
 
     def emit(self, event_type: str, **fields) -> None:
         """Write a single event to the JSONL file."""
@@ -71,8 +85,7 @@ class EventLog:
             and not consent_fn()
         ):
             fields = {
-                k: "[curtailed]" if k in self._REDACT_FIELDS else v
-                for k, v in fields.items()
+                k: "[curtailed]" if k in self._REDACT_FIELDS else v for k, v in fields.items()
             }
             fields["consent_curtailed"] = True
 
