@@ -284,6 +284,11 @@ def write_perception_state(
         "phone_kde_connected": bool(_bval("phone_kde_connected", False)),
         # Scene inventory (persistent object tracking)
         "scene_inventory": _parse_scene_inventory(_bval("scene_inventory", "{}")),
+        # Cognitive loop (turn phase + temperature)
+        "turn_phase": str(_bval("turn_phase", "")),
+        "cognitive_readiness": float(_bval("cognitive_readiness", 0.0) or 0.0),
+        "conversation_temperature": float(_bval("conversation_temperature", 0.0) or 0.0),
+        "predicted_tier": str(_bval("predicted_tier", "")),
         # Voice session (Batch A)
         "voice_session": _snapshot_voice_session(session, pipeline),
         # Supplementary content (Batch B)

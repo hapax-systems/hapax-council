@@ -1028,11 +1028,9 @@ class VoiceDaemon:
         # Pause vision to free GPU memory for voice models
         self._pause_vision_for_conversation()
 
+        # Pipeline.start() activates buffer and opens audio output
         await self._conversation_pipeline.start()
         log.info("Conversation pipeline started (mic stays shared)")
-
-        # Activate conversation buffer for this session
-        self._conversation_buffer.activate()
 
         # Create and start cognitive loop
         from agents.hapax_voice.cognitive_loop import CognitiveLoop
@@ -1055,20 +1053,18 @@ class VoiceDaemon:
             silence_notification_threshold_s=self.cfg.silence_notification_threshold_s,
             silence_winddown_threshold_s=self.cfg.silence_winddown_threshold_s,
             notification_queue=self.notifications,
-            perception_sync_fn=self._sync_perception_to_pipeline,
         )
 
-        # Register as perception backend (provides turn_phase, cognitive_readiness, etc.)
-        try:
-            self.perception.register_backend(self._cognitive_loop)
-        except ValueError:
-            log.debug("Cognitive loop backend already registered")
+        # Register/replace as perception backend. replace_backend handles
+        # the second+ session where the old loop is still registered (#3).
+        self.perception.replace_backend(self._cognitive_loop)
 
         self._pipeline_task = asyncio.create_task(self._cognitive_loop.run())
 
         # Wake greeting — play a presynthesized acknowledging phrase so
         # the operator knows the system is ready. Pipeline audio output is
         # open after start(), so we can write PCM directly.
+        # Set speaking flag on buffer to prevent echo capture (#6).
         try:
             from agents.hapax_voice.bridge_engine import BridgeContext
 
@@ -1079,7 +1075,9 @@ class VoiceDaemon:
             )
             phrase, pcm = self._bridge_engine.select(ctx)
             if pcm and self._conversation_pipeline._audio_output:
+                self._conversation_buffer.set_speaking(True)
                 self._conversation_pipeline._audio_output.write(pcm)
+                self._conversation_buffer.set_speaking(False)
                 log.info("Wake greeting: '%s'", phrase)
         except Exception:
             log.debug("Wake greeting failed (non-fatal)", exc_info=True)
@@ -1109,29 +1107,6 @@ class VoiceDaemon:
         else:
             log.error("Gemini Live session failed to connect")
 
-    def _sync_perception_to_pipeline(self) -> None:
-        """Sync perception state to conversation pipeline for routing.
-
-        Called from cognitive loop each tick instead of _perception_loop.
-        """
-        if self._conversation_pipeline is None:
-            return
-        state = self.perception.latest
-        if state is None:
-            return
-        self._conversation_pipeline._activity_mode = state.activity_mode
-        _cp = self.consent_tracker.phase.value if hasattr(self.consent_tracker, "phase") else "none"
-        _phase_map = {
-            "no_guest": "none",
-            "guest_detected": "none",
-            "consent_pending": "pending",
-            "consent_granted": "active",
-            "consent_refused": "refused",
-        }
-        self._conversation_pipeline._consent_phase = _phase_map.get(_cp, "none")
-        self._conversation_pipeline._guest_mode = self.session.is_guest_mode
-        self._conversation_pipeline._face_count = state.guest_count
-
     async def _stop_pipeline(self) -> None:
         """Stop the active pipeline or Gemini session."""
         if self._gemini_session is not None:
@@ -1157,8 +1132,7 @@ class VoiceDaemon:
             self._pipeline_task = None
             log.info("Conversation pipeline stopped")
 
-        # Deactivate conversation buffer
-        self._conversation_buffer.deactivate()
+        # Buffer deactivation is handled by pipeline.stop() — no duplicate call.
 
         # Clear session-scoped salience state so next session starts fresh
         if self._salience_router is not None:
@@ -1636,8 +1610,26 @@ class VoiceDaemon:
                     self._refresh_concern_graph()
                     self._refresh_context_distillation()
 
-                # Perception→pipeline sync is now handled by cognitive loop tick
-                # via _sync_perception_to_pipeline() callback
+                # Sync perception state to conversation pipeline for routing.
+                # Stays in perception loop (2.5s cadence) because perception
+                # data only changes here — cognitive loop reads it passively.
+                if self._conversation_pipeline is not None:
+                    self._conversation_pipeline._activity_mode = state.activity_mode
+                    _cp = (
+                        self.consent_tracker.phase.value
+                        if hasattr(self.consent_tracker, "phase")
+                        else "none"
+                    )
+                    _phase_map = {
+                        "no_guest": "none",
+                        "guest_detected": "none",
+                        "consent_pending": "pending",
+                        "consent_granted": "active",
+                        "consent_refused": "refused",
+                    }
+                    self._conversation_pipeline._consent_phase = _phase_map.get(_cp, "none")
+                    self._conversation_pipeline._guest_mode = self.session.is_guest_mode
+                    self._conversation_pipeline._face_count = state.guest_count
 
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision

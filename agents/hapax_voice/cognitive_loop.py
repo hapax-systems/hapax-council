@@ -2,15 +2,16 @@
 
 Replaces the 10ms poll `_conversation_loop` with a 150ms cognitive tick that
 tracks turn phase, drives speculative STT, manages a conversational model,
-dispatches utterances, syncs perception state, and handles active silence.
+dispatches utterances, and handles active silence.
 
 Architecture:
     AUDIO LOOP (30ms) ──► ConversationBuffer (feed + VAD)
     COGNITIVE LOOP (150ms) ──► reads buffer state, drives all session cognition
-    PERCEPTION LOOP (2.5s) ──► sensor fusion, governance, consent
+    PERCEPTION LOOP (2.5s) ──► sensor fusion, governance, consent, pipeline sync
 
-The cognitive loop is the sole integration point between perception, buffer,
-pipeline, and session lifecycle during a voice session.
+The cognitive loop owns utterance dispatch, turn phase tracking, speculative
+STT, and conversational model updates. Perception→pipeline sync stays in the
+perception loop (2.5s cadence) because the data only changes there.
 """
 
 from __future__ import annotations
@@ -56,10 +57,10 @@ class CognitiveLoop:
 
     Runs as an asyncio task during active voice sessions. Each tick:
     1. Derives turn phase from buffer + pipeline state
-    2. During OPERATOR_SPEAKING: speculative partial STT + pre-routing
-    3. On TRANSITION: dispatch utterance through speaker verify + pipeline
+    2. Polls for pending utterances (any phase except HAPAX_SPEAKING)
+    3. During OPERATOR_SPEAKING: speculative partial STT + pre-routing
     4. During MUTUAL_SILENCE: tick conversational model, check timeout
-    5. Sync perception state to pipeline, update Behaviors
+    5. Update Behaviors for perception engine
     """
 
     def __init__(
@@ -77,8 +78,6 @@ class CognitiveLoop:
         silence_notification_threshold_s: float = 8.0,
         silence_winddown_threshold_s: float = 20.0,
         notification_queue=None,
-        # Perception sync callbacks (moved from _perception_loop)
-        perception_sync_fn=None,
     ) -> None:
         self._buffer = buffer
         self._pipeline = pipeline
@@ -92,7 +91,6 @@ class CognitiveLoop:
         self._silence_notification_threshold_s = silence_notification_threshold_s
         self._silence_winddown_threshold_s = silence_winddown_threshold_s
         self._notification_queue = notification_queue
-        self._perception_sync_fn = perception_sync_fn
 
         # Internal state
         self._running = False
@@ -102,6 +100,7 @@ class CognitiveLoop:
         self._predicted_tier: str = ""
         self._cognitive_readiness: float = 0.0
         self._wind_down_sent = False
+        self._response_start_at: float = 0.0  # for on_response timing
 
         # Speaker verification state (session-scoped)
         self._speaker_verified = False
@@ -172,18 +171,25 @@ class CognitiveLoop:
                     log.info("turn_phase: %s → %s", prev_phase.value, self._turn_phase.value)
                     self._on_phase_transition(prev_phase, self._turn_phase)
 
-                # 2. Phase-specific cognition
+                # 2. Poll for pending utterances (any phase except HAPAX_SPEAKING).
+                # The buffer emits utterances when VAD detects speech-end, which
+                # can happen before the pipeline transitions to TRANSCRIBING.
+                # Polling only during TRANSITION would miss utterances.
+                if self._turn_phase != TurnPhase.HAPAX_SPEAKING:
+                    utterance = self._buffer.get_utterance()
+                    if utterance is not None:
+                        await self._handle_utterance(utterance)
+
+                # 3. Phase-specific cognition
                 if self._turn_phase == TurnPhase.OPERATOR_SPEAKING:
                     await self._tick_operator_speaking()
-                elif self._turn_phase == TurnPhase.TRANSITION:
-                    await self._tick_transition()
                 elif self._turn_phase == TurnPhase.MUTUAL_SILENCE:
                     await self._tick_mutual_silence()
 
-                # 3. Update cognitive readiness
+                # 4. Update cognitive readiness
                 self._cognitive_readiness = self._compute_readiness()
 
-                # 4. Update Behaviors
+                # 5. Update Behaviors
                 now = time.monotonic()
                 self._b_turn_phase.update(self._turn_phase.value, now)
                 self._b_cognitive_readiness.update(self._cognitive_readiness, now)
@@ -192,10 +198,6 @@ class CognitiveLoop:
                         self._model.conversation_temperature, now
                     )
                 self._b_predicted_tier.update(self._predicted_tier, now)
-
-                # 5. Sync perception to pipeline (if callback provided)
-                if self._perception_sync_fn is not None:
-                    self._perception_sync_fn()
 
                 # 6. Session timeout check
                 if self._session.is_active and self._session.is_timed_out:
@@ -270,6 +272,17 @@ class CognitiveLoop:
             if self._speculative_stt is not None:
                 self._speculative_stt.reset()
 
+        # Track response timing from phase transitions (#2)
+        if to_phase == TurnPhase.TRANSITION:
+            # Pipeline started processing — record when response generation begins
+            self._response_start_at = now
+        if from_phase == TurnPhase.HAPAX_SPEAKING and self._model is not None:
+            # Hapax finished speaking — compute response time
+            if self._response_start_at > 0:
+                response_time = now - self._response_start_at
+                self._model.on_response("", response_time)
+                self._response_start_at = 0.0
+
     # ── Phase-specific ticks ───────────────────────────────────────
 
     async def _tick_operator_speaking(self) -> None:
@@ -295,13 +308,6 @@ class CognitiveLoop:
             except Exception:
                 log.debug("Speculative routing failed", exc_info=True)
 
-    async def _tick_transition(self) -> None:
-        """On transition: dispatch utterance through speaker verify + pipeline."""
-        utterance = self._buffer.get_utterance()
-        if utterance is None:
-            return
-        await self._handle_utterance(utterance)
-
     async def _tick_mutual_silence(self) -> None:
         """During mutual silence: tick model, handle active silence."""
         silence_s = time.monotonic() - self._mutual_silence_start
@@ -318,6 +324,11 @@ class CognitiveLoop:
 
     async def _handle_utterance(self, utterance: bytes) -> None:
         """Speaker verify + process utterance through pipeline."""
+        # Cancel any in-flight speculative STT — final transcription is about
+        # to use the same single-threaded executor (#7)
+        if self._speculative_stt is not None:
+            self._speculative_stt.reset()
+
         # Speaker verification gate
         if self._speaker_identifier is not None and not self._speaker_verified:
             self._speaker_audio_buf.append(utterance)
@@ -351,9 +362,7 @@ class CognitiveLoop:
         self._session.mark_activity()
         self._update_model_on_utterance(utterance)
 
-        # Reset speculative state after final utterance processing
-        if self._speculative_stt is not None:
-            self._speculative_stt.reset()
+        # Clear predicted tier after final processing
         self._predicted_tier = ""
 
     def _update_model_on_utterance(self, utterance: bytes) -> None:
@@ -362,6 +371,8 @@ class CognitiveLoop:
             return
         speech_s = len(utterance) / 2 / 16000  # int16 at 16kHz
         tier = self._predicted_tier or "FAST"
+        # Transcript is not available here (STT runs inside pipeline);
+        # topic tracking would need a pipeline callback to get it.
         self._model.on_utterance("", tier, speech_s)
 
     async def _verify_speaker(self, audio_bytes: bytes) -> str:
@@ -412,10 +423,6 @@ class CognitiveLoop:
             # Let the pipeline handle notification delivery
             log.info("Active silence: surfacing notification (silence=%.1fs)", silence_s)
             # TODO: wire notification delivery through pipeline
-
-        # Refresh concern graph anchors during silence
-        if silence_s > 5.0 and self._salience_router is not None:
-            pass  # Concern graph refresh happens in perception loop
 
         # Wind-down after extended silence
         if (
