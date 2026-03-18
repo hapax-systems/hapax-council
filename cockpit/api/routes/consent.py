@@ -23,7 +23,7 @@ from shared.governance.revocation_wiring import get_revocation_propagator
 
 _log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/consent", tags=["consent"])
+router = APIRouter(prefix="/api/consent", tags=["consent"])
 
 
 class ConsentCreateRequest(BaseModel):

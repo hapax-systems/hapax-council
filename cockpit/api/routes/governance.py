@@ -14,7 +14,7 @@ import dataclasses
 
 from fastapi import APIRouter
 
-router = APIRouter(prefix="/governance", tags=["governance"])
+router = APIRouter(prefix="/api/governance", tags=["governance"])
 
 
 @router.get("/heartbeat")

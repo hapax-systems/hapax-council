@@ -255,7 +255,7 @@ class TestConsentRoute(unittest.TestCase):
         set_revocation_propagator(prop)
 
         client = TestClient(test_app)
-        resp = client.post("/consent/revoke/alice")
+        resp = client.post("/api/consent/revoke/alice")
         assert resp.status_code == 200
         data = resp.json()
         assert data["contract_revoked"] is True
@@ -278,7 +278,7 @@ class TestConsentRoute(unittest.TestCase):
         set_revocation_propagator(prop)
 
         client = TestClient(test_app)
-        resp = client.post("/consent/revoke/nobody")
+        resp = client.post("/api/consent/revoke/nobody")
         assert resp.status_code == 200
         data = resp.json()
         assert data["contract_revoked"] is False

@@ -316,6 +316,26 @@ async def get_visual_layer_state():
         }
 
 
+@router.get("/studio/perception")
+async def get_perception_state():
+    """Current perception state from the voice daemon.
+
+    Returns operator presence, flow, emotion, interruptibility, and
+    environmental sensing data.
+    """
+    import json as _json
+
+    perc_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+    if not perc_path.exists():
+        return {"available": False, "operator_present": False, "presence_score": 0.0}
+    try:
+        data = _json.loads(perc_path.read_text())
+        data["available"] = True
+        return data
+    except (_json.JSONDecodeError, OSError):
+        return {"available": False, "operator_present": False, "presence_score": 0.0}
+
+
 @router.get("/studio/ambient-content")
 async def get_ambient_content():
     """Ambient content pool for the visual layer aggregator.
