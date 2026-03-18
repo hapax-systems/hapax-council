@@ -44,7 +44,7 @@ BARGE_IN_CONSECUTIVE = 8
 
 # Post-TTS cooldown: only applies when TTS ends NORMALLY (no barge-in).
 # On barge-in, cooldown is skipped — operator is definitely speaking.
-POST_TTS_COOLDOWN_S = 2.0
+POST_TTS_COOLDOWN_S = 3.0
 
 
 class ConversationBuffer:

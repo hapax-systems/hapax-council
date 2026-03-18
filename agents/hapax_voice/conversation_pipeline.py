@@ -58,6 +58,27 @@ def _strip_emoji(text: str) -> str:
     return _EMOJI_RE.sub("", text).strip()
 
 
+def _lcs_word_length(a: list[str], b: list[str]) -> int:
+    """Longest common subsequence length between two word lists.
+
+    O(n*m) but lists are short (voice utterances < 30 words).
+    """
+    m, n = len(a), len(b)
+    if m == 0 or n == 0:
+        return 0
+    # Space-optimized: two rows
+    prev = [0] * (n + 1)
+    curr = [0] * (n + 1)
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if a[i - 1] == b[j - 1]:
+                curr[j] = prev[j - 1] + 1
+            else:
+                curr[j] = max(prev[j], curr[j - 1])
+        prev, curr = curr, [0] * (n + 1)
+    return prev[n]
+
+
 # Clause boundary pattern for TTS chunking (Phase 3a: clause-level for earlier first audio)
 _CLAUSE_END = re.compile(r"(?<=[.!?;:])\s+|(?<=\n)|(?<=,)\s+|(?<=—)\s*")
 _MIN_CLAUSE_WORDS = 2
@@ -372,9 +393,18 @@ class ConversationPipeline:
         _t_stt = time.monotonic()
         log.info("TIMING stt=%.0fms transcript=%r", (_t_stt - _t_start) * 1000, transcript[:60])
 
-        # ── Echo detection: reject if transcript matches recent TTS output ──
+        # ── Echo detection: reject or strip echo from transcript ──
         if self._is_echo(transcript):
             log.info("Echo rejected: %r", transcript[:60])
+            self.state = ConvState.LISTENING
+            return
+
+        # Strip echo prefix: when mic captures echo + real speech in one
+        # utterance (e.g., "letting you know I'm here. Yeah how are you"),
+        # remove the echo portion and keep the operator's real speech.
+        transcript = self._strip_echo_prefix(transcript)
+        if not transcript:
+            log.info("Echo stripped to empty")
             self.state = ConvState.LISTENING
             return
 
@@ -476,9 +506,9 @@ class ConversationPipeline:
             if pcm and self._audio_output:
                 if self.buffer:
                     self.buffer.set_speaking(True)
-                self._audio_output.write(pcm)
                 if self._echo_canceller:
                     self._echo_canceller.feed_reference(pcm)
+                self._audio_output.write(pcm)
                 if self.buffer:
                     self.buffer.set_speaking(False)
             else:
@@ -837,11 +867,14 @@ class ConversationPipeline:
     def _is_echo(self, transcript: str) -> bool:
         """Detect if a transcript is Hapax's own TTS output echoed back.
 
-        Checks against recent TTS sentences. Tuned to avoid false positives
-        on legitimate operator speech:
-        - Substring match only for multi-word phrases (≥4 words in common)
-        - Single/two-word utterances: only exact TTS text match
-        - Word overlap at 90% threshold, minimum 4 overlapping words
+        Multi-strategy detection tuned for the Yeti mic + speexdsp AEC setup
+        where residual TTS bleed-through gets transcribed by STT:
+
+        1. Exact match against any recent TTS sentence
+        2. Substring containment (TTS sentence found within transcript)
+        3. Word-sequence overlap using longest common subsequence ratio
+        4. Word-set overlap at 70% threshold (catches STT substitutions)
+        5. Recency boost: transcripts within 5s of last TTS get lower thresholds
         """
         if not self._recent_tts_texts:
             return False
@@ -850,29 +883,105 @@ class ConversationPipeline:
         if not norm:
             return False
 
-        word_count = len(norm.split())
+        norm_words = norm.split()
+        word_count = len(norm_words)
+
+        # Recency: lower thresholds if we just spoke
+        recently_spoke = (
+            hasattr(self, "_last_assistant_end")
+            and self._last_assistant_end > 0
+            and (time.monotonic() - self._last_assistant_end) < 5.0
+        )
 
         for tts_text in self._recent_tts_texts:
-            # Short utterances (1-3 words): only exact match against a TTS sentence
+            tts_words = tts_text.split()
+
+            # 1. Exact match (any length)
+            if norm == tts_text:
+                return True
+
+            # 2. Short utterances (1-3 words): check if it's a fragment of any TTS
             if word_count <= 3:
-                if norm == tts_text:
+                # Check if ALL transcript words appear in any single TTS sentence
+                if all(w in tts_text for w in norm_words):
                     return True
                 continue
 
-            # Longer utterances: substring match (Hapax's full sentence in transcript)
-            if tts_text in norm and len(tts_text.split()) >= 4:
+            # 3. Substring containment (TTS sentence found in transcript, ≥3 words)
+            if len(tts_words) >= 3 and tts_text in norm:
                 return True
 
-            # Word overlap: requires ≥4 overlapping words AND ≥90% of the shorter text
-            tts_words = set(tts_text.split())
-            transcript_words = set(norm.split())
-            overlap = len(tts_words & transcript_words)
-            if overlap >= 4:
-                threshold = min(len(tts_words), len(transcript_words)) * 0.90
-                if overlap >= threshold:
+            # 4. Longest common subsequence ratio — catches reordering/insertion by STT
+            lcs_len = _lcs_word_length(norm_words, tts_words)
+            shorter = min(word_count, len(tts_words))
+            if shorter >= 3:
+                lcs_ratio = lcs_len / shorter
+                threshold = 0.55 if recently_spoke else 0.65
+                if lcs_ratio >= threshold:
+                    return True
+
+            # 5. Word-set overlap (catches STT substitutions)
+            overlap = len(set(tts_words) & set(norm_words))
+            if overlap >= 3:
+                set_threshold = 0.60 if recently_spoke else 0.70
+                if overlap / shorter >= set_threshold:
                     return True
 
         return False
+
+    def _strip_echo_prefix(self, transcript: str) -> str:
+        """Remove echo of Hapax's TTS from the beginning of a transcript.
+
+        When the mic captures both TTS output and operator speech in one
+        utterance, the STT transcript looks like:
+          "letting you know I'm here if you need anything. Yeah how are you"
+        We strip the echo portion and return only the operator's speech.
+        """
+        if not self._recent_tts_texts:
+            return transcript
+
+        norm = transcript.lower().strip()
+        best_strip = 0  # characters to strip from start
+
+        for tts_text in self._recent_tts_texts:
+            tts_words = tts_text.split()
+            if len(tts_words) < 3:
+                continue
+
+            # Check if any TTS sentence appears as a prefix (possibly with STT errors)
+            norm_words = norm.split()
+            # Try matching first N words of transcript against TTS words
+            match_len = 0
+            for i, tw in enumerate(tts_words):
+                if i >= len(norm_words):
+                    break
+                if norm_words[i] == tw:
+                    match_len = i + 1
+                elif i > 0 and match_len / (i + 1) < 0.5:
+                    break  # too many mismatches
+
+            if match_len >= 3 and match_len / len(tts_words) >= 0.5:
+                # Reconstruct the number of characters to strip
+                stripped_words = " ".join(norm_words[:match_len])
+                chars = len(stripped_words)
+                if chars > best_strip:
+                    best_strip = chars
+
+        if best_strip > 0:
+            # Strip the echo prefix, clean up separators
+            remainder = transcript[best_strip:].lstrip(" .,!?;:-–—")
+            if remainder and len(remainder.split()) >= 2:
+                log.info(
+                    "Echo prefix stripped (%d chars): %r → %r",
+                    best_strip,
+                    transcript[:40],
+                    remainder[:40],
+                )
+                return remainder
+            # If only 0-1 words remain, the whole thing was likely echo
+            return ""
+
+        return transcript
 
     # ── Observation Signals (Batch 4) ──────────────────────────────────
 
@@ -1045,11 +1154,15 @@ class ConversationPipeline:
 
     @staticmethod
     def _write_audio(audio_output, echo_canceller, pcm: bytes) -> None:
-        """Write PCM to audio output and feed AEC reference. Runs in _audio_executor."""
+        """Write PCM to audio output and feed AEC reference. Runs in _audio_executor.
+
+        Reference is fed BEFORE playback so the canceller has the expected
+        signal queued when the echo arrives at the microphone (~5-20ms later).
+        """
         try:
-            audio_output.write(pcm)
             if echo_canceller:
                 echo_canceller.feed_reference(pcm)
+            audio_output.write(pcm)
         except Exception:
             pass
 
