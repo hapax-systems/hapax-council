@@ -128,9 +128,9 @@ class VoiceConfig(BaseModel):
     presence_exit_ticks: int = 24  # 60s at 2.5s tick
     presence_enter_ticks: int = 2  # 5s
     presence_signal_weights: dict[str, tuple[float, float]] = {
-        "operator_face": (0.95, 0.05),
+        "operator_face": (0.90, 0.10),
         "keyboard_active": (0.85, 0.05),
-        "vad_speech": (0.70, 0.20),
+        "vad_speech": (0.60, 0.15),
         "speaker_is_operator": (0.95, 0.02),
         "watch_hr": (0.80, 0.30),
         "watch_connected": (0.70, 0.40),

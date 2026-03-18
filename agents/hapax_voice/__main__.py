@@ -260,6 +260,8 @@ class VoiceDaemon:
         self.gate.set_event_log(self.event_log)
         self.notifications.set_event_log(self.event_log)
         self.workspace_monitor.set_event_log(self.event_log)
+        if self._presence_engine is not None:
+            self._presence_engine.set_event_log(self.event_log)
 
         # Wire consent curtailment into event log (deferred — consent_tracker not yet created)
 
@@ -627,11 +629,11 @@ class VoiceDaemon:
                     exit_ticks=self.cfg.presence_exit_ticks,
                     signal_weights=self.cfg.presence_signal_weights,
                 )
-                self._presence_engine.set_event_log(self.event_log)
+                # event_log wired later (created after backend registration)
                 self.perception.register_backend(self._presence_engine)
             except Exception:
                 self._presence_engine = None
-                log.info("PresenceEngine not available, skipping")
+                log.warning("PresenceEngine not available, skipping", exc_info=True)
         else:
             self._presence_engine = None
 
