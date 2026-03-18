@@ -131,7 +131,7 @@ class TestStimmungCollector:
 
     def test_langfuse_cost(self):
         c = StimmungCollector()
-        c.update_langfuse(daily_cost=3.0, error_count=0, total_traces=100)
+        c.update_langfuse(daily_cost=30.0, error_count=0, total_traces=100)
         s = c.snapshot()
         assert s.llm_cost_pressure.value == 0.6
 

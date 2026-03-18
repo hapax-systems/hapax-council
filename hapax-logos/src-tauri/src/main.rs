@@ -44,6 +44,8 @@ fn main() {
             commands::governance::get_briefing,
             // Cost (Tier 2: Langfuse)
             commands::cost::get_cost,
+            // System flow (live anatomy)
+            commands::system_flow::get_system_flow,
             // Visual surface control
             visual::control::get_visual_surface_state,
             visual::control::set_visual_layer_param,
@@ -79,7 +81,12 @@ fn main() {
         ])
         .setup(|app| {
             // Spawn the wgpu visual surface on a dedicated thread
-            visual::bridge::spawn_visual_surface(app.handle().clone());
+            // Skip if HAPAX_NO_VISUAL=1 (useful when visual surface conflicts with Wayland)
+            if std::env::var("HAPAX_NO_VISUAL").unwrap_or_default() != "1" {
+                visual::bridge::spawn_visual_surface(app.handle().clone());
+            } else {
+                log::info!("Visual surface disabled (HAPAX_NO_VISUAL=1)");
+            }
             // Spawn the directive watcher (reads agent directives from shm)
             commands::directive_watcher::spawn_directive_watcher(app.handle().clone());
             // Spawn headless browser engine for agent web access
