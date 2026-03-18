@@ -162,7 +162,7 @@ def route(
 
     # Consent-critical: guests present or consent flow active.
     # Bad model output here is a governance violation, not a UX issue.
-    if consent_phase in ("pending", "active", "refused"):
+    if consent_phase in ("refused",):
         return RoutingDecision(
             tier=ModelTier.CAPABLE,
             model=TIER_ROUTES[ModelTier.CAPABLE],

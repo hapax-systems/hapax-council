@@ -61,7 +61,10 @@ _DEFAULT_WEIGHTS: dict[str, float] = {
 
 # ── Governance override patterns ────────────────────────────────────
 
-_CONSENT_PHASES = frozenset({"pending", "active", "refused"})
+# Only "refused" forces CAPABLE — active refusal needs best model to handle gracefully.
+# "pending" uses normal routing (guest may be transient, face dedup may be wrong).
+# "active" (consent granted) is normal operation — no override needed.
+_CONSENT_PHASES = frozenset({"refused"})
 
 
 class SalienceRouter:

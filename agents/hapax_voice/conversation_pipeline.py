@@ -33,14 +33,18 @@ _MAX_ACCUMULATION_S = 0.3
 # Response length per tier — the ramp IS the length. Short casual
 # responses at LOCAL feel like warmup; longer responses at CAPABLE
 # feel like deep engagement. This shapes conversational cadence.
+# Voice responses must be SHORT. Nobody wants to listen to a 30-second
+# monologue. 1-3 sentences at most tiers, up to 4-5 for deep questions.
+# Calibrated from live conversation: operator barged in on every response
+# because they were too long.
 _TIER_MAX_TOKENS: dict[str, int] = {
     "CANNED": 0,
-    "LOCAL": 60,  # 1-2 sentences max
-    "FAST": 150,  # 2-4 sentences
-    "STRONG": 256,  # full paragraph
-    "CAPABLE": 512,  # extended thought
+    "LOCAL": 40,  # 1 sentence
+    "FAST": 80,  # 1-2 sentences
+    "STRONG": 120,  # 2-3 sentences
+    "CAPABLE": 200,  # 3-4 sentences max
 }
-_MAX_RESPONSE_TOKENS = 256  # fallback
+_MAX_RESPONSE_TOKENS = 120  # fallback
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
 
@@ -68,10 +72,19 @@ def _stimmung_downgrade(model: str, tier: ModelTier) -> tuple[str, ModelTier]:
     resource = raw.get("resource_pressure", {}).get("value", 0.0)
     cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
 
-    # Critical: everything goes to LOCAL
+    # Critical stance: check what's driving it
+    # Health/resource critical → slam to LOCAL (infrastructure at risk)
+    # Cost critical alone → downgrade one tier (budget, not safety)
     if stance == "critical":
-        log.info("Stimmung critical → voice downgrade to LOCAL")
-        return TIER_ROUTES[ModelTier.LOCAL], ModelTier.LOCAL
+        health = raw.get("health", {}).get("value", 0.0)
+        if health >= 0.85 or resource >= 0.85:
+            log.info("Stimmung critical (health/resource) → voice downgrade to LOCAL")
+            return TIER_ROUTES[ModelTier.LOCAL], ModelTier.LOCAL
+        if tier.value > ModelTier.LOCAL.value:
+            new_tier = ModelTier(tier.value - 1)
+            log.info("Stimmung critical (cost) → voice %s → %s", tier.name, new_tier.name)
+            return TIER_ROUTES[new_tier], new_tier
+        return model, tier
 
     # Resource pressure > 0.7: drop one tier
     if resource > 0.7 and tier.value > ModelTier.LOCAL.value:
@@ -309,6 +322,13 @@ class ConversationPipeline:
             log.info("Echo rejected: %r", transcript[:60])
             self.state = ConvState.LISTENING
             return
+
+        # ── Duplicate detection: reject if same transcript just processed ──
+        if hasattr(self, "_last_transcript") and transcript == self._last_transcript:
+            log.info("Duplicate rejected: %r", transcript[:60])
+            self.state = ConvState.LISTENING
+            return
+        self._last_transcript = transcript
 
         # ── Principal attribution: wrap transcript with speaker identity ──
         # Says[str] records WHO said this, not just what. The principal

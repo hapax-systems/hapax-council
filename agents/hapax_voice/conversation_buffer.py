@@ -39,13 +39,8 @@ SPEECH_END_CONSECUTIVE = 15  # ~450ms (reduced from 600ms — AEC handles some e
 BARGE_IN_PROB = 0.85
 BARGE_IN_CONSECUTIVE = 8
 
-# Short post-TTS cooldown: AEC handles most echo but room reflections
-# from the Yeti at close range still trigger VAD for ~200ms after TTS.
-# Reduced from 500ms (pre-AEC) — AEC cuts the needed cooldown by 60%.
-# Post-TTS cooldown: the Yeti picks up TTS bleed-through that survives AEC.
-# 200ms was too short — room reflections arrive 1-3s after TTS ends.
-# 2.0s covers the echo tail in a room with a condenser mic at ~1m.
-# This is a hard gate — no audio processing during cooldown at all.
+# Post-TTS cooldown: hard gate, no audio processing at all.
+# 2.0s covers residual mic pickup in studio environment.
 POST_TTS_COOLDOWN_S = 2.0
 
 
@@ -111,12 +106,12 @@ class ConversationBuffer:
         else:
             # TTS finished — start short cooldown for residual echo
             self._speaking_ended_at = time.monotonic()
-            # If audio was captured during barge-in, start
-            # accumulating from the pre-roll so the utterance isn't lost
-            if self.barge_in_detected and not self._speech_active:
-                self._speech_active = True
-                self._speech_frames = list(self._pre_roll)
-                log.debug("Barge-in: started accumulating post-TTS speech")
+            # On barge-in: do NOT carry pre-roll forward — it contains
+            # audio from during TTS which causes duplicate transcription.
+            # Fresh speech after cooldown will be captured normally.
+            if self.barge_in_detected:
+                self._pre_roll.clear()
+                log.debug("Barge-in: cleared pre-roll to prevent duplicate utterance")
 
     def feed_audio(self, frame: bytes) -> None:
         if not self._active:
