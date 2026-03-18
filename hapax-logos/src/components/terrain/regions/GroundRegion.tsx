@@ -4,14 +4,14 @@ import { AmbientCanvas } from "../ground/AmbientCanvas";
 import { SignalZones } from "../ground/SignalZones";
 import { TimeDisplay } from "../ground/TimeDisplay";
 import { AccommodationPanel } from "../../sidebar/AccommodationPanel";
-import type { useVisualLayer } from "../../../hooks/useVisualLayer";
+import type { useVisualLayerPoll } from "../../../hooks/useVisualLayer";
 
 const StudioPage = lazy(() =>
   import("../../../pages/StudioPage").then((m) => ({ default: m.StudioPage }))
 );
 
 interface GroundRegionProps {
-  vl: ReturnType<typeof useVisualLayer>;
+  vl: ReturnType<typeof useVisualLayerPoll>;
 }
 
 export function GroundRegion({ vl }: GroundRegionProps) {

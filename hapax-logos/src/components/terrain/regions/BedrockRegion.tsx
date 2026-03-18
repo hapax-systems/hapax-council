@@ -8,6 +8,7 @@ import { ConsentPanel } from "../../sidebar/ConsentPanel";
 import { GovernancePanel } from "../../sidebar/GovernancePanel";
 import { OverheadPanel } from "../../sidebar/OverheadPanel";
 import { PrecedentPanel } from "../../sidebar/PrecedentPanel";
+import { TimersPanel } from "../../sidebar/TimersPanel";
 
 function BedrockSurface() {
   const { data: health } = useHealth();
@@ -91,6 +92,7 @@ export function BedrockRegion() {
                 <GovernancePanel />
                 <OverheadPanel />
                 <PrecedentPanel />
+                <TimersPanel />
               </div>
             </div>
           )}

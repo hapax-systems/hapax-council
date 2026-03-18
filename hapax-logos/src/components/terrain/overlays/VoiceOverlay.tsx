@@ -3,7 +3,7 @@
  * Extracted from HapaxPage voice session rendering.
  */
 
-import type { useVisualLayer } from "../../../hooks/useVisualLayer";
+import type { useVisualLayerPoll } from "../../../hooks/useVisualLayer";
 
 const VOICE_STATE_COLORS: Record<string, string> = {
   listening: "#4ddb99",
@@ -13,7 +13,7 @@ const VOICE_STATE_COLORS: Record<string, string> = {
 };
 
 interface VoiceOverlayProps {
-  vl: ReturnType<typeof useVisualLayer>;
+  vl: ReturnType<typeof useVisualLayerPoll>;
 }
 
 export function VoiceOverlay({ vl }: VoiceOverlayProps) {

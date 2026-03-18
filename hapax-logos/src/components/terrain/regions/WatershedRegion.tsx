@@ -1,7 +1,12 @@
+import { Suspense, lazy } from "react";
 import { Region } from "../Region";
 import { FlowSummary } from "../watershed/FlowSummary";
 import { useSystemFlow } from "../../../hooks/useSystemFlow";
 import { ProfilePanel } from "../../sidebar/ProfilePanel";
+
+const FlowPage = lazy(() =>
+  import("../../../pages/FlowPage").then((m) => ({ default: m.FlowPage }))
+);
 
 export function WatershedRegion() {
   const flow = useSystemFlow();
@@ -21,16 +26,26 @@ export function WatershedRegion() {
             />
           </div>
 
-          {/* Stratum: profile + compact topology info */}
-          {depth !== "surface" && (
+          {/* Stratum: profile panel */}
+          {depth === "stratum" && (
             <div className="px-3 overflow-y-auto flex-1 min-h-0">
               <ProfilePanel />
-              {depth === "core" && (
-                <div className="mt-2 text-[10px] text-zinc-600">
-                  Full flow topology available at /legacy/flow
-                </div>
-              )}
             </div>
+          )}
+
+          {/* Core: full flow topology */}
+          {depth === "core" && (
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center h-full text-zinc-600 text-xs">
+                  Loading flow topology...
+                </div>
+              }
+            >
+              <div className="h-full min-h-0">
+                <FlowPage />
+              </div>
+            </Suspense>
           )}
         </div>
       )}

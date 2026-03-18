@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Region } from "../Region";
 import { AgentSummary } from "../field/AgentSummary";
 import { FreshnessPanel } from "../../sidebar/FreshnessPanel";
@@ -6,12 +6,23 @@ import { ScoutPanel } from "../../sidebar/ScoutPanel";
 import { DriftPanel } from "../../sidebar/DriftPanel";
 import { ManagementPanel } from "../../sidebar/ManagementPanel";
 import { AgentGrid } from "../../dashboard/AgentGrid";
+import { PerceptionCanvas } from "../../perception/PerceptionCanvas";
+import { PerceptionSidebar } from "../../perception/PerceptionSidebar";
+import { ClassificationOverlayProvider } from "../../../contexts/ClassificationOverlayContext";
+import { useAgentRun } from "../../../contexts/AgentRunContext";
+import type { SignalCategory } from "../../../contexts/ClassificationOverlayContext";
 import type { AgentInfo } from "../../../api/types";
 
 export function FieldRegion() {
-  const handleRun = useCallback((_agent: AgentInfo, _flags: string[]) => {
-    // Agent run handled by AgentRunContext at layout level
-  }, []);
+  const { runAgent } = useAgentRun();
+  const [activeZone, setActiveZone] = useState<SignalCategory | null>(null);
+
+  const handleRun = useCallback(
+    (agent: AgentInfo, flags: string[]) => {
+      runAgent(agent.name, flags);
+    },
+    [runAgent],
+  );
 
   return (
     <Region name="field">
@@ -39,14 +50,14 @@ export function FieldRegion() {
             </div>
           )}
 
-          {/* Core: full agent view */}
+          {/* Core: perception view */}
           {depth === "core" && (
-            <div className="px-3 overflow-y-auto flex-1 min-h-0">
-              <ScoutPanel />
-              <DriftPanel />
-              <ManagementPanel />
-              <AgentGrid onRun={handleRun} />
-            </div>
+            <ClassificationOverlayProvider>
+              <div className="flex h-full min-h-0">
+                <PerceptionCanvas activeZone={activeZone} onZoneClick={setActiveZone} />
+                <PerceptionSidebar activeZone={activeZone} onZoneSelect={setActiveZone} />
+              </div>
+            </ClassificationOverlayProvider>
           )}
         </div>
       )}

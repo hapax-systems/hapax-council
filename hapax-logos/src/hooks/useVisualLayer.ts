@@ -86,7 +86,7 @@ const DEFAULT_VOICE: VoiceSession = {
   routing_activation: 0.0,
 };
 
-export function useVisualLayer() {
+export function useVisualLayerPoll() {
   const [vlState, setVlState] = useState<VisualLayerState | null>(null);
 
   useEffect(() => {

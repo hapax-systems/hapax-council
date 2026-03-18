@@ -4,6 +4,7 @@ import { GoalsPanel } from "../../sidebar/GoalsPanel";
 import { NudgeList } from "../../dashboard/NudgeList";
 import { CopilotBanner } from "../../dashboard/CopilotBanner";
 import { EnginePanel } from "../../sidebar/EnginePanel";
+import { BriefingPanel } from "../../sidebar/BriefingPanel";
 
 function HorizonSurface() {
   const { data: briefing } = useBriefing();
@@ -51,6 +52,9 @@ export function HorizonRegion() {
                   <NudgeList />
                 </div>
                 <EnginePanel />
+                <div className="col-span-3">
+                  <BriefingPanel />
+                </div>
               </div>
             </div>
           )}
