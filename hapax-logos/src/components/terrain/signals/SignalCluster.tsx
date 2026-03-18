@@ -41,13 +41,15 @@ function TrendSparkline({ slope, color }: { slope: number; color: string }) {
   );
 }
 
-function densityFromDepth(depth: Depth): ClusterDensity {
+// Note: densityFromDepth is exported alongside components, which triggers
+// react-refresh/only-export-components. This is acceptable for a utility
+// tightly coupled to this component.
+// eslint-disable-next-line react-refresh/only-export-components
+export function densityFromDepth(depth: Depth): ClusterDensity {
   if (depth === "surface") return "compact";
   if (depth === "stratum") return "summary";
   return "full";
 }
-
-export { densityFromDepth };
 
 /** Group signals by category, pick highest severity per category */
 function groupByCategory(signals: SignalEntry[]): Map<SignalCategory, SignalEntry[]> {
