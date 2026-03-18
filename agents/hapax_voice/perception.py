@@ -286,6 +286,21 @@ class PerceptionEngine:
         backend.start()
         log.info("Registered perception backend: %s (provides: %s)", backend.name, backend.provides)
 
+    def replace_backend(self, backend: PerceptionBackend) -> None:
+        """Replace an existing backend with a new instance of the same name.
+
+        Stops the old backend, unregisters it, then registers the new one.
+        Use for session-scoped backends that are recreated each session
+        (e.g., cognitive_loop).
+        """
+        old = self._backends.pop(backend.name, None)
+        if old is not None:
+            old.stop()
+            for name in old.provides:
+                self._provided_by.pop(name, None)
+            log.info("Replaced perception backend: %s", backend.name)
+        self.register_backend(backend)
+
     @property
     def registered_backends(self) -> dict[str, PerceptionBackend]:
         """Return a copy of registered backends."""
