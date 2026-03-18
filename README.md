@@ -1,15 +1,15 @@
 # hapax-council
 
-Externalized executive function infrastructure for a single operator. LLM agents handle cognitive work — tracking open loops, maintaining context, surfacing what needs attention — governed by five weighted axioms with formal enforcement. A voice daemon provides conversational interaction. A visual compositor renders the system's state as an ambient display. A reactive engine watches for changes and cascades downstream work.
+Externalized executive function infrastructure for a single operator. 45+ LLM agents coordinate through a filesystem-as-bus, governed by five weighted axioms with formal enforcement. Includes a voice daemon, visual compositor, reactive engine, and consent framework.
 
-Single-operator is a constitutional axiom (weight 100). There is no auth, no roles, no multi-user anything. This is not a limitation — it is an architectural advantage.
+Single-operator is a constitutional axiom (weight 100). No auth, roles, or multi-user features.
 
 ## Core properties
 
 - **Constitutional governance** — Five axioms produce 90 implications via four interpretive canons from statutory law. Enforced at four tiers: T0 blocked, T1 flagged, T2 advisory, T3 lint. Novel cases produce precedents stored with authority hierarchy (operator 1.0 > agent 0.7 > derived 0.5).
-- **Consent as information flow control** — ConsentLabel (DLM join-semilattice), Labeled[T] (LIO functor wrapper), Says monad (Abadi DCC principal attribution), PosBool(X) provenance semirings, GateToken (linear discipline). Properties universally quantified via Hypothesis, not spot-checked.
+- **Consent as information flow control** — ConsentLabel (DLM join-semilattice), Labeled[T] (LIO functor wrapper), Says monad (Abadi DCC principal attribution), PosBool(X) provenance semirings, GateToken (linear discipline). Properties verified via Hypothesis property-based testing.
 - **Phenomenological perception** — Husserlian temporal bands (retention/impression/protention/surprise), Bayesian presence engine (8-signal fusion), apperception self-band (7-step cascade with 6 safeguards against pathological attractors), SystemStimmung (6-dimension self-state vector).
-- **Salience-based voice routing** — Concern graph activation over heuristic rules. Continuous activation score maps to 5 model tiers (LOCAL→CAPABLE). Hysteresis prevents oscillation. Stimmung-aware allostatic regulation.
+- **Salience-based voice routing** — Concern graph activation maps to 5 model tiers (LOCAL→CAPABLE). Includes de-escalation hysteresis and stimmung-aware tier downgrade.
 - **System anatomy visualization** — Live React Flow topology with particle-density edges, breathing nodes, staleness color shift, and attention decay. 9 nodes, 16 edges, polls every 3s from /dev/shm.
 
 ## Quick start
@@ -41,7 +41,7 @@ Loop 3: Reactive Engine (inotify, event-driven)
 
 ### Filesystem-as-bus
 
-Agents coordinate by reading and writing markdown files with YAML frontmatter. The filesystem IS the message bus. Debuggable (`cat` any file), survives restarts, concurrent without locks (atomic rename).
+Agents coordinate by reading and writing markdown files with YAML frontmatter on disk. Atomic rename for writes. State survives restarts and is inspectable with standard tools.
 
 ### The phenomenological stack
 
@@ -54,14 +54,14 @@ Sensors (cameras, mics, watch, keyboard, screens)
   → Apperception Cascade (7-step self-observation, coherence, reflections)
   → Stimmung (6 dimensions → stance: nominal/cautious/degraded/critical)
   → Phenomenal Context Renderer (6 progressive layers, tier-scaled)
-  → LLM System Prompt (orientation, not information)
+  → LLM System Prompt
 ```
 
 ### Consent framework
 
 ```
 Principal (sovereign/bound)
-  → Says[T] (who asserts what — Abadi DCC)
+  → Says[T] (principal attribution — Abadi DCC)
   → Labeled[T] (consent label + provenance — LIO/DLM)
   → ProvenanceExpr (PosBool semiring: tensor ⊗ / plus ⊕)
   → ConsentGatedWriter (single chokepoint, mints GateToken)
@@ -71,15 +71,15 @@ Principal (sovereign/bound)
 
 ### Voice daemon
 
-Wake word → VAD → STT (faster-whisper) → Salience routing (concern graph activation) → LLM (5 tiers) → TTS (Kokoro) → Audio output. Phenomenal context renderer injects temporal bands + self-band at each tier's fidelity ceiling.
+Wake word → VAD → STT (faster-whisper) → Salience routing (concern graph activation) → LLM (5 tiers) → TTS (Kokoro) → Audio output. Phenomenal context renderer injects temporal bands and self-band, scaled per tier.
 
 ### Hapax Logos
 
-Tauri 2 desktop app with wgpu visual surface (6 GPU technique layers: gradient, reaction-diffusion, voronoi, wave, physarum, feedback) and React control panel. System anatomy Flow page shows live topology with flowing particles. HapaxPage is the full-screen ambient canvas — the agent's visual body.
+Tauri 2 desktop app with wgpu visual surface (6 GPU technique layers: gradient, reaction-diffusion, voronoi, wave, physarum, feedback) and React control panel. Includes a system anatomy Flow page (live topology) and a full-screen ambient canvas (HapaxPage).
 
 ### Reactive engine
 
-inotify watches `profiles/`, `axioms/`, `rag-sources/`. 12 rules. Three-phase execution (deterministic → GPU → cloud). Stimmung-gated (degraded/critical → skip expensive phases). Presence-gated (operator away → skip cloud work).
+inotify watches `profiles/`, `axioms/`, `rag-sources/`. 12 rules. Three-phase execution (deterministic → GPU → cloud). Phases 1-2 skipped when stimmung stance is degraded/critical or operator is absent.
 
 ## Status
 
