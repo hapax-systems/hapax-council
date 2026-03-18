@@ -119,10 +119,14 @@ class ReactiveEngine:
         self._quiet_window_s = quiet_window_s or _env_float("ENGINE_QUIET_WINDOW_S", 180)
         self._cooldown_default_s = cooldown_default_s or _env_float("ENGINE_COOLDOWN_S", 600)
 
+        # Voice state directory for presence/consent reactive rules
+        _voice_state_dir = Path.home() / ".cache" / "hapax-voice"
+
         self._watch_paths = watch_paths or [
             PROFILES_DIR,
             RAG_SOURCES_DIR,
             AI_AGENTS_DIR / "axioms",
+            _voice_state_dir,
         ]
 
         self._registry = RuleRegistry()
@@ -278,6 +282,17 @@ class ReactiveEngine:
         except (OSError, json.JSONDecodeError):
             return "nominal"
 
+    def _read_presence_state(self) -> str:
+        """Read current Bayesian presence state. Returns 'PRESENT' on error (fail-open)."""
+        import json
+
+        state_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            return data.get("presence_state", "PRESENT") or "PRESENT"
+        except (OSError, json.JSONDecodeError):
+            return "PRESENT"
+
     async def _handle_change(self, event: ChangeEvent) -> None:
         """Core event handler: evaluate rules → execute plan → log results.
 
@@ -306,23 +321,41 @@ class ReactiveEngine:
             _log.debug("No rules matched for %s", event.path)
             return
 
-        # WS2: stimmung modulation — skip expensive phases when system is stressed
+        # Phase gating: skip expensive phases (1+2) when system is stressed
+        # or operator is away (no reason to burn GPU/cloud when nobody's here)
+        skip_expensive = False
+        skip_reason = ""
+
         stance = self._read_stimmung_stance()
         if stance in (Stance.DEGRADED, Stance.CRITICAL):
+            skip_expensive = True
+            skip_reason = f"stimmung:{stance}"
+
+        presence = self._read_presence_state()
+        if presence == "AWAY":
+            skip_expensive = True
+            skip_reason = skip_reason or f"presence:{presence}"
+
+        if skip_expensive:
             original_count = len(plan.actions)
             plan.actions = [a for a in plan.actions if a.phase == 0]
             skipped = original_count - len(plan.actions)
             if skipped > 0:
                 _log.info(
-                    "Stimmung %s: skipped %d non-critical action(s)",
-                    stance,
+                    "Phase gating (%s): skipped %d non-critical action(s)",
+                    skip_reason,
                     skipped,
                 )
                 hapax_interaction(
                     "stimmung",
                     "engine",
                     "phase_gating",
-                    metadata={"stance": stance, "skipped_actions": skipped},
+                    metadata={
+                        "reason": skip_reason,
+                        "stance": stance,
+                        "presence": presence,
+                        "skipped_actions": skipped,
+                    },
                 )
             if not plan.actions:
                 return
