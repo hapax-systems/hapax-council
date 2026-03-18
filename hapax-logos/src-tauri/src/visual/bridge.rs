@@ -304,7 +304,8 @@ pub fn spawn_visual_surface<R: Runtime>(app_handle: AppHandle<R>) {
             std::fs::create_dir_all("/dev/shm/hapax-compositor").ok();
             std::fs::create_dir_all("/dev/shm/hapax-stimmung").ok();
 
-            let event_loop = EventLoop::new().unwrap();
+            use winit::platform::wayland::EventLoopBuilderExtWayland;
+            let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
             event_loop.set_control_flow(ControlFlow::Poll);
 
             let mut app = VisualApp::new(app_handle);

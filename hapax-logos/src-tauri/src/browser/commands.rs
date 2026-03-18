@@ -12,7 +12,11 @@ use super::engine::BrowserEngine;
 /// Spawn the browser engine on the tokio runtime and store in Tauri state.
 pub fn spawn_browser_engine<R: Runtime>(app_handle: AppHandle<R>) {
     let handle = app_handle.clone();
-    tokio::spawn(async move {
+    let Ok(rt_handle) = tokio::runtime::Handle::try_current() else {
+        log::warn!("No tokio runtime available — browser engine disabled");
+        return;
+    };
+    rt_handle.spawn(async move {
         match BrowserEngine::launch().await {
             Ok(engine) => {
                 handle.manage(BrowserState(engine));
