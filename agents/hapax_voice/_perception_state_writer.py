@@ -265,6 +265,16 @@ def write_perception_state(
         "physiological_load": physiological_load,
         "sleep_quality": sleep_quality,
         "watch_activity_state": watch_activity,
+        # Phone media (AVRCP via Bluetooth)
+        "phone_media_playing": bool(_bval("phone_media_playing", False)),
+        "phone_media_title": str(_bval("phone_media_title", "")),
+        "phone_media_artist": str(_bval("phone_media_artist", "")),
+        "phone_sms_unread": int(_bval("phone_sms_unread", 0) or 0),
+        "phone_sms_latest_sender": str(_bval("phone_sms_latest_sender", "")),
+        "phone_sms_latest_text": str(_bval("phone_sms_latest_text", "")),
+        "phone_call_active": bool(_bval("phone_call_active", False)),
+        "phone_call_incoming": bool(_bval("phone_call_incoming", False)),
+        "phone_call_number": str(_bval("phone_call_number", "")),
         # Scene inventory (persistent object tracking)
         "scene_inventory": _parse_scene_inventory(_bval("scene_inventory", "{}")),
         # Voice session (Batch A)

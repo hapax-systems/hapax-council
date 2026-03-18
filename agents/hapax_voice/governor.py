@@ -122,6 +122,10 @@ class PipelineGovernor:
                     axiom="interpersonal_transparency",
                 ),
                 Veto(
+                    name="phone_call_active",
+                    predicate=lambda s: not getattr(s, "phone_call_active", False),
+                ),
+                Veto(
                     name="axiom_compliance",
                     predicate=self._check_compliance,
                     axiom="constitutional",

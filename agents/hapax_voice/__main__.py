@@ -631,6 +631,38 @@ class VoiceDaemon:
         except Exception:
             log.info("InputActivityBackend not available, skipping")
 
+        # Bluetooth phone presence (paired Pixel 10)
+        try:
+            from agents.hapax_voice.backends.bt_presence import BTPresenceBackend
+
+            self.perception.register_backend(BTPresenceBackend())
+        except Exception:
+            log.info("BTPresenceBackend not available, skipping")
+
+        # Phone media (AVRCP track info via Bluetooth)
+        try:
+            from agents.hapax_voice.backends.phone_media import PhoneMediaBackend
+
+            self.perception.register_backend(PhoneMediaBackend())
+        except Exception:
+            log.info("PhoneMediaBackend not available, skipping")
+
+        # Phone SMS (MAP via Bluetooth)
+        try:
+            from agents.hapax_voice.backends.phone_messages import PhoneMessagesBackend
+
+            self.perception.register_backend(PhoneMessagesBackend())
+        except Exception:
+            log.info("PhoneMessagesBackend not available, skipping")
+
+        # Phone calls (HFP via PipeWire Telephony)
+        try:
+            from agents.hapax_voice.backends.phone_calls import PhoneCallsBackend
+
+            self.perception.register_backend(PhoneCallsBackend())
+        except Exception:
+            log.info("PhoneCallsBackend not available, skipping")
+
         # Bayesian presence engine (fuses all signals into presence probability)
         if self.cfg.presence_bayesian_enabled:
             try:

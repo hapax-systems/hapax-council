@@ -71,6 +71,7 @@ class WatchBackend:
         self._b_load: Behavior[float] = Behavior(0.0)
         self._b_activity: Behavior[str] = Behavior("unknown")
         self._b_sleep: Behavior[float] = Behavior(1.0)
+        self._b_connected: Behavior[bool] = Behavior(False)
 
     @property
     def name(self) -> str:
@@ -86,6 +87,7 @@ class WatchBackend:
                 "physiological_load",
                 "watch_activity_state",
                 "sleep_quality",
+                "watch_connected",
             }
         )
 
@@ -99,7 +101,14 @@ class WatchBackend:
     def contribute(self, behaviors: dict[str, Behavior]) -> None:
         now = time.monotonic()
 
-        # HRV data
+        # Heart rate from heartrate.json (primary) or hrv.json (fallback)
+        hr_data = self._reader.read("heartrate.json")
+        if hr_data is not None:
+            current = hr_data.get("current", {})
+            hr = int(current.get("bpm", 0))
+            self._b_heart_rate.update(hr, now)
+
+        # HRV data (separate file, not always available)
         hrv_data = self._reader.read("hrv.json")
         current_rmssd = None
         mean_rmssd = None
@@ -108,12 +117,21 @@ class WatchBackend:
             window = hrv_data.get("window_1h", {})
             current_rmssd = current.get("rmssd_ms")
             mean_rmssd = window.get("mean")
-            hr = current.get("heart_rate_bpm", 0)
-            self._b_heart_rate.update(hr, now)
+            # Fallback HR from HRV if heartrate.json not available
+            if hr_data is None:
+                hr = current.get("heart_rate_bpm", 0)
+                self._b_heart_rate.update(hr, now)
             if current_rmssd is not None:
                 self._b_hrv_rmssd.update(current_rmssd, now)
             activity = current.get("activity_state", "unknown")
             self._b_activity.update(activity, now)
+
+        # Activity state from activity.json (if HRV didn't provide it)
+        if hrv_data is None:
+            act_data = self._reader.read("activity.json")
+            if act_data is not None:
+                activity = act_data.get("state", "unknown").lower()
+                self._b_activity.update(activity, now)
 
         # EDA data
         eda_data = self._reader.read("eda.json")
@@ -142,12 +160,18 @@ class WatchBackend:
         else:
             self._b_sleep.update(1.0, now)
 
+        # Watch connected: connection.json exists and was updated within 5 minutes
+        conn_data = self._reader.read("connection.json", max_age_seconds=300)
+        connected = conn_data is not None
+        self._b_connected.update(connected, now)
+
         behaviors["heart_rate_bpm"] = self._b_heart_rate
         behaviors["hrv_rmssd_ms"] = self._b_hrv_rmssd
         behaviors["stress_elevated"] = self._b_stress
         behaviors["physiological_load"] = self._b_load
         behaviors["watch_activity_state"] = self._b_activity
         behaviors["sleep_quality"] = self._b_sleep
+        behaviors["watch_connected"] = self._b_connected
 
     def start(self) -> None:
         log.info("Watch backend started")
