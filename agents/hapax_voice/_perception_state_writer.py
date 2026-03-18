@@ -272,6 +272,9 @@ def write_perception_state(
         "phone_sms_unread": int(_bval("phone_sms_unread", 0) or 0),
         "phone_sms_latest_sender": str(_bval("phone_sms_latest_sender", "")),
         "phone_sms_latest_text": str(_bval("phone_sms_latest_text", "")),
+        "phone_call_active": bool(_bval("phone_call_active", False)),
+        "phone_call_incoming": bool(_bval("phone_call_incoming", False)),
+        "phone_call_number": str(_bval("phone_call_number", "")),
         # Scene inventory (persistent object tracking)
         "scene_inventory": _parse_scene_inventory(_bval("scene_inventory", "{}")),
         # Voice session (Batch A)

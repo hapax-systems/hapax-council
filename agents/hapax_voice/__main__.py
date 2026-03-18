@@ -655,6 +655,14 @@ class VoiceDaemon:
         except Exception:
             log.info("PhoneMessagesBackend not available, skipping")
 
+        # Phone calls (HFP via PipeWire Telephony)
+        try:
+            from agents.hapax_voice.backends.phone_calls import PhoneCallsBackend
+
+            self.perception.register_backend(PhoneCallsBackend())
+        except Exception:
+            log.info("PhoneCallsBackend not available, skipping")
+
         # Bayesian presence engine (fuses all signals into presence probability)
         if self.cfg.presence_bayesian_enabled:
             try:
