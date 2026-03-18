@@ -13,6 +13,12 @@ import { DriftPanel } from "./sidebar/DriftPanel";
 import { ManagementPanel } from "./sidebar/ManagementPanel";
 import { AccommodationPanel } from "./sidebar/AccommodationPanel";
 import { TimersPanel } from "./sidebar/TimersPanel";
+import { ConsentPanel } from "./sidebar/ConsentPanel";
+import { GovernancePanel } from "./sidebar/GovernancePanel";
+import { EnginePanel } from "./sidebar/EnginePanel";
+import { ProfilePanel } from "./sidebar/ProfilePanel";
+import { OverheadPanel } from "./sidebar/OverheadPanel";
+import { PrecedentPanel } from "./sidebar/PrecedentPanel";
 import { SidebarStrip } from "./sidebar/SidebarStrip";
 
 interface PanelEntry {
@@ -24,16 +30,22 @@ interface PanelEntry {
 const panels: PanelEntry[] = [
   { id: "health", component: HealthPanel, defaultOrder: 0 },
   { id: "vram", component: VramPanel, defaultOrder: 1 },
-  { id: "containers", component: ContainersPanel, defaultOrder: 2 },
-  { id: "briefing", component: BriefingPanel, defaultOrder: 3 },
-  { id: "readiness", component: FreshnessPanel, defaultOrder: 4 },
-  { id: "goals", component: GoalsPanel, defaultOrder: 5 },
-  { id: "cost", component: CostPanel, defaultOrder: 6 },
-  { id: "scout", component: ScoutPanel, defaultOrder: 7 },
-  { id: "drift", component: DriftPanel, defaultOrder: 8 },
-  { id: "management", component: ManagementPanel, defaultOrder: 9 },
-  { id: "accommodations", component: AccommodationPanel, defaultOrder: 10 },
-  { id: "timers", component: TimersPanel, defaultOrder: 11 },
+  { id: "consent", component: ConsentPanel, defaultOrder: 2 },
+  { id: "governance", component: GovernancePanel, defaultOrder: 3 },
+  { id: "containers", component: ContainersPanel, defaultOrder: 4 },
+  { id: "briefing", component: BriefingPanel, defaultOrder: 5 },
+  { id: "readiness", component: FreshnessPanel, defaultOrder: 6 },
+  { id: "goals", component: GoalsPanel, defaultOrder: 7 },
+  { id: "cost", component: CostPanel, defaultOrder: 8 },
+  { id: "overhead", component: OverheadPanel, defaultOrder: 9 },
+  { id: "engine", component: EnginePanel, defaultOrder: 10 },
+  { id: "profile", component: ProfilePanel, defaultOrder: 11 },
+  { id: "precedents", component: PrecedentPanel, defaultOrder: 12 },
+  { id: "scout", component: ScoutPanel, defaultOrder: 13 },
+  { id: "drift", component: DriftPanel, defaultOrder: 14 },
+  { id: "management", component: ManagementPanel, defaultOrder: 15 },
+  { id: "accommodations", component: AccommodationPanel, defaultOrder: 16 },
+  { id: "timers", component: TimersPanel, defaultOrder: 17 },
 ];
 
 export function Sidebar() {

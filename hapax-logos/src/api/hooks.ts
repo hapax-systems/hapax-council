@@ -163,6 +163,48 @@ export function useDeleteDemo() {
   });
 }
 
+// --- Governance & Consent ---
+
+export const useConsentContracts = () =>
+  useQuery({ queryKey: ["consentContracts"], queryFn: api.consentContracts, refetchInterval: SLOW });
+
+export const useConsentCoverage = () =>
+  useQuery({ queryKey: ["consentCoverage"], queryFn: api.consentCoverage, refetchInterval: SLOW });
+
+export const useConsentOverhead = () =>
+  useQuery({ queryKey: ["consentOverhead"], queryFn: api.consentOverhead, refetchInterval: SLOW });
+
+export const useConsentPrecedents = () =>
+  useQuery({ queryKey: ["consentPrecedents"], queryFn: api.consentPrecedents, refetchInterval: SLOW });
+
+export const useGovernanceHeartbeat = () =>
+  useQuery({ queryKey: ["governanceHeartbeat"], queryFn: api.governanceHeartbeat, refetchInterval: FAST });
+
+export const useGovernanceCoverage = () =>
+  useQuery({ queryKey: ["governanceCoverage"], queryFn: api.governanceCoverage, refetchInterval: SLOW });
+
+export const useGovernanceCarriers = () =>
+  useQuery({ queryKey: ["governanceCarriers"], queryFn: api.governanceCarriers, refetchInterval: SLOW });
+
+// --- Engine ---
+
+export const useEngineStatus = () =>
+  useQuery({ queryKey: ["engineStatus"], queryFn: api.engineStatus, refetchInterval: FAST });
+
+export const useEngineRules = () =>
+  useQuery({ queryKey: ["engineRules"], queryFn: api.engineRules, staleTime: Infinity });
+
+export const useEngineHistory = () =>
+  useQuery({ queryKey: ["engineHistory"], queryFn: api.engineHistory, refetchInterval: FAST });
+
+// --- Profile ---
+
+export const useProfile = () =>
+  useQuery({ queryKey: ["profile"], queryFn: api.profile, refetchInterval: SLOW });
+
+export const useProfilePending = () =>
+  useQuery({ queryKey: ["profilePending"], queryFn: api.profilePending, refetchInterval: SLOW });
+
 // --- Perception (restored for overlay system) ---
 
 const PERCEPTION = 3_000;

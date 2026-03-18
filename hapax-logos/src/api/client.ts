@@ -103,6 +103,26 @@ export const api = {
     post<import("./types").ScoutDecision>(`/scout/${component}/decide`, { decision, notes: notes ?? "" }),
   deleteDemo: (id: string) => del<{ deleted: string }>(`/demos/${id}`),
 
+  // --- Governance & Consent (HTTP-only) ---
+  consentContracts: () => get<unknown[]>("/consent/contracts"),
+  consentTrace: (path?: string) => get<unknown>(`/consent/trace${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  consentCoverage: () => get<unknown>("/consent/coverage"),
+  consentOverhead: () => get<unknown>("/consent/overhead"),
+  consentPrecedents: () => get<unknown[]>("/consent/precedents"),
+  governanceHeartbeat: () => get<unknown>("/governance/heartbeat"),
+  governanceCoverage: () => get<unknown>("/governance/coverage"),
+  governanceCarriers: () => get<unknown>("/governance/carriers"),
+
+  // --- Engine (HTTP-only) ---
+  engineStatus: () => get<unknown>("/engine/status"),
+  engineRules: () => get<unknown[]>("/engine/rules"),
+  engineHistory: () => get<unknown[]>("/engine/history"),
+
+  // --- Profile (HTTP-only) ---
+  profile: () => get<unknown>("/profile"),
+  profileDimension: (dim: string) => get<unknown>(`/profile/${dim}`),
+  profilePending: () => get<unknown>("/profile/facts/pending"),
+
   // POST/DELETE helpers for mutations
   post,
   del,
