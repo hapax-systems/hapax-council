@@ -2570,7 +2570,9 @@ async def check_voice_services() -> list[CheckResult]:
             group="voice",
             status=Status.HEALTHY if voice_active else Status.FAILED,
             message="running" if voice_active else "not running",
-            remediation="process-compose process restart voice --port 9080" if not voice_active else None,
+            remediation="process-compose process restart voice --port 9080"
+            if not voice_active
+            else None,
             duration_ms=_timed(t),
         )
     )

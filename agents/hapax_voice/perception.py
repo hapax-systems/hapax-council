@@ -77,6 +77,9 @@ def compute_interruptibility(
     activity_mode: str,
     in_voice_session: bool,
     operator_present: bool,
+    phone_call_active: bool = False,
+    phone_call_incoming: bool = False,
+    phone_media_playing: bool = False,
     window_count: int = 0,
     physiological_load: float = 0.0,
     circadian_alignment: float = 0.1,
@@ -93,6 +96,13 @@ def compute_interruptibility(
 
     score = 1.0
 
+    # Active phone call — hard veto on interruptibility
+    if phone_call_active:
+        return 0.05
+    # Incoming call — nearly uninterruptible (ringing)
+    if phone_call_incoming:
+        return 0.1
+
     # Active speech reduces interruptibility
     if vad_confidence > 0.5:
         score -= 0.4 * vad_confidence
@@ -100,6 +110,10 @@ def compute_interruptibility(
     # Production activity reduces interruptibility
     activity_penalties = {"production": 0.5, "meeting": 0.6, "coding": 0.3}
     score -= activity_penalties.get(activity_mode, 0.0)
+
+    # Phone media playing — mild reduction
+    if phone_media_playing:
+        score -= 0.15
 
     # Many open windows = deep multitasking context
     if window_count > 8:
