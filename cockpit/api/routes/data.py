@@ -129,6 +129,16 @@ async def get_accommodations():
     return _slow_response(_to_dict(cache.accommodations))
 
 
+@router.get("/management")
+async def get_management():
+    """Management snapshot — team state, coaching, feedback.
+
+    Council doesn't own management data (that's officium), so this
+    returns an empty structure to prevent frontend 404s.
+    """
+    return _slow_response({"people": [], "coaching": [], "feedback": []})
+
+
 @router.get("/workspace")
 async def workspace():
     """Latest workspace analysis (screen + camera + hardware state)."""
