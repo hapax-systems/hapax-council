@@ -3,6 +3,7 @@ import { Region } from "../Region";
 import { FlowSummary } from "../watershed/FlowSummary";
 import { useSystemFlow } from "../../../hooks/useSystemFlow";
 import { ProfilePanel } from "../../sidebar/ProfilePanel";
+import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
 
 const FlowPage = lazy(() =>
   import("../../../pages/FlowPage").then((m) => ({ default: m.FlowPage }))
@@ -10,9 +11,10 @@ const FlowPage = lazy(() =>
 
 export function WatershedRegion() {
   const flow = useSystemFlow();
+  const { stimmungStance } = useOverlay();
 
   return (
-    <Region name="watershed">
+    <Region name="watershed" stimmungStance={stimmungStance}>
       {(depth) => (
         <div className="h-full flex flex-col min-h-0">
           {/* Surface: stance + counts */}

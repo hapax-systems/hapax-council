@@ -395,12 +395,42 @@ export interface AmbientParams {
   brightness: number;
 }
 
+export interface BiometricState {
+  heart_rate_bpm: number;
+  stress_elevated: boolean;
+  physiological_load: number;
+  sleep_quality: number;
+  watch_activity: string;
+}
+
+export interface TemporalContext {
+  trend_flow: number;
+  trend_audio: number;
+  trend_hr: number;
+  perception_age_s: number;
+  ring_depth: number;
+}
+
+export interface SignalStaleness {
+  perception_s: number;
+  health_s: number;
+  gpu_s: number;
+  nudges_s: number;
+  briefing_s: number;
+}
+
+export type StimmungStance = "nominal" | "cautious" | "degraded" | "critical";
+
 export interface VisualLayerState {
   available: boolean;
   display_state: "ambient" | "peripheral" | "informational" | "alert" | "performative";
   zone_opacities: Record<string, number>;
   signals: Record<string, VisualLayerSignal[]>;
   ambient_params: AmbientParams;
+  biometrics?: BiometricState;
+  temporal_context?: TemporalContext;
+  signal_staleness?: SignalStaleness;
+  stimmung_stance?: StimmungStance;
   timestamp: number;
   aggregator?: string;
 }

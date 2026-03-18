@@ -5,6 +5,8 @@ import { NudgeList } from "../../dashboard/NudgeList";
 import { CopilotBanner } from "../../dashboard/CopilotBanner";
 import { EnginePanel } from "../../sidebar/EnginePanel";
 import { BriefingPanel } from "../../sidebar/BriefingPanel";
+import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
+import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
 
 function HorizonSurface() {
   const { data: briefing } = useBriefing();
@@ -38,10 +40,13 @@ function HorizonSurface() {
 }
 
 export function HorizonRegion() {
+  const { signalsByRegion, stimmungStance } = useOverlay();
+  const horizonSignals = signalsByRegion.horizon;
+
   return (
-    <Region name="horizon" className="col-span-3">
+    <Region name="horizon" className="col-span-3" stimmungStance={stimmungStance}>
       {(depth) => (
-        <div className="h-full">
+        <div className="h-full relative">
           {depth === "surface" && <HorizonSurface />}
           {depth !== "surface" && (
             <div className="h-full overflow-y-auto p-3">
@@ -57,6 +62,19 @@ export function HorizonRegion() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* Signal pips — bottom-right at surface, inline at deeper depths */}
+          {horizonSignals.length > 0 && (
+            <SignalCluster
+              signals={horizonSignals}
+              density={densityFromDepth(depth)}
+              className={
+                depth === "surface"
+                  ? "absolute bottom-1.5 right-8 pointer-events-none"
+                  : "absolute top-2 right-8"
+              }
+            />
           )}
         </div>
       )}

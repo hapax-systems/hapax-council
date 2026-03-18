@@ -9,6 +9,8 @@ import { GovernancePanel } from "../../sidebar/GovernancePanel";
 import { OverheadPanel } from "../../sidebar/OverheadPanel";
 import { PrecedentPanel } from "../../sidebar/PrecedentPanel";
 import { TimersPanel } from "../../sidebar/TimersPanel";
+import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
+import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
 
 function BedrockSurface() {
   const { data: health } = useHealth();
@@ -76,10 +78,13 @@ function BedrockSurface() {
 }
 
 export function BedrockRegion() {
+  const { signalsByRegion, stimmungStance } = useOverlay();
+  const bedrockSignals = signalsByRegion.bedrock;
+
   return (
-    <Region name="bedrock" className="col-span-3">
+    <Region name="bedrock" className="col-span-3" stimmungStance={stimmungStance}>
       {(depth) => (
-        <div className="h-full">
+        <div className="h-full relative">
           {depth === "surface" && <BedrockSurface />}
           {depth !== "surface" && (
             <div className="h-full overflow-y-auto p-3">
@@ -95,6 +100,19 @@ export function BedrockRegion() {
                 <TimersPanel />
               </div>
             </div>
+          )}
+
+          {/* Signal pips — bottom-right */}
+          {bedrockSignals.length > 0 && (
+            <SignalCluster
+              signals={bedrockSignals}
+              density={densityFromDepth(depth)}
+              className={
+                depth === "surface"
+                  ? "absolute bottom-1.5 right-8 pointer-events-none"
+                  : "absolute top-2 right-8"
+              }
+            />
           )}
         </div>
       )}
