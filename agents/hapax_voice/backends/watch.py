@@ -99,7 +99,14 @@ class WatchBackend:
     def contribute(self, behaviors: dict[str, Behavior]) -> None:
         now = time.monotonic()
 
-        # HRV data
+        # Heart rate from heartrate.json (primary) or hrv.json (fallback)
+        hr_data = self._reader.read("heartrate.json")
+        if hr_data is not None:
+            current = hr_data.get("current", {})
+            hr = int(current.get("bpm", 0))
+            self._b_heart_rate.update(hr, now)
+
+        # HRV data (separate file, not always available)
         hrv_data = self._reader.read("hrv.json")
         current_rmssd = None
         mean_rmssd = None
@@ -108,12 +115,21 @@ class WatchBackend:
             window = hrv_data.get("window_1h", {})
             current_rmssd = current.get("rmssd_ms")
             mean_rmssd = window.get("mean")
-            hr = current.get("heart_rate_bpm", 0)
-            self._b_heart_rate.update(hr, now)
+            # Fallback HR from HRV if heartrate.json not available
+            if hr_data is None:
+                hr = current.get("heart_rate_bpm", 0)
+                self._b_heart_rate.update(hr, now)
             if current_rmssd is not None:
                 self._b_hrv_rmssd.update(current_rmssd, now)
             activity = current.get("activity_state", "unknown")
             self._b_activity.update(activity, now)
+
+        # Activity state from activity.json (if HRV didn't provide it)
+        if hrv_data is None:
+            act_data = self._reader.read("activity.json")
+            if act_data is not None:
+                activity = act_data.get("state", "unknown").lower()
+                self._b_activity.update(activity, now)
 
         # EDA data
         eda_data = self._reader.read("eda.json")
