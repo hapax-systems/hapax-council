@@ -1,19 +1,19 @@
-"""Phone messages perception backend — SMS via Bluetooth MAP.
+"""Phone messages perception backend — SMS count via busctl/OBEX MAP.
 
-Reads SMS inbox from paired phone via BlueZ OBEX Message Access Profile.
-Provides unread count and latest message info for voice notification.
-
-Requires: obex.service running, phone BT paired with MAP authorized.
+Provides unread SMS count. MAP access is expensive so polls infrequently.
+Falls back gracefully if MAP session fails.
 
 Provides:
-  - phone_sms_unread: int (unread message count)
-  - phone_sms_latest_sender: str (most recent message sender)
-  - phone_sms_latest_text: str (most recent message preview)
+  - phone_sms_unread: int
+  - phone_sms_latest_sender: str
+  - phone_sms_latest_text: str
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
 import time
 
 from agents.hapax_voice.perception import PerceptionTier
@@ -24,96 +24,59 @@ log = logging.getLogger(__name__)
 _PHONE_MAC = "B0:D5:FB:A5:86:E8"
 
 
-def _read_sms_inbox(max_count: int = 10) -> list[dict]:
-    """Read SMS inbox via BlueZ OBEX MAP."""
+def _read_sms_via_script() -> list[dict]:
+    """Read SMS inbox via a helper script that uses gi (system Python)."""
     try:
-        from gi.repository import Gio, GLib
-
-        bus = Gio.bus_get_sync(Gio.BusType.SESSION)
-
-        # Create MAP session
-        result = bus.call_sync(
-            "org.bluez.obex",
-            "/org/bluez/obex",
-            "org.bluez.obex.Client1",
-            "CreateSession",
-            GLib.Variant("(sa{sv})", (_PHONE_MAC, {"Target": GLib.Variant("s", "map")})),
-            GLib.VariantType("(o)"),
-            Gio.DBusCallFlags.NONE,
-            10000,
-            None,
+        result = subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-c",
+                """
+import json
+from gi.repository import Gio, GLib
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+try:
+    r = bus.call_sync('org.bluez.obex', '/org/bluez/obex',
+        'org.bluez.obex.Client1', 'CreateSession',
+        GLib.Variant('(sa{sv})', ('"""
+                + _PHONE_MAC
+                + """', {'Target': GLib.Variant('s', 'map')})),
+        GLib.VariantType('(o)'), Gio.DBusCallFlags.NONE, 10000, None)
+    mp = r.unpack()[0]
+    bus.call_sync('org.bluez.obex', mp, 'org.bluez.obex.MessageAccess1',
+        'SetFolder', GLib.Variant('(s)', ('telecom/msg/inbox',)),
+        None, Gio.DBusCallFlags.NONE, 10000, None)
+    r2 = bus.call_sync('org.bluez.obex', mp, 'org.bluez.obex.MessageAccess1',
+        'ListMessages', GLib.Variant('(sa{sv})', ('', {'MaxCount': GLib.Variant('q', 5)})),
+        GLib.VariantType('(a{oa{sv}})'), Gio.DBusCallFlags.NONE, 10000, None)
+    msgs = []
+    for p, props in r2.unpack()[0].items():
+        msgs.append({'sender': str(props.get('Sender','')), 'subject': str(props.get('Subject','')),'read': bool(props.get('Read', True))})
+    print(json.dumps(msgs))
+except Exception as e:
+    print(json.dumps([]))
+""",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
-        map_path = result.unpack()[0]
-
-        # Navigate to inbox
-        bus.call_sync(
-            "org.bluez.obex",
-            map_path,
-            "org.bluez.obex.MessageAccess1",
-            "SetFolder",
-            GLib.Variant("(s)", ("telecom/msg/inbox",)),
-            None,
-            Gio.DBusCallFlags.NONE,
-            10000,
-            None,
-        )
-
-        # List messages
-        result2 = bus.call_sync(
-            "org.bluez.obex",
-            map_path,
-            "org.bluez.obex.MessageAccess1",
-            "ListMessages",
-            GLib.Variant("(sa{sv})", ("", {"MaxCount": GLib.Variant("q", max_count)})),
-            GLib.VariantType("(a{oa{sv}})"),
-            Gio.DBusCallFlags.NONE,
-            10000,
-            None,
-        )
-
-        messages = []
-        for _path, props in result2.unpack()[0].items():
-            messages.append(
-                {
-                    "sender": str(props.get("Sender", "")),
-                    "subject": str(props.get("Subject", "")),
-                    "timestamp": str(props.get("Timestamp", "")),
-                    "read": bool(props.get("Read", True)),
-                }
-            )
-
-        # Clean up session
-        try:
-            bus.call_sync(
-                "org.bluez.obex",
-                map_path,
-                "org.bluez.obex.Session1",
-                "Close",
-                None,
-                None,
-                Gio.DBusCallFlags.NONE,
-                3000,
-                None,
-            )
-        except Exception:
-            pass
-
-        return messages
-
-    except Exception as e:
-        log.debug("SMS read failed: %s", e)
-        return []
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout.strip())
+    except Exception:
+        pass
+    return []
 
 
 class PhoneMessagesBackend:
-    """PerceptionBackend that reads SMS via Bluetooth MAP."""
+    """PerceptionBackend that reads SMS via MAP (system Python subprocess)."""
 
     def __init__(self) -> None:
         self._b_unread: Behavior[int] = Behavior(0)
         self._b_latest_sender: Behavior[str] = Behavior("")
         self._b_latest_text: Behavior[str] = Behavior("")
         self._last_poll: float = 0.0
-        self._poll_interval: float = 30.0  # check every 30s (MAP is expensive)
+        self._poll_interval: float = 60.0  # MAP is expensive
 
     @property
     def name(self) -> str:
@@ -128,17 +91,20 @@ class PhoneMessagesBackend:
         return PerceptionTier.SLOW
 
     def available(self) -> bool:
+        # Check if obex service is running
         try:
-            from gi.repository import Gio  # noqa: F401
-
-            return True
-        except ImportError:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", "obex.service"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            return result.stdout.strip() == "active"
+        except Exception:
             return False
 
     def contribute(self, behaviors: dict[str, Behavior]) -> None:
         now = time.monotonic()
-
-        # Rate limit MAP polling (expensive BT operation)
         if now - self._last_poll < self._poll_interval:
             behaviors["phone_sms_unread"] = self._b_unread
             behaviors["phone_sms_latest_sender"] = self._b_latest_sender
@@ -146,32 +112,20 @@ class PhoneMessagesBackend:
             return
 
         self._last_poll = now
-        messages = _read_sms_inbox(max_count=10)
-
+        messages = _read_sms_via_script()
         if messages:
-            unread = sum(1 for m in messages if not m["read"])
-            latest = messages[0]  # most recent
+            unread = sum(1 for m in messages if not m.get("read", True))
+            latest = messages[0]
             self._b_unread.update(unread, now)
-            self._b_latest_sender.update(latest["sender"], now)
-            self._b_latest_text.update(latest["subject"][:80], now)
-        else:
-            self._b_unread.update(0, now)
+            self._b_latest_sender.update(latest.get("sender", ""), now)
+            self._b_latest_text.update(latest.get("subject", "")[:80], now)
 
         behaviors["phone_sms_unread"] = self._b_unread
         behaviors["phone_sms_latest_sender"] = self._b_latest_sender
         behaviors["phone_sms_latest_text"] = self._b_latest_text
 
     def start(self) -> None:
-        messages = _read_sms_inbox(max_count=3)
-        if messages:
-            unread = sum(1 for m in messages if not m["read"])
-            log.info(
-                "Phone messages backend started (%d messages, %d unread)",
-                len(messages),
-                unread,
-            )
-        else:
-            log.info("Phone messages backend started (no access or no messages)")
+        log.info("Phone messages backend started (poll every %.0fs)", self._poll_interval)
 
     def stop(self) -> None:
         log.info("Phone messages backend stopped")
