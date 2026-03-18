@@ -2537,38 +2537,58 @@ def _voice_socket_path() -> str:
 
 @check_group("voice")
 async def check_voice_services() -> list[CheckResult]:
-    """Check hapax-voice.service and its dependencies are active."""
-    services = [
-        ("hapax-voice.service", True, "systemctl --user restart hapax-voice"),
-        ("pipewire.service", True, "systemctl --user restart pipewire"),
-    ]
+    """Check voice daemon is running (process-compose or systemd) and PipeWire is active."""
     results: list[CheckResult] = []
+    t = time.monotonic()
 
-    for unit, required, fix_cmd in services:
-        t = time.monotonic()
-        rc, out, err = await run_cmd(["systemctl", "--user", "is-active", unit])
-        active = out.strip() == "active"
+    # Voice daemon: check process-compose first, fall back to systemd
+    voice_active = False
 
-        if active:
-            status = Status.HEALTHY
-            msg = "active"
-        elif required:
-            status = Status.FAILED
-            msg = out.strip() or "inactive"
-        else:
-            status = Status.DEGRADED
-            msg = f"{out.strip() or 'inactive'} (Bluetooth speaker unavailable)"
+    # Try process-compose API
+    try:
+        import httpx
 
-        results.append(
-            CheckResult(
-                name=f"voice.{unit}",
-                group="voice",
-                status=status,
-                message=msg,
-                remediation=fix_cmd if not active else None,
-                duration_ms=_timed(t),
-            )
+        resp = httpx.get("http://localhost:9080/processes", timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            for _key, procs in data.items():
+                for p in procs:
+                    if p.get("name") == "voice" and p.get("status") == "Running":
+                        voice_active = True
+                        break
+    except Exception:
+        pass
+
+    # Fall back to systemd
+    if not voice_active:
+        rc, out, _err = await run_cmd(["systemctl", "--user", "is-active", "hapax-voice.service"])
+        voice_active = out.strip() == "active"
+
+    results.append(
+        CheckResult(
+            name="voice.daemon",
+            group="voice",
+            status=Status.HEALTHY if voice_active else Status.FAILED,
+            message="running" if voice_active else "not running",
+            remediation="process-compose process restart voice --port 9080" if not voice_active else None,
+            duration_ms=_timed(t),
         )
+    )
+
+    # PipeWire
+    t = time.monotonic()
+    rc, out, _err = await run_cmd(["systemctl", "--user", "is-active", "pipewire.service"])
+    pw_active = out.strip() == "active"
+    results.append(
+        CheckResult(
+            name="voice.pipewire",
+            group="voice",
+            status=Status.HEALTHY if pw_active else Status.FAILED,
+            message="active" if pw_active else (out.strip() or "inactive"),
+            remediation="systemctl --user restart pipewire" if not pw_active else None,
+            duration_ms=_timed(t),
+        )
+    )
 
     return results
 
