@@ -29,6 +29,7 @@ interface FlowNode {
   status: string;
   age_s: number;
   metrics: NodeMetrics;
+  [key: string]: unknown;
 }
 
 interface FlowEdge {
@@ -360,8 +361,8 @@ function staticTopology(): SystemFlowState {
 export function FlowPage() {
   const [flowState, setFlowState] = useState<SystemFlowState | null>(null);
   const [selectedNode, setSelectedNode] = useState<FlowNode | null>(null);
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const prevPositions = useRef<Record<string, { x: number; y: number }>>({});
 
   // Poll every 3s — Tauri IPC → HTTP fallback → static topology

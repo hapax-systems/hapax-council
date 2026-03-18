@@ -46,6 +46,9 @@ interface VoiceSession {
   last_response: string;
   active_tool: string | null;
   barge_in: boolean;
+  routing_tier: string;
+  routing_reason: string;
+  routing_activation: number;
 }
 
 interface SupplementaryContent {
@@ -231,7 +234,11 @@ export function HapaxPage() {
   const signals = vlState?.signals ?? {};
   const opacities = vlState?.zone_opacities ?? {};
   const ambient = vlState?.ambient_params ?? { speed: 0.08, turbulence: 0.1, color_warmth: 0.3, brightness: 0.25 };
-  const voiceSession = vlState?.voice_session ?? { active: false, state: "idle", turn_count: 0, last_utterance: "", last_response: "", active_tool: null, barge_in: false };
+  const voiceSession = vlState?.voice_session ?? { active: false, state: "idle", turn_count: 0, last_utterance: "", last_response: "", active_tool: null, barge_in: false, routing_tier: "", routing_reason: "", routing_activation: 0.0 };
+
+  // Routing tier modulates visual intensity — LOCAL is ambient, CAPABLE is intense
+  const tierIntensity: Record<string, number> = { LOCAL: 0.3, FAST: 0.5, STRONG: 0.75, CAPABLE: 1.0 };
+  const voiceIntensity = voiceSession.active ? (tierIntensity[voiceSession.routing_tier] ?? 0.5) : 0;
   const voiceContent = vlState?.voice_content ?? [];
   const injectedFeeds = vlState?.injected_feeds ?? [];
   const activityLabel = vlState?.activity_label ?? "present";
@@ -252,12 +259,27 @@ export function HapaxPage() {
         background: "#060301",
       }}
     >
-      {/* Layer 0: WebGL generative shader background */}
+      {/* Layer 0: WebGL generative shader background
+          Voice state modulates the visual field:
+          - listening: slightly brighter, receptive
+          - thinking: warmer, more turbulent (working)
+          - speaking: cooler, calmer (delivering)
+          Tier intensity scales the modulation magnitude */}
       <AmbientShader
-        speed={ambient.speed}
-        turbulence={ambient.turbulence}
-        warmth={ambient.color_warmth}
-        brightness={ambient.brightness}
+        speed={voiceSession.state === "thinking"
+          ? ambient.speed + 0.05 * voiceIntensity
+          : ambient.speed}
+        turbulence={voiceSession.state === "thinking"
+          ? ambient.turbulence + 0.08 * voiceIntensity
+          : ambient.turbulence}
+        warmth={voiceSession.state === "thinking"
+          ? ambient.color_warmth + 0.15 * voiceIntensity
+          : voiceSession.state === "speaking"
+            ? ambient.color_warmth - 0.05 * voiceIntensity
+            : ambient.color_warmth}
+        brightness={voiceSession.active
+          ? ambient.brightness + 0.06 * voiceIntensity
+          : ambient.brightness}
         displayState={state}
       />
 
@@ -419,7 +441,7 @@ export function HapaxPage() {
         </div>
       )}
 
-      {/* Layer 5: Voice session indicator (Batch A) */}
+      {/* Layer 5: Voice session — the agent's conversational body */}
       {voiceSession.active && (
         <div
           className="absolute bottom-[8%] left-1/2 -translate-x-1/2"
@@ -428,16 +450,26 @@ export function HapaxPage() {
             animation: "voiceIn 1.5s ease-out forwards",
           }}
         >
+          {/* Voice indicator — size and glow scale with routing tier */}
           <div className="flex items-center gap-3 backdrop-blur-md rounded-full px-6 py-3"
-            style={{ background: "rgba(0,0,0,0.6)" }}
+            style={{
+              background: "rgba(0,0,0,0.6)",
+              boxShadow: voiceIntensity > 0.5
+                ? `0 0 ${20 + voiceIntensity * 30}px ${VOICE_STATE_COLORS[voiceSession.state] ?? "#999"}20`
+                : "none",
+              transition: "box-shadow 0.5s ease",
+            }}
           >
-            {/* State dot */}
+            {/* State dot — size scales with tier intensity */}
             <div
-              className="w-2.5 h-2.5 rounded-full"
               style={{
+                width: `${8 + voiceIntensity * 6}px`,
+                height: `${8 + voiceIntensity * 6}px`,
+                borderRadius: "50%",
                 background: VOICE_STATE_COLORS[voiceSession.state] ?? "#999",
-                boxShadow: `0 0 8px ${VOICE_STATE_COLORS[voiceSession.state] ?? "#999"}`,
+                boxShadow: `0 0 ${6 + voiceIntensity * 12}px ${VOICE_STATE_COLORS[voiceSession.state] ?? "#999"}`,
                 animation: voiceSession.state === "listening" ? "pulse 2s ease-in-out infinite" : undefined,
+                transition: "width 0.3s ease, height 0.3s ease, box-shadow 0.5s ease",
               }}
             />
             {/* State label */}
@@ -447,17 +479,53 @@ export function HapaxPage() {
             >
               {voiceSession.state}
             </span>
+            {/* Tier indicator — subtle, only visible for STRONG/CAPABLE */}
+            {voiceIntensity >= 0.75 && (
+              <span
+                className="text-[9px] uppercase tracking-[0.2em]"
+                style={{
+                  color: VOICE_STATE_COLORS[voiceSession.state] ?? "#999",
+                  opacity: 0.4,
+                }}
+              >
+                {voiceSession.routing_tier}
+              </span>
+            )}
             {/* Active tool */}
             {voiceSession.active_tool && (
               <span className="text-[10px] text-white/40 ml-2">
                 {voiceSession.active_tool}
               </span>
             )}
+            {/* Barge-in indicator */}
+            {voiceSession.barge_in && (
+              <span className="text-[9px] text-amber-400/60 ml-1">↑</span>
+            )}
           </div>
-          {/* Last utterance */}
+          {/* Last utterance — fades based on state */}
           {voiceSession.last_utterance && (
-            <div className="text-center mt-2 text-white/20 text-xs max-w-md mx-auto">
+            <div
+              className="text-center mt-2 text-xs max-w-md mx-auto"
+              style={{
+                color: voiceSession.state === "speaking"
+                  ? "rgba(255,255,255,0.1)"
+                  : "rgba(255,255,255,0.25)",
+                transition: "color 0.5s ease",
+              }}
+            >
               {voiceSession.last_utterance}
+            </div>
+          )}
+          {/* Last response — only when speaking */}
+          {voiceSession.state === "speaking" && voiceSession.last_response && (
+            <div
+              className="text-center mt-1 text-xs max-w-md mx-auto"
+              style={{
+                color: `${VOICE_STATE_COLORS.speaking}80`,
+                animation: "fragmentIn 1s ease-out forwards",
+              }}
+            >
+              {voiceSession.last_response.slice(0, 120)}
             </div>
           )}
         </div>

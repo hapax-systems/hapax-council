@@ -154,7 +154,12 @@ def get_flow_state() -> dict:
             "label": "Voice Pipeline",
             "status": "active" if voice_active else "offline",
             "age_s": round(comp_age, 1),
-            "metrics": {"active": voice_active, "state": voice_data.get("state", "off")},
+            "metrics": {
+                "active": voice_active,
+                "state": voice_data.get("state", "off"),
+                "tier": voice_data.get("routing_tier", ""),
+                "activation": voice_data.get("routing_activation", 0.0),
+            },
         }
     )
 

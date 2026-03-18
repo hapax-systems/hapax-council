@@ -350,6 +350,9 @@ def map_voice_session(data: dict) -> tuple[list[SignalEntry], VoiceSessionState]
         last_response=vs.get("last_response", ""),
         active_tool=vs.get("active_tool"),
         barge_in=vs.get("barge_in", False),
+        routing_tier=vs.get("routing_tier", ""),
+        routing_reason=vs.get("routing_reason", ""),
+        routing_activation=vs.get("routing_activation", 0.0),
     )
 
     signals: list[SignalEntry] = []
