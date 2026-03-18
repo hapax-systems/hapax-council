@@ -4,11 +4,11 @@ A React single-page application that provides real-time operational visibility i
 
 This is a Tier 1 interface: interactive, human-facing, read-heavy. It consumes the cockpit API (:8051) but never writes to the filesystem-as-bus directly. All mutations go through API endpoints that the reactive engine processes.
 
-The dashboard satisfies the `executive_function` axiom requirement that system state be visible without investigation.
+The dashboard satisfies the `executive_function` axiom (weight 95) requirement that system state be visible without investigation, by surfacing health status, agent output, active nudges, cost tracking, and data freshness in a single interface with push-based state updates.
 
 ## Architecture
 
-**Server state** is managed exclusively through TanStack React Query. Every backend call goes through `src/api/client.ts`, which hits `/api/*` (Vite proxies to :8051 in dev). Types in `src/api/types.ts` mirror the Python dataclasses in `cockpit/data/`. There is no local state management library — React Query is the single source of truth for anything that comes from the backend. 
+**Server state** is managed exclusively through TanStack React Query. Every backend call goes through `src/api/client.ts`, which hits `/api/*` (Vite proxies to :8051 in dev). Types in `src/api/types.ts` mirror the Python dataclasses in `cockpit/data/`. There is no local state management library — React Query is the single source of truth for anything that comes from the backend.
 
 **Streaming chat** uses Server-Sent Events (`src/api/sse.ts`) for the chat interface, handling Anthropic-style `content_block_delta` events, tool call rendering, and reconnection. Messages are streamed token-by-token with markdown rendering.
 
@@ -16,11 +16,11 @@ The dashboard satisfies the `executive_function` axiom requirement that system s
 
 ## Design Decisions
 
-**No test runner.** The dashboard is a thin presentation layer over a comprehensively tested backend. For a system with one user who is also the developer, the cost of maintaining frontend tests exceeds the value. If this changes, the architecture supports adding tests without refactoring.
+**No test runner.** The dashboard is a thin presentation layer over a comprehensively tested backend. For a system with one user who is also the developer, the cost of maintaining frontend tests exceeds the value. The architecture supports adding tests without refactoring.
 
-**Tailwind only.** No CSS modules, no styled-components. Styling is collocated with markup. 
+**Tailwind only.** No CSS modules, no styled-components. Styling is collocated with markup.
 
-**Feature-based folders.** Components are grouped by what they do (chat, dashboard, demos, sidebar, shared), not by type. Each feature folder is self-contained.
+**Feature-based folders.** Components are grouped by function (chat, dashboard, demos, sidebar, shared), not by type. Each feature folder is self-contained.
 
 ## Quick Start
 
