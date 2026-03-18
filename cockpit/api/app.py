@@ -92,13 +92,13 @@ from cockpit.api.routes.cycle_mode import router as cycle_mode_router
 from cockpit.api.routes.data import router as data_router
 from cockpit.api.routes.demos import router as demos_router
 from cockpit.api.routes.engine import router as engine_router
+from cockpit.api.routes.flow import router as flow_router
 from cockpit.api.routes.governance import router as governance_router
 from cockpit.api.routes.logos import router as logos_router
 from cockpit.api.routes.nudges import router as nudges_router
 from cockpit.api.routes.profile import router as profile_router
 from cockpit.api.routes.query import router as query_router
 from cockpit.api.routes.scout import router as scout_router
-from cockpit.api.routes.flow import router as flow_router
 from cockpit.api.routes.studio import router as studio_router
 
 app.include_router(data_router)
