@@ -71,6 +71,7 @@ class WatchBackend:
         self._b_load: Behavior[float] = Behavior(0.0)
         self._b_activity: Behavior[str] = Behavior("unknown")
         self._b_sleep: Behavior[float] = Behavior(1.0)
+        self._b_connected: Behavior[bool] = Behavior(False)
 
     @property
     def name(self) -> str:
@@ -86,6 +87,7 @@ class WatchBackend:
                 "physiological_load",
                 "watch_activity_state",
                 "sleep_quality",
+                "watch_connected",
             }
         )
 
@@ -158,12 +160,18 @@ class WatchBackend:
         else:
             self._b_sleep.update(1.0, now)
 
+        # Watch connected: connection.json exists and was updated within 5 minutes
+        conn_data = self._reader.read("connection.json", max_age_seconds=300)
+        connected = conn_data is not None
+        self._b_connected.update(connected, now)
+
         behaviors["heart_rate_bpm"] = self._b_heart_rate
         behaviors["hrv_rmssd_ms"] = self._b_hrv_rmssd
         behaviors["stress_elevated"] = self._b_stress
         behaviors["physiological_load"] = self._b_load
         behaviors["watch_activity_state"] = self._b_activity
         behaviors["sleep_quality"] = self._b_sleep
+        behaviors["watch_connected"] = self._b_connected
 
     def start(self) -> None:
         log.info("Watch backend started")
