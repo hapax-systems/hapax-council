@@ -19,7 +19,6 @@ CPU: negligible (VAD <1ms per frame, Whisper only on speech segments).
 from __future__ import annotations
 
 import logging
-import struct
 import time
 from collections import deque
 from collections.abc import Callable
@@ -126,7 +125,7 @@ class WhisperWakeWord:
         """
         self._last_vad_prob = prob
 
-    def process_audio(self, audio_chunk: "np.ndarray") -> None:
+    def process_audio(self, audio_chunk: np.ndarray) -> None:
         """Process a single audio frame (512 samples, 16kHz int16).
 
         Buffers audio during detected speech, then checks for wake word
