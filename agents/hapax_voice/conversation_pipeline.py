@@ -248,6 +248,20 @@ class ConversationPipeline:
             except Exception:
                 log.debug("env_context_fn failed (non-fatal)", exc_info=True)
 
+        # Phenomenal context: temporal bands + self-band, rendered as
+        # orientation (not information). Progressive fidelity — the tier
+        # determines how much depth is returned. Upstream structures
+        # self-compress, so this just renders what survived.
+        tier_name = getattr(self, "_turn_model_tier", "CAPABLE")
+        try:
+            from agents.hapax_voice.phenomenal_context import render as render_phenomenal
+
+            phenom = render_phenomenal(tier=tier_name)
+            if phenom:
+                updated += "\n\n" + phenom
+        except Exception:
+            log.debug("phenomenal context render failed (non-fatal)", exc_info=True)
+
         content_hash = hash(updated)
         if content_hash == self._last_env_hash:
             return
@@ -456,11 +470,19 @@ class ConversationPipeline:
             _model = getattr(self, "_turn_model", self.llm_model)
             _tier_name = getattr(self, "_turn_model_tier", "")
 
-            # LOCAL tier: context-distilled system prompt — grounded but brief.
-            # Replaces the stripped prompt that made LOCAL sound vapid.
+            # LOCAL tier: phenomenal context replaces the old context_distillation.
+            # Identity + orientation in ~60 tokens. The phenomenal renderer
+            # returns layers 1-3 for LOCAL (stimmung + situation + impression),
+            # which is a directionally faithful rendering of the same temporal
+            # structure that CAPABLE gets in full — just at lower fidelity.
             _messages = self.messages
             if _tier_name == "LOCAL" and _messages and _messages[0].get("role") == "system":
-                ctx = self._context_distillation
+                try:
+                    from agents.hapax_voice.phenomenal_context import render as render_phenom
+
+                    phenom = render_phenom(tier="LOCAL")
+                except Exception:
+                    phenom = self._context_distillation  # fallback to old distillation
                 _messages = [
                     {
                         "role": "system",
@@ -469,7 +491,7 @@ class ConversationPipeline:
                             "1-2 short sentences max. Match the operator's energy — if they're "
                             "just checking in, keep it light. Don't volunteer system status "
                             "or technical details unless specifically asked."
-                            + (f"\n\nCurrent context: {ctx}" if ctx else "")
+                            + (f"\n\n{phenom}" if phenom else "")
                         ),
                     },
                     *_messages[1:],
