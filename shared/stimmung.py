@@ -154,14 +154,15 @@ class StimmungCollector:
         self._record("error_rate", error_value)
 
         # Processing throughput — events/min vs baseline
-        if uptime_s > 0:
+        # Low throughput is NOT stress when the engine is simply idle
+        # (no filesystem changes = no events = normal). Throughput
+        # pressure only matters when there ARE events to process.
+        if uptime_s > 60 and actions_executed > 0:
             events_per_min = (events_processed / uptime_s) * 60.0
-            # Lower throughput = higher pressure (inverted)
             throughput_ratio = min(1.0, events_per_min / _ENGINE_EVENTS_PER_MIN_BASELINE)
-            # 0.0 when at baseline, 1.0 when no events
             throughput_value = 1.0 - throughput_ratio
         else:
-            throughput_value = 0.5  # unknown
+            throughput_value = 0.0  # idle engine = no pressure
         self._record("processing_throughput", throughput_value)
 
     def update_perception(self, freshness_s: float, confidence: float = 1.0) -> None:
@@ -183,8 +184,10 @@ class StimmungCollector:
         total_traces: int = 0,
     ) -> None:
         """Update from Langfuse sync state."""
-        # Cost pressure: $0 = 0.0, $5+ = 1.0 (single operator scale)
-        cost_value = min(1.0, daily_cost / 5.0)
+        # Cost pressure: $0 = 0.0, $50+ = 1.0
+        # Max plan is effectively unlimited for Claude; $50 threshold
+        # only triggers on heavy API fallback usage.
+        cost_value = min(1.0, daily_cost / 50.0)
         # Error ratio
         error_ratio = min(1.0, error_count / max(1, total_traces)) if total_traces > 0 else 0.0
         # Combined: max of cost and error pressure
