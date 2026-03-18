@@ -43,6 +43,7 @@ except ImportError:
     pass
 from agents.hapax_voice.wake_word import WakeWordDetector
 from agents.hapax_voice.wake_word_porcupine import PorcupineWakeWord
+from agents.hapax_voice.wake_word_whisper import WhisperWakeWord
 from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
 
 log = logging.getLogger("hapax_voice")
@@ -699,12 +700,17 @@ class VoiceDaemon:
     def _create_wake_word_detector(self):
         """Instantiate wake word detector based on config.
 
-        Porcupine is the default (reliable, low false-positive).
-        Falls back to OpenWakeWord if configured or if Porcupine fails to load.
+        Engine priority:
+        - "whisper": VAD + faster-whisper-tiny (no training, no license)
+        - "porcupine": Picovoice Porcupine (requires access key)
+        - "oww": OpenWakeWord (requires trained model)
         """
-        if self.cfg.wake_word_engine == "porcupine":
+        engine = self.cfg.wake_word_engine
+        if engine == "porcupine":
             detector = PorcupineWakeWord(sensitivity=self.cfg.porcupine_sensitivity)
             return detector
+        if engine == "whisper":
+            return WhisperWakeWord(model_size="tiny")
         return WakeWordDetector()
 
     # ------------------------------------------------------------------
@@ -787,9 +793,13 @@ class VoiceDaemon:
                 del _vad_buf[:_VAD_CHUNK]
                 try:
                     self.presence.process_audio_frame(chunk)
+                    vad_prob = self.presence._latest_vad_confidence
                     # Feed VAD probability to conversation buffer
                     if self._conversation_buffer.is_active:
-                        self._conversation_buffer.update_vad(self.presence._latest_vad_confidence)
+                        self._conversation_buffer.update_vad(vad_prob)
+                    # Feed VAD probability to whisper wake word (needs speech timing)
+                    if isinstance(self.wake_word, WhisperWakeWord):
+                        self.wake_word.set_vad_probability(vad_prob)
                 except Exception as exc:
                     log.warning("Presence consumer error: %s", exc)
 
