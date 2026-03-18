@@ -45,6 +45,59 @@ _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
 
 
+def _stimmung_downgrade(model: str, tier: ModelTier) -> tuple[str, ModelTier]:
+    """Apply stimmung-aware downgrade to voice model selection.
+
+    Reads live stimmung from /dev/shm. Under resource/cost pressure or
+    critical stance, downgrades the selected model to a cheaper tier.
+    This is allostatic regulation — the voice pipeline participates in
+    system self-preservation instead of being disconnected from stimmung.
+
+    Returns (model, tier) — unchanged if nominal or stimmung unavailable.
+    """
+    from pathlib import Path
+
+    from agents.hapax_voice.model_router import TIER_ROUTES, ModelTier
+
+    try:
+        raw = json.loads(Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
+    except Exception:
+        return model, tier
+
+    stance = raw.get("overall_stance", "nominal")
+    resource = raw.get("resource_pressure", {}).get("value", 0.0)
+    cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
+
+    # Critical: everything goes to LOCAL
+    if stance == "critical":
+        log.info("Stimmung critical → voice downgrade to LOCAL")
+        return TIER_ROUTES[ModelTier.LOCAL], ModelTier.LOCAL
+
+    # Resource pressure > 0.7: drop one tier
+    if resource > 0.7 and tier.value > ModelTier.LOCAL.value:
+        new_tier = ModelTier(tier.value - 1)
+        log.info(
+            "Stimmung resource pressure %.2f → voice %s → %s",
+            resource,
+            tier.name,
+            new_tier.name,
+        )
+        return TIER_ROUTES[new_tier], new_tier
+
+    # Cost pressure > 0.6: CAPABLE → STRONG, STRONG → FAST
+    if cost > 0.6 and tier.value >= ModelTier.STRONG.value:
+        new_tier = ModelTier(tier.value - 1)
+        log.info(
+            "Stimmung cost pressure %.2f → voice %s → %s",
+            cost,
+            tier.name,
+            new_tier.name,
+        )
+        return TIER_ROUTES[new_tier], new_tier
+
+    return model, tier
+
+
 class ConvState(enum.Enum):
     IDLE = "idle"
     LISTENING = "listening"
@@ -348,8 +401,17 @@ class ConversationPipeline:
             return
 
         # Set model for this turn (may differ from default)
-        self._turn_model = routing.model or self.llm_model
-        self._turn_model_tier = routing.tier.name
+        # Apply stimmung-aware downgrade: if system is under resource/cost
+        # pressure, route to a cheaper model. This is allostatic regulation
+        # — the voice pipeline participates in system self-preservation.
+        selected_model = routing.model or self.llm_model
+        selected_tier = routing.tier
+        try:
+            selected_model, selected_tier = _stimmung_downgrade(selected_model, selected_tier)
+        except Exception:
+            pass  # stimmung unavailable — use selected model as-is
+        self._turn_model = selected_model
+        self._turn_model_tier = selected_tier.name
 
         # Refresh environment context before LLM call
         self._update_system_context()
