@@ -174,6 +174,29 @@ class VoiceDaemon:
         _consent_count = self.consent_registry.load()
         log.info("Loaded %d consent contracts", _consent_count)
 
+        # Operator principal — sovereign, single-user axiom
+        from shared.governance.principal import Principal, PrincipalKind
+
+        self._operator_principal = Principal(
+            id="operator",
+            kind=PrincipalKind.SOVEREIGN,
+        )
+        # Voice daemon principal — bound, delegated by operator
+        self._daemon_principal = self._operator_principal.delegate(
+            child_id="hapax-voice",
+            scope=frozenset(
+                {
+                    "audio",
+                    "video",
+                    "transcription",
+                    "presence",
+                    "biometrics",
+                    "workspace",
+                    "notifications",
+                }
+            ),
+        )
+
         # Perception layer
         self.perception = PerceptionEngine(
             presence=self.presence,
@@ -238,6 +261,8 @@ class VoiceDaemon:
         self.notifications.set_event_log(self.event_log)
         self.workspace_monitor.set_event_log(self.event_log)
 
+        # Wire consent curtailment into event log (deferred — consent_tracker not yet created)
+
         # Consent tracking (interpersonal_transparency axiom)
         from agents.hapax_voice.consent_state import ConsentStateTracker
 
@@ -246,6 +271,8 @@ class VoiceDaemon:
             absence_clear_s=self.cfg.consent_absence_clear_s,
         )
         self.consent_tracker.set_event_log(self.event_log)
+        # Wire consent curtailment into event log
+        self.event_log.set_consent_fn(lambda: self.consent_tracker.persistence_allowed)
         self._consent_session_active = False
         self._perception_tier = self.cfg.perception_tier
 
@@ -1647,6 +1674,13 @@ class VoiceDaemon:
 
     async def run(self) -> None:
         """Main daemon loop."""
+        from shared.governance.consent_context import consent_scope
+
+        with consent_scope(self.consent_registry, self._operator_principal):
+            await self._run_inner()
+
+    async def _run_inner(self) -> None:
+        """Inner run loop — executes within consent_scope context."""
         log.info("Hapax Voice daemon starting (backend=%s)", self.cfg.backend)
 
         # Start hotkey server
