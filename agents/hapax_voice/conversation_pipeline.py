@@ -837,9 +837,11 @@ class ConversationPipeline:
     def _is_echo(self, transcript: str) -> bool:
         """Detect if a transcript is Hapax's own TTS output echoed back.
 
-        Always checks against recent TTS sentences — critical during barge-in
-        when the mic captures Hapax's voice mixed with the operator's.
-        Uses substring and word-overlap matching since STT may garble the echo.
+        Checks against recent TTS sentences. Tuned to avoid false positives
+        on legitimate operator speech:
+        - Substring match only for multi-word phrases (≥4 words in common)
+        - Single/two-word utterances: only exact TTS text match
+        - Word overlap at 90% threshold, minimum 4 overlapping words
         """
         if not self._recent_tts_texts:
             return False
@@ -848,16 +850,26 @@ class ConversationPipeline:
         if not norm:
             return False
 
+        word_count = len(norm.split())
+
         for tts_text in self._recent_tts_texts:
-            # Exact substring match
-            if norm in tts_text or tts_text in norm:
+            # Short utterances (1-3 words): only exact match against a TTS sentence
+            if word_count <= 3:
+                if norm == tts_text:
+                    return True
+                continue
+
+            # Longer utterances: substring match (Hapax's full sentence in transcript)
+            if tts_text in norm and len(tts_text.split()) >= 4:
                 return True
-            # Word overlap: STT may rephrase slightly
+
+            # Word overlap: requires ≥4 overlapping words AND ≥90% of the shorter text
             tts_words = set(tts_text.split())
             transcript_words = set(norm.split())
-            if len(tts_words) >= 2 and len(transcript_words) >= 2:
-                overlap = len(tts_words & transcript_words)
-                if overlap >= min(len(tts_words), len(transcript_words)) * 0.85:
+            overlap = len(tts_words & transcript_words)
+            if overlap >= 4:
+                threshold = min(len(tts_words), len(transcript_words)) * 0.90
+                if overlap >= threshold:
                     return True
 
         return False
