@@ -4,15 +4,11 @@ A React single-page application that provides real-time operational visibility i
 
 This is a Tier 1 interface: interactive, human-facing, read-heavy. It consumes the cockpit API (:8051) but never writes to the filesystem-as-bus directly. All mutations go through API endpoints that the reactive engine processes.
 
-## Why This Dashboard Exists
-
-The `executive_function` axiom (weight 95) requires that system state be visible without investigation. The operator should never have to SSH into the home server, check log files, or run diagnostic commands to understand what agents are doing. The dashboard satisfies this requirement by surfacing everything the operator needs — health status, agent output, active nudges, cost tracking, data freshness — in a single interface that pushes state changes to the browser rather than waiting to be polled.
-
-The `useHealthToasts` hook is the most direct expression of this axiom in the frontend. It watches health status and surfaces degradation as non-intrusive toast notifications. A Docker container goes down, a systemd timer misses its schedule, a Qdrant collection drops below threshold — the operator sees it without looking for it.
+The dashboard satisfies the `executive_function` axiom requirement that system state be visible without investigation.
 
 ## Architecture
 
-**Server state** is managed exclusively through TanStack React Query. Every backend call goes through `src/api/client.ts`, which hits `/api/*` (Vite proxies to :8051 in dev). Types in `src/api/types.ts` mirror the Python dataclasses in `cockpit/data/`. There is no local state management library — React Query is the single source of truth for anything that comes from the backend. This avoids the synchronization bugs that emerge when frontend state diverges from backend state.
+**Server state** is managed exclusively through TanStack React Query. Every backend call goes through `src/api/client.ts`, which hits `/api/*` (Vite proxies to :8051 in dev). Types in `src/api/types.ts` mirror the Python dataclasses in `cockpit/data/`. There is no local state management library — React Query is the single source of truth for anything that comes from the backend. 
 
 **Streaming chat** uses Server-Sent Events (`src/api/sse.ts`) for the chat interface, handling Anthropic-style `content_block_delta` events, tool call rendering, and reconnection. Messages are streamed token-by-token with markdown rendering.
 
@@ -22,7 +18,7 @@ The `useHealthToasts` hook is the most direct expression of this axiom in the fr
 
 **No test runner.** The dashboard is a thin presentation layer over a comprehensively tested backend. For a system with one user who is also the developer, the cost of maintaining frontend tests exceeds the value. If this changes, the architecture supports adding tests without refactoring.
 
-**Tailwind only.** No CSS modules, no styled-components. Styling is collocated with markup. One fewer abstraction to maintain.
+**Tailwind only.** No CSS modules, no styled-components. Styling is collocated with markup. 
 
 **Feature-based folders.** Components are grouped by what they do (chat, dashboard, demos, sidebar, shared), not by type. Each feature folder is self-contained.
 
