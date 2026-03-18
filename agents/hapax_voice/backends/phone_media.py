@@ -74,8 +74,11 @@ def _read_media_player() -> dict:
 
             data = json.loads(result.stdout)
             track = data.get("data", {})
-            title = str(track.get("Title", ""))
-            artist = str(track.get("Artist", ""))
+            # busctl --json=short wraps values as {"type":"s","data":"..."}
+            title_val = track.get("Title", "")
+            artist_val = track.get("Artist", "")
+            title = title_val.get("data", "") if isinstance(title_val, dict) else str(title_val)
+            artist = artist_val.get("data", "") if isinstance(artist_val, dict) else str(artist_val)
     except Exception:
         pass
 
