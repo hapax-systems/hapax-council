@@ -86,6 +86,28 @@ class ConversationBuffer:
         return self._active
 
     @property
+    def speech_active(self) -> bool:
+        """True when VAD has detected ongoing speech."""
+        return self._speech_active
+
+    @property
+    def speech_duration_s(self) -> float:
+        """Duration of current speech segment in seconds (0.0 if not speaking)."""
+        if not self._speech_active or self._speech_start_time == 0.0:
+            return 0.0
+        return time.monotonic() - self._speech_start_time
+
+    @property
+    def is_speaking(self) -> bool:
+        """True when TTS playback is active."""
+        return self._speaking
+
+    @property
+    def speech_frames_snapshot(self) -> list[bytes]:
+        """Shallow copy of accumulated speech frames for speculative STT."""
+        return list(self._speech_frames)
+
+    @property
     def in_cooldown(self) -> bool:
         """True while short post-TTS echo decay cooldown is active."""
         if self._speaking:
