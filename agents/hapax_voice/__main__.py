@@ -1761,12 +1761,15 @@ class VoiceDaemon:
 
         # Pin voice LLM model warm in Ollama (prevents 5s cold-start spikes)
         try:
-            import httpx
+            import subprocess as _sp
 
-            _ollama_model = "gemma3-voice"  # matches LiteLLM local-fast route
-            httpx.post(
-                "http://localhost:11434/api/generate",
-                json={"model": _ollama_model, "prompt": "", "keep_alive": -1},
+            _ollama_model = "gemma3-voice"
+            _sp.run(
+                [
+                    "curl", "-sf", "http://localhost:11434/api/generate",
+                    "-d", '{"model":"' + _ollama_model + '","prompt":"","keep_alive":-1}',
+                ],
+                capture_output=True,
                 timeout=10,
             )
             log.info("Ollama model %s pinned warm (keep_alive=-1)", _ollama_model)
