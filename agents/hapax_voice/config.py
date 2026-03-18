@@ -139,6 +139,7 @@ class VoiceConfig(BaseModel):
         "watch_connected": (0.70, 0.40),
         "desktop_active": (0.75, 0.10),
         "midi_active": (0.90, 0.02),
+        "bt_phone_connected": (0.95, 0.05),
     }
 
     # Perception layer

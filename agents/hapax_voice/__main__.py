@@ -631,6 +631,14 @@ class VoiceDaemon:
         except Exception:
             log.info("InputActivityBackend not available, skipping")
 
+        # Bluetooth phone presence (paired Pixel 10)
+        try:
+            from agents.hapax_voice.backends.bt_presence import BTPresenceBackend
+
+            self.perception.register_backend(BTPresenceBackend())
+        except Exception:
+            log.info("BTPresenceBackend not available, skipping")
+
         # Bayesian presence engine (fuses all signals into presence probability)
         if self.cfg.presence_bayesian_enabled:
             try:
