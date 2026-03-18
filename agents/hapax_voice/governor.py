@@ -120,10 +120,6 @@ class PipelineGovernor:
                         s.consent_phase not in ("consent_pending", "consent_refused")
                     ),
                     axiom="interpersonal_transparency",
-                Veto(
-                    name="phone_call_active",
-                    predicate=lambda s: not getattr(s, "phone_call_active", False),
-                ),
                 ),
                 Veto(
                     name="phone_call_active",
