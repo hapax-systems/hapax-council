@@ -171,13 +171,78 @@ function FlowingEdge({
 
 const edgeTypes = { flowing: FlowingEdge };
 
-// ── Custom Node (breathing + decay) ─────────────────────────────────
+// ── Sparkline (tiny SVG, no axes, no labels) ────────────────────────
+
+// Which metric to sparkline per node
+const SPARKLINE_METRIC: Record<string, string> = {
+  perception: "flow_score",
+  stimmung: "resource_pressure",
+  temporal: "max_surprise",
+  apperception: "coherence",
+  voice: "activation",
+  compositor: "",
+  phenomenal: "",
+  engine: "",
+  consent: "",
+};
+
+// Global history buffer: nodeId → metric values (last 30)
+const sparklineHistory: Record<string, number[]> = {};
+const SPARKLINE_MAX = 30;
+
+function pushSparkline(nodeId: string, value: number | undefined | null) {
+  if (value === null || value === undefined || typeof value !== "number") return;
+  if (!sparklineHistory[nodeId]) sparklineHistory[nodeId] = [];
+  const buf = sparklineHistory[nodeId];
+  buf.push(value);
+  if (buf.length > SPARKLINE_MAX) buf.shift();
+}
+
+function Sparkline({ nodeId, color }: { nodeId: string; color: string }) {
+  const values = sparklineHistory[nodeId];
+  if (!values || values.length < 3) return null;
+
+  const w = 120;
+  const h = 20;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+
+  const points = values
+    .map((v, i) => {
+      const x = (i / (values.length - 1)) * w;
+      const y = h - ((v - min) / range) * h;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+
+  return (
+    <svg width={w} height={h} style={{ opacity: 0.5, marginTop: "4px" }}>
+      <polyline
+        points={points}
+        fill="none"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// ── Custom Node (breathing + decay + sparkline) ─────────────────────
 
 function SystemNode({ data }: { data: FlowNode }) {
   const colors = COLORS[data.status as keyof typeof COLORS] || COLORS.offline;
   const metrics = data.metrics || {};
   const breathe = breathDuration(data.age_s, data.status);
   const opacity = nodeOpacity(data.age_s, data.status);
+
+  // Push to sparkline history
+  const sparkMetric = SPARKLINE_METRIC[data.id];
+  if (sparkMetric && metrics[sparkMetric] !== undefined) {
+    pushSparkline(data.id, metrics[sparkMetric] as number);
+  }
 
   // State machine for consent node
   const consentStates = ["none", "guest_detected", "consent_pending", "consent_granted", "consent_refused"];
@@ -250,6 +315,11 @@ function SystemNode({ data }: { data: FlowNode }) {
               />
             ))}
           </div>
+        )}
+
+        {/* Sparkline */}
+        {SPARKLINE_METRIC[data.id] && (
+          <Sparkline nodeId={data.id} color={colors.border} />
         )}
 
         {/* Age indicator */}
@@ -498,6 +568,41 @@ export function FlowPage() {
           ? <><span style={{ color: activeCount > 0 ? "#10b981" : "#4b5563" }}>{activeCount}</span>/{totalCount} active</>
           : "connecting..."}
       </div>
+
+      {/* System summary bar */}
+      {flowState && (() => {
+        const stimmungNode = flowState.nodes.find(n => n.id === "stimmung");
+        const stance = (stimmungNode?.metrics?.stance as string) || "unknown";
+        const staleCount = flowState.nodes.filter(n => n.status === "stale").length;
+        const offlineCount = flowState.nodes.filter(n => n.status === "offline").length;
+        const activeEdges = flowState.edges.filter(e => e.active).length;
+        const totalEdges = flowState.edges.length;
+        const stanceColor = stance === "nominal" ? "#10b981" : stance === "cautious" ? "#f59e0b" : stance === "degraded" ? "#f97316" : stance === "critical" ? "#ef4444" : "#6b7280";
+
+        return (
+          <div
+            style={{
+              position: "absolute",
+              bottom: "12px",
+              left: "50%",
+              transform: "translateX(-50%)",
+              display: "flex",
+              gap: "24px",
+              color: "#4b5563",
+              fontSize: "10px",
+              fontFamily: "'JetBrains Mono', monospace",
+              zIndex: 10,
+              letterSpacing: "0.05em",
+              opacity: 0.7,
+            }}
+          >
+            <span>stance: <span style={{ color: stanceColor }}>{stance}</span></span>
+            <span>flows: <span style={{ color: "#6b7280" }}>{activeEdges}/{totalEdges}</span></span>
+            {staleCount > 0 && <span>stale: <span style={{ color: "#f59e0b" }}>{staleCount}</span></span>}
+            {offlineCount > 0 && <span>offline: <span style={{ color: "#6b7280" }}>{offlineCount}</span></span>}
+          </div>
+        );
+      })()}
     </div>
   );
 }
