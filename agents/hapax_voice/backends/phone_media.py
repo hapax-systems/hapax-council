@@ -50,7 +50,7 @@ def _read_media_player() -> dict:
     artist = ""
     if track_raw:
         # Parse the busctl dict output
-        for part in track_raw.split('"'):
+        for _part in track_raw.split('"'):
             pass  # busctl dict parsing is complex
 
     # Simpler: parse via subprocess with json output
