@@ -32,15 +32,16 @@ PRE_ROLL_FRAMES = 10  # 300ms before speech onset
 SPEECH_START_PROB = 0.5
 SPEECH_START_CONSECUTIVE = 3  # ~90ms
 SPEECH_END_PROB = 0.3
-SPEECH_END_CONSECUTIVE = 15  # ~450ms (reduced from 600ms — AEC handles some echo tail)
+# Operator talks a lot and pauses mid-thought. 750ms of silence before
+# deciding they're done (was 450ms — too aggressive, cut mid-sentence).
+SPEECH_END_CONSECUTIVE = 25  # ~750ms
 
-# Barge-in: AEC reduces echo but Yeti still picks up bleed-through.
-# Higher threshold than ideal — operator must speak clearly over TTS.
+# Barge-in detection during TTS playback
 BARGE_IN_PROB = 0.85
 BARGE_IN_CONSECUTIVE = 8
 
-# Post-TTS cooldown: hard gate, no audio processing at all.
-# 2.0s covers residual mic pickup in studio environment.
+# Post-TTS cooldown: only applies when TTS ends NORMALLY (no barge-in).
+# On barge-in, cooldown is skipped — operator is definitely speaking.
 POST_TTS_COOLDOWN_S = 2.0
 
 
@@ -104,24 +105,34 @@ class ConversationBuffer:
             self.barge_in_detected = False
             self._speaking_ended_at = 0.0
         else:
-            # TTS finished — start short cooldown for residual echo
-            self._speaking_ended_at = time.monotonic()
-            # On barge-in: do NOT carry pre-roll forward — it contains
-            # audio from during TTS which causes duplicate transcription.
-            # Fresh speech after cooldown will be captured normally.
             if self.barge_in_detected:
-                self._pre_roll.clear()
-                log.debug("Barge-in: cleared pre-roll to prevent duplicate utterance")
+                # Barge-in: operator spoke over TTS. Skip cooldown entirely —
+                # they're definitely speaking, no echo ambiguity. Start
+                # accumulating immediately from pre-roll (which contains
+                # their voice during TTS, possibly mixed with Hapax's output).
+                self._speaking_ended_at = 0.0  # no cooldown
+                if not self._speech_active:
+                    self._speech_active = True
+                    self._speech_frames = list(self._pre_roll)
+                    self._consecutive_speech = SPEECH_START_CONSECUTIVE  # already speaking
+                    self._consecutive_silence = 0
+                log.debug("Barge-in: capturing operator speech from pre-roll, no cooldown")
+            else:
+                # Normal TTS end — start cooldown for residual mic pickup
+                self._speaking_ended_at = time.monotonic()
 
     def feed_audio(self, frame: bytes) -> None:
         if not self._active:
             return
         self._pre_roll.append(frame)
-        if self._speaking or self.in_cooldown:
-            # During TTS and short cooldown: capture to pre-roll only.
-            # AEC reduces echo but the Yeti picks up enough bleed-through
-            # to trigger false speech detection.
+
+        # During normal TTS (no barge-in): pre-roll only
+        if self._speaking and not self.barge_in_detected:
             return
+        # During cooldown (normal TTS end): pre-roll only
+        if self.in_cooldown:
+            return
+        # During TTS with barge-in active, OR after TTS: accumulate speech
         if self._speech_active:
             self._speech_frames.append(frame)
             if len(self._speech_frames) >= self._max_frames:
@@ -131,17 +142,25 @@ class ConversationBuffer:
         if not self._active:
             return
 
-        # During TTS: track VAD for barge-in detection only (high threshold)
+        # During TTS: detect barge-in, then switch to normal speech tracking
         if self._speaking:
-            if probability >= BARGE_IN_PROB:
-                self._barge_in_speech_count += 1
-                if self._barge_in_speech_count >= BARGE_IN_CONSECUTIVE:
-                    if not self.barge_in_detected:
+            if not self.barge_in_detected:
+                # Phase 1: detecting barge-in (high threshold)
+                if probability >= BARGE_IN_PROB:
+                    self._barge_in_speech_count += 1
+                    if self._barge_in_speech_count >= BARGE_IN_CONSECUTIVE:
                         log.info("Barge-in detected: operator speaking over TTS")
-                    self.barge_in_detected = True
-            else:
-                self._barge_in_speech_count = max(0, self._barge_in_speech_count - 1)
-            return
+                        self.barge_in_detected = True
+                        # Immediately start speech accumulation
+                        if not self._speech_active:
+                            self._speech_active = True
+                            self._speech_frames = list(self._pre_roll)
+                            self._consecutive_speech = SPEECH_START_CONSECUTIVE
+                            self._consecutive_silence = 0
+                else:
+                    self._barge_in_speech_count = max(0, self._barge_in_speech_count - 1)
+                return
+            # Phase 2: barge-in active, track speech normally (fall through to main VAD logic below)
 
         # During short post-TTS cooldown: track VAD state so speech detection
         # begins immediately when cooldown ends, but don't emit utterances.

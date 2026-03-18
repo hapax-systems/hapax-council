@@ -133,7 +133,7 @@ class SalienceRouter:
                 canned_response="",
             )
 
-        if guest_mode or face_count > 1:
+        if guest_mode:
             self._record_breakdown(0.0, 0.0, 0.0, 1.0, "guest_or_multiface", "CAPABLE", t_start)
             return RoutingDecision(
                 tier=ModelTier.CAPABLE,

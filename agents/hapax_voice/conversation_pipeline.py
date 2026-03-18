@@ -236,9 +236,33 @@ class ConversationPipeline:
         self._emit("conversation_end", turns=self.turn_count)
         log.info("Conversation pipeline stopped (%d turns)", self.turn_count)
 
+    # Compressed prompt for LOCAL tier — gemma3:4b can't follow complex instructions.
+    # ~200 tokens instead of ~1300. Just enough personality to not be generic.
+    _LOCAL_SYSTEM_PROMPT = (
+        "You are Hapax, a voice assistant for Ryan (system architect, hip-hop producer). "
+        "Be brief (1-2 sentences), warm, direct, genuinely helpful. Dry wit welcome. "
+        "Never condescend. Answer first, then reasoning if needed. "
+        "Don't say 'I'm just an AI' or hedge unnecessarily."
+    )
+
     def _update_system_context(self) -> None:
-        """Refresh system message with current environment and policy blocks."""
+        """Refresh system message with current environment and policy blocks.
+
+        LOCAL tier gets a compressed prompt (~200 tokens) — gemma3:4b can't
+        follow complex multi-paragraph instructions and the full prompt
+        (~1300 tokens) dominates the context window.
+        """
         if not self.messages:
+            return
+
+        tier_name = getattr(self, "_turn_model_tier", "CAPABLE")
+
+        # LOCAL: minimal prompt, no policy/env/phenomenal overhead
+        if tier_name == "LOCAL":
+            content_hash = hash(self._LOCAL_SYSTEM_PROMPT)
+            if content_hash != self._last_env_hash:
+                self._last_env_hash = content_hash
+                self.messages[0]["content"] = self._LOCAL_SYSTEM_PROMPT
             return
 
         updated = self.system_prompt
@@ -263,9 +287,7 @@ class ConversationPipeline:
 
         # Phenomenal context: temporal bands + self-band, rendered as
         # orientation (not information). Progressive fidelity — the tier
-        # determines how much depth is returned. Upstream structures
-        # self-compress, so this just renders what survived.
-        tier_name = getattr(self, "_turn_model_tier", "CAPABLE")
+        # determines how much depth is returned.
         try:
             from agents.hapax_voice.phenomenal_context import render as render_phenomenal
 
@@ -782,33 +804,28 @@ class ConversationPipeline:
     def _is_echo(self, transcript: str) -> bool:
         """Detect if a transcript is Hapax's own TTS output echoed back.
 
-        Compares the transcript against recent TTS sentences using
-        substring matching. STT may truncate or slightly garble the echo,
-        so we check for significant overlap rather than exact match.
-
-        This is a structural defense independent of speaker identity —
-        works for any operator, any mic, any room.
+        Always checks against recent TTS sentences — critical during barge-in
+        when the mic captures Hapax's voice mixed with the operator's.
+        Uses substring and word-overlap matching since STT may garble the echo.
         """
         if not self._recent_tts_texts:
             return False
 
-        # Also reject if it arrives within the assistant speaking window
-        if self._last_assistant_end > 0:
-            gap = time.monotonic() - self._last_assistant_end
-            if gap < 3.0 and len(transcript.split()) <= 6:
-                # Short utterance very close to TTS end — likely echo
-                norm = transcript.lower().strip().rstrip(".,!?")
-                for tts_text in self._recent_tts_texts:
-                    # Substring match: echo might be partial
-                    if norm in tts_text or tts_text in norm:
-                        return True
-                    # Word overlap: STT may rephrase slightly
-                    tts_words = set(tts_text.split())
-                    transcript_words = set(norm.split())
-                    if len(tts_words) >= 2 and len(transcript_words) >= 2:
-                        overlap = len(tts_words & transcript_words)
-                        if overlap >= min(len(tts_words), len(transcript_words)) * 0.7:
-                            return True
+        norm = transcript.lower().strip().rstrip(".,!?")
+        if not norm:
+            return False
+
+        for tts_text in self._recent_tts_texts:
+            # Exact substring match
+            if norm in tts_text or tts_text in norm:
+                return True
+            # Word overlap: STT may rephrase slightly
+            tts_words = set(tts_text.split())
+            transcript_words = set(norm.split())
+            if len(tts_words) >= 2 and len(transcript_words) >= 2:
+                overlap = len(tts_words & transcript_words)
+                if overlap >= min(len(tts_words), len(transcript_words)) * 0.85:
+                    return True
 
         return False
 
