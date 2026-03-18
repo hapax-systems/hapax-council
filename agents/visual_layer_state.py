@@ -150,6 +150,9 @@ class VoiceSessionState(BaseModel):
     last_response: str = ""
     active_tool: str | None = None
     barge_in: bool = False
+    routing_tier: str = ""  # LOCAL | FAST | STRONG | CAPABLE
+    routing_reason: str = ""  # salience:0.45 | consent_pending | phatic | etc
+    routing_activation: float = 0.0  # 0.0-1.0 continuous activation score
 
 
 # ── Supplementary Content ────────────────────────────────────────────────────
