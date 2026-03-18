@@ -81,7 +81,12 @@ fn main() {
         ])
         .setup(|app| {
             // Spawn the wgpu visual surface on a dedicated thread
-            visual::bridge::spawn_visual_surface(app.handle().clone());
+            // Skip if HAPAX_NO_VISUAL=1 (useful when visual surface conflicts with Wayland)
+            if std::env::var("HAPAX_NO_VISUAL").unwrap_or_default() != "1" {
+                visual::bridge::spawn_visual_surface(app.handle().clone());
+            } else {
+                log::info!("Visual surface disabled (HAPAX_NO_VISUAL=1)");
+            }
             // Spawn the directive watcher (reads agent directives from shm)
             commands::directive_watcher::spawn_directive_watcher(app.handle().clone());
             // Spawn headless browser engine for agent web access
