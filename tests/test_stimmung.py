@@ -114,9 +114,9 @@ class TestStimmungCollector:
 
     def test_engine_errors(self):
         c = StimmungCollector()
-        c.update_engine(events_processed=100, actions_executed=50, errors=40, uptime_s=300)
+        c.update_engine(events_processed=100, actions_executed=50, errors=120, uptime_s=300)
         s = c.snapshot()
-        assert s.error_rate.value == 0.8
+        assert s.error_rate.value == 0.8  # 120/(100+50) = 0.8
 
     def test_perception_stale(self):
         c = StimmungCollector()

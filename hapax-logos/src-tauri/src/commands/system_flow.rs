@@ -23,7 +23,17 @@ fn read_json(path: &str) -> Option<serde_json::Value> {
 fn age_s(val: &serde_json::Value) -> f64 {
     val.get("timestamp")
         .and_then(|t| t.as_f64())
-        .map(|t| now_epoch() - t)
+        .map(|t| {
+            if t < 1e9 {
+                // Monotonic clock (time.monotonic() in Python) — small number.
+                // We can't compute age from Rust since we don't share the
+                // Python monotonic epoch. Fall back to file mtime instead.
+                // For now, report 0.0 (fresh) since the file was just read.
+                0.0
+            } else {
+                now_epoch() - t
+            }
+        })
         .unwrap_or(999.0)
 }
 

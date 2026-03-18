@@ -103,7 +103,7 @@ _STALE_THRESHOLD_S = 120.0  # dimensions older than this are excluded from stanc
 
 # ── Baseline Constants ───────────────────────────────────────────────────────
 
-_ENGINE_EVENTS_PER_MIN_BASELINE = 10.0  # expected events/min at nominal load
+_ENGINE_EVENTS_PER_MIN_BASELINE = 500.0  # expected events/min at nominal load (inotify is chatty)
 
 
 # ── StimmungCollector ────────────────────────────────────────────────────────
@@ -155,9 +155,14 @@ class StimmungCollector:
         uptime_s: float,
     ) -> None:
         """Update from reactive engine status."""
-        # Error rate
-        total_actions = max(1, actions_executed)
-        error_value = min(1.0, errors / total_actions)
+        # Error rate — relative to total activity (events + actions).
+        # A few errors with thousands of events is normal operation.
+        # Zero activity = no error pressure.
+        total_activity = events_processed + actions_executed
+        if total_activity > 0:
+            error_value = min(1.0, errors / total_activity)
+        else:
+            error_value = 0.0
         self._record("error_rate", error_value)
 
         # Processing throughput pressure — high event rate = system thrashing.
