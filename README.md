@@ -134,7 +134,7 @@ hapax-council/
 ├── hapax-logos/      Tauri 2 desktop app (wgpu + React)
 │   ├── src-tauri/    Rust backend (visual surface, system flow, browser engine)
 │   └── src/          React frontend (8 pages including Flow + HapaxPage)
-├── council-web/      React SPA dashboard (legacy, being superseded by hapax-logos)
+├── council-web/      DEPRECATED — superseded by hapax-logos
 ├── axioms/           5 axioms, 90 implications, precedents, contracts, schemas
 ├── specs/            8 operational principles + spec registry
 ├── tests/            444 test files
