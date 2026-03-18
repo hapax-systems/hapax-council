@@ -108,6 +108,20 @@ def _snapshot_voice_session(
                     active_tool = fn.get("name")
                 break
 
+    # Routing info from last utterance
+    routing_tier = ""
+    routing_reason = ""
+    routing_activation = 0.0
+    if pipeline is not None:
+        routing_tier = getattr(pipeline, "_turn_model_tier", "")
+        # Get last routing decision from salience router
+        router = getattr(pipeline, "_salience_router", None)
+        if router is not None:
+            breakdown = getattr(router, "last_breakdown", None)
+            if breakdown is not None:
+                routing_reason = getattr(breakdown, "reason", "")
+                routing_activation = round(getattr(breakdown, "final_activation", 0.0), 3)
+
     return {
         "active": True,
         "state": state,
@@ -116,6 +130,9 @@ def _snapshot_voice_session(
         "last_response": last_response,
         "active_tool": active_tool,
         "barge_in": barge_in,
+        "routing_tier": routing_tier,
+        "routing_reason": routing_reason,
+        "routing_activation": routing_activation,
     }
 
 

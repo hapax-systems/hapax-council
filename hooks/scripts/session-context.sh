@@ -264,6 +264,70 @@ if [ "$OPEN_PRS" -gt 0 ] && [ "$OPEN_PRS" != "null" ]; then
   echo "$PR_SUMMARY" | while read -r line; do echo "  $line"; done
 fi
 
+# ── Trio Relay Protocol onboarding ──
+RELAY_DIR="$HOME/.cache/hapax/relay"
+RELAY_ACTIVE=false
+if [ -f "$RELAY_DIR/PROTOCOL.md" ]; then
+  if [ "${CONCURRENT_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+    RELAY_ACTIVE=true
+  elif [ -f "$RELAY_DIR/alpha.yaml" ] && [ -f "$RELAY_DIR/beta.yaml" ]; then
+    RELAY_ACTIVE=true
+  fi
+fi
+if [ "$RELAY_ACTIVE" = "true" ]; then
+  ROLE=""
+  if [ -f "$RELAY_DIR/alpha.yaml" ] && [ -f "$RELAY_DIR/beta.yaml" ]; then
+    ALPHA_AGE=$(( $(date +%s) - $(stat -c %Y "$RELAY_DIR/alpha.yaml" 2>/dev/null || echo 0) ))
+    BETA_AGE=$(( $(date +%s) - $(stat -c %Y "$RELAY_DIR/beta.yaml" 2>/dev/null || echo 0) ))
+    if [ "$ALPHA_AGE" -gt "$BETA_AGE" ]; then
+      ROLE="alpha"
+    else
+      ROLE="beta"
+    fi
+  elif [ -f "$RELAY_DIR/alpha.yaml" ]; then
+    ROLE="beta"
+  elif [ -f "$RELAY_DIR/beta.yaml" ]; then
+    ROLE="alpha"
+  else
+    ROLE="alpha"
+  fi
+
+  echo ""
+  echo "RELAY PROTOCOL ACTIVE — you are **$ROLE**"
+  echo "Read $RELAY_DIR/onboarding-${ROLE}.md and onboard immediately."
+  echo "Then read $RELAY_DIR/PROTOCOL.md for the full spec."
+  PEER=$([ "$ROLE" = "alpha" ] && echo "beta" || echo "alpha")
+  if [ -f "$RELAY_DIR/${PEER}.yaml" ]; then
+    echo "Peer status ($PEER):"
+    head -6 "$RELAY_DIR/${PEER}.yaml" | sed 's/^/  /'
+  fi
+
+  # Show work queue items for this role
+  if [ -d "$RELAY_DIR/queue" ]; then
+    QUEUE_ITEMS=$(grep -l "assigned_to: $ROLE" "$RELAY_DIR/queue/"*.yaml 2>/dev/null | head -5)
+    if [ -n "$QUEUE_ITEMS" ]; then
+      echo "Work queue ($ROLE):"
+      for item in $QUEUE_ITEMS; do
+        TITLE=$(grep '^title:' "$item" | head -1 | sed 's/title: *//' | tr -d '"')
+        STATUS=$(grep '^status:' "$item" | head -1 | sed 's/status: *//' | tr -d '"')
+        ID=$(grep '^id:' "$item" | head -1 | sed 's/id: *//' | tr -d '"')
+        echo "  [$STATUS] #$ID: $TITLE"
+      done
+    fi
+  fi
+
+  # Show new inflections
+  if [ -d "$RELAY_DIR/inflections" ]; then
+    NEW_INFLECTIONS=$(find "$RELAY_DIR/inflections" -name "*.md" -newer "$RELAY_DIR/${ROLE}.yaml" 2>/dev/null)
+    if [ -n "$NEW_INFLECTIONS" ]; then
+      echo "NEW INFLECTIONS (since your last update):"
+      for inf in $NEW_INFLECTIONS; do
+        head -1 "$inf" | sed 's/^# /  /'
+      done
+    fi
+  fi
+fi
+
 # Seed auto-memory directory if missing
 WORK_DIR="$(pwd)"
 SANITIZED="$(echo "$WORK_DIR" | sed 's|/|-|g; s|^-||')"

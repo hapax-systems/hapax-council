@@ -700,7 +700,7 @@ class VisualLayerAggregator:
                 last_line = text.split("\n")[-1]
                 h = json.loads(last_line)
                 healthy = h.get("healthy", 0)
-                total = h.get("total", 0)
+                total = h.get("total", healthy + h.get("degraded", 0) + h.get("failed", 0))
                 self._stimmung_collector.update_health(healthy, total)
         except (OSError, json.JSONDecodeError, IndexError):
             pass

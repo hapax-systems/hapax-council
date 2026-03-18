@@ -23,6 +23,7 @@ import time
 from cockpit.engine.models import Action, ChangeEvent
 from cockpit.engine.rules import Rule
 from shared.governance.carrier import CarrierRegistry
+from shared.telemetry import hapax_event
 
 _log = logging.getLogger(__name__)
 
@@ -150,8 +151,8 @@ async def _handle_rag_ingest(*, path: str) -> str:
 
 
 def _rag_source_filter(event: ChangeEvent) -> bool:
-    """Match new files in RAG_SOURCES_DIR."""
-    if event.event_type != "created":
+    """Match new or updated files in RAG_SOURCES_DIR."""
+    if event.event_type not in ("created", "modified"):
         return False
     return event.source_service is not None
 
@@ -618,6 +619,171 @@ CORRECTION_SYNTHESIS_RULE = Rule(
 )
 
 
+# ── Phase 0: Voice/presence state reactive rules ─────────────────────────────
+
+# Track previous presence state to detect transitions (not every tick)
+_last_presence_state: str = ""
+_last_consent_phase: str = "no_guest"
+
+
+async def _handle_presence_transition(*, from_state: str, to_state: str) -> str:
+    """React to Bayesian presence state transition."""
+    _log.info("PRESENCE transition: %s → %s", from_state, to_state)
+
+    if to_state == "AWAY":
+        # Emit telemetry event for session analytics
+        hapax_event(
+            "presence",
+            "operator_away",
+            metadata={"from_state": from_state},
+        )
+    elif to_state == "PRESENT" and from_state == "AWAY":
+        hapax_event(
+            "presence",
+            "operator_returned",
+            metadata={"from_state": from_state},
+        )
+
+    return f"presence:{from_state}→{to_state}"
+
+
+def _presence_transition_filter(event: ChangeEvent) -> bool:
+    """Detect presence state transitions from perception-state.json updates."""
+    global _last_presence_state
+
+    if event.path.name != "perception-state.json":
+        return False
+
+    import json
+
+    try:
+        data = json.loads(event.path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    current = data.get("presence_state", "")
+    return bool(current and current != _last_presence_state)
+
+
+def _presence_transition_produce(event: ChangeEvent) -> list[Action]:
+    global _last_presence_state
+
+    import json
+
+    try:
+        data = json.loads(event.path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    current = data.get("presence_state", "")
+    from_state = _last_presence_state
+    _last_presence_state = current
+
+    return [
+        Action(
+            name=f"presence-transition:{from_state}→{current}",
+            handler=_handle_presence_transition,
+            args={"from_state": from_state, "to_state": current},
+            phase=0,
+            priority=10,
+        )
+    ]
+
+
+PRESENCE_TRANSITION_RULE = Rule(
+    name="presence-transition",
+    description="React to Bayesian presence state transitions (PRESENT/UNCERTAIN/AWAY)",
+    trigger_filter=_presence_transition_filter,
+    produce=_presence_transition_produce,
+    phase=0,
+    cooldown_s=5,  # don't spam on rapid oscillation
+)
+
+
+async def _handle_consent_transition(*, from_phase: str, to_phase: str) -> str:
+    """React to consent phase transitions."""
+    _log.info("CONSENT transition: %s → %s", from_phase, to_phase)
+
+    if to_phase == "consent_pending":
+        from shared.notify import send_notification
+
+        await asyncio.to_thread(
+            send_notification,
+            title="Guest Detected",
+            message="Non-operator person detected. Consent flow initiated.",
+            priority="high",
+        )
+    elif to_phase == "no_guest" and from_phase in ("consent_pending", "consent_refused"):
+        from shared.notify import send_notification
+
+        await asyncio.to_thread(
+            send_notification,
+            title="Guest Left",
+            message=f"Guest departed ({from_phase}). Perception curtailment lifted.",
+            priority="default",
+        )
+
+    hapax_event(
+        "consent",
+        f"phase_{to_phase}",
+        metadata={"from_phase": from_phase, "to_phase": to_phase},
+    )
+    return f"consent:{from_phase}→{to_phase}"
+
+
+def _consent_transition_filter(event: ChangeEvent) -> bool:
+    """Detect consent phase transitions from perception-state.json updates."""
+    global _last_consent_phase
+
+    if event.path.name != "perception-state.json":
+        return False
+
+    import json
+
+    try:
+        data = json.loads(event.path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    current = data.get("consent_phase", "no_guest")
+    return current != _last_consent_phase
+
+
+def _consent_transition_produce(event: ChangeEvent) -> list[Action]:
+    global _last_consent_phase
+
+    import json
+
+    try:
+        data = json.loads(event.path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    current = data.get("consent_phase", "no_guest")
+    from_phase = _last_consent_phase
+    _last_consent_phase = current
+
+    return [
+        Action(
+            name=f"consent-transition:{from_phase}→{current}",
+            handler=_handle_consent_transition,
+            args={"from_phase": from_phase, "to_phase": current},
+            phase=0,
+            priority=5,  # high priority — consent is governance
+        )
+    ]
+
+
+CONSENT_TRANSITION_RULE = Rule(
+    name="consent-transition",
+    description="React to consent phase transitions (guest detection, consent resolution)",
+    trigger_filter=_consent_transition_filter,
+    produce=_consent_transition_produce,
+    phase=0,
+    cooldown_s=5,
+)
+
+
 # ── Registration ────────────────────────────────────────────────────────────
 
 ALL_RULES: list[Rule] = [
@@ -650,6 +816,8 @@ ALL_RULES: list[Rule] = [
     KNOWLEDGE_MAINT_RULE,
     PATTERN_CONSOLIDATION_RULE,
     CORRECTION_SYNTHESIS_RULE,
+    PRESENCE_TRANSITION_RULE,
+    CONSENT_TRANSITION_RULE,
 ]
 
 # Backwards compat alias
