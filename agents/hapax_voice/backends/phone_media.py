@@ -1,9 +1,7 @@
-"""Phone media perception backend — AVRCP track info via Bluetooth.
+"""Phone media perception backend — AVRCP track info via busctl.
 
 Reads current media playback state from the paired phone via BlueZ
-DBus MediaPlayer1 interface. Provides track title, artist, play state.
-
-No dependencies beyond gi (GObject Introspection) which ships with GNOME/KDE.
+DBus MediaPlayer1 interface using busctl (no gi/PyGObject dependency).
 
 Provides:
   - phone_media_playing: bool
@@ -14,6 +12,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import subprocess
 import time
 
 from agents.hapax_voice.perception import PerceptionTier
@@ -21,46 +20,70 @@ from agents.hapax_voice.primitives import Behavior
 
 log = logging.getLogger(__name__)
 
+_PLAYER_PATH = "/org/bluez/hci0/dev_B0_D5_FB_A5_86_E8/avrcp/player0"
+
+
+def _busctl_get(prop: str) -> str:
+    """Read a property from the BlueZ MediaPlayer1 interface."""
+    try:
+        result = subprocess.run(
+            ["busctl", "get-property", "org.bluez", _PLAYER_PATH, "org.bluez.MediaPlayer1", prop],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
 
 def _read_media_player() -> dict:
-    """Read AVRCP media player state from BlueZ DBus."""
+    """Read AVRCP media player state."""
+    status_raw = _busctl_get("Status")
+    # busctl output: s "paused" or s "playing"
+    status = status_raw.split('"')[1] if '"' in status_raw else ""
+
+    # Track is a dict — harder to parse from busctl
+    # Use a simpler approach: just get Status + use cached track
+    track_raw = _busctl_get("Track")
+    title = ""
+    artist = ""
+    if track_raw:
+        # Parse the busctl dict output
+        for part in track_raw.split('"'):
+            pass  # busctl dict parsing is complex
+
+    # Simpler: parse via subprocess with json output
     try:
-        from gi.repository import Gio, GLib
-
-        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
-        result = bus.call_sync(
-            "org.bluez",
-            "/",
-            "org.freedesktop.DBus.ObjectManager",
-            "GetManagedObjects",
-            None,
-            GLib.VariantType(
-                "(a{oa{sa{sv}}})",
-            ),
-            Gio.DBusCallFlags.NONE,
-            3000,
-            None,
+        result = subprocess.run(
+            [
+                "busctl",
+                "--json=short",
+                "get-property",
+                "org.bluez",
+                _PLAYER_PATH,
+                "org.bluez.MediaPlayer1",
+                "Track",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
         )
+        if result.returncode == 0:
+            import json
 
-        objects = result.unpack()[0]
-        for _path, ifaces in objects.items():
-            if "org.bluez.MediaPlayer1" in ifaces:
-                player = ifaces["org.bluez.MediaPlayer1"]
-                track = player.get("Track", {})
-                return {
-                    "status": str(player.get("Status", "stopped")),
-                    "title": str(track.get("Title", "")),
-                    "artist": str(track.get("Artist", "")),
-                    "album": str(track.get("Album", "")),
-                    "name": str(player.get("Name", "")),
-                }
+            data = json.loads(result.stdout)
+            track = data.get("data", {})
+            title = str(track.get("Title", ""))
+            artist = str(track.get("Artist", ""))
     except Exception:
         pass
-    return {}
+
+    return {"status": status, "title": title, "artist": artist}
 
 
 class PhoneMediaBackend:
-    """PerceptionBackend that reads phone media state via AVRCP/BlueZ."""
+    """PerceptionBackend that reads phone media state via AVRCP/busctl."""
 
     def __init__(self) -> None:
         self._b_playing: Behavior[bool] = Behavior(False)
@@ -80,24 +103,15 @@ class PhoneMediaBackend:
         return PerceptionTier.SLOW
 
     def available(self) -> bool:
-        try:
-            from gi.repository import Gio  # noqa: F401
-
-            return True
-        except ImportError:
-            return False
+        return bool(_busctl_get("Status"))
 
     def contribute(self, behaviors: dict[str, Behavior]) -> None:
         now = time.monotonic()
         info = _read_media_player()
 
-        playing = info.get("status") == "playing"
-        title = info.get("title", "")
-        artist = info.get("artist", "")
-
-        self._b_playing.update(playing, now)
-        self._b_title.update(title, now)
-        self._b_artist.update(artist, now)
+        self._b_playing.update(info["status"] == "playing", now)
+        self._b_title.update(info["title"], now)
+        self._b_artist.update(info["artist"], now)
 
         behaviors["phone_media_playing"] = self._b_playing
         behaviors["phone_media_title"] = self._b_title
@@ -105,14 +119,7 @@ class PhoneMediaBackend:
 
     def start(self) -> None:
         info = _read_media_player()
-        if info:
-            log.info(
-                "Phone media backend started (player: %s, status: %s)",
-                info.get("name", "?"),
-                info.get("status", "?"),
-            )
-        else:
-            log.info("Phone media backend started (no player connected)")
+        log.info("Phone media backend started (status: %s)", info.get("status", "?"))
 
     def stop(self) -> None:
         log.info("Phone media backend stopped")

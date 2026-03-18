@@ -45,8 +45,9 @@ processes:
 
   # ── Cockpit API (FastAPI on :8051) ──────────────────────────────
   cockpit-api:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec uv run python -m cockpit.api'
+    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m cockpit.api --host 0.0.0.0'
     working_dir: /home/operator/projects/hapax-council
+    disabled: true  # Managed by systemd cockpit-api.service to avoid port conflicts
     depends_on:
       secrets:
         condition: process_completed_successfully
@@ -64,7 +65,7 @@ processes:
 
   # ── Voice Daemon ────────────────────────────────────────────────
   voice:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec uv run python -m agents.hapax_voice'
+    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m agents.hapax_voice'
     working_dir: /home/operator/projects/hapax-council
     depends_on:
       secrets:
@@ -83,7 +84,7 @@ processes:
 
   # ── Visual Layer Aggregator ─────────────────────────────────────
   visual:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec uv run python -m agents.visual_layer_aggregator'
+    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m agents.visual_layer_aggregator'
     working_dir: /home/operator/projects/hapax-council
     depends_on:
       cockpit-api:
@@ -98,7 +99,7 @@ processes:
   # ── Watch Sensor Receiver ───────────────────────────────────────
   watch-receiver:
     disabled: true
-    command: uv run python -m agents.watch_receiver
+    command: /home/operator/projects/hapax-council/.venv/bin/python -m agents.watch_receiver
     working_dir: /home/operator/projects/hapax-council
     availability:
       restart: on_failure
