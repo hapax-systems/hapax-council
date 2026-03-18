@@ -70,6 +70,10 @@ class SalienceRouter:
     Computes per-utterance activation in <20ms total and routes to the
     right model tier based on how much the utterance matters to the
     operator right now.
+
+    Includes hysteresis to prevent jarring tier oscillation between
+    consecutive turns, and cold-start guard to default to FAST when
+    the concern graph is empty (no environmental context yet).
     """
 
     def __init__(
@@ -86,6 +90,8 @@ class SalienceRouter:
         self._recent_turns: list[str] = []
         self._max_recent_turns: int = 10
         self._last_breakdown: ActivationBreakdown | None = None
+        # Hysteresis: track previous tier to resist oscillation
+        self._prev_tier: ModelTier | None = None
 
     @property
     def last_breakdown(self) -> ActivationBreakdown | None:
@@ -158,6 +164,21 @@ class SalienceRouter:
                 canned_response="",
             )
 
+        # ── Cold-start guard ────────────────────────────────────
+        # Empty concern graph = no environmental context yet.
+        # Default to FAST so we don't underserve important early
+        # utterances. Normal routing takes over once the graph populates.
+        if self._concern_graph.anchor_count == 0:
+            self._record_breakdown(0.0, 0.0, 0.0, 0.5, "cold_start", "FAST", t_start)
+            self._prev_tier = ModelTier.FAST
+            self._add_recent_turn(transcript)
+            return RoutingDecision(
+                tier=ModelTier.FAST,
+                model=TIER_ROUTES[ModelTier.FAST],
+                reason="cold_start",
+                canned_response="",
+            )
+
         # ── Embed utterance (<1ms with Model2Vec) ────────────────
         t_embed = time.monotonic()
         utt_vec = self._embedder.embed(transcript)
@@ -202,6 +223,15 @@ class SalienceRouter:
 
         # ── Map to tier ──────────────────────────────────────────
         tier = self._activation_to_tier(activation)
+
+        # ── Hysteresis: resist de-escalation oscillation ────────
+        # Escalation is unrestricted (new information should be served).
+        # De-escalation is damped: can only drop one tier per turn.
+        # This prevents jarring quality shifts between consecutive
+        # utterances and is ADHD-friendly (consistent > variable quality).
+        if self._prev_tier is not None and tier.value < self._prev_tier.value:
+            tier = ModelTier(max(tier.value, self._prev_tier.value - 1))
+        self._prev_tier = tier
 
         # Track recent turns for feature extraction
         self._add_recent_turn(transcript)
