@@ -101,13 +101,39 @@ class PorcupineWakeWord:
                 sensitivities=[self.sensitivity],
             )
             self.frame_length = self._handle.frame_length
-            log.info(
-                "Porcupine loaded: model=%s, sensitivity=%.2f, frame_length=%d, sample_rate=%d",
-                self.model_path.name,
-                self.sensitivity,
-                self._handle.frame_length,
-                self._handle.sample_rate,
-            )
+
+            # Verify the key actually works by processing a test frame.
+            # Picovoice silently returns -1 on all frames when the access
+            # key is expired or rate-limited — no exception, just dead.
+            try:
+                test_result = self._handle.process([0] * self.frame_length)
+                if test_result == -1:
+                    log.info(
+                        "Porcupine loaded: model=%s, sensitivity=%.2f, frame_length=%d, sample_rate=%d",
+                        self.model_path.name,
+                        self.sensitivity,
+                        self._handle.frame_length,
+                        self._handle.sample_rate,
+                    )
+                else:
+                    # Silence triggered detection — something is wrong
+                    log.warning("Porcupine returned %d on silence — model may be corrupt", test_result)
+            except pvporcupine.PorcupineActivationLimitError:
+                log.error(
+                    "Picovoice access key RATE LIMITED — wake word will not work. "
+                    "Use Super+H hotkey to trigger sessions manually."
+                )
+                self._handle.delete()
+                self._handle = None
+                return
+            except pvporcupine.PorcupineActivationError as e:
+                log.error(
+                    "Picovoice access key INVALID or EXPIRED: %s — wake word disabled. "
+                    "Use Super+H hotkey to trigger sessions manually.", e
+                )
+                self._handle.delete()
+                self._handle = None
+                return
         except Exception:
             log.exception("Failed to initialize Porcupine")
             self._handle = None
