@@ -145,21 +145,30 @@ def get_flow_state() -> dict:
         }
     )
 
-    # Voice Pipeline
-    voice_data = (compositor or {}).get("voice_session", {})
+    # Voice Pipeline — pull from perception state (richer, updated every tick)
+    voice_data = (perception or {}).get("voice_session", {})
+    if not voice_data:
+        voice_data = (compositor or {}).get("voice_session", {})
     voice_active = voice_data.get("active", False)
     nodes.append(
         {
             "id": "voice",
             "label": "Voice Pipeline",
             "status": "active" if voice_active else "offline",
-            "age_s": round(comp_age, 1),
+            "age_s": round(perc_age, 1),
             "metrics": {
                 "active": voice_active,
                 "state": voice_data.get("state", "off"),
-                "tier": voice_data.get("routing_tier", ""),
-                "activation": voice_data.get("routing_activation", 0.0),
-            },
+                "turn_count": voice_data.get("turn_count", 0),
+                "last_utterance": voice_data.get("last_utterance", ""),
+                "last_response": voice_data.get("last_response", ""),
+                "routing_tier": voice_data.get("routing_tier", ""),
+                "routing_reason": voice_data.get("routing_reason", ""),
+                "routing_activation": voice_data.get("routing_activation", 0.0),
+                "barge_in": voice_data.get("barge_in", False),
+            }
+            if voice_active
+            else {"active": False, "state": "off"},
         }
     )
 
