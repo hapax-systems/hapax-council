@@ -6,6 +6,7 @@ pub mod health;
 pub mod introspect;
 pub mod state;
 pub mod studio;
+pub mod system_flow;
 
 /// Smoke-test command to verify IPC works.
 #[tauri::command]

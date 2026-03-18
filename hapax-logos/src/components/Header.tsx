@@ -44,6 +44,9 @@ export function Header({ onManualToggle, hapaxStatus }: HeaderProps) {
           <NavLink to="/chat" className={navLinkClass}>
             Chat
           </NavLink>
+          <NavLink to="/flow" className={navLinkClass}>
+            Flow
+          </NavLink>
           <NavLink to="/insight" className={navLinkClass}>
             Insight
           </NavLink>

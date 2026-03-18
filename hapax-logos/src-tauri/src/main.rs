@@ -44,6 +44,8 @@ fn main() {
             commands::governance::get_briefing,
             // Cost (Tier 2: Langfuse)
             commands::cost::get_cost,
+            // System flow (live anatomy)
+            commands::system_flow::get_system_flow,
             // Visual surface control
             visual::control::get_visual_surface_state,
             visual::control::set_visual_layer_param,
