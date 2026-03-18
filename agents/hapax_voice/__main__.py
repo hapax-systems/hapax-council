@@ -757,6 +757,11 @@ class VoiceDaemon:
                 except Exception as exc:
                     log.warning("Gemini audio consumer error: %s", exc)
 
+            # Wake word gets RAW audio — Porcupine is designed for unprocessed
+            # mic input. AEC/noise gate/normalization can attenuate or distort
+            # the signal enough to prevent detection.
+            _wake_buf.extend(frame)
+
             # AEC: process mic frame through echo canceller before distribution
             if self._echo_canceller is not None:
                 frame = self._echo_canceller.process(frame)
@@ -769,8 +774,7 @@ class VoiceDaemon:
             if self._audio_preprocessor is not None:
                 frame = self._audio_preprocessor.process(frame)
 
-            # Accumulate for exact-sized consumer chunks
-            _wake_buf.extend(frame)
+            # Accumulate for exact-sized consumer chunks (processed audio)
             _vad_buf.extend(frame)
 
             # Conversation buffer: feed every frame (inline, no copy overhead)
