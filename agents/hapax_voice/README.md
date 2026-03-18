@@ -31,26 +31,31 @@ A 10-layer composition ladder for fusing signals at different temporal rates int
 
 ## Temporal Fusion
 
-An always-on voice daemon receives signals from the world at vastly different rates. A MIDI clock tick arrives every few milliseconds. Audio energy measurements update at 50ms. Voice activity detection settles over hundreds of milliseconds. Emotion classification from body language or vocal tone takes 1–2 seconds. An LLM-powered workspace analysis — "what is the operator doing right now?" — takes 10–15 seconds. All of these signals contribute to a single governance decision: should the system fire a beat-aligned audio sample, switch an OBS camera, or stay quiet?
+An always-on voice daemon receives signals at different rates. A MIDI clock tick arrives every few milliseconds. Audio energy measurements update at 50ms. Voice activity detection settles over hundreds of milliseconds. Emotion classification from body language or vocal tone takes 1–2 seconds. An LLM-powered workspace analysis takes 10–15 seconds. All of these signals contribute to a single governance decision: should the system fire a beat-aligned audio sample, switch an OBS camera, or stay quiet?
+
+Downsampling everything to the slowest rate loses the temporal precision that music production requires — beat-aligned sample firing is not possible if the decision loop runs at 12-second intervals. Running everything at the fastest rate wastes computation, couples independent signals, and forces slow signals to either block or return stale values without staleness metadata.
 
 The solution draws from three research traditions.
 
-**Functional reactive programming** (Elliott 2009, Yampa, Reflex, RxPY) provides the core duality: `Behavior[T]` for values that are always available (like a voltage reading on a meter — there is always a current value), and `Event[T]` for things that happen at specific instants (like a button press or a MIDI tick). The `with_latest_from` combinator bridges them: when a fast event fires, sample all slow behaviors at whatever they currently hold. This is how a MIDI tick at sub-millisecond precision can incorporate an emotion reading that is 2 seconds old. The tick doesn't wait for emotion to update. It reads what's there.
+**Functional reactive programming** (Elliott 2009, Yampa, Reflex, RxPY) provides the core duality: `Behavior[T]` for values that are always available (continuously varying, like a voltage reading), and `Event[T]` for things that happen at specific instants (like a button press or a MIDI tick). The `with_latest_from` combinator bridges them: when a fast event fires, it samples all slow behaviors at their current values. A MIDI tick at sub-millisecond precision can incorporate an emotion reading that is 2 seconds old. The tick does not wait for emotion to update; it reads the current value.
 
-**Stream processing** (Flink, Dataflow, VLDB watermark theory) provides the mechanism for reasoning about staleness. Every `Behavior` carries a monotonic watermark — a timestamp that records when the value was last updated. When `with_latest_from` fuses a trigger event with multiple behaviors, it computes `min_watermark`: the age of the stalest signal in the fused result. A `FreshnessGuard` downstream can then reject decisions made on data that's too old. The MIDI tick sampled emotion at 2 seconds old, which is fine. But if the emotion signal is 30 seconds old because the classifier crashed, the FreshnessGuard catches it. 
+**Stream processing** (Flink, Dataflow, VLDB watermark theory) provides the mechanism for reasoning about staleness. Every `Behavior` carries a monotonic watermark — a timestamp recording when the value was last updated. When `with_latest_from` fuses a trigger event with multiple behaviors, it computes `min_watermark`: the age of the stalest signal in the fused result. A `FreshnessGuard` downstream can then reject decisions made on data that is too old. A MIDI tick sampling 2-second-old emotion data is acceptable; a 30-second-old emotion signal (from a crashed classifier) is caught by the FreshnessGuard. Distributed stream processors use this pattern to reason about completeness; it is adapted here for a single-machine runtime.
 
-**DSP audio synthesis** (modular synthesis, compressor envelopes) provides the temporal smoothing needed for multi-role coordination. When a conversation starts and the MC (backup microphone) governance chain needs to quiet down, the suppression doesn't slam to zero. A `SuppressionField` uses attack/release envelopes — the same mechanism audio compressors use — to smoothly ramp the energy threshold upward. The MC chain doesn't switch off; it gradually becomes harder to trigger. When the conversation ends, the threshold releases slowly back to baseline. This prevents the kind of oscillation that binary mode-switching produces when signals are noisy.
+**DSP audio synthesis** (modular synthesis, compressor envelopes) provides the temporal smoothing for multi-role coordination. When a conversation starts and the MC (backup microphone) governance chain needs to quiet down, the suppression does not switch instantly to zero. A `SuppressionField` uses attack/release envelopes to smoothly ramp the energy threshold upward. The MC chain gradually becomes harder to trigger. When the conversation ends, the threshold releases slowly back to baseline. This prevents oscillation from binary mode-switching when signals are noisy.
 
 ## The Three Layers
 
+The type system is organized into three layers — **Perceptives**, **Detectives**, and **Directives** — corresponding to three questions: What is the world doing? What does it mean for governance? What action should be taken?
+
+Each layer has algebraic properties that make safety guarantees compositional — new sensors, governance rules, or actuators can be added without breaking existing guarantees.
 
 ### Perceptives: What Is the World Doing?
 
 Perceptives are the raw material of perception. Two types capture the fundamental duality of time-varying state:
 
-**`Behavior[T]`** is a continuously-available value. It always has a current reading. You can sample it at any time and get a `Stamped[T]` — the value plus the timestamp when it was last updated. If you update a Behavior with a timestamp earlier than its current watermark, the update is rejected. Time does not go backward. Consumers can rely on values being produced at or after the reported time. Behaviors model things like emotion arousal, audio energy, stream health, operator presence, circadian alignment — signals that have a meaningful "current value" even between updates.
+**`Behavior[T]`** is a continuously-available value. It always has a current reading. Sampling it at any time returns a `Stamped[T]` — the value plus the timestamp when it was last updated. Monotonicity is enforced: updates with a timestamp earlier than the current watermark are rejected. Time does not go backward. Any consumer can trust that a sampled value was produced at or after the reported time. Behaviors model things like emotion arousal, audio energy, stream health, operator presence, and circadian alignment.
 
-**`Event[T]`** is a discrete occurrence. It has no current value — it happens at a specific instant and then it's gone. You subscribe to an Event and your callback fires when it emits. Late subscribers receive no history. Events model MIDI clock ticks, wake word detections, governance chain outputs, and actuation completions. The distinction from Behavior is semantic, not just pragmatic: asking "what is the current MIDI tick?" is a category error, while asking "what is the current emotion arousal?" is not.
+**`Event[T]`** is a discrete occurrence. It has no current value — it happens at a specific instant and then is gone. Subscribers receive callbacks when it emits. Late subscribers receive no history. Events model MIDI clock ticks, wake word detections, governance chain outputs, and actuation completions. The distinction from Behavior is semantic: "what is the current MIDI tick?" is a category error, while "what is the current emotion arousal?" is not.
 
 **`Stamped[T]`** is the common currency: an immutable snapshot of a value frozen at a moment in time. Immutability prevents TOCTOU bugs — between the moment a governance chain evaluates a signal and the moment an executor acts on the decision, the data cannot change underneath.
 
@@ -60,37 +65,37 @@ Detectives evaluate whether a proposed action should proceed. They are governanc
 
 **`VetoChain[C]`** is a set of constraints evaluated over a context `C`. Each constraint (a `Veto`) is a predicate that either allows or denies. The chain is **deny-wins**: any single denial blocks the action. All vetoes evaluate regardless of earlier denials, producing a complete audit trail. Chains compose via `|` (concatenation).
 
-The critical property is monotonicity: **adding a veto to a chain can only make the system more restrictive, never less.** If a chain with vetoes A and B permits an action, the chain with vetoes A, B, and C will permit it only if C also allows it. You cannot accidentally widen permissions by adding a constraint. When you wire a new safety check into an existing governance chain, you don't need to reason about interactions with existing checks — the algebra guarantees that the system can only become more conservative.
+Monotonicity: adding a veto to a chain can only make the system more restrictive, never less. If a chain with vetoes A and B permits an action, the chain with vetoes A, B, and C permits it only if C also allows it. Permissions cannot be widened by adding a constraint. Wiring a new safety check into an existing governance chain does not require reasoning about interactions with existing checks — the algebra guarantees that the system can only become more conservative.
 
 Each Veto optionally tags the axiom it enforces, linking runtime governance decisions back to constitutional principles.
 
-**`FallbackChain[C, T]`** is a priority-ordered sequence of candidates, each with a predicate and an action. It returns the first eligible candidate — deterministically, first-eligible-wins. The chain always has a default (the last entry), which means the system always has something to do. This ensures graceful degradation: even when every interesting action is vetoed, the system doesn't crash or hang — it falls back to the default (typically silence or a hold).
+**`FallbackChain[C, T]`** is a priority-ordered sequence of candidates, each with a predicate and an action. It returns the first eligible candidate — deterministically, first-eligible-wins. The chain always has a default (the last entry), ensuring graceful degradation: even when every action is vetoed, the system falls back to the default (typically silence or a hold).
 
-**`FreshnessGuard`** rejects decisions made on stale data. Each requirement specifies a behavior name and a maximum staleness in seconds. The fail-safe default is `fresh_enough=False` — if the guard cannot determine freshness, it rejects the decision. This prevents the system from acting on perception data that no longer reflects reality.
+**`FreshnessGuard`** rejects decisions made on stale data. Each requirement specifies a behavior name and a maximum staleness in seconds. The fail-safe default is `fresh_enough=False` — if the guard cannot determine freshness, it rejects the decision.
 
 ### The Combinator
 
 **`with_latest_from(trigger: Event, behaviors: dict[str, Behavior]) → Event[FusedContext]`**
 
-This single function bridges Perceptives to Detectives. When the trigger fires, it samples every behavior at its current value and emits a `FusedContext` — a frozen snapshot containing the trigger event, all sampled values with their watermarks, and the `min_watermark` (the stalest signal). The semantics are: "this thing just happened — what does the world look like right now?"
+This function bridges Perceptives to Detectives. When the trigger fires, it samples every behavior at its current value and emits a `FusedContext` — a frozen snapshot containing the trigger event, all sampled values with their watermarks, and the `min_watermark` (the stalest signal). The semantics are: "this thing just happened — what does the world look like right now?"
 
-This is derived from Rx's `withLatestFrom` operator, but the addition of watermarks and `min_watermark` computation is specific to this system. 
+This is derived from Rx's `withLatestFrom` operator. The addition of watermarks and `min_watermark` computation allows fast decisions to incorporate slow signals without blocking on them or ignoring their age.
 
 ### Directives: What Should We Do?
 
-Directives are not actions. They are descriptions of actions that carry the full governance trail of how they were selected. This distinction — between describing an action and performing it — is where governance lives.
+Directives are descriptions of actions that carry the full governance trail of how they were selected. The separation between describing an action and performing it is where governance is enforced.
 
 **`Command`** is an immutable data object recording: what action was selected, what parameters it requires, what governance evaluation produced it (the complete `VetoResult`), which chain selected it, what trigger caused it, and the minimum watermark of the perception data that informed it. A denied Command still exists — it carries its denial as provenance. An Executor can inspect any Command and see the full chain of reasoning that led to it.
 
-The system never constructs a Command without a governance trail. There is no way to create an action description that skips the Detective layer. 
+The system never constructs a Command without a governance trail. There is no way to create an action description that skips the Detective layer. This is structural, not conventional.
 
 **`Schedule`** binds a Command to a specific time in a specific domain. `domain="beat"` means the target time is a beat number (resolved to wall-clock via `TimelineMapping`); `domain="wall"` means direct wall-clock targeting. The `tolerance_ms` field specifies how late execution can be before the schedule is discarded — a beat-aligned sample that arrives 200ms late is worse than not firing at all.
 
 ### Actuation
 
-**`Executor`** is a protocol for physical actuators. Each declares what action names it handles and whether it's currently available. **`ExecutorRegistry`** routes Commands to the correct Executor. On successful dispatch, it emits an `ActuationEvent` — an immutable record of what happened, when, and how much latency was incurred. This event feeds back into Behaviors, closing the loop.
+**`Executor`** is a protocol for physical actuators. Each declares what action names it handles and whether it is currently available. **`ExecutorRegistry`** routes Commands to the correct Executor. On successful dispatch, it emits an `ActuationEvent` — an immutable record of what happened, when, and how much latency was incurred. This event feeds back into Behaviors, closing the loop.
 
-**`ScheduleQueue`** is a priority queue ordered by wall-clock time. The actuation loop drains it continuously: schedules whose time has arrived are dispatched; those past their tolerance window are discarded; future schedules wait. This is how beat-aligned actuation achieves sub-50ms precision: the MC governance chain emits Schedules at beat positions, and the actuation loop drains them at the right moment.
+**`ScheduleQueue`** is a priority queue ordered by wall-clock time. The actuation loop drains it continuously: schedules whose time has arrived are dispatched; those past their tolerance window are discarded; future schedules wait. The MC governance chain emits Schedules at beat positions, and the actuation loop drains them at the right moment, achieving sub-50ms precision.
 
 ## The Governance Chains
 
@@ -107,13 +112,13 @@ The MC (backup microphone) chain controls audio sample playback during live musi
 5. `FallbackChain` selects: vocal throw (high energy + high arousal), ad-lib (moderate energy), or silence (default)
 6. The selected action becomes a `Schedule` at the next beat position, resolved from beat-time to wall-clock via `TimelineMapping`
 
-Each veto predicate is a module-level function, independently testable. The entire chain is composed from the same primitives used everywhere else.
+Each veto predicate is a module-level function, independently testable. The entire chain is composed from the same primitives used throughout.
 
 ### OBS Governance: Camera Direction
 
-The OBS chain selects livestream camera scenes and transitions based on energy, stream health, and feedback from the MC chain. It runs at perception cadence (2.5s) rather than MIDI cadence, because camera cuts don't need beat alignment — they need stream health awareness and dwell-time respect (don't cut too frequently).
+The OBS chain selects livestream camera scenes and transitions based on energy, stream health, and feedback from the MC chain. It runs at perception cadence (2.5s) rather than MIDI cadence, because camera cuts require stream health awareness and dwell-time respect rather than beat alignment.
 
-A cross-chain feedback mechanism links the two: when the MC chain fires a vocal throw, the feedback behavior `last_mc_fire` updates. The OBS chain reads this and biases toward the face camera — if audio just fired, the viewer should see the performer. This is not a hardcoded coupling; it's a Behavior that one chain writes and another reads through the normal `with_latest_from` sampling.
+A cross-chain feedback mechanism links the two: when the MC chain fires a vocal throw, the feedback behavior `last_mc_fire` updates. The OBS chain reads this and biases toward the face camera — if audio just fired, the viewer should see the performer. This is a Behavior that one chain writes and another reads through the normal `with_latest_from` sampling, not a hardcoded coupling.
 
 ### Pipeline Governor
 
@@ -123,9 +128,9 @@ Above both chains sits the `PipelineGovernor`, which determines whether the voic
 
 ### Suppression Fields
 
-When roles must coexist — conversation and MC, for instance — binary mode-switching is too coarse. `SuppressionField` provides continuous modulation (0.0 to 1.0) using attack/release envelopes borrowed from audio compressor design. The `effective_threshold` function adjusts a base energy threshold by suppression level: at 0 the threshold is unchanged; at 1.0 it reaches 1.0 (impossible to trigger), fully suppressing the chain. Between those extremes, the chain becomes progressively harder to fire.
+When roles must coexist — conversation and MC, for instance — binary mode-switching is too coarse. `SuppressionField` provides continuous modulation (0.0 to 1.0) using attack/release envelopes from audio compressor design. The `effective_threshold` function adjusts a base energy threshold by suppression level: at 0 the threshold is unchanged; at 1.0 it reaches 1.0 (impossible to trigger), fully suppressing the chain. Between those extremes, the chain becomes progressively harder to fire.
 
-This is Brooks' subsumption architecture (layered behavioral competence with inhibition) reimplemented as graduated modulation rather than binary suppression. It prevents oscillation when signals are noisy and allows multiple roles to coexist with dynamic priorities.
+This implements Brooks' subsumption architecture (layered behavioral competence with inhibition) as graduated modulation rather than binary suppression. It prevents oscillation when signals are noisy and allows multiple roles to coexist with dynamic priorities.
 
 ### Resource Arbiter
 
@@ -133,6 +138,7 @@ When multiple governance chains produce Commands that claim the same physical re
 
 ### Feedback Loop
 
+`wire_feedback_behaviors()` subscribes to the `ExecutorRegistry`'s actuation event stream and maintains Behaviors that governance chains read: `last_mc_fire`, `mc_fire_count`, `last_obs_switch`, `last_tts_end`. The MC chain reads `last_mc_fire` to enforce cooldown (the `spacing_respected` veto). The OBS chain reads it to bias camera selection. This closes the reactive loop: perception → governance → actuation → feedback → perception. The feedback uses Behaviors and Events, the same primitives used throughout.
 
 ## Perception Infrastructure
 
@@ -140,7 +146,7 @@ When multiple governance chains produce Commands that claim the same physical re
 
 `PerceptionEngine` produces `EnvironmentState` snapshots by fusing registered backends. Each backend implements the `PerceptionBackend` protocol and is assigned to a `CadenceGroup` — a set of backends polled at a shared interval. Different groups run at different rates: audio energy at fast tick (2.5s), workspace analysis at slow tick (12s), Hyprland window state on IPC events.
 
-Each CadenceGroup has its own `tick_event: Event[float]`. Governance chains wire to the tick event of the cadence group that matches their temporal requirements. The MC chain wires to MIDI clock ticks. The OBS chain wires to perception fast ticks. Each chain fires at its required rate, sampling other signals via `with_latest_from`.
+Each CadenceGroup has its own `tick_event: Event[float]`. Governance chains wire to the tick event of the cadence group that matches their temporal requirements. The MC chain wires to MIDI clock ticks. The OBS chain wires to perception fast ticks. Each chain fires at the rate it needs, sampling all other signals at their current values via `with_latest_from`.
 
 Eight backends in `backends/`: PipeWire (audio energy, emotion), Hyprland (window/workspace), watch (heart rate, HRV), health (CPU, RAM, GPU), circadian (rhythm alignment), MIDI clock (ticks, transport, tempo), stream health (OBS bitrate, lag, drops).
 
@@ -150,7 +156,7 @@ Eight backends in `backends/`: PipeWire (audio energy, emotion), Hyprland (windo
 
 ## Musical Semantics
 
-`TimelineMapping` is a bijective affine map between wall-clock and beat time: given a reference point and a tempo, `beat_at_time(t)` and `time_at_beat(b)` are pure arithmetic. Transport state (PLAYING/STOPPED) freezes the mapping. Bijectivity means every wall-clock instant has exactly one beat position and vice versa — no ambiguity, no rounding. This is adapted from Ableton Link's timeline triple `(beat, time, tempo)`.
+`TimelineMapping` is a bijective affine map between wall-clock and beat time: given a reference point and a tempo, `beat_at_time(t)` and `time_at_beat(b)` are pure arithmetic. Transport state (PLAYING/STOPPED) freezes the mapping. Bijectivity means every wall-clock instant has exactly one beat position and vice versa. Adapted from Ableton Link's timeline triple `(beat, time, tempo)`.
 
 `MusicalPosition` decomposes a global beat number into bar, beat-in-bar, phrase, bar-in-phrase, section, and phrase-in-section (assuming 4/4 time, 4-bar phrases, 4-phrase sections). This enables musically-aware governance: fire on downbeats, respect phrase boundaries, avoid mid-section interruptions.
 
