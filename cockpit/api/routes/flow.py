@@ -28,10 +28,22 @@ def _read(path: Path) -> dict | None:
 
 
 def _age(raw: dict | None) -> float:
+    """Compute age in seconds from a timestamp field.
+
+    Handles both epoch timestamps (time.time()) and monotonic timestamps
+    (time.monotonic()). Monotonic timestamps are detected by being much
+    smaller than epoch (< 1e9 = before 2001, so definitely monotonic).
+    """
     if raw is None:
         return 999.0
     ts = raw.get("timestamp", 0)
-    return time.time() - ts if ts else 999.0
+    if not ts:
+        return 999.0
+    if ts < 1e9:
+        # Monotonic clock — compare against current monotonic time
+        return time.monotonic() - ts
+    # Epoch timestamp
+    return time.time() - ts
 
 
 def _status(age: float, stale_threshold: float = 10.0) -> str:
