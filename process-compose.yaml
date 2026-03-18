@@ -97,6 +97,7 @@ processes:
 
   # ── Watch Sensor Receiver ───────────────────────────────────────
   watch-receiver:
+    disabled: true
     command: uv run python -m agents.watch_receiver
     working_dir: /home/operator/projects/hapax-council
     availability:
