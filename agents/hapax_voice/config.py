@@ -59,12 +59,13 @@ class VoiceConfig(BaseModel):
     # (ENOTSUP on capture node start). Use raw Yeti with application-level
     # echo suppression: wake word + VAD gated during TTS playback,
     # post-TTS cooldown to let room reflections decay.
-    audio_input_source: str = (
-        "alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
-    )
+    # PipeWire echo-cancelled source (WebRTC AEC3 at driver level).
+    # Falls back to raw Yeti if echo cancel module not loaded.
+    audio_input_source: str = "Echo Cancel Source"
 
-    # Echo cancellation (application-level, replaces broken PipeWire AEC)
-    aec_enabled: bool = True
+    # Application-level AEC disabled — PipeWire handles it now.
+    # Keep the code path but don't use it unless PipeWire AEC fails.
+    aec_enabled: bool = False
     aec_tail_ms: int = 200
 
     # Backends
