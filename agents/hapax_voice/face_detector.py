@@ -18,7 +18,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 _OPERATOR_EMBEDDING_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "operator_face.npy"
-_OPERATOR_SIMILARITY_THRESHOLD = 0.4
+_OPERATOR_SIMILARITY_THRESHOLD = 0.25  # lowered — buffalo_sc varies across cameras/lighting
 _AUTO_ENROLL_CONFIDENCE = 0.7
 
 

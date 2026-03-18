@@ -105,7 +105,10 @@ class PipelineGovernor:
             [
                 Veto(
                     name="activity_mode",
-                    predicate=lambda s: s.activity_mode not in ("production", "meeting"),
+                    predicate=lambda s: (
+                        s.in_voice_session  # never pause during active conversation
+                        or s.activity_mode not in ("production", "meeting")
+                    ),
                 ),
                 Veto(
                     name="conversation_debounce",

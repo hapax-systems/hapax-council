@@ -71,7 +71,7 @@ class VoiceConfig(BaseModel):
     backend: str = "local"  # "local" or "gemini"
     llm_model: str = "gemini-flash"
     gemini_model: str = "gemini-2.5-flash-preview-native-audio"
-    local_stt_model: str = "nvidia/parakeet-tdt-0.6b-v2"
+    local_stt_model: str = "distil-large-v3"
     kokoro_voice: str = "af_heart"
 
     # Consent

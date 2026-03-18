@@ -56,7 +56,7 @@ def _registry() -> RuleRegistry:
 class TestRegistration:
     def test_registers_all_rules(self):
         reg = _registry()
-        assert len(reg) == 10
+        assert len(reg) == 12
 
     def test_rule_names(self):
         reg = _registry()
@@ -72,11 +72,13 @@ class TestRegistration:
             "correction-synthesis",
             "audio-archive-sidecar",
             "audio-clap-indexed",
+            "presence-transition",
+            "consent-transition",
         }
 
     def test_phase_zero_rules(self):
         phase0 = [r for r in ALL_RULES if r.phase == 0]
-        assert len(phase0) == 5
+        assert len(phase0) == 7
 
     def test_phase_one_rules(self):
         phase1 = [r for r in ALL_RULES if r.phase == 1]
@@ -260,15 +262,15 @@ class TestRagSourceRule:
         assert len(rag_actions) == 1
         assert rag_actions[0].phase == 1
 
-    def test_modified_file_does_not_trigger(self):
-        """Only created events trigger — avoids re-ingest on file touch."""
+    def test_modified_file_triggers_reingest(self):
+        """Modified files trigger re-ingest to update stale embeddings."""
         reg = _registry()
         plan = evaluate_rules(
             _event("/home/user/documents/rag-sources/gmail/inbox/msg.md", event_type="modified"),
             reg,
         )
         rag_actions = [a for a in plan.actions if a.name.startswith("rag-ingest:")]
-        assert len(rag_actions) == 0
+        assert len(rag_actions) == 1
 
     def test_non_rag_source_path_no_match(self):
         reg = _registry()

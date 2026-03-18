@@ -61,7 +61,10 @@ _DEFAULT_WEIGHTS: dict[str, float] = {
 
 # ── Governance override patterns ────────────────────────────────────
 
-_CONSENT_PHASES = frozenset({"pending", "active", "refused"})
+# Only "refused" forces CAPABLE — active refusal needs best model to handle gracefully.
+# "pending" uses normal routing (guest may be transient, face dedup may be wrong).
+# "active" (consent granted) is normal operation — no override needed.
+_CONSENT_PHASES = frozenset({"refused"})
 
 
 class SalienceRouter:
@@ -130,7 +133,7 @@ class SalienceRouter:
                 canned_response="",
             )
 
-        if guest_mode or face_count > 1:
+        if guest_mode:
             self._record_breakdown(0.0, 0.0, 0.0, 1.0, "guest_or_multiface", "CAPABLE", t_start)
             return RoutingDecision(
                 tier=ModelTier.CAPABLE,
