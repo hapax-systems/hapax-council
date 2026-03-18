@@ -20,11 +20,14 @@ from agents.hapax_voice.primitives import Behavior
 
 log = logging.getLogger(__name__)
 
-# Default likelihood ratios: (P(signal|present), P(signal|absent))
+# Calibrated from first live run (2026-03-17):
+# - operator_face P(no_face|present) was 0.05, far too low — operator frequently
+#   not visible (turned away, under desk, out of frame). Raised to 0.10.
+# - vad_speech P(speech|present) lowered — silent work is common, mic often off.
 DEFAULT_SIGNAL_WEIGHTS: dict[str, tuple[float, float]] = {
-    "operator_face": (0.95, 0.05),
+    "operator_face": (0.90, 0.10),
     "keyboard_active": (0.85, 0.05),
-    "vad_speech": (0.70, 0.20),
+    "vad_speech": (0.60, 0.15),
     "speaker_is_operator": (0.95, 0.02),
     "watch_hr": (0.80, 0.30),
     "watch_connected": (0.70, 0.40),
@@ -171,11 +174,18 @@ class PresenceEngine:
         obs: dict[str, bool | None] = {}
 
         # Operator face visible (from presence detector via fused detection)
-        b = behaviors.get("operator_visible")
-        if b is None:
-            # Fall back: check if face_detected exists (legacy path)
-            b = behaviors.get("face_detected")
-        obs["operator_face"] = b.value if b is not None else None
+        # Three states: True (operator matched), False (no face at all), None (face detected
+        # but not matched — ambiguous, could be stale embedding or bad angle)
+        op_visible = behaviors.get("operator_visible")
+        face_detected = behaviors.get("face_detected")
+        if op_visible is not None and op_visible.value:
+            obs["operator_face"] = True
+        elif face_detected is not None and face_detected.value:
+            obs["operator_face"] = None  # face seen but not matched — neutral
+        elif face_detected is not None and not face_detected.value:
+            obs["operator_face"] = False  # no face at all
+        else:
+            obs["operator_face"] = None
 
         # Keyboard/mouse active
         b = behaviors.get("input_active")
@@ -192,12 +202,12 @@ class PresenceEngine:
         b = behaviors.get("speaker_is_operator")
         obs["speaker_is_operator"] = b.value if b is not None else None
 
-        # Watch heart rate > 0
+        # Watch heart rate > 0 (0 bpm = not connected, treat as missing)
         b = behaviors.get("heart_rate_bpm")
-        if b is not None:
-            obs["watch_hr"] = b.value > 0 if isinstance(b.value, (int, float)) else None
+        if b is not None and isinstance(b.value, (int, float)) and b.value > 0:
+            obs["watch_hr"] = True
         else:
-            obs["watch_hr"] = None
+            obs["watch_hr"] = None  # no data = neutral, not negative
 
         # Watch connected
         b = behaviors.get("watch_connected")
