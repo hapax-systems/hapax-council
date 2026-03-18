@@ -134,10 +134,17 @@ class StimmungCollector:
         self._record("health", value)
 
     def update_gpu(self, used_mb: float, total_mb: float) -> None:
-        """Update from GPU/VRAM data."""
+        """Update from GPU/VRAM data.
+
+        VRAM usage below 80% is normal operation (Ollama models + YOLO +
+        InsightFace). Pressure starts above 80% and scales to 1.0 at 95%.
+        This prevents 65% VRAM utilization from driving degraded stance.
+        """
         if total_mb <= 0:
             return
-        value = used_mb / total_mb
+        raw_ratio = used_mb / total_mb
+        # Remap: 0-80% → 0.0, 80-95% → 0.0-1.0, 95%+ → 1.0
+        value = max(0.0, min(1.0, (raw_ratio - 0.80) / 0.15))
         self._record("resource_pressure", value)
 
     def update_engine(
@@ -153,14 +160,13 @@ class StimmungCollector:
         error_value = min(1.0, errors / total_actions)
         self._record("error_rate", error_value)
 
-        # Processing throughput — events/min vs baseline
-        # Low throughput is NOT stress when the engine is simply idle
-        # (no filesystem changes = no events = normal). Throughput
-        # pressure only matters when there ARE events to process.
-        if uptime_s > 60 and actions_executed > 0:
+        # Processing throughput pressure — high event rate = system thrashing.
+        # Low event rate = calm (nothing changing). The pressure is from
+        # TOO MANY events, not too few. Previous logic was inverted.
+        if uptime_s > 60 and events_processed > 0:
             events_per_min = (events_processed / uptime_s) * 60.0
-            throughput_ratio = min(1.0, events_per_min / _ENGINE_EVENTS_PER_MIN_BASELINE)
-            throughput_value = 1.0 - throughput_ratio
+            # Pressure rises when event rate exceeds baseline
+            throughput_value = min(1.0, events_per_min / _ENGINE_EVENTS_PER_MIN_BASELINE)
         else:
             throughput_value = 0.0  # idle engine = no pressure
         self._record("processing_throughput", throughput_value)
