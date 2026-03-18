@@ -8,34 +8,43 @@ interface RegionProps {
   style?: React.CSSProperties;
 }
 
-const DEPTH_HEIGHTS: Record<Depth, string> = {
-  surface: "100%",
-  stratum: "100%",
-  core: "100%",
-};
-
 const DEPTH_BORDER: Record<Depth, string> = {
   surface: "transparent",
   stratum: "rgba(180, 160, 120, 0.08)",
   core: "rgba(180, 160, 120, 0.15)",
 };
 
-export function Region({ name, children, className = "", style }: RegionProps) {
-  const { regionDepths, cycleDepth, focusRegion } = useTerrain();
-  const depth = regionDepths[name];
+const DEPTH_GLOW: Record<Depth, string> = {
+  surface: "none",
+  stratum: "inset 0 0 20px rgba(180, 160, 120, 0.03)",
+  core: "inset 0 0 30px rgba(180, 160, 120, 0.06)",
+};
 
-  const handleClick = useCallback(() => {
-    if (depth === "surface") {
-      cycleDepth(name);
-      focusRegion(name);
-    } else if (depth === "stratum") {
-      cycleDepth(name);
-    } else {
-      // core -> surface, unfocus
-      cycleDepth(name);
-      focusRegion(null);
-    }
-  }, [depth, name, cycleDepth, focusRegion]);
+export function Region({ name, children, className = "", style }: RegionProps) {
+  const { regionDepths, focusedRegion, cycleDepth, focusRegion } = useTerrain();
+  const depth = regionDepths[name];
+  const isFocused = focusedRegion === name;
+
+  const handleClick = useCallback(
+    (e: React.MouseEvent) => {
+      // Don't cycle if clicking interactive content in stratum/core
+      if (depth !== "surface") {
+        const target = e.target as HTMLElement;
+        if (target.closest("button, a, input, textarea, [role=button]")) return;
+      }
+
+      if (depth === "surface") {
+        cycleDepth(name);
+        focusRegion(name);
+      } else if (depth === "stratum") {
+        cycleDepth(name);
+      } else {
+        cycleDepth(name);
+        focusRegion(null);
+      }
+    },
+    [depth, name, cycleDepth, focusRegion],
+  );
 
   return (
     <div
@@ -43,12 +52,14 @@ export function Region({ name, children, className = "", style }: RegionProps) {
       data-depth={depth}
       className={`relative overflow-hidden ${className}`}
       style={{
-        height: DEPTH_HEIGHTS[depth],
-        borderColor: DEPTH_BORDER[depth],
+        borderColor: isFocused ? "rgba(184, 187, 38, 0.12)" : DEPTH_BORDER[depth],
         borderWidth: "1px",
         borderStyle: "solid",
-        transition: "height 200ms ease, border-color 300ms ease",
-        cursor: depth === "surface" ? "pointer" : depth === "stratum" ? "pointer" : "default",
+        boxShadow: isFocused
+          ? "inset 0 0 24px rgba(184, 187, 38, 0.04)"
+          : DEPTH_GLOW[depth],
+        transition: "border-color 300ms ease, box-shadow 300ms ease",
+        cursor: depth === "core" ? "default" : "pointer",
         ...style,
       }}
       onClick={handleClick}
@@ -60,12 +71,13 @@ export function Region({ name, children, className = "", style }: RegionProps) {
           color: "rgba(180, 160, 120, 0.15)",
           opacity: depth === "surface" ? 0 : 1,
           transition: "opacity 150ms ease",
+          zIndex: 2,
         }}
       >
         {depth}
       </div>
 
-      {/* Content with depth-aware opacity transition */}
+      {/* Content */}
       <div
         className="w-full h-full"
         style={{

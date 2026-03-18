@@ -8,11 +8,19 @@ import { BedrockRegion } from "./regions/BedrockRegion";
 import { VoiceOverlay } from "./overlays/VoiceOverlay";
 import { InvestigationOverlay } from "./overlays/InvestigationOverlay";
 import { useVisualLayer } from "../../hooks/useVisualLayer";
-import { useTerrain } from "../../contexts/TerrainContext";
+import { useTerrain, type RegionName } from "../../contexts/TerrainContext";
+
+const REGION_KEYS: Record<string, RegionName> = {
+  h: "horizon",
+  f: "field",
+  g: "ground",
+  w: "watershed",
+  b: "bedrock",
+};
 
 export function TerrainLayout() {
   const vl = useVisualLayer();
-  const { activeOverlay, setOverlay } = useTerrain();
+  const { activeOverlay, setOverlay, focusRegion, cycleDepth } = useTerrain();
 
   // Voice overlay: auto-show when voice active
   useEffect(() => {
@@ -23,22 +31,34 @@ export function TerrainLayout() {
     }
   }, [vl.voiceSession.active, activeOverlay, setOverlay]);
 
-  // Keyboard: `/` toggles investigation overlay
+  // Keyboard: `/` toggles investigation, H/F/G/W/B focus regions, Escape dismisses
   const handleKey = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key === "/" && !e.ctrlKey && !e.metaKey) {
-        // Don't toggle if typing in an input
-        const target = e.target as HTMLElement;
-        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
-          return;
+      const target = e.target as HTMLElement;
+      const isInput =
+        target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
+
+      if (e.key === "/" && !e.ctrlKey && !e.metaKey && !isInput) {
         e.preventDefault();
         setOverlay(activeOverlay === "investigation" ? null : "investigation");
+        return;
       }
+
       if (e.key === "Escape" && activeOverlay) {
         setOverlay(null);
+        return;
+      }
+
+      // Region shortcuts — only when no overlay and not in input
+      if (!activeOverlay && !isInput && !e.ctrlKey && !e.metaKey) {
+        const region = REGION_KEYS[e.key.toLowerCase()];
+        if (region) {
+          focusRegion(region);
+          cycleDepth(region);
+        }
       }
     },
-    [activeOverlay, setOverlay],
+    [activeOverlay, setOverlay, focusRegion, cycleDepth],
   );
 
   useEffect(() => {
