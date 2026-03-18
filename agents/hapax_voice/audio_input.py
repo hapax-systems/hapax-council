@@ -6,6 +6,7 @@ import asyncio
 import logging
 import queue
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 import pyaudio
 
@@ -158,9 +159,15 @@ class AudioInputStream:
                 log.warning("Audio frame queue full — dropping frames")
         return (None, pyaudio.paContinue)
 
+    # Dedicated single-thread executor so get_frame never contends with
+    # STT, TTS, or speaker verification in the default thread pool.
+    _frame_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-in")
+
     async def get_frame(self, timeout: float = 1.0) -> bytes | None:
         loop = asyncio.get_running_loop()
         try:
-            return await loop.run_in_executor(None, lambda: self._queue.get(timeout=timeout))
+            return await loop.run_in_executor(
+                self._frame_executor, lambda: self._queue.get(timeout=timeout)
+            )
         except queue.Empty:
             return None
