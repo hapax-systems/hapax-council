@@ -29,11 +29,29 @@ This directory contains the formal types and enforcement infrastructure that the
 | ConstitutiveRule (Searle/Boella) | §4.1 | [`constitutive.py`](constitutive.py) | [`tests/test_constitutive.py`](../tests/test_constitutive.py) |
 | Governance coherence checker | §4 | [`coherence.py`](coherence.py) | [`tests/test_coherence.py`](../tests/test_coherence.py) |
 
+### Consent formalisms (5 of 7 algebraic layers)
+
+| Concept | Reference | Source | Proven properties | Tests |
+|---------|-----------|--------|-------------------|-------|
+| Says monad (principal attribution) | Abadi DCC | [`governance/says.py`](governance/says.py) | Monadic laws (left identity, right identity, associativity), functor laws, handoff non-amplification, speaks-for transitivity | [`tests/test_says_monad.py`](../tests/test_says_monad.py) |
+| ProvenanceExpr (PosBool semiring) | Green PODS 2007 | [`governance/provenance.py`](governance/provenance.py) | ⊕ commutative/associative/idempotent/identity, ⊗ commutative/associative/identity/annihilation, distributivity (10 hypothesis) | [`tests/test_provenance_semiring.py`](../tests/test_provenance_semiring.py) |
+| ConsentInterval (temporal bounds) | Allen's interval algebra | [`governance/temporal.py`](governance/temporal.py) | Active/expired correctness, intersection, containment, overlap, before (5 hypothesis) | [`tests/test_temporal_bounds.py`](../tests/test_temporal_bounds.py) |
+| GateToken (linear discipline) | Girard linear logic | [`governance/gate_token.py`](governance/gate_token.py) | Unforgeability (unique nonce), immutability, require_token enforcement | [`tests/test_gate_token.py`](../tests/test_gate_token.py) |
+| consent_scope (contextvars) | — | [`governance/consent_context.py`](governance/consent_context.py) | Scoping, nesting, async inheritance, exception safety | [`tests/test_consent_context.py`](../tests/test_consent_context.py) |
+
+### Apperception (self-band architecture)
+
+| Concept | Reference | Source | Tests |
+|---------|-----------|--------|-------|
+| ApperceptionCascade (7-step) | Kohut, ACT, Merleau-Ponty | [`apperception.py`](apperception.py) | 113 cascade matrix tests (step × source × stimmung) + 6 safeguard tests |
+| ApperceptionTick (standalone) | — | [`apperception_tick.py`](apperception_tick.py) | Event wiring tests |
+| Phenomenal context renderer | Husserl, Dreyfus, Gibson | [`../agents/hapax_voice/phenomenal_context.py`](../agents/hapax_voice/phenomenal_context.py) | 18 progressive fidelity tests |
+
 ### Carrier dynamics (Paper B)
 
 | Concept | Theory § | Source | Tests |
 |---------|----------|--------|-------|
-| CarrierFact, displacement dynamics | §9 | [`carrier.py`](carrier.py) | [`tests/test_carrier.py`](../tests/test_carrier.py) |
+| CarrierFact, displacement dynamics | §9 | [`governance/carrier.py`](governance/carrier.py) | [`tests/test_carrier.py`](../tests/test_carrier.py) |
 
 ## Algebraic properties verified
 
