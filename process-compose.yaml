@@ -29,10 +29,10 @@ processes:
   secrets:
     command: |
       bash -c '
-        echo "LITELLM_API_KEY=$(pass show litellm/master-key)" > /run/user/1000/hapax-voice.env
-        echo "LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key)" >> /run/user/1000/hapax-voice.env
-        echo "LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key)" >> /run/user/1000/hapax-voice.env
-        echo "HF_TOKEN=$(pass show api/huggingface)" >> /run/user/1000/hapax-voice.env
+        echo "export LITELLM_API_KEY=$(pass show litellm/master-key)" > /run/user/1000/hapax-voice.env
+        echo "export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key)" >> /run/user/1000/hapax-voice.env
+        echo "export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key)" >> /run/user/1000/hapax-voice.env
+        echo "export HF_TOKEN=$(pass show api/huggingface)" >> /run/user/1000/hapax-voice.env
         chmod 600 /run/user/1000/hapax-voice.env
         echo "Secrets loaded"
       '
