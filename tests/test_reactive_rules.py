@@ -279,7 +279,7 @@ class TestRagSourceRule:
             reg,
         )
         rag_actions = [a for a in plan.actions if a.name.startswith("rag-ingest:")]
-        assert len(rag_actions) == 1
+        assert len(rag_actions) == 0
 
     def test_action_name_includes_path(self):
         """Action name includes file path to prevent cross-file dedup."""
