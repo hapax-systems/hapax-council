@@ -170,7 +170,9 @@ def _modulate_for_environment(
         rules.append(f"Phone battery critical ({phone_battery}%). Mention if relevant.")
     if getattr(env, "phone_media_playing", False):
         title = getattr(env, "phone_media_app", "")
-        rules.append(f"Phone playing media{f' ({title})' if title else ''}. Keep voice responses short to not talk over it.")
+        rules.append(
+            f"Phone playing media{f' ({title})' if title else ''}. Keep voice responses short to not talk over it."
+        )
 
     # Time-of-day heuristic (operator reports no significant modulation needed,
     # but late hours still warrant awareness)

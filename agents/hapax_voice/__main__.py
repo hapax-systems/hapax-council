@@ -1788,8 +1788,11 @@ class VoiceDaemon:
             _ollama_model = "gemma3-voice"
             _sp.run(
                 [
-                    "curl", "-sf", "http://localhost:11434/api/generate",
-                    "-d", '{"model":"' + _ollama_model + '","prompt":"","keep_alive":-1}',
+                    "curl",
+                    "-sf",
+                    "http://localhost:11434/api/generate",
+                    "-d",
+                    '{"model":"' + _ollama_model + '","prompt":"","keep_alive":-1}',
                 ],
                 capture_output=True,
                 timeout=10,

@@ -83,3 +83,28 @@
   0%, 100% { box-shadow: 0 0 0 2px transparent; }
   50% { box-shadow: 0 0 0 3px var(--color-amber-400); }
 }
+
+/* Terrain depth transition flash */
+@keyframes depth-flash {
+  0% { border-color: rgba(184, 187, 38, 0.2); }
+  100% { border-color: transparent; }
+}
+
+/* Signal breathing animations — severity-proportional tempo */
+@keyframes signal-breathe-slow { 0%,100% { opacity: 0.3; } 50% { opacity: 0.6; } }
+@keyframes signal-breathe-mod  { 0%,100% { opacity: 0.4; } 50% { opacity: 0.8; } }
+@keyframes signal-breathe-fast { 0%,100% { opacity: 0.5; } 50% { opacity: 1.0; } }
+@keyframes signal-breathe-crit {
+  0%,100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1.0; transform: scale(1.15); }
+}
+
+/* Stimmung glow breathing for region borders */
+@keyframes stimmung-breathe-degraded {
+  0%,100% { border-color: rgba(180, 160, 120, 0.08); }
+  50% { border-color: rgba(254, 128, 25, 0.25); }
+}
+@keyframes stimmung-breathe-critical {
+  0%,100% { border-color: rgba(180, 160, 120, 0.08); }
+  50% { border-color: rgba(251, 73, 52, 0.35); }
+}

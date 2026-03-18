@@ -8,14 +8,18 @@ import { ManagementPanel } from "../../sidebar/ManagementPanel";
 import { AgentGrid } from "../../dashboard/AgentGrid";
 import { PerceptionCanvas } from "../../perception/PerceptionCanvas";
 import { PerceptionSidebar } from "../../perception/PerceptionSidebar";
-import { ClassificationOverlayProvider } from "../../../contexts/ClassificationOverlayContext";
+import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
+import { OperatorVitals } from "../field/OperatorVitals";
+import { useOverlay, type SignalCategory } from "../../../contexts/ClassificationOverlayContext";
 import { useAgentRun } from "../../../contexts/AgentRunContext";
-import type { SignalCategory } from "../../../contexts/ClassificationOverlayContext";
 import type { AgentInfo } from "../../../api/types";
 
 export function FieldRegion() {
   const { runAgent } = useAgentRun();
+  const { signalsByRegion, stimmungStance, visualLayer } = useOverlay();
   const [activeZone, setActiveZone] = useState<SignalCategory | null>(null);
+  const fieldSignals = signalsByRegion.field;
+  const biometrics = visualLayer?.biometrics ?? null;
 
   const handleRun = useCallback(
     (agent: AgentInfo, flags: string[]) => {
@@ -25,9 +29,9 @@ export function FieldRegion() {
   );
 
   return (
-    <Region name="field">
+    <Region name="field" stimmungStance={stimmungStance}>
       {(depth) => (
-        <div className="h-full flex flex-col min-h-0">
+        <div className="h-full flex flex-col min-h-0 relative">
           {/* Surface: compact summaries */}
           <div className="px-4 py-2 shrink-0">
             <AgentSummary />
@@ -36,6 +40,11 @@ export function FieldRegion() {
           {depth === "surface" && (
             <div className="px-4 shrink-0">
               <FreshnessPanel />
+              {biometrics && biometrics.heart_rate_bpm > 0 && (
+                <div className="mt-1">
+                  <OperatorVitals biometrics={biometrics} />
+                </div>
+              )}
             </div>
           )}
 
@@ -52,12 +61,23 @@ export function FieldRegion() {
 
           {/* Core: perception view */}
           {depth === "core" && (
-            <ClassificationOverlayProvider>
-              <div className="flex h-full min-h-0">
-                <PerceptionCanvas activeZone={activeZone} onZoneClick={setActiveZone} />
-                <PerceptionSidebar activeZone={activeZone} onZoneSelect={setActiveZone} />
-              </div>
-            </ClassificationOverlayProvider>
+            <div className="flex h-full min-h-0">
+              <PerceptionCanvas activeZone={activeZone} onZoneClick={setActiveZone} />
+              <PerceptionSidebar activeZone={activeZone} onZoneSelect={setActiveZone} />
+            </div>
+          )}
+
+          {/* Signal pips — top-right */}
+          {fieldSignals.length > 0 && (
+            <SignalCluster
+              signals={fieldSignals}
+              density={densityFromDepth(depth)}
+              className={
+                depth === "surface"
+                  ? "absolute top-2 right-8 pointer-events-none"
+                  : "absolute top-2 right-8"
+              }
+            />
           )}
         </div>
       )}
