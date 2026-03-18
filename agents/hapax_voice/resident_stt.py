@@ -105,10 +105,11 @@ class ResidentSTT:
 
             segments, info = self._model.transcribe(
                 audio,
-                language=language,
+                language="en",  # skip language detection (saves ~50ms)
                 beam_size=1,  # greedy for speed
                 vad_filter=False,  # we already did VAD
                 without_timestamps=True,
+                initial_prompt="Hapax, hey Hapax, voice assistant, studio, coding",
             )
 
             text = " ".join(seg.text for seg in segments).strip()
