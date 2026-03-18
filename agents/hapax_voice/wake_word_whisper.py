@@ -19,7 +19,6 @@ CPU: negligible (VAD <1ms per frame, Whisper only on speech segments).
 from __future__ import annotations
 
 import logging
-import struct
 import time
 from collections import deque
 from collections.abc import Callable
@@ -33,18 +32,20 @@ log = logging.getLogger(__name__)
 
 # Keywords to match in transcript (lowercase). "hapax" + common
 # Whisper mis-transcriptions we've observed or can anticipate.
-_WAKE_WORDS = frozenset({
-    "hapax",
-    "hey pax",
-    "hay pax",
-    "hey packs",
-    "ha pax",
-    "hepax",
-    "hey pacs",
-    "hapacs",
-    "hey pax,",
-    "a pax",
-})
+_WAKE_WORDS = frozenset(
+    {
+        "hapax",
+        "hey pax",
+        "hay pax",
+        "hey packs",
+        "ha pax",
+        "hepax",
+        "hey pacs",
+        "hapacs",
+        "hey pax,",
+        "a pax",
+    }
+)
 
 # Also match these as substrings (for "hapax" embedded in longer text)
 _WAKE_SUBSTRINGS = ("hapax", "hey pax", "hay pax", "hepax")
@@ -126,7 +127,7 @@ class WhisperWakeWord:
         """
         self._last_vad_prob = prob
 
-    def process_audio(self, audio_chunk: "np.ndarray") -> None:
+    def process_audio(self, audio_chunk: np.ndarray) -> None:
         """Process a single audio frame (512 samples, 16kHz int16).
 
         Buffers audio during detected speech, then checks for wake word
@@ -181,7 +182,11 @@ class WhisperWakeWord:
 
         self._check_pending = True
         duration_ms = len(audio_bytes) / (_SAMPLE_RATE * 2) * 1000
-        log.info("Wake word check: submitting %.0fms audio (%d speech frames)", duration_ms, self._speech_frames)
+        log.info(
+            "Wake word check: submitting %.0fms audio (%d speech frames)",
+            duration_ms,
+            self._speech_frames,
+        )
         # Run in thread to not block audio loop
         _whisper_executor.submit(self._check_wake_word, audio_bytes, now)
 
@@ -211,6 +216,7 @@ class WhisperWakeWord:
 
             # Check for wake word — normalize away ALL punctuation first
             import re
+
             text_clean = re.sub(r"[^\w\s]", "", text).strip()
             text_clean = re.sub(r"\s+", " ", text_clean)  # collapse whitespace
 
@@ -230,7 +236,7 @@ class WhisperWakeWord:
                 # Check bigrams ("hey pax")
                 if not detected:
                     for i in range(len(words) - 1):
-                        bigram = f"{words[i]} {words[i+1]}"
+                        bigram = f"{words[i]} {words[i + 1]}"
                         if bigram in _WAKE_WORDS:
                             detected = True
                             break

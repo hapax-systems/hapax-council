@@ -117,7 +117,9 @@ class PorcupineWakeWord:
                     )
                 else:
                     # Silence triggered detection — something is wrong
-                    log.warning("Porcupine returned %d on silence — model may be corrupt", test_result)
+                    log.warning(
+                        "Porcupine returned %d on silence — model may be corrupt", test_result
+                    )
             except pvporcupine.PorcupineActivationLimitError:
                 log.error(
                     "Picovoice access key RATE LIMITED — wake word will not work. "
@@ -129,7 +131,8 @@ class PorcupineWakeWord:
             except pvporcupine.PorcupineActivationError as e:
                 log.error(
                     "Picovoice access key INVALID or EXPIRED: %s — wake word disabled. "
-                    "Use Super+H hotkey to trigger sessions manually.", e
+                    "Use Super+H hotkey to trigger sessions manually.",
+                    e,
                 )
                 self._handle.delete()
                 self._handle = None

@@ -51,6 +51,32 @@ interface InjectedFeed {
   injected_at: number;
 }
 
+export interface BiometricState {
+  heart_rate_bpm: number;
+  stress_elevated: boolean;
+  physiological_load: number;
+  sleep_quality: number;
+  watch_activity: string;
+}
+
+export interface TemporalContext {
+  trend_flow: number;
+  trend_audio: number;
+  trend_hr: number;
+  perception_age_s: number;
+  ring_depth: number;
+}
+
+export interface SignalStaleness {
+  perception_s: number;
+  health_s: number;
+  gpu_s: number;
+  nudges_s: number;
+  briefing_s: number;
+}
+
+export type StimmungStance = "nominal" | "cautious" | "degraded" | "critical";
+
 export interface VisualLayerState {
   available?: boolean;
   display_state: string;
@@ -63,6 +89,10 @@ export interface VisualLayerState {
   ambient_text: string;
   activity_label: string;
   activity_detail: string;
+  biometrics?: BiometricState;
+  temporal_context?: TemporalContext;
+  signal_staleness?: SignalStaleness;
+  stimmung_stance?: StimmungStance;
   timestamp: number;
 }
 
@@ -117,6 +147,10 @@ export function useVisualLayerPoll() {
   const activityLabel = vlState?.activity_label ?? "present";
   const activityDetail = vlState?.activity_detail ?? "";
   const ambientText = vlState?.ambient_text ?? "";
+  const biometrics = vlState?.biometrics ?? null;
+  const temporalContext = vlState?.temporal_context ?? null;
+  const signalStaleness = vlState?.signal_staleness ?? null;
+  const stimmungStance: StimmungStance = vlState?.stimmung_stance ?? "nominal";
 
   return {
     raw: vlState,
@@ -130,5 +164,9 @@ export function useVisualLayerPoll() {
     activityLabel,
     activityDetail,
     ambientText,
+    biometrics,
+    temporalContext,
+    signalStaleness,
+    stimmungStance,
   };
 }
