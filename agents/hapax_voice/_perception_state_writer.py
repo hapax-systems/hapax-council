@@ -275,6 +275,13 @@ def write_perception_state(
         "phone_call_active": bool(_bval("phone_call_active", False)),
         "phone_call_incoming": bool(_bval("phone_call_incoming", False)),
         "phone_call_number": str(_bval("phone_call_number", "")),
+        # KDE Connect phone awareness
+        "phone_battery_pct": int(_bval("phone_battery_pct", 0) or 0),
+        "phone_battery_charging": bool(_bval("phone_battery_charging", False)),
+        "phone_network_type": str(_bval("phone_network_type", "")),
+        "phone_notification_count": int(_bval("phone_notification_count", 0) or 0),
+        "phone_media_app": str(_bval("phone_media_app", "")),
+        "phone_kde_connected": bool(_bval("phone_kde_connected", False)),
         # Scene inventory (persistent object tracking)
         "scene_inventory": _parse_scene_inventory(_bval("scene_inventory", "{}")),
         # Voice session (Batch A)

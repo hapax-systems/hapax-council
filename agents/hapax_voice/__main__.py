@@ -663,6 +663,14 @@ class VoiceDaemon:
         except Exception:
             log.info("PhoneCallsBackend not available, skipping")
 
+        # Phone unified awareness (KDE Connect)
+        try:
+            from agents.hapax_voice.backends.phone_awareness import PhoneAwarenessBackend
+
+            self.perception.register_backend(PhoneAwarenessBackend())
+        except Exception:
+            log.info("PhoneAwarenessBackend not available, skipping")
+
         # Bayesian presence engine (fuses all signals into presence probability)
         if self.cfg.presence_bayesian_enabled:
             try:
