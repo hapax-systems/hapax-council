@@ -169,6 +169,16 @@ pub fn get_system_flow() -> SystemFlowState {
         .and_then(|v| v.get("state"))
         .and_then(|v| v.as_str())
         .unwrap_or("off");
+    let voice_session = compositor.as_ref()
+        .and_then(|c| c.get("voice_session"));
+    let routing_tier = voice_session
+        .and_then(|v| v.get("routing_tier"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let routing_activation = voice_session
+        .and_then(|v| v.get("routing_activation"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     nodes.push(NodeState {
         id: "voice".into(),
         label: "Voice Pipeline".into(),
@@ -177,6 +187,8 @@ pub fn get_system_flow() -> SystemFlowState {
         metrics: serde_json::json!({
             "active": voice_active,
             "state": voice_state,
+            "tier": routing_tier,
+            "activation": routing_activation,
         }),
     });
 
