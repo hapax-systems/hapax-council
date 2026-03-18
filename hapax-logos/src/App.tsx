@@ -8,11 +8,14 @@ import { InsightPage } from "./pages/InsightPage";
 import { StudioPage } from "./pages/StudioPage";
 import { VisualPage } from "./pages/VisualPage";
 import { HapaxPage } from "./pages/HapaxPage";
+import { TerrainPage } from "./pages/TerrainPage";
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Terrain — spatial regions, no chrome */}
+        <Route path="terrain" element={<TerrainPage />} />
         {/* Hapax Corpora — full-screen, no chrome */}
         <Route path="hapax" element={<HapaxPage />} />
         {/* Main app with layout shell */}
