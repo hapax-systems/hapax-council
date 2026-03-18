@@ -165,6 +165,9 @@ class EnvironmentState:
     phone_call_active: bool = False
     phone_call_incoming: bool = False
     phone_media_playing: bool = False
+    phone_battery_pct: int = 100
+    phone_notification_count: int = 0
+    phone_media_app: str = ""
 
     # Desktop topology (updated by HyprlandEventListener)
     active_window: WindowInfo | None = None
@@ -375,6 +378,9 @@ class PerceptionEngine:
             phone_call_active=bool(self._bval("phone_call_active", False)),
             phone_call_incoming=bool(self._bval("phone_call_incoming", False)),
             phone_media_playing=bool(self._bval("phone_media_playing", False)),
+            phone_battery_pct=int(self._bval("phone_battery_pct", 100) or 100),
+            phone_notification_count=int(self._bval("phone_notification_count", 0) or 0),
+            phone_media_app=str(self._bval("phone_media_app", "") or ""),
             workspace_context=self._b_workspace_context.value,
             active_window=self._b_active_window.value,
             window_count=self._b_window_count.value,

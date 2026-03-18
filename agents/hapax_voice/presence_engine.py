@@ -34,6 +34,7 @@ DEFAULT_SIGNAL_WEIGHTS: dict[str, tuple[float, float]] = {
     "desktop_active": (0.75, 0.10),
     "midi_active": (0.90, 0.02),
     "bt_phone_connected": (0.95, 0.05),  # BT paired phone in range = very strong presence
+    "phone_kde_connected": (0.80, 0.25),  # KDE Connect WiFi reachable = likely in house
 }
 
 
@@ -221,6 +222,10 @@ class PresenceEngine:
         # Bluetooth phone presence (paired, connected = in room)
         b = behaviors.get("bt_watch_connected")
         obs["bt_phone_connected"] = b.value if b is not None else None
+
+        # KDE Connect phone reachable (WiFi)
+        b = behaviors.get("phone_kde_connected")
+        obs["phone_kde_connected"] = b.value if b is not None else None
 
         # MIDI active
         b = behaviors.get("midi_playing")
