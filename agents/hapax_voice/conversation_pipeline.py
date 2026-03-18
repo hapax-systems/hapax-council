@@ -902,8 +902,11 @@ class ConversationPipeline:
 
             # 2. Short utterances (1-3 words): check if it's a fragment of any TTS
             if word_count <= 3:
-                # Check if ALL transcript words appear in any single TTS sentence
-                if all(w in tts_text for w in norm_words):
+                # Only match if the TTS sentence is also short (≤5 words).
+                # A 1-word utterance like "Ryan" matching a long TTS sentence
+                # like "hey, ryan, what's going on?" is a false positive — the
+                # operator is likely responding, not echoing.
+                if len(tts_words) <= 5 and all(w in tts_text for w in norm_words):
                     return True
                 continue
 
