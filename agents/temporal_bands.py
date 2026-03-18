@@ -30,6 +30,7 @@ class RetentionEntry(BaseModel, frozen=True):
     activity: str = ""
     audio_energy: float = 0.0
     heart_rate: int = 0
+    presence: str = ""  # PRESENT/UNCERTAIN/AWAY from Bayesian engine
     summary: str = ""
 
 
@@ -111,10 +112,10 @@ class TemporalBandFormatter:
         if bands.retention:
             parts.append("  <retention>")
             for r in bands.retention:
-                parts.append(
-                    f'    <memory age_s="{r.age_s:.0f}" flow="{r.flow_state}" '
-                    f'activity="{r.activity}">{r.summary}</memory>'
-                )
+                attrs = f'age_s="{r.age_s:.0f}" flow="{r.flow_state}" activity="{r.activity}"'
+                if r.presence:
+                    attrs += f' presence="{r.presence}"'
+                parts.append(f"    <memory {attrs}>{r.summary}</memory>")
             parts.append("  </retention>")
 
         if bands.impression:
@@ -177,6 +178,13 @@ class TemporalBandFormatter:
             audio = best.get("audio_energy_rms", 0.0)
             hr = int(best.get("heart_rate_bpm", 0))
 
+            # Presence from Bayesian engine
+            pp = best.get("presence_probability", None)
+            if pp is not None:
+                presence = "present" if pp >= 0.7 else ("uncertain" if pp >= 0.3 else "away")
+            else:
+                presence = ""
+
             summary = self._summarize_snapshot(best, flow_state)
 
             entries.append(
@@ -187,6 +195,7 @@ class TemporalBandFormatter:
                     activity=activity,
                     audio_energy=audio,
                     heart_rate=hr,
+                    presence=presence,
                     summary=summary,
                 )
             )
@@ -203,7 +212,19 @@ class TemporalBandFormatter:
         else:
             flow_state = "idle"
 
-        return {
+        # Presence from Bayesian engine
+        presence_prob = current.get("presence_probability")
+        if presence_prob is not None:
+            if presence_prob >= 0.7:
+                presence = "present"
+            elif presence_prob >= 0.3:
+                presence = "uncertain"
+            else:
+                presence = "away"
+        else:
+            presence = ""
+
+        impression: dict[str, Any] = {
             "flow_state": flow_state,
             "flow_score": round(flow_score, 2),
             "activity": current.get("production_activity", ""),
@@ -212,6 +233,11 @@ class TemporalBandFormatter:
             "heart_rate": int(current.get("heart_rate_bpm", 0)),
             "consent_phase": current.get("consent_phase", "no_guest"),
         }
+        if presence:
+            impression["presence"] = presence
+            impression["presence_probability"] = round(presence_prob, 3)
+
+        return impression
 
     def _compute_surprise(
         self, current: dict[str, Any], last_protention: list[ProtentionEntry]
@@ -287,6 +313,30 @@ class TemporalBandFormatter:
                         expected="sustained",
                         surprise=0.0 if observed_matches else pred.confidence * 0.5,
                         note="" if observed_matches else "activity changed unexpectedly",
+                    )
+                )
+            elif pred.predicted_state == "operator_departing":
+                pp = current.get("presence_probability", 1.0)
+                observed_matches = pp < 0.3  # actually departed
+                surprises.append(
+                    SurpriseField(
+                        field="presence",
+                        observed=f"p={pp:.2f}" if pp is not None else "unknown",
+                        expected="departing",
+                        surprise=0.0 if observed_matches else pred.confidence,
+                        note="" if observed_matches else "operator stayed",
+                    )
+                )
+            elif pred.predicted_state == "operator_returning":
+                pp = current.get("presence_probability", 0.0)
+                observed_matches = pp >= 0.7  # actually returned
+                surprises.append(
+                    SurpriseField(
+                        field="presence",
+                        observed=f"p={pp:.2f}" if pp is not None else "unknown",
+                        expected="returning",
+                        surprise=0.0 if observed_matches else pred.confidence,
+                        note="" if observed_matches else "operator still away",
                     )
                 )
             # Engine-sourced activity predictions
@@ -399,6 +449,27 @@ class TemporalBandFormatter:
                 )
             )
 
+        # Presence trend (Bayesian posterior declining → operator may leave)
+        presence_trend = ring.trend("presence_probability", window_s=20.0)
+        presence_prob = current.get("presence_probability")
+        if presence_prob is not None:
+            if presence_trend < -0.01 and presence_prob > 0.3:
+                predictions.append(
+                    ProtentionEntry(
+                        predicted_state="operator_departing",
+                        confidence=min(0.7, 0.3 + abs(presence_trend) * 20),
+                        basis="presence probability declining",
+                    )
+                )
+            elif presence_trend > 0.01 and presence_prob < 0.7:
+                predictions.append(
+                    ProtentionEntry(
+                        predicted_state="operator_returning",
+                        confidence=min(0.7, 0.3 + presence_trend * 20),
+                        basis="presence probability rising",
+                    )
+                )
+
         # Activity stability → sustained state
         if len(ring) >= 5:
             recent = ring.window(12.0)
@@ -431,5 +502,11 @@ class TemporalBandFormatter:
         hr = snapshot.get("heart_rate_bpm", 0)
         if hr > 0:
             parts.append(f"{hr}bpm")
+
+        pp = snapshot.get("presence_probability")
+        if pp is not None and pp < 0.3:
+            parts.append("away")
+        elif pp is not None and pp < 0.7:
+            parts.append("uncertain")
 
         return ", ".join(parts) if parts else "quiet"
