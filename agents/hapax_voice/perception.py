@@ -147,6 +147,11 @@ class EnvironmentState:
     activity_mode: str = "unknown"
     workspace_context: str = ""
 
+    # Phone state (Bluetooth)
+    phone_call_active: bool = False
+    phone_call_incoming: bool = False
+    phone_media_playing: bool = False
+
     # Desktop topology (updated by HyprlandEventListener)
     active_window: WindowInfo | None = None
     window_count: int = 0
@@ -317,6 +322,9 @@ class PerceptionEngine:
         interruptibility = compute_interruptibility(
             vad_confidence=self._b_vad_confidence.value,
             activity_mode=self._b_activity_mode.value,
+            phone_call_active=bool(self._bval("phone_call_active", False)),
+            phone_call_incoming=bool(self._bval("phone_call_incoming", False)),
+            phone_media_playing=bool(self._bval("phone_media_playing", False)),
             in_voice_session=self._in_voice_session,
             operator_present=self._b_operator_present.value,
             window_count=self._b_window_count.value,
@@ -350,6 +358,9 @@ class PerceptionEngine:
             presence_state=bayesian_state,
             presence_probability=bayesian_prob,
             activity_mode=self._b_activity_mode.value,
+            phone_call_active=bool(self._bval("phone_call_active", False)),
+            phone_call_incoming=bool(self._bval("phone_call_incoming", False)),
+            phone_media_playing=bool(self._bval("phone_media_playing", False)),
             workspace_context=self._b_workspace_context.value,
             active_window=self._b_active_window.value,
             window_count=self._b_window_count.value,
