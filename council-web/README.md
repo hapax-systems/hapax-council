@@ -1,8 +1,8 @@
-# council-web — Operational Dashboard
+# council-web — DEPRECATED
 
-A React single-page application that provides real-time operational visibility into the hapax-council agent system. Health monitoring, agent execution, streaming chat, nudge management, and demo browsing — backed by the cockpit API via Server-Sent Events and React Query.
+> **Superseded by [hapax-logos](../hapax-logos/).** All pages, components, hooks, and API bindings have been migrated to the Hapax Logos Tauri application. Logos adds: system anatomy Flow page, wgpu visual surface, Tauri IPC commands, visual layer controls, and conversation UX. This directory is retained for reference only.
 
-This is a Tier 1 interface: interactive, human-facing, read-heavy. It consumes the cockpit API (:8051) but never writes to the filesystem-as-bus directly. All mutations go through API endpoints that the reactive engine processes.
+A React single-page application that previously provided operational visibility into the hapax-council agent system. Health monitoring, agent execution, streaming chat, nudge management, and demo browsing — backed by the cockpit API via Server-Sent Events and React Query.
 
 The dashboard satisfies the `executive_function` axiom (weight 95) requirement that system state be visible without investigation, by surfacing health status, agent output, active nudges, cost tracking, and data freshness in a single interface with push-based state updates.
 
