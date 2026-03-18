@@ -37,10 +37,58 @@ class EventLog:
         """Update the current session ID (set to None when session closes)."""
         self._session_id = session_id
 
+    def set_consent_fn(self, fn: object) -> None:
+        """Set a callable that returns True when persistence is allowed.
+
+        Used for consent curtailment: person-adjacent event fields are
+        redacted when persistence is not allowed (guest present without consent).
+        """
+        self._consent_fn = fn
+
+    # Event types that may contain person-adjacent data
+    _PERSON_ADJACENT_EVENTS: frozenset[str] = frozenset(
+        {
+            "user_utterance",
+            "assistant_response",
+            "speaker_identified",
+            "consent_pending",
+            "consent_granted",
+            "consent_refused",
+            "face_event",
+            "presence_transition",
+            "presence_bayesian_transition",
+        }
+    )
+
+    # Fields that should be redacted when consent is not granted
+    _REDACT_FIELDS: frozenset[str] = frozenset(
+        {
+            "text",
+            "transcript",
+            "response",
+            "utterance",
+            "speaker",
+        }
+    )
+
     def emit(self, event_type: str, **fields) -> None:
         """Write a single event to the JSONL file."""
         if not self._enabled:
             return
+
+        # Consent curtailment: redact person-adjacent fields when guest
+        # is present without consent
+        consent_fn = getattr(self, "_consent_fn", None)
+        if (
+            consent_fn is not None
+            and event_type in self._PERSON_ADJACENT_EVENTS
+            and not consent_fn()
+        ):
+            fields = {
+                k: "[curtailed]" if k in self._REDACT_FIELDS else v for k, v in fields.items()
+            }
+            fields["consent_curtailed"] = True
+
         event = {
             "ts": time.time(),
             "type": event_type,

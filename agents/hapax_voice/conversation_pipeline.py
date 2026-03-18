@@ -117,6 +117,9 @@ class ConversationPipeline:
         self._context_distillation: str = ""  # refreshed on perception tick
         self._guest_mode: bool = False  # synced from session on perception tick
         self._face_count: int = 0  # synced from perception on perception tick
+        self._last_says: object | None = (
+            None  # Says[str] for last utterance (principal attribution)
+        )
 
         # Echo detection: track recent TTS output to detect mic picking up Hapax's own voice
         self._recent_tts_texts: list[str] = []  # last N sentences spoken by Hapax
@@ -239,6 +242,22 @@ class ConversationPipeline:
             log.info("Echo rejected: %r", transcript[:60])
             self.state = ConvState.LISTENING
             return
+
+        # ── Principal attribution: wrap transcript with speaker identity ──
+        # Says[str] records WHO said this, not just what. The principal
+        # is resolved from consent_context (set at daemon boundary) or
+        # falls back to operator (single-user axiom).
+        try:
+            from shared.governance.consent_context import maybe_principal
+            from shared.governance.says import Says
+
+            speaker_principal = maybe_principal()
+            if speaker_principal is not None:
+                self._last_says = Says.unit(speaker_principal, transcript)
+            else:
+                self._last_says = None
+        except Exception:
+            self._last_says = None
 
         self._emit("user_utterance", text=transcript)
 
