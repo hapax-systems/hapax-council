@@ -180,6 +180,8 @@ class WhisperWakeWord:
             return
 
         self._check_pending = True
+        duration_ms = len(audio_bytes) / (_SAMPLE_RATE * 2) * 1000
+        log.info("Wake word check: submitting %.0fms audio (%d speech frames)", duration_ms, self._speech_frames)
         # Run in thread to not block audio loop
         _whisper_executor.submit(self._check_wake_word, audio_bytes, now)
 
@@ -207,21 +209,36 @@ class WhisperWakeWord:
             if not text:
                 return
 
-            # Check for wake word
+            # Check for wake word — normalize away ALL punctuation first
+            import re
+            text_clean = re.sub(r"[^\w\s]", "", text).strip()
+            text_clean = re.sub(r"\s+", " ", text_clean)  # collapse whitespace
+
             detected = False
 
-            # Exact token match
-            words = text.split()
-            for w in words:
-                w_clean = w.strip(".,!?;:'\"")
-                if w_clean in _WAKE_WORDS:
-                    detected = True
-                    break
+            # Exact full-text match
+            if text_clean in _WAKE_WORDS:
+                detected = True
 
-            # Substring match
+            # Token match (individual words or bigrams)
+            if not detected:
+                words = text_clean.split()
+                for w in words:
+                    if w in _WAKE_WORDS:
+                        detected = True
+                        break
+                # Check bigrams ("hey pax")
+                if not detected:
+                    for i in range(len(words) - 1):
+                        bigram = f"{words[i]} {words[i+1]}"
+                        if bigram in _WAKE_WORDS:
+                            detected = True
+                            break
+
+            # Substring match on cleaned text
             if not detected:
                 for sub in _WAKE_SUBSTRINGS:
-                    if sub in text:
+                    if sub in text_clean:
                         detected = True
                         break
 
@@ -237,7 +254,7 @@ class WhisperWakeWord:
                 if self.on_wake_word is not None:
                     self.on_wake_word()
             else:
-                log.debug("Whisper wake word miss: %r (%.0fms)", text, elapsed)
+                log.info("Whisper wake word miss: %r (%.0fms)", text, elapsed)
 
         except Exception:
             log.exception("Whisper wake word check failed")
