@@ -244,6 +244,7 @@ class VoiceDaemon:
         # Pipeline state (managed per-session)
         self._pipeline_task: asyncio.Task | None = None
         self._gemini_session = None
+        self._cognitive_loop = None
 
         # Wake word async signaling — sync callback sets event,
         # coroutine awaits it and atomically starts the pipeline
@@ -993,7 +994,7 @@ class VoiceDaemon:
             tools = self._precomputed_tools
             tool_handlers = self._precomputed_handlers
 
-        # Pre-synthesize bridge phrases on first session (TTS is warm by now)
+        # Fallback: presynthesise if startup presynthesis failed
         if not self._bridges_presynthesized:
             self._bridge_engine.presynthesize_all(self.tts)
             self._bridges_presynthesized = True
@@ -1030,8 +1031,58 @@ class VoiceDaemon:
         await self._conversation_pipeline.start()
         log.info("Conversation pipeline started (mic stays shared)")
 
-        # Run the conversation loop as a background task
-        self._pipeline_task = asyncio.create_task(self._conversation_loop())
+        # Activate conversation buffer for this session
+        self._conversation_buffer.activate()
+
+        # Create and start cognitive loop
+        from agents.hapax_voice.cognitive_loop import CognitiveLoop
+        from agents.hapax_voice.conversational_model import ConversationalModel
+        from agents.hapax_voice.speculative_stt import SpeculativeTranscriber
+
+        spec_stt = SpeculativeTranscriber(self._resident_stt) if self._resident_stt else None
+        conv_model = ConversationalModel()
+
+        self._cognitive_loop = CognitiveLoop(
+            buffer=self._conversation_buffer,
+            pipeline=self._conversation_pipeline,
+            session=self.session,
+            speaker_identifier=self._speaker_identifier,
+            salience_router=self._salience_router,
+            speculative_stt=spec_stt,
+            conversational_model=conv_model,
+            event_log=self.event_log,
+            active_silence_enabled=self.cfg.active_silence_enabled,
+            silence_notification_threshold_s=self.cfg.silence_notification_threshold_s,
+            silence_winddown_threshold_s=self.cfg.silence_winddown_threshold_s,
+            notification_queue=self.notifications,
+            perception_sync_fn=self._sync_perception_to_pipeline,
+        )
+
+        # Register as perception backend (provides turn_phase, cognitive_readiness, etc.)
+        try:
+            self.perception.register_backend(self._cognitive_loop)
+        except ValueError:
+            log.debug("Cognitive loop backend already registered")
+
+        self._pipeline_task = asyncio.create_task(self._cognitive_loop.run())
+
+        # Wake greeting — play a presynthesized acknowledging phrase so
+        # the operator knows the system is ready. Pipeline audio output is
+        # open after start(), so we can write PCM directly.
+        try:
+            from agents.hapax_voice.bridge_engine import BridgeContext
+
+            ctx = BridgeContext(
+                turn_position=0,
+                response_type="acknowledging",
+                session_id=self._conversation_pipeline._session_id,
+            )
+            phrase, pcm = self._bridge_engine.select(ctx)
+            if pcm and self._conversation_pipeline._audio_output:
+                self._conversation_pipeline._audio_output.write(pcm)
+                log.info("Wake greeting: '%s'", phrase)
+        except Exception:
+            log.debug("Wake greeting failed (non-fatal)", exc_info=True)
 
     async def _start_gemini_session(self) -> None:
         """Connect and start a Gemini Live session."""
@@ -1058,111 +1109,28 @@ class VoiceDaemon:
         else:
             log.error("Gemini Live session failed to connect")
 
-    async def _conversation_loop(self) -> None:
-        """Background task: poll conversation buffer for utterances.
+    def _sync_perception_to_pipeline(self) -> None:
+        """Sync perception state to conversation pipeline for routing.
 
-        Runs while the conversation pipeline is active. Checks every
-        50ms for complete utterances from the ConversationBuffer and
-        feeds them to the pipeline for processing.
-
-        Speaker verification: accumulates speech audio across utterances
-        until enough is collected (~3s) for reliable pyannote embedding.
-        Once the operator is verified, the session is trusted until it
-        closes. Non-operator audio is dropped.
+        Called from cognitive loop each tick instead of _perception_loop.
         """
-        # Session-scoped speaker verification state
-        _speaker_verified = False  # True once operator confirmed
-        _speaker_audio_buf: list[bytes] = []  # accumulate for verification
-        _speaker_audio_samples = 0  # total samples accumulated
-        _VERIFY_MIN_SAMPLES = 16000 * 3  # 3s of 16kHz audio for reliable ID
-
-        try:
-            while (
-                self._conversation_pipeline is not None
-                and self._conversation_pipeline.is_active
-                and self._running
-            ):
-                utterance = self._conversation_buffer.get_utterance()
-                if utterance is not None:
-                    # Speaker verification gate
-                    if self._speaker_identifier is not None and not _speaker_verified:
-                        _speaker_audio_buf.append(utterance)
-                        _speaker_audio_samples += len(utterance) // 2  # int16 = 2 bytes/sample
-
-                        if _speaker_audio_samples >= _VERIFY_MIN_SAMPLES:
-                            # Enough audio accumulated — verify speaker
-                            combined = b"".join(_speaker_audio_buf)
-                            speaker = await self._verify_speaker(combined)
-
-                            if speaker == "ryan":
-                                _speaker_verified = True
-                                self.session.set_speaker("ryan", 0.0)
-                                log.info("Speaker gate: operator verified, session trusted")
-                                # Process all buffered utterances
-                                for buffered in _speaker_audio_buf:
-                                    self.session.mark_activity()
-                                    await self._conversation_pipeline.process_utterance(buffered)
-                                    self.session.mark_activity()
-                                _speaker_audio_buf.clear()
-                                continue
-                            elif speaker == "not_ryan":
-                                log.info("Speaker gate: DROPPED — not operator")
-                                _speaker_audio_buf.clear()
-                                _speaker_audio_samples = 0
-                                continue
-                            else:
-                                # Uncertain — keep accumulating, but process
-                                # this utterance (fail-open for operator)
-                                log.info("Speaker gate: uncertain, accumulating more audio")
-                        else:
-                            # Not enough audio yet — process anyway (fail-open)
-                            # but keep accumulating for verification
-                            pass
-
-                    self.session.mark_activity()
-                    await self._conversation_pipeline.process_utterance(utterance)
-                    self.session.mark_activity()
-                else:
-                    await asyncio.sleep(0.01)  # 10ms poll (Phase 3d)
-
-                # Session timeout check
-                if self.session.is_active and self.session.is_timed_out:
-                    log.info("Conversation timed out (silence)")
-                    break
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            log.exception("Conversation loop error")
-
-    async def _verify_speaker(self, audio_bytes: bytes) -> str:
-        """Run speaker verification on accumulated PCM audio.
-
-        Returns "ryan", "not_ryan", or "uncertain".
-        Runs pyannote embedding extraction in a thread to avoid blocking.
-        Expects at least 3s of audio for reliable identification.
-        """
-        try:
-            import numpy as np
-
-            audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            if len(audio) < 8000:  # less than 0.5s — too short even for best-effort
-                return "uncertain"
-
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self._speaker_identifier.identify_audio(audio, 16000),
-            )
-            log.info(
-                "Speaker verification: %s (confidence=%.3f, audio=%.1fs)",
-                result.label,
-                result.confidence,
-                len(audio) / 16000,
-            )
-            return result.label
-        except Exception:
-            log.debug("Speaker verification failed (fail-open)", exc_info=True)
-            return "uncertain"
+        if self._conversation_pipeline is None:
+            return
+        state = self.perception.latest
+        if state is None:
+            return
+        self._conversation_pipeline._activity_mode = state.activity_mode
+        _cp = self.consent_tracker.phase.value if hasattr(self.consent_tracker, "phase") else "none"
+        _phase_map = {
+            "no_guest": "none",
+            "guest_detected": "none",
+            "consent_pending": "pending",
+            "consent_granted": "active",
+            "consent_refused": "refused",
+        }
+        self._conversation_pipeline._consent_phase = _phase_map.get(_cp, "none")
+        self._conversation_pipeline._guest_mode = self.session.is_guest_mode
+        self._conversation_pipeline._face_count = state.guest_count
 
     async def _stop_pipeline(self) -> None:
         """Stop the active pipeline or Gemini session."""
@@ -1170,6 +1138,11 @@ class VoiceDaemon:
             await self._gemini_session.disconnect()
             self._gemini_session = None
             log.info("Gemini Live session stopped")
+
+        # Stop cognitive loop first (it drives the pipeline)
+        if self._cognitive_loop is not None:
+            self._cognitive_loop.stop_loop()
+            self._cognitive_loop = None
 
         if self._conversation_pipeline is not None:
             await self._conversation_pipeline.stop()
@@ -1183,6 +1156,9 @@ class VoiceDaemon:
                 pass
             self._pipeline_task = None
             log.info("Conversation pipeline stopped")
+
+        # Deactivate conversation buffer
+        self._conversation_buffer.deactivate()
 
         # Clear session-scoped salience state so next session starts fresh
         if self._salience_router is not None:
@@ -1660,29 +1636,8 @@ class VoiceDaemon:
                     self._refresh_concern_graph()
                     self._refresh_context_distillation()
 
-                # Sync perception state to conversation pipeline for routing
-                if self._conversation_pipeline is not None:
-                    self._conversation_pipeline._activity_mode = state.activity_mode
-                    # Map ConsentPhase enum to routing phase strings
-                    _cp = (
-                        self.consent_tracker.phase.value
-                        if hasattr(self.consent_tracker, "phase")
-                        else "none"
-                    )
-                    # Normalize to routing expectations: pending/active/refused/none
-                    _phase_map = {
-                        "no_guest": "none",
-                        "guest_detected": "none",
-                        "consent_pending": "pending",
-                        "consent_granted": "active",
-                        "consent_refused": "refused",
-                    }
-                    self._conversation_pipeline._consent_phase = _phase_map.get(_cp, "none")
-                    self._conversation_pipeline._guest_mode = self.session.is_guest_mode
-                    # Re-enabled: guest_count is deduplicated non-operator count
-                    # from Bayesian face fusion (no longer double-counts operator
-                    # across cameras or screen faces)
-                    self._conversation_pipeline._face_count = state.guest_count
+                # Perception→pipeline sync is now handled by cognitive loop tick
+                # via _sync_perception_to_pipeline() callback
 
                 # Write perception state AFTER consent tick so published state
                 # reflects the current consent decision
@@ -1775,8 +1730,18 @@ class VoiceDaemon:
             self._resident_stt.load()
         self.tts.preload()
 
-        # Bridge presynthesis happens on first session start (after TTS is warm)
+        # Bridge presynthesis at startup (TTS is warm now) — eliminates 5s
+        # delay on first session. Moved from _start_conversation_pipeline().
         self._bridges_presynthesized = False
+        try:
+            self._bridge_engine.presynthesize_all(self.tts)
+            self._bridges_presynthesized = True
+            log.info("Bridge phrases presynthesized at startup")
+        except Exception:
+            log.warning("Bridge presynthesis at startup failed (will retry on first session)")
+
+        # Cognitive loop instance (created per-session in _start_conversation_pipeline)
+        self._cognitive_loop = None
 
         # Precompute pipeline dependencies (tools, consent, callbacks)
         self._precompute_pipeline_deps()
