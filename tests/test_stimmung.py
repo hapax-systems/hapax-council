@@ -106,7 +106,8 @@ class TestStimmungCollector:
 
     def test_critical_gpu(self):
         c = StimmungCollector()
-        c.update_gpu(used_mb=22000, total_mb=24000)
+        # 95%+ VRAM = critical (above the 80-95% pressure ramp)
+        c.update_gpu(used_mb=23500, total_mb=24000)
         s = c.snapshot()
         assert s.resource_pressure.value > 0.85
         assert s.overall_stance == Stance.CRITICAL
@@ -137,17 +138,19 @@ class TestStimmungCollector:
 
     def test_trend_rising(self):
         c = StimmungCollector()
-        c.update_gpu(used_mb=5000, total_mb=24000)
-        c.update_gpu(used_mb=10000, total_mb=24000)
-        c.update_gpu(used_mb=15000, total_mb=24000)
+        # Values must be above 80% threshold to register as pressure
+        c.update_gpu(used_mb=19500, total_mb=24000)
+        c.update_gpu(used_mb=21000, total_mb=24000)
+        c.update_gpu(used_mb=22500, total_mb=24000)
         s = c.snapshot()
         assert s.resource_pressure.trend == "rising"
 
     def test_trend_falling(self):
         c = StimmungCollector()
+        # Values must be above 80% threshold to register as pressure
+        c.update_gpu(used_mb=23000, total_mb=24000)
+        c.update_gpu(used_mb=21500, total_mb=24000)
         c.update_gpu(used_mb=20000, total_mb=24000)
-        c.update_gpu(used_mb=15000, total_mb=24000)
-        c.update_gpu(used_mb=10000, total_mb=24000)
         s = c.snapshot()
         assert s.resource_pressure.trend == "falling"
 
