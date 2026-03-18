@@ -64,39 +64,35 @@ def _make_temporal_shm(
         for s in surprises:
             field = s["field"]
             # Replace the plain tag with surprised version
-            imp_parts = [
-                p
-                for p in imp_parts
-                if not p.strip().startswith(f"<{field}>")
-            ]
+            imp_parts = [p for p in imp_parts if not p.strip().startswith(f"<{field}>")]
             imp_parts.append(
                 f'    <{field} surprise="{s["surprise"]:.2f}" '
                 f'expected="{s["expected"]}">{s["observed"]}</{field}>'
             )
 
-    xml_parts = ['<temporal_context>', '  <impression>']
+    xml_parts = ["<temporal_context>", "  <impression>"]
     xml_parts.extend(imp_parts)
-    xml_parts.append('  </impression>')
+    xml_parts.append("  </impression>")
 
     if retention:
-        xml_parts.append('  <retention>')
+        xml_parts.append("  <retention>")
         for r in retention:
             attrs = f'age_s="{r["age_s"]}" flow="{r.get("flow", "idle")}" activity="{r.get("activity", "")}"'
             if "presence" in r:
                 attrs += f' presence="{r["presence"]}"'
-            xml_parts.append(f'    <memory {attrs}>{r.get("summary", "quiet")}</memory>')
-        xml_parts.append('  </retention>')
+            xml_parts.append(f"    <memory {attrs}>{r.get('summary', 'quiet')}</memory>")
+        xml_parts.append("  </retention>")
 
     if protention:
-        xml_parts.append('  <protention>')
+        xml_parts.append("  <protention>")
         for p in protention:
             xml_parts.append(
                 f'    <prediction state="{p["state"]}" '
                 f'confidence="{p["confidence"]:.2f}">{p.get("basis", "")}</prediction>'
             )
-        xml_parts.append('  </protention>')
+        xml_parts.append("  </protention>")
 
-    xml_parts.append('</temporal_context>')
+    xml_parts.append("</temporal_context>")
     xml = "\n".join(xml_parts)
 
     payload = {
@@ -162,8 +158,12 @@ class TestProgressiveFidelity:
         bands = _make_temporal_shm(
             tmp_path,
             activity="coding",
-            surprises=[{"field": "flow_state", "observed": "idle", "expected": "active", "surprise": 0.6}],
-            retention=[{"age_s": 15, "flow": "active", "activity": "coding", "summary": "coding, 72bpm"}],
+            surprises=[
+                {"field": "flow_state", "observed": "idle", "expected": "active", "surprise": 0.6}
+            ],
+            retention=[
+                {"age_s": 15, "flow": "active", "activity": "coding", "summary": "coding, 72bpm"}
+            ],
         )
         stimmung = _make_stimmung_shm(tmp_path)
 
@@ -276,7 +276,9 @@ class TestDirectionPreservation:
         bands = _make_temporal_shm(
             tmp_path,
             activity="coding",
-            protention=[{"state": "entering_deep_work", "confidence": 0.72, "basis": "flow rising"}],
+            protention=[
+                {"state": "entering_deep_work", "confidence": 0.72, "basis": "flow rising"}
+            ],
         )
         with patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands):
             result = _render_impression()
@@ -300,12 +302,14 @@ class TestDirectionPreservation:
         """Surprise renders as prediction error, not just observation."""
         bands = _make_temporal_shm(
             tmp_path,
-            surprises=[{
-                "field": "flow_state",
-                "observed": "idle",
-                "expected": "active",
-                "surprise": 0.7,
-            }],
+            surprises=[
+                {
+                    "field": "flow_state",
+                    "observed": "idle",
+                    "expected": "active",
+                    "surprise": 0.7,
+                }
+            ],
         )
         with patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands):
             result = _render_surprise()
@@ -355,7 +359,9 @@ class TestSelfState:
     def test_reflection_included(self, tmp_path):
         apperception = _make_apperception_shm(
             tmp_path,
-            reflections=["I notice a tension: accuracy trend positive but last event problematized"],
+            reflections=[
+                "I notice a tension: accuracy trend positive but last event problematized"
+            ],
         )
         with patch("agents.hapax_voice.phenomenal_context._APPERCEPTION_PATH", apperception):
             result = _render_self_state()
