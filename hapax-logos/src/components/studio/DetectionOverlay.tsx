@@ -325,8 +325,11 @@ export function DetectionOverlay({
         const dw = dx2 - dx1;
         const dh = dy2 - dy1;
         // Depth modulates halo radius: close=larger, far=smaller
-        const depthScale = det.depth === "close" ? 1.3 : det.depth === "far" ? 0.7 : 1.0;
-        const radius = Math.max(dw, dh) * 0.6 * depthScale;
+        const depthScale = det.depth === "close" ? 1.1 : det.depth === "far" ? 0.7 : 1.0;
+        // Use geometric mean of dimensions, capped to prevent frame-filling blobs
+        const rawRadius = Math.sqrt(dw * dh) * 0.5 * depthScale;
+        const maxRadius = Math.min(imgW, imgH) * 0.25; // never exceed 25% of frame
+        const radius = Math.min(rawRadius, maxRadius);
 
         // Breathing animation
         const period = breathingPeriod(det.novelty);
