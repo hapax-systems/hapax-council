@@ -487,6 +487,7 @@ class VisionBackend:
                 "detected_action",
                 "top_emotion",
                 "operator_confirmed",
+                "scene_state_clip",
                 "scene_inventory",
             }
         )
