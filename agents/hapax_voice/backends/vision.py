@@ -1533,7 +1533,10 @@ class VisionBackend:
                 )
 
                 # Route per-person enrichments to SceneInventory entities
-                if role == "operator" and hasattr(self, "_inventory"):
+                # Any Brio-class camera can enrich persons (multi-perspective)
+                from shared.cameras import can_enrich_persons as _can_enrich
+
+                if _can_enrich(role) and hasattr(self, "_inventory"):
                     try:
                         # Find the most-confident person detection on this camera
                         person_dets = [o for o in objects if o.get("label") == "person"]

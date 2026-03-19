@@ -101,11 +101,18 @@ SLOW_INTERVAL_S = SLOW_POLL_S
 
 # ── API ──────────────────────────────────────────────────────────────────────
 
-from shared.config import COCKPIT_API_URL as COCKPIT_BASE
-
 # ── Camera roles available for injection ─────────────────────────────────────
-
-CAMERA_ROLES = ["brio-operator", "c920-hardware", "c920-room", "c920-aux"]
+from shared.cameras import (
+    CAMERA_ROLES,
+    can_enrich_persons,
+)
+from shared.cameras import (
+    SHORT_TO_ROLE as _ROLE_MAP,
+)
+from shared.cameras import (
+    resolution as cam_resolution,
+)
+from shared.config import COCKPIT_API_URL as COCKPIT_BASE
 
 # ── Experimental camera filters for ambient injection ────────────────────────
 
@@ -439,25 +446,7 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
     )
     remove_person_detections = consent_phase == "consent_refused"
 
-    # Camera native resolutions for normalization (both short and full role names)
-    _RESOLUTIONS: dict[str, tuple[int, int]] = {
-        "brio-operator": (1920, 1080),
-        "operator": (1920, 1080),
-        "c920-hardware": (1280, 720),
-        "hardware": (1280, 720),
-        "c920-room": (1280, 720),
-        "room": (1280, 720),
-        "c920-aux": (1280, 720),
-        "aux": (1280, 720),
-    }
-    # Map short camera names to full role names for frontend compatibility
-    _ROLE_MAP: dict[str, str] = {
-        "operator": "brio-operator",
-        "hardware": "c920-hardware",
-        "room": "c920-room",
-        "aux": "c920-aux",
-    }
-    _OPERATOR_CAMERAS = {"brio-operator", "operator"}
+    # Camera config from shared.cameras (supports 6 cameras: 3 Brio + 3 C920)
 
     # Person enrichments from perception-state top-level keys (global, first-person only)
     _ENRICHMENT_MAP = (
@@ -493,7 +482,7 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
         # Objects from snapshot() don't include raw box, check for it
         box_raw = obj.get("box", obj.get("last_box"))
         if box_raw and len(box_raw) == 4:
-            res_w, res_h = _RESOLUTIONS.get(camera_raw, (1920, 1080))
+            res_w, res_h = cam_resolution(camera_raw)
             x1 = max(0.0, min(1.0, box_raw[0] / res_w))
             y1 = max(0.0, min(1.0, box_raw[1] / res_h))
             x2 = max(0.0, min(1.0, box_raw[2] / res_w))
@@ -509,12 +498,12 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
             continue
 
         consent_suppressed = suppress_person_enrichments and is_person
-        is_operator_cam = camera_raw in _OPERATOR_CAMERAS
+        is_enrichment_cam = can_enrich_persons(camera_raw)
 
-        # Person enrichments: only for persons on operator camera, not suppressed
+        # Person enrichments: for persons on any enrichment-capable camera, not suppressed
         # Prefer per-entity enrichments from inventory, fall back to global perception-state
         enrichment_kwargs: dict[str, Any] = {}
-        if is_person and is_operator_cam and not consent_suppressed:
+        if is_person and is_enrichment_cam and not consent_suppressed:
             for field_name in (
                 "gaze_direction",
                 "emotion",

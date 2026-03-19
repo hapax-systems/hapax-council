@@ -263,12 +263,8 @@ class SceneInventory:
 
         Unlike snapshot(), this includes the raw bounding box data needed for rendering.
         """
-        _RESOLUTIONS: dict[str, tuple[int, int]] = {
-            "brio-operator": (1920, 1080),
-            "c920-hardware": (1280, 720),
-            "c920-room": (1280, 720),
-            "c920-aux": (1280, 720),
-        }
+        from shared.cameras import resolution as _cam_resolution
+
         with self._lock:
             now = time.time()
             recent = sorted(
@@ -282,14 +278,14 @@ class SceneInventory:
                 age = now - o.last_seen
                 if age > 300:
                     continue
-                res_w, res_h = _RESOLUTIONS.get(o.last_camera, (1920, 1080))
+                res_w, res_h = _cam_resolution(o.last_camera)
                 box = o.last_box
                 # Normalize last N sightings boxes to 0-1 for trail rendering
                 norm_sightings: list[list[float]] = []
                 for s in o.sightings[-5:]:
                     sb = s.get("box", [])
                     s_cam = s.get("camera", o.last_camera)
-                    s_rw, s_rh = _RESOLUTIONS.get(s_cam, (1920, 1080))
+                    s_rw, s_rh = _cam_resolution(s_cam)
                     if len(sb) == 4:
                         norm_sightings.append(
                             [
@@ -305,7 +301,7 @@ class SceneInventory:
                 for s in o.sightings[-10:]:
                     sb = s.get("box", [])
                     s_cam = s.get("camera", o.last_camera)
-                    s_rw, s_rh = _RESOLUTIONS.get(s_cam, (1920, 1080))
+                    s_rw, s_rh = _cam_resolution(s_cam)
                     if len(sb) == 4:
                         raw_sightings.append(
                             {

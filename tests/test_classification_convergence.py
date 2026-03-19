@@ -161,7 +161,8 @@ class TestMapSceneInventoryEnrichments:
         assert det.action == "typing"
         assert det.depth == "close"
 
-    def test_person_on_non_operator_camera_no_enrichments(self):
+    def test_person_on_c920_camera_no_enrichments(self):
+        """C920 cameras don't run person classifiers — no enrichments."""
         data = _make_perception_data(
             objects=[_make_object(camera="room")],
             gaze="screen",
@@ -172,6 +173,30 @@ class TestMapSceneInventoryEnrichments:
         det = dets[0]
         assert det.gaze_direction is None
         assert det.emotion is None
+
+    def test_person_on_non_operator_brio_gets_enrichments(self):
+        """Any Brio-class camera can enrich persons (multi-perspective)."""
+        data = _make_perception_data(
+            objects=[_make_object(camera="room-brio")],
+            gaze="screen",
+            emotion="happy",
+        )
+        dets = _map_scene_inventory(data)
+        assert len(dets) == 1
+        det = dets[0]
+        assert det.gaze_direction == "screen"
+        assert det.emotion == "happy"
+
+    def test_person_on_aux_brio_gets_enrichments(self):
+        data = _make_perception_data(
+            objects=[_make_object(camera="aux-brio")],
+            gaze="hardware",
+            posture="slouching",
+        )
+        dets = _map_scene_inventory(data)
+        assert len(dets) == 1
+        assert dets[0].gaze_direction == "hardware"
+        assert dets[0].posture == "slouching"
 
     def test_non_person_no_enrichments(self):
         data = _make_perception_data(
