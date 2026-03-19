@@ -985,10 +985,11 @@ class ConversationPipeline:
         """Detect if a transcript is Hapax's own TTS output echoed back.
 
         Tuned to avoid false positives that silence legitimate operator speech.
-        Uses TTL-based pruning (8s max) and conservative matching:
+        Uses TTL-based pruning and conservative matching:
 
         1. Exact match against recent TTS sentence
-        2. High-confidence LCS ratio (≥0.75) for longer utterances
+        2. Substring containment (transcript is a fragment of TTS)
+        3. High-confidence LCS ratio (≥0.75) for longer utterances
         """
         if not self._recent_tts_texts:
             return False
@@ -1001,8 +1002,9 @@ class ConversationPipeline:
         word_count = len(norm_words)
         now = time.monotonic()
 
-        # TTL pruning — only check TTS from the last 8 seconds
-        _ECHO_TTL_S = 8.0
+        # TTL scales with dynamic cooldown — echo can arrive late after
+        # long responses. Base 12s covers 5s cooldown + propagation.
+        _ECHO_TTL_S = 12.0
 
         for ts, tts_text in self._recent_tts_texts:
             if now - ts > _ECHO_TTL_S:
@@ -1014,13 +1016,16 @@ class ConversationPipeline:
             if norm == tts_text:
                 return True
 
-            # 2. High-confidence LCS match (≥4 words, ≥75% overlap)
-            # Conservative threshold to avoid rejecting legitimate speech
-            # that happens to share common words with recent TTS.
-            if word_count >= 4 and len(tts_words) >= 4:
+            # 2. Substring: transcript is a fragment of recent TTS (≥2 words)
+            # Catches "connecting right now" matching "having trouble connecting right now"
+            if word_count >= 2 and norm in tts_text:
+                return True
+
+            # 3. High-confidence LCS match (≥3 words, ≥70% overlap)
+            if word_count >= 3 and len(tts_words) >= 3:
                 lcs_len = _lcs_word_length(norm_words, tts_words)
                 shorter = min(word_count, len(tts_words))
-                if lcs_len / shorter >= 0.75:
+                if lcs_len / shorter >= 0.70:
                     return True
 
         return False
