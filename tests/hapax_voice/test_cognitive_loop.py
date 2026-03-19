@@ -200,6 +200,35 @@ class TestCognitiveLoopBasic:
         # Audio accumulated but not enough to verify — falls through to process
         pipeline.process_utterance.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_speaker_verification_fails_open_after_2_attempts(self):
+        """After 2 uncertain results, trust wake word and process all buffered."""
+        speaker_id = MagicMock()
+        # Mock identify_audio to return uncertain
+        result = MagicMock()
+        result.label = "uncertain"
+        result.confidence = 0.0
+        speaker_id.identify_audio.return_value = result
+
+        pipeline = _mock_pipeline(state="listening")
+        session = _mock_session()
+
+        loop = _make_loop(
+            pipeline=pipeline,
+            session=session,
+            speaker_identifier=speaker_id,
+        )
+
+        # First utterance with enough audio — uncertain
+        audio_3s = b"\x00" * (16000 * 3 * 2)  # 3s of int16
+        await loop._handle_utterance(audio_3s)
+        assert not loop._speaker_verified
+
+        # Second utterance — uncertain again, should fail-open
+        await loop._handle_utterance(audio_3s)
+        assert loop._speaker_verified
+        session.set_speaker.assert_called_with("ryan", 0.0)
+
 
 # ── Batch 2: Turn Phase Tracking ──────────────────────────────────────
 
@@ -547,42 +576,32 @@ class TestActiveSilence:
         await loop._handle_silence(15.0)
 
 
-# ── Response timing from phase transitions (#2) ──────────────────────
+# ── Response timing (inline in _handle_utterance) ────────────────────
 
 
 class TestResponseTiming:
-    """on_response called when HAPAX_SPEAKING ends, using phase transition timing."""
+    """on_response called after process_utterance completes, using wall-clock time."""
 
-    def test_transition_records_response_start(self):
+    @pytest.mark.asyncio
+    async def test_on_response_called_after_utterance(self):
         model = ConversationalModel()
-        loop = _make_loop(conversational_model=model)
+        pipeline = _mock_pipeline(state="listening")
+        loop = _make_loop(pipeline=pipeline, conversational_model=model)
         loop._running = True
 
-        # Transition to TRANSITION phase records start time
-        loop._on_phase_transition(TurnPhase.OPERATOR_PAUSING, TurnPhase.TRANSITION)
-        assert loop._response_start_at > 0
+        await loop._handle_utterance(b"\x00" * 32000)
 
-    def test_hapax_speaking_end_calls_on_response(self):
-        model = ConversationalModel()
-        loop = _make_loop(conversational_model=model)
-        loop._running = True
-
-        # Start timing
-        loop._response_start_at = time.monotonic() - 1.5  # 1.5s ago
-        # Transition from HAPAX_SPEAKING → triggers on_response
-        loop._on_phase_transition(TurnPhase.HAPAX_SPEAKING, TurnPhase.MUTUAL_SILENCE)
-
+        # on_response should have been called with the process_utterance duration
         assert model.last_response_at > 0
-        assert loop._response_start_at == 0.0  # cleared
 
-    def test_no_on_response_without_start(self):
-        model = ConversationalModel()
-        loop = _make_loop(conversational_model=model)
+    @pytest.mark.asyncio
+    async def test_on_response_not_called_without_model(self):
+        pipeline = _mock_pipeline(state="listening")
+        loop = _make_loop(pipeline=pipeline, conversational_model=None)
         loop._running = True
 
-        # No response_start_at set
-        loop._on_phase_transition(TurnPhase.HAPAX_SPEAKING, TurnPhase.MUTUAL_SILENCE)
-        assert model.last_response_at == 0.0  # not called
+        # Should not raise even without model
+        await loop._handle_utterance(b"\x00" * 32000)
 
 
 # ── PerceptionEngine.replace_backend (#3) ─────────────────────────────
