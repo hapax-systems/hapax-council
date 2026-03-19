@@ -321,21 +321,54 @@ class SceneInventory:
                 reverse=True,
             )[:_SNAPSHOT_MAX_OBJECTS]
 
+            from shared.cameras import resolution as _cam_resolution
+
             objects_out = []
             for o in recent:
                 age = now - o.last_seen
-                objects_out.append(
-                    {
-                        "entity_id": o.entity_id,
-                        "label": o.label,
-                        "camera": o.last_camera,
-                        "box": o.last_box,
-                        "confidence": o.last_confidence,
-                        "mobility": o.mobility,
-                        "seen_count": o.seen_count,
-                        "age_s": round(age, 1),
-                    }
-                )
+                # Normalize sightings for trail rendering + temporal delta
+                norm_sightings: list[list[float]] = []
+                raw_sightings: list[dict] = []
+                for s in o.sightings[-10:]:
+                    sb = s.get("box", [])
+                    s_cam = s.get("camera", o.last_camera)
+                    s_rw, s_rh = _cam_resolution(s_cam)
+                    if len(sb) == 4:
+                        norm = [sb[0] / s_rw, sb[1] / s_rh, sb[2] / s_rw, sb[3] / s_rh]
+                        if len(norm_sightings) < 5:
+                            norm_sightings.append(norm)
+                        raw_sightings.append(
+                            {
+                                "box": norm,
+                                "conf": s.get("conf", 0.0),
+                                "ts": s.get("ts", 0.0),
+                                "camera": s_cam,
+                            }
+                        )
+
+                obj_out: dict[str, Any] = {
+                    "entity_id": o.entity_id,
+                    "label": o.label,
+                    "camera": o.last_camera,
+                    "box": o.last_box,
+                    "confidence": o.last_confidence,
+                    "mobility": o.mobility,
+                    "mobility_score": round(o.mobility_score, 3),
+                    "seen_count": o.seen_count,
+                    "age_s": round(age, 1),
+                    "first_seen": o.first_seen,
+                    "last_seen": o.last_seen,
+                    "first_seen_age_s": round(now - o.first_seen, 1),
+                    "camera_count": len(o.camera_history),
+                    "sightings": norm_sightings,
+                    "raw_sightings": raw_sightings,
+                }
+                # Include per-entity enrichments
+                for key in ("gaze_direction", "emotion", "posture", "gesture", "action", "depth"):
+                    val = getattr(o, key, None)
+                    if val is not None:
+                        obj_out[key] = val
+                objects_out.append(obj_out)
 
             return {
                 "object_count": len(self._objects),
