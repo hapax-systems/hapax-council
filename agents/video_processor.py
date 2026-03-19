@@ -64,7 +64,7 @@ CACHE_DIR = Path.home() / ".cache" / "video-processor"
 STATE_FILE = CACHE_DIR / "state.json"
 CHANGES_LOG = CACHE_DIR / "changes.jsonl"
 
-CAMERA_ROLES = ("brio-operator", "c920-room", "c920-hardware", "c920-aux")
+from shared.cameras import CAMERA_ROLES
 
 # Number of keyframes to extract from each segment (start, middle, end)
 NUM_KEYFRAMES = 3

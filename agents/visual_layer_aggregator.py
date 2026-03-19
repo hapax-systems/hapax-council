@@ -551,6 +551,7 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
                 first_seen=first_seen_ts,
                 last_seen=last_seen_ts,
                 now=now_ts,
+                camera=camera_raw,  # filter to same-camera sightings
             )
             temporal_kwargs = {
                 "velocity": delta.velocity,

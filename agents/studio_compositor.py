@@ -168,6 +168,20 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "height": 720,
         "input_format": "mjpeg",
     },
+    {
+        "role": "brio-room",
+        "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0",
+        "width": 1920,
+        "height": 1080,
+        "input_format": "mjpeg",
+    },
+    {
+        "role": "brio-aux",
+        "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0",
+        "width": 1920,
+        "height": 1080,
+        "input_format": "mjpeg",
+    },
 ]
 
 

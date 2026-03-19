@@ -15,11 +15,12 @@ import sys
 import time
 from pathlib import Path
 
+from shared.cameras import CAMERA_ROLES
+
 log = logging.getLogger(__name__)
 
 SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
 DETECTION_OUTPUT = SNAPSHOT_DIR / "person-detection.json"
-CAMERA_ROLES = ["brio-operator", "c920-hardware", "c920-room", "c920-aux"]
 SKIP_FILES = {"snapshot.jpg", "fx-snapshot.jpg", "consent-state.txt"}
 
 

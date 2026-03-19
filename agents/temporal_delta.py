@@ -37,20 +37,27 @@ def compute_temporal_delta(
     last_seen: float,
     now: float,
     exit_threshold_s: float = 10.0,
+    camera: str | None = None,
 ) -> TemporalDelta:
     """Compute temporal delta from a sightings ring buffer.
 
     Args:
         sightings: List of dicts with keys: box (4-element list, normalized 0-1),
-                   conf (float), ts (float timestamp).
+                   conf (float), ts (float timestamp), camera (str, optional).
         first_seen: Epoch timestamp of entity's first detection.
         last_seen: Epoch timestamp of entity's most recent detection.
         now: Current epoch timestamp.
         exit_threshold_s: Seconds since last_seen to classify as exiting.
+        camera: If provided, only use sightings from this camera for
+                velocity/direction computation (prevents cross-camera
+                coordinate mixing in multi-perspective setups).
 
     Returns:
         TemporalDelta with derived motion signals.
     """
+    # Filter to same-camera sightings for spatial computation
+    if camera:
+        sightings = [s for s in sightings if s.get("camera", "") == camera or not s.get("camera")]
     if len(sightings) < 2:
         return TemporalDelta(
             velocity=0.0,
