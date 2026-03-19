@@ -2,6 +2,9 @@ import { useCallback, useRef } from "react";
 import { useSnapshotPoll } from "../../../hooks/useSnapshotPoll";
 import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
+import { CompositeCanvas } from "../../studio/CompositeCanvas";
+import { PRESETS } from "../../studio/compositePresets";
+import { SOURCE_FILTERS } from "../../studio/compositeFilters";
 import { useStudio } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
 
@@ -11,6 +14,10 @@ interface CameraHeroProps {
   onHeroChange: (role: string) => void;
   fxMode?: boolean;
   smoothMode?: boolean;
+  compositeMode?: boolean;
+  presetIdx?: number;
+  liveFilterIdx?: number;
+  smoothFilterIdx?: number;
 }
 
 export function CameraHero({
@@ -19,6 +26,10 @@ export function CameraHero({
   onHeroChange,
   fxMode,
   smoothMode,
+  compositeMode,
+  presetIdx = 0,
+  liveFilterIdx = 0,
+  smoothFilterIdx = 0,
 }: CameraHeroProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // FX mode uses single-camera endpoint; normal mode uses batch
@@ -36,6 +47,33 @@ export function CameraHero({
     if (document.fullscreenElement) document.exitFullscreen();
     else el.requestFullscreen();
   }, []);
+
+  // Composite mode: dual-ring-buffer canvas with temporal parallax
+  if (compositeMode) {
+    const preset = PRESETS[presetIdx] ?? PRESETS[0];
+    const liveFilter = liveFilterIdx > 0 ? SOURCE_FILTERS[liveFilterIdx]?.css : undefined;
+    const smoothFilter = smoothFilterIdx > 0 ? SOURCE_FILTERS[smoothFilterIdx]?.css : undefined;
+    return (
+      <div ref={containerRef} className="relative h-full w-full" onDoubleClick={handleDoubleClick}>
+        <CompositeCanvas
+          role={heroRole}
+          preset={preset}
+          className="h-full w-full bg-black object-cover"
+          smoothSource="/api/studio/stream/fx"
+          liveFilter={liveFilter}
+          smoothFilter={smoothFilter}
+        />
+        {/* Camera role label */}
+        <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
+          {heroRole} · {preset.name}
+        </div>
+        {/* Secondary strip */}
+        {secondaryCameras.length > 0 && (
+          <SecondaryStrip cameras={secondaryCameras} onSelect={onHeroChange} />
+        )}
+      </div>
+    );
+  }
 
   // HLS mode: render video element instead of snapshot
   if (smoothMode) {

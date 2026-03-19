@@ -9,6 +9,8 @@ interface CompositeCanvasProps {
   className?: string;
   liveSource?: string;   // URL override for live layer (default: camera/{role})
   smoothSource?: string;  // URL for smooth/overlay layer (if different from live)
+  liveFilter?: string;   // Override preset's colorFilter for live layer
+  smoothFilter?: string; // Override preset's overlay.filter for smooth/overlay layer
 }
 
 const RING_SIZE = 16;
@@ -21,11 +23,17 @@ export function CompositeCanvas({
   className,
   liveSource,
   smoothSource,
+  liveFilter,
+  smoothFilter,
 }: CompositeCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // Keep preset in a ref so the render loop always sees the latest without re-mounting
   const presetRef = useRef(preset);
   presetRef.current = preset;
+  const liveFilterRef = useRef(liveFilter);
+  liveFilterRef.current = liveFilter;
+  const smoothFilterRef = useRef(smoothFilter);
+  smoothFilterRef.current = smoothFilter;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -107,12 +115,14 @@ export function CompositeCanvas({
       if (hueQ !== lastHueQ) {
         lastHueQ = hueQ;
         const isNeonP = p.name === "Neon";
-        cachedMainFilter = isNeonP && p.colorFilter !== "none"
-          ? `${p.colorFilter} hue-rotate(${hueQ}deg)` : p.colorFilter;
+        const effectiveLiveFilter = liveFilterRef.current ?? p.colorFilter;
+        const effectiveSmoothFilter = smoothFilterRef.current ?? p.overlay?.filter ?? "none";
+        cachedMainFilter = isNeonP && effectiveLiveFilter !== "none"
+          ? `${effectiveLiveFilter} hue-rotate(${hueQ}deg)` : effectiveLiveFilter;
         cachedTrailFilter = isNeonP && p.trail.filter !== "none"
           ? `${p.trail.filter} hue-rotate(${hueQ}deg)` : p.trail.filter;
-        cachedOverlayFilter = isNeonP && p.overlay?.filter && p.overlay.filter !== "none"
-          ? `${p.overlay.filter} hue-rotate(${hueQ + 120}deg)` : (p.overlay?.filter ?? "none");
+        cachedOverlayFilter = isNeonP && effectiveSmoothFilter !== "none"
+          ? `${effectiveSmoothFilter} hue-rotate(${hueQ + 120}deg)` : effectiveSmoothFilter;
       }
 
       // --- Stutter engine ---
