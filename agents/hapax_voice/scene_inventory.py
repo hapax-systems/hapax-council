@@ -124,17 +124,71 @@ class SceneInventory:
     def __init__(self, persist_path: Path | None = None) -> None:
         self._objects: dict[str, SceneObject] = {}
         self._lock = threading.RLock()
+        # Cross-camera trajectory stitcher
+        self._stitcher: Any = None
         self._persist_path = (
             persist_path or Path.home() / ".cache" / "hapax-voice" / "scene-inventory.json"
         )
         self._persist_counter = 0
+        # Per-camera ByteTrack instances for proper multi-object association
+        self._byte_trackers: dict[str, Any] = {}
         self._load()
+
+    def _ensure_stitcher(self) -> None:
+        """Lazy-init cross-camera trajectory stitcher."""
+        if self._stitcher is not None:
+            return
+        try:
+            from agents.models.cross_camera import CrossCameraStitcher
+
+            self._stitcher = CrossCameraStitcher()
+        except ImportError:
+            pass  # module not available
+
+    def _get_byte_tracker(self, camera_role: str) -> Any:
+        """Get or create a ByteTracker for the given camera."""
+        if camera_role not in self._byte_trackers:
+            try:
+                from agents.byte_tracker import ByteTracker
+
+                self._byte_trackers[camera_role] = ByteTracker(
+                    high_thresh=0.6,
+                    low_thresh=0.1,
+                    iou_thresh=0.3,
+                    max_age=30,
+                    min_hits=3,
+                )
+            except ImportError:
+                self._byte_trackers[camera_role] = None
+        return self._byte_trackers[camera_role]
 
     def ingest(self, detections: list[dict], camera_role: str, timestamp: float) -> None:
         """Process a batch of detections from one camera tick.
 
         Each detection dict should have: label, confidence, box, track_id.
+        ByteTrack provides improved track_id association when available.
         """
+        self._ensure_stitcher()
+
+        # Run detections through ByteTrack for better association
+        bt = self._get_byte_tracker(camera_role)
+        if bt is not None:
+            try:
+                tracked = bt.update(detections)
+                # Merge ByteTrack IDs back into detections
+                bt_id_map = {
+                    (tuple(t["box"]), t["label"]): t["track_id"]
+                    for t in tracked
+                    if t.get("confirmed")
+                }
+                for det in detections:
+                    key = (tuple(det.get("box", [])), det.get("label", ""))
+                    bt_tid = bt_id_map.get(key)
+                    if bt_tid is not None:
+                        det["track_id"] = bt_tid
+            except Exception:
+                pass  # fall through to existing matching
+
         with self._lock:
             matched_ids: set[str] = set()
 
@@ -212,6 +266,39 @@ class SceneInventory:
                         yolo_track_ids={camera_role: track_id} if track_id is not None else {},
                     )
                     self._objects[eid] = new_obj
+
+                    # Notify cross-camera stitcher of new appearance
+                    if self._stitcher is not None and label == "person":
+                        try:
+                            suggestions = self._stitcher.report_appeared(
+                                entity_id=eid,
+                                camera=camera_role,
+                                label=label,
+                            )
+                            # Apply best merge suggestion: alias new entity to existing
+                            for s in suggestions[:1]:
+                                if s.confidence >= 0.4 and s.entity_a in self._objects:
+                                    old_obj = self._objects[s.entity_a]
+                                    # Transfer new entity's data to the existing one
+                                    old_obj.last_camera = camera_role
+                                    old_obj.last_box = box
+                                    old_obj.last_confidence = conf
+                                    old_obj.last_seen = timestamp
+                                    old_obj.seen_count += 1
+                                    old_obj.camera_history.add(camera_role)
+                                    # Remove the duplicate new entity
+                                    del self._objects[eid]
+                                    matched_ids.add(s.entity_a)
+                                    log.debug(
+                                        "Cross-camera merge: %s→%s (%.2f, %s)",
+                                        eid,
+                                        s.entity_a,
+                                        s.confidence,
+                                        s.reason,
+                                    )
+                                    break
+                        except Exception:
+                            pass
 
             self._maybe_gc(timestamp)
 
@@ -489,6 +576,18 @@ class SceneInventory:
             ):
                 to_remove.append(eid)
         for eid in to_remove:
+            # Notify stitcher before removal (entity disappeared)
+            if self._stitcher is not None:
+                obj = self._objects.get(eid)
+                if obj and obj.label == "person":
+                    try:
+                        self._stitcher.report_disappeared(
+                            entity_id=eid,
+                            camera=obj.last_camera,
+                            label=obj.label,
+                        )
+                    except Exception:
+                        pass
             del self._objects[eid]
         if to_remove:
             log.debug("Scene inventory GC: removed %d expired objects", len(to_remove))
