@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStudio } from "../../api/hooks";
 import { AlertTriangle, Camera, X, Maximize, GripVertical } from "lucide-react";
+import { acquireImage, releaseImage } from "../../hooks/useImagePool";
 import { DetectionOverlay, type DetectionTier } from "./DetectionOverlay";
 import type { ClassificationDetection } from "../../api/types";
 
@@ -137,17 +138,19 @@ export function CameraSoloView({
     const pull = () => {
       if (!running || pending) return;
       pending = true;
-      const loader = new Image();
+      const loader = acquireImage();
       currentLoader = loader;
       loader.onload = () => {
         if (running && img) img.src = loader.src;
         lastSuccess.current = Date.now();
         setIsStale(false);
         pending = false;
+        releaseImage(loader);
         currentLoader = null;
       };
       loader.onerror = () => {
         pending = false;
+        releaseImage(loader);
         currentLoader = null;
       };
       loader.src = `/api/studio/stream/camera/${role}?_t=${Date.now()}`;
@@ -163,9 +166,7 @@ export function CameraSoloView({
       clearInterval(timer);
       clearInterval(staleTimer);
       if (currentLoader) {
-        currentLoader.onload = null;
-        currentLoader.onerror = null;
-        currentLoader.src = "";
+        releaseImage(currentLoader);
         currentLoader = null;
       }
     };

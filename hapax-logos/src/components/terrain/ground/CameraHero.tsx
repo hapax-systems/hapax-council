@@ -1,5 +1,6 @@
 import { useCallback, useRef } from "react";
 import { useSnapshotPoll } from "../../../hooks/useSnapshotPoll";
+import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
 import { useStudio } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
@@ -20,10 +21,10 @@ export function CameraHero({
   smoothMode,
 }: CameraHeroProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const snapshotUrl = fxMode
-    ? "/api/studio/stream/fx"
-    : `/api/studio/stream/camera/${heroRole}`;
-  const { imgRef, isStale } = useSnapshotPoll(snapshotUrl, 83); // ~12fps
+  // FX mode uses single-camera endpoint; normal mode uses batch
+  const batchResult = useBatchSnapshot(heroRole, 83);
+  const fxResult = useSnapshotPoll("/api/studio/stream/fx", 83, !!fxMode);
+  const { imgRef, isStale } = fxMode ? fxResult : batchResult;
 
   const { data: studio } = useStudio();
   const cameras = studio?.compositor ? Object.keys(studio.compositor.cameras) : [];
@@ -106,7 +107,7 @@ function SecondaryStrip({
 }
 
 function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }) {
-  const { imgRef } = useSnapshotPoll(`/api/studio/stream/camera/${role}`, 1000);
+  const { imgRef } = useBatchSnapshot(role, 1000);
 
   return (
     <button
@@ -139,9 +140,9 @@ function HlsPlayer() {
     const Hls = (await import("hls.js")).default;
     if (!Hls.isSupported()) return;
     const hls = new Hls({
-      liveSyncDurationCount: 3,
-      liveMaxLatencyDurationCount: 5,
-      maxBufferLength: 10,
+      liveSyncDurationCount: 1,
+      liveMaxLatencyDurationCount: 3,
+      maxBufferLength: 2,
       backBufferLength: 0,
     });
     hlsRef.current = hls;

@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { useSnapshotPoll } from "../../../hooks/useSnapshotPoll";
+import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
 import { useStudio } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
@@ -14,7 +14,7 @@ interface CameraTileProps {
 
 function CameraTile({ role, classificationDetections, status, recording, onClick }: CameraTileProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const { imgRef, isStale } = useSnapshotPoll(`/api/studio/stream/camera/${role}`, 250); // 4fps
+  const { imgRef, isStale } = useBatchSnapshot(role, 250); // 4fps via batch
 
   const borderColor = recording
     ? "border-red-500/80 animate-pulse"

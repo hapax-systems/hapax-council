@@ -35,6 +35,7 @@ uniform float u_speed;
 uniform float u_turbulence;
 uniform float u_warmth;
 uniform float u_brightness;
+uniform float u_lod;
 uniform vec2 u_resolution;
 
 float hash(vec2 p) {
@@ -53,7 +54,7 @@ float noise(vec2 p) {
 }
 
 float fbm(vec2 p, float turb) {
-  int octaves = int(2.0 + turb * 4.0);
+  int octaves = int(u_lod + turb * (6.0 - u_lod));
   float value = 0.0;
   float amplitude = 0.5;
   float frequency = 1.0;
@@ -114,6 +115,30 @@ function targetFPS(displayState: string): number {
       return 30;
     default:
       return 15;
+  }
+}
+
+function lodForState(displayState: string): number {
+  switch (displayState) {
+    case "performative":
+      return 4.0;
+    case "informational":
+    case "alert":
+      return 3.0;
+    default:
+      return 2.0;
+  }
+}
+
+function resolutionScale(displayState: string): number {
+  switch (displayState) {
+    case "performative":
+      return 1.0;
+    case "informational":
+    case "alert":
+      return 0.75;
+    default:
+      return 0.5;
   }
 }
 
@@ -178,6 +203,7 @@ export function AmbientShader({
       u_warmth: gl.getUniformLocation(program, "u_warmth"),
       u_brightness: gl.getUniformLocation(program, "u_brightness"),
       u_resolution: gl.getUniformLocation(program, "u_resolution"),
+      u_lod: gl.getUniformLocation(program, "u_lod"),
     };
   }, []);
 
@@ -194,15 +220,18 @@ export function AmbientShader({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    const scale = resolutionScale(displayState);
     const resize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      canvas.width = Math.round(window.innerWidth * scale);
+      canvas.height = Math.round(window.innerHeight * scale);
+      canvas.style.width = `${window.innerWidth}px`;
+      canvas.style.height = `${window.innerHeight}px`;
       glRef.current?.viewport(0, 0, canvas.width, canvas.height);
     };
     resize();
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
-  }, []);
+  }, [displayState]);
 
   // Render loop
   useEffect(() => {
@@ -228,6 +257,7 @@ export function AmbientShader({
       gl.uniform1f(u.u_warmth, warmth);
       gl.uniform1f(u.u_brightness, brightness);
       gl.uniform2f(u.u_resolution, canvas.width, canvas.height);
+      gl.uniform1f(u.u_lod, lodForState(displayState));
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     };

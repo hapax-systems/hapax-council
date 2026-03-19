@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
+import { acquireImage, releaseImage } from "../../hooks/useImagePool";
 import { useStudioStreamInfo } from "../../api/hooks";
 import { VideoOff, Zap, Film, Layers, Maximize, Minimize } from "lucide-react";
 
@@ -57,19 +58,22 @@ export function StudioStream() {
     const pull = () => {
       if (!running || pending) return;
       pending = true;
-      const loader = new Image();
+      const loader = acquireImage();
       loader.onload = () => {
         if (running && img) img.src = loader.src;
+        releaseImage(loader);
         pending = false;
       };
       loader.onerror = () => {
+        releaseImage(loader);
         pending = false;
       };
       loader.src = `/api/studio/stream/snapshot?_t=${Date.now()}`;
     };
 
     pull();
-    const timer = setInterval(pull, 80);
+    const pollRate = mode === "composite" ? 150 : 80;
+    const timer = setInterval(pull, pollRate);
     return () => {
       running = false;
       clearInterval(timer);

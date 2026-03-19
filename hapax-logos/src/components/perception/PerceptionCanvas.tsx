@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { acquireImage, releaseImage } from "../../hooks/useImagePool";
 import { ZoneOverlay } from "./ZoneOverlay";
 import { DetectionOverlay } from "../studio/DetectionOverlay";
 import {
@@ -28,12 +29,14 @@ export function PerceptionCanvas({ activeZone, onZoneClick }: PerceptionCanvasPr
     const pull = () => {
       if (!running || pending) return;
       pending = true;
-      const loader = new Image();
+      const loader = acquireImage();
       loader.onload = () => {
         if (running && imgRef.current) imgRef.current.src = loader.src;
+        releaseImage(loader);
         pending = false;
       };
       loader.onerror = () => {
+        releaseImage(loader);
         pending = false;
       };
       loader.src = `/api/studio/stream/snapshot?_t=${Date.now()}`;

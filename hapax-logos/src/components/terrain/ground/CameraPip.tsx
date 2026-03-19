@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { useSnapshotPoll } from "../../../hooks/useSnapshotPoll";
+import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
 import type { ClassificationDetection } from "../../../api/types";
 
@@ -11,10 +11,7 @@ interface CameraPipProps {
 
 export function CameraPip({ heroRole, classificationDetections, onClick }: CameraPipProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const { imgRef, isStale } = useSnapshotPoll(
-    `/api/studio/stream/camera/${heroRole}`,
-    1000, // 1fps — ambient, not live
-  );
+  const { imgRef, isStale } = useBatchSnapshot(heroRole, 1000); // 1fps — ambient via batch
 
   return (
     <div
