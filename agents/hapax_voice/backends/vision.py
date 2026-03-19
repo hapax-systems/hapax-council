@@ -155,6 +155,7 @@ class _VisionCache:
         self._detected_action: str = "unknown"
         self._top_emotion: str = "neutral"
         self._operator_confirmed: bool = False
+        self._scene_state_clip: str = ""
         self._updated_at: float = 0.0
 
         # Audio behaviors injected externally for cross-modal fusion
@@ -250,6 +251,7 @@ class _VisionCache:
             "detected_action": activity,
             "detected_objects": self._merged_detections(),
             "nearest_person_distance": self._nearest_person_distance,
+            "scene_state_clip": self._scene_state_clip,
         }
 
     def update(
@@ -269,6 +271,7 @@ class _VisionCache:
         detected_action: str | None = None,
         top_emotion: str | None = None,
         operator_confirmed: bool | None = None,
+        scene_state_clip: str | None = None,
     ) -> None:
         with self._lock:
             self._detected_objects = detected_objects
@@ -309,6 +312,8 @@ class _VisionCache:
                 self._top_emotion = top_emotion
             if operator_confirmed is not None:
                 self._operator_confirmed = operator_confirmed
+            if scene_state_clip is not None:
+                self._scene_state_clip = scene_state_clip
             self._updated_at = time.monotonic()
 
     def read(self) -> dict:
@@ -333,6 +338,7 @@ class _VisionCache:
                 "detected_action": self._detected_action,
                 "top_emotion": self._top_emotion,
                 "operator_confirmed": self._operator_confirmed,
+                "scene_state_clip": self._scene_state_clip,
                 "updated_at": self._updated_at,
             }
 
@@ -456,6 +462,7 @@ class VisionBackend:
         self._b_action: Behavior[str] = Behavior("unknown")
         self._b_emotion: Behavior[str] = Behavior("neutral")
         self._b_operator_confirmed: Behavior[bool] = Behavior(False)
+        self._b_scene_state_clip: Behavior[str] = Behavior("")
         self._b_scene_inventory: Behavior[str] = Behavior("{}")
 
     @property
@@ -567,6 +574,7 @@ class VisionBackend:
         self._b_action.update(cached["detected_action"], now)
         self._b_emotion.update(cached["top_emotion"], now)
         self._b_operator_confirmed.update(cached.get("operator_confirmed", False), now)
+        self._b_scene_state_clip.update(cached.get("scene_state_clip", ""), now)
 
         # Scene inventory snapshot
         try:
@@ -590,6 +598,7 @@ class VisionBackend:
         behaviors["detected_action"] = self._b_action
         behaviors["top_emotion"] = self._b_emotion
         behaviors["operator_confirmed"] = self._b_operator_confirmed
+        behaviors["scene_state_clip"] = self._b_scene_state_clip
         behaviors["scene_inventory"] = self._b_scene_inventory
 
     def _run_gaze_estimation(self, frame: np.ndarray) -> str:
@@ -1199,6 +1208,11 @@ class VisionBackend:
                             import torch
 
                             model.cpu()
+                            # Offload Batch 5 GPU models too
+                            if hasattr(self, "_movinet"):
+                                self._movinet.to_cpu()
+                            if hasattr(self, "_clip_scene"):
+                                self._clip_scene.to_cpu()
                             torch.cuda.empty_cache()
                             gc.collect()
                             log.info("Vision models moved to CPU (freed ~2-3GB VRAM)")
@@ -1212,6 +1226,10 @@ class VisionBackend:
                 if _gpu_released and model is not None:
                     try:
                         model.to("cuda")
+                        if hasattr(self, "_movinet"):
+                            self._movinet.to_cuda()
+                        if hasattr(self, "_clip_scene"):
+                            self._clip_scene.to_cuda()
                         log.info("Vision models reloaded to GPU")
                     except Exception:
                         log.debug("Vision GPU reload failed", exc_info=True)
@@ -1452,10 +1470,21 @@ class VisionBackend:
 
                     # Scene classification (GPU, runs after YOLO on same frame)
                     scene_type: str | None = None
+                    scene_state_clip: str | None = None
                     try:
                         scene_type = self._run_scene_classification(frame)
                     except Exception as exc:
                         log.debug("Scene classification failed: %s", exc)
+
+                    # CLIP scene state — activity-focused zero-shot classification
+                    try:
+                        if not hasattr(self, "_clip_scene"):
+                            from agents.models.clip_scene import CLIPSceneClassifier
+
+                            self._clip_scene = CLIPSceneClassifier()
+                        scene_state_clip = self._clip_scene.predict(frame)
+                    except Exception as exc:
+                        log.debug("CLIP scene classification failed: %s", exc)
 
                     # Depth estimation (GPU, every ~30s on operator camera only)
                     nearest_person_distance: str | None = None
@@ -1504,10 +1533,18 @@ class VisionBackend:
                     )
                     ambient_brightness, color_temperature = self._estimate_lighting(frame)
 
-                    # Action recognition (GPU, needs VRAM lock)
+                    # Action recognition: MoViNet-A2 (streaming) with X3D-XS fallback
                     if self._vram_lock.acquire():
                         try:
-                            detected_action = self._run_action_recognition(frame)
+                            if not hasattr(self, "_movinet"):
+                                from agents.models.movinet import MoViNetA2
+
+                                self._movinet = MoViNetA2()
+                            action = self._movinet.predict(frame)
+                            if action and action != "unknown":
+                                detected_action = action
+                            else:
+                                detected_action = self._run_action_recognition(frame)
                         finally:
                             self._vram_lock.release()
 
@@ -1541,6 +1578,7 @@ class VisionBackend:
                     detected_action=detected_action,
                     top_emotion=top_emotion,
                     operator_confirmed=operator_confirmed,
+                    scene_state_clip=scene_state_clip,
                 )
 
                 # Route per-person enrichments to SceneInventory entities

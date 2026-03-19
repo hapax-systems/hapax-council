@@ -813,6 +813,16 @@ class VisualLayerAggregator:
         # Self-band: apperception tick (standalone, reads from shm)
         self._apperception = ApperceptionTick()
 
+        # BOCPD: change-point detection on perception signals
+        from agents.bocpd import MultiSignalBOCPD
+
+        self._bocpd = MultiSignalBOCPD(
+            signals=["flow_score", "audio_energy", "heart_rate"],
+            hazard_lambda=30,
+            threshold=0.2,
+        )
+        self._last_change_points: list[dict] = []
+
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
         t0 = time.monotonic()
@@ -922,6 +932,30 @@ class VisualLayerAggregator:
             # Classification detection overlay
             raw_detections = _map_scene_inventory(data)
             self._classification_detections = self._apply_stability_filter(raw_detections)
+
+            # BOCPD: detect activity transitions
+            bocpd_cps = self._bocpd.update(
+                {
+                    "flow_score": self._flow_score,
+                    "audio_energy": self._audio_energy,
+                    "heart_rate": float(self._biometrics.heart_rate_bpm),
+                },
+                timestamp=time.time(),
+            )
+            if bocpd_cps:
+                self._last_change_points = [
+                    {
+                        "signal": cp.signal_name,
+                        "probability": cp.probability,
+                        "timestamp": cp.timestamp,
+                        "run_length": cp.run_length_before,
+                    }
+                    for cp in bocpd_cps
+                ]
+                log.info(
+                    "Change points detected: %s",
+                    ", ".join(f"{cp.signal_name}(p={cp.probability:.2f})" for cp in bocpd_cps),
+                )
 
             # WS1: feed multi-scale aggregator
             self._multi_scale.tick(data)
