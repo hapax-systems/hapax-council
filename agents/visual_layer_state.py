@@ -241,6 +241,14 @@ class ClassificationDetection(BaseModel, frozen=True):
     camera_count: int | None = None  # cameras that have seen this entity
     sightings: list[tuple[float, float, float, float]] | None = None  # last 5 box positions
 
+    # Temporal delta (Batch 2: derived from sightings history)
+    velocity: float | None = None  # normalized coords/s
+    direction_deg: float | None = None  # 0=right, 90=down, 180=left, 270=up
+    confidence_stability: float | None = None  # stddev of confidence over sightings
+    dwell_s: float | None = None  # seconds at current position
+    is_entering: bool = False  # first appeared within last 2 ticks
+    is_exiting: bool = False  # not seen recently
+
 
 class VisualLayerState(BaseModel):
     """Complete state for the visual communication layer.

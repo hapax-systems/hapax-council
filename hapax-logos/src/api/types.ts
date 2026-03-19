@@ -476,6 +476,14 @@ export interface ClassificationDetection {
   first_seen_age_s?: number | null; // seconds since first detection
   camera_count?: number | null; // cameras that have seen this entity
   sightings?: [number, number, number, number][] | null; // last 5 box positions
+
+  // Temporal delta (derived from sightings history)
+  velocity?: number | null; // normalized coords/s
+  direction_deg?: number | null; // 0=right, 90=down, 180=left, 270=up
+  confidence_stability?: number | null; // stddev of confidence over sightings
+  dwell_s?: number | null; // seconds at current position
+  is_entering?: boolean; // first appeared within last 2 ticks
+  is_exiting?: boolean; // not seen recently
 }
 
 // --- Perception ---

@@ -495,6 +495,85 @@ export function DetectionOverlay({
           ctx.setLineDash([]);
         }
 
+        // ── Tier 3: Directional arrow from temporal delta ─────────
+        if (effectiveTier >= 3 && det.velocity != null && det.velocity > 0.005 && det.direction_deg != null) {
+          const arrowLen = Math.min(Math.max(dw, dh) * 0.4, det.velocity * 500);
+          const rad = (det.direction_deg * Math.PI) / 180;
+          const ax = cx + Math.cos(rad) * arrowLen;
+          const ay = cy + Math.sin(rad) * arrowLen;
+
+          ctx.strokeStyle = color + "80";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(ax, ay);
+          ctx.stroke();
+
+          // Arrowhead
+          const headLen = 6;
+          ctx.beginPath();
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(ax - Math.cos(rad - 0.4) * headLen, ay - Math.sin(rad - 0.4) * headLen);
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(ax - Math.cos(rad + 0.4) * headLen, ay - Math.sin(rad + 0.4) * headLen);
+          ctx.stroke();
+        }
+
+        // ── Entry/exit animations ────────────────────────────────
+        if (det.is_entering) {
+          // Radial expand pulse on entry (500ms cycle)
+          const entryPhase = ((now % 500) / 500);
+          const entryRadius = radius * (1.0 + entryPhase * 0.3);
+          ctx.strokeStyle = color + "30";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, entryRadius, entryRadius * 0.8, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        if (det.is_exiting && det.direction_deg != null) {
+          // Fade + drift indicator for exiting entities
+          ctx.globalAlpha = 0.3;
+          const driftRad = (det.direction_deg * Math.PI) / 180;
+          const driftX = cx + Math.cos(driftRad) * radius * 0.3;
+          const driftY = cy + Math.sin(driftRad) * radius * 0.3;
+          ctx.strokeStyle = color + "20";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2, 4]);
+          ctx.beginPath();
+          ctx.ellipse(driftX, driftY, radius * 0.8, radius * 0.6, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+        }
+
+        // ── Dwell indicator: slow breathing when stationary > 30s ─
+        if (det.dwell_s != null && det.dwell_s > 30) {
+          // Render a subtle settling ring
+          const settleOpacity = Math.min(0.2, (det.dwell_s - 30) / 300);
+          ctx.strokeStyle = color + Math.round(settleOpacity * 255).toString(16).padStart(2, "0");
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, radius * 1.2, radius * 0.96, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // ── Confidence instability: jitter on bracket corners ─────
+        if (det.confidence_stability != null && det.confidence_stability > 0.1 && showBrackets) {
+          const jitter = det.confidence_stability * 3;
+          const jx = (Math.sin(now / 100 + cx) * jitter);
+          const jy = (Math.cos(now / 130 + cy) * jitter);
+          ctx.strokeStyle = color + "30";
+          ctx.lineWidth = 0.5;
+          const cLen = Math.min(dw, dh) * 0.15;
+          // Jittered top-left corner
+          ctx.beginPath();
+          ctx.moveTo(dx1 + jx, dy1 + cLen + jy);
+          ctx.lineTo(dx1 + jx, dy1 + jy);
+          ctx.lineTo(dx1 + cLen + jx, dy1 + jy);
+          ctx.stroke();
+        }
+
         // ── Annotation (from Hapax directive) ─────────────────────
         if (highlight?.annotation) {
           const text = highlight.annotation;

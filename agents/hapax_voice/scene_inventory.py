@@ -280,6 +280,21 @@ class SceneInventory:
                             ]
                         )
 
+                # Raw sightings with timestamps for temporal delta computation
+                raw_sightings: list[dict] = []
+                for s in o.sightings[-10:]:
+                    sb = s.get("box", [])
+                    s_cam = s.get("camera", o.last_camera)
+                    s_rw, s_rh = _RESOLUTIONS.get(s_cam, (1920, 1080))
+                    if len(sb) == 4:
+                        raw_sightings.append(
+                            {
+                                "box": [sb[0] / s_rw, sb[1] / s_rh, sb[2] / s_rw, sb[3] / s_rh],
+                                "conf": s.get("conf", 0.0),
+                                "ts": s.get("ts", 0.0),
+                            }
+                        )
+
                 results.append(
                     {
                         "entity_id": o.entity_id,
@@ -296,9 +311,12 @@ class SceneInventory:
                         "mobility_score": round(o.mobility_score, 3),
                         "seen_count": o.seen_count,
                         "age_s": round(age, 1),
+                        "first_seen": o.first_seen,
+                        "last_seen": o.last_seen,
                         "first_seen_age_s": round(now - o.first_seen, 1),
                         "camera_count": len(o.camera_history),
                         "sightings": norm_sightings,
+                        "raw_sightings": raw_sightings,
                     }
                 )
             return results

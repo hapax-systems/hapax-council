@@ -33,6 +33,7 @@ from agents.content_scheduler import (
 from agents.predictive_cache import PredictiveCache
 from agents.protention_engine import ProtentionEngine
 from agents.temporal_bands import TemporalBandFormatter
+from agents.temporal_delta import compute_temporal_delta
 from agents.temporal_scales import MultiScaleAggregator
 from agents.visual_layer_state import (
     SEVERITY_CRITICAL,
@@ -535,6 +536,28 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
                         )
                     )
 
+        # Temporal delta: compute from raw sightings with timestamps
+        temporal_kwargs: dict[str, Any] = {}
+        raw_sightings = obj.get("raw_sightings", [])
+        first_seen_ts = obj.get("first_seen", 0.0)
+        last_seen_ts = obj.get("last_seen", 0.0)
+        if raw_sightings and len(raw_sightings) >= 2:
+            now_ts = time.time()
+            delta = compute_temporal_delta(
+                sightings=raw_sightings,
+                first_seen=first_seen_ts,
+                last_seen=last_seen_ts,
+                now=now_ts,
+            )
+            temporal_kwargs = {
+                "velocity": delta.velocity,
+                "direction_deg": delta.direction_deg,
+                "confidence_stability": delta.confidence_stability,
+                "dwell_s": delta.dwell_s,
+                "is_entering": delta.is_entering,
+                "is_exiting": delta.is_exiting,
+            }
+
         detections.append(
             ClassificationDetection(
                 entity_id=entity_id,
@@ -554,6 +577,7 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
                 camera_count=int(camera_count_raw) if camera_count_raw is not None else None,
                 sightings=norm_sightings if norm_sightings else None,
                 **enrichment_kwargs,
+                **temporal_kwargs,
             )
         )
 
