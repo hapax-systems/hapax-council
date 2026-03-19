@@ -179,6 +179,8 @@ class BiometricState(BaseModel):
     physiological_load: float = 0.0
     sleep_quality: float = 1.0
     watch_activity: str = "unknown"
+    phone_battery_pct: int = 0
+    phone_connected: bool = False
 
 
 # ── Temporal Context (WS1+WS5) ──────────────────────────────────────────────

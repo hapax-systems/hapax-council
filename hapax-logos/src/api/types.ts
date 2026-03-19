@@ -413,6 +413,8 @@ export interface BiometricState {
   physiological_load: number;
   sleep_quality: number;
   watch_activity: string;
+  phone_battery_pct: number;
+  phone_connected: boolean;
 }
 
 export interface TemporalContext {
