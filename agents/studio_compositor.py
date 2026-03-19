@@ -2129,6 +2129,11 @@ class StudioCompositor:
                     fx_request_path.unlink(missing_ok=True)
                     if preset_name and hasattr(self, "_fx_color_grade"):
                         self._switch_fx_preset(preset_name)
+                        # Write current preset for API trace context
+                        try:
+                            (SNAPSHOT_DIR / "fx-current.txt").write_text(preset_name)
+                        except OSError:
+                            pass
                 except Exception as exc:
                     log.debug("Failed to process FX request: %s", exc)
                     fx_request_path.unlink(missing_ok=True)

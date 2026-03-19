@@ -294,6 +294,17 @@ async def select_effect(req: EffectSelectRequest):
     """Request the compositor to switch to a different visual effect preset."""
     fx_request = Path("/dev/shm/hapax-compositor/fx-request.txt")
     try:
+        # Read previous preset for trace context
+        prev = ""
+        try:
+            from shared.telemetry import trace_compositor_effect
+
+            prev_file = Path("/dev/shm/hapax-compositor/fx-current.txt")
+            if prev_file.exists():
+                prev = prev_file.read_text().strip()
+            trace_compositor_effect(preset=req.preset, prev_preset=prev)
+        except Exception:
+            pass
         fx_request.write_text(req.preset)
         return {"status": "requested", "preset": req.preset}
     except OSError:
