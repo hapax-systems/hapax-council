@@ -422,7 +422,14 @@ class VisionBackend:
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
     ) -> None:
         self._webcam_capturer = webcam_capturer
-        self._camera_roles = camera_roles or ["operator", "hardware", "room", "aux"]
+        self._camera_roles = camera_roles or [
+            "operator",
+            "hardware",
+            "room",
+            "aux",
+            "room-brio",
+            "aux-brio",
+        ]
         self._poll_interval = poll_interval
         self._cache = _VisionCache()
         self._thread: threading.Thread | None = None
@@ -1227,6 +1234,8 @@ class VisionBackend:
                     "hardware": "c920-hardware",
                     "room": "c920-room",
                     "aux": "c920-aux",
+                    "room-brio": "brio-room",
+                    "aux-brio": "brio-aux",
                 }
                 _shm2 = _P(f"/dev/shm/hapax-compositor/{_role_to_shm2.get(role, role)}.jpg")
                 if not self._webcam_capturer.has_camera(role) and not _shm2.exists():
@@ -1242,6 +1251,8 @@ class VisionBackend:
                     "hardware": "c920-hardware",
                     "room": "c920-room",
                     "aux": "c920-aux",
+                    "room-brio": "brio-room",
+                    "aux-brio": "brio-aux",
                 }
                 shm_name = _role_to_shm.get(role, role)
                 shm_path = Path(f"/dev/shm/hapax-compositor/{shm_name}.jpg")
