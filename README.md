@@ -138,7 +138,7 @@ hapax-council/
 ├── axioms/           5 axioms, 90 implications, precedents, contracts, schemas
 ├── specs/            8 operational principles + spec registry
 ├── tests/            444 test files
-├── docs/             Compendium, 21 research documents, design plans
+├── docs/             21 research documents, design plans
 └── skills/           17 Claude Code skills
 ```
 
@@ -149,10 +149,6 @@ hapax-council/
 - **[hapax-officium](https://github.com/ryanklee/hapax-officium)** — Management-domain extraction
 - **[hapax-watch](https://github.com/ryanklee/hapax-watch)** — Wear OS biometric companion
 - **[cockpit-mcp](https://github.com/ryanklee/cockpit-mcp)** — MCP server for Claude Code (40 tools)
-
-## Compendium
-
-For exhaustive system documentation, see [`docs/compendium.md`](docs/compendium.md) — 22 sections covering architecture, subsystems, decisions, evolution, and operational reference.
 
 ## License
 
