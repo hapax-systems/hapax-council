@@ -120,6 +120,11 @@ _TIER_MAX_TOKENS: dict[str, int] = {
     "CAPABLE": 150,
 }
 _MAX_RESPONSE_TOKENS = 150
+_MAX_SPOKEN_WORDS = 40  # Hard cutoff: stop speaking after this many words.
+# 40 words ≈ 2 spoken sentences ≈ 8-12 seconds of speech. The LLM may
+# generate up to max_tokens internally, but we stop vocalizing after this
+# limit to keep responses conversational. Decouples "how much the model
+# thinks" from "how much the operator hears."
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
 
@@ -648,13 +653,16 @@ class ConversationPipeline:
         except TimeoutError:
             log.warning("LLM task timed out after 20s")
             llm_task.cancel()
-            # Restore buffer immediately so operator can speak again
+            # Speak error WHILE still in speaking mode — prevents echo feedback.
+            # Previous bug: set_speaking(False) before error TTS let the buffer
+            # capture the error audio as an operator utterance.
+            await self._speak_sentence("I'm having trouble connecting right now.")
             if self.buffer:
                 self.buffer.set_speaking(False)
             self.state = ConvState.LISTENING
-            await self._speak_sentence("I'm having trouble connecting right now.")
         except Exception:
             log.exception("LLM task failed")
+            await self._speak_sentence("Something went wrong.")
             if self.buffer:
                 self.buffer.set_speaking(False)
             self.state = ConvState.LISTENING
@@ -849,6 +857,7 @@ class ConversationPipeline:
             _t_first_token = 0.0
             _t_first_audio = 0.0
             _first_clause_spoken = False
+            _spoken_words = 0  # Track words sent to TTS for cutoff
 
             self.state = ConvState.SPEAKING
             # set_speaking(True) already called by process_utterance before bridge
@@ -947,9 +956,19 @@ class ConversationPipeline:
                 if self.buffer and self.buffer.barge_in_detected:
                     break
 
-            # Flush remaining text (skip if barge-in — operator is talking)
+                # Word cutoff: stop vocalizing after _MAX_SPOKEN_WORDS.
+                # The LLM continues generating (full_text accumulates for
+                # context), but we stop sending to TTS.
+                _spoken_words = len(full_text.split()) - len(accumulated.split())
+                if _spoken_words >= _MAX_SPOKEN_WORDS:
+                    log.info("Word cutoff at %d words — stopping speech", _spoken_words)
+                    accumulated = ""  # discard unspoken remainder
+                    break
+
+            # Flush remaining text (skip if barge-in or word cutoff)
             if accumulated.strip() and not (self.buffer and self.buffer.barge_in_detected):
-                await self._speak_sentence(accumulated.strip())
+                if _spoken_words < _MAX_SPOKEN_WORDS:
+                    await self._speak_sentence(accumulated.strip())
 
             # Log full response for debugging truncation
             if full_text:
