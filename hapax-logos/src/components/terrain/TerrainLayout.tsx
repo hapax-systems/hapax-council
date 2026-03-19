@@ -11,6 +11,7 @@ import { AgentOutputDrawer } from "./AgentOutputDrawer";
 import { SplitPane } from "./SplitPane";
 import { DetailPane } from "./DetailPane";
 import { ClassificationOverlayProvider } from "../../contexts/ClassificationOverlayContext";
+import { GroundStudioProvider } from "../../contexts/GroundStudioContext";
 import { useVisualLayer } from "../../api/hooks";
 import { useTerrain, useTerrainDisplay, type RegionName } from "../../contexts/TerrainContext";
 
@@ -138,6 +139,7 @@ export function TerrainLayout() {
 
   return (
     <ClassificationOverlayProvider>
+    <GroundStudioProvider>
       <div
         className="h-screen w-screen overflow-hidden relative"
         style={{ fontFamily: "'JetBrains Mono', monospace", background: "#1d2021" }}
@@ -206,6 +208,7 @@ export function TerrainLayout() {
         <VoiceOverlay vl={vl} />
 
       </div>
+    </GroundStudioProvider>
     </ClassificationOverlayProvider>
   );
 }
