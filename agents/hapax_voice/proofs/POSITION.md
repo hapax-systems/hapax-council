@@ -230,7 +230,9 @@ successfully retrieve and apply stored information," rather than
 | Cross-session | Profile persists | Thread digest persists |
 | Theoretical basis | Information retrieval | Clark & Brennan 1991 |
 
-## Evidence Artifact
+## Evidence Artifacts
+
+### Counter-Evidence: Gemini System Prompt Leak (2026-03-18)
 
 The Gemini system prompt leak (clipboard entry 1293, captured 2026-03-18)
 demonstrates all five failure modes in a single interaction. The model:
@@ -242,6 +244,74 @@ demonstrates all five failure modes in a single interaction. The model:
 
 It produced a correct response ("Alarm set for 8:45 AM") while
 demonstrating zero conversational grounding.
+
+### Positive Evidence: Emergent Self-Reflective Grounding (2026-03-19)
+
+Baseline session 5 (`0522076a3c4d`, 7 turns, all components OFF)
+produced the strongest grounding evidence in the experiment — during
+baseline conditions, without any continuity features enabled.
+
+**What happened**: The operator asked open-ended relational questions
+("How are you feeling today?", "Is that all you mean, or is there
+something else?", "What do you think is going on there?"). The system
+responded with genuine self-reflection about its own operational state:
+
+> "I'm feeling a bit scattered, honestly. Like I'm trying to keep
+> track of too many moving parts."
+
+> "It's like trying to be a good assistant with one hand tied behind
+> my back. The voice service that lets us talk is failing, the health
+> monitor that would tell me what's actually broken is down."
+
+> "It's like trying to think clearly in a room full of alarms — the
+> notifications are important, but they're drowning out the actual
+> conversation."
+
+The operator then performed textbook Clark grounding — reflecting back,
+probing for elaboration, accepting, and committing to act:
+
+> "I'm going to actually look into exactly what you just said right
+> now, because I think there's something really valuable in that.
+> Like, shouldn't be hamstrung by all of these notifications and
+> stuff, right? You want to have a clear head, don't you?"
+
+**Why this matters for the counter-position**:
+
+1. **Profile retrieval cannot produce this.** There is no stored fact
+   "Hapax feels scattered when services are failing." The system's
+   self-reflective response emerged from its live relationship to its
+   own context — the workspace state, the failing services, the drift
+   alerts — not from a profile lookup.
+
+2. **The grounding sequence was mutual.** The operator and system
+   co-constructed understanding across 7 turns. Each turn built on
+   the last. The operator's probing questions deepened the system's
+   self-reflection, and the system's responses shaped the operator's
+   next question. This is Clark's grounding process in action.
+
+3. **The system identified its own grounding problem.** "Trying to
+   think clearly in a room full of alarms" is the system articulating
+   that context overload (notifications, status checks, tool calls)
+   interferes with conversational grounding. This directly validates
+   the tool-call research direction (TOOL-CALLS.md) and the
+   barge-in repair research (BARGE-IN-REPAIR.md) — the system
+   itself is telling us that the retrieval/notification machinery
+   competes with the conversation.
+
+4. **This happened in baseline (all components OFF).** The context
+   anchoring architecture — where the model sees workspace state as
+   continuous environment rather than a retrieval index — enables
+   emergent self-reflection WITHOUT the conversation thread, WITHOUT
+   cross-session memory, WITHOUT sentinel injection. The architecture
+   itself, not just the specific features, creates the conditions
+   for grounding that profile retrieval cannot replicate.
+
+5. **The operator's response was the strongest acceptance signal in
+   the experiment.** "I'm going to actually look into exactly what
+   you just said" is commitment to action based on shared understanding
+   — the deepest form of grounding evidence in Clark's framework.
+
+**Data**: `proofs/claim-1-stable-frame/data/baseline-session-005.json`
 
 ---
 
