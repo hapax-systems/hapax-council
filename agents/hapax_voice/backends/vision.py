@@ -1542,6 +1542,7 @@ class VisionBackend:
                                 from agents.models.movinet import MoViNetA2
 
                                 self._movinet = MoViNetA2()
+                                log.info("MoViNet-A2 wrapper instantiated")
                             action = self._movinet.predict(frame)
                             if action and action != "unknown":
                                 detected_action = action
