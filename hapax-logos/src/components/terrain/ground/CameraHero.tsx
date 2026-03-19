@@ -22,8 +22,8 @@ export function CameraHero({
 }: CameraHeroProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // FX mode uses single-camera endpoint; normal mode uses batch
-  const batchResult = useBatchSnapshot(heroRole, 83);
-  const fxResult = useSnapshotPoll("/api/studio/stream/fx", 83, !!fxMode);
+  const batchResult = useBatchSnapshot(heroRole, 16); // 60fps
+  const fxResult = useSnapshotPoll("/api/studio/stream/fx", 16, !!fxMode); // 60fps
   const { imgRef, isStale } = fxMode ? fxResult : batchResult;
 
   const { data: studio } = useStudio();
@@ -107,7 +107,7 @@ function SecondaryStrip({
 }
 
 function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }) {
-  const { imgRef } = useBatchSnapshot(role, 1000);
+  const { imgRef } = useBatchSnapshot(role, 16); // 60fps secondary thumbs
 
   return (
     <button
