@@ -1524,16 +1524,30 @@ class VisionBackend:
                         log.debug("ReID face check failed: %s", exc)
 
                 if role == "operator":
-                    gaze_direction = self._run_gaze_estimation(frame)
-                    hand_gesture = self._run_hand_gesture(frame)
-                    top_emotion = self._run_emotion_recognition(frame)
-                    # Use YOLO keypoint posture if available, else MediaPipe
-                    posture = (
-                        posture_from_yolo
-                        if posture_from_yolo != "unknown"
-                        else self._run_posture_estimation(frame)
-                    )
-                    ambient_brightness, color_temperature = self._estimate_lighting(frame)
+                    try:
+                        gaze_direction = self._run_gaze_estimation(frame)
+                    except Exception:
+                        log.debug("Gaze estimation failed", exc_info=True)
+                    try:
+                        hand_gesture = self._run_hand_gesture(frame)
+                    except Exception:
+                        log.debug("Hand gesture failed", exc_info=True)
+                    try:
+                        top_emotion = self._run_emotion_recognition(frame)
+                    except Exception:
+                        log.debug("Emotion recognition failed", exc_info=True)
+                    try:
+                        posture = (
+                            posture_from_yolo
+                            if posture_from_yolo != "unknown"
+                            else self._run_posture_estimation(frame)
+                        )
+                    except Exception:
+                        log.debug("Posture estimation failed", exc_info=True)
+                    try:
+                        ambient_brightness, color_temperature = self._estimate_lighting(frame)
+                    except Exception:
+                        log.debug("Lighting estimation failed", exc_info=True)
 
                     # Action recognition: MoViNet-A2 (streaming) with X3D-XS fallback
                     _action_lock = self._vram_lock.acquire()
