@@ -108,16 +108,18 @@ _MAX_ACCUMULATION_S = 0.3
 # monologue. 1-3 sentences at most tiers, up to 4-5 for deep questions.
 # Calibrated from live conversation: operator barged in on every response
 # because they were too long.
-# Voice response token budget — generous ceiling, model self-regulates
-# via system prompt guidance ("brief answer + reasoning when interesting").
+# Voice response token budget — hard ceiling. 150 tokens ≈ 2-3 spoken
+# sentences. Enough for substance, not enough for monologue. Opus will
+# self-regulate shorter via system prompt; this prevents runaway responses
+# that blow past TTS pipeline capacity and trigger 20s timeouts.
 _TIER_MAX_TOKENS: dict[str, int] = {
     "CANNED": 0,
     "LOCAL": 80,
-    "FAST": 400,
-    "STRONG": 400,
-    "CAPABLE": 400,
+    "FAST": 150,
+    "STRONG": 150,
+    "CAPABLE": 150,
 }
-_MAX_RESPONSE_TOKENS = 400
+_MAX_RESPONSE_TOKENS = 150
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
 
@@ -646,9 +648,16 @@ class ConversationPipeline:
         except TimeoutError:
             log.warning("LLM task timed out after 20s")
             llm_task.cancel()
+            # Restore buffer immediately so operator can speak again
+            if self.buffer:
+                self.buffer.set_speaking(False)
+            self.state = ConvState.LISTENING
             await self._speak_sentence("I'm having trouble connecting right now.")
         except Exception:
             log.exception("LLM task failed")
+            if self.buffer:
+                self.buffer.set_speaking(False)
+            self.state = ConvState.LISTENING
 
         # Check limits
         if self.turn_count >= _MAX_TURNS:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import types
 import unittest
 
 from agents.hapax_voice.eval_grounding import (
@@ -13,15 +12,15 @@ from agents.hapax_voice.eval_grounding import (
 )
 
 
-def _make_trace(turn: int, activation: float, anchor: float) -> types.SimpleNamespace:
-    """Build a fake Langfuse trace with scores."""
-    return types.SimpleNamespace(
-        metadata={"turn": turn},
-        scores=[
-            types.SimpleNamespace(name="activation_score", value=activation),
-            types.SimpleNamespace(name="context_anchor_success", value=anchor),
+def _make_trace(turn: int, activation: float, anchor: float) -> dict:
+    """Build a fake Langfuse trace dict (REST API format)."""
+    return {
+        "metadata": {"turn": turn},
+        "scores": [
+            {"name": "activation_score", "value": activation},
+            {"name": "context_anchor_success", "value": anchor},
         ],
-    )
+    }
 
 
 def _make_session(sid: str, n_turns: int) -> SessionEval:
