@@ -1345,7 +1345,7 @@ class VoiceDaemon:
                 activity="voice_conversation",
                 voice_turns=digest.get("turn_count", 0),
                 duration_s=0,
-                start_ts=time.time(),
+                start_ts=digest.get("start_ts", time.time()),
             )
             topic_str = ", ".join(digest.get("topic_words", []))
             thread_str = "; ".join(digest.get("thread", []))
