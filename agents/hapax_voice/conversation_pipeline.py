@@ -439,6 +439,11 @@ class ConversationPipeline:
         if not transcript:
             self.state = ConvState.LISTENING
             return
+        if _utt_trace is not None:
+            try:
+                _utt_trace.update(input=transcript)
+            except Exception:
+                pass
 
         # Utterance plausibility: reject likely music/noise bleed-through
         if self._ambient_fn is not None:
@@ -663,6 +668,11 @@ class ConversationPipeline:
                     break
 
             if _last_response:
+                if _utt_trace is not None:
+                    try:
+                        _utt_trace.update(output=_last_response)
+                    except Exception:
+                        pass
                 evaluate_turn(
                     response=_last_response,
                     messages=self.messages,

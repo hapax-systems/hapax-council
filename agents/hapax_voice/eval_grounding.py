@@ -73,73 +73,79 @@ class SessionEval:
 
 
 def fetch_sessions(since_hours: float = 24, max_sessions: int = 10) -> list[dict]:
-    """Fetch recent voice session traces from Langfuse."""
-    try:
-        from langfuse import get_client
-
-        client = get_client()
-    except Exception:
-        log.error("Langfuse client unavailable")
-        return []
-
-    # Query traces tagged with voice.utterance from the last N hours
+    """Fetch recent voice session traces from Langfuse via REST API."""
     from datetime import datetime, timedelta
 
-    since = datetime.now(UTC) - timedelta(hours=since_hours)
+    from shared.langfuse_client import langfuse_get
 
-    try:
-        traces = client.get_traces(
-            name="voice.utterance",
-            from_timestamp=since,
-            limit=200,  # fetch many, then group by session
+    since = (datetime.now(UTC) - timedelta(hours=since_hours)).isoformat()
+
+    # Paginate to get all traces
+    all_traces: list[dict] = []
+    page = 1
+    while page <= 10:
+        resp = langfuse_get(
+            "/traces",
+            {"name": "voice.utterance", "fromTimestamp": since, "limit": 100, "page": str(page)},
         )
-    except Exception:
-        log.error("Failed to fetch traces from Langfuse", exc_info=True)
+        if not resp:
+            break
+        data = resp.get("data", [])
+        if not data:
+            break
+        all_traces.extend(data)
+        total = resp.get("meta", {}).get("totalItems", 0)
+        if page * 100 >= total:
+            break
+        page += 1
+
+    if not all_traces:
+        log.info("No voice traces found in last %.0fh", since_hours)
         return []
+
+    # Enrich each trace with full scores (list endpoint only returns score IDs)
+    for trace in all_traces:
+        detail = langfuse_get(f"/traces/{trace['id']}")
+        if detail:
+            trace["scores"] = detail.get("scores", [])
 
     # Group by session_id
     sessions: dict[str, list] = {}
-    for trace in traces.data if hasattr(traces, "data") else traces:
-        sid = getattr(trace, "session_id", None) or trace.metadata.get("session_id", "unknown")
-        if sid not in sessions:
-            sessions[sid] = []
-        sessions[sid].append(trace)
+    for trace in all_traces:
+        sid = trace.get("sessionId") or (trace.get("metadata") or {}).get("session_id", "unknown")
+        sessions.setdefault(sid, []).append(trace)
 
-    # Sort sessions by first trace timestamp, take most recent
+    # Sort sessions by trace count descending, take most recent
     sorted_sessions = sorted(sessions.items(), key=lambda x: len(x[1]), reverse=True)
-    return [{"session_id": sid, "traces": traces} for sid, traces in sorted_sessions[:max_sessions]]
+    return [
+        {"session_id": sid, "traces": traces}
+        for sid, traces in sorted_sessions[:max_sessions]
+    ]
 
 
-def reconstruct_conversation(session_traces: list) -> list[dict]:
-    """Reconstruct conversation turns from Langfuse traces."""
+def reconstruct_conversation(session_traces: list[dict]) -> list[dict]:
+    """Reconstruct conversation turns from Langfuse trace dicts."""
     turns = []
-    for trace in sorted(session_traces, key=lambda t: getattr(t, "timestamp", 0)):
-        meta = getattr(trace, "metadata", {}) or {}
-        turn_idx = meta.get("turn", len(turns))
+    for trace in sorted(session_traces, key=lambda t: t.get("timestamp", "")):
+        meta = trace.get("metadata") or {}
+        turn_raw = meta.get("turn", len(turns))
+        turn_idx = turn_raw.get("intValue", turn_raw) if isinstance(turn_raw, dict) else turn_raw
 
-        # Extract user and assistant text from trace observations
         user_text = ""
         assistant_text = ""
 
-        observations = getattr(trace, "observations", []) or []
-        for obs in observations:
-            if hasattr(obs, "input") and obs.input:
-                if isinstance(obs.input, str):
-                    user_text = obs.input
-                elif isinstance(obs.input, dict):
-                    user_text = obs.input.get("text", obs.input.get("content", ""))
+        # Extract from trace-level input/output
+        inp = trace.get("input")
+        if isinstance(inp, str):
+            user_text = inp
+        elif isinstance(inp, dict):
+            user_text = inp.get("text", inp.get("content", ""))
 
-            if hasattr(obs, "output") and obs.output:
-                if isinstance(obs.output, str):
-                    assistant_text = obs.output
-
-        # Fallback: check trace-level input/output
-        if not user_text and hasattr(trace, "input"):
-            inp = trace.input
-            if isinstance(inp, str):
-                user_text = inp
-            elif isinstance(inp, dict):
-                user_text = inp.get("text", inp.get("content", ""))
+        out = trace.get("output")
+        if isinstance(out, str):
+            assistant_text = out
+        elif isinstance(out, dict):
+            assistant_text = out.get("text", out.get("content", ""))
 
         if user_text or assistant_text:
             turns.append(
@@ -336,11 +342,11 @@ def analyze_salience_correlation(
     for se in evals:
         traces = session_traces.get(se.session_id, [])
         for trace in traces:
-            scores = getattr(trace, "scores", []) or []
+            scores = trace.get("scores", []) if isinstance(trace, dict) else []
             score_map: dict[str, float] = {}
             for s in scores:
-                name = getattr(s, "name", "")
-                value = getattr(s, "value", None)
+                name = s.get("name", "") if isinstance(s, dict) else getattr(s, "name", "")
+                value = s.get("value") if isinstance(s, dict) else getattr(s, "value", None)
                 if name and value is not None:
                     score_map[name] = float(value)
 
@@ -349,9 +355,13 @@ def analyze_salience_correlation(
                 continue
 
             # Response tokens: count words in assistant text as proxy
-            turn_idx = (getattr(trace, "metadata", {}) or {}).get("turn")
+            meta = trace.get("metadata", {}) if isinstance(trace, dict) else {}
+            turn_raw = meta.get("turn") if meta else None
+            turn_idx = (
+                turn_raw.get("intValue", turn_raw) if isinstance(turn_raw, dict) else turn_raw
+            )
             resp_tokens = 0.0
-            if turn_idx is not None and turn_idx < len(se.turns):
+            if turn_idx is not None and isinstance(turn_idx, int) and turn_idx < len(se.turns):
                 resp_tokens = float(len(se.turns[turn_idx].assistant_text.split()))
 
             anchor = score_map.get("context_anchor_success", 0.0)
