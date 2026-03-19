@@ -93,12 +93,12 @@ _MAX_ACCUMULATION_S = 0.3
 # because they were too long.
 _TIER_MAX_TOKENS: dict[str, int] = {
     "CANNED": 0,
-    "LOCAL": 60,  # 1-2 sentences
-    "FAST": 150,  # 2-3 sentences
-    "STRONG": 120,  # 2-3 sentences
-    "CAPABLE": 200,  # 3-4 sentences max
+    "LOCAL": 80,  # 2 sentences
+    "FAST": 250,  # let the model decide
+    "STRONG": 300,  # let the model decide
+    "CAPABLE": 400,  # let the model decide
 }
-_MAX_RESPONSE_TOKENS = 120  # fallback
+_MAX_RESPONSE_TOKENS = 250  # fallback
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
 
@@ -506,6 +506,19 @@ class ConversationPipeline:
                 has_tools=bool(self.tools),
                 prev_tier=self._prev_tier,
             )
+        # After turn 0, floor at FAST — commit to having an actual
+        # conversation. LOCAL is only for the initial greeting/phatic.
+        # Once the operator engages, they deserve contextual intelligence.
+        from agents.hapax_voice.model_router import TIER_ROUTES
+
+        if self.turn_count > 1 and routing.tier.value < ModelTier.FAST.value:
+            routing = routing.__class__(
+                tier=ModelTier.FAST,
+                model=TIER_ROUTES[ModelTier.FAST],
+                reason=f"floor_upgrade:{routing.reason}",
+                canned_response="",
+            )
+
         self._prev_tier = routing.tier
         log.info(
             "TIMING route=%s model=%s reason=%s",
@@ -725,6 +738,11 @@ class ConversationPipeline:
                         if to_speak and _words >= _MIN_FIRST_CLAUSE_WORDS:
                             await self._speak_sentence(to_speak)
                             _first_clause_spoken = True
+                            # Speak any complete middle clauses too (don't drop them)
+                            for mid in parts[1:-1]:
+                                mid = mid.strip()
+                                if mid and len(mid.split()) >= _MIN_CLAUSE_WORDS:
+                                    await self._speak_sentence(mid)
                             accumulated = parts[-1]
                             accumulation_start = time.monotonic()
                     elif _elapsed > _MAX_ACCUMULATION_S and _words >= _MIN_FIRST_CLAUSE_WORDS:
@@ -889,6 +907,9 @@ class ConversationPipeline:
 
         if not phrase:
             return
+
+        # Add bridge phrase to echo history so echo rejection catches it
+        self._recent_tts_texts.append((time.monotonic(), phrase.lower().strip().rstrip(".,!?")))
 
         if pcm and self._audio_output:
             if self.buffer:

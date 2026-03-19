@@ -237,6 +237,51 @@ class SceneInventory:
                 "summary": self.summary(),
             }
 
+    def snapshot_for_overlay(self) -> list[dict[str, Any]]:
+        """Return full bbox data with normalized coordinates for the detection overlay.
+
+        Unlike snapshot(), this includes the raw bounding box data needed for rendering.
+        """
+        _RESOLUTIONS: dict[str, tuple[int, int]] = {
+            "brio-operator": (1920, 1080),
+            "c920-hardware": (1280, 720),
+            "c920-room": (1280, 720),
+            "c920-aux": (1280, 720),
+        }
+        with self._lock:
+            now = time.time()
+            recent = sorted(
+                self._objects.values(),
+                key=lambda o: o.last_seen,
+                reverse=True,
+            )[:_SNAPSHOT_MAX_OBJECTS]
+
+            results = []
+            for o in recent:
+                age = now - o.last_seen
+                if age > 300:
+                    continue
+                res_w, res_h = _RESOLUTIONS.get(o.last_camera, (1920, 1080))
+                box = o.last_box
+                results.append(
+                    {
+                        "entity_id": o.entity_id,
+                        "label": o.label,
+                        "camera": o.last_camera,
+                        "box": [
+                            box[0] / res_w,
+                            box[1] / res_h,
+                            box[2] / res_w,
+                            box[3] / res_h,
+                        ],
+                        "confidence": o.last_confidence,
+                        "mobility": o.mobility,
+                        "seen_count": o.seen_count,
+                        "age_s": round(age, 1),
+                    }
+                )
+            return results
+
     def by_label(self, label: str) -> list[SceneObject]:
         """Find all objects with a given label."""
         with self._lock:

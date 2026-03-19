@@ -47,10 +47,9 @@ BARGE_IN_PROB = 0.90
 BARGE_IN_CONSECUTIVE = 30
 
 # Post-TTS cooldown: wait after TTS ends before listening again.
-# In studio conditions, the room echo tail and AEC residual persist
-# well beyond the immediate playback. 5s gives the room time to decay
-# and prevents Hapax's own voice from being transcribed as operator speech.
-POST_TTS_COOLDOWN_S = 5.0
+# In dampened studio, room echo decays within 1-2s. Echo rejection
+# catches any residual TTS text that leaks through.
+POST_TTS_COOLDOWN_S = 2.0
 
 
 class ConversationBuffer:

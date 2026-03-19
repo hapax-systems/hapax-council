@@ -281,6 +281,68 @@ _get_briefing = FunctionSchema(
     required=[],
 )
 
+_query_scene_inventory = FunctionSchema(
+    name="query_scene_inventory",
+    description=(
+        "Query what objects are currently visible in the scene. "
+        "Returns detected objects with labels, cameras, confidence, and mobility."
+    ),
+    properties={
+        "label": {
+            "type": "string",
+            "description": "Filter by object label (e.g. 'keyboard', 'person'). Omit for all.",
+        },
+        "camera": {
+            "type": "string",
+            "description": "Filter by camera role (e.g. 'brio-operator'). Omit for all.",
+        },
+    },
+    required=[],
+)
+
+_highlight_detection = FunctionSchema(
+    name="highlight_detection",
+    description=(
+        "Highlight a specific detected object in the detection overlay. "
+        "Makes the halo pulse to draw operator attention."
+    ),
+    properties={
+        "entity_id": {
+            "type": "string",
+            "description": "Entity ID from scene inventory to highlight.",
+        },
+        "annotation": {
+            "type": "string",
+            "description": "Optional text annotation to show near the object.",
+        },
+        "duration_s": {
+            "type": "number",
+            "description": "How long to highlight in seconds. Default 5.",
+        },
+    },
+    required=["entity_id"],
+)
+
+_set_detection_layers = FunctionSchema(
+    name="set_detection_layers",
+    description=(
+        "Control the detection overlay visibility and detail level. "
+        "Tier 1 = ambient halos, tier 2 = labels on hover, tier 3 = full detail."
+    ),
+    properties={
+        "visible": {
+            "type": "boolean",
+            "description": "Whether the detection overlay is visible.",
+        },
+        "tier": {
+            "type": "integer",
+            "description": "Detail tier: 1 (halos), 2 (hover labels), 3 (full). Default 1.",
+            "enum": [1, 2, 3],
+        },
+    },
+    required=["visible"],
+)
+
 TOOL_SCHEMAS: list[FunctionSchema] = [
     _search_documents,
     _search_drive,
@@ -297,6 +359,9 @@ TOOL_SCHEMAS: list[FunctionSchema] = [
     _check_consent_status,
     _describe_consent_flow,
     _check_governance_health,
+    _query_scene_inventory,
+    _highlight_detection,
+    _set_detection_layers,
 ]
 
 
@@ -1092,6 +1157,103 @@ async def handle_check_governance_health(params) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Scene inventory + detection overlay tools
+# ---------------------------------------------------------------------------
+
+PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+
+
+async def handle_query_scene_inventory(params) -> None:
+    """Query the scene inventory for visible objects."""
+    label_filter = params.arguments.get("label", "")
+    camera_filter = params.arguments.get("camera", "")
+
+    try:
+        data = json.loads(PERCEPTION_STATE_PATH.read_text())
+        inventory = data.get("scene_inventory", {})
+        objects = inventory.get("objects", [])
+
+        if label_filter:
+            objects = [o for o in objects if o.get("label", "") == label_filter]
+        if camera_filter:
+            objects = [o for o in objects if o.get("camera", "") == camera_filter]
+
+        if not objects:
+            result = "No objects matching that query in the scene inventory."
+        else:
+            lines = [f"Scene inventory: {len(objects)} objects"]
+            for o in objects[:10]:
+                lines.append(
+                    f"  - {o.get('label')} (id: {o.get('entity_id')}) "
+                    f"on {o.get('camera')}, "
+                    f"confidence: {o.get('confidence', 0):.0%}, "
+                    f"mobility: {o.get('mobility', 'unknown')}, "
+                    f"seen: {o.get('seen_count', 0)}x"
+                )
+            result = "\n".join(lines)
+    except (FileNotFoundError, json.JSONDecodeError):
+        result = "Scene inventory unavailable (perception not running)."
+    except Exception as e:
+        result = f"Error querying scene inventory: {e}"
+
+    await params.result_callback(result)
+
+
+async def handle_highlight_detection(params) -> None:
+    """Highlight a detection in the overlay via directive bridge."""
+    entity_id = params.arguments.get("entity_id", "")
+    annotation = params.arguments.get("annotation", "")
+    duration_s = params.arguments.get("duration_s", 5)
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            directive = {
+                "detection_highlight": entity_id,
+                "detection_annotation_text": annotation,
+                "source": "voice-tool",
+            }
+            resp = await client.post(
+                "http://localhost:8051/api/logos/directive",
+                json=directive,
+            )
+            if resp.status_code == 200:
+                result = f"Highlighting {entity_id}" + (f" with annotation '{annotation}'" if annotation else "") + f" for {duration_s}s."
+            else:
+                result = f"Directive failed: {resp.status_code}"
+    except Exception as e:
+        result = f"Error posting highlight directive: {e}"
+
+    await params.result_callback(result)
+
+
+async def handle_set_detection_layers(params) -> None:
+    """Control detection overlay visibility and tier via directive bridge."""
+    visible = params.arguments.get("visible", True)
+    tier = params.arguments.get("tier", 1)
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            directive = {
+                "detection_layer_visible": visible,
+                "detection_tier": tier,
+                "source": "voice-tool",
+            }
+            resp = await client.post(
+                "http://localhost:8051/api/logos/directive",
+                json=directive,
+            )
+            if resp.status_code == 200:
+                state = "visible" if visible else "hidden"
+                result = f"Detection overlay set to {state}, tier {tier}."
+            else:
+                result = f"Directive failed: {resp.status_code}"
+    except Exception as e:
+        result = f"Error posting layer directive: {e}"
+
+    await params.result_callback(result)
+
+
+# ---------------------------------------------------------------------------
 # Module-level state initialization
 # ---------------------------------------------------------------------------
 
@@ -1156,5 +1318,10 @@ def register_tool_handlers(
     llm.register_function("check_consent_status", handle_check_consent_status)
     llm.register_function("describe_consent_flow", handle_describe_consent_flow)
     llm.register_function("check_governance_health", handle_check_governance_health)
+
+    # Scene inventory / detection overlay tools
+    llm.register_function("query_scene_inventory", handle_query_scene_inventory)
+    llm.register_function("highlight_detection", handle_highlight_detection)
+    llm.register_function("set_detection_layers", handle_set_detection_layers)
 
     log.info("Registered %d voice tools", len(TOOL_SCHEMAS) + len(DESKTOP_TOOL_SCHEMAS))

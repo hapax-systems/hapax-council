@@ -1043,11 +1043,15 @@ class VoiceDaemon:
         spec_stt = SpeculativeTranscriber(self._resident_stt) if self._resident_stt else None
         conv_model = ConversationalModel()
 
+        # Wake word implies operator — skip speaker verification.
+        # Speaker ID is only needed for hotkey-triggered sessions.
+        _speaker_id = self._speaker_identifier if self.session.trigger != "wake_word" else None
+
         self._cognitive_loop = CognitiveLoop(
             buffer=self._conversation_buffer,
             pipeline=self._conversation_pipeline,
             session=self.session,
-            speaker_identifier=self._speaker_identifier,
+            speaker_identifier=_speaker_id,
             salience_router=self._salience_router,
             speculative_stt=spec_stt,
             conversational_model=conv_model,
