@@ -145,7 +145,9 @@ def _fetch_scores(metric: str, since_hours: float = 48) -> list[dict]:
                 )
                 meta = trace.get("metadata") or {}
                 turn_raw = meta.get("turn", 0)
-                turn = turn_raw.get("intValue", turn_raw) if isinstance(turn_raw, dict) else turn_raw
+                turn = (
+                    turn_raw.get("intValue", turn_raw) if isinstance(turn_raw, dict) else turn_raw
+                )
                 results.append(
                     {
                         "session_id": sid,

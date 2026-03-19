@@ -117,10 +117,7 @@ def fetch_sessions(since_hours: float = 24, max_sessions: int = 10) -> list[dict
 
     # Sort sessions by trace count descending, take most recent
     sorted_sessions = sorted(sessions.items(), key=lambda x: len(x[1]), reverse=True)
-    return [
-        {"session_id": sid, "traces": traces}
-        for sid, traces in sorted_sessions[:max_sessions]
-    ]
+    return [{"session_id": sid, "traces": traces} for sid, traces in sorted_sessions[:max_sessions]]
 
 
 def reconstruct_conversation(session_traces: list[dict]) -> list[dict]:
