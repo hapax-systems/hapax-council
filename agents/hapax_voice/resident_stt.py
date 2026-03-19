@@ -113,7 +113,17 @@ class ResidentSTT:
                 beam_size=1,  # greedy for speed
                 vad_filter=False,  # we already did VAD
                 without_timestamps=True,
-                initial_prompt="Hapax, hey Hapax, voice assistant, studio, coding",
+                # Whisper treats initial_prompt as "preceding transcript" and
+                # conditions on its style/vocabulary. Realistic example sentences
+                # with "Hapax" bias the decoder toward the word — keyword lists
+                # don't work well. Covers both pronunciations (HAY-paks, HA-packs).
+                initial_prompt=(
+                    "Hey Hapax, what's going on? "
+                    "Hapax, can you check that for me? "
+                    "Thanks Hapax. "
+                    "Hey Hapax, what do you think about this? "
+                    "Hapax, tell me about the studio session."
+                ),
             )
 
             text = " ".join(seg.text for seg in segments).strip()

@@ -906,6 +906,19 @@ class ConversationPipeline:
                 full_text += content
                 accumulated += content
 
+                # Cut stream if LLM hallucinates tool-call XML in text output.
+                # With tools disabled, Opus sometimes generates <tool_use> tags
+                # as plain text. Stop before TTS speaks JSON.
+                if "<tool_use>" in full_text or "<tool_name>" in full_text:
+                    # Keep only the text before the tool tag
+                    cut = full_text.split("<tool_use>")[0].split("<tool_name>")[0].strip()
+                    if cut and not _first_clause_spoken:
+                        await self._speak_sentence(cut)
+                    log.info("Halted: LLM hallucinated tool XML in text output")
+                    full_text = cut
+                    accumulated = ""
+                    break
+
                 # Eager flush: speak as soon as possible to minimize dead air.
                 # For the first clause, flush aggressively (2+ words or 400ms).
                 # For subsequent clauses, use clause boundary detection.
