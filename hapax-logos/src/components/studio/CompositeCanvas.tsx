@@ -14,8 +14,10 @@ interface CompositeCanvasProps {
 }
 
 const RING_SIZE = 16;
+const SMOOTH_RING_SIZE = 16;
 const FETCH_INTERVAL = 100;
 const SMOOTH_INTERVAL = 200;
+const SMOOTH_DELAY_FRAMES = 3; // ~500ms at 200ms poll interval
 
 export function CompositeCanvas({
   role,
@@ -256,11 +258,12 @@ export function CompositeCanvas({
       }
 
       // --- Delayed overlay (smooth source if available, else delayed from live ring) ---
-      const smoothAvail = Math.min(smoothWriteHead, 8);
+      const smoothAvail = Math.min(smoothWriteHead, SMOOTH_RING_SIZE);
       const useSmoothRing = smoothSource && smoothAvail > 0;
+      const hasFilterOverrides = liveFilterRef.current || smoothFilterRef.current;
       if (p.overlay && (useSmoothRing || available > p.overlay.delayFrames)) {
         const delayed = useSmoothRing
-          ? smoothRing[(smoothWriteHead - 1 + 800) % Math.min(smoothAvail, 8)]
+          ? smoothRing[((smoothWriteHead - 1 - SMOOTH_DELAY_FRAMES) + SMOOTH_RING_SIZE * 100) % Math.min(smoothAvail, SMOOTH_RING_SIZE)]
           : frameRing[(idx - p.overlay.delayFrames + available * 100) % available];
         if (delayed) {
           ctx.save();
@@ -269,14 +272,20 @@ export function CompositeCanvas({
           }
           ctx.globalAlpha = p.overlay.alpha;
           ctx.globalCompositeOperation = p.overlay.blendMode as GlobalCompositeOperation;
-          const dt = tick * 0.03;
-          ctx.drawImage(
-            delayed,
-            Math.sin(dt) * 5,
-            p.overlay.driftY + Math.sin(dt * 0.6) * 4,
-            w,
-            h,
-          );
+          if (hasFilterOverrides) {
+            // Composite mode: aligned layers, no drift
+            ctx.drawImage(delayed, 0, 0, w, h);
+          } else {
+            // FX mode: deliberate spatial drift for effect
+            const dt = tick * 0.03;
+            ctx.drawImage(
+              delayed,
+              Math.sin(dt) * 5,
+              p.overlay.driftY + Math.sin(dt * 0.6) * 4,
+              w,
+              h,
+            );
+          }
           ctx.restore();
         }
       }
@@ -363,9 +372,9 @@ export function CompositeCanvas({
       loader.crossOrigin = "anonymous";
       loader.onload = () => {
         if (!running) { releaseImage(loader); smoothPending = false; return; }
-        const prev = smoothRing[smoothWriteHead % 8];
+        const prev = smoothRing[smoothWriteHead % SMOOTH_RING_SIZE];
         if (prev) releaseImage(prev);
-        smoothRing[smoothWriteHead % 8] = loader;
+        smoothRing[smoothWriteHead % SMOOTH_RING_SIZE] = loader;
         smoothWriteHead++;
         smoothPending = false;
       };
