@@ -842,9 +842,11 @@ class ConversationPipeline:
                 "api_base": _voice_litellm_base,
                 "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
             }
-            # Always pass tools — intelligence-first routing means capable model
-            if self.tools:
-                kwargs["tools"] = self.tools
+            # Tools disabled for voice pacing — tool execution + second LLM
+            # round-trip adds 10-15s latency that destroys conversation flow.
+            # The model answers from system prompt context instead.
+            # if self.tools:
+            #     kwargs["tools"] = self.tools
 
             kwargs["timeout"] = 15  # seconds — fail fast, don't block conversation
             _t_llm_start = time.monotonic()
@@ -986,9 +988,21 @@ class ConversationPipeline:
                     self._emit("assistant_response", text=full_text)
                 self._last_assistant_end = time.monotonic()
 
-            # Handle tool calls — play bridge phrase then execute
+            # Tool calls: skip in voice turns to avoid 10-15s latency penalty.
+            # Tool execution + second LLM round-trip eats the 20s timeout budget.
+            # The model already has workspace context via system prompt injection;
+            # tools add precision but destroy conversational pacing.
+            # TODO: re-enable with tight per-tool timeouts (3s cap) once latency
+            # is under control.
             if tool_calls_data:
-                await self._handle_tool_calls(tool_calls_data, full_text)
+                log.info(
+                    "Skipping %d tool call(s) for voice pacing: %s",
+                    len(tool_calls_data),
+                    [tc["name"] for tc in tool_calls_data],
+                )
+                # Record as assistant message without executing tools
+                if full_text:
+                    self.messages.append({"role": "assistant", "content": full_text})
 
         except TimeoutError:
             log.warning("LLM timeout — no response")
