@@ -227,6 +227,28 @@ class ClassificationDetection(BaseModel, frozen=True):
     novelty: float = 0.0  # 0.0=familiar, 1.0=brand new
     consent_suppressed: bool = False  # True when person enrichments must be hidden
 
+    # Person enrichments (operator camera, consent-gated)
+    gaze_direction: str | None = None  # screen/hardware/away/person
+    emotion: str | None = None  # 8-class HSEmotion
+    posture: str | None = None  # upright/slouching/leaning_forward/leaning_back
+    gesture: str | None = None  # MediaPipe hand gestures
+    action: str | None = None  # Kinetics-400 or heuristic
+    depth: str | None = None  # close/medium/far
+
+    # Entity metadata (all entities)
+    mobility_score: float | None = None  # continuous 0.0-1.0
+    first_seen_age_s: float | None = None  # seconds since first detection
+    camera_count: int | None = None  # cameras that have seen this entity
+    sightings: list[tuple[float, float, float, float]] | None = None  # last 5 box positions
+
+    # Temporal delta (Batch 2: derived from sightings history)
+    velocity: float | None = None  # normalized coords/s
+    direction_deg: float | None = None  # 0=right, 90=down, 180=left, 270=up
+    confidence_stability: float | None = None  # stddev of confidence over sightings
+    dwell_s: float | None = None  # seconds at current position
+    is_entering: bool = False  # first appeared within last 2 ticks
+    is_exiting: bool = False  # not seen recently
+
 
 class VisualLayerState(BaseModel):
     """Complete state for the visual communication layer.
