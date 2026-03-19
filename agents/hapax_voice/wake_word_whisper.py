@@ -57,6 +57,10 @@ _WAKE_WORDS = frozenset(
         "hay packs",
         "hey hapaks",
         "hey hapax",
+        "hpex",
+        "hap axe",
+        "hey apex",
+        "hap ax",
     }
 )
 
@@ -92,10 +96,14 @@ def _fuzzy_wake_match(text_clean: str) -> bool:
     # Single word: check if it's a hapax-like compound
     if len(words) == 1:
         w = words[0]
-        return w.startswith("h") and ("pax" in w or "pacs" in w or "hax" in w or "packs" in w)
+        return w.startswith("h") and (
+            "pax" in w or "pacs" in w or "hax" in w or "packs" in w or "pex" in w or "peks" in w
+        )
 
     # Multi-word: first word h-sound, last word pax-sound
-    h_starts = frozenset({"hey", "hi", "high", "hay", "ha", "he", "hit", "hip", "hei", "hie"})
+    h_starts = frozenset(
+        {"hey", "hi", "high", "hay", "ha", "he", "hit", "hip", "hei", "hie", "hap"}
+    )
     pax_ends = frozenset(
         {
             "pax",
@@ -116,6 +124,12 @@ def _fuzzy_wake_match(text_clean: str) -> bool:
             "hapax",
             "hapacs",
             "hapacks",
+            "pex",
+            "peks",
+            "pecks",
+            "apex",
+            "axe",
+            "acts",
         }
     )
 
