@@ -6,7 +6,7 @@ interface OperatorVitalsProps {
 }
 
 export function OperatorVitals({ biometrics, freshness = 1.0 }: OperatorVitalsProps) {
-  const { heart_rate_bpm, stress_elevated, physiological_load, sleep_quality } = biometrics;
+  const { heart_rate_bpm, stress_elevated, physiological_load, sleep_quality, phone_connected, phone_battery_pct } = biometrics;
   const opacity = Math.max(0.15, freshness * 0.5);
 
   return (
@@ -57,6 +57,35 @@ export function OperatorVitals({ biometrics, freshness = 1.0 }: OperatorVitalsPr
         <span className="text-[8px] text-zinc-600" title={`Sleep quality: ${(sleep_quality * 100).toFixed(0)}%`}>
           ☾
         </span>
+      )}
+
+      {/* Phone connectivity dot */}
+      {phone_connected !== undefined && (
+        <div
+          className="w-1 h-1 rounded-full"
+          style={{
+            backgroundColor: phone_connected ? "#b8bb26" : "#504945",
+          }}
+          title={phone_connected ? "Phone connected" : "Phone disconnected"}
+        />
+      )}
+
+      {/* Phone battery bar */}
+      {phone_connected && phone_battery_pct > 0 && (
+        <div className="h-[1px] rounded-full bg-zinc-800" style={{ width: 16 }}>
+          <div
+            className="h-full rounded-full"
+            style={{
+              width: `${phone_battery_pct}%`,
+              background:
+                phone_battery_pct > 30
+                  ? "#b8bb26"
+                  : phone_battery_pct > 15
+                    ? "#fabd2f"
+                    : "#fb4934",
+            }}
+          />
+        </div>
       )}
     </div>
   );
