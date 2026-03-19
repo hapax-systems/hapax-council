@@ -308,6 +308,7 @@ class SceneInventory:
                                 "box": [sb[0] / s_rw, sb[1] / s_rh, sb[2] / s_rw, sb[3] / s_rh],
                                 "conf": s.get("conf", 0.0),
                                 "ts": s.get("ts", 0.0),
+                                "camera": s_cam,
                             }
                         )
 

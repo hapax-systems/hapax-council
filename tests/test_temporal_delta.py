@@ -191,3 +191,48 @@ class TestReturnType:
             raise AssertionError("Should have raised AttributeError")
         except AttributeError:
             pass
+
+
+# ── Cross-camera sighting filtering ──────────────────────────────────
+
+
+class TestCrossCameraFiltering:
+    def test_camera_filter_uses_only_matching_sightings(self):
+        """With camera filter, only same-camera sightings contribute to velocity."""
+        sightings = [
+            {"box": [0.1, 0.5, 0.2, 0.6], "conf": 0.9, "ts": 100.0, "camera": "operator"},
+            {"box": [0.5, 0.5, 0.6, 0.6], "conf": 0.9, "ts": 101.0, "camera": "room-brio"},
+            {"box": [0.3, 0.5, 0.4, 0.6], "conf": 0.9, "ts": 102.0, "camera": "operator"},
+        ]
+        # Without camera filter — uses all 3 (mixed coordinate systems)
+        delta_all = compute_temporal_delta(sightings, first_seen=100.0, last_seen=102.0, now=103.0)
+        # With camera filter — uses only operator sightings (2 of 3)
+        delta_op = compute_temporal_delta(
+            sightings, first_seen=100.0, last_seen=102.0, now=103.0, camera="operator"
+        )
+        # Operator-only should show rightward movement (0.1→0.3)
+        assert delta_op.velocity > 0
+        assert delta_op.direction_deg is not None
+        # Velocity differs because the filtered set excludes the room-brio jump
+        assert delta_op.velocity != delta_all.velocity
+
+    def test_camera_filter_with_no_matching_sightings(self):
+        """Camera filter with no matching camera returns stationary."""
+        sightings = [
+            {"box": [0.1, 0.5, 0.2, 0.6], "conf": 0.9, "ts": 100.0, "camera": "operator"},
+            {"box": [0.3, 0.5, 0.4, 0.6], "conf": 0.9, "ts": 101.0, "camera": "operator"},
+        ]
+        delta = compute_temporal_delta(
+            sightings, first_seen=100.0, last_seen=101.0, now=102.0, camera="room-brio"
+        )
+        assert delta.velocity == 0.0
+        assert delta.direction_deg is None
+
+    def test_no_camera_filter_uses_all_sightings(self):
+        """Without camera filter, all sightings contribute (backward compat)."""
+        sightings = [
+            {"box": [0.1, 0.5, 0.2, 0.6], "conf": 0.9, "ts": 100.0, "camera": "operator"},
+            {"box": [0.5, 0.5, 0.6, 0.6], "conf": 0.9, "ts": 101.0, "camera": "room-brio"},
+        ]
+        delta = compute_temporal_delta(sightings, first_seen=100.0, last_seen=101.0, now=102.0)
+        assert delta.velocity > 0  # uses both sightings
