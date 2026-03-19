@@ -1482,9 +1482,10 @@ class VisionBackend:
                             from agents.models.clip_scene import CLIPSceneClassifier
 
                             self._clip_scene = CLIPSceneClassifier()
+                            log.info("CLIP scene classifier instantiated")
                         scene_state_clip = self._clip_scene.predict(frame)
                     except Exception as exc:
-                        log.debug("CLIP scene classification failed: %s", exc)
+                        log.warning("CLIP scene classification failed: %s", exc)
 
                     # Depth estimation (GPU, every ~30s on operator camera only)
                     nearest_person_distance: str | None = None

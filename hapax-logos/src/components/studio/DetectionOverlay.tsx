@@ -352,8 +352,8 @@ export function DetectionOverlay({
         let grad = gradientCache.get(gradKey);
         if (!grad) {
           grad = ctx.createRadialGradient(cx, cy, radius * 0.1, cx, cy, radius);
-          grad.addColorStop(0, color + Math.round(baseOpacity * 0.6 * 255).toString(16).padStart(2, "0"));
-          grad.addColorStop(0.5, color + Math.round(baseOpacity * 0.25 * 255).toString(16).padStart(2, "0"));
+          grad.addColorStop(0, color + Math.round(baseOpacity * 0.8 * 255).toString(16).padStart(2, "0"));
+          grad.addColorStop(0.5, color + Math.round(baseOpacity * 0.4 * 255).toString(16).padStart(2, "0"));
           grad.addColorStop(1, color + "00");
           gradientCache.set(gradKey, grad);
         }
