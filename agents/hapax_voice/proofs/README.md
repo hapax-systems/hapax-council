@@ -7,9 +7,8 @@ continuity design (DESIGN-conversational-continuity.md).
 
 Each claim gets a directory:
 ```
-claim-N/
+claim-N-<slug>/
   hypothesis.md    — prediction, null, metric, design, date
-  design.md        — detailed experiment design (after baseline)
   data/            — raw Langfuse exports and session logs
   analysis/        — scripts and results
 ```
