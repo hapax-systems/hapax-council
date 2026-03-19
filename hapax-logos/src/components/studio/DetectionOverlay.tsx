@@ -40,6 +40,64 @@ function classColor(label: string): string {
   return CATEGORY_HEX[cat] ?? "#83a598";
 }
 
+// ── Enrichment-driven halo color ─────────────────────────────────────
+// Persons: gaze/emotion/mobility/state drive color. Objects: dim category only.
+const GAZE_COLORS: Record<string, string> = {
+  screen: "#83a598",    // blue — engaged with work
+  hardware: "#fabd2f",  // yellow — hands-on
+  person: "#d3869b",    // purple — social attention
+  away: "#7c8a74",      // muted sage — disengaged
+};
+const EMOTION_TINTS: Record<string, string> = {
+  happy: "#b8bb26",     // bright green
+  sad: "#83a598",       // blue
+  angry: "#fb4934",     // red
+  surprise: "#fe8019",  // orange
+  fear: "#d3869b",      // purple
+  disgust: "#bdae93",   // tan
+};
+const SUPPRESSED_COLOR = "#665c54";  // zinc-600, desaturated
+const EXITING_COLOR = "#504945";     // zinc-700, fading
+
+function haloColor(det: ClassificationDetection): string {
+  // Consent suppressed → desaturated
+  if (det.consent_suppressed) return SUPPRESSED_COLOR;
+
+  // Non-person objects → dim category color
+  if (det.label !== "person") return classColor(det.label);
+
+  // Exiting → fade toward background
+  if (det.is_exiting) return EXITING_COLOR;
+
+  // Person: gaze is primary color driver (most actionable signal)
+  if (det.gaze_direction && GAZE_COLORS[det.gaze_direction]) {
+    return GAZE_COLORS[det.gaze_direction];
+  }
+
+  // Emotion as secondary (only non-neutral)
+  if (det.emotion && det.emotion !== "neutral" && EMOTION_TINTS[det.emotion]) {
+    return EMOTION_TINTS[det.emotion];
+  }
+
+  // Moving person → warm shift
+  if (det.velocity != null && det.velocity > 0.02) return "#fabd2f";
+
+  // Dwelling person → cool shift
+  if (det.dwell_s != null && det.dwell_s > 60) return "#83a598";
+
+  // Default person green
+  return "#8ec07c";
+}
+
+// ── Halo opacity scaling by entity type ──────────────────────────────
+// Persons are prominent, objects are ambient background texture
+function haloOpacityScale(det: ClassificationDetection): number {
+  if (det.label === "person") return 1.0;
+  if (det.novelty > 0.5) return 0.6; // novel objects more visible
+  if (det.mobility === "dynamic") return 0.5;
+  return 0.25; // static familiar objects barely visible
+}
+
 // ── Novelty → breathing period ──────────────────────────────────────────
 // Matches SignalPip severity tiers: static→8s, low→4s, mod→1.5s, high→0.6s
 function breathingPeriod(novelty: number): number {
@@ -299,7 +357,9 @@ export function DetectionOverlay({
       const gradientCache = new Map<string, CanvasGradient>();
 
       for (const det of detections) {
-        const color = classColor(det.label);
+        const color = haloColor(det);           // enrichment-driven (gaze/emotion/state)
+        const pillColor = classColor(det.label); // category-stable for readability
+        const opacityScale = haloOpacityScale(det);
         const isHovered = currentHovered === det.entity_id;
         const highlight = highlights.get(det.entity_id);
         const isHighlighted = !!highlight;
@@ -343,7 +403,7 @@ export function DetectionOverlay({
           breathe = 0.5 + 0.5 * Math.sin((now / 300) * Math.PI * 2);
         }
 
-        const baseOpacity = det.confidence * breathe;
+        const baseOpacity = det.confidence * breathe * opacityScale;
 
         // ── Tier 1: Ambient halos ────────────────────────────────
         // Quantize gradient params for cache reuse
@@ -411,7 +471,7 @@ export function DetectionOverlay({
           const lx = dx1;
           const ly = dy1 - lh - 2;
 
-          ctx.fillStyle = color + "cc";
+          ctx.fillStyle = pillColor + "cc";
           ctx.beginPath();
           ctx.roundRect(lx, ly, lw, lh, 3);
           ctx.fill();
