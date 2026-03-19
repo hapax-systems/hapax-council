@@ -1536,7 +1536,10 @@ class VisionBackend:
                     ambient_brightness, color_temperature = self._estimate_lighting(frame)
 
                     # Action recognition: MoViNet-A2 (streaming) with X3D-XS fallback
-                    if self._vram_lock.acquire():
+                    _action_lock = self._vram_lock.acquire()
+                    if not _action_lock:
+                        log.info("VRAM lock held, skipping action recognition on %s", role)
+                    if _action_lock:
                         try:
                             if not hasattr(self, "_movinet"):
                                 from agents.models.movinet import MoViNetA2
