@@ -1477,16 +1477,26 @@ class VisionBackend:
                     except Exception as exc:
                         log.debug("Scene classification failed: %s", exc)
 
-                    # CLIP scene state — activity-focused zero-shot classification
-                    try:
-                        if not hasattr(self, "_clip_scene"):
-                            from agents.models.clip_scene import CLIPSceneClassifier
+                    # CLIP scene state — only run if model already loaded (non-blocking)
+                    if hasattr(self, "_clip_scene") and self._clip_scene._loaded:
+                        try:
+                            scene_state_clip = self._clip_scene.predict(frame)
+                        except Exception as exc:
+                            log.warning("CLIP scene classification failed: %s", exc)
+                    elif not hasattr(self, "_clip_scene"):
+                        # Start background loading so it's ready for next tick
+                        import threading
 
-                            self._clip_scene = CLIPSceneClassifier()
-                            log.info("CLIP scene classifier instantiated")
-                        scene_state_clip = self._clip_scene.predict(frame)
-                    except Exception as exc:
-                        log.warning("CLIP scene classification failed: %s", exc)
+                        from agents.models.clip_scene import CLIPSceneClassifier
+
+                        self._clip_scene = CLIPSceneClassifier()
+
+                        def _bg_load_clip():
+                            self._clip_scene._load()
+                            log.info("CLIP scene classifier loaded in background")
+
+                        threading.Thread(target=_bg_load_clip, daemon=True).start()
+                        log.info("CLIP scene classifier loading in background thread")
 
                     # Depth estimation (GPU, every ~30s on operator camera only)
                     nearest_person_distance: str | None = None
@@ -1556,14 +1566,23 @@ class VisionBackend:
                     if _action_lock:
                         try:
                             if not hasattr(self, "_movinet"):
+                                import threading as _thr
+
                                 from agents.models.movinet import MoViNetA2
 
                                 self._movinet = MoViNetA2()
-                                log.info("MoViNet-A2 wrapper instantiated")
-                            action = self._movinet.predict(frame)
-                            if action and action != "unknown":
-                                detected_action = action
-                            else:
+
+                                def _bg_load_movinet():
+                                    self._movinet._load()
+                                    log.info("MoViNet-A2 loaded in background")
+
+                                _thr.Thread(target=_bg_load_movinet, daemon=True).start()
+                                log.info("MoViNet-A2 loading in background thread")
+                            if self._movinet._loaded:
+                                action = self._movinet.predict(frame)
+                                if action and action != "unknown":
+                                    detected_action = action
+                            if detected_action in (None, "unknown"):
                                 detected_action = self._run_action_recognition(frame)
                         finally:
                             self._vram_lock.release()
