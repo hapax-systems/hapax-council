@@ -691,7 +691,15 @@ class ConversationPipeline:
                 self.buffer.set_speaking(True)
 
             async for chunk in response:
-                delta = chunk.choices[0].delta if chunk.choices else None
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
+
+                # Log finish reason when stream ends
+                if choice.finish_reason:
+                    log.info("LLM stream finished: reason=%s", choice.finish_reason)
+
                 if delta is None:
                     continue
 
