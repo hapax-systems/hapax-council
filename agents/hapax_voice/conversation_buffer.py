@@ -117,12 +117,17 @@ class ConversationBuffer:
 
     @property
     def in_cooldown(self) -> bool:
-        """True while short post-TTS echo decay cooldown is active."""
+        """True while post-TTS echo decay cooldown is active.
+
+        Cooldown scales with response length: longer responses produce
+        more room echo. Base 2s + 0.3s per second of TTS, capped at 5s.
+        """
         if self._speaking:
             return False
         if self._speaking_ended_at == 0.0:
             return False
-        return (time.monotonic() - self._speaking_ended_at) < POST_TTS_COOLDOWN_S
+        cooldown = getattr(self, "_dynamic_cooldown_s", POST_TTS_COOLDOWN_S)
+        return (time.monotonic() - self._speaking_ended_at) < cooldown
 
     def activate(self) -> None:
         self._active = True
@@ -139,11 +144,17 @@ class ConversationBuffer:
             self._barge_in_speech_count = 0
             self.barge_in_detected = False
             self._speaking_ended_at = 0.0
+            self._speaking_started_at = time.monotonic()
         else:
             # TTS ended — start cooldown for residual echo decay.
-            # Barge-in is disabled (AEC can't cancel echo in studio
-            # conditions), so always use cooldown path.
+            # Cooldown scales with how long Hapax was speaking: longer
+            # responses produce more room echo that persists longer.
             self._speaking_ended_at = time.monotonic()
+            speaking_duration = self._speaking_ended_at - getattr(
+                self, "_speaking_started_at", self._speaking_ended_at
+            )
+            # Base 2s + 0.3s per second of TTS, capped at 5s
+            self._dynamic_cooldown_s = min(5.0, POST_TTS_COOLDOWN_S + speaking_duration * 0.3)
 
     def feed_audio(self, frame: bytes) -> None:
         if not self._active:
