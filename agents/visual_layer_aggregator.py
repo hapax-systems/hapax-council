@@ -33,6 +33,8 @@ from agents.content_scheduler import (
 from agents.predictive_cache import PredictiveCache
 from agents.protention_engine import ProtentionEngine
 from agents.temporal_bands import TemporalBandFormatter
+from agents.temporal_delta import compute_temporal_delta
+from agents.temporal_filter import ClassificationFilter
 from agents.temporal_scales import MultiScaleAggregator
 from agents.visual_layer_state import (
     SEVERITY_CRITICAL,
@@ -99,11 +101,18 @@ SLOW_INTERVAL_S = SLOW_POLL_S
 
 # ── API ──────────────────────────────────────────────────────────────────────
 
-from shared.config import COCKPIT_API_URL as COCKPIT_BASE
-
 # ── Camera roles available for injection ─────────────────────────────────────
-
-CAMERA_ROLES = ["brio-operator", "c920-hardware", "c920-room", "c920-aux"]
+from shared.cameras import (
+    CAMERA_ROLES,
+    can_enrich_persons,
+)
+from shared.cameras import (
+    SHORT_TO_ROLE as _ROLE_MAP,
+)
+from shared.cameras import (
+    resolution as cam_resolution,
+)
+from shared.config import COCKPIT_API_URL as COCKPIT_BASE
 
 # ── Experimental camera filters for ambient injection ────────────────────────
 
@@ -423,7 +432,9 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
     """Map scene_inventory from perception state to classification detections.
 
     Normalizes bounding boxes to 0-1, computes novelty from seen_count,
-    checks consent phase for person suppression. Returns top 5 by confidence.
+    checks consent phase for person suppression. Attaches person enrichments
+    from perception-state top-level keys when on operator camera and not
+    consent-suppressed. Returns top 5 by confidence.
     """
     inventory = data.get("scene_inventory", {})
     objects = inventory.get("objects", [])
@@ -435,24 +446,22 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
     )
     remove_person_detections = consent_phase == "consent_refused"
 
-    # Camera native resolutions for normalization (both short and full role names)
-    _RESOLUTIONS: dict[str, tuple[int, int]] = {
-        "brio-operator": (1920, 1080),
-        "operator": (1920, 1080),
-        "c920-hardware": (1280, 720),
-        "hardware": (1280, 720),
-        "c920-room": (1280, 720),
-        "room": (1280, 720),
-        "c920-aux": (1280, 720),
-        "aux": (1280, 720),
-    }
-    # Map short camera names to full role names for frontend compatibility
-    _ROLE_MAP: dict[str, str] = {
-        "operator": "brio-operator",
-        "hardware": "c920-hardware",
-        "room": "c920-room",
-        "aux": "c920-aux",
-    }
+    # Camera config from shared.cameras (supports 6 cameras: 3 Brio + 3 C920)
+
+    # Person enrichments from perception-state top-level keys (global, first-person only)
+    _ENRICHMENT_MAP = (
+        ("gaze_direction", "gaze_direction"),
+        ("emotion", "top_emotion"),
+        ("posture", "posture"),
+        ("gesture", "hand_gesture"),
+        ("action", "detected_action"),
+        ("depth", "nearest_person_distance"),
+    )
+    person_enrichments: dict[str, str | None] = {}
+    if not suppress_person_enrichments:
+        for field, key in _ENRICHMENT_MAP:
+            val = data.get(key, "")
+            person_enrichments[field] = val if val else None
 
     detections: list[ClassificationDetection] = []
     for obj in objects:
@@ -473,7 +482,7 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
         # Objects from snapshot() don't include raw box, check for it
         box_raw = obj.get("box", obj.get("last_box"))
         if box_raw and len(box_raw) == 4:
-            res_w, res_h = _RESOLUTIONS.get(camera_raw, (1920, 1080))
+            res_w, res_h = cam_resolution(camera_raw)
             x1 = max(0.0, min(1.0, box_raw[0] / res_w))
             y1 = max(0.0, min(1.0, box_raw[1] / res_h))
             x2 = max(0.0, min(1.0, box_raw[2] / res_w))
@@ -486,9 +495,71 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
 
         # CONSENT_REFUSED: remove non-operator person detections entirely
         if is_person and remove_person_detections:
-            # Operator is always rendered (operator_confirmed flag would go here)
-            # For now, skip all person detections during refusal
             continue
+
+        consent_suppressed = suppress_person_enrichments and is_person
+        is_enrichment_cam = can_enrich_persons(camera_raw)
+
+        # Person enrichments: for persons on any enrichment-capable camera, not suppressed
+        # Prefer per-entity enrichments from inventory, fall back to global perception-state
+        enrichment_kwargs: dict[str, Any] = {}
+        if is_person and is_enrichment_cam and not consent_suppressed:
+            for field_name in (
+                "gaze_direction",
+                "emotion",
+                "posture",
+                "gesture",
+                "action",
+                "depth",
+            ):
+                entity_val = obj.get(field_name)
+                if entity_val:
+                    enrichment_kwargs[field_name] = entity_val
+                elif person_enrichments.get(field_name):
+                    enrichment_kwargs[field_name] = person_enrichments[field_name]
+
+        # Entity metadata (available for all entities from snapshot_for_overlay)
+        mobility_score_raw = obj.get("mobility_score")
+        first_seen_age_raw = obj.get("first_seen_age_s")
+        camera_count_raw = obj.get("camera_count")
+
+        # Normalize sightings to tuples
+        raw_sightings = obj.get("sightings")
+        norm_sightings: list[tuple[float, float, float, float]] | None = None
+        if raw_sightings and isinstance(raw_sightings, list):
+            norm_sightings = []
+            for sb in raw_sightings[-5:]:
+                if isinstance(sb, (list, tuple)) and len(sb) == 4:
+                    norm_sightings.append(
+                        (
+                            float(sb[0]),
+                            float(sb[1]),
+                            float(sb[2]),
+                            float(sb[3]),
+                        )
+                    )
+
+        # Temporal delta: compute from raw sightings with timestamps
+        temporal_kwargs: dict[str, Any] = {}
+        raw_sightings = obj.get("raw_sightings", [])
+        first_seen_ts = obj.get("first_seen", 0.0)
+        last_seen_ts = obj.get("last_seen", 0.0)
+        if raw_sightings and len(raw_sightings) >= 2:
+            now_ts = time.time()
+            delta = compute_temporal_delta(
+                sightings=raw_sightings,
+                first_seen=first_seen_ts,
+                last_seen=last_seen_ts,
+                now=now_ts,
+            )
+            temporal_kwargs = {
+                "velocity": delta.velocity,
+                "direction_deg": delta.direction_deg,
+                "confidence_stability": delta.confidence_stability,
+                "dwell_s": delta.dwell_s,
+                "is_entering": delta.is_entering,
+                "is_exiting": delta.is_exiting,
+            }
 
         detections.append(
             ClassificationDetection(
@@ -499,7 +570,17 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
                 confidence=confidence,
                 mobility=obj.get("mobility", "unknown"),
                 novelty=novelty,
-                consent_suppressed=suppress_person_enrichments and is_person,
+                consent_suppressed=consent_suppressed,
+                mobility_score=float(mobility_score_raw)
+                if mobility_score_raw is not None
+                else None,
+                first_seen_age_s=float(first_seen_age_raw)
+                if first_seen_age_raw is not None
+                else None,
+                camera_count=int(camera_count_raw) if camera_count_raw is not None else None,
+                sightings=norm_sightings if norm_sightings else None,
+                **enrichment_kwargs,
+                **temporal_kwargs,
             )
         )
 
@@ -680,6 +761,8 @@ class VisualLayerAggregator:
 
         # Classification detection overlay
         self._classification_detections: list[ClassificationDetection] = []
+        # Per-entity temporal stability filters (Batch 4)
+        self._entity_filters: dict[str, ClassificationFilter] = {}
 
         # Content scheduler (replaces _rotate_ambient_text + _maybe_inject_camera)
         self._scheduler = ContentScheduler()
@@ -836,7 +919,8 @@ class VisualLayerAggregator:
                     self._ambient_moments.append(media_text)
 
             # Classification detection overlay
-            self._classification_detections = _map_scene_inventory(data)
+            raw_detections = _map_scene_inventory(data)
+            self._classification_detections = self._apply_stability_filter(raw_detections)
 
             # WS1: feed multi-scale aggregator
             self._multi_scale.tick(data)
@@ -1302,6 +1386,51 @@ class VisualLayerAggregator:
         params.color_warmth = round(min(1.0, max(params.color_warmth, tod_offset)), 3)
 
         return params
+
+    def _apply_stability_filter(
+        self, detections: list[ClassificationDetection]
+    ) -> list[ClassificationDetection]:
+        """Apply N-of-M hysteresis filter to prevent flickering enrichments.
+
+        Per-entity filters ensure gaze/emotion/posture/gesture/action/mobility
+        only change after 3 consistent readings in a 5-sample window.
+        """
+        # GC stale filters for entities no longer present
+        active_ids = {d.entity_id for d in detections}
+        stale = [eid for eid in self._entity_filters if eid not in active_ids]
+        for eid in stale:
+            del self._entity_filters[eid]
+
+        filtered: list[ClassificationDetection] = []
+        for det in detections:
+            if det.entity_id not in self._entity_filters:
+                self._entity_filters[det.entity_id] = ClassificationFilter()
+
+            filt = self._entity_filters[det.entity_id]
+            stable = filt.filter(
+                gaze_direction=det.gaze_direction,
+                emotion=det.emotion,
+                posture=det.posture,
+                gesture=det.gesture,
+                action=det.action,
+                mobility=det.mobility,
+            )
+
+            # Reconstruct detection with filtered values
+            filtered.append(
+                det.model_copy(
+                    update={
+                        "gaze_direction": stable.get("gaze_direction"),
+                        "emotion": stable.get("emotion"),
+                        "posture": stable.get("posture"),
+                        "gesture": stable.get("gesture"),
+                        "action": stable.get("action"),
+                        "mobility": stable.get("mobility") or det.mobility,
+                    }
+                )
+            )
+
+        return filtered
 
     def _infer_activity(self) -> tuple[str, str]:
         """Infer what the operator is doing from perception state.
