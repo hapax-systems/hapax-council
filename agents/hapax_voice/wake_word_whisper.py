@@ -44,11 +44,15 @@ _WAKE_WORDS = frozenset(
         "hapacs",
         "hey pax,",
         "a pax",
+        "hit pax",
+        "hip ax",
+        "hip pax",
+        "he pax",
     }
 )
 
 # Also match these as substrings (for "hapax" embedded in longer text)
-_WAKE_SUBSTRINGS = ("hapax", "hey pax", "hay pax", "hepax")
+_WAKE_SUBSTRINGS = ("hapax", "hey pax", "hay pax", "hepax", "hit pax", "hip ax", "he pax")
 
 DETECTION_COOLDOWN_S = 1.5
 
