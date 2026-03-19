@@ -7,12 +7,14 @@ import { useEffect, useRef, useState } from "react";
 export function useSnapshotPoll(
   url: string,
   intervalMs: number,
+  enabled = true,
 ): { imgRef: React.RefObject<HTMLImageElement | null>; isStale: boolean } {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const lastSuccess = useRef(0);
   const [isStale, setIsStale] = useState(false);
 
   useEffect(() => {
+    if (!enabled) return;
     let running = true;
     let pending = false;
     let currentLoader: HTMLImageElement | null = null;
@@ -59,7 +61,7 @@ export function useSnapshotPoll(
         currentLoader = null;
       }
     };
-  }, [url, intervalMs]);
+  }, [url, intervalMs, enabled]);
 
   return { imgRef, isStale };
 }

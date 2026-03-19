@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Region } from "../Region";
 import { useBriefing, useNudges } from "../../../api/hooks";
 import { GoalsPanel } from "../../sidebar/GoalsPanel";
@@ -6,7 +7,7 @@ import { CopilotBanner } from "../../dashboard/CopilotBanner";
 import { EnginePanel } from "../../sidebar/EnginePanel";
 import { BriefingPanel } from "../../sidebar/BriefingPanel";
 import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
-import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
+import { useSignals } from "../../../contexts/ClassificationOverlayContext";
 
 function HorizonSurface() {
   const { data: briefing } = useBriefing();
@@ -39,8 +40,8 @@ function HorizonSurface() {
   );
 }
 
-export function HorizonRegion() {
-  const { signalsByRegion, stimmungStance } = useOverlay();
+export const HorizonRegion = memo(function HorizonRegion() {
+  const { signalsByRegion, stimmungStance } = useSignals();
   const horizonSignals = signalsByRegion.horizon;
 
   return (
@@ -92,4 +93,4 @@ export function HorizonRegion() {
       )}
     </Region>
   );
-}
+});

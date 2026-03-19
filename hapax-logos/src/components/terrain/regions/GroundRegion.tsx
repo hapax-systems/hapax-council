@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { memo, useCallback, useState } from "react";
 import { Region } from "../Region";
 import { AmbientCanvas } from "../ground/AmbientCanvas";
 import { TimeDisplay } from "../ground/TimeDisplay";
@@ -7,17 +7,17 @@ import { CameraGrid } from "../ground/CameraGrid";
 import { CameraHero } from "../ground/CameraHero";
 import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
 import { PresenceIndicator } from "../ground/PresenceIndicator";
-import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
-import { useTerrain } from "../../../contexts/TerrainContext";
-import type { useVisualLayerPoll } from "../../../hooks/useVisualLayer";
+import { useSignals } from "../../../contexts/ClassificationOverlayContext";
+import { useTerrainActions } from "../../../contexts/TerrainContext";
+import type { VisualLayerState } from "../../../api/types";
 
 interface GroundRegionProps {
-  vl: ReturnType<typeof useVisualLayerPoll>;
+  vl: VisualLayerState | undefined;
 }
 
-export function GroundRegion({ vl }: GroundRegionProps) {
-  const { signalsByRegion, stimmungStance, perception } = useOverlay();
-  const { setRegionDepth, focusRegion } = useTerrain();
+export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps) {
+  const { signalsByRegion, stimmungStance, perception } = useSignals();
+  const { setRegionDepth, focusRegion } = useTerrainActions();
   const groundSignals = signalsByRegion.ground;
   const [heroRole, setHeroRole] = useState("brio-operator");
   const [fxMode, setFxMode] = useState(false);
@@ -44,11 +44,11 @@ export function GroundRegion({ vl }: GroundRegionProps) {
       {(depth) => (
         <div className="h-full relative">
           {/* Surface: ambient canvas + time + camera pip */}
-          <AmbientCanvas ambientText={vl.ambientText} speed={vl.ambient.speed} />
+          <AmbientCanvas ambientText={vl?.ambient_text ?? ""} speed={vl?.ambient_params?.speed ?? 0.08} />
           <TimeDisplay
-            activityLabel={vl.activityLabel}
-            activityDetail={vl.activityDetail}
-            displayState={vl.state}
+            activityLabel={vl?.activity_label ?? "present"}
+            activityDetail={vl?.activity_detail ?? ""}
+            displayState={vl?.display_state ?? "ambient"}
           />
 
           {/* Surface: small camera pip — bottom-right, above presence indicator */}
@@ -56,7 +56,7 @@ export function GroundRegion({ vl }: GroundRegionProps) {
             <div className="absolute bottom-8 right-8 pointer-events-auto" style={{ zIndex: 4 }}>
               <CameraPip
                 heroRole={heroRole}
-                classificationDetections={vl.classificationDetections}
+                classificationDetections={vl?.classification_detections ?? []}
                 onClick={handlePipClick}
               />
             </div>
@@ -66,7 +66,7 @@ export function GroundRegion({ vl }: GroundRegionProps) {
           {depth === "stratum" && (
             <div className="absolute inset-0 top-16 overflow-y-auto p-4" style={{ zIndex: 5 }}>
               <CameraGrid
-                classificationDetections={vl.classificationDetections}
+                classificationDetections={vl?.classification_detections ?? []}
                 onSelectHero={handleGridSelect}
               />
             </div>
@@ -77,7 +77,7 @@ export function GroundRegion({ vl }: GroundRegionProps) {
             <div className="absolute inset-0 overflow-hidden" style={{ zIndex: 5 }}>
               <CameraHero
                 heroRole={heroRole}
-                classificationDetections={vl.classificationDetections}
+                classificationDetections={vl?.classification_detections ?? []}
                 onHeroChange={setHeroRole}
                 fxMode={fxMode}
                 smoothMode={smoothMode}
@@ -113,7 +113,7 @@ export function GroundRegion({ vl }: GroundRegionProps) {
       )}
     </Region>
   );
-}
+});
 
 // Re-export state for DetailPane
 export { type GroundRegionProps };

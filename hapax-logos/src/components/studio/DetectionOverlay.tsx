@@ -234,6 +234,12 @@ export function DetectionOverlay({
         return;
       }
 
+      // Skip rendering when container is off-screen (hidden region)
+      if (!container.offsetParent) {
+        requestAnimationFrame(render);
+        return;
+      }
+
       const rect = container.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       canvas.width = rect.width * dpr;
@@ -452,6 +458,10 @@ export function DetectionOverlay({
       const activeIds = new Set(detections.map((d) => d.entity_id));
       for (const id of smoothedRef.current.keys()) {
         if (!activeIds.has(id)) smoothedRef.current.delete(id);
+      }
+      // Safety valve: cap Map size to prevent unbounded growth over long sessions
+      if (smoothedRef.current.size > 200) {
+        smoothedRef.current.clear();
       }
 
       requestAnimationFrame(render);

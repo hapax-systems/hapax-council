@@ -4,7 +4,8 @@ import { DetectionOverlay } from "../studio/DetectionOverlay";
 import {
   SIGNAL_CATEGORIES,
   type SignalCategory,
-  useOverlay,
+  useSignals,
+  useOverlayControl,
 } from "../../contexts/ClassificationOverlayContext";
 import type { SignalEntry } from "../../api/types";
 
@@ -14,7 +15,8 @@ interface PerceptionCanvasProps {
 }
 
 export function PerceptionCanvas({ activeZone, onZoneClick }: PerceptionCanvasProps) {
-  const { visualLayer, filteredSignals, zoneOpacityOverrides } = useOverlay();
+  const { visualLayer, filteredSignals } = useSignals();
+  const { zoneOpacityOverrides } = useOverlayControl();
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const classificationDetections = visualLayer?.classification_detections ?? [];

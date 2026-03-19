@@ -3,7 +3,7 @@
  * Extracted from HapaxPage voice session rendering.
  */
 
-import type { useVisualLayerPoll } from "../../../hooks/useVisualLayer";
+import type { VisualLayerState } from "../../../api/types";
 
 const VOICE_STATE_COLORS: Record<string, string> = {
   listening: "#4ddb99",
@@ -12,12 +12,26 @@ const VOICE_STATE_COLORS: Record<string, string> = {
   speaking: "#4d99db",
 };
 
+const DEFAULT_VOICE = {
+  active: false,
+  state: "idle",
+  turn_count: 0,
+  last_utterance: "",
+  last_response: "",
+  active_tool: null as string | null,
+  barge_in: false,
+  routing_tier: "",
+  routing_reason: "",
+  routing_activation: 0.0,
+};
+
 interface VoiceOverlayProps {
-  vl: ReturnType<typeof useVisualLayerPoll>;
+  vl: VisualLayerState | undefined;
 }
 
 export function VoiceOverlay({ vl }: VoiceOverlayProps) {
-  const { voiceSession, voiceContent } = vl;
+  const voiceSession = vl?.voice_session ?? DEFAULT_VOICE;
+  const voiceContent = vl?.voice_content ?? [];
   if (!voiceSession.active) return null;
 
   const tierIntensity: Record<string, number> = {

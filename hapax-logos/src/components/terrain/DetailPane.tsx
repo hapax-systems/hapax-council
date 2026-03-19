@@ -13,7 +13,7 @@ import { GroundRegion } from "./regions/GroundRegion";
 import { WatershedRegion } from "./regions/WatershedRegion";
 import { BedrockRegion } from "./regions/BedrockRegion";
 import { StudioDetailPane } from "./ground/StudioDetailPane";
-import { useVisualLayerPoll } from "../../hooks/useVisualLayer";
+import { useVisualLayer } from "../../api/hooks";
 import type { RegionName } from "../../contexts/TerrainContext";
 
 interface DetailPaneProps {
@@ -21,7 +21,7 @@ interface DetailPaneProps {
 }
 
 export function DetailPane({ region }: DetailPaneProps) {
-  const vl = useVisualLayerPoll();
+  const { data: vl } = useVisualLayer();
   const [heroRole, setHeroRole] = useState("brio-operator");
   const [fxMode, setFxMode] = useState(false);
   const [smoothMode, setSmoothMode] = useState(false);
@@ -42,7 +42,7 @@ export function DetailPane({ region }: DetailPaneProps) {
         <StudioDetailPane
           heroRole={heroRole}
           onHeroChange={setHeroRole}
-          classificationDetections={vl.classificationDetections}
+          classificationDetections={vl?.classification_detections ?? []}
           fxMode={fxMode}
           onFxModeChange={setFxMode}
           smoothMode={smoothMode}
