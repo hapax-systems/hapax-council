@@ -26,12 +26,31 @@ claim-N/
 
 ## Methodology
 
-Single-Case Experimental Design (SCED) with A-B-A reversal:
-- Phase A (baseline): measurement only, no interventions
-- Phase B (intervention): stable frame + compression + memory active
-- Phase A' (reversal): interventions disabled, measurement continues
+Bayesian SCED with sequential stopping and per-component feature flags.
+
+Each claim specifies:
+- **Prior** — Beta or Normal distribution encoding pre-experiment belief
+- **ROPE** — Region of Practical Equivalence (null zone)
+- **Sequential Stopping Rule** — BF > 10 or max sessions
+- **Component flag** — individual feature toggle for A-B-A phases
+
+Primary success metric across all claims: **frustration composite**
+(`frustration_rolling_avg` from `FrustrationDetector`), adapted from
+Datadog RUM frustration signals + COLING 2025 dialogue breakdown research.
 
 Use `~/.cache/hapax/voice-experiment.json` to set condition:
 ```json
-{"name": "continuity-v1", "condition": "A", "phase": "baseline"}
+{
+  "name": "continuity-v1",
+  "condition": "A",
+  "phase": "baseline",
+  "components": {
+    "stable_frame": false,
+    "message_drop": false,
+    "cross_session": false,
+    "sentinel": false
+  }
+}
 ```
+
+No experiment JSON = all components ON (production default).
