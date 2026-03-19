@@ -428,13 +428,13 @@ class VisionBackend:
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
     ) -> None:
         self._webcam_capturer = webcam_capturer
+        # Weighted round-robin: operator gets 3x polls for responsive tracking.
+        # Sequence: op, hw, op, room, op, aux, room-brio, aux-brio (repeat)
         self._camera_roles = camera_roles or [
-            "operator",
-            "hardware",
-            "room",
-            "aux",
-            "room-brio",
-            "aux-brio",
+            "operator", "hardware",
+            "operator", "room",
+            "operator", "aux",
+            "room-brio", "aux-brio",
         ]
         self._poll_interval = poll_interval
         self._cache = _VisionCache()

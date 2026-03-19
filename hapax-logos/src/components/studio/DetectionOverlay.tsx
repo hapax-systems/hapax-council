@@ -58,7 +58,7 @@ interface SmoothedBox {
   y2: number;
 }
 
-const EMA_ALPHA = 0.3;
+const EMA_ALPHA = 0.6; // higher = snappier tracking (was 0.3)
 
 function lerpBox(prev: SmoothedBox, next: SmoothedBox): SmoothedBox {
   return {
