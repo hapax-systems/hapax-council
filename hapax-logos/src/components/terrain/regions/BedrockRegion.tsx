@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Region } from "../Region";
 import { useHealth, useGovernanceHeartbeat, useCost } from "../../../api/hooks";
 import { HealthPanel } from "../../sidebar/HealthPanel";
@@ -9,6 +11,7 @@ import { GovernancePanel } from "../../sidebar/GovernancePanel";
 import { OverheadPanel } from "../../sidebar/OverheadPanel";
 import { PrecedentPanel } from "../../sidebar/PrecedentPanel";
 import { TimersPanel } from "../../sidebar/TimersPanel";
+import { AccommodationPanel } from "../../sidebar/AccommodationPanel";
 import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
 import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
 
@@ -17,22 +20,24 @@ function BedrockSurface() {
   const { data: heartbeat } = useGovernanceHeartbeat();
   const { data: cost } = useCost();
 
-  const hb = heartbeat as any;
-  const score = hb?.score ?? null;
-  const axiomCount = hb?.axiom_count ?? 5;
-  const healthScore = (health as any)?.score ?? null;
-  const healthTotal = (health as any)?.total ?? null;
-  const stance = (health as any)?.summary?.stance ?? "unknown";
-  const costPct = (cost as any)?.tax_percentage ?? null;
+  const score = heartbeat?.score ?? null;
+  const axiomCount = heartbeat?.axiom_count ?? 5;
+  const healthScore = health?.score ?? null;
+  const healthTotal = health?.total ?? null;
+  const stance = health?.summary?.stance ?? "unknown";
+  const costPct = cost?.tax_percentage ?? null;
 
   return (
     <div className="h-full flex items-center gap-6 px-6">
       {/* Axiom dots */}
-      <div className="flex gap-1.5">
-        {Array.from({ length: axiomCount }).map((_, i) => (
+      <div className="flex gap-1.5" title="Axiom compliance">
+        {Array.from({ length: axiomCount }).map((_, i) => {
+          const axiomNames = ["single_user", "exec_function", "corp_boundary", "transparency", "mgmt_governance"];
+          return (
           <div
             key={i}
             className="w-2 h-2 rounded-full"
+            title={axiomNames[i] ?? `axiom-${i}`}
             style={{
               background:
                 score === null
@@ -44,7 +49,8 @@ function BedrockSurface() {
                       : "#fb4934",
             }}
           />
-        ))}
+          );
+        })}
       </div>
 
       {/* Health summary */}
@@ -66,7 +72,7 @@ function BedrockSurface() {
                   : "#504945",
         }}
       >
-        {stance}
+        {stance === "unknown" ? "—" : stance}
       </div>
 
       {/* Cost tax % */}
@@ -80,6 +86,7 @@ function BedrockSurface() {
 export function BedrockRegion() {
   const { signalsByRegion, stimmungStance } = useOverlay();
   const bedrockSignals = signalsByRegion.bedrock;
+  const [accommOpen, setAccommOpen] = useState(false);
 
   return (
     <Region name="bedrock" className="col-span-3" stimmungStance={stimmungStance}>
@@ -88,7 +95,7 @@ export function BedrockRegion() {
           {depth === "surface" && <BedrockSurface />}
           {depth !== "surface" && (
             <div className="h-full overflow-y-auto p-3">
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 <HealthPanel />
                 <VramPanel />
                 <ContainersPanel />
@@ -98,6 +105,25 @@ export function BedrockRegion() {
                 <OverheadPanel />
                 <PrecedentPanel />
                 <TimersPanel />
+              </div>
+              {/* Accommodations — collapsible, governance-adjacent */}
+              <div className="mt-3">
+                <button
+                  onClick={() => setAccommOpen(!accommOpen)}
+                  className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-300"
+                >
+                  {accommOpen ? (
+                    <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3" />
+                  )}
+                  Accommodations
+                </button>
+                {accommOpen && (
+                  <div className="mt-2">
+                    <AccommodationPanel />
+                  </div>
+                )}
               </div>
             </div>
           )}

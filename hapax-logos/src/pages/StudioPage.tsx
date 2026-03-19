@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Maximize, Minimize } from "lucide-react";
 import Hls from "hls.js";
 import { StudioLiveGrid } from "../components/studio/StudioLiveGrid";
@@ -11,6 +11,9 @@ import { StudioSidebar } from "../components/studio/StudioSidebar";
 import { useStudio, useStudioStreamInfo } from "../api/hooks";
 import { useSnapshotPoll } from "../hooks/useSnapshotPoll";
 import { useStudioShortcuts } from "../hooks/useStudioShortcuts";
+import { useVisualLayerPoll } from "../hooks/useVisualLayer";
+import { DetectionOverlay } from "../components/studio/DetectionOverlay";
+import type { ClassificationDetection } from "../api/types";
 import { api } from "../api/client";
 
 /* ---------- GPU FX snapshot viewer ---------- */
@@ -36,7 +39,91 @@ function FxView() {
   );
 }
 
-type ViewMode = "grid" | "composite" | "smooth";
+/* ---------- Classification deep-dive view ---------- */
+function ClassificationView({
+  heroRole,
+  classificationDetections,
+}: {
+  heroRole: string | null;
+  classificationDetections: ClassificationDetection[];
+}) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const role = heroRole ?? "brio-operator";
+  const { imgRef, isStale } = useSnapshotPoll(`/api/studio/stream/camera/${role}`, 80);
+
+  return (
+    <div className="flex h-full gap-2">
+      {/* Hero camera with deep overlay */}
+      <div ref={containerRef} className="relative min-w-0 flex-1">
+        <img
+          ref={imgRef}
+          className="h-full w-full rounded-lg bg-black object-contain"
+          alt={role}
+        />
+        <DetectionOverlay
+          containerRef={containerRef}
+          cameraRole={role}
+          classificationDetections={classificationDetections}
+          tier={3}
+          visible={true}
+        />
+        {isStale && (
+          <div className="absolute inset-x-0 top-2 flex justify-center">
+            <div className="flex items-center gap-1.5 rounded-full bg-amber-900/80 px-3 py-1 text-[11px] font-medium text-amber-200 backdrop-blur-sm">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Camera stale
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Entity list sidebar */}
+      <div className="w-56 shrink-0 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900/70 p-2">
+        <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+          Entities ({classificationDetections.length})
+        </h3>
+        {classificationDetections.length === 0 ? (
+          <p className="text-[10px] text-zinc-600">No detections</p>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {classificationDetections.map((det) => (
+              <div
+                key={det.entity_id}
+                className="flex items-center gap-2 rounded border border-zinc-800 px-2 py-1.5"
+              >
+                <span
+                  className="inline-block h-2 w-2 shrink-0 rounded-full"
+                  style={{
+                    backgroundColor: det.consent_suppressed ? "#665c54" : undefined,
+                    background: det.consent_suppressed
+                      ? undefined
+                      : det.label === "person"
+                        ? "#8ec07c"
+                        : det.label === "keyboard" || det.label === "monitor" || det.label === "laptop" || det.label === "mouse"
+                          ? "#83a598"
+                          : "#bdae93",
+                  }}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[10px] font-medium text-zinc-300">
+                    {det.label}
+                  </div>
+                  <div className="text-[9px] text-zinc-600">
+                    {det.camera} · {(det.confidence * 100).toFixed(0)}% · {det.mobility}
+                  </div>
+                </div>
+                {det.consent_suppressed && (
+                  <span className="shrink-0 text-[8px] text-orange-400">suppressed</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type ViewMode = "grid" | "composite" | "smooth" | "classification";
 
 export function StudioPage() {
   const { data: studio } = useStudio();
@@ -58,6 +145,7 @@ export function StudioPage() {
   const [hlsError, setHlsError] = useState(false);
   const hlsRef = useRef<Hls | null>(null);
   const { data: streamInfo } = useStudioStreamInfo();
+  const { classificationDetections } = useVisualLayerPoll();
 
   const defaultOrder = useMemo(
     () => (compositor ? Object.keys(compositor.cameras) : []),
@@ -225,7 +313,12 @@ export function StudioPage() {
         {/* Main view */}
         <div className="relative min-h-0 flex-1" style={{ isolation: "isolate" }}>
           {focusedCamera ? (
-            <CameraSoloView role={focusedCamera} onClose={() => setFocusedCamera(null)} />
+            <CameraSoloView
+              role={focusedCamera}
+              onClose={() => setFocusedCamera(null)}
+              classificationDetections={classificationDetections}
+              detectionTier={2}
+            />
           ) : (
             <>
               {viewMode === "grid" ? (
@@ -233,6 +326,12 @@ export function StudioPage() {
                   cameraOrder={cameraOrder}
                   onReorder={setUserOrder}
                   onFocusCamera={setFocusedCamera}
+                  classificationDetections={classificationDetections}
+                />
+              ) : viewMode === "classification" ? (
+                <ClassificationView
+                  heroRole={heroRole}
+                  classificationDetections={classificationDetections}
                 />
               ) : viewMode === "composite" ? (
                 <div className="relative h-full w-full">
@@ -272,15 +371,7 @@ export function StudioPage() {
                   )}
                 </>
               )}
-              {/* Hidden video element keeps HLS pre-buffered regardless of view mode */}
-              {viewMode !== "smooth" && (
-                <video
-                  ref={videoRef}
-                  className="invisible absolute inset-0 h-0 w-0"
-                  muted
-                  playsInline
-                />
-              )}
+              {/* HLS pre-buffer removed — only initialized when smooth mode active */}
             </>
           )}
         </div>

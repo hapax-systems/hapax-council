@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from cockpit.engine.models import Action, ActionPlan
 
@@ -45,24 +46,40 @@ class PhasedExecutor:
                 _log.debug("Skipping %s: dependency %s failed/skipped", action.name, dep)
                 return
 
-        try:
-            if sem is not None:
-                async with sem:
+        from shared.telemetry import hapax_span
+
+        with hapax_span(
+            "engine",
+            f"action.{action.name}",
+            metadata={"phase": action.phase, "priority": action.priority},
+        ) as _action_span:
+            try:
+                _t_wait = time.monotonic()
+                if sem is not None:
+                    async with sem:
+                        _t_run = time.monotonic()
+                        if _action_span is not None:
+                            try:
+                                _action_span.update(metadata={
+                                    "semaphore_wait_ms": round((_t_run - _t_wait) * 1000),
+                                })
+                            except Exception:
+                                pass
+                        result = await asyncio.wait_for(
+                            action.handler(**action.args), timeout=self._action_timeout_s
+                        )
+                else:
                     result = await asyncio.wait_for(
                         action.handler(**action.args), timeout=self._action_timeout_s
                     )
-            else:
-                result = await asyncio.wait_for(
-                    action.handler(**action.args), timeout=self._action_timeout_s
-                )
-            plan.results[action.name] = result
-        except TimeoutError:
-            msg = f"Timed out after {self._action_timeout_s}s"
-            plan.errors[action.name] = msg
-            _log.warning("Action %s: %s", action.name, msg)
-        except Exception as exc:
-            plan.errors[action.name] = str(exc)
-            _log.exception("Action %s failed", action.name)
+                plan.results[action.name] = result
+            except TimeoutError:
+                msg = f"Timed out after {self._action_timeout_s}s"
+                plan.errors[action.name] = msg
+                _log.warning("Action %s: %s", action.name, msg)
+            except Exception as exc:
+                plan.errors[action.name] = str(exc)
+                _log.exception("Action %s failed", action.name)
 
     async def execute(self, plan: ActionPlan) -> ActionPlan:
         """Execute all actions in the plan, phase by phase."""

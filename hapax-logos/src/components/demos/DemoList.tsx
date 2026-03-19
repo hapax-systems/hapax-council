@@ -27,8 +27,9 @@ export function DemoList() {
 
   if (!demos?.length) {
     return (
-      <div className="rounded border border-zinc-800 p-6 text-center text-xs text-zinc-500">
-        No demos generated yet. Run: <code className="text-zinc-400">uv run python -m agents.demo "scope for audience"</code>
+      <div className="rounded border border-zinc-800 p-6 text-center">
+        <p className="text-xs text-zinc-400 mb-1">No demos have been generated yet.</p>
+        <p className="text-[11px] text-zinc-600">Create one via the demo agent or command line.</p>
       </div>
     );
   }

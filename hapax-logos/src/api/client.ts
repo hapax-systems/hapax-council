@@ -109,7 +109,7 @@ export const api = {
   consentCoverage: () => get<unknown>("/consent/coverage"),
   consentOverhead: () => get<unknown>("/consent/overhead"),
   consentPrecedents: () => get<unknown[]>("/consent/precedents"),
-  governanceHeartbeat: () => get<unknown>("/governance/heartbeat"),
+  governanceHeartbeat: () => get<import("./types").GovernanceHeartbeat>("/governance/heartbeat"),
   governanceCoverage: () => get<unknown>("/governance/coverage"),
   governanceCarriers: () => get<unknown>("/governance/carriers"),
 

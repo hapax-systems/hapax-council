@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { ZoneOverlay } from "./ZoneOverlay";
+import { DetectionOverlay } from "../studio/DetectionOverlay";
 import {
   SIGNAL_CATEGORIES,
   type SignalCategory,
@@ -15,6 +16,8 @@ interface PerceptionCanvasProps {
 export function PerceptionCanvas({ activeZone, onZoneClick }: PerceptionCanvasProps) {
   const { visualLayer, filteredSignals, zoneOpacityOverrides } = useOverlay();
   const imgRef = useRef<HTMLImageElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const classificationDetections = visualLayer?.classification_detections ?? [];
 
   // Poll compositor snapshot
   useEffect(() => {
@@ -44,12 +47,21 @@ export function PerceptionCanvas({ activeZone, onZoneClick }: PerceptionCanvasPr
   const zoneOpacities = visualLayer?.zone_opacities ?? {};
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-lg bg-black">
+    <div ref={containerRef} className="relative h-full w-full overflow-hidden rounded-lg bg-black">
       {/* Background: compositor snapshot */}
       <img
         ref={imgRef}
         className="h-full w-full object-contain"
         alt="Studio composite"
+      />
+
+      {/* Detection overlay (tier 1, all cameras) */}
+      <DetectionOverlay
+        containerRef={containerRef}
+        classificationDetections={classificationDetections}
+        tier={1}
+        visible={classificationDetections.length > 0}
+        objectFit="contain"
       />
 
       {/* Zone overlays */}

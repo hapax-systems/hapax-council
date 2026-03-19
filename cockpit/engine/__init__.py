@@ -388,12 +388,32 @@ class ReactiveEngine:
             event.doc_type,
         )
 
+        from shared.telemetry import hapax_score, hapax_span, hapax_trace
+
+        _engine_trace_cm = hapax_trace(
+            "engine",
+            "event",
+            metadata={
+                "path": str(event.path),
+                "event_type": event.event_type,
+                "doc_type": event.doc_type or "",
+            },
+        )
+        _engine_trace = _engine_trace_cm.__enter__()
+
         # Evaluate rules
-        plan = evaluate_rules(event, self._registry)
+        with hapax_span(
+            "engine", "evaluate_rules", metadata={"rule_count": len(self._registry)}
+        ):
+            plan = evaluate_rules(event, self._registry)
         self._rules_evaluated += len(self._registry)
 
         if not plan.actions:
             _log.debug("No rules matched for %s", event.path)
+            try:
+                _engine_trace_cm.__exit__(None, None, None)
+            except Exception:
+                pass
             return
 
         # Phase gating: skip expensive phases (1+2) when system is stressed
@@ -433,6 +453,10 @@ class ReactiveEngine:
                     },
                 )
             if not plan.actions:
+                try:
+                    _engine_trace_cm.__exit__(None, None, None)
+                except Exception:
+                    pass
                 return
 
         _log.info(
@@ -442,9 +466,21 @@ class ReactiveEngine:
         )
 
         # Execute
-        await self._executor.execute(plan)
+        with hapax_span("engine", "execute", metadata={
+            "action_count": len(plan.actions),
+            "actions": [a.name for a in plan.actions],
+        }):
+            await self._executor.execute(plan)
         self._actions_executed += len(plan.results)
         self._error_count += len(plan.errors)
+
+        # Score and close the engine trace
+        hapax_score(_engine_trace, "actions_completed", float(len(plan.results)))
+        hapax_score(_engine_trace, "actions_errored", float(len(plan.errors)))
+        try:
+            _engine_trace_cm.__exit__(None, None, None)
+        except Exception:
+            pass
 
         if plan.errors:
             _log.warning("Action errors: %s", plan.errors)

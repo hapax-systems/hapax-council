@@ -10,6 +10,8 @@ interface TerrainState {
   regionDepths: Record<RegionName, Depth>;
   activeOverlay: Overlay;
   investigationTab: InvestigationTab;
+  splitRegion: RegionName | null;
+  splitFullscreen: boolean;
 }
 
 interface TerrainActions {
@@ -18,6 +20,8 @@ interface TerrainActions {
   cycleDepth: (region: RegionName) => void;
   setOverlay: (overlay: Overlay) => void;
   setInvestigationTab: (tab: InvestigationTab) => void;
+  setSplitRegion: (region: RegionName | null) => void;
+  setSplitFullscreen: (fs: boolean) => void;
 }
 
 type TerrainContextValue = TerrainState & TerrainActions;
@@ -39,6 +43,20 @@ export function TerrainProvider({ children }: { children: ReactNode }) {
   const [regionDepths, setRegionDepths] = useState<Record<RegionName, Depth>>(DEFAULT_DEPTHS);
   const [activeOverlay, setActiveOverlay] = useState<Overlay>(null);
   const [investigationTab, setInvestigationTab] = useState<InvestigationTab>("chat");
+  const [splitRegion, setSplitRegionState] = useState<RegionName | null>(null);
+  const [splitFullscreen, setSplitFullscreen] = useState(false);
+
+  const setSplitRegion = useCallback((region: RegionName | null) => {
+    setSplitRegionState(region);
+    setSplitFullscreen(false);
+    // Auto-deepen to stratum when splitting
+    if (region) {
+      setRegionDepths((prev) => ({
+        ...prev,
+        [region]: prev[region] === "surface" ? "stratum" : prev[region],
+      }));
+    }
+  }, []);
 
   const focusRegion = useCallback((region: RegionName | null) => {
     setFocusedRegion(region);
@@ -68,11 +86,15 @@ export function TerrainProvider({ children }: { children: ReactNode }) {
         regionDepths,
         activeOverlay,
         investigationTab,
+        splitRegion,
+        splitFullscreen,
         focusRegion,
         setRegionDepth,
         cycleDepth,
         setOverlay,
         setInvestigationTab,
+        setSplitRegion,
+        setSplitFullscreen,
       }}
     >
       {children}
@@ -80,8 +102,24 @@ export function TerrainProvider({ children }: { children: ReactNode }) {
   );
 }
 
+const noop = () => {};
+const FALLBACK: TerrainContextValue = {
+  focusedRegion: null,
+  regionDepths: DEFAULT_DEPTHS,
+  activeOverlay: null,
+  investigationTab: "chat",
+  splitRegion: null,
+  splitFullscreen: false,
+  focusRegion: noop,
+  setRegionDepth: noop,
+  cycleDepth: noop,
+  setOverlay: noop,
+  setInvestigationTab: noop,
+  setSplitRegion: noop,
+  setSplitFullscreen: noop,
+};
+
 export function useTerrain(): TerrainContextValue {
   const ctx = useContext(TerrainContext);
-  if (!ctx) throw new Error("useTerrain must be used within TerrainProvider");
-  return ctx;
+  return ctx ?? FALLBACK;
 }

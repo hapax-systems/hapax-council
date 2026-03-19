@@ -13,6 +13,9 @@
  *   hapax:status          — set header status text
  *   hapax:stance-override — visual surface stance change
  *   hapax:visual-ping     — visual surface wave event
+ *   hapax:detection-highlight — pulse a detection overlay halo
+ *   hapax:detection-annotate  — annotate a detection entity
+ *   hapax:detection-layer     — toggle detection layer visibility/tier
  */
 import { useEffect, useCallback, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -48,90 +51,80 @@ export function useHapaxIntrospection() {
   useEffect(() => {
     if (!IS_TAURI) return;
 
-    // Dynamic import to avoid breaking non-Tauri builds
-    let cleanups: Array<() => void> = [];
+    // Track whether we've been cleaned up (handles race between async setup and unmount)
+    let disposed = false;
+    const cleanups: Array<() => void> = [];
 
     (async () => {
       const { listen } = await import("@tauri-apps/api/event");
+      if (disposed) return; // Component unmounted before import resolved
 
-      // Navigation
-      const u1 = await listen<string>("hapax:navigate", (e) => {
-        navigate(e.payload);
-      });
-      cleanups.push(u1);
-
-      // Panel toggle
-      const u2 = await listen<{ panel: string; open: boolean }>(
-        "hapax:toggle-panel",
-        (e) => {
-          // Dispatch a custom DOM event that sidebar components can listen for
-          window.dispatchEvent(
-            new CustomEvent("hapax-panel-toggle", { detail: e.payload }),
-          );
-        },
-      );
-      cleanups.push(u2);
-
-      // Toast
-      const u3 = await listen<{
-        message: string;
-        level: string;
-        duration_ms: number;
-      }>("hapax:toast", (e) => {
-        window.dispatchEvent(
-          new CustomEvent("hapax-toast", { detail: e.payload }),
-        );
-      });
-      cleanups.push(u3);
-
-      // Modal
-      const u4 = await listen<{
-        title: string;
-        content: string;
-        dismissable: boolean;
-        action: string;
-      }>("hapax:modal", (e) => {
-        if (e.payload.action === "dismiss") {
-          setModal((prev) => ({ ...prev, visible: false }));
+      const reg = async <T,>(event: string, handler: (e: { payload: T }) => void) => {
+        const unlisten = await listen<T>(event, handler);
+        if (disposed) {
+          unlisten(); // Immediately clean up if we raced unmount
         } else {
-          setModal({
-            visible: true,
-            title: e.payload.title,
-            content: e.payload.content,
-            dismissable: e.payload.dismissable,
-          });
+          cleanups.push(unlisten);
         }
-      });
-      cleanups.push(u4);
+      };
 
-      // Highlight
-      const u5 = await listen<{ selector: string; duration_ms: number }>(
-        "hapax:highlight",
+      await reg<string>("hapax:navigate", (e) => navigate(e.payload));
+
+      await reg<{ panel: string; open: boolean }>("hapax:toggle-panel", (e) => {
+        window.dispatchEvent(new CustomEvent("hapax-panel-toggle", { detail: e.payload }));
+      });
+
+      await reg<{ message: string; level: string; duration_ms: number }>("hapax:toast", (e) => {
+        window.dispatchEvent(new CustomEvent("hapax-toast", { detail: e.payload }));
+      });
+
+      await reg<{ title: string; content: string; dismissable: boolean; action: string }>(
+        "hapax:modal",
         (e) => {
-          const el = document.querySelector(e.payload.selector);
-          if (el instanceof HTMLElement) {
-            el.classList.add("hapax-highlight");
-            setTimeout(() => {
-              el.classList.remove("hapax-highlight");
-            }, e.payload.duration_ms);
+          if (e.payload.action === "dismiss") {
+            setModal((prev) => ({ ...prev, visible: false }));
+          } else {
+            setModal({
+              visible: true,
+              title: e.payload.title,
+              content: e.payload.content,
+              dismissable: e.payload.dismissable,
+            });
           }
         },
       );
-      cleanups.push(u5);
 
-      // Status
-      const u6 = await listen<{ text: string; level: string }>(
-        "hapax:status",
-        (e) => {
-          setStatus(e.payload);
-          // Auto-clear after 10s
-          setTimeout(() => setStatus(null), 10000);
-        },
+      await reg<{ selector: string; duration_ms: number }>("hapax:highlight", (e) => {
+        const el = document.querySelector(e.payload.selector);
+        if (el instanceof HTMLElement) {
+          el.classList.add("hapax-highlight");
+          setTimeout(() => el.classList.remove("hapax-highlight"), e.payload.duration_ms);
+        }
+      });
+
+      await reg<{ text: string; level: string }>("hapax:status", (e) => {
+        setStatus(e.payload);
+        setTimeout(() => setStatus(null), 10000);
+      });
+
+      await reg<{ entity_id: string; annotation?: string; duration_s?: number }>(
+        "hapax:detection-highlight",
+        (e) => window.dispatchEvent(new CustomEvent("hapax:detection-highlight", { detail: e.payload })),
       );
-      cleanups.push(u6);
+
+      await reg<{ entity_id: string; annotation?: string; duration_s?: number }>(
+        "hapax:detection-annotate",
+        (e) => window.dispatchEvent(new CustomEvent("hapax:detection-annotate", { detail: e.payload })),
+      );
+
+      await reg<{ visible: boolean; tier?: number }>(
+        "hapax:detection-layer",
+        (e) => window.dispatchEvent(new CustomEvent("hapax:detection-layer", { detail: e.payload })),
+      );
     })();
 
     return () => {
+      disposed = true;
       cleanups.forEach((fn) => fn());
     };
   }, [navigate]);

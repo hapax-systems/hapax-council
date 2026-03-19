@@ -58,7 +58,10 @@ def _get_langfuse():
 
 # ── System Tags ──────────────────────────────────────────────────────────────
 
-SYSTEMS = frozenset({"perception", "stimmung", "visual", "experiential", "prediction"})
+SYSTEMS = frozenset({
+    "perception", "stimmung", "visual", "experiential", "prediction",
+    "voice", "engine", "interaction",
+})
 
 
 def _system_tags(system: str, extra_tags: list[str] | None = None) -> list[str]:
@@ -169,6 +172,71 @@ def hapax_score(
         span.score(name=name, value=round(value, 4), data_type="NUMERIC", comment=comment)
     except Exception:
         log.debug("Langfuse score failed: %s", name, exc_info=True)
+
+
+@contextmanager
+def hapax_trace(
+    system: str,
+    name: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    session_id: str | None = None,
+    input_data: Any = None,
+):
+    """Create a top-level Langfuse chain span for a system operation.
+
+    Unlike hapax_span (which creates child observations), this creates a root-level
+    "chain" span that groups an entire operation. Child hapax_span() calls within
+    the context will nest automatically.
+
+    Use for: utterance lifecycles, reactive engine events, sync runs.
+    """
+    client = _get_langfuse()
+    if client is None:
+        yield None
+        return
+
+    full_name = f"{system}.{name}"
+    all_tags = _system_tags(system, tags)
+
+    try:
+        from langfuse import propagate_attributes
+
+        with propagate_attributes(
+            tags=all_tags,
+            session_id=session_id,
+            metadata=metadata or {},
+        ):
+            with client.start_as_current_observation(
+                as_type="chain",
+                name=full_name,
+                input=input_data,
+                metadata=metadata or {},
+            ) as trace:
+                yield trace
+    except Exception:
+        log.debug("Langfuse trace failed: %s", full_name, exc_info=True)
+        yield None
+
+
+def hapax_bool_score(
+    span: Any,
+    name: str,
+    value: bool,
+    *,
+    comment: str = "",
+) -> None:
+    """Attach a boolean score to a span.
+
+    Use for: consent_latency_ok, rate_limited, threshold checks.
+    """
+    if span is None:
+        return
+    try:
+        span.score(name=name, value=int(value), data_type="BOOLEAN", comment=comment)
+    except Exception:
+        log.debug("Langfuse bool score failed: %s", name, exc_info=True)
 
 
 def hapax_interaction(

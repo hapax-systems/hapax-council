@@ -1,13 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Maximize, Minimize, GripVertical } from "lucide-react";
+import { DetectionOverlay, type DetectionTier } from "./DetectionOverlay";
+import type { ClassificationDetection } from "../../api/types";
 
 interface Props {
   cameraOrder: string[];
   onReorder: (order: string[]) => void;
   onFocusCamera: (role: string) => void;
+  classificationDetections?: ClassificationDetection[];
+  detectionTier?: DetectionTier;
+  detectionsVisible?: boolean;
 }
 
-export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera }: Props) {
+export function StudioLiveGrid({
+  cameraOrder,
+  onReorder,
+  onFocusCamera,
+  classificationDetections = [],
+  detectionTier = 1,
+  detectionsVisible = true,
+}: Props) {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
 
@@ -31,7 +43,13 @@ export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera }: Props)
     setOverIdx(null);
   };
 
-  if (cameraOrder.length === 0) return null;
+  if (cameraOrder.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
+        No cameras connected — start the compositor to enable studio.
+      </div>
+    );
+  }
 
   const hero = cameraOrder[0];
   const others = cameraOrder.slice(1);
@@ -49,6 +67,9 @@ export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera }: Props)
         onDrop={handleDrop}
         onDragEnd={handleDragEnd}
         onFocus={onFocusCamera}
+        classificationDetections={classificationDetections}
+        detectionTier={detectionTier}
+        detectionsVisible={detectionsVisible}
       />
       {others.length > 0 && (
         <div className="flex w-1/3 flex-col gap-1">
@@ -64,6 +85,9 @@ export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera }: Props)
               onDrop={handleDrop}
               onDragEnd={handleDragEnd}
               onFocus={onFocusCamera}
+              classificationDetections={classificationDetections}
+              detectionTier={detectionTier}
+              detectionsVisible={detectionsVisible}
             />
           ))}
         </div>
@@ -83,6 +107,9 @@ interface CameraCellProps {
   onDrop: (idx: number) => void;
   onDragEnd: () => void;
   onFocus: (role: string) => void;
+  classificationDetections?: ClassificationDetection[];
+  detectionTier?: DetectionTier;
+  detectionsVisible?: boolean;
 }
 
 function CameraCell({
@@ -96,6 +123,9 @@ function CameraCell({
   onDrop,
   onDragEnd,
   onFocus,
+  classificationDetections = [],
+  detectionTier = 1,
+  detectionsVisible = true,
 }: CameraCellProps) {
   const imgRef = useRef<HTMLImageElement>(null);
   const cellRef = useRef<HTMLDivElement>(null);
@@ -122,19 +152,23 @@ function CameraCell({
     if (!img) return;
     let running = true;
     let pending = false;
+    let currentLoader: HTMLImageElement | null = null;
 
     const pull = () => {
       if (!running || pending) return;
       pending = true;
       const loader = new Image();
+      currentLoader = loader;
       loader.onload = () => {
         if (running && img) img.src = loader.src;
         lastSuccess.current = Date.now();
         setIsStale(false);
         pending = false;
+        currentLoader = null;
       };
       loader.onerror = () => {
         pending = false;
+        currentLoader = null;
       };
       loader.src = `/api/studio/stream/camera/${role}?_t=${Date.now()}`;
     };
@@ -149,6 +183,12 @@ function CameraCell({
       running = false;
       clearInterval(timer);
       clearInterval(staleTimer);
+      if (currentLoader) {
+        currentLoader.onload = null;
+        currentLoader.onerror = null;
+        currentLoader.src = "";
+        currentLoader = null;
+      }
     };
   }, [role, isHero]);
 
@@ -178,11 +218,21 @@ function CameraCell({
         ref={imgRef}
         alt={role}
         crossOrigin="anonymous"
-        className={`bg-black object-contain ${isFullscreen ? "max-h-screen max-w-full" : "h-full w-full"}`}
+        className={`bg-black ${isFullscreen ? "max-h-screen max-w-full object-contain" : "h-full w-full object-cover"}`}
+      />
+
+      {/* Classification detection overlay */}
+      <DetectionOverlay
+        containerRef={cellRef}
+        cameraRole={role}
+        classificationDetections={classificationDetections}
+        tier={detectionTier}
+        visible={detectionsVisible}
+        objectFit={isFullscreen ? "contain" : "cover"}
       />
 
       {/* Labels + controls */}
-      <div className="absolute left-1 top-1 flex items-center gap-1">
+      <div className="absolute left-1 top-1 z-20 flex items-center gap-1">
         <span className="rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 backdrop-blur-sm">
           {role}
         </span>
@@ -193,7 +243,7 @@ function CameraCell({
           </span>
         )}
       </div>
-      <div className="absolute right-1 top-1 flex items-center gap-0.5">
+      <div className="absolute right-1 top-1 z-20 flex items-center gap-0.5">
         {!isFullscreen && (
           <div className="cursor-grab rounded bg-black/40 p-0.5 text-zinc-400 active:cursor-grabbing">
             <GripVertical className="h-3 w-3" />

@@ -77,6 +77,17 @@ export interface SignalStaleness {
 
 export type StimmungStance = "nominal" | "cautious" | "degraded" | "critical";
 
+export interface ClassificationDetection {
+  entity_id: string;
+  label: string;
+  camera: string;
+  box: [number, number, number, number];
+  confidence: number;
+  mobility: "static" | "dynamic" | "unknown";
+  novelty: number;
+  consent_suppressed: boolean;
+}
+
 export interface VisualLayerState {
   available?: boolean;
   display_state: string;
@@ -93,6 +104,8 @@ export interface VisualLayerState {
   temporal_context?: TemporalContext;
   signal_staleness?: SignalStaleness;
   stimmung_stance?: StimmungStance;
+  classification_detections?: ClassificationDetection[];
+  classification_directives?: Record<string, string>;
   timestamp: number;
 }
 
@@ -124,7 +137,9 @@ export function useVisualLayerPoll() {
     const poll = async () => {
       try {
         const res = await fetch(`${API}/studio/visual-layer`);
-        if (res.ok && active) setVlState(await res.json());
+        if (!res.ok || !active) return;
+        const data = await res.json();
+        if (active) setVlState(data);
       } catch {
         /* offline */
       }
@@ -151,6 +166,8 @@ export function useVisualLayerPoll() {
   const temporalContext = vlState?.temporal_context ?? null;
   const signalStaleness = vlState?.signal_staleness ?? null;
   const stimmungStance: StimmungStance = vlState?.stimmung_stance ?? "nominal";
+  const classificationDetections = vlState?.classification_detections ?? [];
+  const classificationDirectives = vlState?.classification_directives ?? {};
 
   return {
     raw: vlState,
@@ -168,5 +185,7 @@ export function useVisualLayerPoll() {
     temporalContext,
     signalStaleness,
     stimmungStance,
+    classificationDetections,
+    classificationDirectives,
   };
 }
