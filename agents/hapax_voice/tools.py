@@ -1217,7 +1217,11 @@ async def handle_highlight_detection(params) -> None:
                 json=directive,
             )
             if resp.status_code == 200:
-                result = f"Highlighting {entity_id}" + (f" with annotation '{annotation}'" if annotation else "") + f" for {duration_s}s."
+                result = (
+                    f"Highlighting {entity_id}"
+                    + (f" with annotation '{annotation}'" if annotation else "")
+                    + f" for {duration_s}s."
+                )
             else:
                 result = f"Directive failed: {resp.status_code}"
     except Exception as e:

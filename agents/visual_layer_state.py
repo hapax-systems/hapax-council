@@ -210,6 +210,22 @@ class SignalStaleness(BaseModel):
 # ── Visual Layer State (output model) ────────────────────────────────────────
 
 
+class ClassificationDetection(BaseModel, frozen=True):
+    """A single classification detection for the overlay.
+
+    Normalized coordinates (0-1) relative to the camera frame.
+    """
+
+    entity_id: str
+    label: str
+    camera: str
+    box: tuple[float, float, float, float]  # x1, y1, x2, y2 normalized 0-1
+    confidence: float
+    mobility: str = "unknown"  # static | dynamic | unknown
+    novelty: float = 0.0  # 0.0=familiar, 1.0=brand new
+    consent_suppressed: bool = False  # True when person enrichments must be hidden
+
+
 class VisualLayerState(BaseModel):
     """Complete state for the visual communication layer.
 
@@ -233,6 +249,9 @@ class VisualLayerState(BaseModel):
     temporal_context: TemporalContext = Field(default_factory=TemporalContext)
     signal_staleness: SignalStaleness = Field(default_factory=SignalStaleness)
     stimmung_stance: str = "nominal"  # System self-state stance (WS2)
+    # Classification detection overlay
+    classification_detections: list[ClassificationDetection] = Field(default_factory=list)
+    classification_directives: dict[str, str] = Field(default_factory=dict)
     # Corpora next: environmental color influence
     environmental_color: EnvironmentalColor = Field(default_factory=EnvironmentalColor)
     # Corpora next: transition choreography

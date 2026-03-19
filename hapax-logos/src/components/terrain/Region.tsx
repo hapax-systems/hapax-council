@@ -1,4 +1,4 @@
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { useTerrain, type RegionName, type Depth } from "../../contexts/TerrainContext";
 import type { StimmungStance } from "../../hooks/useVisualLayer";
 
@@ -52,6 +52,7 @@ export function Region({ name, children, className = "", style, stimmungStance }
   const { regionDepths, focusedRegion, cycleDepth, focusRegion } = useTerrain();
   const depth = regionDepths[name];
   const isFocused = focusedRegion === name;
+  const [isHovered, setIsHovered] = useState(false);
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -74,8 +75,17 @@ export function Region({ name, children, className = "", style, stimmungStance }
     [depth, name, cycleDepth, focusRegion],
   );
 
-  const baseBorder = isFocused ? "rgba(184, 187, 38, 0.12)" : DEPTH_BORDER[depth];
+  const baseBorder = isFocused
+    ? "rgba(184, 187, 38, 0.12)"
+    : isHovered && depth === "surface"
+      ? "rgba(180, 160, 120, 0.12)"
+      : DEPTH_BORDER[depth];
   const stimmung = stimmungBorderStyle(stimmungStance, baseBorder);
+
+  const hoverGlow =
+    isHovered && depth === "surface" && !isFocused
+      ? "inset 0 0 16px rgba(180, 160, 120, 0.04)"
+      : undefined;
 
   return (
     <div
@@ -86,7 +96,7 @@ export function Region({ name, children, className = "", style, stimmungStance }
         borderColor: stimmung.borderColor,
         borderWidth: "1px",
         borderStyle: "solid",
-        boxShadow: stimmung.boxShadow ?? (isFocused
+        boxShadow: stimmung.boxShadow ?? hoverGlow ?? (isFocused
           ? "inset 0 0 24px rgba(184, 187, 38, 0.04)"
           : DEPTH_GLOW[depth]),
         animation: stimmung.animation,
@@ -95,12 +105,14 @@ export function Region({ name, children, className = "", style, stimmungStance }
         ...style,
       }}
       onClick={handleClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
     >
       {/* Depth indicator */}
       <div
-        className="absolute top-1 right-1 text-[8px] uppercase tracking-[0.3em] pointer-events-none"
+        className="absolute top-1 right-1 text-[9px] uppercase tracking-[0.3em] pointer-events-none"
         style={{
-          color: "rgba(180, 160, 120, 0.15)",
+          color: "rgba(180, 160, 120, 0.3)",
           opacity: depth === "surface" ? 0 : 1,
           transition: "opacity 150ms ease",
           zIndex: 2,

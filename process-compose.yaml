@@ -117,3 +117,16 @@ processes:
       restart: "no"
     # Runs via systemd timer, not continuously — this is for manual runs
     disabled: true
+
+  # ── VRAM Watchdog (30s loop) ──────────────────────────────────
+  vram-watchdog:
+    command: |
+      bash -c 'while true; do
+        /home/hapax/projects/hapax-council/scripts/vram-watchdog.sh
+        sleep 30
+      done'
+    working_dir: /home/hapax/projects/hapax-council
+    availability:
+      restart: on_failure
+      backoff_seconds: 10
+      max_restarts: 100

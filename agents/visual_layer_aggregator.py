@@ -41,6 +41,7 @@ from agents.visual_layer_state import (
     SEVERITY_MEDIUM,
     AmbientParams,
     BiometricState,
+    ClassificationDetection,
     DisplayStateMachine,
     InjectedFeed,
     SignalCategory,
@@ -416,6 +417,95 @@ def map_stimmung(stimmung: SystemStimmung) -> list[SignalEntry]:
     return signals
 
 
+def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
+    """Map scene_inventory from perception state to classification detections.
+
+    Normalizes bounding boxes to 0-1, computes novelty from seen_count,
+    checks consent phase for person suppression. Returns top 5 by confidence.
+    """
+    inventory = data.get("scene_inventory", {})
+    objects = inventory.get("objects", [])
+    consent_phase = data.get("consent_phase", "no_guest")
+    suppress_person_enrichments = consent_phase in (
+        "guest_detected",
+        "consent_pending",
+        "consent_refused",
+    )
+    remove_person_detections = consent_phase == "consent_refused"
+
+    # Camera native resolutions for normalization (both short and full role names)
+    _RESOLUTIONS: dict[str, tuple[int, int]] = {
+        "brio-operator": (1920, 1080),
+        "operator": (1920, 1080),
+        "c920-hardware": (1280, 720),
+        "hardware": (1280, 720),
+        "c920-room": (1280, 720),
+        "room": (1280, 720),
+        "c920-aux": (1280, 720),
+        "aux": (1280, 720),
+    }
+    # Map short camera names to full role names for frontend compatibility
+    _ROLE_MAP: dict[str, str] = {
+        "operator": "brio-operator",
+        "hardware": "c920-hardware",
+        "room": "c920-room",
+        "aux": "c920-aux",
+    }
+
+    detections: list[ClassificationDetection] = []
+    for obj in objects:
+        confidence = obj.get("confidence", 0.0)
+        if confidence < 0.3:
+            continue
+
+        camera_raw = obj.get("camera", "")
+        camera = _ROLE_MAP.get(camera_raw, camera_raw)
+        label = obj.get("label", "")
+        entity_id = obj.get("entity_id", "")
+
+        # Compute novelty from seen_count (fewer sightings = more novel)
+        seen_count = obj.get("seen_count", 1)
+        novelty = max(0.0, min(1.0, 1.0 - (seen_count - 1) / 20.0))
+
+        # Normalize bounding box to 0-1 coordinates
+        # Objects from snapshot() don't include raw box, check for it
+        box_raw = obj.get("box", obj.get("last_box"))
+        if box_raw and len(box_raw) == 4:
+            res_w, res_h = _RESOLUTIONS.get(camera_raw, (1920, 1080))
+            x1 = max(0.0, min(1.0, box_raw[0] / res_w))
+            y1 = max(0.0, min(1.0, box_raw[1] / res_h))
+            x2 = max(0.0, min(1.0, box_raw[2] / res_w))
+            y2 = max(0.0, min(1.0, box_raw[3] / res_h))
+            box = (x1, y1, x2, y2)
+        else:
+            continue  # Skip objects without bbox data
+
+        is_person = label == "person"
+
+        # CONSENT_REFUSED: remove non-operator person detections entirely
+        if is_person and remove_person_detections:
+            # Operator is always rendered (operator_confirmed flag would go here)
+            # For now, skip all person detections during refusal
+            continue
+
+        detections.append(
+            ClassificationDetection(
+                entity_id=entity_id,
+                label=label,
+                camera=camera,
+                box=box,
+                confidence=confidence,
+                mobility=obj.get("mobility", "unknown"),
+                novelty=novelty,
+                consent_suppressed=suppress_person_enrichments and is_person,
+            )
+        )
+
+    # Sort by confidence descending, take top 5
+    detections.sort(key=lambda d: d.confidence, reverse=True)
+    return detections[:5]
+
+
 def map_biometrics(data: dict) -> BiometricState:
     """Map biometric fields from perception state."""
     return BiometricState(
@@ -471,6 +561,9 @@ class VisualLayerAggregator:
         self._voice_session = VoiceSessionState()
         self._voice_content: list[SupplementaryContent] = []
         self._biometrics = BiometricState()
+
+        # Classification detection overlay
+        self._classification_detections: list[ClassificationDetection] = []
 
         # Content scheduler (replaces _rotate_ambient_text + _maybe_inject_camera)
         self._scheduler = ContentScheduler()
@@ -598,6 +691,9 @@ class VisualLayerAggregator:
 
             # Biometrics (Batch E)
             self._biometrics = map_biometrics(data)
+
+            # Classification detection overlay
+            self._classification_detections = _map_scene_inventory(data)
 
             # WS1: feed multi-scale aggregator
             self._multi_scale.tick(data)
@@ -1204,6 +1300,9 @@ class VisualLayerAggregator:
         state.biometrics = self._biometrics
         state.injected_feeds = self._injected_feeds
         state.ambient_text = self._ambient_text
+
+        # Classification detection overlay
+        state.classification_detections = self._classification_detections
 
         # Activity label — what Hapax thinks operator is doing
         activity_label, activity_detail = self._infer_activity()

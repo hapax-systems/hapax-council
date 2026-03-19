@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { usePerception, useVisualLayer } from "../api/hooks";
-import type { PerceptionState, VisualLayerState, SignalEntry, StimmungStance } from "../api/types";
+import type { ClassificationDetection, PerceptionState, VisualLayerState, SignalEntry, StimmungStance } from "../api/types";
+import type { DetectionTier } from "../components/studio/DetectionOverlay";
 import type { RegionName } from "./TerrainContext";
 
 export type OverlayMode = "off" | "minimal" | "full";
@@ -141,6 +142,12 @@ interface OverlayContextValue {
   stimmungStance: StimmungStance;
   zoneOpacityOverrides: Record<string, number>;
   setZoneOpacity: (zone: string, opacity: number) => void;
+  // Detection overlay state
+  detectionLayerVisible: boolean;
+  setDetectionLayerVisible: (v: boolean) => void;
+  detectionTier: DetectionTier;
+  setDetectionTier: (t: DetectionTier) => void;
+  classificationDetections: ClassificationDetection[];
 }
 
 const OverlayContext = createContext<OverlayContextValue | null>(null);
@@ -151,6 +158,33 @@ export function ClassificationOverlayProvider({ children }: { children: ReactNod
   const [channelVisibility, setChannelVisibility] = useState(loadVisibility);
   const [overlayMode, setOverlayModeState] = useState(loadMode);
   const [zoneOpacityOverrides, setZoneOpacityOverrides] = useState<Record<string, number>>({});
+
+  // Detection overlay state — persisted in localStorage
+  const [detectionLayerVisible, setDetectionVisibleRaw] = useState(() => {
+    try {
+      const v = localStorage.getItem("hapax-detection-layer-visible");
+      return v === null ? true : v === "true";
+    } catch { return true; }
+  });
+  const [detectionTier, setDetectionTierRaw] = useState<DetectionTier>(() => {
+    try {
+      const v = localStorage.getItem("hapax-detection-tier");
+      const n = v ? Number(v) : 1;
+      return (n === 1 || n === 2 || n === 3 ? n : 1) as DetectionTier;
+    } catch { return 1 as DetectionTier; }
+  });
+
+  const setDetectionLayerVisible = useCallback((v: boolean) => {
+    setDetectionVisibleRaw(v);
+    try { localStorage.setItem("hapax-detection-layer-visible", String(v)); } catch { /* */ }
+  }, []);
+
+  const setDetectionTier = useCallback((t: DetectionTier) => {
+    setDetectionTierRaw(t);
+    try { localStorage.setItem("hapax-detection-tier", String(t)); } catch { /* */ }
+  }, []);
+
+  const classificationDetections: ClassificationDetection[] = visualLayer?.classification_detections ?? [];
 
   const setOverlayMode = useCallback((mode: OverlayMode) => {
     setOverlayModeState(mode);
@@ -212,8 +246,13 @@ export function ClassificationOverlayProvider({ children }: { children: ReactNod
       stimmungStance,
       zoneOpacityOverrides,
       setZoneOpacity,
+      detectionLayerVisible,
+      setDetectionLayerVisible,
+      detectionTier,
+      setDetectionTier,
+      classificationDetections,
     }),
-    [perception, visualLayer, overlayMode, setOverlayMode, channelVisibility, toggleChannel, filteredSignals, signalsByRegion, stimmungStance, zoneOpacityOverrides, setZoneOpacity],
+    [perception, visualLayer, overlayMode, setOverlayMode, channelVisibility, toggleChannel, filteredSignals, signalsByRegion, stimmungStance, zoneOpacityOverrides, setZoneOpacity, detectionLayerVisible, setDetectionLayerVisible, detectionTier, setDetectionTier, classificationDetections],
   );
 
   return <OverlayContext.Provider value={value}>{children}</OverlayContext.Provider>;

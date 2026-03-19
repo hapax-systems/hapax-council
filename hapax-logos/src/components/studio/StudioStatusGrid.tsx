@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStudio } from "../../api/hooks";
 import { AlertTriangle, Camera, X, Maximize, GripVertical } from "lucide-react";
+import { DetectionOverlay, type DetectionTier } from "./DetectionOverlay";
+import type { ClassificationDetection } from "../../api/types";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-green-500",
@@ -108,9 +110,15 @@ export function StudioStatusGrid({ onFocusCamera, focusedCamera }: Props) {
 export function CameraSoloView({
   role,
   onClose,
+  classificationDetections = [],
+  detectionTier = 2,
+  detectionsVisible = true,
 }: {
   role: string;
   onClose: () => void;
+  classificationDetections?: ClassificationDetection[];
+  detectionTier?: DetectionTier;
+  detectionsVisible?: boolean;
 }) {
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -123,20 +131,24 @@ export function CameraSoloView({
     if (!img) return;
     let running = true;
     let pending = false;
+    let currentLoader: HTMLImageElement | null = null;
     lastSuccess.current = Date.now();
 
     const pull = () => {
       if (!running || pending) return;
       pending = true;
       const loader = new Image();
+      currentLoader = loader;
       loader.onload = () => {
         if (running && img) img.src = loader.src;
         lastSuccess.current = Date.now();
         setIsStale(false);
         pending = false;
+        currentLoader = null;
       };
       loader.onerror = () => {
         pending = false;
+        currentLoader = null;
       };
       loader.src = `/api/studio/stream/camera/${role}?_t=${Date.now()}`;
     };
@@ -150,6 +162,12 @@ export function CameraSoloView({
       running = false;
       clearInterval(timer);
       clearInterval(staleTimer);
+      if (currentLoader) {
+        currentLoader.onload = null;
+        currentLoader.onerror = null;
+        currentLoader.src = "";
+        currentLoader = null;
+      }
     };
   }, [role]);
 
@@ -180,7 +198,15 @@ export function CameraSoloView({
         alt={role}
         className="aspect-video w-full rounded-lg bg-black object-contain"
       />
-      <div className="absolute left-2 top-2 flex items-center gap-1.5">
+      {/* Classification detection overlay */}
+      <DetectionOverlay
+        containerRef={containerRef}
+        cameraRole={role}
+        classificationDetections={classificationDetections}
+        tier={detectionTier}
+        visible={detectionsVisible}
+      />
+      <div className="absolute left-2 top-2 z-20 flex items-center gap-1.5">
         <span className="flex items-center gap-1 rounded bg-black/60 px-2 py-1 text-[10px] font-medium text-amber-300 backdrop-blur-sm">
           <Camera className="h-3 w-3" />
           {role}
@@ -192,7 +218,7 @@ export function CameraSoloView({
           </span>
         )}
       </div>
-      <div className="absolute right-2 top-2 flex items-center gap-1">
+      <div className="absolute right-2 top-2 z-20 flex items-center gap-1">
         <button
           onClick={toggleFullscreen}
           className="rounded bg-black/60 p-1 text-zinc-300 backdrop-blur-sm hover:bg-black/80"

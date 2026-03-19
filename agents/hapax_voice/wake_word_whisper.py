@@ -126,9 +126,7 @@ def _fuzzy_wake_match(text_clean: str) -> bool:
         return True
 
     # Check if any bigram matches h+pax pattern
-    return any(
-        words[i] in h_starts and words[i + 1] in pax_ends for i in range(len(words) - 1)
-    )
+    return any(words[i] in h_starts and words[i + 1] in pax_ends for i in range(len(words) - 1))
 
 
 DETECTION_COOLDOWN_S = 1.5

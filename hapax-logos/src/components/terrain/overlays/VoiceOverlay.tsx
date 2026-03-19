@@ -36,8 +36,8 @@ export function VoiceOverlay({ vl }: VoiceOverlayProps) {
     >
       {/* Voice indicator — bottom center of Ground area */}
       <div
-        className="absolute bottom-[15%] left-1/2 -translate-x-1/2 pointer-events-auto"
-        style={{ animation: "voiceIn 1.5s ease-out forwards" }}
+        className="absolute left-1/2 -translate-x-1/2 pointer-events-auto"
+        style={{ bottom: "max(16px, 12vh)", animation: "voiceIn 1.5s ease-out forwards" }}
       >
         <div
           className="flex items-center gap-3 backdrop-blur-md rounded-full px-6 py-3"
@@ -118,7 +118,7 @@ export function VoiceOverlay({ vl }: VoiceOverlayProps) {
       {/* Supplementary content cards */}
       {voiceContent.length > 0 && (
         <div
-          className="absolute top-[15%] right-[5%] flex flex-col gap-3 max-w-sm pointer-events-auto"
+          className="absolute top-[15%] right-[5%] flex flex-col gap-3 max-w-sm max-h-[50vh] overflow-y-auto pointer-events-auto"
         >
           {voiceContent.map((content, i) => (
             <div
