@@ -1746,13 +1746,9 @@ class VoiceDaemon:
                     # trust it over a single failed face embedding match.
                     _pe = self._presence_engine
                     _presence_suppresses_guest = (
-                        _pe is not None
-                        and _pe.state == "PRESENT"
-                        and _pe.posterior >= 0.8
+                        _pe is not None and _pe.state == "PRESENT" and _pe.posterior >= 0.8
                     )
-                    _effective_guest_count = (
-                        0 if _presence_suppresses_guest else state.guest_count
-                    )
+                    _effective_guest_count = 0 if _presence_suppresses_guest else state.guest_count
                     self.consent_tracker.tick(
                         face_count=state.face_count,
                         speaker_is_operator=speaker_is_op,
