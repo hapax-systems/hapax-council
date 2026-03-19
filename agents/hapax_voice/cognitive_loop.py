@@ -100,7 +100,6 @@ class CognitiveLoop:
         self._predicted_tier: str = ""
         self._cognitive_readiness: float = 0.0
         self._wind_down_sent = False
-        self._response_start_at: float = 0.0  # for on_response timing
 
         # Speaker verification state (session-scoped)
         self._speaker_verified = False
@@ -272,16 +271,9 @@ class CognitiveLoop:
             if self._speculative_stt is not None:
                 self._speculative_stt.reset()
 
-        # Track response timing from phase transitions (#2)
-        if to_phase == TurnPhase.TRANSITION:
-            # Pipeline started processing — record when response generation begins
-            self._response_start_at = now
-        if from_phase == TurnPhase.HAPAX_SPEAKING and self._model is not None:
-            # Hapax finished speaking — compute response time
-            if self._response_start_at > 0:
-                response_time = now - self._response_start_at
-                self._model.on_response("", response_time)
-                self._response_start_at = 0.0
+        # Response timing is measured inline in _handle_utterance (wall-clock
+        # of process_utterance) because the await blocks the cognitive loop —
+        # TRANSITION and HAPAX_SPEAKING phases are never observed.
 
     # ── Phase-specific ticks ───────────────────────────────────────
 
@@ -329,14 +321,20 @@ class CognitiveLoop:
         if self._speculative_stt is not None:
             self._speculative_stt.reset()
 
-        # Speaker verification gate
+        # Speaker verification gate — verify on first utterance with enough
+        # audio. If pyannote returns confidence=0.0, the model can't form an
+        # embedding (audio too noisy/short/discontinuous) — give up and
+        # trust the wake word (operator implied by wake word activation).
         if self._speaker_identifier is not None and not self._speaker_verified:
+            utterance_samples = len(utterance) // 2  # int16 = 2 bytes/sample
             self._speaker_audio_buf.append(utterance)
-            self._speaker_audio_samples += len(utterance) // 2  # int16 = 2 bytes/sample
+            self._speaker_audio_samples += utterance_samples
 
             if self._speaker_audio_samples >= _VERIFY_MIN_SAMPLES:
-                combined = b"".join(self._speaker_audio_buf)
-                speaker = await self._verify_speaker(combined)
+                # Verify on the single longest utterance, not concatenated
+                # clips with gaps — pyannote needs continuous audio.
+                longest = max(self._speaker_audio_buf, key=len)
+                speaker = await self._verify_speaker(longest)
 
                 if speaker == "ryan":
                     self._speaker_verified = True
@@ -355,12 +353,41 @@ class CognitiveLoop:
                     self._speaker_audio_samples = 0
                     return
                 else:
-                    log.info("Speaker gate: uncertain, accumulating more audio")
+                    # Confidence=0.0 means pyannote can't form an embedding.
+                    # After 2 attempts, give up — wake word implies operator.
+                    self._speaker_verify_attempts = getattr(self, "_speaker_verify_attempts", 0) + 1
+                    if self._speaker_verify_attempts >= 2:
+                        self._speaker_verified = True
+                        self._session.set_speaker("ryan", 0.0)
+                        log.info(
+                            "Speaker gate: verification inconclusive after %d attempts, "
+                            "trusting wake word (fail-open)",
+                            self._speaker_verify_attempts,
+                        )
+                        for buffered in self._speaker_audio_buf:
+                            self._session.mark_activity()
+                            await self._pipeline.process_utterance(buffered)
+                            self._session.mark_activity()
+                        self._speaker_audio_buf.clear()
+                        self._update_model_on_utterance(utterance)
+                        return
+                    log.info("Speaker gate: uncertain, will retry on next utterance")
 
         self._session.mark_activity()
+
+        # Record response start time BEFORE process_utterance — the await
+        # blocks the cognitive loop so TRANSITION phase is never observed.
+        # Measure wall-clock time of the full process_utterance call instead.
+        t_start = time.monotonic()
         await self._pipeline.process_utterance(utterance)
+        t_end = time.monotonic()
         self._session.mark_activity()
         self._update_model_on_utterance(utterance)
+
+        # Update model with response timing (process_utterance includes
+        # STT + routing + LLM + TTS, so this is the full response time).
+        if self._model is not None:
+            self._model.on_response("", t_end - t_start)
 
         # Clear predicted tier after final processing
         self._predicted_tier = ""
