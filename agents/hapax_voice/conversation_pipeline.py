@@ -91,14 +91,16 @@ _MAX_ACCUMULATION_S = 0.3
 # monologue. 1-3 sentences at most tiers, up to 4-5 for deep questions.
 # Calibrated from live conversation: operator barged in on every response
 # because they were too long.
+# Voice response token budget — generous ceiling, model self-regulates
+# via system prompt guidance ("brief answer + reasoning when interesting").
 _TIER_MAX_TOKENS: dict[str, int] = {
     "CANNED": 0,
-    "LOCAL": 80,  # 2 sentences
-    "FAST": 250,  # let the model decide
-    "STRONG": 300,  # let the model decide
-    "CAPABLE": 400,  # let the model decide
+    "LOCAL": 80,
+    "FAST": 400,
+    "STRONG": 400,
+    "CAPABLE": 400,
 }
-_MAX_RESPONSE_TOKENS = 250  # fallback
+_MAX_RESPONSE_TOKENS = 400
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
 
@@ -303,21 +305,10 @@ class ConversationPipeline:
     def _update_system_context(self) -> None:
         """Refresh system message with current environment and policy blocks.
 
-        LOCAL tier gets a compressed prompt (~200 tokens) — gemma3:4b can't
-        follow complex multi-paragraph instructions and the full prompt
-        (~1300 tokens) dominates the context window.
+        Always uses the full prompt with all context bands — intelligence-first
+        routing means every turn gets the capable model with full context.
         """
         if not self.messages:
-            return
-
-        tier_name = getattr(self, "_turn_model_tier", "CAPABLE")
-
-        # LOCAL: minimal prompt, no policy/env/phenomenal overhead
-        if tier_name == "LOCAL":
-            content_hash = hash(self._LOCAL_SYSTEM_PROMPT)
-            if content_hash != self._last_env_hash:
-                self._last_env_hash = content_hash
-                self.messages[0]["content"] = self._LOCAL_SYSTEM_PROMPT
             return
 
         updated = self.system_prompt
@@ -340,17 +331,25 @@ class ConversationPipeline:
             except Exception:
                 log.debug("env_context_fn failed (non-fatal)", exc_info=True)
 
-        # Phenomenal context: temporal bands + self-band, rendered as
-        # orientation (not information). Progressive fidelity — the tier
-        # determines how much depth is returned.
+        # Phenomenal context: temporal bands + self-band — always full fidelity
         try:
             from agents.hapax_voice.phenomenal_context import render as render_phenomenal
 
-            phenom = render_phenomenal(tier=tier_name)
+            phenom = render_phenomenal(tier="CAPABLE")
             if phenom:
                 updated += "\n\n" + phenom
         except Exception:
             log.debug("phenomenal context render failed (non-fatal)", exc_info=True)
+
+        # Salience context: activation signals from the concern graph,
+        # injected as orientation so the model can self-modulate response
+        # depth and investment. Replaces tier-based gating.
+        try:
+            salience_ctx = self._build_salience_context()
+            if salience_ctx:
+                updated += "\n\n## Conversational Salience\n" + salience_ctx
+        except Exception:
+            log.debug("salience context build failed (non-fatal)", exc_info=True)
 
         content_hash = hash(updated)
         if content_hash == self._last_env_hash:
@@ -480,8 +479,12 @@ class ConversationPipeline:
             self.messages.append({"role": "user", "content": transcript})
         self.turn_count += 1
 
-        # ── Model routing: pick the right tier for this utterance ────
-        from agents.hapax_voice.model_router import ModelTier
+        # ── Model routing: intelligence-first ────────────────────────
+        # Always CAPABLE (claude-opus) except CANNED for pure phatic.
+        # The salience router still computes activation/novelty/concern
+        # signals — these are injected into the model's context (Batch 2)
+        # rather than used to select a tier.
+        from agents.hapax_voice.model_router import TIER_ROUTES, ModelTier
 
         if self._salience_router is not None:
             routing = self._salience_router.route(
@@ -493,29 +496,22 @@ class ConversationPipeline:
                 face_count=self._face_count,
                 has_tools=bool(self.tools),
             )
+            # Keep CANNED for zero-latency phatic, upgrade everything else
+            if routing.tier != ModelTier.CANNED:
+                routing = routing.__class__(
+                    tier=ModelTier.CAPABLE,
+                    model=TIER_ROUTES[ModelTier.CAPABLE],
+                    reason=f"intelligence_first:{routing.reason}",
+                    canned_response="",
+                )
         else:
-            from agents.hapax_voice.model_router import route
+            # No salience router — default to CAPABLE
+            from agents.hapax_voice.model_router import RoutingDecision
 
-            routing = route(
-                transcript,
-                turn_count=self.turn_count,
-                activity_mode=self._activity_mode,
-                consent_phase=self._consent_phase,
-                guest_mode=self._guest_mode,
-                face_count=self._face_count,
-                has_tools=bool(self.tools),
-                prev_tier=self._prev_tier,
-            )
-        # After turn 0, floor at FAST — commit to having an actual
-        # conversation. LOCAL is only for the initial greeting/phatic.
-        # Once the operator engages, they deserve contextual intelligence.
-        from agents.hapax_voice.model_router import TIER_ROUTES
-
-        if self.turn_count > 1 and routing.tier.value < ModelTier.FAST.value:
-            routing = routing.__class__(
-                tier=ModelTier.FAST,
-                model=TIER_ROUTES[ModelTier.FAST],
-                reason=f"floor_upgrade:{routing.reason}",
+            routing = RoutingDecision(
+                tier=ModelTier.CAPABLE,
+                model=TIER_ROUTES[ModelTier.CAPABLE],
+                reason="intelligence_first:default",
                 canned_response="",
             )
 
@@ -564,18 +560,13 @@ class ConversationPipeline:
             self.state = ConvState.LISTENING
             return
 
-        # Set model for this turn (may differ from default)
-        # Apply stimmung-aware downgrade: if system is under resource/cost
-        # pressure, route to a cheaper model. This is allostatic regulation
-        # — the voice pipeline participates in system self-preservation.
+        # Intelligence is the LAST thing to shed under stimmung pressure.
+        # Stimmung state is fed into model context (Batch 3) instead of
+        # downgrading the model. Vision, perception cadence, workspace
+        # analysis get shed first.
         selected_model = routing.model or self.llm_model
-        selected_tier = routing.tier
-        try:
-            selected_model, selected_tier = _stimmung_downgrade(selected_model, selected_tier)
-        except Exception:
-            pass  # stimmung unavailable — use selected model as-is
         self._turn_model = selected_model
-        self._turn_model_tier = selected_tier.name
+        self._turn_model_tier = routing.tier.name
 
         # Refresh environment context before LLM call
         self._update_system_context()
@@ -669,9 +660,8 @@ class ConversationPipeline:
                 "api_base": _voice_litellm_base,
                 "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
             }
-            # Only pass tools to models that can use them (not local tier)
-            _tier_name = getattr(self, "_turn_model_tier", "")
-            if self.tools and _tier_name not in ("LOCAL", "CANNED"):
+            # Always pass tools — intelligence-first routing means capable model
+            if self.tools:
                 kwargs["tools"] = self.tools
 
             kwargs["timeout"] = 15  # seconds — fail fast, don't block conversation
@@ -937,6 +927,59 @@ class ConversationPipeline:
             await self._speak_sentence(phrase)
             if self.buffer:
                 self.buffer.set_speaking(False)
+
+    # ── Salience Context ────────────────────────────────────────────────
+
+    def _build_salience_context(self) -> str:
+        """Build salience context block for system prompt injection.
+
+        Feeds activation, novelty, concern overlap, and conversational model
+        signals into the prompt so the model can self-modulate response depth.
+        """
+        parts = []
+
+        # Salience router signals
+        if self._salience_router is not None:
+            breakdown = self._salience_router.last_breakdown
+            if breakdown is not None:
+                level = "low"
+                if breakdown.final_activation > 0.6:
+                    level = "high — this connects to active concerns"
+                elif breakdown.final_activation > 0.3:
+                    level = "moderate"
+
+                parts.append(
+                    f"Activation: {breakdown.final_activation:.2f} ({level}). "
+                    f"Concern overlap: {breakdown.concern_overlap:.2f}. "
+                    f"Novelty: {breakdown.novelty:.2f}."
+                )
+
+        # Conversational model signals (from cognitive loop)
+        # These are available via pipeline attributes set by the cognitive loop
+        temp = getattr(self, "_conversation_temperature", None)
+        if temp is not None and temp > 0:
+            warmth = "cold" if temp < 0.2 else "warming" if temp < 0.5 else "heated"
+            parts.append(f"Conversation temperature: {temp:.2f} ({warmth}).")
+
+        parts.append(f"Turn: {self.turn_count}.")
+
+        # Stimmung state — inform model, don't degrade it
+        try:
+            import json
+            from pathlib import Path
+
+            raw = json.loads(Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
+            stance = raw.get("overall_stance", "nominal")
+            resource = raw.get("resource_pressure", {}).get("value", 0.0)
+            if stance != "nominal" or resource > 0.5:
+                parts.append(
+                    f"System stance: {stance} (resource pressure: {resource:.2f}). "
+                    "Be concise if pressure is elevated."
+                )
+        except Exception:
+            pass  # stimmung unavailable
+
+        return " ".join(parts) if parts else ""
 
     # ── Echo Detection ──────────────────────────────────────────────────
 

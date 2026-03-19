@@ -222,6 +222,7 @@ class SceneInventory:
                         "entity_id": o.entity_id,
                         "label": o.label,
                         "camera": o.last_camera,
+                        "box": o.last_box,
                         "confidence": o.last_confidence,
                         "mobility": o.mobility,
                         "seen_count": o.seen_count,
