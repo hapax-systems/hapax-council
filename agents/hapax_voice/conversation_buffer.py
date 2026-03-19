@@ -32,11 +32,14 @@ PRE_ROLL_FRAMES = 10  # 300ms before speech onset
 SPEECH_START_PROB = 0.5
 SPEECH_START_CONSECUTIVE = 3  # ~90ms
 SPEECH_END_PROB = 0.3
-# Adaptive speech-end: short utterances end quickly, long utterances
-# get more patience for mid-thought pauses.
-SPEECH_END_SHORT = 20  # ~600ms — for utterances < 1s of speech
-SPEECH_END_LONG = 35  # ~1050ms — for utterances > 3s of speech
-SPEECH_END_DEFAULT = 25  # ~750ms — baseline
+# Adaptive speech-end: calibrated for an operator who "processes voice
+# slowly and has dysfluencies when thinking aloud" — natural mid-thought
+# pauses of 600-1200ms are common and should NOT trigger emission.
+# Short utterances get the same patience as default — no premature
+# cutoff on incomplete thoughts.
+SPEECH_END_SHORT = 30  # ~900ms — was 600ms, raised for dysfluent pauses
+SPEECH_END_LONG = 40  # ~1200ms — for long utterances > 3s
+SPEECH_END_DEFAULT = 33  # ~1000ms — was 750ms, raised for natural pauses
 
 # Barge-in / interrupt detection during TTS playback.
 # In studio conditions, the AEC can't cancel TTS echo from monitors —
