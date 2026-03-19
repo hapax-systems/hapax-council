@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAgents } from "../../api/hooks";
+import { useTerrain, type RegionName } from "../../contexts/TerrainContext";
 
 interface Command {
   id: string;
@@ -20,6 +21,7 @@ export function CommandPalette({ open, onClose, onManualToggle }: CommandPalette
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: agents } = useAgents();
+  const { splitRegion, setSplitRegion, setSplitFullscreen } = useTerrain();
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -31,6 +33,17 @@ export function CommandPalette({ open, onClose, onManualToggle }: CommandPalette
     { id: "refresh", label: "Refresh All Data", shortcut: "r", action: () => { queryClient.invalidateQueries(); onClose(); } },
     { id: "new-chat", label: "New Chat Session", action: () => { navigate("/chat"); onClose(); } },
     { id: "health", label: "View Health Detail", action: () => { navigate("/"); onClose(); } },
+    ...(splitRegion
+      ? [
+          { id: "split-close", label: "Close Split Pane", shortcut: "S", action: () => { setSplitRegion(null); onClose(); } },
+          { id: "split-fullscreen", label: "Toggle Split Fullscreen", shortcut: "F11", action: () => { setSplitFullscreen(true); onClose(); } },
+        ]
+      : (["horizon", "field", "ground", "watershed", "bedrock"] as RegionName[]).map((r) => ({
+          id: `split-${r}`,
+          label: `Split View: ${r.charAt(0).toUpperCase() + r.slice(1)}`,
+          action: () => { setSplitRegion(r); onClose(); },
+        }))
+    ),
   ];
 
   const agentCommands: Command[] = (agents ?? []).map((a) => ({
@@ -42,7 +55,12 @@ export function CommandPalette({ open, onClose, onManualToggle }: CommandPalette
   const commands = [...staticCommands, ...agentCommands];
 
   const filtered = query
-    ? commands.filter((c) => c.label.toLowerCase().includes(query.toLowerCase()))
+    ? commands.filter((c) => {
+        const q = query.toLowerCase();
+        const text = `${c.label} ${c.id}`.toLowerCase();
+        // Match all words in query (fuzzy multi-word search)
+        return q.split(/\s+/).every((word) => text.includes(word));
+      })
     : commands;
 
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -83,7 +101,7 @@ export function CommandPalette({ open, onClose, onManualToggle }: CommandPalette
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]" style={{ left: 0, right: 0, width: "100vw" }} onClick={onClose}>
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
       <div
         className="relative w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl animate-in fade-in zoom-in-95 duration-150"

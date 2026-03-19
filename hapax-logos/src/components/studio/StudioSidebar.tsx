@@ -23,6 +23,7 @@ import {
   Sparkles,
   Video,
   Square,
+  ScanEye,
 } from "lucide-react";
 
 const EFFECT_TOGGLES: { key: keyof CompositePreset["effects"]; label: string }[] = [
@@ -33,8 +34,8 @@ const EFFECT_TOGGLES: { key: keyof CompositePreset["effects"]; label: string }[]
 ];
 
 interface Props {
-  viewMode: "grid" | "composite" | "smooth";
-  onViewModeChange: (m: "grid" | "composite" | "smooth") => void;
+  viewMode: "grid" | "composite" | "smooth" | "classification";
+  onViewModeChange: (m: "grid" | "composite" | "smooth" | "classification") => void;
   presetIdx: number;
   onPresetChange: (i: number) => void;
   liveFilterIdx: number;
@@ -228,6 +229,7 @@ export function StudioSidebar({
                 { mode: "grid" as const, label: "Grid", Icon: LayoutGrid },
                 { mode: "composite" as const, label: "FX", Icon: Sparkles },
                 { mode: "smooth" as const, label: "Smooth", Icon: Video },
+                { mode: "classification" as const, label: "CV", Icon: ScanEye },
               ] as const
             ).map(({ mode, label, Icon }) => (
               <button

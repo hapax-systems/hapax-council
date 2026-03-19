@@ -12,8 +12,8 @@ function HorizonSurface() {
   const { data: briefing } = useBriefing();
   const { data: nudges } = useNudges();
 
-  const oneLiner = (briefing as any)?.one_liner ?? "";
-  const nudgeItems = (nudges as any)?.nudges ?? [];
+  const oneLiner = briefing?.one_liner ?? "";
+  const nudgeItems = nudges ?? [];
   const topNudges = nudgeItems.slice(0, 3);
 
   return (
@@ -23,12 +23,12 @@ function HorizonSurface() {
 
       {/* Top nudges as compact pills */}
       <div className="flex gap-2">
-        {topNudges.map((n: any, i: number) => (
+        {topNudges.map((n, i) => (
           <div
             key={n.source_id ?? i}
             className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-800/60 text-zinc-500 truncate max-w-[200px]"
           >
-            {n.title ?? n.message ?? "nudge"}
+            {n.title ?? "nudge"}
           </div>
         ))}
         {nudgeItems.length > 3 && (
@@ -48,16 +48,28 @@ export function HorizonRegion() {
       {(depth) => (
         <div className="h-full relative">
           {depth === "surface" && <HorizonSurface />}
-          {depth !== "surface" && (
+          {depth === "stratum" && (
             <div className="h-full overflow-y-auto p-3">
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <GoalsPanel />
                 <div>
                   <CopilotBanner />
                   <NudgeList />
                 </div>
                 <EnginePanel />
-                <div className="col-span-3">
+              </div>
+            </div>
+          )}
+          {depth === "core" && (
+            <div className="h-full overflow-y-auto p-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <GoalsPanel />
+                <div>
+                  <CopilotBanner />
+                  <NudgeList />
+                </div>
+                <EnginePanel />
+                <div className="col-span-1 md:col-span-3">
                   <BriefingPanel />
                 </div>
               </div>

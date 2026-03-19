@@ -15,20 +15,24 @@ export function useSnapshotPoll(
   useEffect(() => {
     let running = true;
     let pending = false;
+    let currentLoader: HTMLImageElement | null = null;
     lastSuccess.current = Date.now();
 
     const pull = () => {
       if (!running || pending) return;
       pending = true;
       const loader = new Image();
+      currentLoader = loader;
       loader.onload = () => {
         if (running && imgRef.current) imgRef.current.src = loader.src;
         lastSuccess.current = Date.now();
         setIsStale(false);
         pending = false;
+        currentLoader = null;
       };
       loader.onerror = () => {
         pending = false;
+        currentLoader = null;
       };
       loader.src = `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}`;
     };
@@ -47,6 +51,13 @@ export function useSnapshotPoll(
       running = false;
       clearInterval(pollTimer);
       clearInterval(staleTimer);
+      // Abort any in-flight image load
+      if (currentLoader) {
+        currentLoader.onload = null;
+        currentLoader.onerror = null;
+        currentLoader.src = "";
+        currentLoader = null;
+      }
     };
   }, [url, intervalMs]);
 

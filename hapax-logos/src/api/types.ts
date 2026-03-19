@@ -9,6 +9,10 @@ export interface HealthSnapshot {
   duration_ms: number;
   failed_checks: string[];
   timestamp: string;
+  // Computed fields from cockpit API
+  score?: number;
+  total?: number;
+  summary?: { stance: string };
 }
 
 export interface VramSnapshot {
@@ -58,6 +62,7 @@ export interface BriefingData {
   generated_at: string;
   body: string;
   action_items: ActionItem[];
+  one_liner?: string;
 }
 
 export interface ActionItem {
@@ -65,6 +70,12 @@ export interface ActionItem {
   action: string;
   reason: string;
   command: string;
+}
+
+export interface GovernanceHeartbeat {
+  score: number;
+  axiom_count: number;
+  violations: string[];
 }
 
 export interface GoalSnapshot {
@@ -139,6 +150,7 @@ export interface CostSnapshot {
   daily_average: number;
   top_models: { model: string; cost: number }[];
   available: boolean;
+  tax_percentage?: number;
 }
 
 // --- Drift ---
@@ -431,8 +443,23 @@ export interface VisualLayerState {
   temporal_context?: TemporalContext;
   signal_staleness?: SignalStaleness;
   stimmung_stance?: StimmungStance;
+  classification_detections?: ClassificationDetection[];
+  classification_directives?: Record<string, string>;
   timestamp: number;
   aggregator?: string;
+}
+
+// --- Classification Detection ---
+
+export interface ClassificationDetection {
+  entity_id: string;
+  label: string;
+  camera: string;
+  box: [number, number, number, number]; // x1, y1, x2, y2 normalized 0-1
+  confidence: number;
+  mobility: "static" | "dynamic" | "unknown";
+  novelty: number; // 0.0=familiar, 1.0=brand new
+  consent_suppressed: boolean;
 }
 
 // --- Perception ---

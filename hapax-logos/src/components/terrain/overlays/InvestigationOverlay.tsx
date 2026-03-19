@@ -19,9 +19,9 @@ export function InvestigationOverlay() {
       }}
     >
       <div
-        className="w-[60%] h-[80%] rounded-2xl overflow-hidden"
+        className="w-[60%] h-[90%] rounded-2xl overflow-hidden"
         style={{
-          background: "rgba(29, 32, 33, 0.92)",
+          background: "rgba(29, 32, 33, 0.88)",
           backdropFilter: "blur(16px)",
           border: "1px solid rgba(80, 73, 69, 0.3)",
           boxShadow: "0 16px 64px rgba(0,0,0,0.5)",
