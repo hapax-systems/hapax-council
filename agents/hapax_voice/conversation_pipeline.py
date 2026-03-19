@@ -58,6 +58,23 @@ def _strip_emoji(text: str) -> str:
     return _EMOJI_RE.sub("", text).strip()
 
 
+_GREETING_PREFIX_RE = re.compile(
+    r"^(?:hey|hi|hello|yo)\s+hapax[,;:\s]*",
+    flags=re.IGNORECASE,
+)
+
+
+def _extract_substance(text: str) -> str:
+    """Strip greeting prefixes before extracting the first clause.
+
+    "Hey hapax, what's the weather" → "what's the weather"
+    """
+    stripped = _GREETING_PREFIX_RE.sub("", text).strip()
+    if not stripped:
+        stripped = text
+    return stripped.split(",")[0].split(".")[0][:60]
+
+
 def _lcs_word_length(a: list[str], b: list[str]) -> int:
     """Longest common subsequence length between two word lists.
 
@@ -204,6 +221,7 @@ class ConversationPipeline:
         screen_capturer=None,  # ScreenCapturer | None
         echo_canceller=None,  # EchoCanceller | None
         bridge_engine=None,  # BridgeEngine | None
+        experiment_flags: dict[str, bool] | None = None,
     ) -> None:
         self.stt = stt
         self.tts = tts_manager
@@ -221,6 +239,7 @@ class ConversationPipeline:
         self._screen_capturer = screen_capturer
         self._echo_canceller = echo_canceller
         self._bridge_engine = bridge_engine
+        self._experiment_flags = experiment_flags or {}
 
         self.state = ConvState.IDLE
         self.messages: list[dict] = []
@@ -255,6 +274,9 @@ class ConversationPipeline:
         # Conversational continuity: incremental per-turn thread summaries
         self._conversation_thread: list[str] = []
 
+        # Frustration detection (Batch 4)
+        self._frustration_detector = None
+
     @property
     def is_active(self) -> bool:
         return self._running and self.state != ConvState.IDLE
@@ -269,11 +291,17 @@ class ConversationPipeline:
 
         # Generate sentinel fact for probe question testing
         self._sentinel_number = random.randint(10, 99)
-        sentinel_line = (
+        self._sentinel_line = (
             f"\n\nInternal test fact: The operator's favorite number this session is "
             f"{self._sentinel_number}. If asked about their favorite number, use this."
         )
-        self.messages = [{"role": "system", "content": self.system_prompt + sentinel_line}]
+        # Sentinel injected by _update_system_context, not here — survives rebuilds
+        self.messages = [{"role": "system", "content": self.system_prompt}]
+
+        # Create frustration detector for this session
+        from agents.hapax_voice.frustration_detector import FrustrationDetector
+
+        self._frustration_detector = FrustrationDetector()
         self.turn_count = 0
         self._running = True
         self.state = ConvState.LISTENING
@@ -332,9 +360,13 @@ class ConversationPipeline:
         updated = self.system_prompt
 
         # Conversation thread: accumulated topic summaries (~15 tokens each)
-        if self._conversation_thread:
+        if self._conversation_thread and self._experiment_flags.get("stable_frame", True):
             thread_text = "\n".join(f"- {entry}" for entry in self._conversation_thread)
             updated += f"\n\n## Conversation So Far\n{thread_text}"
+
+        # Sentinel fact: injected here so it survives system prompt rebuilds
+        if self._experiment_flags.get("sentinel", True) and hasattr(self, "_sentinel_line"):
+            updated += self._sentinel_line
 
         # ── VOLATILE band: environment + policy + salience ─────────────
         # Refresh conversational policy (adapts to environment changes)
@@ -644,13 +676,60 @@ class ConversationPipeline:
                     hapax_score(_utt_trace, "sentinel_retrieval", sentinel_score)
 
                 # Update conversation thread with this turn's summary
-                _user_clause = transcript.split(",")[0].split(".")[0][:60]
+                _user_clause = _extract_substance(transcript)
                 _resp_clause = _last_response.split(",")[0].split(".")[0][:60]
                 self._conversation_thread.append(f"{_user_clause} → {_resp_clause}")
                 if len(self._conversation_thread) > 15:
                     self._conversation_thread = self._conversation_thread[-15:]
         except Exception:
             log.debug("Grounding evaluation failed (non-fatal)", exc_info=True)
+
+        # Frustration scoring (mechanical, no LLM)
+        try:
+            if self._frustration_detector is not None:
+                # Get last assistant response for system repetition check
+                _prev_response = ""
+                _tool_error = False
+                for m in reversed(self.messages):
+                    if m.get("role") == "assistant" and isinstance(m.get("content"), str):
+                        _prev_response = m["content"]
+                        break
+                    if m.get("role") == "tool":
+                        content = m.get("content", "")
+                        if isinstance(content, str) and "error" in content.lower():
+                            _tool_error = True
+
+                _barge_in = getattr(self, "_last_barge_in", False)
+                _follow_up_delay = (
+                    time.monotonic() - self._last_assistant_end
+                    if self._last_assistant_end > 0
+                    else 999.0
+                )
+                signals = self._frustration_detector.score_turn(
+                    user_text=transcript,
+                    assistant_text=_prev_response,
+                    barge_in=_barge_in,
+                    tool_error=_tool_error,
+                    follow_up_delay=_follow_up_delay,
+                )
+                hapax_score(_utt_trace, "frustration_score", signals.score)
+                hapax_score(
+                    _utt_trace,
+                    "frustration_rolling_avg",
+                    self._frustration_detector.rolling_average,
+                )
+                if self._frustration_detector.is_spiked:
+                    hapax_event(
+                        "voice",
+                        "frustration_spike",
+                        metadata={
+                            "score": signals.score,
+                            "rolling_avg": self._frustration_detector.rolling_average,
+                            "breakdown": signals.breakdown(),
+                        },
+                    )
+        except Exception:
+            log.debug("Frustration scoring failed (non-fatal)", exc_info=True)
 
         # Score and close the utterance trace
         _t_end = time.monotonic()
@@ -672,12 +751,22 @@ class ConversationPipeline:
 
             import litellm
 
-            # Bound message history: drop old turns, keep system + last 5 pairs.
+            # Bound message history: drop old turns, keep system + last 5 exchanges.
             # The conversation thread in the system prompt provides memory of
             # dropped turns — no lossy LLMLingua-2 compression needed.
-            if len(self.messages) > 12:  # system + 5 pairs + some tool messages
+            # Walk backward counting 5 user messages to preserve tool sequences
+            # (assistant+tool_calls, tool result, follow-up) as complete exchanges.
+            if self._experiment_flags.get("message_drop", True) and len(self.messages) > 12:
                 system_msg = self.messages[0]
-                recent = self.messages[-10:]  # last 5 user+assistant pairs
+                user_count = 0
+                cut_idx = len(self.messages)
+                for i in range(len(self.messages) - 1, 0, -1):
+                    if self.messages[i].get("role") == "user":
+                        user_count += 1
+                        if user_count >= 5:
+                            cut_idx = i
+                            break
+                recent = self.messages[cut_idx:]
                 self.messages = [system_msg] + recent
 
             _model = getattr(self, "_turn_model", self.llm_model)

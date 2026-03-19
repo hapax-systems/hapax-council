@@ -1037,6 +1037,7 @@ class VoiceDaemon:
         self._pause_vision_for_conversation()
 
         # Load experiment config if present (SCED methodology support)
+        self._experiment_flags: dict[str, bool] = {}
         try:
             _exp_path = Path.home() / ".cache" / "hapax" / "voice-experiment.json"
             if _exp_path.exists():
@@ -1048,14 +1049,20 @@ class VoiceDaemon:
                     condition=_exp.get("condition", "A"),
                     phase=_exp.get("phase", "baseline"),
                 )
+                # Extract component flags for SCED feature toggling
+                self._experiment_flags = _exp.get("components", {})
                 log.info(
-                    "Experiment loaded: %s condition=%s phase=%s",
+                    "Experiment loaded: %s condition=%s phase=%s components=%s",
                     _exp.get("name"),
                     _exp.get("condition"),
                     _exp.get("phase"),
+                    self._experiment_flags,
                 )
         except Exception:
             log.debug("Experiment config load failed (non-fatal)", exc_info=True)
+
+        # Pass experiment flags to pipeline
+        self._conversation_pipeline._experiment_flags = self._experiment_flags
 
         # Pipeline.start() activates buffer and opens audio output
         await self._conversation_pipeline.start()
@@ -1338,6 +1345,7 @@ class VoiceDaemon:
                 activity="voice_conversation",
                 voice_turns=digest.get("turn_count", 0),
                 duration_s=0,
+                start_ts=time.time(),
             )
             topic_str = ", ".join(digest.get("topic_words", []))
             thread_str = "; ".join(digest.get("thread", []))
@@ -1376,25 +1384,46 @@ class VoiceDaemon:
     def _load_recent_memory(self) -> str:
         """Load recent voice session digests from episodic memory.
 
+        Uses scroll with activity filter instead of semantic search — avoids
+        embedding drift and always returns the most recent sessions by timestamp.
+
         Returns a formatted string for system prompt injection, or empty string.
         """
+        # Experiment flag: disable cross-session memory if toggled off
+        if not getattr(self, "_experiment_flags", {}).get("cross_session", True):
+            return ""
+
         try:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
+
             from shared.episodic_memory import EpisodeStore
 
             store = EpisodeStore()
-            matches = store.search(
-                "recent voice conversation",
-                activity="voice_conversation",
-                limit=3,
-                min_score=0.2,
+            points, _offset = store.client.scroll(
+                "operator-episodes",
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="activity",
+                            match=MatchValue(value="voice_conversation"),
+                        )
+                    ]
+                ),
+                limit=20,
+                with_payload=True,
+                with_vectors=False,
             )
 
-            if not matches:
+            if not points:
                 return ""
 
+            # Sort by start_ts descending, take top 3
+            points.sort(key=lambda p: p.payload.get("start_ts", 0), reverse=True)
+            top = points[:3]
+
             lines = []
-            for match in matches:
-                payload = match.episode.model_dump()
+            for point in top:
+                payload = point.payload or {}
                 thread = payload.get("thread", [])
                 topics = payload.get("topic_words", [])
                 turns = payload.get("voice_turns", 0)
@@ -1866,6 +1895,16 @@ class VoiceDaemon:
             log.info("Bridge phrases presynthesized at startup")
         except Exception:
             log.warning("Bridge presynthesis at startup failed (will retry on first session)")
+
+        # Pin embedding model at startup — first embed() call downloads/loads the model,
+        # so do it here to avoid latency on first cross-session memory lookup.
+        try:
+            from shared.config import embed
+
+            embed("warmup", prefix="search_query")
+            log.info("Embedding model warmed up")
+        except Exception:
+            log.debug("Embedding warmup failed (non-fatal)", exc_info=True)
 
         # Cognitive loop instance (created per-session in _start_conversation_pipeline)
         self._cognitive_loop = None

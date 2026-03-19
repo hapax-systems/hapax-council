@@ -279,3 +279,26 @@ After all 4 components:
 2. **Cross-turn**: Operator can say "what were we just talking about?" and Hapax can answer from the thread.
 3. **Cross-session**: Operator says "hey hapax" after 2 hours and Hapax says "Hey — last time we were debugging the voice pipeline. How's that going?"
 4. **No context skipping**: Operator does NOT report feeling like Hapax "jumps between contexts" within a conversation.
+
+---
+
+## Assumptions and Risks
+
+### Pre-tool speech assumption
+
+The bridge phrase strategy depends on Claude not emitting text tokens before
+`tool_call` tokens during streaming. This is empirically observed behavior:
+when the model decides to use a tool, the stream begins with tool_call deltas
+(no content tokens first), so the pipeline never speaks speculative text.
+
+**This is not a guaranteed API contract.** If model behavior changes such that
+text tokens precede tool_call tokens in a single response, the pipeline would
+speak the speculative text via TTS, then the tool result would arrive, and the
+model's follow-up would contradict what the operator already heard — exactly
+the discontinuity this design aims to prevent.
+
+**Mitigation**: The `_generate_and_speak()` streaming loop checks for
+`delta.tool_calls` alongside `delta.content`. If both appear in the same
+chunk, the text content is discarded in favor of the tool call path. A
+regression test should monitor for mixed content+tool_call chunks in
+production Langfuse traces.
