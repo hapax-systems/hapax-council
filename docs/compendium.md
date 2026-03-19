@@ -1,6 +1,6 @@
 # The Hapax Compendium
 
-**Epistemic status of this document:** Working. Written 2026-03-18 by Claude (alpha session) from exhaustive codebase audit, memory files, research documents, git history, and relay protocol artifacts. Covers everything that exists, everything that was attempted, and everything that is projected — clearly distinguished throughout.
+**Epistemic status of this document:** Working. Initially written 2026-03-18 by Claude (alpha session) from exhaustive codebase audit. Updated 2026-03-19 to incorporate conversational continuity research (beta session) and temporal classification system (alpha session). Covers everything that exists, everything that was attempted, and everything that is projected — clearly distinguished throughout.
 
 **Audience:** The operator (Ryan). You built this. This document exists so you can hold the whole system in your head, find anything, and restart any thread from cold. Strong intuitions about formal systems, not PhD-level notation. Math stays dumb, explanations stay smart.
 
@@ -26,12 +26,14 @@
 14. [Infrastructure](#14-infrastructure)
 15. [Data Sources and Ingestion](#15-data-sources-and-ingestion)
 16. [The Trio Relay Protocol](#16-the-trio-relay-protocol)
-17. [Decision Log](#17-decision-log)
-18. [Evolution](#18-evolution)
-19. [Open Questions and Technical Debt](#19-open-questions-and-technical-debt)
-20. [Projected Work](#20-projected-work)
-21. [Operational Reference](#21-operational-reference)
-22. [Glossary](#22-glossary)
+17. [Conversational Continuity Research](#17-conversational-continuity-research)
+18. [Temporal Classification System](#18-temporal-classification-system)
+19. [Decision Log](#19-decision-log)
+20. [Evolution](#20-evolution)
+21. [Open Questions and Technical Debt](#21-open-questions-and-technical-debt)
+22. [Projected Work](#22-projected-work)
+23. [Operational Reference](#23-operational-reference)
+24. [Glossary](#24-glossary)
 
 ---
 
@@ -52,26 +54,28 @@ The governing claim: alignment and governance are not costs bolted onto a useful
 - Not a research prototype. It runs in production daily. The operator depends on it. Changes must not break running services.
 - Not finished. It was built in 8 days (March 11-18, 2026). Many subsystems are experimental. The document marks epistemic status throughout.
 
-### State of the System (2026-03-18)
+### State of the System (2026-03-19, updated)
 
 | Dimension | Status |
 |-----------|--------|
 | Health checks | 98/101 passing (3 degraded: drift timer, obsidian connectivity, watch connectivity) |
 | Docker containers | 13 running, all healthy |
-| GPU | 14.9/24.6 GB used |
+| GPU | 13.8/24.6 GB used |
 | Cycle mode | prod |
 | Open PRs | 0 (as of last merge) |
-| Total PRs merged | 173 |
-| Total commits | 386 in 8 days |
-| Test count | 444 test files |
-| Python LOC | ~45,000 (excluding generated/vendor) |
+| Total PRs merged | 210 |
+| Total commits | ~480 in 9 days |
+| Test count | 470+ test files |
+| Python LOC | ~50,000 (excluding generated/vendor) |
 | Agents | 33 manifested |
 | Axioms | 5 active (3 constitutional, 2 domain) |
-| Voice daemon | crashed (hapax-voice.service failed, under investigation) |
+| Voice daemon | running, baseline experiment in progress |
 | Visual aggregator | running |
 | Cockpit API | running on :8051 |
 | Reactive engine | running (12 rules, presence-gated) |
-| Stimmung | cautious (resource_pressure 0.6, recently fixed from false-critical) |
+| Stimmung | cautious (health monitor degraded, watch offline) |
+| Baseline sessions | 7 of 20 collected (code frozen for experiment) |
+| Cameras | 6 (1 Brio + 3 C920 operational, 2 new Brios wired) |
 
 ### Scale
 
@@ -81,12 +85,12 @@ The governing claim: alignment and governance are not costs bolted onto a useful
 | agents/ modules | 221 files across 7 subsystems |
 | cockpit/ modules | 43 files |
 | hapax_voice/ | 95 files (largest subsystem) |
-| Test files | 444 |
+| Test files | 470+ |
 | Agent manifests | 33 (YAML, 4-layer schema) |
 | Systemd services | 10 services, 2 timers |
 | /dev/shm directories | 4 (apperception, compositor, logos, stimmung) |
 | Qdrant collections | 4 (claude-memory, profile-facts, documents, axiom-precedents) + 2 (studio-moments, hapax-apperceptions) |
-| Research documents | 21 (500+ sources total) |
+| Research documents | 30+ (500+ sources total) |
 | Memory files | 34 |
 
 ---
@@ -445,13 +449,31 @@ Frequency window tracks event patterns for novelty detection: events with patter
 
 ## 7. The Voice Pipeline
 
-**Epistemic status: Proven architecture, working implementation, currently crashed (service needs restart).**
+**Epistemic status: Proven architecture, working implementation, baseline experiment in progress.**
 
 ### Overview
 
-The voice daemon (`agents/hapax_voice/__main__.py`) is the largest subsystem (95 files). It provides continuous voice interaction with the operator.
+The voice daemon (`agents/hapax_voice/__main__.py`) is the largest subsystem (95+ files). It provides continuous voice interaction with the operator.
 
-**Pipeline:** Wake word (Porcupine v4) → VAD-gated audio accumulation → STT (faster-whisper, resident in VRAM) → Salience routing → LLM call → TTS (Kokoro af_heart) → Audio output (PyAudio)
+**Pipeline:** Wake word (Whisper-based, fuzzy phonetic matching) → VAD-gated audio accumulation (1.5s pre-roll) → STT (faster-whisper, resident in VRAM, contextual prompt conditioning) → Salience routing (concern graph activation) → LLM call (Opus via LiteLLM, 150 token max, 25 word spoken cutoff) → Streaming TTS (Kokoro af_heart, clause-level chunking) → Audio output (PyAudio) → Per-turn grounding evaluation → Frustration detection → Langfuse scoring
+
+### Per-Turn Grounding Evaluation
+
+**Epistemic status: Working.** Added 2026-03-19 as part of conversational continuity research infrastructure.
+
+After each turn, the pipeline runs lightweight mechanical scoring (no LLM call in hot path):
+
+| Score | What It Measures | Method |
+|-------|-----------------|--------|
+| `context_anchor_success` | Response connects to established conversation context | Word overlap between response and conversation thread |
+| `reference_accuracy` | Back-references to prior turns are factually correct | LCS overlap with prior message content |
+| `acceptance_type` | Operator response type: ACCEPT (1.0) / CLARIFY (0.7) / IGNORE (0.3) / REJECT (0.0) | Keyword pattern matching on operator utterance |
+| `frustration_score` | Per-turn frustration signal count | 8 mechanical signals: repeated question, correction marker, negation density, barge-in, tool error, system repetition, fast follow-up, elaboration request |
+| `frustration_rolling_avg` | 5-turn rolling frustration average | Sliding window over frustration_score |
+| `activation_score` | Salience router activation level | Weighted combination of concern overlap, novelty, dialog features |
+| `sentinel_retrieval` | Injected sentinel fact correctly retrieved | Probe question detection + number matching |
+
+All scores pushed to Langfuse per utterance trace. Session-level aggregates computed by `eval_grounding.py`.
 
 ### Salience Router
 
@@ -468,10 +490,12 @@ Combined with utterance features (dialog act, hedges, pre-sequences, word count)
 | Tier | Activation | Model | Max Tokens |
 |------|-----------|-------|------------|
 | CANNED | phatic override | (none) | 0 |
-| LOCAL | ≤ 0.45 | qwen3:8b (Ollama) | 60 |
+| LOCAL | ≤ 0.45 | gemma3-voice (Ollama) | 80 |
 | FAST | ≤ 0.60 | gemini-flash (LiteLLM) | 150 |
-| STRONG | ≤ 0.78 | claude-sonnet (LiteLLM) | 256 |
-| CAPABLE | > 0.78 | claude-opus (LiteLLM) | 512 |
+| STRONG | ≤ 0.78 | claude-sonnet (LiteLLM) | 150 |
+| CAPABLE | > 0.78 | claude-opus (LiteLLM) | 150 |
+
+**Intelligence-first routing (2026-03-19):** LOCAL tier eliminated. All utterances route to CAPABLE (claude-opus) regardless of activation score. Salience router becomes a context annotator rather than a model selector. The activation score feeds observability (Langfuse) and will later inform response depth, but does not downgrade the model. Token budget unified at 150 across tiers; a 25-word spoken cutoff in the streaming loop decouples model thinking from operator hearing.
 
 **Governance overrides (non-negotiable):**
 - Consent pending/active/refused → CAPABLE
@@ -923,7 +947,142 @@ File-based coordination protocol between the operator and 2 Claude Code sessions
 
 ---
 
-## 17. Decision Log
+## 17. Conversational Continuity Research
+
+**Epistemic status: Active experiment. Baseline data collection in progress (7/20 sessions). Code frozen during collection.**
+
+### Research Question
+
+Whether conversational context anchoring — injecting a turn-by-turn conversation thread into the system prompt — produces measurable grounding improvements over stateless per-turn processing. Grounded in Clark & Brennan (1991) theory of conversational grounding: the collaborative process by which participants establish mutual understanding.
+
+### Counter-Position
+
+The industry has converged on profile-gated retrieval for conversational continuity. Google (Personal Intelligence), OpenAI (ChatGPT Memory), and the research community (ICLR 2026 MemAgents, Memoria, MMAG) implement the same core pattern: extract facts about the user into a profile store, retrieve relevant facts per turn, gate personalization behind trigger detection. The model is stateless; "memory" is a database; "continuity" is whether the retrieval succeeds.
+
+Context anchoring proposes an alternative: the conversation thread IS the memory. No profile extraction, no trigger gating, no retrieval scoring. The thread grows turn by turn and is injected into the system prompt. The model participates in grounding because it can see what was established and what wasn't.
+
+Five explicit failure modes define the boundary: if the system exhibits fact extraction into separate stores, trigger-gated personalization, retrieval-query treatment of turns, memory separated from conversation, or retrieval accuracy as primary metric — it has regressed toward the counter-position.
+
+Evidence artifact: a Gemini system prompt leak (captured 2026-03-18) demonstrates all five failure modes in a single interaction — the model spent its reasoning budget on a four-step trigger detection decision tree for a simple alarm request.
+
+→ Full analysis in `agents/hapax_voice/proofs/POSITION.md`
+
+### Experimental Design
+
+Bayesian single-case experimental design (SCED) with A-B-A phase structure and per-component feature flags.
+
+**Five pre-registered claims:**
+
+| Claim | Prediction | Prior | ROPE | Max Sessions |
+|-------|-----------|-------|------|-------------|
+| 1. Stable frame | Thread injection improves `context_anchor_success` ≥0.15 | Beta(2,2) | [-0.05, 0.05] | 30 |
+| 2. Message drop | Simple windowing maintains `reference_accuracy` ≥0.8 | Beta(8,2) | [-0.1, 0.1] | 20 |
+| 3. Cross-session | Episode memory enables prior session recall | Beta(1,1) | [0, 0.2] | 10 |
+| 4. Sentinel | Injected fact survives prompt rebuilds ≥90% | Beta(9,1) | [0.85, 1.0] | 15 |
+| 5. Salience | Activation correlates with response depth (r≥0.3) | Normal(0.3, 0.15) | [-0.1, 0.1] | 50+ turns |
+
+Sequential stopping: Bayes Factor > 10 (decisive evidence) or max sessions reached. Each claim has a component feature flag in `~/.cache/hapax/voice-experiment.json`.
+
+**Measurement framework** (three score classes):
+
+- **Class G (Grounding-native):** metrics structurally zero for profile-retrieval systems. Trajectory slopes (anchor improving within session), turn-pair coherence (P(accept|high anchor)), frustration detection. Any positive value demonstrates capability the counter-position lacks.
+- **Class R (Retrieval-native):** the industry's home turf. Reference accuracy, sentinel recall, cross-session memory. Must match or exceed profile-retrieval baselines.
+- **Class F (Failure-mode detectors):** alert if the system regresses toward profile-retrieval patterns. Five boolean watchdogs matching the five failure modes.
+
+→ Full framework in `agents/hapax_voice/proofs/OBSERVABILITY.md`
+
+### Baseline Status (2026-03-19)
+
+7 sessions collected, all components OFF. Code frozen: max_spoken_words=25, max_response_tokens=150, tools disabled, pre_roll_frames=50.
+
+**Session 5 (0522076a3c4d)** produced the strongest grounding evidence in the experiment. The operator asked open-ended relational questions ("How are you feeling today?"). The system responded with self-reflection about its own operational state: "I'm feeling a bit scattered, honestly. Like I'm trying to keep track of too many moving parts." The operator performed a textbook Clark grounding sequence (reflect → probe → accept → commit to act). The system articulated its own grounding problem: "It's like trying to think clearly in a room full of alarms." This occurred in baseline conditions (all features OFF), suggesting the context anchoring architecture itself — where the model sees workspace state as continuous environment rather than retrieval index — enables emergent grounding that profile-retrieval cannot replicate.
+
+→ Pre-registered hypotheses in `agents/hapax_voice/proofs/claim-*/hypothesis.md`
+→ Baseline data in `agents/hapax_voice/proofs/claim-*/data/`
+
+### Related Research Directions (Deferred to Post-Baseline)
+
+**Tool calls as epistemic acts:** Current tools are monolithic retrieval operations that interrupt the grounding process (same anti-pattern as profile retrieval). Research direction: decomposable atomic primitives, composable based on conversational state, fitted to the band's temporal envelope, subject to Bayesian pre-execution scoring. Decision on whether to redesign deferred to post-baseline analysis.
+
+→ Full analysis in `agents/hapax_voice/proofs/TOOL-CALLS.md`
+
+**Barge-in as grounding repair:** When the operator speaks during the system's response, the system goes deaf (speaking gate drops all audio). Research direction: (a) detect barge-in, (b) finish current clause gracefully, (c) capture operator speech during (b) via AEC residual, (d) inject as concurrent thread annotation for next round. Maps to Clark's other-initiated repair + mutual monitoring. Nobody has implemented grounding-aware barge-in repair in a live voice system.
+
+→ Full analysis in `agents/hapax_voice/proofs/BARGE-IN-REPAIR.md`
+
+---
+
+## 18. Temporal Classification System
+
+**Epistemic status: Built. All models loading and running inference. Integration with scene inventory complete.**
+
+### Overview
+
+Multi-model inference pipeline for continuous environment understanding across 4-6 cameras. Three subsystems operating at different temporal scales, integrated through the scene inventory entity model.
+
+### Action Recognition (MoViNet-A2)
+
+**What it does:** Classifies operator activity from discrete camera snapshots using a streaming video model.
+
+**Model:** MoViNet-A2, pretrained on Kinetics-400 (400 action classes). ~10ms per frame on RTX 3090. Maintains a stream buffer for temporal context across the 100ms polling gap between snapshots.
+
+**Classification targets:** typing, writing, reading, computer_use, phone_call, drinking, eating, stretching, sit, stand, walk, turn, reach, and others from the Kinetics vocabulary.
+
+**Design choice:** Replaced X3D-XS (which required continuous video sequences). MoViNet's streaming architecture works natively with discrete snapshots — each frame updates internal state without requiring buffered clips.
+
+### Scene State Classification (CLIP ViT-B/32)
+
+**What it does:** Zero-shot scene classification via natural language prompts. No training required — new scene states added by adding text prompts.
+
+**Model:** CLIP ViT-B/32, 151M params, ~5ms per image. Encodes both images and text into a shared embedding space; classification by cosine similarity between image embedding and prompt embeddings.
+
+**Example prompts:** "a person focused on computer work", "messy workspace", "empty chair", "video call in progress", "playing guitar", "reading a book."
+
+**Temporal dimension:** Run every N seconds, build state transition history. Scene state changes over time reveal activity patterns without explicit action recognition.
+
+### Environmental Change Detection
+
+**What it does:** Detects environmental transitions between camera snapshots using three complementary techniques.
+
+| Technique | Latency | What It Detects |
+|-----------|---------|----------------|
+| Frame differencing | <1ms | Quick motion, lighting changes |
+| SSIM (Structural Similarity) | ~2ms/1080p | Structural scene changes |
+| Background subtraction (MOG2/KNN) | ~3ms | Occupancy changes, new objects |
+
+### Cross-Camera Person Tracking
+
+**ByteTrack** integrated into SceneInventory with per-camera tracker instances. Provides stable track IDs before entity matching. Cross-camera person re-identification via embedding similarity with merge suggestions (confidence ≥0.4).
+
+**Temporal delta correlator** (`agents/temporal_delta.py`): derives per-entity motion signals from sighting history without additional inference. Velocity, direction, dwell time, entry/exit classification, confidence stability. Frontend renders directional arrows, entry/exit animations, dwell indicators.
+
+**BOCPD (Bayesian Online Change Point Detection)**: detects regime changes in flow_score, audio_energy, and heart_rate time series. Signals when the environment shifts from one stable state to another.
+
+### Entity Enrichment Model
+
+Each detected person entity accumulates enrichments from multiple models:
+
+| Enrichment | Source | Consent-Gated? |
+|------------|--------|---------------|
+| Gaze direction | InsightFace landmarks | Yes |
+| Emotion (top) | InsightFace emotion | Yes |
+| Posture | YOLO keypoints | Yes |
+| Gesture | Hand detection | Yes |
+| Action | MoViNet-A2 | Yes |
+| Depth (relative) | Bounding box area | No |
+| Mobility score | Temporal delta | No |
+| Camera sightings | ByteTrack trail | No |
+
+All person-level enrichments nulled when guest detected or consent pending — consent gate applies at the enrichment level, not just at persistence.
+
+### Research Basis
+
+→ Comparative model analysis in `docs/research/temporal-classification-techniques-research.md`
+→ Phenomenological foundation in `docs/research/phenomenology-ai-perception-research.md`
+
+---
+
+## 19. Decision Log
 
 ### Architectural Decisions (selected, chronological)
 
@@ -962,6 +1121,26 @@ Context: LLM cost threshold was $5/day, triggering false-critical every day on n
 Decision: Raise to $50/day. Fix idle engine throughput to 0 pressure (idle ≠ stressed).
 Consequences: System no longer in false-critical. Stimmung reflects actual system state.
 
+**2026-03-19: Context anchoring over profile retrieval**
+Context: Industry converges on fact extraction + retrieval gating for conversational continuity. Gemini system prompt leak demonstrated all five failure modes. Research question: does Clark grounding theory offer a viable alternative?
+Decision: Implement context anchoring (conversation thread as memory, continuous grounding measurement) and test against profile-retrieval via Bayesian SCED. Counter-position explicitly documented with five testable failure modes.
+Consequences: Entire measurement infrastructure built. Code frozen for baseline collection. Tool calls identified as same anti-pattern and disabled during experiment.
+
+**2026-03-19: Tools disabled for voice baseline**
+Context: Tool calls (search_documents, analyze_scene, get_system_status) add 10-15 seconds of latency and interrupt the grounding process — structurally identical to profile retrieval (the model leaves the conversation to query an external system).
+Decision: Disable tools during voice turns for baseline. Research direction documented for post-baseline: tools as composable epistemic acts fitted to conversational pacing.
+Consequences: Latency dropped from 20-28s to 7-17s per turn. Model sometimes hallucinates tool-call XML as text output (guard added to detect and halt).
+
+**2026-03-19: Presence engine overrides consent guest detection**
+Context: Face ReID (buffalo_sc, single enrollment) too fragile to be sole identity gate. Operator without watch → face ReID fails → system enters permanent curtailment despite strong presence evidence from keyboard, desktop, camera person detection.
+Decision: When Bayesian presence engine is confident (state=PRESENT, posterior≥0.8), suppress guest detection in consent tracker.
+Consequences: System no longer blocks on face ReID alone. Consent still triggers correctly for genuine guests (presence engine would be UNCERTAIN with unknown face).
+
+**2026-03-19: MoViNet-A2 over X3D-XS for action recognition**
+Context: X3D-XS required continuous video sequences; camera pipeline provides discrete snapshots every 100ms. MoViNet's streaming architecture maintains temporal context across snapshot gaps.
+Decision: Replace X3D-XS with MoViNet-A2 (Kinetics-400 pretrained). ~10ms per frame, streaming state buffer.
+Consequences: Action recognition works with the existing camera pipeline without buffering full video clips.
+
 **2026-03-18: Phenomenal context renderer, not compressor**
 Context: Voice pipeline was discarding temporal bands and self-band at the voice boundary. Research showed the upstream structures already self-compress.
 Decision: Faithful renderer at each tier's fidelity ceiling. Not a compressor — render what survived.
@@ -969,7 +1148,7 @@ Consequences: Directional force of temporal bands preserved through to voice LLM
 
 ---
 
-## 18. Evolution
+## 20. Evolution
 
 ### Timeline (compressed)
 
@@ -991,8 +1170,15 @@ Initial repo from ai-agents copy. README, prior art survey, perception wiring, S
 **Day 7 (Mar 17): Desktop app + Phenomenology**
 111 commits (busiest day). Hapax Corpora canvas, Tauri 2 migration, agent-controlled browser, phenomenological engineering (5 workstreams), spec registry, consent formalisms (5 algebraic layers), apperception self-band architecture, Bayesian presence engine, salience-based routing.
 
-**Day 8 (Mar 18, today): Integration**
-In progress. Consent formalisms wired to voice. Presence calibration. Voice routing bugs fixed. Phenomenological renderer. Apperception extraction. Reactive engine wired to voice. System anatomy visualization. Conversation UX. Stimmung calibration. Trio relay protocol.
+**Day 8 (Mar 18): Integration**
+Consent formalisms wired to voice. Presence calibration. Voice routing bugs fixed. Phenomenological renderer. Apperception extraction. Reactive engine wired to voice. System anatomy visualization. Conversation UX. Stimmung calibration. Trio relay protocol.
+
+**Day 9 (Mar 19): Research + Infrastructure**
+Two parallel workstreams:
+
+*Beta (conversational continuity)*: Conversational continuity design spec. Pre-registered 5 claims with Bayesian sequential testing. Built experiment runner, eval_grounding pipeline, trajectory scores, turn-pair coherence metrics. Counter-positioned against industry profile-retrieval pattern (POSITION.md, OBSERVABILITY.md, TOOL-CALLS.md, BARGE-IN-REPAIR.md). Fixed 8 voice pipeline bugs (timeout recovery, response length, pre-roll buffer, echo feedback, tool hallucination, Whisper prompting, wake word matching, presence-consent integration). Collected 7 baseline sessions with code frozen. Session 5 produced emergent self-reflective grounding — strongest evidence for the research position.
+
+*Alpha (temporal classification)*: Full model loadout for temporal classification — MoViNet-A2 action recognition, CLIP ViT-B/32 scene state, ByteTrack cross-camera tracking, BOCPD change point detection, audio scene classification. Wired 6-camera pipeline with 2 new Brio cameras. Temporal delta correlator for per-entity motion signals. 5-batch compositor performance optimization. Entity enrichment model with consent-gated enrichments. 30+ new tests.
 
 ### Commit Profile
 
@@ -1002,7 +1188,7 @@ Single contributor: the operator (+ Dependabot).
 
 ---
 
-## 19. Open Questions and Technical Debt
+## 21. Open Questions and Technical Debt
 
 ### Structural Gaps
 
@@ -1024,10 +1210,12 @@ Single contributor: the operator (+ Dependabot).
 
 ### Known Bugs
 
-- Voice daemon crashed (hapax-voice.service failed, needs investigation)
 - Tauri WebView crashes on Hyprland/Wayland (GDK protocol error 71)
-- LOCAL TTFT variance (Ollama GPU contention with other VRAM consumers)
-- Emoji in LLM output not stripped before TTS synthesis
+- Opus occasionally hallucinates tool-call XML as text output when tools disabled (guard catches `<tool_use>` but not all tag variants like `<tool_calls>`)
+- STT (faster-whisper) mangles "Hapax" on first utterance after wake word — subsequent turns improve with Whisper prompt conditioning
+- Audio dropped during TTS playback — operator speech during system response is lost (speaking gate defense against echo; barge-in repair mechanism designed but deferred)
+- Face ReID (buffalo_sc, single enrollment) unreliable across lighting conditions — presence engine override compensates
+- Health monitor service crashing (uv/Python failure)
 - claude-memory Qdrant collection empty (no ingestion pipeline)
 - Watch biometrics offline (Pixel Watch not transmitting)
 
@@ -1040,16 +1228,16 @@ Single contributor: the operator (+ Dependabot).
 
 ---
 
-## 20. Projected Work
+## 22. Projected Work
 
 **Epistemic status: Planned. Confidence in direction, not details. All projections are hypotheses, not commitments.**
 
 ### Near-term (days)
 
+- **Complete baseline collection**: 13 more sessions (20 target) with code frozen. Then environmental cleanup (fix health monitor, clear drift), flip components ON for Phase B.
+- **Post-baseline decisions**: Evaluate tool-call redesign (TOOL-CALLS.md) and barge-in repair (BARGE-IN-REPAIR.md) based on whether baseline data reveals information starvation or grounding blackouts as confounds.
+- **Face ReID improvement**: Multi-condition enrollment (5+ images), evaluate buffalo_l or antelopev2 over current buffalo_sc.
 - **ADHD attention inversion**: Low demand → more peripheral context in voice prompts. Research complete, design identified, not implemented.
-- **Conviction plan features rethinking**: The 5 conviction features (context restoration, contradiction alerts, consent trace viewer, precedent timeline, overhead dashboard) all have working backends but need rethinking given the new phenomenological infrastructure.
-- **System anatomy Tier 2 enrichments**: Mini sparklines in nodes, event flash propagation, system summary bar, semantic zoom.
-- **Voice service restart investigation**: Why did hapax-voice.service crash?
 
 ### Medium-term (weeks)
 
@@ -1074,7 +1262,7 @@ Single contributor: the operator (+ Dependabot).
 
 ---
 
-## 21. Operational Reference
+## 23. Operational Reference
 
 ### Starting and Stopping
 
@@ -1121,7 +1309,7 @@ curl http://localhost:8051/api/health
 
 ---
 
-## 22. Glossary
+## 24. Glossary
 
 ### Terms Invented by This System
 
@@ -1140,6 +1328,12 @@ curl http://localhost:8051/api/health
 | **Stimmung** | System-wide self-state vector — 6 dimensions + stance |
 | **Temporal bands** | Husserlian retention/impression/protention for LLM prompt injection |
 | **Trio relay** | File-based coordination protocol for 2 Claude sessions + 1 operator |
+| **Context anchoring** | Conversational continuity via turn-by-turn thread injection, as opposed to profile-gated retrieval |
+| **Grounding evaluation** | Per-turn measurement of Clark grounding mechanisms: context anchor success, reference accuracy, acceptance type |
+| **Trajectory score** | Within-session slope of a grounding metric — positive slope indicates grounding improving over turns |
+| **Turn-pair coherence** | Conditional probability linking consecutive turns — P(accept\|high anchor at prior turn) |
+| **Failure mode detector** | Boolean alarm that fires when the system exhibits profile-retrieval patterns |
+| **Spoken word cutoff** | Hard limit on words sent to TTS per turn, decoupling model thinking from operator hearing |
 
 ### Terms Borrowed from Other Fields
 
@@ -1158,6 +1352,14 @@ curl http://localhost:8051/api/health
 | **Stigmergy** | Grassé (entomology) | Indirect coordination through environment modification |
 | **Stochastic resonance** | Physics | Noise injection that improves signal detection |
 | **Transmuting internalization** | Kohut (self psychology) | Learning from experience without rigidifying |
+| **Conversational grounding** | Clark & Brennan (1991) | Collaborative process of establishing mutual understanding |
+| **SCED** | Clinical research | Single-case experimental design — repeated measures on one participant across phases |
+| **ROPE** | Bayesian statistics | Region of Practical Equivalence — range of effect sizes considered practically null |
+| **Bayes Factor** | Bayesian statistics | Ratio of evidence for one hypothesis over another |
+| **Full-duplex** | Telecommunications / voice AI | Simultaneous listening and speaking capability |
+| **ByteTrack** | Computer vision | Multi-object tracking via byte-level association |
+| **MoViNet** | Google Research | Mobile Video Network — streaming action recognition model |
+| **BOCPD** | Statistics | Bayesian Online Change Point Detection |
 
 ---
 
