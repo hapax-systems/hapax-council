@@ -40,7 +40,7 @@ export const FieldRegion = memo(function FieldRegion() {
           {depth === "surface" && (
             <div className="px-4 shrink-0">
               <FreshnessPanel />
-              {biometrics && biometrics.heart_rate_bpm > 0 && (
+              {biometrics && (biometrics.heart_rate_bpm > 0 || biometrics.phone_connected) && (
                 <div className="mt-1">
                   <OperatorVitals biometrics={biometrics} />
                 </div>
