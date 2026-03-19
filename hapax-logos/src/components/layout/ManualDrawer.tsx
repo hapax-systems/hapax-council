@@ -92,10 +92,9 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
   const filteredSections = useMemo(() => {
     if (!search.trim()) return sections;
     const query = search.toLowerCase();
-    const matched = sections.filter(
-      (s) => s.level === 0 || s.content.toLowerCase().includes(query),
+    return sections.filter(
+      (s) => s.level === 0 || s.title.toLowerCase().includes(query) || s.content.toLowerCase().includes(query),
     );
-    return matched.length > 0 ? matched : sections;
   }, [sections, search]);
 
   const allCollapsed = useMemo(
@@ -185,8 +184,12 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
       setCollapsed(new Set());
       setActiveSection("");
       setActiveSubsection("");
+    } else if (toc.length > 0 && !activeSection) {
+      // Initialize active section to first H2 on open
+      const first = toc.find((e) => e.level === 2);
+      if (first) setActiveSection(first.id);
     }
-  }, [open]);
+  }, [open, toc, activeSection]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const scrollToSection = (id: string) => {
@@ -201,14 +204,15 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
       if (parentH2) next.delete(parentH2.id);
       return next;
     });
-    requestAnimationFrame(() => {
+    // Delay to allow React to re-render expanded sections before scrolling
+    setTimeout(() => {
       const el =
         contentRef.current?.querySelector(`[id="${id}"]`) ??
         Array.from(contentRef.current?.querySelectorAll("h2, h3") ?? []).find(
           (h) => toId(h.textContent ?? "") === id,
         );
       el?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
+    }, 100);
   };
 
   const handlePrint = () => {
@@ -229,7 +233,7 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
 
       {/* Drawer */}
       <div
-        className={`fixed right-0 top-0 z-50 h-full w-full max-w-3xl transform border-l border-zinc-700 bg-zinc-900 shadow-xl transition-transform duration-200 print:static print:max-w-none print:transform-none print:border-0 print:shadow-none ${
+        className={`fixed right-0 top-0 z-50 h-full w-full max-w-4xl transform border-l border-zinc-700 bg-zinc-900 shadow-xl transition-transform duration-200 print:static print:max-w-none print:transform-none print:border-0 print:shadow-none ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >
@@ -266,7 +270,7 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search… (/)"
-                className="w-48 rounded border border-zinc-700 bg-zinc-800 py-1 pl-7 pr-2 text-xs text-zinc-300 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+                className="w-64 rounded border border-zinc-700 bg-zinc-800 py-1 pl-7 pr-2 text-xs text-zinc-300 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
               />
               {search && (
                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-zinc-600">
@@ -343,7 +347,9 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
           }`}
         >
           {manual?.content ? (
-            filteredSections.map((section) =>
+            search.trim() && filteredSections.filter((s) => s.level > 0).length === 0 ? (
+              <p className="text-xs text-zinc-500 py-8 text-center">No sections match "{search}"</p>
+            ) : filteredSections.map((section) =>
               section.level === 0 ? (
                 <div key={section.id} className="mb-4">
                   <MarkdownContent content={section.content} searchQuery={search || undefined} />
@@ -365,7 +371,7 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
                       {section.title}
                     </h2>
                   </button>
-                  {!collapsed.has(section.id) && (
+                  {(!collapsed.has(section.id) || search.trim()) && (
                     <div className="pl-0">
                       <MarkdownContent
                         content={section.content.replace(/^## .+\n/, "")}

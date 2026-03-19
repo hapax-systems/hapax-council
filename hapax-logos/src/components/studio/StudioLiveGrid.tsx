@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Maximize, Minimize, GripVertical } from "lucide-react";
+import { DetectionOverlay } from "./DetectionOverlay";
 
 interface Props {
   cameraOrder: string[];
@@ -31,7 +32,13 @@ export function StudioLiveGrid({ cameraOrder, onReorder, onFocusCamera }: Props)
     setOverIdx(null);
   };
 
-  if (cameraOrder.length === 0) return null;
+  if (cameraOrder.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
+        No cameras connected — start the compositor to enable studio.
+      </div>
+    );
+  }
 
   const hero = cameraOrder[0];
   const others = cameraOrder.slice(1);
@@ -179,6 +186,15 @@ function CameraCell({
         alt={role}
         crossOrigin="anonymous"
         className={`bg-black object-contain ${isFullscreen ? "max-h-screen max-w-full" : "h-full w-full"}`}
+      />
+
+      {/* Detection overlay — bounding boxes + labels */}
+      <DetectionOverlay
+        containerRef={cellRef}
+        cameraRole={role}
+        showBoxes={true}
+        showLabels={true}
+        showEnrichments={isHero}
       />
 
       {/* Labels + controls */}

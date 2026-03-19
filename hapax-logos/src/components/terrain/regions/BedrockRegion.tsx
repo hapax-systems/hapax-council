@@ -28,11 +28,14 @@ function BedrockSurface() {
   return (
     <div className="h-full flex items-center gap-6 px-6">
       {/* Axiom dots */}
-      <div className="flex gap-1.5">
-        {Array.from({ length: axiomCount }).map((_, i) => (
+      <div className="flex gap-1.5" title="Axiom compliance">
+        {Array.from({ length: axiomCount }).map((_, i) => {
+          const axiomNames = ["single_user", "exec_function", "corp_boundary", "transparency", "mgmt_governance"];
+          return (
           <div
             key={i}
             className="w-2 h-2 rounded-full"
+            title={axiomNames[i] ?? `axiom-${i}`}
             style={{
               background:
                 score === null
@@ -44,7 +47,8 @@ function BedrockSurface() {
                       : "#fb4934",
             }}
           />
-        ))}
+          );
+        })}
       </div>
 
       {/* Health summary */}
@@ -66,7 +70,7 @@ function BedrockSurface() {
                   : "#504945",
         }}
       >
-        {stance}
+        {stance === "unknown" ? "—" : stance}
       </div>
 
       {/* Cost tax % */}
@@ -88,7 +92,7 @@ export function BedrockRegion() {
           {depth === "surface" && <BedrockSurface />}
           {depth !== "surface" && (
             <div className="h-full overflow-y-auto p-3">
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 <HealthPanel />
                 <VramPanel />
                 <ContainersPanel />

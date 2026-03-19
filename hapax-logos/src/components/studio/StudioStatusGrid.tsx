@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStudio } from "../../api/hooks";
 import { AlertTriangle, Camera, X, Maximize, GripVertical } from "lucide-react";
+import { DetectionOverlay } from "./DetectionOverlay";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-green-500",
@@ -179,6 +180,14 @@ export function CameraSoloView({
         ref={imgRef}
         alt={role}
         className="aspect-video w-full rounded-lg bg-black object-contain"
+      />
+      {/* Detection overlay — bounding boxes + labels + enrichments */}
+      <DetectionOverlay
+        containerRef={containerRef}
+        cameraRole={role}
+        showBoxes={true}
+        showLabels={true}
+        showEnrichments={true}
       />
       <div className="absolute left-2 top-2 flex items-center gap-1.5">
         <span className="flex items-center gap-1 rounded bg-black/60 px-2 py-1 text-[10px] font-medium text-amber-300 backdrop-blur-sm">
