@@ -140,7 +140,7 @@ async def camera_batch_snapshot(roles: str = ""):
         header = (
             f"--{boundary}\r\n"
             f"Content-Type: image/jpeg\r\n"
-            f"Content-Disposition: attachment; name=\"{role}\"\r\n"
+            f'Content-Disposition: attachment; name="{role}"\r\n'
             f"Content-Length: {len(data)}\r\n"
             f"\r\n"
         ).encode()
