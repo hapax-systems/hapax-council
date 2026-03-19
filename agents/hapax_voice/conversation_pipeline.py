@@ -242,7 +242,8 @@ class ConversationPipeline:
         )
 
         # Echo detection: track recent TTS output to detect mic picking up Hapax's own voice
-        self._recent_tts_texts: list[str] = []  # last N sentences spoken by Hapax
+        # Stored as (timestamp, text) tuples for TTL-based pruning
+        self._recent_tts_texts: list[tuple[float, str]] = []
         self._max_tts_history: int = 10
 
         # Observation signal tracking (Batch 4: revealed preferences)
@@ -365,7 +366,16 @@ class ConversationPipeline:
         if not self._running:
             return
 
+        from shared.telemetry import hapax_bool_score, hapax_event, hapax_score, hapax_trace
+
         _t_start = time.monotonic()
+        _utt_trace_cm = hapax_trace(
+            "voice",
+            "utterance",
+            session_id=getattr(self, "_session_id", None),
+            metadata={"turn": self.turn_count, "audio_bytes": len(audio_bytes)},
+        )
+        _utt_trace = _utt_trace_cm.__enter__()
 
         # STT
         self.state = ConvState.TRANSCRIBING
@@ -391,9 +401,22 @@ class ConversationPipeline:
                 pass  # fail-open
 
         _t_stt = time.monotonic()
-        log.info("TIMING stt=%.0fms transcript=%r", (_t_stt - _t_start) * 1000, transcript[:60])
+        _stt_ms = (_t_stt - _t_start) * 1000
+        log.info("TIMING stt=%.0fms transcript=%r", _stt_ms, transcript[:60])
+        hapax_event(
+            "voice",
+            "stt_done",
+            metadata={
+                "stt_ms": round(_stt_ms),
+                "transcript_len": len(transcript),
+            },
+        )
 
         # ── Echo detection: reject or strip echo from transcript ──
+        # Echo rejection stays active even during barge-in. The AEC doesn't
+        # fully cancel TTS from the mic signal, and the barge-in detector
+        # can't distinguish operator voice from loud speaker bleed-through.
+        # Without echo rejection, Hapax talks to itself in a feedback loop.
         if self._is_echo(transcript):
             log.info("Echo rejected: %r", transcript[:60])
             self.state = ConvState.LISTENING
@@ -490,6 +513,15 @@ class ConversationPipeline:
             routing.model or "canned",
             routing.reason,
         )
+        hapax_event(
+            "voice",
+            "routed",
+            metadata={
+                "tier": routing.tier.name,
+                "model": routing.model or "canned",
+                "reason": routing.reason,
+            },
+        )
 
         # Record activation breakdown for diagnostics
         if self._salience_diagnostics is not None:
@@ -553,6 +585,17 @@ class ConversationPipeline:
             log.info("Max turns reached, ending conversation")
             await self.stop()
             return
+
+        # Score and close the utterance trace
+        _t_end = time.monotonic()
+        _total_ms = (_t_end - _t_start) * 1000
+        hapax_score(_utt_trace, "total_latency_ms", _total_ms)
+        _consent_threshold = 2000 if getattr(self, "_consent_phase", "none") != "none" else 5000
+        hapax_bool_score(_utt_trace, "consent_latency_ok", _total_ms < _consent_threshold)
+        try:
+            _utt_trace_cm.__exit__(None, None, None)
+        except Exception:
+            pass
 
         self.state = ConvState.LISTENING
 
@@ -867,14 +910,11 @@ class ConversationPipeline:
     def _is_echo(self, transcript: str) -> bool:
         """Detect if a transcript is Hapax's own TTS output echoed back.
 
-        Multi-strategy detection tuned for the Yeti mic + speexdsp AEC setup
-        where residual TTS bleed-through gets transcribed by STT:
+        Tuned to avoid false positives that silence legitimate operator speech.
+        Uses TTL-based pruning (8s max) and conservative matching:
 
-        1. Exact match against any recent TTS sentence
-        2. Substring containment (TTS sentence found within transcript)
-        3. Word-sequence overlap using longest common subsequence ratio
-        4. Word-set overlap at 70% threshold (catches STT substitutions)
-        5. Recency boost: transcripts within 5s of last TTS get lower thresholds
+        1. Exact match against recent TTS sentence
+        2. High-confidence LCS ratio (≥0.75) for longer utterances
         """
         if not self._recent_tts_texts:
             return False
@@ -885,49 +925,28 @@ class ConversationPipeline:
 
         norm_words = norm.split()
         word_count = len(norm_words)
+        now = time.monotonic()
 
-        # Recency: lower thresholds if we just spoke
-        recently_spoke = (
-            hasattr(self, "_last_assistant_end")
-            and self._last_assistant_end > 0
-            and (time.monotonic() - self._last_assistant_end) < 5.0
-        )
+        # TTL pruning — only check TTS from the last 8 seconds
+        _ECHO_TTL_S = 8.0
 
-        for tts_text in self._recent_tts_texts:
+        for ts, tts_text in self._recent_tts_texts:
+            if now - ts > _ECHO_TTL_S:
+                continue
+
             tts_words = tts_text.split()
 
             # 1. Exact match (any length)
             if norm == tts_text:
                 return True
 
-            # 2. Short utterances (1-3 words): check if it's a fragment of any TTS
-            if word_count <= 3:
-                # Only match if the TTS sentence is also short (≤5 words).
-                # A 1-word utterance like "Ryan" matching a long TTS sentence
-                # like "hey, ryan, what's going on?" is a false positive — the
-                # operator is likely responding, not echoing.
-                if len(tts_words) <= 5 and all(w in tts_text for w in norm_words):
-                    return True
-                continue
-
-            # 3. Substring containment (TTS sentence found in transcript, ≥3 words)
-            if len(tts_words) >= 3 and tts_text in norm:
-                return True
-
-            # 4. Longest common subsequence ratio — catches reordering/insertion by STT
-            lcs_len = _lcs_word_length(norm_words, tts_words)
-            shorter = min(word_count, len(tts_words))
-            if shorter >= 3:
-                lcs_ratio = lcs_len / shorter
-                threshold = 0.55 if recently_spoke else 0.65
-                if lcs_ratio >= threshold:
-                    return True
-
-            # 5. Word-set overlap (catches STT substitutions)
-            overlap = len(set(tts_words) & set(norm_words))
-            if overlap >= 3:
-                set_threshold = 0.60 if recently_spoke else 0.70
-                if overlap / shorter >= set_threshold:
+            # 2. High-confidence LCS match (≥4 words, ≥75% overlap)
+            # Conservative threshold to avoid rejecting legitimate speech
+            # that happens to share common words with recent TTS.
+            if word_count >= 4 and len(tts_words) >= 4:
+                lcs_len = _lcs_word_length(norm_words, tts_words)
+                shorter = min(word_count, len(tts_words))
+                if lcs_len / shorter >= 0.75:
                     return True
 
         return False
@@ -945,8 +964,12 @@ class ConversationPipeline:
 
         norm = transcript.lower().strip()
         best_strip = 0  # characters to strip from start
+        now = time.monotonic()
+        _ECHO_TTL_S = 8.0
 
-        for tts_text in self._recent_tts_texts:
+        for ts, tts_text in self._recent_tts_texts:
+            if now - ts > _ECHO_TTL_S:
+                continue
             tts_words = tts_text.split()
             if len(tts_words) < 3:
                 continue
@@ -1111,8 +1134,8 @@ class ConversationPipeline:
         if not self._running:
             return
 
-        # Track for echo detection
-        self._recent_tts_texts.append(text.lower().strip().rstrip(".,!?"))
+        # Track for echo detection — store with timestamp for TTL pruning
+        self._recent_tts_texts.append((time.monotonic(), text.lower().strip().rstrip(".,!?")))
         if len(self._recent_tts_texts) > self._max_tts_history:
             self._recent_tts_texts.pop(0)
 
@@ -1133,12 +1156,24 @@ class ConversationPipeline:
                 "conversation",
             )
             _t_synth = time.monotonic()
+            _tts_ms = (_t_synth - _t0) * 1000
             if pcm and self._audio_output:
                 log.info(
                     "TIMING tts_synth=%.0fms play=%db text=%r",
-                    (_t_synth - _t0) * 1000,
+                    _tts_ms,
                     len(pcm),
                     text[:40],
+                )
+                from shared.telemetry import hapax_event
+
+                hapax_event(
+                    "voice",
+                    "tts_synth",
+                    metadata={
+                        "tts_ms": round(_tts_ms),
+                        "pcm_bytes": len(pcm),
+                        "text_len": len(tts_text),
+                    },
                 )
                 # Write audio in background — streaming loop continues
                 # immediately so next clause can start synthesizing.
@@ -1165,6 +1200,8 @@ class ConversationPipeline:
         try:
             if echo_canceller:
                 echo_canceller.feed_reference(pcm)
+            else:
+                log.debug("_write_audio: echo_canceller is None!")
             audio_output.write(pcm)
         except Exception:
             pass

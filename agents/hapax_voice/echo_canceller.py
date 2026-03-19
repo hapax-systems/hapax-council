@@ -83,8 +83,21 @@ class EchoCanceller:
         self._ref_lock = Lock()
         self._ref_buf: deque[bytes] = deque(maxlen=500)  # ~15s at 30ms frames
 
+        # Latency compensation: delay reference by N frames to account for
+        # acoustic propagation from speaker to mic (~10-20ms = ~1 frame at 30ms).
+        # Without this, the reference arrives at the AEC before the echo
+        # arrives at the mic, causing mis-alignment.
+        self._latency_frames = max(1, int(15 / 30))  # ~15ms = 1 frame at 30ms
+        self._latency_buf: deque[bytes] = deque(maxlen=self._latency_frames)
+
         # Pre-allocate output buffer
         self._out_buf = (ctypes.c_int16 * frame_size)()
+
+        # Diagnostics: count frames processed vs passthrough
+        self._frames_processed = 0
+        self._frames_passthrough = 0
+        self._refs_fed = 0
+        self._diag_last_log = 0.0
 
         log.info(
             "EchoCanceller initialized: frame=%d samples, tail=%dms (%d samples)",
@@ -108,9 +121,12 @@ class EchoCanceller:
         # Split into frame-sized chunks
         with self._ref_lock:
             offset = 0
+            count = 0
             while offset + self._frame_bytes <= len(resampled):
                 self._ref_buf.append(resampled[offset : offset + self._frame_bytes])
                 offset += self._frame_bytes
+                count += 1
+            self._refs_fed += count
 
     def process(self, mic_frame: bytes) -> bytes:
         """Process a mic frame through echo cancellation.
@@ -123,10 +139,20 @@ class EchoCanceller:
 
         # Get reference frame (or silence if none available)
         with self._ref_lock:
-            ref = self._ref_buf.popleft() if self._ref_buf else None
+            raw_ref = self._ref_buf.popleft() if self._ref_buf else None
+
+        # Latency compensation: delay reference by 1 frame (~30ms) so it
+        # aligns with when the acoustic echo actually reaches the mic.
+        ref = None
+        if raw_ref is not None:
+            self._latency_buf.append(raw_ref)
+            if len(self._latency_buf) >= self._latency_frames:
+                ref = self._latency_buf.popleft()
 
         if ref is None:
             # No echo to cancel — passthrough
+            self._frames_passthrough += 1
+            self._log_diag()
             return mic_frame
 
         # Set up ctypes pointers
@@ -135,7 +161,28 @@ class EchoCanceller:
 
         self._lib.speex_echo_cancellation(self._state, mic_arr, ref_arr, self._out_buf)
 
+        self._frames_processed += 1
+        self._log_diag()
         return bytes(self._out_buf)
+
+    def _log_diag(self) -> None:
+        """Log AEC diagnostics every 5 seconds."""
+        import time
+
+        now = time.monotonic()
+        if now - self._diag_last_log >= 5.0:
+            self._diag_last_log = now
+            total = self._frames_processed + self._frames_passthrough
+            pct = (self._frames_processed / total * 100) if total > 0 else 0
+            log.info(
+                "AEC diag: processed=%d passthrough=%d (%.0f%% active), "
+                "refs_fed=%d, ref_buf=%d",
+                self._frames_processed,
+                self._frames_passthrough,
+                pct,
+                self._refs_fed,
+                len(self._ref_buf),
+            )
 
     def destroy(self) -> None:
         """Release the speexdsp state."""

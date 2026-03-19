@@ -48,11 +48,76 @@ _WAKE_WORDS = frozenset(
         "hip ax",
         "hip pax",
         "he pax",
+        "hip hacks",
+        "hiphacks",
+        "hit x",
+        "hitx",
+        "high pax",
+        "hi pax",
+        "hey packs",
+        "hey pax",
+        "hay packs",
+        "hey hapaks",
+        "hey hapax",
     }
 )
 
 # Also match these as substrings (for "hapax" embedded in longer text)
-_WAKE_SUBSTRINGS = ("hapax", "hey pax", "hay pax", "hepax", "hit pax", "hip ax", "he pax")
+_WAKE_SUBSTRINGS = (
+    "hapax",
+    "hey pax",
+    "hay pax",
+    "hepax",
+    "hit pax",
+    "hip ax",
+    "he pax",
+    "hiphacks",
+    "hitx",
+    "high pax",
+    "hi pax",
+)
+
+
+def _fuzzy_wake_match(text_clean: str) -> bool:
+    """Fuzzy phonetic matching for wake word.
+
+    Whisper-tiny produces wildly varying transcriptions of "hey hapax".
+    Instead of enumerating every variant, check if the text sounds like
+    it could be the wake phrase using simple heuristics:
+    - Starts with h-sound word (hey/hi/high/hay/ha/he/hit/hip)
+    - Followed by pax/packs/hacks/ax/x sound
+    """
+    words = text_clean.split()
+    if len(words) < 1 or len(words) > 4:
+        return False
+
+    # Single word: check if it's a hapax-like compound
+    if len(words) == 1:
+        w = words[0]
+        return w.startswith("h") and ("pax" in w or "pacs" in w or "hax" in w or "packs" in w)
+
+    # Multi-word: first word h-sound, last word pax-sound
+    h_starts = frozenset(
+        {"hey", "hi", "high", "hay", "ha", "he", "hit", "hip", "hei", "hie"}
+    )
+    pax_ends = frozenset(
+        {"pax", "packs", "pacs", "hacks", "ax", "x", "backs", "pacts",
+         "pass", "pats", "pash", "patch", "pack", "paks",
+         "hapaks", "hapax", "hapacs", "hapacks"}
+    )
+
+    first = words[0]
+    last = words[-1]
+
+    if first in h_starts and last in pax_ends:
+        return True
+
+    # Check if any bigram matches h+pax pattern
+    for i in range(len(words) - 1):
+        if words[i] in h_starts and words[i + 1] in pax_ends:
+            return True
+
+    return False
 
 DETECTION_COOLDOWN_S = 1.5
 
@@ -251,6 +316,10 @@ class WhisperWakeWord:
                     if sub in text_clean:
                         detected = True
                         break
+
+            # Fuzzy phonetic match (catches novel whisper-tiny variants)
+            if not detected:
+                detected = _fuzzy_wake_match(text_clean)
 
             if detected:
                 latency = (time.monotonic() - submit_time) * 1000

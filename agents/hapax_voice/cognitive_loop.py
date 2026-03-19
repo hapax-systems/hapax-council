@@ -100,6 +100,8 @@ class CognitiveLoop:
         self._predicted_tier: str = ""
         self._cognitive_readiness: float = 0.0
         self._wind_down_sent = False
+        self._processing_task: asyncio.Task | None = None  # non-blocking utterance dispatch
+        self._response_start_at: float = 0.0  # for on_response timing via phase transitions
 
         # Speaker verification state (session-scoped)
         self._speaker_verified = False
@@ -171,19 +173,23 @@ class CognitiveLoop:
                     self._on_phase_transition(prev_phase, self._turn_phase)
 
                 # 2. Poll for pending utterances (any phase except HAPAX_SPEAKING).
-                # The buffer emits utterances when VAD detects speech-end, which
-                # can happen before the pipeline transitions to TRANSCRIBING.
-                # Polling only during TRANSITION would miss utterances.
-                if self._turn_phase != TurnPhase.HAPAX_SPEAKING:
+                # Dispatch as a background task so the cognitive loop keeps
+                # ticking during STT+LLM+TTS. Only poll when not already
+                # processing — get_utterance() consumes the pending utterance,
+                # so polling while busy would drop it.
+                if self._turn_phase != TurnPhase.HAPAX_SPEAKING and not self._is_processing:
                     utterance = self._buffer.get_utterance()
                     if utterance is not None:
-                        await self._handle_utterance(utterance)
+                        self._dispatch_utterance(utterance)
 
                 # 3. Phase-specific cognition
                 if self._turn_phase == TurnPhase.OPERATOR_SPEAKING:
                     await self._tick_operator_speaking()
                 elif self._turn_phase == TurnPhase.MUTUAL_SILENCE:
                     await self._tick_mutual_silence()
+                elif self._turn_phase in (TurnPhase.HAPAX_SPEAKING, TurnPhase.TRANSITION):
+                    # Keep session alive during processing/speaking
+                    self._session.mark_activity()
 
                 # 4. Update cognitive readiness
                 self._cognitive_readiness = self._compute_readiness()
@@ -198,8 +204,14 @@ class CognitiveLoop:
                     )
                 self._b_predicted_tier.update(self._predicted_tier, now)
 
-                # 6. Session timeout check
-                if self._session.is_active and self._session.is_timed_out:
+                # 6. Session timeout check — skip during active processing
+                # or TTS playback (Hapax speaking counts as activity).
+                if (
+                    self._session.is_active
+                    and self._session.is_timed_out
+                    and not self._is_processing
+                    and self._turn_phase not in (TurnPhase.HAPAX_SPEAKING, TurnPhase.TRANSITION)
+                ):
                     log.info("Conversation timed out (silence)")
                     break
 
@@ -271,9 +283,16 @@ class CognitiveLoop:
             if self._speculative_stt is not None:
                 self._speculative_stt.reset()
 
-        # Response timing is measured inline in _handle_utterance (wall-clock
-        # of process_utterance) because the await blocks the cognitive loop —
-        # TRANSITION and HAPAX_SPEAKING phases are never observed.
+        # Track response timing from phase transitions — now that
+        # process_utterance runs as a background task, the cognitive loop
+        # observes TRANSITION and HAPAX_SPEAKING phases in real time.
+        if to_phase == TurnPhase.TRANSITION:
+            self._response_start_at = time.monotonic()
+        if from_phase == TurnPhase.HAPAX_SPEAKING and self._model is not None:
+            if self._response_start_at > 0:
+                response_time = now - self._response_start_at
+                self._model.on_response("", response_time)
+                self._response_start_at = 0.0
 
     # ── Phase-specific ticks ───────────────────────────────────────
 
@@ -314,25 +333,48 @@ class CognitiveLoop:
 
     # ── Utterance dispatch ─────────────────────────────────────────
 
-    async def _handle_utterance(self, utterance: bytes) -> None:
-        """Speaker verify + process utterance through pipeline."""
+    @property
+    def _is_processing(self) -> bool:
+        """True if an utterance is currently being processed by the pipeline."""
+        return self._processing_task is not None and not self._processing_task.done()
+
+    def _dispatch_utterance(self, utterance: bytes) -> None:
+        """Dispatch utterance processing as a background task.
+
+        The cognitive loop continues ticking while STT+LLM+TTS runs,
+        enabling speculative STT, phase tracking, and model updates.
+        """
         # Cancel any in-flight speculative STT — final transcription is about
-        # to use the same single-threaded executor (#7)
+        # to use the same single-threaded executor
         if self._speculative_stt is not None:
             self._speculative_stt.reset()
 
-        # Speaker verification gate — verify on first utterance with enough
-        # audio. If pyannote returns confidence=0.0, the model can't form an
-        # embedding (audio too noisy/short/discontinuous) — give up and
-        # trust the wake word (operator implied by wake word activation).
+        self._processing_task = asyncio.create_task(self._process_utterance(utterance))
+        self._processing_task.add_done_callback(self._on_processing_done)
+
+    def _on_processing_done(self, task: asyncio.Task) -> None:
+        """Callback when utterance processing completes."""
+        self._processing_task = None
+        self._predicted_tier = ""
+        try:
+            exc = task.exception()
+            if exc is not None:
+                log.exception("Utterance processing failed", exc_info=exc)
+        except asyncio.CancelledError:
+            pass
+
+    async def _process_utterance(self, utterance: bytes) -> None:
+        """Process an utterance through speaker verify + pipeline.
+
+        Runs as a background task — does NOT block the cognitive loop.
+        """
+        # Speaker verification gate
         if self._speaker_identifier is not None and not self._speaker_verified:
-            utterance_samples = len(utterance) // 2  # int16 = 2 bytes/sample
+            utterance_samples = len(utterance) // 2
             self._speaker_audio_buf.append(utterance)
             self._speaker_audio_samples += utterance_samples
 
             if self._speaker_audio_samples >= _VERIFY_MIN_SAMPLES:
-                # Verify on the single longest utterance, not concatenated
-                # clips with gaps — pyannote needs continuous audio.
                 longest = max(self._speaker_audio_buf, key=len)
                 speaker = await self._verify_speaker(longest)
 
@@ -353,8 +395,6 @@ class CognitiveLoop:
                     self._speaker_audio_samples = 0
                     return
                 else:
-                    # Confidence=0.0 means pyannote can't form an embedding.
-                    # After 2 attempts, give up — wake word implies operator.
                     self._speaker_verify_attempts = getattr(self, "_speaker_verify_attempts", 0) + 1
                     if self._speaker_verify_attempts >= 2:
                         self._speaker_verified = True
@@ -374,23 +414,10 @@ class CognitiveLoop:
                     log.info("Speaker gate: uncertain, will retry on next utterance")
 
         self._session.mark_activity()
-
-        # Record response start time BEFORE process_utterance — the await
-        # blocks the cognitive loop so TRANSITION phase is never observed.
-        # Measure wall-clock time of the full process_utterance call instead.
-        t_start = time.monotonic()
-        await self._pipeline.process_utterance(utterance)
-        t_end = time.monotonic()
-        self._session.mark_activity()
         self._update_model_on_utterance(utterance)
 
-        # Update model with response timing (process_utterance includes
-        # STT + routing + LLM + TTS, so this is the full response time).
-        if self._model is not None:
-            self._model.on_response("", t_end - t_start)
-
-        # Clear predicted tier after final processing
-        self._predicted_tier = ""
+        await self._pipeline.process_utterance(utterance)
+        self._session.mark_activity()
 
     def _update_model_on_utterance(self, utterance: bytes) -> None:
         """Update conversational model after an utterance is processed."""

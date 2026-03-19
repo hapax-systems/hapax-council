@@ -123,7 +123,7 @@ class TestCognitiveLoopBasic:
 
         # Utterance dispatched directly via _handle_utterance
         loop._running = True
-        await loop._handle_utterance(b"\x00" * 3200)
+        await loop._process_utterance(b"\x00" * 3200)
         pipeline.process_utterance.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -159,7 +159,7 @@ class TestCognitiveLoopBasic:
         # Simulate one tick's utterance poll
         utterance = loop._buffer.get_utterance()
         assert utterance is not None
-        await loop._handle_utterance(utterance)
+        await loop._process_utterance(utterance)
         pipeline.process_utterance.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -196,7 +196,7 @@ class TestCognitiveLoopBasic:
 
         # Short audio — not enough for verification, but fail-open processes it
         short_audio = b"\x00" * 1000
-        await loop._handle_utterance(short_audio)
+        await loop._process_utterance(short_audio)
         # Audio accumulated but not enough to verify — falls through to process
         pipeline.process_utterance.assert_awaited_once()
 
@@ -221,11 +221,11 @@ class TestCognitiveLoopBasic:
 
         # First utterance with enough audio — uncertain
         audio_3s = b"\x00" * (16000 * 3 * 2)  # 3s of int16
-        await loop._handle_utterance(audio_3s)
+        await loop._process_utterance(audio_3s)
         assert not loop._speaker_verified
 
         # Second utterance — uncertain again, should fail-open
-        await loop._handle_utterance(audio_3s)
+        await loop._process_utterance(audio_3s)
         assert loop._speaker_verified
         session.set_speaker.assert_called_with("ryan", 0.0)
 
@@ -497,7 +497,7 @@ class TestPipelineIntegration:
             conversational_model=model,
         )
         loop._running = True
-        await loop._handle_utterance(b"\x00" * 32000)  # 1s audio
+        await loop._process_utterance(b"\x00" * 32000)  # 1s audio
         assert model.turn_count == 1
 
     @pytest.mark.asyncio
@@ -576,32 +576,38 @@ class TestActiveSilence:
         await loop._handle_silence(15.0)
 
 
-# ── Response timing (inline in _handle_utterance) ────────────────────
+# ── Response timing (from phase transitions) ─────────────────────────
 
 
 class TestResponseTiming:
-    """on_response called after process_utterance completes, using wall-clock time."""
+    """on_response called via phase transitions now that loop is non-blocking."""
 
-    @pytest.mark.asyncio
-    async def test_on_response_called_after_utterance(self):
+    def test_transition_records_response_start(self):
         model = ConversationalModel()
-        pipeline = _mock_pipeline(state="listening")
-        loop = _make_loop(pipeline=pipeline, conversational_model=model)
+        loop = _make_loop(conversational_model=model)
         loop._running = True
 
-        await loop._handle_utterance(b"\x00" * 32000)
+        loop._on_phase_transition(TurnPhase.OPERATOR_PAUSING, TurnPhase.TRANSITION)
+        assert loop._response_start_at > 0
 
-        # on_response should have been called with the process_utterance duration
+    def test_hapax_speaking_end_calls_on_response(self):
+        model = ConversationalModel()
+        loop = _make_loop(conversational_model=model)
+        loop._running = True
+
+        loop._response_start_at = time.monotonic() - 1.5
+        loop._on_phase_transition(TurnPhase.HAPAX_SPEAKING, TurnPhase.MUTUAL_SILENCE)
+
         assert model.last_response_at > 0
+        assert loop._response_start_at == 0.0
 
     @pytest.mark.asyncio
-    async def test_on_response_not_called_without_model(self):
+    async def test_process_utterance_does_not_crash_without_model(self):
         pipeline = _mock_pipeline(state="listening")
         loop = _make_loop(pipeline=pipeline, conversational_model=None)
         loop._running = True
 
-        # Should not raise even without model
-        await loop._handle_utterance(b"\x00" * 32000)
+        await loop._process_utterance(b"\x00" * 32000)
 
 
 # ── PerceptionEngine.replace_backend (#3) ─────────────────────────────
@@ -657,10 +663,10 @@ class TestReplaceBackend:
 
 
 class TestSpeculativeResetOnDispatch:
-    """Speculative STT is reset before final utterance to avoid executor contention."""
+    """Speculative STT is reset on dispatch to avoid executor contention."""
 
     @pytest.mark.asyncio
-    async def test_speculative_reset_before_process(self):
+    async def test_speculative_reset_on_dispatch(self):
         spec = SpeculativeTranscriber(MagicMock(), interval_s=0.0)
         spec._last_partial = "some partial"
         spec._pending = False
@@ -669,7 +675,9 @@ class TestSpeculativeResetOnDispatch:
         loop = _make_loop(pipeline=pipeline, speculative_stt=spec)
         loop._running = True
 
-        await loop._handle_utterance(b"\x00" * 3200)
+        # _dispatch_utterance resets speculative STT synchronously
+        loop._dispatch_utterance(b"\x00" * 3200)
+        await asyncio.sleep(0.05)  # let the task start
 
         # Speculative state should be reset before pipeline.process_utterance
         assert spec._last_partial == ""

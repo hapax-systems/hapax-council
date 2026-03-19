@@ -68,7 +68,7 @@ class VoiceConfig(BaseModel):
 
     # Application-level echo cancellation (speexdsp)
     aec_enabled: bool = True
-    aec_tail_ms: int = 200
+    aec_tail_ms: int = 500  # 500ms covers typical room reverb (was 200ms)
 
     # Backends
     backend: str = "local"  # "local" or "gemini"
@@ -199,9 +199,9 @@ class VoiceConfig(BaseModel):
     salience_model: str = "minishlab/potion-base-8M"
     salience_thresholds: dict[str, float] = {
         "canned_max": 0.15,
-        "local_max": 0.45,
-        "fast_max": 0.60,
-        "strong_max": 0.78,
+        "local_max": 0.20,  # was 0.45 — LOCAL only for greetings/phatic
+        "fast_max": 0.55,
+        "strong_max": 0.75,
     }
     salience_weights: dict[str, float] = {
         "concern_overlap": 0.55,
