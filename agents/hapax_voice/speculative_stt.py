@@ -56,7 +56,8 @@ class SpeculativeTranscriber:
         self._last_speculate_at = now
         try:
             audio = b"".join(speech_frames)
-            transcript = await self._stt.transcribe(audio)
+            # Use _transcribe_quiet to avoid INFO logging for speculative calls
+            transcript = await self._stt.transcribe(audio, _speculative=True)
             transcript = transcript.strip()
             if transcript and transcript != self._last_partial:
                 self._last_partial = transcript

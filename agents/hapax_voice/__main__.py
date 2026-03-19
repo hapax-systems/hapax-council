@@ -712,6 +712,8 @@ class VoiceDaemon:
             detector = PorcupineWakeWord(sensitivity=self.cfg.porcupine_sensitivity)
             return detector
         if engine == "whisper":
+            # resident_stt is set later via set_resident_stt() after
+            # ResidentSTT is created (line ~289) and loaded (_run_inner)
             return WhisperWakeWord(model_size="tiny")
         return WakeWordDetector()
 
@@ -1713,15 +1715,19 @@ class VoiceDaemon:
         # Start hotkey server
         await self.hotkey.start()
 
-        # Load wake word model (non-blocking, logs warning if unavailable)
-        self.wake_word.load()
-
         # Preload STT + TTS models at startup so first wake word is instant.
         # These stay resident in GPU memory for the daemon's lifetime.
+        # STT must load BEFORE wake word — wake word uses the resident model.
         if not self._resident_stt.is_loaded:
             log.info("Preloading STT model at startup...")
             self._resident_stt.load()
         self.tts.preload()
+
+        # Wire resident STT into wake word detector, then load.
+        # Uses GPU distil-large-v3 instead of CPU whisper-tiny.
+        if isinstance(self.wake_word, WhisperWakeWord):
+            self.wake_word._resident_stt = self._resident_stt
+        self.wake_word.load()
 
         # Bridge presynthesis at startup (TTS is warm now) — eliminates 5s
         # delay on first session. Moved from _start_conversation_pipeline().
@@ -1821,9 +1827,28 @@ class VoiceDaemon:
             while self._running:
                 # Session timeout check
                 if self.session.is_active and self.session.is_timed_out:
-                    msg = session_end_message(self.notifications.pending_count)
-                    log.info("Session timeout: %s", msg)
-                    await self._close_session(reason="silence_timeout")
+                    # Don't timeout during active processing or TTS
+                    if self._cognitive_loop and self._cognitive_loop.turn_phase in (
+                        "hapax_speaking",
+                        "transition",
+                        "operator_speaking",
+                    ):
+                        self.session.mark_activity()
+                    else:
+                        msg = session_end_message(self.notifications.pending_count)
+                        log.info("Session closing: %s", msg)
+                        # Speak goodbye so operator knows the session is ending
+                        if (
+                            self._conversation_pipeline
+                            and self._conversation_pipeline._audio_output
+                        ):
+                            try:
+                                pcm = self.tts.synthesize(msg, "conversation")
+                                if pcm:
+                                    self._conversation_pipeline._audio_output.write(pcm)
+                            except Exception:
+                                log.debug("Goodbye TTS failed", exc_info=True)
+                        await self._close_session(reason="silence_timeout")
 
                 # Prune expired notifications
                 self.notifications.prune_expired()

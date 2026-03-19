@@ -93,8 +93,8 @@ _MAX_ACCUMULATION_S = 0.3
 # because they were too long.
 _TIER_MAX_TOKENS: dict[str, int] = {
     "CANNED": 0,
-    "LOCAL": 40,  # 1 sentence
-    "FAST": 80,  # 1-2 sentences
+    "LOCAL": 60,  # 1-2 sentences
+    "FAST": 150,  # 2-3 sentences
     "STRONG": 120,  # 2-3 sentences
     "CAPABLE": 200,  # 3-4 sentences max
 }
@@ -761,6 +761,10 @@ class ConversationPipeline:
             # Flush remaining text (skip if barge-in — operator is talking)
             if accumulated.strip() and not (self.buffer and self.buffer.barge_in_detected):
                 await self._speak_sentence(accumulated.strip())
+
+            # Log full response for debugging truncation
+            if full_text:
+                log.info("LLM full response (%d chars): %r", len(full_text), full_text[:200])
 
             # Record assistant message (even partial on barge-in)
             if full_text:

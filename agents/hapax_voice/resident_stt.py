@@ -70,6 +70,7 @@ class ResidentSTT:
         audio_bytes: bytes,
         sample_rate: int = 16000,
         language: str = "en",
+        _speculative: bool = False,
     ) -> str:
         """Transcribe PCM audio bytes. Runs in thread pool.
 
@@ -77,6 +78,7 @@ class ResidentSTT:
             audio_bytes: Raw PCM int16 mono bytes
             sample_rate: Sample rate (default 16000)
             language: Language code (default "en")
+            _speculative: If True, log at DEBUG not INFO (speculative partials)
 
         Returns:
             Transcribed text, or empty string on failure.
@@ -91,6 +93,7 @@ class ResidentSTT:
             audio_bytes,
             sample_rate,
             language,
+            _speculative,
         )
 
     def _transcribe_sync(
@@ -98,6 +101,7 @@ class ResidentSTT:
         audio_bytes: bytes,
         sample_rate: int,
         language: str,
+        speculative: bool = False,
     ) -> str:
         """Synchronous transcription (runs in executor thread)."""
         try:
@@ -114,7 +118,8 @@ class ResidentSTT:
 
             text = " ".join(seg.text for seg in segments).strip()
             if text:
-                log.info(
+                _level = log.debug if speculative else log.info
+                _level(
                     'STT: "%s" (%.1fs audio, lang=%s)',
                     text,
                     len(audio) / sample_rate,
