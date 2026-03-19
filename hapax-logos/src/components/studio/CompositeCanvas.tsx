@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { CompositePreset } from "./compositePresets";
+import { acquireImage, releaseImage } from "../../hooks/useImagePool";
 
 interface CompositeCanvasProps {
   role: string;
@@ -12,7 +13,7 @@ interface CompositeCanvasProps {
 
 const RING_SIZE = 16;
 const FETCH_INTERVAL = 100;
-const RENDER_INTERVAL = 70;
+const SMOOTH_INTERVAL = 200;
 
 export function CompositeCanvas({
   role,
@@ -54,16 +55,26 @@ export function CompositeCanvas({
     // Neon hue rotation accumulator
     let hueAccum = 0;
 
+    // Filter string cache — avoid per-frame string allocation
+    let lastHueQ = -1;
+    let cachedMainFilter = "";
+    let cachedTrailFilter = "";
+    let cachedOverlayFilter = "";
+
     const fetchFrame = () => {
       if (!running || pending) return;
       pending = true;
-      const loader = new Image();
+      const loader = acquireImage();
       loader.crossOrigin = "anonymous";
       loader.onload = () => {
         if (!running) {
+          releaseImage(loader);
           pending = false;
           return;
         }
+        // Release previous occupant at this ring slot
+        const prev = frameRing[writeHead % RING_SIZE];
+        if (prev) releaseImage(prev);
         frameRing[writeHead % RING_SIZE] = loader;
         writeHead++;
         if (canvas.width !== loader.naturalWidth && loader.naturalWidth > 0) {
@@ -73,6 +84,7 @@ export function CompositeCanvas({
         pending = false;
       };
       loader.onerror = () => {
+        releaseImage(loader);
         pending = false;
       };
       loader.src = liveSource ?? `/api/studio/stream/camera/${role}?_t=${Date.now()}`;
@@ -89,6 +101,19 @@ export function CompositeCanvas({
 
       tick++;
       hueAccum += 4; // degrees per tick for neon hue rotation
+
+      // Update cached filter strings only when quantized hue changes
+      const hueQ = Math.round(hueAccum / 10) * 10;
+      if (hueQ !== lastHueQ) {
+        lastHueQ = hueQ;
+        const isNeonP = p.name === "Neon";
+        cachedMainFilter = isNeonP && p.colorFilter !== "none"
+          ? `${p.colorFilter} hue-rotate(${hueQ}deg)` : p.colorFilter;
+        cachedTrailFilter = isNeonP && p.trail.filter !== "none"
+          ? `${p.trail.filter} hue-rotate(${hueQ}deg)` : p.trail.filter;
+        cachedOverlayFilter = isNeonP && p.overlay?.filter && p.overlay.filter !== "none"
+          ? `${p.overlay.filter} hue-rotate(${hueQ + 120}deg)` : (p.overlay?.filter ?? "none");
+      }
 
       // --- Stutter engine ---
       const stutter = p.stutter;
@@ -137,13 +162,9 @@ export function CompositeCanvas({
         const ghost = frameRing[gi];
         if (!ghost) continue;
         ctx.save();
-        // For Neon preset, rotate hue on trail filter
-        let trailFilter = trail.filter;
-        if (trailFilter !== "none" && p.name === "Neon") {
-          trailFilter = `${trailFilter} hue-rotate(${hueAccum}deg)`;
-        }
-        if (trailFilter !== "none") {
-          ctx.filter = trailFilter;
+        // Use cached trail filter (includes Neon hue rotation)
+        if (cachedTrailFilter !== "none") {
+          ctx.filter = cachedTrailFilter;
         }
         ctx.globalAlpha = trail.opacity * (1 - g / (trail.count + 1));
         ctx.globalCompositeOperation = trail.blendMode as GlobalCompositeOperation;
@@ -155,12 +176,8 @@ export function CompositeCanvas({
       const main = frameRing[idx];
       if (!main) return;
 
-      // For Neon, inject cycling hue-rotate into the main colorFilter
-      const isNeon = p.name === "Neon";
-      let mainFilter = p.colorFilter;
-      if (isNeon && mainFilter !== "none") {
-        mainFilter = `${mainFilter} hue-rotate(${hueAccum}deg)`;
-      }
+      // Use cached main filter (includes Neon hue rotation)
+      const mainFilter = cachedMainFilter;
 
       const warpCfg = p.warp;
       if (warpCfg && warpCfg.sliceCount > 0) {
@@ -237,12 +254,8 @@ export function CompositeCanvas({
           : frameRing[(idx - p.overlay.delayFrames + available * 100) % available];
         if (delayed) {
           ctx.save();
-          let overlayFilter = p.overlay.filter;
-          if (isNeon && overlayFilter !== "none") {
-            overlayFilter = `${overlayFilter} hue-rotate(${hueAccum + 120}deg)`;
-          }
-          if (overlayFilter !== "none") {
-            ctx.filter = overlayFilter;
+          if (cachedOverlayFilter !== "none") {
+            ctx.filter = cachedOverlayFilter;
           }
           ctx.globalAlpha = p.overlay.alpha;
           ctx.globalCompositeOperation = p.overlay.blendMode as GlobalCompositeOperation;
@@ -336,29 +349,40 @@ export function CompositeCanvas({
     const fetchSmooth = () => {
       if (!running || smoothPending || !smoothSource) return;
       smoothPending = true;
-      const loader = new Image();
+      const loader = acquireImage();
       loader.crossOrigin = "anonymous";
       loader.onload = () => {
-        if (!running) { smoothPending = false; return; }
+        if (!running) { releaseImage(loader); smoothPending = false; return; }
+        const prev = smoothRing[smoothWriteHead % 8];
+        if (prev) releaseImage(prev);
         smoothRing[smoothWriteHead % 8] = loader;
         smoothWriteHead++;
         smoothPending = false;
       };
-      loader.onerror = () => { smoothPending = false; };
+      loader.onerror = () => { releaseImage(loader); smoothPending = false; };
       loader.src = `${smoothSource}?_t=${Date.now()}`;
     };
 
+    // Unified rAF loop replaces 3 setInterval timers
+    let lastFetch = 0;
+    let lastSmooth = 0;
     fetchFrame();
-    const fetchTimer = setInterval(fetchFrame, FETCH_INTERVAL);
-    const smoothTimer = smoothSource ? setInterval(fetchSmooth, 200) : null;
     if (smoothSource) fetchSmooth();
-    const renderTimer = setInterval(render, RENDER_INTERVAL);
+
+    const loop = (now: number) => {
+      if (!running) return;
+      if (now - lastFetch >= FETCH_INTERVAL) { fetchFrame(); lastFetch = now; }
+      if (smoothSource && now - lastSmooth >= SMOOTH_INTERVAL) { fetchSmooth(); lastSmooth = now; }
+      render();
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
 
     return () => {
       running = false;
-      clearInterval(fetchTimer);
-      clearInterval(renderTimer);
-      if (smoothTimer) clearInterval(smoothTimer);
+      // Release all ring buffer images
+      for (const img of frameRing) { if (img) releaseImage(img); }
+      for (const img of smoothRing) { if (img) releaseImage(img); }
     };
   }, [role, liveSource, smoothSource]); // Only re-mount when camera role changes
 

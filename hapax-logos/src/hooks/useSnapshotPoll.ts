@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { acquireImage, releaseImage } from "./useImagePool";
 
 /**
  * Polls a snapshot URL and tracks staleness.
@@ -23,17 +24,19 @@ export function useSnapshotPoll(
     const pull = () => {
       if (!running || pending) return;
       pending = true;
-      const loader = new Image();
+      const loader = acquireImage();
       currentLoader = loader;
       loader.onload = () => {
         if (running && imgRef.current) imgRef.current.src = loader.src;
         lastSuccess.current = Date.now();
         setIsStale(false);
         pending = false;
+        releaseImage(loader);
         currentLoader = null;
       };
       loader.onerror = () => {
         pending = false;
+        releaseImage(loader);
         currentLoader = null;
       };
       loader.src = `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}`;
@@ -55,9 +58,7 @@ export function useSnapshotPoll(
       clearInterval(staleTimer);
       // Abort any in-flight image load
       if (currentLoader) {
-        currentLoader.onload = null;
-        currentLoader.onerror = null;
-        currentLoader.src = "";
+        releaseImage(currentLoader);
         currentLoader = null;
       }
     };

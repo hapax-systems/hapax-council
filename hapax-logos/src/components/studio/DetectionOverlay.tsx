@@ -104,7 +104,7 @@ export function DetectionOverlay({
 }: DetectionOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const smoothedRef = useRef<Map<string, SmoothedBox>>(new Map());
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const hoveredIdRef = useRef<string | null>(null);
   const [highlights, setHighlights] = useState<Map<string, { annotation?: string; expires: number }>>(new Map());
   const [layerOverride, setLayerOverride] = useState<{ visible: boolean; tier?: DetectionTier } | null>(null);
 
@@ -200,12 +200,12 @@ export function DetectionOverlay({
           break;
         }
       }
-      setHoveredId(found);
+      hoveredIdRef.current = found;
     },
     [tier, layerOverride, detections, containerRef, objectFit],
   );
 
-  const handlePointerLeave = useCallback(() => setHoveredId(null), []);
+  const handlePointerLeave = useCallback(() => { hoveredIdRef.current = null; }, []);
 
   // Resolve effective visibility and tier
   const effectiveVisible = layerOverride ? layerOverride.visible : visible;
@@ -242,17 +242,22 @@ export function DetectionOverlay({
 
       const rect = container.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      canvas.style.width = `${rect.width}px`;
-      canvas.style.height = `${rect.height}px`;
+      const targetW = Math.round(rect.width * dpr);
+      const targetH = Math.round(rect.height * dpr);
+      const resized = canvas.width !== targetW || canvas.height !== targetH;
+      if (resized) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+        canvas.style.width = `${rect.width}px`;
+        canvas.style.height = `${rect.height}px`;
+      }
 
       const ctx = canvas.getContext("2d");
       if (!ctx) {
         requestAnimationFrame(render);
         return;
       }
-      ctx.scale(dpr, dpr);
+      if (resized) ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, rect.width, rect.height);
 
       if (detections.length === 0) {
@@ -288,10 +293,14 @@ export function DetectionOverlay({
       }
 
       const now = Date.now();
+      const currentHovered = hoveredIdRef.current;
+
+      // Gradient cache — reuse gradients for similar positions
+      const gradientCache = new Map<string, CanvasGradient>();
 
       for (const det of detections) {
         const color = classColor(det.label);
-        const isHovered = hoveredId === det.entity_id;
+        const isHovered = currentHovered === det.entity_id;
         const highlight = highlights.get(det.entity_id);
         const isHighlighted = !!highlight;
 
@@ -332,10 +341,20 @@ export function DetectionOverlay({
         const baseOpacity = det.confidence * breathe;
 
         // ── Tier 1: Ambient halos ────────────────────────────────
-        const grad = ctx.createRadialGradient(cx, cy, radius * 0.1, cx, cy, radius);
-        grad.addColorStop(0, color + Math.round(baseOpacity * 0.6 * 255).toString(16).padStart(2, "0"));
-        grad.addColorStop(0.5, color + Math.round(baseOpacity * 0.25 * 255).toString(16).padStart(2, "0"));
-        grad.addColorStop(1, color + "00");
+        // Quantize gradient params for cache reuse
+        const qcx = cx >> 1;
+        const qcy = cy >> 1;
+        const qr = radius >> 1;
+        const qo = Math.round(baseOpacity * 10);
+        const gradKey = `${qcx}:${qcy}:${qr}:${qo}:${color}`;
+        let grad = gradientCache.get(gradKey);
+        if (!grad) {
+          grad = ctx.createRadialGradient(cx, cy, radius * 0.1, cx, cy, radius);
+          grad.addColorStop(0, color + Math.round(baseOpacity * 0.6 * 255).toString(16).padStart(2, "0"));
+          grad.addColorStop(0.5, color + Math.round(baseOpacity * 0.25 * 255).toString(16).padStart(2, "0"));
+          grad.addColorStop(1, color + "00");
+          gradientCache.set(gradKey, grad);
+        }
 
         ctx.fillStyle = grad;
         ctx.beginPath();
@@ -471,7 +490,7 @@ export function DetectionOverlay({
     return () => {
       running = false;
     };
-  }, [detections, effectiveVisible, effectiveTier, hoveredId, highlights, objectFit]);
+  }, [detections, effectiveVisible, effectiveTier, highlights, objectFit]);
 
   if (!effectiveVisible) return null;
 

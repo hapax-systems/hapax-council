@@ -109,6 +109,51 @@ async def camera_snapshot(role: str):
     return Response(content=data, media_type="image/jpeg", headers=_NO_CACHE)
 
 
+@router.get("/studio/stream/cameras/batch")
+async def camera_batch_snapshot(roles: str = ""):
+    """Batch JPEG snapshots of multiple cameras in a single multipart response.
+
+    Reduces N HTTP round trips to 1 for camera grid views.
+    Query: ?roles=brio-desk,c920-hw,...  (comma-separated camera roles)
+    Returns multipart/mixed with one JPEG part per camera.
+    """
+    from starlette.responses import Response
+
+    if not roles:
+        return JSONResponse({"error": "roles parameter required"}, status_code=400)
+
+    role_list = [r.strip() for r in roles.split(",") if r.strip()]
+    if not role_list:
+        return JSONResponse({"error": "no valid roles"}, status_code=400)
+
+    boundary = "hapax-batch"
+    parts: list[bytes] = []
+
+    for role in role_list:
+        cam_path = Path(f"/dev/shm/hapax-compositor/{role}.jpg")
+        if not cam_path.exists():
+            continue
+        try:
+            data = cam_path.read_bytes()
+        except OSError:
+            continue
+        header = (
+            f"--{boundary}\r\n"
+            f"Content-Type: image/jpeg\r\n"
+            f'Content-Disposition: attachment; name="{role}"\r\n'
+            f"Content-Length: {len(data)}\r\n"
+            f"\r\n"
+        ).encode()
+        parts.append(header + data + b"\r\n")
+
+    body = b"".join(parts) + f"--{boundary}--\r\n".encode()
+    return Response(
+        content=body,
+        media_type=f"multipart/mixed; boundary={boundary}",
+        headers=_NO_CACHE,
+    )
+
+
 class MomentSearchRequest(BaseModel):
     query: str
     limit: int = 10
