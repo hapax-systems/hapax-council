@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import subprocess
 import time
@@ -1876,6 +1877,48 @@ class VoiceDaemon:
         self._running = False
 
 
+_PID_FILE = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hapax-voice.pid"
+
+
+def _enforce_single_instance() -> None:
+    """Kill any stale hapax-voice process and write our PID file.
+
+    Prevents the dual-daemon problem where a masked/unmasked systemd
+    cycle leaves an orphaned process competing for the microphone.
+    """
+    if _PID_FILE.exists():
+        try:
+            old_pid = int(_PID_FILE.read_text().strip())
+            # Check if it's actually a hapax-voice process
+            cmdline = Path(f"/proc/{old_pid}/cmdline").read_text()
+            if "hapax_voice" in cmdline or "hapax.voice" in cmdline:
+                log.warning("Killing stale hapax-voice process (PID %d)", old_pid)
+                os.kill(old_pid, signal.SIGTERM)
+                # Give it a moment to die gracefully
+                import time as _time
+
+                _time.sleep(1)
+                try:
+                    os.kill(old_pid, 0)  # check if still alive
+                    os.kill(old_pid, signal.SIGKILL)
+                    log.warning("Force-killed stale PID %d", old_pid)
+                except ProcessLookupError:
+                    pass  # already dead
+        except (ValueError, FileNotFoundError, ProcessLookupError, PermissionError):
+            pass  # stale PID file, process already gone
+
+    _PID_FILE.write_text(str(os.getpid()))
+
+
+def _cleanup_pid_file() -> None:
+    """Remove PID file on clean exit."""
+    try:
+        if _PID_FILE.exists() and _PID_FILE.read_text().strip() == str(os.getpid()):
+            _PID_FILE.unlink()
+    except Exception:
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hapax Voice daemon")
     parser.add_argument("--config", type=str, help="Path to config YAML")
@@ -1891,6 +1934,8 @@ def main() -> None:
         print(cfg.model_dump_json(indent=2))
         return
 
+    _enforce_single_instance()
+
     daemon = VoiceDaemon(cfg=cfg)
     loop = asyncio.new_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1899,6 +1944,7 @@ def main() -> None:
     try:
         loop.run_until_complete(daemon.run())
     finally:
+        _cleanup_pid_file()
         loop.close()
 
 
