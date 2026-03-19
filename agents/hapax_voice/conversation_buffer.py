@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 FRAME_SAMPLES = 480  # 16kHz, 30ms
 SAMPLE_RATE = 16000
-PRE_ROLL_FRAMES = 10  # 300ms before speech onset
+PRE_ROLL_FRAMES = 50  # 1500ms before speech onset — captures full wake word phrase
 
 SPEECH_START_PROB = 0.5
 SPEECH_START_CONSECUTIVE = 3  # ~90ms
