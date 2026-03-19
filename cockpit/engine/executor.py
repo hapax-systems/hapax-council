@@ -60,9 +60,11 @@ class PhasedExecutor:
                         _t_run = time.monotonic()
                         if _action_span is not None:
                             try:
-                                _action_span.update(metadata={
-                                    "semaphore_wait_ms": round((_t_run - _t_wait) * 1000),
-                                })
+                                _action_span.update(
+                                    metadata={
+                                        "semaphore_wait_ms": round((_t_run - _t_wait) * 1000),
+                                    }
+                                )
                             except Exception:
                                 pass
                         result = await asyncio.wait_for(

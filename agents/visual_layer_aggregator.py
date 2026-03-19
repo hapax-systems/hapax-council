@@ -426,7 +426,11 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
     inventory = data.get("scene_inventory", {})
     objects = inventory.get("objects", [])
     consent_phase = data.get("consent_phase", "no_guest")
-    suppress_person_enrichments = consent_phase in ("guest_detected", "consent_pending", "consent_refused")
+    suppress_person_enrichments = consent_phase in (
+        "guest_detected",
+        "consent_pending",
+        "consent_refused",
+    )
     remove_person_detections = consent_phase == "consent_refused"
 
     # Camera native resolutions for normalization (both short and full role names)

@@ -86,8 +86,12 @@ class UiDirective(BaseModel):
     detection_dim: str | None = Field(None, description="Entity ID to dim (reduce opacity)")
     detection_annotate: str | None = Field(None, description="Entity ID to annotate")
     detection_annotation_text: str | None = Field(None, description="Annotation text for entity")
-    detection_layer_visible: bool | None = Field(None, description="Toggle detection layer visibility")
-    detection_tier: int | None = Field(None, description="Detection tier: 1 (halos), 2 (hover), 3 (deep)")
+    detection_layer_visible: bool | None = Field(
+        None, description="Toggle detection layer visibility"
+    )
+    detection_tier: int | None = Field(
+        None, description="Detection tier: 1 (halos), 2 (hover), 3 (deep)"
+    )
 
     # Metadata
     source: str | None = Field(None, description="Agent name or source identifier")

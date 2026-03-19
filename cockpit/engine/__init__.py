@@ -402,9 +402,7 @@ class ReactiveEngine:
         _engine_trace = _engine_trace_cm.__enter__()
 
         # Evaluate rules
-        with hapax_span(
-            "engine", "evaluate_rules", metadata={"rule_count": len(self._registry)}
-        ):
+        with hapax_span("engine", "evaluate_rules", metadata={"rule_count": len(self._registry)}):
             plan = evaluate_rules(event, self._registry)
         self._rules_evaluated += len(self._registry)
 
@@ -466,10 +464,14 @@ class ReactiveEngine:
         )
 
         # Execute
-        with hapax_span("engine", "execute", metadata={
-            "action_count": len(plan.actions),
-            "actions": [a.name for a in plan.actions],
-        }):
+        with hapax_span(
+            "engine",
+            "execute",
+            metadata={
+                "action_count": len(plan.actions),
+                "actions": [a.name for a in plan.actions],
+            },
+        ):
             await self._executor.execute(plan)
         self._actions_executed += len(plan.results)
         self._error_count += len(plan.errors)

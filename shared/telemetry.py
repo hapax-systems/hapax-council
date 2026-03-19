@@ -58,10 +58,18 @@ def _get_langfuse():
 
 # ── System Tags ──────────────────────────────────────────────────────────────
 
-SYSTEMS = frozenset({
-    "perception", "stimmung", "visual", "experiential", "prediction",
-    "voice", "engine", "interaction",
-})
+SYSTEMS = frozenset(
+    {
+        "perception",
+        "stimmung",
+        "visual",
+        "experiential",
+        "prediction",
+        "voice",
+        "engine",
+        "interaction",
+    }
+)
 
 
 def _system_tags(system: str, extra_tags: list[str] | None = None) -> list[str]:
