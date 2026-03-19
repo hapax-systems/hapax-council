@@ -6,7 +6,8 @@ import {
   SIGNAL_CATEGORIES,
   type OverlayMode,
   type SignalCategory,
-  useOverlay,
+  useSignals,
+  useOverlayControl,
 } from "../../contexts/ClassificationOverlayContext";
 import type { SignalEntry } from "../../api/types";
 
@@ -22,13 +23,8 @@ const MODE_OPTIONS: { value: OverlayMode; label: string }[] = [
 ];
 
 export function PerceptionSidebar({ activeZone, onZoneSelect }: PerceptionSidebarProps) {
-  const {
-    visualLayer,
-    overlayMode,
-    setOverlayMode,
-    channelVisibility,
-    toggleChannel,
-  } = useOverlay();
+  const { visualLayer } = useSignals();
+  const { overlayMode, setOverlayMode, channelVisibility, toggleChannel } = useOverlayControl();
 
   const [collapsed, setCollapsed] = useState(false);
   const [expandedGroup, setExpandedGroup] = useState<SignalCategory | null>(null);

@@ -2,7 +2,8 @@ import { ZoneOverlay } from "./ZoneOverlay";
 import { DisplayStateBadge } from "./DisplayStateBadge";
 import {
   SIGNAL_CATEGORIES,
-  useOverlay,
+  useSignals,
+  useOverlayControl,
 } from "../../contexts/ClassificationOverlayContext";
 import type { SignalEntry } from "../../api/types";
 
@@ -11,7 +12,8 @@ import type { SignalEntry } from "../../api/types";
  * Three densities: off, minimal (HUD badges), full (zone overlays).
  */
 export function PerceptionOverlayPortal() {
-  const { overlayMode, visualLayer, filteredSignals, perception, zoneOpacityOverrides } = useOverlay();
+  const { visualLayer, filteredSignals, perception } = useSignals();
+  const { overlayMode, zoneOpacityOverrides } = useOverlayControl();
 
   if (overlayMode === "off" || !visualLayer) return null;
 

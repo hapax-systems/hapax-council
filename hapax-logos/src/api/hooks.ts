@@ -208,10 +208,10 @@ export const useProfilePending = () =>
 // --- Perception (restored for overlay system) ---
 
 const PERCEPTION = 3_000;
-const VISUAL_LAYER = 5_000;
+const FAST_VL = 2_000;
 
 export const usePerception = () =>
   useQuery({ queryKey: ["perception"], queryFn: api.perception, refetchInterval: PERCEPTION });
 
 export const useVisualLayer = () =>
-  useQuery({ queryKey: ["visualLayer"], queryFn: api.visualLayer, refetchInterval: VISUAL_LAYER });
+  useQuery({ queryKey: ["visualLayer"], queryFn: api.visualLayer, refetchInterval: FAST_VL });

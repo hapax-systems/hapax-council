@@ -3,10 +3,10 @@ import { PerceptionCanvas } from "../components/perception/PerceptionCanvas";
 import { PerceptionSidebar } from "../components/perception/PerceptionSidebar";
 import { PerceptionMeter } from "../components/perception/PerceptionMeter";
 import type { SignalCategory } from "../contexts/ClassificationOverlayContext";
-import { useOverlay } from "../contexts/ClassificationOverlayContext";
+import { useSignals } from "../contexts/ClassificationOverlayContext";
 
 export function PerceptionPage() {
-  const { perception } = useOverlay();
+  const { perception } = useSignals();
   const [activeZone, setActiveZone] = useState<SignalCategory | null>(null);
 
   return (

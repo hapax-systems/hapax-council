@@ -11,7 +11,7 @@ import { StudioSidebar } from "../components/studio/StudioSidebar";
 import { useStudio, useStudioStreamInfo } from "../api/hooks";
 import { useSnapshotPoll } from "../hooks/useSnapshotPoll";
 import { useStudioShortcuts } from "../hooks/useStudioShortcuts";
-import { useVisualLayerPoll } from "../hooks/useVisualLayer";
+import { useVisualLayer } from "../api/hooks";
 import { DetectionOverlay } from "../components/studio/DetectionOverlay";
 import type { ClassificationDetection } from "../api/types";
 import { api } from "../api/client";
@@ -145,7 +145,8 @@ export function StudioPage() {
   const [hlsError, setHlsError] = useState(false);
   const hlsRef = useRef<Hls | null>(null);
   const { data: streamInfo } = useStudioStreamInfo();
-  const { classificationDetections } = useVisualLayerPoll();
+  const { data: vlData } = useVisualLayer();
+  const classificationDetections = vlData?.classification_detections ?? [];
 
   const defaultOrder = useMemo(
     () => (compositor ? Object.keys(compositor.cameras) : []),

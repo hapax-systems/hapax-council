@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { TerrainProvider, useTerrain, type RegionName, type Depth, type InvestigationTab } from "../contexts/TerrainContext";
+import { TerrainProvider, useTerrainActions, type RegionName, type Depth, type InvestigationTab } from "../contexts/TerrainContext";
 import { TerrainLayout } from "../components/terrain/TerrainLayout";
 import { ToastProvider } from "../components/shared/ToastProvider";
 import { AgentRunProvider } from "../contexts/AgentRunContext";
@@ -17,7 +17,7 @@ const TABS: InvestigationTab[] = ["chat", "insight", "demos"];
 
 function TerrainParamSync() {
   const [params] = useSearchParams();
-  const { setRegionDepth, focusRegion, setOverlay, setInvestigationTab } = useTerrain();
+  const { setRegionDepth, focusRegion, setOverlay, setInvestigationTab } = useTerrainActions();
 
   useEffect(() => {
     const region = params.get("region") as RegionName | null;

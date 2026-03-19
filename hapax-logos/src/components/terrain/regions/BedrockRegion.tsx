@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Region } from "../Region";
 import { useHealth, useGovernanceHeartbeat, useCost } from "../../../api/hooks";
@@ -13,7 +13,7 @@ import { PrecedentPanel } from "../../sidebar/PrecedentPanel";
 import { TimersPanel } from "../../sidebar/TimersPanel";
 import { AccommodationPanel } from "../../sidebar/AccommodationPanel";
 import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
-import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
+import { useSignals } from "../../../contexts/ClassificationOverlayContext";
 
 function BedrockSurface() {
   const { data: health } = useHealth();
@@ -83,8 +83,8 @@ function BedrockSurface() {
   );
 }
 
-export function BedrockRegion() {
-  const { signalsByRegion, stimmungStance } = useOverlay();
+export const BedrockRegion = memo(function BedrockRegion() {
+  const { signalsByRegion, stimmungStance } = useSignals();
   const bedrockSignals = signalsByRegion.bedrock;
   const [accommOpen, setAccommOpen] = useState(false);
 
@@ -144,4 +144,4 @@ export function BedrockRegion() {
       )}
     </Region>
   );
-}
+});

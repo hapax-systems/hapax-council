@@ -1,11 +1,13 @@
-import { createContext, useContext, useCallback, useState, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useMemo, useState, type ReactNode } from "react";
 
 export type RegionName = "horizon" | "field" | "ground" | "watershed" | "bedrock";
 export type Depth = "surface" | "stratum" | "core";
 export type Overlay = "voice" | "investigation" | null;
 export type InvestigationTab = "chat" | "insight" | "demos";
 
-interface TerrainState {
+// ── Display Context ─────────────────────────────────────────────────────
+// Read-only state that drives grid layout. Changes when regions cycle depth.
+interface TerrainDisplayValue {
   focusedRegion: RegionName | null;
   regionDepths: Record<RegionName, Depth>;
   activeOverlay: Overlay;
@@ -14,7 +16,11 @@ interface TerrainState {
   splitFullscreen: boolean;
 }
 
-interface TerrainActions {
+const TerrainDisplayContext = createContext<TerrainDisplayValue | null>(null);
+
+// ── Action Context ──────────────────────────────────────────────────────
+// Stable callbacks — never change identity after mount.
+interface TerrainActionValue {
   focusRegion: (region: RegionName | null) => void;
   setRegionDepth: (region: RegionName, depth: Depth) => void;
   cycleDepth: (region: RegionName) => void;
@@ -24,9 +30,9 @@ interface TerrainActions {
   setSplitFullscreen: (fs: boolean) => void;
 }
 
-type TerrainContextValue = TerrainState & TerrainActions;
+const TerrainActionContext = createContext<TerrainActionValue | null>(null);
 
-const TerrainContext = createContext<TerrainContextValue | null>(null);
+type TerrainContextValue = TerrainDisplayValue & TerrainActionValue;
 
 const DEFAULT_DEPTHS: Record<RegionName, Depth> = {
   horizon: "surface",
@@ -79,47 +85,60 @@ export function TerrainProvider({ children }: { children: ReactNode }) {
     setActiveOverlay(overlay);
   }, []);
 
+  const displayValue = useMemo(
+    () => ({ focusedRegion, regionDepths, activeOverlay, investigationTab, splitRegion, splitFullscreen }),
+    [focusedRegion, regionDepths, activeOverlay, investigationTab, splitRegion, splitFullscreen],
+  );
+
+  const actionValue = useMemo(
+    () => ({ focusRegion, setRegionDepth, cycleDepth, setOverlay, setInvestigationTab, setSplitRegion, setSplitFullscreen }),
+    [focusRegion, setRegionDepth, cycleDepth, setOverlay, setInvestigationTab, setSplitRegion, setSplitFullscreen],
+  );
+
   return (
-    <TerrainContext.Provider
-      value={{
-        focusedRegion,
-        regionDepths,
-        activeOverlay,
-        investigationTab,
-        splitRegion,
-        splitFullscreen,
-        focusRegion,
-        setRegionDepth,
-        cycleDepth,
-        setOverlay,
-        setInvestigationTab,
-        setSplitRegion,
-        setSplitFullscreen,
-      }}
-    >
-      {children}
-    </TerrainContext.Provider>
+    <TerrainDisplayContext.Provider value={displayValue}>
+      <TerrainActionContext.Provider value={actionValue}>
+        {children}
+      </TerrainActionContext.Provider>
+    </TerrainDisplayContext.Provider>
   );
 }
 
-const noop = () => {};
-const FALLBACK: TerrainContextValue = {
+// ── Narrow hooks ────────────────────────────────────────────────────────
+
+const noopFn = () => {};
+const DISPLAY_FALLBACK: TerrainDisplayValue = {
   focusedRegion: null,
   regionDepths: DEFAULT_DEPTHS,
   activeOverlay: null,
   investigationTab: "chat",
   splitRegion: null,
   splitFullscreen: false,
-  focusRegion: noop,
-  setRegionDepth: noop,
-  cycleDepth: noop,
-  setOverlay: noop,
-  setInvestigationTab: noop,
-  setSplitRegion: noop,
-  setSplitFullscreen: noop,
+};
+const ACTION_FALLBACK: TerrainActionValue = {
+  focusRegion: noopFn,
+  setRegionDepth: noopFn,
+  cycleDepth: noopFn,
+  setOverlay: noopFn,
+  setInvestigationTab: noopFn,
+  setSplitRegion: noopFn,
+  setSplitFullscreen: noopFn,
 };
 
+export function useTerrainDisplay(): TerrainDisplayValue {
+  const ctx = useContext(TerrainDisplayContext);
+  return ctx ?? DISPLAY_FALLBACK;
+}
+
+export function useTerrainActions(): TerrainActionValue {
+  const ctx = useContext(TerrainActionContext);
+  return ctx ?? ACTION_FALLBACK;
+}
+
+// ── Convenience hook (reads both — use narrower hooks when possible) ──
+
 export function useTerrain(): TerrainContextValue {
-  const ctx = useContext(TerrainContext);
-  return ctx ?? FALLBACK;
+  const display = useTerrainDisplay();
+  const actions = useTerrainActions();
+  return { ...display, ...actions };
 }
