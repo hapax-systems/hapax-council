@@ -114,10 +114,13 @@ def get_openai_tools(
         handle_get_current_time,
         handle_get_system_status,
         handle_get_weather,
+        handle_highlight_detection,
+        handle_query_scene_inventory,
         handle_search_documents,
         handle_search_drive,
         handle_search_emails,
         handle_send_sms,
+        handle_set_detection_layers,
         init_tool_state,
     )
 
@@ -142,6 +145,9 @@ def get_openai_tools(
         "check_consent_status": handle_check_consent_status,
         "describe_consent_flow": handle_describe_consent_flow,
         "check_governance_health": handle_check_governance_health,
+        "query_scene_inventory": handle_query_scene_inventory,
+        "highlight_detection": handle_highlight_detection,
+        "set_detection_layers": handle_set_detection_layers,
         "focus_window": handle_focus_window,
         "switch_workspace": handle_switch_workspace,
         "open_app": handle_open_app,
