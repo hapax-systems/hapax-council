@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agents.visual_layer_aggregator import (
+    map_biometrics,
     map_briefing,
     map_copilot,
     map_drift,
@@ -11,6 +12,7 @@ from agents.visual_layer_aggregator import (
     map_health,
     map_nudges,
     map_perception,
+    map_phone,
 )
 from agents.visual_layer_state import (
     SEVERITY_CRITICAL,
@@ -230,3 +232,77 @@ class TestMapPerception:
         signals, flow, audio, prod = map_perception({})
         assert flow == 0.0
         assert not prod
+
+
+class TestMapPhone:
+    def test_no_phone_data(self):
+        assert map_phone({}) == []
+
+    def test_incoming_call(self):
+        signals = map_phone({"phone_call_incoming": True, "phone_call_number": "+1234"})
+        assert len(signals) == 1
+        assert signals[0].category == SignalCategory.PROFILE_STATE
+        assert signals[0].severity == SEVERITY_CRITICAL
+        assert "+1234" in signals[0].detail
+
+    def test_active_call(self):
+        signals = map_phone({"phone_call_active": True})
+        assert len(signals) == 1
+        assert signals[0].severity == SEVERITY_HIGH
+        assert signals[0].category == SignalCategory.PROFILE_STATE
+        assert signals[0].title == "On call"
+
+    def test_low_battery(self):
+        signals = map_phone({"phone_battery_pct": 10})
+        assert len(signals) == 1
+        assert signals[0].severity == SEVERITY_HIGH
+        assert "10%" in signals[0].detail
+
+    def test_battery_warning(self):
+        signals = map_phone({"phone_battery_pct": 25, "phone_battery_charging": False})
+        assert len(signals) == 1
+        assert signals[0].severity == SEVERITY_MEDIUM
+
+    def test_battery_suppressed_charging(self):
+        signals = map_phone({"phone_battery_pct": 25, "phone_battery_charging": True})
+        assert signals == []
+
+    def test_sms_unread(self):
+        signals = map_phone({"phone_sms_unread": 3, "phone_sms_sender": "Alice"})
+        assert len(signals) == 1
+        assert signals[0].category == SignalCategory.WORK_TASKS
+        assert signals[0].severity == SEVERITY_LOW
+        assert "Alice" in signals[0].detail
+
+    def test_notifications_threshold(self):
+        assert map_phone({"phone_notification_count": 4}) == []
+        signals = map_phone({"phone_notification_count": 5})
+        assert len(signals) == 1
+        assert signals[0].severity == SEVERITY_LOW
+
+    def test_media_playing(self):
+        signals = map_phone(
+            {
+                "phone_media_playing": True,
+                "phone_media_title": "A" * 70,
+                "phone_media_artist": "TestArtist",
+            }
+        )
+        assert len(signals) == 1
+        assert signals[0].category == SignalCategory.AMBIENT_SENSOR
+        assert len(signals[0].detail) <= 60
+
+    def test_kde_disconnected(self):
+        # No prior data → no signal
+        assert map_phone({"phone_kde_connected": False}) == []
+        # With prior data → signal
+        signals = map_phone({"phone_kde_connected": False, "phone_battery_pct": 80})
+        battery_signals = [s for s in signals if s.source_id == "phone_kde"]
+        assert len(battery_signals) == 1
+        assert battery_signals[0].category == SignalCategory.HEALTH_INFRA
+        assert battery_signals[0].severity == SEVERITY_MEDIUM
+
+    def test_biometrics_phone_fields(self):
+        bio = map_biometrics({"phone_battery_pct": 72, "phone_kde_connected": True})
+        assert bio.phone_battery_pct == 72
+        assert bio.phone_connected is True

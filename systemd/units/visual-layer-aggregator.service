@@ -1,7 +1,7 @@
 [Unit]
 Description=Visual Layer Aggregator — polls cockpit API and perception state for compositor overlay
-After=cockpit-api.service hapax-voice.service
-Wants=cockpit-api.service
+After=logos-api.service hapax-voice.service
+Wants=logos-api.service
 
 [Service]
 Type=simple

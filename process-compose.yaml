@@ -43,11 +43,11 @@ processes:
     availability:
       restart: "no"  # run once
 
-  # ── Cockpit API (FastAPI on :8051) ──────────────────────────────
-  cockpit-api:
+  # ── Logos API (FastAPI on :8051) ────────────────────────────────
+  logos-api:
     command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m cockpit.api --host 0.0.0.0'
     working_dir: /home/operator/projects/hapax-council
-    disabled: true  # Managed by systemd cockpit-api.service to avoid port conflicts
+    disabled: true  # Managed by systemd logos-api.service to avoid port conflicts
     depends_on:
       secrets:
         condition: process_completed_successfully
@@ -70,7 +70,7 @@ processes:
     depends_on:
       secrets:
         condition: process_completed_successfully
-      cockpit-api:
+      logos-api:
         condition: process_healthy
     availability:
       restart: on_failure
@@ -87,7 +87,7 @@ processes:
     command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m agents.visual_layer_aggregator'
     working_dir: /home/operator/projects/hapax-council
     depends_on:
-      cockpit-api:
+      logos-api:
         condition: process_healthy
       voice:
         condition: process_started

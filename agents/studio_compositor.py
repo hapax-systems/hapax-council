@@ -626,12 +626,14 @@ class StudioCompositor:
                 try:
                     tmp = SNAPSHOT_DIR / "snapshot.jpg.tmp"
                     final = SNAPSHOT_DIR / "snapshot.jpg"
+                    data = bytes(mapinfo.data)
                     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
                     try:
-                        os.write(fd, mapinfo.data)
+                        written = os.write(fd, data)
                     finally:
                         os.close(fd)
-                    tmp.rename(final)
+                    if written == len(data):
+                        tmp.rename(final)
                 finally:
                     buf.unmap(mapinfo)
             return 0  # GST_FLOW_OK
@@ -793,12 +795,14 @@ class StudioCompositor:
                 try:
                     tmp = SNAPSHOT_DIR / "fx-snapshot.jpg.tmp"
                     final = SNAPSHOT_DIR / "fx-snapshot.jpg"
+                    data = bytes(mapinfo.data)
                     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
                     try:
-                        os.write(fd, mapinfo.data)
+                        written = os.write(fd, data)
                     finally:
                         os.close(fd)
-                    tmp.rename(final)
+                    if written == len(data):
+                        tmp.rename(final)
                 except OSError:
                     pass
                 finally:
@@ -1057,12 +1061,14 @@ class StudioCompositor:
                 try:
                     tmp = SNAPSHOT_DIR / f"{snap_role}.jpg.tmp"
                     final = SNAPSHOT_DIR / f"{snap_role}.jpg"
+                    data = bytes(mapinfo.data)
                     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
                     try:
-                        os.write(fd, mapinfo.data)
+                        written = os.write(fd, data)
                     finally:
                         os.close(fd)
-                    tmp.rename(final)
+                    if written == len(data):
+                        tmp.rename(final)
                 finally:
                     buf.unmap(mapinfo)
             return 0
@@ -2120,11 +2126,12 @@ class StudioCompositor:
             if fx_request_path.exists():
                 try:
                     preset_name = fx_request_path.read_text().strip()
+                    fx_request_path.unlink(missing_ok=True)
                     if preset_name and hasattr(self, "_fx_color_grade"):
                         self._switch_fx_preset(preset_name)
-                    fx_request_path.unlink()
                 except Exception as exc:
                     log.debug("Failed to process FX request: %s", exc)
+                    fx_request_path.unlink(missing_ok=True)
             time.sleep(1.0)
 
     # -- Lifecycle --------------------------------------------------------

@@ -127,16 +127,20 @@ async def camera_batch_snapshot(roles: str = ""):
         return JSONResponse({"error": "no valid roles"}, status_code=400)
 
     boundary = "hapax-batch"
-    parts: list[bytes] = []
 
+    # Pre-read all camera JPEGs into memory to minimize inter-frame skew
+    snapshots: list[tuple[str, bytes]] = []
     for role in role_list:
         cam_path = Path(f"/dev/shm/hapax-compositor/{role}.jpg")
         if not cam_path.exists():
             continue
         try:
-            data = cam_path.read_bytes()
+            snapshots.append((role, cam_path.read_bytes()))
         except OSError:
             continue
+
+    parts: list[bytes] = []
+    for role, data in snapshots:
         header = (
             f"--{boundary}\r\n"
             f"Content-Type: image/jpeg\r\n"
@@ -294,6 +298,63 @@ async def select_effect(req: EffectSelectRequest):
         return {"status": "requested", "preset": req.preset}
     except OSError:
         return JSONResponse({"error": "write failed"}, status_code=503)
+
+
+COMPOSITOR_STATUS_PATH = Path.home() / ".cache" / "hapax-compositor" / "status.json"
+
+
+@router.get("/studio/compositor/live")
+async def compositor_live():
+    """Live compositor status — read from status.json written by the compositor."""
+    import json
+
+    if not COMPOSITOR_STATUS_PATH.exists():
+        return JSONResponse({"error": "compositor not running"}, status_code=503)
+    try:
+        data = json.loads(COMPOSITOR_STATUS_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return JSONResponse({"error": "status read failed"}, status_code=503)
+
+    # Read audio energy from perception state for the audio_energy_rms field
+    audio_rms = 0.0
+    try:
+        perc_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+        if perc_path.exists():
+            perc = json.loads(perc_path.read_text())
+            audio_rms = perc.get("audio_energy_rms", 0.0)
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    return {
+        "state": data.get("state", "unknown"),
+        "cameras": data.get("cameras", {}),
+        "active_cameras": data.get("active_cameras", 0),
+        "total_cameras": data.get("total_cameras", 0),
+        "recording_enabled": data.get("recording_enabled", False),
+        "recording_cameras": data.get("recording_cameras", {}),
+        "hls_enabled": data.get("hls_enabled", False),
+        "consent_recording_allowed": data.get("consent_recording_allowed", True),
+        "guest_present": data.get("guest_present", False),
+        "consent_phase": data.get("consent_phase", "no_guest"),
+        "audio_energy_rms": audio_rms,
+        "timestamp": data.get("timestamp", 0),
+    }
+
+
+@router.get("/studio/disk")
+async def studio_disk():
+    """Disk usage for the video recording directory."""
+    import shutil
+
+    rec_dir = Path.home() / ".cache" / "hapax-compositor" / "recordings"
+    target = rec_dir if rec_dir.exists() else Path.home()
+    usage = shutil.disk_usage(str(target))
+    return {
+        "path": str(target),
+        "total_gb": round(usage.total / (1024**3), 1),
+        "used_gb": round(usage.used / (1024**3), 1),
+        "free_gb": round(usage.free / (1024**3), 1),
+    }
 
 
 @router.get("/studio/consent")

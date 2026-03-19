@@ -514,7 +514,120 @@ def map_biometrics(data: dict) -> BiometricState:
         physiological_load=data.get("physiological_load", 0.0),
         sleep_quality=data.get("sleep_quality", 1.0),
         watch_activity=data.get("watch_activity_state", "unknown"),
+        phone_battery_pct=data.get("phone_battery_pct", 0),
+        phone_connected=data.get("phone_kde_connected", False),
     )
+
+
+def map_phone(data: dict) -> list[SignalEntry]:
+    """Map phone/KDEConnect fields to visual layer signals."""
+    signals: list[SignalEntry] = []
+
+    # Incoming call — CRITICAL, bypasses deep-flow gate
+    if data.get("phone_call_incoming"):
+        number = data.get("phone_call_number", "unknown")
+        signals.append(
+            SignalEntry(
+                category=SignalCategory.PROFILE_STATE,
+                severity=SEVERITY_CRITICAL,
+                title="Incoming call",
+                detail=number,
+                source_id="phone_call",
+            )
+        )
+    elif data.get("phone_call_active"):
+        signals.append(
+            SignalEntry(
+                category=SignalCategory.PROFILE_STATE,
+                severity=SEVERITY_HIGH,
+                title="On call",
+                detail=data.get("phone_call_number", ""),
+                source_id="phone_call",
+            )
+        )
+
+    # Battery
+    battery = data.get("phone_battery_pct", 0)
+    charging = data.get("phone_battery_charging", False)
+    if battery > 0 and battery < 15:
+        signals.append(
+            SignalEntry(
+                category=SignalCategory.PROFILE_STATE,
+                severity=SEVERITY_HIGH,
+                title="Phone battery low",
+                detail=f"{battery}%",
+                source_id="phone_battery",
+            )
+        )
+    elif battery > 0 and battery < 30 and not charging:
+        signals.append(
+            SignalEntry(
+                category=SignalCategory.PROFILE_STATE,
+                severity=SEVERITY_MEDIUM,
+                title="Phone battery",
+                detail=f"{battery}%",
+                source_id="phone_battery",
+            )
+        )
+
+    # SMS unread
+    sms_unread = data.get("phone_sms_unread", 0)
+    if sms_unread > 0:
+        sender = data.get("phone_sms_sender", "")
+        signals.append(
+            SignalEntry(
+                category=SignalCategory.WORK_TASKS,
+                severity=SEVERITY_LOW,
+                title=f"{sms_unread} unread SMS",
+                detail=sender,
+                source_id="phone_sms",
+            )
+        )
+
+    # Notifications threshold
+    notif_count = data.get("phone_notification_count", 0)
+    if notif_count >= 5:
+        signals.append(
+            SignalEntry(
+                category=SignalCategory.WORK_TASKS,
+                severity=SEVERITY_LOW,
+                title=f"{notif_count} notifications",
+                detail="",
+                source_id="phone_notifications",
+            )
+        )
+
+    # Media playing
+    if data.get("phone_media_playing"):
+        title = data.get("phone_media_title", "")
+        artist = data.get("phone_media_artist", "")
+        if title:
+            media_text = f"{title} — {artist}" if artist else title
+            signals.append(
+                SignalEntry(
+                    category=SignalCategory.AMBIENT_SENSOR,
+                    severity=SEVERITY_LOW,
+                    title="Now playing",
+                    detail=media_text[:60],
+                    source_id="phone_media",
+                )
+            )
+
+    # KDE disconnected — only flag when we've seen phone data before
+    kde_connected = data.get("phone_kde_connected")
+    has_prior_data = data.get("phone_battery_pct", 0) > 0 or data.get("phone_sms_unread", 0) > 0
+    if kde_connected is False and has_prior_data:
+        signals.append(
+            SignalEntry(
+                category=SignalCategory.HEALTH_INFRA,
+                severity=SEVERITY_MEDIUM,
+                title="Phone disconnected",
+                detail="KDE Connect lost",
+                source_id="phone_kde",
+            )
+        )
+
+    return signals
 
 
 # ── Time-of-day color evolution ──────────────────────────────────────────────
@@ -553,6 +666,7 @@ class VisualLayerAggregator:
         self._slow_signals: list[SignalEntry] = []
         self._perception_signals: list[SignalEntry] = []
         self._voice_signals: list[SignalEntry] = []
+        self._phone_signals: list[SignalEntry] = []
         self._flow_score: float = 0.0
         self._audio_energy: float = 0.0
         self._production_active: bool = False
@@ -691,6 +805,20 @@ class VisualLayerAggregator:
 
             # Biometrics (Batch E)
             self._biometrics = map_biometrics(data)
+
+            # Phone signals (Batch F)
+            self._phone_signals = map_phone(data)
+
+            # Phone media → ambient moments
+            if data.get("phone_media_playing"):
+                title = data.get("phone_media_title", "")
+                artist = data.get("phone_media_artist", "")
+                if title:
+                    media_text = f"Now playing: {title}" + (f" — {artist}" if artist else "")
+                    self._ambient_moments = [
+                        m for m in self._ambient_moments if not m.startswith("Now playing:")
+                    ]
+                    self._ambient_moments.append(media_text)
 
             # Classification detection overlay
             self._classification_detections = _map_scene_inventory(data)
@@ -1246,7 +1374,11 @@ class VisualLayerAggregator:
         )
 
         all_signals = (
-            self._fast_signals + self._slow_signals + self._perception_signals + self._voice_signals
+            self._fast_signals
+            + self._slow_signals
+            + self._perception_signals
+            + self._voice_signals
+            + self._phone_signals
         )
 
         # WS2: add stimmung signals
