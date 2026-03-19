@@ -406,6 +406,78 @@ def trace_episode_closed(
     )
 
 
+def trace_phone_signals(
+    signal_count: int,
+    battery_pct: int,
+    connected: bool,
+    signals: list[str] | None = None,
+) -> None:
+    """Trace phone/KDEConnect signal generation."""
+    if signal_count == 0 and not connected:
+        return  # Skip when no phone data at all
+    client = _get_langfuse()
+    if client is None:
+        return
+    try:
+        meta: dict[str, Any] = {
+            "signal_count": signal_count,
+            "battery_pct": battery_pct,
+            "connected": connected,
+        }
+        if signals:
+            meta["signal_titles"] = signals[:5]
+        with client.start_as_current_observation(
+            as_type="span",
+            name="perception.phone",
+            metadata=meta,
+        ) as span:
+            if battery_pct > 0 and battery_pct < 15:
+                span.score(name="phone_battery_critical", value=1.0, data_type="NUMERIC")
+    except Exception:
+        pass
+
+
+def trace_compositor_effect(
+    preset: str,
+    prev_preset: str = "",
+) -> None:
+    """Trace compositor effect preset change."""
+    hapax_event(
+        "visual",
+        "effect_switch",
+        metadata={"preset": preset, "prev_preset": prev_preset},
+        tags=[f"effect:{preset}"],
+    )
+
+
+def trace_api_poll(
+    endpoint: str,
+    latency_ms: float,
+    success: bool,
+    status_code: int = 0,
+) -> None:
+    """Trace a cockpit API poll cycle (only logged when slow or failed)."""
+    if success and latency_ms < 500:
+        return  # Only trace slow or failed polls
+    client = _get_langfuse()
+    if client is None:
+        return
+    try:
+        with client.start_as_current_observation(
+            as_type="span",
+            name=f"api.poll.{endpoint}",
+            metadata={
+                "endpoint": endpoint,
+                "latency_ms": round(latency_ms, 1),
+                "success": success,
+                "status_code": status_code,
+            },
+        ) as span:
+            span.score(name="api_latency", value=round(latency_ms / 1000, 4), data_type="NUMERIC")
+    except Exception:
+        pass
+
+
 def trace_prediction_tick(
     predictions: int,
     cache_hit: bool,
