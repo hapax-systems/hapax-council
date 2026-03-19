@@ -650,7 +650,7 @@ class ConversationPipeline:
             await self.stop()
             return
 
-        # Per-turn grounding evaluation (lightweight, no LLM call)
+        # Per-turn context anchoring evaluation (lightweight, no LLM call)
         try:
             from agents.hapax_voice.grounding_evaluator import evaluate_turn
 
@@ -737,6 +737,10 @@ class ConversationPipeline:
         hapax_score(_utt_trace, "total_latency_ms", _total_ms)
         _consent_threshold = 2000 if getattr(self, "_consent_phase", "none") != "none" else 5000
         hapax_bool_score(_utt_trace, "consent_latency_ok", _total_ms < _consent_threshold)
+        if self._salience_router is not None:
+            _bd = self._salience_router.last_breakdown
+            if _bd is not None:
+                hapax_score(_utt_trace, "activation_score", _bd.final_activation)
         try:
             _utt_trace_cm.__exit__(None, None, None)
         except Exception:
