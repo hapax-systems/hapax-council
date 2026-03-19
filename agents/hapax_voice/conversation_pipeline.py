@@ -287,6 +287,7 @@ class ConversationPipeline:
         import uuid
 
         self._session_id = uuid.uuid4().hex[:12]
+        self._session_start_ts = time.time()
         self._conversation_thread = []
 
         # Generate sentinel fact for probe question testing
@@ -1535,6 +1536,7 @@ class ConversationPipeline:
             "turn_count": self.turn_count,
             "topic_words": top_words,
             "session_id": self._session_id,
+            "start_ts": getattr(self, "_session_start_ts", time.time()),
         }
 
     def check_sentinel_retrieval(self, response: str) -> float | None:
