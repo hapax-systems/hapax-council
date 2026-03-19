@@ -68,6 +68,14 @@ class SessionEval:
     # Summary
     judge_summary: str = ""
 
+    # Trajectory scores (Class G — grounding-native, structurally zero for profile-retrieval)
+    anchor_trajectory: float = 0.0  # slope of context_anchor_success across turns
+    frustration_trajectory: float = 0.0  # slope of frustration across turns (negative = good)
+
+    # Turn-pair coherence (Class G)
+    acceptance_after_anchor: float | None = None  # P(ACCEPT | high anchor at prior turn)
+    frustration_after_miss: float | None = None  # P(frustration | low anchor at prior turn)
+
 
 # ── Langfuse Session Reconstruction ─────────────────────────────────────────
 
@@ -296,6 +304,108 @@ def aggregate_session(turns: list[dict], judge_result: dict) -> SessionEval:
     return session_eval
 
 
+# ── Trajectory & Turn-Pair Analysis ─────────────────────────────────────────
+
+
+def compute_trajectories(
+    session_eval: SessionEval,
+    per_turn_scores: list[dict[str, float]],
+) -> None:
+    """Compute within-session trajectory slopes and turn-pair coherence.
+
+    Trajectory: linear regression slope of a score across turns.
+    Positive anchor_trajectory = grounding improving (expected for context anchoring).
+    Profile-retrieval produces flat slopes (each turn is independent).
+
+    Turn-pair coherence: conditional probabilities linking consecutive turns.
+    These are structurally undefined for stateless systems.
+
+    Mutates session_eval in place.
+    """
+    n = len(per_turn_scores)
+    if n < 3:
+        return
+
+    # Extract per-turn values
+    anchors = [s.get("context_anchor_success") for s in per_turn_scores]
+    frustrations = [s.get("frustration_score") for s in per_turn_scores]
+    acceptances = [s.get("acceptance_type") for s in per_turn_scores]
+
+    # ── Trajectory slopes (simple linear regression: slope = cov(x,y)/var(x))
+    def _slope(values: list[float | None]) -> float:
+        """OLS slope of values against turn index. Returns 0.0 if insufficient data."""
+        pairs = [(i, v) for i, v in enumerate(values) if v is not None]
+        if len(pairs) < 3:
+            return 0.0
+        xs = [p[0] for p in pairs]
+        ys = [p[1] for p in pairs]
+        n_p = len(pairs)
+        x_mean = sum(xs) / n_p
+        y_mean = sum(ys) / n_p
+        cov = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys, strict=True))
+        var = sum((x - x_mean) ** 2 for x in xs)
+        if var < 1e-12:
+            return 0.0
+        return cov / var
+
+    session_eval.anchor_trajectory = round(_slope(anchors), 4)
+    session_eval.frustration_trajectory = round(_slope(frustrations), 4)
+
+    # ── Turn-pair coherence: P(ACCEPT at N+1 | high anchor at N)
+    high_anchor_threshold = 0.5
+    frustration_threshold = 1.0
+    low_anchor_threshold = 0.3
+
+    accept_after_high = 0
+    total_high = 0
+    frust_after_low = 0
+    total_low = 0
+
+    for i in range(n - 1):
+        anchor_i = anchors[i]
+        accept_next = acceptances[i + 1]
+        frust_next = frustrations[i + 1]
+
+        if anchor_i is not None and anchor_i >= high_anchor_threshold:
+            total_high += 1
+            if accept_next is not None and accept_next >= 0.7:  # ACCEPT or CLARIFY
+                accept_after_high += 1
+
+        if anchor_i is not None and anchor_i <= low_anchor_threshold:
+            total_low += 1
+            if frust_next is not None and frust_next >= frustration_threshold:
+                frust_after_low += 1
+
+    if total_high >= 2:
+        session_eval.acceptance_after_anchor = round(accept_after_high / total_high, 3)
+    if total_low >= 2:
+        session_eval.frustration_after_miss = round(frust_after_low / total_low, 3)
+
+
+def collect_per_turn_scores(session_traces: list[dict]) -> list[dict[str, float]]:
+    """Extract per-turn Langfuse scores from trace dicts, ordered by turn index."""
+    turn_scores: dict[int, dict[str, float]] = {}
+    for trace in session_traces:
+        meta = trace.get("metadata") or {}
+        turn_raw = meta.get("turn", -1)
+        turn_idx = turn_raw.get("intValue", turn_raw) if isinstance(turn_raw, dict) else turn_raw
+        if not isinstance(turn_idx, int) or turn_idx < 0:
+            continue
+
+        scores = trace.get("scores", [])
+        score_map: dict[str, float] = {}
+        for s in scores:
+            name = s.get("name", "") if isinstance(s, dict) else ""
+            value = s.get("value") if isinstance(s, dict) else None
+            if name and value is not None:
+                score_map[name] = float(value)
+
+        if score_map:
+            turn_scores[turn_idx] = score_map
+
+    return [turn_scores[k] for k in sorted(turn_scores)]
+
+
 # ── Langfuse Score Push ──────────────────────────────────────────────────────
 
 
@@ -313,6 +423,10 @@ def push_scores(session_eval: SessionEval, session_id: str) -> None:
                 "acceptance_rate": session_eval.acceptance_rate,
                 "reference_accuracy": session_eval.reference_accuracy,
                 "grounding_depth": session_eval.grounding_depth,
+                "anchor_trajectory": session_eval.anchor_trajectory,
+                "frustration_trajectory": session_eval.frustration_trajectory,
+                "acceptance_after_anchor": session_eval.acceptance_after_anchor,
+                "frustration_after_miss": session_eval.frustration_after_miss,
                 "summary": session_eval.judge_summary,
             },
         )
@@ -404,6 +518,15 @@ def format_report(evals: list[SessionEval], correlation: dict | None = None) -> 
             else "- No back-references detected"
         )
         lines.append(f"- Judge summary: {se.judge_summary}")
+        # Trajectory scores (Class G — grounding-native)
+        if se.anchor_trajectory != 0.0 or se.frustration_trajectory != 0.0:
+            direction = "improving" if se.anchor_trajectory > 0 else "flat/declining"
+            lines.append(f"- Anchor trajectory: {se.anchor_trajectory:+.4f} ({direction})")
+            lines.append(f"- Frustration trajectory: {se.frustration_trajectory:+.4f}")
+        if se.acceptance_after_anchor is not None:
+            lines.append(f"- P(accept|high anchor): {se.acceptance_after_anchor:.1%}")
+        if se.frustration_after_miss is not None:
+            lines.append(f"- P(frustration|low anchor): {se.frustration_after_miss:.1%}")
         lines.append("")
 
         for t in se.turns:
@@ -429,6 +552,17 @@ def format_report(evals: list[SessionEval], correlation: dict | None = None) -> 
         lines.append(f"- Sessions evaluated: {len(evals)}")
         lines.append(f"- Mean acceptance rate: {avg_accept:.1%}")
         lines.append(f"- Mean reference accuracy: {avg_ref:.1%}")
+        # Trajectory aggregates
+        traj_evals = [e for e in evals if e.anchor_trajectory != 0.0]
+        if traj_evals:
+            avg_traj = sum(e.anchor_trajectory for e in traj_evals) / len(traj_evals)
+            positive = sum(1 for e in traj_evals if e.anchor_trajectory > 0)
+            lines.append(
+                f"- Mean anchor trajectory: {avg_traj:+.4f} ({positive}/{len(traj_evals)} positive)"
+            )
+        aaa = [e.acceptance_after_anchor for e in evals if e.acceptance_after_anchor is not None]
+        if aaa:
+            lines.append(f"- Mean P(accept|high anchor): {sum(aaa) / len(aaa):.1%}")
 
     if correlation is not None:
         lines.append("")
@@ -472,6 +606,10 @@ async def main() -> None:
         judge_result = await judge_session(turns)
         session_eval = aggregate_session(turns, judge_result)
         session_eval.session_id = sid
+
+        # Compute trajectory scores from Langfuse per-turn data
+        per_turn = collect_per_turn_scores(session_data["traces"])
+        compute_trajectories(session_eval, per_turn)
 
         push_scores(session_eval, sid)
         evals.append(session_eval)
