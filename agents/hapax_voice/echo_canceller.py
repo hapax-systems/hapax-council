@@ -155,11 +155,19 @@ class EchoCanceller:
             self._log_diag()
             return mic_frame
 
-        # Set up ctypes pointers
-        mic_arr = (ctypes.c_int16 * self._frame_size).from_buffer_copy(mic_frame)
-        ref_arr = (ctypes.c_int16 * self._frame_size).from_buffer_copy(ref)
+        # Set up ctypes pointers — guard against invalid state (SEGV risk)
+        if not self._state or len(ref) != self._frame_bytes:
+            self._frames_passthrough += 1
+            return mic_frame
 
-        self._lib.speex_echo_cancellation(self._state, mic_arr, ref_arr, self._out_buf)
+        try:
+            mic_arr = (ctypes.c_int16 * self._frame_size).from_buffer_copy(mic_frame)
+            ref_arr = (ctypes.c_int16 * self._frame_size).from_buffer_copy(ref)
+            self._lib.speex_echo_cancellation(self._state, mic_arr, ref_arr, self._out_buf)
+        except Exception:
+            self._frames_passthrough += 1
+            self._log_diag()
+            return mic_frame
 
         self._frames_processed += 1
         self._log_diag()
@@ -175,8 +183,7 @@ class EchoCanceller:
             total = self._frames_processed + self._frames_passthrough
             pct = (self._frames_processed / total * 100) if total > 0 else 0
             log.info(
-                "AEC diag: processed=%d passthrough=%d (%.0f%% active), "
-                "refs_fed=%d, ref_buf=%d",
+                "AEC diag: processed=%d passthrough=%d (%.0f%% active), refs_fed=%d, ref_buf=%d",
                 self._frames_processed,
                 self._frames_passthrough,
                 pct,

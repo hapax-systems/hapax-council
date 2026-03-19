@@ -172,12 +172,12 @@ class CognitiveLoop:
                     log.info("turn_phase: %s → %s", prev_phase.value, self._turn_phase.value)
                     self._on_phase_transition(prev_phase, self._turn_phase)
 
-                # 2. Poll for pending utterances (any phase except HAPAX_SPEAKING).
-                # Dispatch as a background task so the cognitive loop keeps
-                # ticking during STT+LLM+TTS. Only poll when not already
-                # processing — get_utterance() consumes the pending utterance,
-                # so polling while busy would drop it.
-                if self._turn_phase != TurnPhase.HAPAX_SPEAKING and not self._is_processing:
+                # 2. Poll for pending utterances. Only when:
+                # - Not during HAPAX_SPEAKING (let it finish)
+                # - Not already processing (would drop the utterance)
+                # - Pipeline not in SPEAKING state (TTS audio still playing)
+                _pipeline_busy = self._is_processing or self._turn_phase == TurnPhase.HAPAX_SPEAKING
+                if not _pipeline_busy:
                     utterance = self._buffer.get_utterance()
                     if utterance is not None:
                         self._dispatch_utterance(utterance)
@@ -185,6 +185,7 @@ class CognitiveLoop:
                 # 3. Phase-specific cognition
                 if self._turn_phase == TurnPhase.OPERATOR_SPEAKING:
                     await self._tick_operator_speaking()
+                    self._session.mark_activity()  # keep session alive while operator speaks
                 elif self._turn_phase == TurnPhase.MUTUAL_SILENCE:
                     await self._tick_mutual_silence()
                 elif self._turn_phase in (TurnPhase.HAPAX_SPEAKING, TurnPhase.TRANSITION):
@@ -204,16 +205,10 @@ class CognitiveLoop:
                     )
                 self._b_predicted_tier.update(self._predicted_tier, now)
 
-                # 6. Session timeout check — skip during active processing
-                # or TTS playback (Hapax speaking counts as activity).
-                if (
-                    self._session.is_active
-                    and self._session.is_timed_out
-                    and not self._is_processing
-                    and self._turn_phase not in (TurnPhase.HAPAX_SPEAKING, TurnPhase.TRANSITION)
-                ):
-                    log.info("Conversation timed out (silence)")
-                    break
+                # Session timeout is handled by the daemon's main loop, which
+                # speaks a goodbye message before closing. The cognitive loop
+                # just checks if the pipeline is still active (set to False
+                # by _stop_pipeline when the daemon closes the session).
 
                 # Sleep remainder of tick
                 elapsed = time.monotonic() - tick_start
@@ -335,8 +330,17 @@ class CognitiveLoop:
 
     @property
     def _is_processing(self) -> bool:
-        """True if an utterance is currently being processed by the pipeline."""
-        return self._processing_task is not None and not self._processing_task.done()
+        """True if an utterance is currently being processed by the pipeline.
+
+        Also true if the pipeline is in SPEAKING state — TTS audio may still
+        be playing even after the processing task completes. Dispatching a new
+        utterance during playback would cut off the current response.
+        """
+        if self._processing_task is not None and not self._processing_task.done():
+            return True
+        from agents.hapax_voice.conversation_pipeline import ConvState
+
+        return self._pipeline.state == ConvState.SPEAKING
 
     def _dispatch_utterance(self, utterance: bytes) -> None:
         """Dispatch utterance processing as a background task.
