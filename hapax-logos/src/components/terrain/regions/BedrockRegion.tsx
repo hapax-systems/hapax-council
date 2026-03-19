@@ -13,7 +13,7 @@ import { PrecedentPanel } from "../../sidebar/PrecedentPanel";
 import { TimersPanel } from "../../sidebar/TimersPanel";
 import { AccommodationPanel } from "../../sidebar/AccommodationPanel";
 import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
-import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
+import { useSignals } from "../../../contexts/ClassificationOverlayContext";
 
 function BedrockSurface() {
   const { data: health } = useHealth();
@@ -84,7 +84,7 @@ function BedrockSurface() {
 }
 
 export const BedrockRegion = memo(function BedrockRegion() {
-  const { signalsByRegion, stimmungStance } = useOverlay();
+  const { signalsByRegion, stimmungStance } = useSignals();
   const bedrockSignals = signalsByRegion.bedrock;
   const [accommOpen, setAccommOpen] = useState(false);
 

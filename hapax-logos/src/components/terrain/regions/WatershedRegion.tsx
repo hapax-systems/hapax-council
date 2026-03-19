@@ -3,7 +3,7 @@ import { Region } from "../Region";
 import { FlowSummary } from "../watershed/FlowSummary";
 import { useSystemFlow } from "../../../hooks/useSystemFlow";
 import { ProfilePanel } from "../../sidebar/ProfilePanel";
-import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
+import { useSignals } from "../../../contexts/ClassificationOverlayContext";
 
 const FlowPage = lazy(() =>
   import("../../../pages/FlowPage").then((m) => ({ default: m.FlowPage }))
@@ -11,7 +11,7 @@ const FlowPage = lazy(() =>
 
 export const WatershedRegion = memo(function WatershedRegion() {
   const flow = useSystemFlow();
-  const { stimmungStance } = useOverlay();
+  const { stimmungStance } = useSignals();
 
   return (
     <Region name="watershed" stimmungStance={stimmungStance}>

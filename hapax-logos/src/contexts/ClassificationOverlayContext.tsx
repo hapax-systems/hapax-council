@@ -130,27 +130,42 @@ function loadMode(): OverlayMode {
   return "full";
 }
 
-interface OverlayContextValue {
+// ── Signal Context ──────────────────────────────────────────────────────
+// Changes at VL poll rate (~2s). Consumers: all 5 regions, PerceptionPage
+interface SignalContextValue {
   perception: PerceptionState | undefined;
   visualLayer: VisualLayerState | undefined;
-  overlayMode: OverlayMode;
-  setOverlayMode: (mode: OverlayMode) => void;
-  channelVisibility: Record<SignalCategory, boolean>;
-  toggleChannel: (cat: SignalCategory) => void;
   filteredSignals: Record<string, SignalEntry[]>;
   signalsByRegion: SignalsByRegion;
   stimmungStance: StimmungStance;
-  zoneOpacityOverrides: Record<string, number>;
-  setZoneOpacity: (zone: string, opacity: number) => void;
-  // Detection overlay state
+}
+
+const SignalContext = createContext<SignalContextValue | null>(null);
+
+// ── Detection Context ───────────────────────────────────────────────────
+// Changes at VL poll rate + user toggles. Consumers: DetectionOverlay, camera components, StudioDetailPane
+interface DetectionContextValue {
+  classificationDetections: ClassificationDetection[];
   detectionLayerVisible: boolean;
   setDetectionLayerVisible: (v: boolean) => void;
   detectionTier: DetectionTier;
   setDetectionTier: (t: DetectionTier) => void;
-  classificationDetections: ClassificationDetection[];
 }
 
-const OverlayContext = createContext<OverlayContextValue | null>(null);
+const DetectionContext = createContext<DetectionContextValue | null>(null);
+
+// ── Overlay Control Context ─────────────────────────────────────────────
+// Changes on user interaction only. Consumers: PerceptionCanvas, PerceptionSidebar, PerceptionOverlayPortal
+interface OverlayControlContextValue {
+  overlayMode: OverlayMode;
+  setOverlayMode: (mode: OverlayMode) => void;
+  channelVisibility: Record<SignalCategory, boolean>;
+  toggleChannel: (cat: SignalCategory) => void;
+  zoneOpacityOverrides: Record<string, number>;
+  setZoneOpacity: (zone: string, opacity: number) => void;
+}
+
+const OverlayControlContext = createContext<OverlayControlContextValue | null>(null);
 
 export function ClassificationOverlayProvider({ children }: { children: ReactNode }) {
   const { data: perception } = usePerception();
@@ -233,33 +248,62 @@ export function ClassificationOverlayProvider({ children }: { children: ReactNod
 
   const stimmungStance: StimmungStance = visualLayer?.stimmung_stance ?? "nominal";
 
-  const value = useMemo(
-    () => ({
-      perception,
-      visualLayer,
-      overlayMode,
-      setOverlayMode,
-      channelVisibility,
-      toggleChannel,
-      filteredSignals,
-      signalsByRegion,
-      stimmungStance,
-      zoneOpacityOverrides,
-      setZoneOpacity,
-      detectionLayerVisible,
-      setDetectionLayerVisible,
-      detectionTier,
-      setDetectionTier,
-      classificationDetections,
-    }),
-    [perception, visualLayer, overlayMode, setOverlayMode, channelVisibility, toggleChannel, filteredSignals, signalsByRegion, stimmungStance, zoneOpacityOverrides, setZoneOpacity, detectionLayerVisible, setDetectionLayerVisible, detectionTier, setDetectionTier, classificationDetections],
+  // Signal context — changes at VL poll rate
+  const signalValue = useMemo(
+    () => ({ perception, visualLayer, filteredSignals, signalsByRegion, stimmungStance }),
+    [perception, visualLayer, filteredSignals, signalsByRegion, stimmungStance],
   );
 
-  return <OverlayContext.Provider value={value}>{children}</OverlayContext.Provider>;
+  // Detection context — VL poll rate + user toggles
+  const detectionValue = useMemo(
+    () => ({ classificationDetections, detectionLayerVisible, setDetectionLayerVisible, detectionTier, setDetectionTier }),
+    [classificationDetections, detectionLayerVisible, setDetectionLayerVisible, detectionTier, setDetectionTier],
+  );
+
+  // Overlay control — user interaction only
+  const overlayControlValue = useMemo(
+    () => ({ overlayMode, setOverlayMode, channelVisibility, toggleChannel, zoneOpacityOverrides, setZoneOpacity }),
+    [overlayMode, setOverlayMode, channelVisibility, toggleChannel, zoneOpacityOverrides, setZoneOpacity],
+  );
+
+  return (
+    <SignalContext.Provider value={signalValue}>
+      <DetectionContext.Provider value={detectionValue}>
+        <OverlayControlContext.Provider value={overlayControlValue}>
+          {children}
+        </OverlayControlContext.Provider>
+      </DetectionContext.Provider>
+    </SignalContext.Provider>
+  );
 }
 
-export function useOverlay(): OverlayContextValue {
-  const ctx = useContext(OverlayContext);
-  if (!ctx) throw new Error("useOverlay must be used within ClassificationOverlayProvider");
+// ── Narrow hooks ────────────────────────────────────────────────────────
+
+export function useSignals(): SignalContextValue {
+  const ctx = useContext(SignalContext);
+  if (!ctx) throw new Error("useSignals must be used within ClassificationOverlayProvider");
   return ctx;
+}
+
+export function useDetections(): DetectionContextValue {
+  const ctx = useContext(DetectionContext);
+  if (!ctx) throw new Error("useDetections must be used within ClassificationOverlayProvider");
+  return ctx;
+}
+
+export function useOverlayControl(): OverlayControlContextValue {
+  const ctx = useContext(OverlayControlContext);
+  if (!ctx) throw new Error("useOverlayControl must be used within ClassificationOverlayProvider");
+  return ctx;
+}
+
+// ── Convenience hook (reads all 3 — use narrower hooks when possible) ──
+
+type OverlayContextValue = SignalContextValue & DetectionContextValue & OverlayControlContextValue;
+
+export function useOverlay(): OverlayContextValue {
+  const signals = useSignals();
+  const detections = useDetections();
+  const overlayControl = useOverlayControl();
+  return { ...signals, ...detections, ...overlayControl };
 }

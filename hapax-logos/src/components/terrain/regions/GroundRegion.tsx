@@ -7,7 +7,7 @@ import { CameraGrid } from "../ground/CameraGrid";
 import { CameraHero } from "../ground/CameraHero";
 import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
 import { PresenceIndicator } from "../ground/PresenceIndicator";
-import { useOverlay } from "../../../contexts/ClassificationOverlayContext";
+import { useSignals } from "../../../contexts/ClassificationOverlayContext";
 import { useTerrain } from "../../../contexts/TerrainContext";
 import type { VisualLayerState } from "../../../api/types";
 
@@ -16,7 +16,7 @@ interface GroundRegionProps {
 }
 
 export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps) {
-  const { signalsByRegion, stimmungStance, perception } = useOverlay();
+  const { signalsByRegion, stimmungStance, perception } = useSignals();
   const { setRegionDepth, focusRegion } = useTerrain();
   const groundSignals = signalsByRegion.ground;
   const [heroRole, setHeroRole] = useState("brio-operator");

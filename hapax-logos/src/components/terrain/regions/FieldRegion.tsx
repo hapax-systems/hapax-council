@@ -10,13 +10,13 @@ import { PerceptionCanvas } from "../../perception/PerceptionCanvas";
 import { PerceptionSidebar } from "../../perception/PerceptionSidebar";
 import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
 import { OperatorVitals } from "../field/OperatorVitals";
-import { useOverlay, type SignalCategory } from "../../../contexts/ClassificationOverlayContext";
+import { useSignals, type SignalCategory } from "../../../contexts/ClassificationOverlayContext";
 import { useAgentRun } from "../../../contexts/AgentRunContext";
 import type { AgentInfo } from "../../../api/types";
 
 export const FieldRegion = memo(function FieldRegion() {
   const { runAgent } = useAgentRun();
-  const { signalsByRegion, stimmungStance, visualLayer } = useOverlay();
+  const { signalsByRegion, stimmungStance, visualLayer } = useSignals();
   const [activeZone, setActiveZone] = useState<SignalCategory | null>(null);
   const fieldSignals = signalsByRegion.field;
   const biometrics = visualLayer?.biometrics ?? null;
