@@ -96,46 +96,64 @@ CLAIMS: dict[int, ClaimSpec] = {
 # ── Langfuse Data Collection ───────────────────────────────────────────────
 
 
+def _fetch_voice_traces(since_hours: float = 48) -> list[dict]:
+    """Fetch voice traces with full score data from Langfuse REST API."""
+    from shared.langfuse_client import langfuse_get
+
+    since = (datetime.now(UTC) - timedelta(hours=since_hours)).isoformat()
+
+    all_traces: list[dict] = []
+    page = 1
+    while page <= 20:
+        resp = langfuse_get(
+            "/traces",
+            {"name": "voice.utterance", "fromTimestamp": since, "limit": 100, "page": str(page)},
+        )
+        if not resp:
+            break
+        data = resp.get("data", [])
+        if not data:
+            break
+        all_traces.extend(data)
+        total = resp.get("meta", {}).get("totalItems", 0)
+        if page * 100 >= total:
+            break
+        page += 1
+
+    # Enrich with full score data
+    for trace in all_traces:
+        detail = langfuse_get(f"/traces/{trace['id']}")
+        if detail:
+            trace["scores"] = detail.get("scores", [])
+
+    return all_traces
+
+
 def _fetch_scores(metric: str, since_hours: float = 48) -> list[dict]:
     """Fetch per-turn scores from Langfuse for a specific metric.
 
     Returns list of {"session_id", "turn", "value", "timestamp"}.
     """
-    try:
-        from langfuse import get_client
-
-        client = get_client()
-    except Exception:
-        log.error("Langfuse client unavailable")
-        return []
-
-    since = datetime.now(UTC) - timedelta(hours=since_hours)
-
-    try:
-        traces = client.get_traces(
-            name="voice.utterance",
-            from_timestamp=since,
-            limit=500,
-        )
-    except Exception:
-        log.error("Failed to fetch traces", exc_info=True)
-        return []
+    traces = _fetch_voice_traces(since_hours)
 
     results: list[dict] = []
-    for trace in traces.data if hasattr(traces, "data") else traces:
-        scores = getattr(trace, "scores", []) or []
-        for s in scores:
-            if getattr(s, "name", "") == metric:
-                sid = getattr(trace, "session_id", None) or (
-                    getattr(trace, "metadata", {}) or {}
-                ).get("session_id", "unknown")
-                meta = getattr(trace, "metadata", {}) or {}
+    for trace in traces:
+        for s in trace.get("scores", []):
+            if s.get("name") == metric:
+                sid = trace.get("sessionId") or (trace.get("metadata") or {}).get(
+                    "session_id", "unknown"
+                )
+                meta = trace.get("metadata") or {}
+                turn_raw = meta.get("turn", 0)
+                turn = (
+                    turn_raw.get("intValue", turn_raw) if isinstance(turn_raw, dict) else turn_raw
+                )
                 results.append(
                     {
                         "session_id": sid,
-                        "turn": meta.get("turn", 0),
-                        "value": float(getattr(s, "value", 0)),
-                        "timestamp": str(getattr(trace, "timestamp", "")),
+                        "turn": turn,
+                        "value": float(s.get("value", 0)),
+                        "timestamp": trace.get("timestamp", ""),
                     }
                 )
     return results
@@ -143,33 +161,14 @@ def _fetch_scores(metric: str, since_hours: float = 48) -> list[dict]:
 
 def _fetch_activation_pairs(since_hours: float = 48) -> list[dict]:
     """Fetch (activation_score, response_tokens, context_anchor_success) triples."""
-    try:
-        from langfuse import get_client
-
-        client = get_client()
-    except Exception:
-        log.error("Langfuse client unavailable")
-        return []
-
-    since = datetime.now(UTC) - timedelta(hours=since_hours)
-
-    try:
-        traces = client.get_traces(
-            name="voice.utterance",
-            from_timestamp=since,
-            limit=500,
-        )
-    except Exception:
-        log.error("Failed to fetch traces", exc_info=True)
-        return []
+    traces = _fetch_voice_traces(since_hours)
 
     results: list[dict] = []
-    for trace in traces.data if hasattr(traces, "data") else traces:
-        scores = getattr(trace, "scores", []) or []
+    for trace in traces:
         score_map: dict[str, float] = {}
-        for s in scores:
-            name = getattr(s, "name", "")
-            val = getattr(s, "value", None)
+        for s in trace.get("scores", []):
+            name = s.get("name", "")
+            val = s.get("value")
             if name and val is not None:
                 score_map[name] = float(val)
 
@@ -178,7 +177,7 @@ def _fetch_activation_pairs(since_hours: float = 48) -> list[dict]:
             continue
 
         # Use output length as token proxy
-        output = getattr(trace, "output", None)
+        output = trace.get("output")
         if isinstance(output, str):
             tokens = float(len(output.split()))
         elif isinstance(output, dict):
