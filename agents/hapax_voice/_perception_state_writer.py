@@ -249,6 +249,8 @@ def write_perception_state(
         "presence_score": float(_bval("presence_score", 0.0) or 0),
         "nearest_person_distance": str(_bval("nearest_person_distance", "none")),
         "detected_action": str(_bval("detected_action", "unknown")),
+        "audio_scene": str(_bval("audio_scene", "silence")),
+        "scene_state_clip": str(_bval("scene_state_clip", "")),
         "usb_devices": str(_bval("usb_devices", "")),
         "network_devices": str(_bval("network_devices", "")),
         "active_contracts": active_contracts,
