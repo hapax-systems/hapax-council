@@ -604,7 +604,7 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", "snapshot-rate-caps")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=15/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=30/1"),
         )
         encoder = Gst.ElementFactory.make("jpegenc", "snapshot-jpeg")
         encoder.set_property("quality", 85)
@@ -772,7 +772,7 @@ class StudioCompositor:
 
         fx_rate = Gst.ElementFactory.make("videorate", "fx-rate")
         fx_rate_caps = Gst.ElementFactory.make("capsfilter", "fx-rate-caps")
-        fx_rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=15/1"))
+        fx_rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=30/1"))
 
         fx_jpeg = Gst.ElementFactory.make("jpegenc", "fx-jpeg")
         fx_jpeg.set_property("quality", 80)
@@ -1031,7 +1031,7 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=15/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=30/1"),
         )
         scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
         # Use native resolution

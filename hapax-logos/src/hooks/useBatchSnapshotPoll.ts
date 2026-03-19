@@ -130,8 +130,13 @@ function indexOf(haystack: Uint8Array, needle: Uint8Array, offset: number): numb
 
 const encoder = new TextEncoder();
 
+let currentIntervalMs = 0;
+
 function startPolling(intervalMs: number): void {
-  if (pollTimer) return;
+  // Restart with faster interval if a new subscriber needs higher fps
+  if (pollTimer && intervalMs >= currentIntervalMs) return;
+  if (pollTimer) clearInterval(pollTimer);
+  currentIntervalMs = intervalMs;
   fetchBatch();
   pollTimer = setInterval(fetchBatch, intervalMs);
 }
