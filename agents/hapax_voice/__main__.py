@@ -1738,10 +1738,21 @@ class VoiceDaemon:
                         not self.session.is_active
                         or getattr(self.session, "speaker", "operator") == "operator"
                     )
+                    # When the Bayesian presence engine is confident the operator
+                    # is present, suppress guest detection. Face ReID alone is too
+                    # fragile (lighting, angle, model limitations) to be the sole
+                    # identity gate. The presence engine fuses face + speaker ID +
+                    # keyboard + desktop + phone + watch — if it's confident,
+                    # trust it over a single failed face embedding match.
+                    _pe = self._presence_engine
+                    _presence_suppresses_guest = (
+                        _pe is not None and _pe.state == "PRESENT" and _pe.posterior >= 0.8
+                    )
+                    _effective_guest_count = 0 if _presence_suppresses_guest else state.guest_count
                     self.consent_tracker.tick(
                         face_count=state.face_count,
                         speaker_is_operator=speaker_is_op,
-                        guest_count=state.guest_count,
+                        guest_count=_effective_guest_count,
                         now=state.timestamp,
                     )
 
