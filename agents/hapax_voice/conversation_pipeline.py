@@ -573,6 +573,10 @@ class ConversationPipeline:
 
         # Fire LLM call concurrently with bridge phrase
         self.state = ConvState.THINKING
+        # Set speaking BEFORE bridge so the buffer stays deaf from bridge
+        # through the entire response — no gap where echo could leak in.
+        if self.buffer:
+            self.buffer.set_speaking(True)
         llm_task = asyncio.create_task(self._generate_and_speak())
         await self._speak_bridge()
         try:
@@ -677,8 +681,7 @@ class ConversationPipeline:
             _first_clause_spoken = False
 
             self.state = ConvState.SPEAKING
-            if self.buffer:
-                self.buffer.set_speaking(True)
+            # set_speaking(True) already called by process_utterance before bridge
 
             async for chunk in response:
                 if not chunk.choices:
@@ -909,24 +912,19 @@ class ConversationPipeline:
         # Add bridge phrase to echo history so echo rejection catches it
         self._recent_tts_texts.append((time.monotonic(), phrase.lower().strip().rstrip(".,!?")))
 
+        # No set_speaking here — the caller (process_utterance) manages the
+        # speaking gate around the entire bridge+response sequence. This
+        # prevents a gap between bridge end and first clause that was causing
+        # the first TTS clause to get clipped.
         if pcm and self._audio_output:
-            if self.buffer:
-                self.buffer.set_speaking(True)
             try:
                 self._audio_output.write(pcm)
                 if self._echo_canceller:
                     self._echo_canceller.feed_reference(pcm)
             except Exception:
                 log.debug("Bridge playback failed", exc_info=True)
-            finally:
-                if self.buffer:
-                    self.buffer.set_speaking(False)
         elif phrase:
-            if self.buffer:
-                self.buffer.set_speaking(True)
             await self._speak_sentence(phrase)
-            if self.buffer:
-                self.buffer.set_speaking(False)
 
     # ── Salience Context ────────────────────────────────────────────────
 
