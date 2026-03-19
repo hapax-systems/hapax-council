@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback } from "react";
 import { Region } from "../Region";
 import { AmbientCanvas } from "../ground/AmbientCanvas";
 import { TimeDisplay } from "../ground/TimeDisplay";
@@ -9,6 +9,7 @@ import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
 import { PresenceIndicator } from "../ground/PresenceIndicator";
 import { useSignals } from "../../../contexts/ClassificationOverlayContext";
 import { useTerrainActions } from "../../../contexts/TerrainContext";
+import { useGroundStudio } from "../../../contexts/GroundStudioContext";
 import type { VisualLayerState } from "../../../api/types";
 
 interface GroundRegionProps {
@@ -19,9 +20,11 @@ export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps
   const { signalsByRegion, stimmungStance, perception } = useSignals();
   const { setRegionDepth, focusRegion } = useTerrainActions();
   const groundSignals = signalsByRegion.ground;
-  const [heroRole, setHeroRole] = useState("brio-operator");
-  const [fxMode, setFxMode] = useState(false);
-  const [smoothMode, setSmoothMode] = useState(false);
+  const {
+    heroRole, setHeroRole,
+    fxMode, smoothMode, compositeMode,
+    presetIdx, liveFilterIdx, smoothFilterIdx,
+  } = useGroundStudio();
 
   /** CameraPip click → advance to stratum */
   const handlePipClick = useCallback(() => {
@@ -81,6 +84,10 @@ export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps
                 onHeroChange={setHeroRole}
                 fxMode={fxMode}
                 smoothMode={smoothMode}
+                compositeMode={compositeMode}
+                presetIdx={presetIdx}
+                liveFilterIdx={liveFilterIdx}
+                smoothFilterIdx={smoothFilterIdx}
               />
             </div>
           )}

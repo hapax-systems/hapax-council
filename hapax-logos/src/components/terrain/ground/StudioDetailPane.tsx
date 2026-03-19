@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Circle, Square } from "lucide-react";
 import { PRESETS } from "../../studio/compositePresets";
+import { SOURCE_FILTERS } from "../../studio/compositeFilters";
 import VisualLayerPanel from "../../studio/VisualLayerPanel";
 import {
   useStudio,
@@ -11,26 +12,24 @@ import {
 } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
 import { api } from "../../../api/client";
+import { useGroundStudio } from "../../../contexts/GroundStudioContext";
 
 interface StudioDetailPaneProps {
-  heroRole: string;
-  onHeroChange: (role: string) => void;
   classificationDetections: ClassificationDetection[];
-  fxMode: boolean;
-  onFxModeChange: (on: boolean) => void;
-  smoothMode: boolean;
-  onSmoothModeChange: (on: boolean) => void;
 }
 
 export function StudioDetailPane({
-  heroRole,
-  onHeroChange,
   classificationDetections,
-  fxMode,
-  onFxModeChange,
-  smoothMode,
-  onSmoothModeChange,
 }: StudioDetailPaneProps) {
+  const {
+    heroRole, setHeroRole,
+    fxMode, setFxMode,
+    smoothMode, setSmoothMode,
+    compositeMode, setCompositeMode,
+    presetIdx, setPresetIdx,
+    liveFilterIdx, setLiveFilterIdx,
+    smoothFilterIdx, setSmoothFilterIdx,
+  } = useGroundStudio();
   const { data: studio } = useStudio();
   const { data: streamInfo } = useStudioStreamInfo();
   const { data: liveStatus } = useCompositorLive();
@@ -41,7 +40,6 @@ export function StudioDetailPane({
   const isRecording = compositor?.recording_enabled ?? false;
   const cameraRoles = compositor ? Object.keys(compositor.cameras) : [];
   const recordingCams = compositor?.recording_cameras ?? {};
-  const [presetIdx, setPresetIdx] = useState(0);
 
   // Recording timer
   const [recElapsed, setRecElapsed] = useState("");
@@ -71,7 +69,7 @@ export function StudioDetailPane({
           <span className="shrink-0 text-[10px] text-zinc-400">Hero</span>
           <select
             value={heroRole}
-            onChange={(e) => onHeroChange(e.target.value)}
+            onChange={(e) => setHeroRole(e.target.value)}
             className="flex-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
           >
             {cameraRoles.map((r) => (
@@ -241,13 +239,75 @@ export function StudioDetailPane({
         <VisualLayerPanel />
       </Section>
 
+      {/* COMPOSITE */}
+      <Section title="Composite">
+        <button
+          onClick={() => setCompositeMode(!compositeMode)}
+          className={`mb-2 w-full rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+            compositeMode
+              ? "bg-indigo-900/50 text-indigo-300"
+              : "bg-zinc-800 text-zinc-500 hover:text-zinc-300"
+          }`}
+        >
+          {compositeMode ? "Composite Active" : "Enable Composite"}
+        </button>
+        {compositeMode && (
+          <>
+            {/* Preset selector */}
+            <div className="mb-2 flex flex-col gap-0.5">
+              {PRESETS.map((p, i) => (
+                <button
+                  key={p.name}
+                  onClick={() => setPresetIdx(i)}
+                  className={`rounded px-2 py-1 text-left text-[10px] transition-colors ${
+                    presetIdx === i
+                      ? "bg-indigo-950/30 text-zinc-200"
+                      : "text-zinc-400 hover:bg-zinc-800/50"
+                  }`}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+            {/* Per-layer filter selectors */}
+            <div className="flex flex-col gap-2">
+              <label className="flex items-center gap-1.5">
+                <span className="shrink-0 text-[10px] text-zinc-400">Live</span>
+                <select
+                  value={liveFilterIdx}
+                  onChange={(e) => setLiveFilterIdx(Number(e.target.value))}
+                  className="flex-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+                >
+                  {SOURCE_FILTERS.map((f, i) => (
+                    <option key={f.name} value={i}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-1.5">
+                <span className="shrink-0 text-[10px] text-zinc-400">Smooth</span>
+                <select
+                  value={smoothFilterIdx}
+                  onChange={(e) => setSmoothFilterIdx(Number(e.target.value))}
+                  className="flex-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+                >
+                  {SOURCE_FILTERS.map((f, i) => (
+                    <option key={f.name} value={i}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </>
+        )}
+      </Section>
+
       {/* FX MODE */}
       <Section title="FX Mode">
         <button
-          onClick={() => {
-            onFxModeChange(!fxMode);
-            if (!fxMode) onSmoothModeChange(false);
-          }}
+          onClick={() => setFxMode(!fxMode)}
           className={`mb-2 w-full rounded px-2 py-1 text-[10px] font-medium transition-colors ${
             fxMode
               ? "bg-purple-900/50 text-purple-300"
@@ -281,10 +341,7 @@ export function StudioDetailPane({
       {/* STREAM */}
       <Section title="Stream">
         <button
-          onClick={() => {
-            onSmoothModeChange(!smoothMode);
-            if (!smoothMode) onFxModeChange(false);
-          }}
+          onClick={() => setSmoothMode(!smoothMode)}
           className={`mb-2 w-full rounded px-2 py-1 text-[10px] font-medium transition-colors ${
             smoothMode
               ? "bg-green-900/50 text-green-300"
