@@ -325,10 +325,10 @@ export function DetectionOverlay({
         const dw = dx2 - dx1;
         const dh = dy2 - dy1;
         // Depth modulates halo radius: close=larger, far=smaller
-        const depthScale = det.depth === "close" ? 1.1 : det.depth === "far" ? 0.7 : 1.0;
-        // Use geometric mean of dimensions, capped to prevent frame-filling blobs
-        const rawRadius = Math.sqrt(dw * dh) * 0.5 * depthScale;
-        const maxRadius = Math.min(imgW, imgH) * 0.25; // never exceed 25% of frame
+        const depthScale = det.depth === "close" ? 1.0 : det.depth === "far" ? 0.7 : 0.9;
+        // Tight halo: fraction of the smaller box dimension, hard-capped
+        const rawRadius = Math.min(dw, dh) * 0.35 * depthScale;
+        const maxRadius = Math.min(imgW, imgH) * 0.12; // never exceed 12% of frame
         const radius = Math.min(rawRadius, maxRadius);
 
         // Breathing animation
@@ -355,8 +355,8 @@ export function DetectionOverlay({
         let grad = gradientCache.get(gradKey);
         if (!grad) {
           grad = ctx.createRadialGradient(cx, cy, radius * 0.1, cx, cy, radius);
-          grad.addColorStop(0, color + Math.round(baseOpacity * 0.8 * 255).toString(16).padStart(2, "0"));
-          grad.addColorStop(0.5, color + Math.round(baseOpacity * 0.4 * 255).toString(16).padStart(2, "0"));
+          grad.addColorStop(0, color + Math.round(baseOpacity * 0.5 * 255).toString(16).padStart(2, "0"));
+          grad.addColorStop(0.5, color + Math.round(baseOpacity * 0.2 * 255).toString(16).padStart(2, "0"));
           grad.addColorStop(1, color + "00");
           gradientCache.set(gradKey, grad);
         }
