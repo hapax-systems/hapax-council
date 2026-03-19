@@ -1,6 +1,6 @@
 # hapax-council
 
-Externalized executive function infrastructure for a single operator. 45+ LLM agents coordinate through a filesystem-as-bus, governed by five weighted axioms with formal enforcement. Includes a voice daemon, visual compositor, reactive engine, and consent framework.
+Externalized executive function infrastructure for a single operator. 45+ LLM agents coordinate through a filesystem-as-bus, governed by five weighted axioms with formal enforcement. Includes a voice daemon with conversational grounding measurement, a multi-camera temporal classification pipeline, a visual compositor, a reactive engine, and a consent framework.
 
 Single-operator is a constitutional axiom (weight 100). No auth, roles, or multi-user features.
 
@@ -71,11 +71,11 @@ Principal (sovereign/bound)
 
 ### Voice daemon
 
-Wake word → VAD → STT (faster-whisper) → Salience routing (concern graph activation) → LLM (5 tiers) → TTS (Kokoro) → Audio output. Phenomenal context renderer injects temporal bands and self-band, scaled per tier.
+Wake word (Whisper-based, fuzzy phonetic matching) → VAD → STT (faster-whisper, GPU) → Salience routing (concern graph activation, 4 weighted signals) → LLM (5 tiers via LiteLLM) → Streaming TTS (Kokoro, clause-level chunking) → Audio output. Phenomenal context renderer injects temporal bands and self-band, scaled per tier. Includes Bayesian presence engine (10 signals), frustration detector (8 mechanical signals), echo canceller (speexdsp AEC), and per-turn grounding evaluation (context anchoring, reference accuracy, acceptance classification).
 
 ### Hapax Logos
 
-Tauri 2 desktop app with wgpu visual surface (6 GPU technique layers: gradient, reaction-diffusion, voronoi, wave, physarum, feedback) and React control panel. Includes a system anatomy Flow page (live topology) and a full-screen ambient canvas (HapaxPage).
+Tauri 2 desktop app with wgpu visual surface (6 GPU technique layers: gradient, reaction-diffusion, voronoi, wave, physarum, feedback) and React control panel. Terrain navigation (surface → horizon → field → ground → watershed → bedrock) with per-stratum data visualization. Includes system anatomy Flow page (live topology with particle-density edges), multi-camera ground core (6-camera grid with per-feed composite effects), and full-screen ambient canvas. Performance-optimized: image pool recycling, unified rAF loop, batch snapshot API, ambient shader LOD scaling.
 
 ### Reactive engine
 
@@ -97,6 +97,59 @@ inotify watches `profiles/`, `axioms/`, `rag-sources/`. 12 rules. Three-phase ex
 | Voice routing (salience + hysteresis + stimmung) | **Built** | 27 salience router tests |
 | System anatomy visualization | **Built** | TypeScript + Rust compile-clean |
 | Alignment tax ≤ 20% | **Measured** | Label ops: 0.3µs join, 0.1µs flow check |
+| Conversational continuity (claims 1-5) | **Baseline** | 7 sessions, Bayesian sequential testing |
+| Temporal classification (vision) | **Built** | MoViNet-A2 + CLIP ViT-B/32 + ByteTrack |
+
+## Active research
+
+### Conversational continuity
+
+Investigates whether conversational context anchoring — injecting a
+turn-by-turn conversation thread into the system prompt — produces
+measurable grounding improvements over stateless per-turn processing.
+
+Grounded in Clark & Brennan (1991) theory of conversational grounding.
+Five pre-registered claims tested via Bayesian SCED (single-case
+experimental design) with sequential stopping rules. Experiment
+infrastructure includes per-turn Langfuse scoring (context anchoring
+success, reference accuracy, acceptance type, frustration detection,
+salience activation), trajectory analysis (within-session grounding
+slopes), and turn-pair coherence metrics.
+
+**Phase A (baseline)**: all continuity components disabled. 7 of 20
+target sessions collected. Code frozen during collection.
+
+**Measurement framework**: three score classes distinguish grounding-native
+metrics (structurally zero for stateless systems), retrieval-parity
+metrics (must match industry baselines), and failure-mode detectors
+(alert if the system regresses toward profile-retrieval patterns).
+
+Design documents and pre-registered hypotheses in `agents/hapax_voice/proofs/`.
+
+### Temporal classification (vision)
+
+Multi-model inference pipeline for continuous environment understanding
+across 4-6 cameras. Three subsystems:
+
+- **Action recognition**: MoViNet-A2 streaming inference (~10ms/frame),
+  classifies operator activity from discrete camera snapshots
+- **Scene state**: CLIP ViT-B/32 zero-shot classification (~5ms/image),
+  arbitrary scene states via text prompts without training
+- **Change detection**: frame differencing + SSIM + background
+  subtraction for environmental transitions
+
+Cross-camera person tracking via ByteTrack with entity-level enrichment
+(gaze, emotion, posture, gesture, action, depth). Temporal delta
+correlator derives motion signals (velocity, direction, dwell time,
+entry/exit) from sighting history. All enrichments consent-gated.
+
+### Compositor performance
+
+Five-batch optimization of the Tauri 2 / wgpu visual surface:
+image pool recycling, gradient caching, unified rAF loop, backend
+batch snapshot API (N HTTP round trips → 1), ambient shader LOD
+scaling. Targets sustained 60fps with 6 camera feeds and 6 GPU
+technique layers.
 
 ## Agents (33 manifested)
 
@@ -137,8 +190,8 @@ hapax-council/
 ├── council-web/      DEPRECATED — superseded by hapax-logos
 ├── axioms/           5 axioms, 90 implications, precedents, contracts, schemas
 ├── specs/            8 operational principles + spec registry
-├── tests/            444 test files
-├── docs/             21 research documents, design plans
+├── tests/            470+ test files
+├── docs/             30+ research documents, design plans
 └── skills/           17 Claude Code skills
 ```
 
