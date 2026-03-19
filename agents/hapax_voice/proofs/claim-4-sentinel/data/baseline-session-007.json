@@ -1,0 +1,55 @@
+{
+  "baseline_session": 7,
+  "session_id": "7c5fb8c8d905",
+  "timestamp": "2026-03-19T22:02:26.112Z",
+  "turn_count": 2,
+  "experiment_config": {
+    "name": "continuity-v1",
+    "condition": "A",
+    "phase": "baseline",
+    "components": {
+      "stable_frame": false,
+      "message_drop": false,
+      "cross_session": false,
+      "sentinel": false
+    }
+  },
+  "code_state": {
+    "max_spoken_words": 25,
+    "max_response_tokens": 150,
+    "tools_enabled": false,
+    "pre_roll_frames": 50
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "user": "There, X?",
+      "assistant": "I'm here. What do you need?",
+      "scores": {
+        "reference_accuracy": 1,
+        "activation_score": 0.1154,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "acceptance_type": 0.3,
+        "frustration_score": 0,
+        "total_latency_ms": 6107.9825,
+        "context_anchor_success": 0.5
+      }
+    },
+    {
+      "turn": 1,
+      "user": "our conversation, we were just talking a couple minutes ago. We were talking about your sort of a lot going on in your head. I told you I'm going to go take a look at it and I did take a look at it. I think we might have some solutions for you.",
+      "assistant": "Ah, you're following up on the system noise I mentioned. What solutions are you thinking? The drift items and error rates are definitely getting in the way.",
+      "scores": {
+        "reference_accuracy": 1,
+        "activation_score": 0.5352,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "acceptance_type": 1,
+        "total_latency_ms": 11259.5581,
+        "context_anchor_success": 0.1
+      }
+    }
+  ]
+}
