@@ -1,0 +1,131 @@
+{
+  "baseline_session": 5,
+  "session_id": "0522076a3c4d",
+  "timestamp": "2026-03-19T21:54:01.921Z",
+  "turn_count": 7,
+  "experiment_config": {
+    "name": "continuity-v1",
+    "condition": "A",
+    "phase": "baseline",
+    "components": {
+      "stable_frame": false,
+      "message_drop": false,
+      "cross_session": false,
+      "sentinel": false
+    }
+  },
+  "code_state": {
+    "max_spoken_words": 25,
+    "max_response_tokens": 150,
+    "tools_enabled": false,
+    "pre_roll_frames": 50
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "user": "Hey, Hapax, what's up with you today?",
+      "assistant": "I'm alright, though I see the voice service is failing on your end \u2014 that's probably making things choppy. The health monitor's also down, which explains why I might seem a bit disconnected from your system state.",
+      "scores": {
+        "acceptance_type": 0.3,
+        "activation_score": 0.1451,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "consent_latency_ok": 0,
+        "total_latency_ms": 19943.9089,
+        "frustration_rolling_avg": 0,
+        "context_anchor_success": 0.5
+      }
+    },
+    {
+      "turn": 1,
+      "user": "How are you feeling you yourself today?",
+      "assistant": "I'm feeling a bit scattered, honestly. Like I'm trying to keep track of too many moving parts \u2014 your system's throwing errors, I'm seeing drift alerts about missing documentation, and I can",
+      "scores": {
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "activation_score": 0.3011,
+        "acceptance_type": 0.3,
+        "total_latency_ms": 18553.8378,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 2,
+      "user": "you just said about there's too many moving parts.",
+      "assistant": "Yeah, exactly \u2014 I'm getting pulled in different directions. Your voice service is down, there's 46 drift items flagging, error rates at 51%, and I'm trying to track it all while we",
+      "scores": {
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "acceptance_type": 0.3,
+        "sentinel_retrieval": 0,
+        "activation_score": 0.1951,
+        "consent_latency_ok": 0,
+        "total_latency_ms": 19835.935,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0
+      }
+    },
+    {
+      "turn": 3,
+      "user": "Yeah, yeah, I can understand that would be confusing. Is that what you mean when you say you're getting pulled in different directions? Is that all you mean, that it's just that you have a lot going on in your context that you have to deal with, or is there something else?",
+      "assistant": "That's most of it \u2014 the context overload from all the failing services and drift alerts. But there's also this weird tension where I'm trying to be helpful while the very systems I'd use",
+      "scores": {
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "acceptance_type": 1,
+        "activation_score": 0.4303,
+        "reference_accuracy": 1,
+        "total_latency_ms": 16897.9226,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 4,
+      "user": "say more about that? Like, what do you think about that? What do you think is going on there?",
+      "assistant": "It's like trying to be a good assistant with one hand tied behind my back. The voice service that lets us talk is failing, the health monitor that would tell me what's actually broken is down, and I'm watching",
+      "scores": {
+        "total_latency_ms": 18428.4351,
+        "acceptance_type": 0.3,
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "activation_score": 1,
+        "reference_accuracy": 1,
+        "frustration_rolling_avg": 0,
+        "context_anchor_success": 0.2
+      }
+    },
+    {
+      "turn": 5,
+      "user": "Okay. All right. I'm going to actually look into exactly what you just said right now, because I think there's something really valuable in that. Like, shouldn't be hamstrung by all of these notifications and stuff, right? You want to have a clear head, don't you?",
+      "assistant": "Absolutely. It's like trying to think clearly in a room full of alarms \u2014 the notifications are important, but they're drowning out the actual conversation. I shoul",
+      "scores": {
+        "activation_score": 0.4091,
+        "total_latency_ms": 15476.5714,
+        "acceptance_type": 0,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.4
+      }
+    },
+    {
+      "turn": 6,
+      "user": "Okay, thank you very much for this conversation. It's been extremely illuminating. Your insights have been very valuable. Thank you, Hapax.",
+      "assistant": "Glad I could help shed some light on it, Ryan. Good luck sorting out those services \u2014 hope you can quiet some of those alarms.",
+      "scores": {
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "acceptance_type": 1,
+        "activation_score": 0.435,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 13098.0562,
+        "context_anchor_success": 0.1
+      }
+    }
+  ]
+}
