@@ -1,4 +1,4 @@
-"""Per-turn grounding evaluation — lightweight mechanical scoring.
+"""Per-turn context anchoring evaluation — lightweight mechanical scoring.
 
 Runs after each _generate_and_speak() in the voice pipeline. No LLM call
 in the hot path — pure heuristics using word overlap and keyword matching.

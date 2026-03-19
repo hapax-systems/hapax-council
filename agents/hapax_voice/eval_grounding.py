@@ -1,7 +1,7 @@
-"""Offline grounding evaluation — LLM-as-judge for conversational continuity.
+"""Offline context anchoring evaluation — LLM-as-judge for conversational continuity.
 
 Fetches recent voice session traces from Langfuse, reconstructs conversations,
-and evaluates Clark's three grounding mechanisms:
+and evaluates Clark's three grounding mechanisms (Clark 1996):
   1. Presentation: classify each assistant sentence
   2. Acceptance: classify operator response type
   3. Evidence of understanding: check later turns for correct reference
@@ -155,7 +155,7 @@ def reconstruct_conversation(session_traces: list) -> list[dict]:
 
 # ── LLM-as-Judge Evaluation ─────────────────────────────────────────────────
 
-_JUDGE_PROMPT = """You are evaluating conversational grounding in a voice assistant interaction.
+_JUDGE_PROMPT = """You are evaluating conversational context anchoring in a voice assistant interaction.
 
 For each turn, classify:
 
@@ -190,7 +190,7 @@ Respond in JSON format:
       "rationale": "brief explanation"
     }
   ],
-  "summary": "overall grounding quality assessment in 1-2 sentences"
+  "summary": "overall context anchoring quality assessment in 1-2 sentences"
 }
 ```
 
@@ -199,7 +199,7 @@ Here is the conversation:
 
 
 async def judge_session(turns: list[dict]) -> dict:
-    """Use LLM-as-judge to evaluate a session's grounding."""
+    """Use LLM-as-judge to evaluate a session's context anchoring."""
     import litellm
 
     if not turns:
@@ -317,12 +317,74 @@ def push_scores(session_eval: SessionEval, session_id: str) -> None:
         log.debug("Score push failed (non-fatal)", exc_info=True)
 
 
+# ── Salience Correlation (Claim 5) ──────────────────────────────────────────
+
+
+def analyze_salience_correlation(
+    evals: list[SessionEval],
+    session_traces: dict[str, list],
+) -> dict[str, float] | None:
+    """Correlate activation_score with response tokens and context_anchor_success.
+
+    Collects per-turn scores from Langfuse traces across all evaluated sessions.
+    Returns None if fewer than 50 turns have valid activation scores.
+    """
+    activations: list[float] = []
+    token_counts: list[float] = []
+    anchor_scores: list[float] = []
+
+    for se in evals:
+        traces = session_traces.get(se.session_id, [])
+        for trace in traces:
+            scores = getattr(trace, "scores", []) or []
+            score_map: dict[str, float] = {}
+            for s in scores:
+                name = getattr(s, "name", "")
+                value = getattr(s, "value", None)
+                if name and value is not None:
+                    score_map[name] = float(value)
+
+            activation = score_map.get("activation_score")
+            if activation is None or activation < 0:
+                continue
+
+            # Response tokens: count words in assistant text as proxy
+            turn_idx = (getattr(trace, "metadata", {}) or {}).get("turn")
+            resp_tokens = 0.0
+            if turn_idx is not None and turn_idx < len(se.turns):
+                resp_tokens = float(len(se.turns[turn_idx].assistant_text.split()))
+
+            anchor = score_map.get("context_anchor_success", 0.0)
+
+            activations.append(activation)
+            token_counts.append(resp_tokens)
+            anchor_scores.append(anchor)
+
+    if len(activations) < 50:
+        return None
+
+    from agents.hapax_voice.stats import bayes_correlation as _bayes_corr
+
+    corr_tokens = _bayes_corr(activations, token_counts, prior_mu=0.3, prior_sigma=0.15)
+    corr_anchor = _bayes_corr(activations, anchor_scores, prior_mu=0.3, prior_sigma=0.15)
+
+    return {
+        "r_tokens": corr_tokens["r"],
+        "r_anchor": corr_anchor["r"],
+        "bf_tokens": corr_tokens["bf"],
+        "bf_anchor": corr_anchor["bf"],
+        "n_turns": len(activations),
+        "ci_tokens": corr_tokens["ci_95"],
+        "ci_anchor": corr_anchor["ci_95"],
+    }
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
-def format_report(evals: list[SessionEval]) -> str:
+def format_report(evals: list[SessionEval], correlation: dict | None = None) -> str:
     """Format evaluation results as a human-readable report."""
-    lines = ["# Conversational Grounding Evaluation Report", ""]
+    lines = ["# Context Anchoring Evaluation Report", ""]
 
     for i, se in enumerate(evals):
         lines.append(f"## Session {i + 1} ({se.session_id})")
@@ -361,11 +423,20 @@ def format_report(evals: list[SessionEval]) -> str:
         lines.append(f"- Mean acceptance rate: {avg_accept:.1%}")
         lines.append(f"- Mean reference accuracy: {avg_ref:.1%}")
 
+    if correlation is not None:
+        lines.append("")
+        lines.append("## Claim 5: Salience Correlation")
+        lines.append(f"- Turns analyzed: {correlation['n_turns']}")
+        lines.append(f"- r(activation, tokens): {correlation['r_tokens']:.3f}")
+        lines.append(f"  BF={correlation['bf_tokens']:.2f}, 95% CI={correlation['ci_tokens']}")
+        lines.append(f"- r(activation, anchor): {correlation['r_anchor']:.3f}")
+        lines.append(f"  BF={correlation['bf_anchor']:.2f}, 95% CI={correlation['ci_anchor']}")
+
     return "\n".join(lines)
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Offline grounding evaluation")
+    parser = argparse.ArgumentParser(description="Offline context anchoring evaluation")
     parser.add_argument("--sessions", type=int, default=5, help="Max sessions to evaluate")
     parser.add_argument("--since", type=float, default=24, help="Hours to look back")
     args = parser.parse_args()
@@ -398,7 +469,13 @@ async def main() -> None:
         push_scores(session_eval, sid)
         evals.append(session_eval)
 
-    report = format_report(evals)
+    # Salience correlation analysis (Claim 5)
+    all_traces = {s["session_id"]: s["traces"] for s in sessions}
+    correlation = analyze_salience_correlation(evals, all_traces)
+    if correlation:
+        print(f"  Salience correlation: {correlation['n_turns']} turns analyzed")
+
+    report = format_report(evals, correlation=correlation)
     print(report)
 
 
