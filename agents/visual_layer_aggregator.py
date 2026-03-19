@@ -59,7 +59,9 @@ from shared.episodic_memory import EpisodeBuilder, EpisodeStore
 from shared.stimmung import StimmungCollector, SystemStimmung
 from shared.telemetry import (
     hapax_interaction,
+    trace_api_poll,
     trace_episode_closed,
+    trace_phone_signals,
     trace_prediction_tick,
     trace_stimmung_update,
     trace_visual_tick,
@@ -729,11 +731,17 @@ class VisualLayerAggregator:
 
     async def _fetch_json(self, path: str) -> dict | list | None:
         """Fetch a cockpit API endpoint. Returns None on any error."""
+        t0 = time.monotonic()
         try:
             resp = await self._client.get(path)
+            latency_ms = (time.monotonic() - t0) * 1000
             if resp.status_code == 200:
+                trace_api_poll(path, latency_ms, success=True, status_code=200)
                 return resp.json()
+            trace_api_poll(path, latency_ms, success=False, status_code=resp.status_code)
         except Exception:
+            latency_ms = (time.monotonic() - t0) * 1000
+            trace_api_poll(path, latency_ms, success=False)
             log.debug("Failed to fetch %s", path, exc_info=True)
         return None
 
@@ -808,6 +816,13 @@ class VisualLayerAggregator:
 
             # Phone signals (Batch F)
             self._phone_signals = map_phone(data)
+            if self._phone_signals or data.get("phone_kde_connected"):
+                trace_phone_signals(
+                    signal_count=len(self._phone_signals),
+                    battery_pct=data.get("phone_battery_pct", 0),
+                    connected=data.get("phone_kde_connected", False),
+                    signals=[s.title for s in self._phone_signals],
+                )
 
             # Phone media → ambient moments
             if data.get("phone_media_playing"):
