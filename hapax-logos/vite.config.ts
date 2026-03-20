@@ -31,6 +31,16 @@ export default defineConfig({
     target: "safari13",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom", "react-router-dom"],
+          "vendor-recharts": ["recharts"],
+          "vendor-xyflow": ["@xyflow/react"],
+          "vendor-hls": ["hls.js"],
+        },
+      },
+    },
   },
   test: {
     environment: "jsdom",

@@ -3,6 +3,8 @@
  * Renders signal categories in positioned zones with severity coloring.
  */
 
+import { memo } from "react";
+
 interface SignalEntry {
   category: string;
   severity: number;
@@ -57,7 +59,7 @@ interface SignalZonesProps {
   opacities: Record<string, number>;
 }
 
-export function SignalZones({ signals, opacities }: SignalZonesProps) {
+export const SignalZones = memo(function SignalZones({ signals, opacities }: SignalZonesProps) {
   const allSignals = Object.values(signals).flat();
   if (allSignals.length === 0) return null;
 
@@ -109,4 +111,4 @@ export function SignalZones({ signals, opacities }: SignalZonesProps) {
       })}
     </div>
   );
-}
+});

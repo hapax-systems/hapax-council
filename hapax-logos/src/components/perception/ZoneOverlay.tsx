@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import type { SignalEntry } from "../../api/types";
 import { ZoneCard } from "./ZoneCard";
 import {
@@ -32,7 +33,7 @@ interface ZoneOverlayProps {
   active?: boolean;
 }
 
-export function ZoneOverlay({ category, signals, opacity, onClick, active }: ZoneOverlayProps) {
+export const ZoneOverlay = memo(function ZoneOverlay({ category, signals, opacity, onClick, active }: ZoneOverlayProps) {
   const zone = ZONE_LAYOUT[category];
   if (!zone) return null;
 
@@ -42,19 +43,21 @@ export function ZoneOverlay({ category, signals, opacity, onClick, active }: Zon
   const zoneBorder = CATEGORY_BORDER[category];
   const zoneColor = CATEGORY_COLORS[category];
 
+  const positionStyle = useMemo(() => ({
+    left: `${zone.x * 100}%`,
+    top: `${zone.y * 100}%`,
+    width: `${zone.w * 100}%`,
+    height: `${zone.h * 100}%`,
+    opacity: hasSignals ? Math.max(effectiveOpacity, 0.6) : 0.15,
+  }), [zone.x, zone.y, zone.w, zone.h, hasSignals, effectiveOpacity]);
+
   return (
     <div
       onClick={onClick}
       className={`absolute overflow-hidden rounded-md border-l-2 transition-all duration-500 ${zoneBorder} ${
         active ? "ring-1 ring-white/20" : ""
       } ${hasSignals ? "cursor-pointer" : ""}`}
-      style={{
-        left: `${zone.x * 100}%`,
-        top: `${zone.y * 100}%`,
-        width: `${zone.w * 100}%`,
-        height: `${zone.h * 100}%`,
-        opacity: hasSignals ? Math.max(effectiveOpacity, 0.6) : 0.15,
-      }}
+      style={positionStyle}
     >
       <div
         className={`flex h-full flex-col gap-0.5 rounded-r-md p-1.5 backdrop-blur-md ${
@@ -81,4 +84,4 @@ export function ZoneOverlay({ category, signals, opacity, onClick, active }: Zon
       </div>
     </div>
   );
-}
+});
