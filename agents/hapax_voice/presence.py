@@ -63,7 +63,7 @@ class PresenceDetector:
         self._operator_visible: bool = False
         self._guest_count: int = 0
         self._last_face_time: float = 0.0
-        self._face_decay_s: float = 30.0
+        self._face_decay_s: float = 20.0
         self._event_log: Any | None = None
         self._last_score: str = "likely_absent"
         self._latest_vad_confidence: float = 0.0

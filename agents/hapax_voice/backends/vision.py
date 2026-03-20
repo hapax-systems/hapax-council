@@ -20,6 +20,7 @@ import json
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -643,22 +644,16 @@ class VisionBackend:
     def _run_gaze_estimation(self, frame: np.ndarray) -> str:
         """Estimate gaze direction from SCRFD 5-point face landmarks.
 
-        Uses geometric analysis of the landmark constellation to estimate
-        head yaw and pitch. More robust than PnP for 5-point landmarks.
+        Reuses the face_detector's SCRFD instance to avoid duplicate model loading.
+        Falls back to its own instance only if face_detector is unavailable.
         """
         try:
-            from insightface.app import FaceAnalysis
+            # Reuse face_detector's SCRFD app (saves ~30MB VRAM)
+            app = self._face_detector._get_app()
+            if app is None:
+                return "unknown"
 
-            if not hasattr(self, "_gaze_app"):
-                self._gaze_app = FaceAnalysis(
-                    name="buffalo_sc",
-                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-                    allowed_modules=["detection"],
-                )
-                self._gaze_app.prepare(ctx_id=0, det_size=(320, 320))
-                log.info("SCRFD gaze estimator initialized")
-
-            faces = self._gaze_app.get(frame)
+            faces = app.get(frame)
             if not faces:
                 return "unknown"
 
@@ -748,6 +743,9 @@ class VisionBackend:
         "kitchen",
         "hallway",
         "workspace with equipment",
+        "person working at desk with multiple monitors",
+        "person on video call",
+        "dark room with colored LED lighting",
     ]
 
     def _run_scene_classification(self, frame: np.ndarray) -> str:
@@ -800,26 +798,22 @@ class VisionBackend:
     def _run_emotion_recognition(self, frame: np.ndarray) -> str:
         """Run HSEmotion on SCRFD face crops for emotion classification.
 
-        Uses InsightFace SCRFD to detect and crop faces, then HSEmotion-onnx
-        enet_b2_8 model for 8-class emotion classification.
+        Reuses the face_detector's SCRFD instance for face detection, then
+        runs HSEmotion-onnx enet_b2_8 for 8-class emotion classification.
         """
         try:
-            from insightface.app import FaceAnalysis
-
-            if not hasattr(self, "_emotion_face_app"):
-                self._emotion_face_app = FaceAnalysis(
-                    name="buffalo_sc",
-                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-                    allowed_modules=["detection"],
-                )
-                self._emotion_face_app.prepare(ctx_id=0, det_size=(320, 320))
-
+            if not hasattr(self, "_emotion_recognizer"):
                 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 
                 self._emotion_recognizer = HSEmotionRecognizer(model_name="enet_b2_8_best")
-                log.info("HSEmotion + SCRFD emotion pipeline initialized")
+                log.info("HSEmotion emotion pipeline initialized (reusing face_detector SCRFD)")
 
-            faces = self._emotion_face_app.get(frame)
+            # Reuse face_detector's SCRFD app (saves ~30MB VRAM)
+            app = self._face_detector._get_app()
+            if app is None:
+                return "neutral"
+
+            faces = app.get(frame)
             if not faces:
                 return "neutral"
 
@@ -843,7 +837,7 @@ class VisionBackend:
                 face_crop = np.clip(face_crop.astype(np.float32) * scale, 0, 255).astype(np.uint8)
             lab = cv2.cvtColor(face_crop, cv2.COLOR_BGR2LAB)
             if not hasattr(self, "_face_clahe"):
-                self._face_clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(4, 4))
+                self._face_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             lab[:, :, 0] = self._face_clahe.apply(lab[:, :, 0])
             face_crop = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
@@ -854,11 +848,20 @@ class VisionBackend:
             log.debug("Emotion recognition failed: %s", exc)
             return "neutral"
 
+    _IR_FLAG_PATH = Path.home() / ".cache" / "hapax" / "ir-active"
+
     def _estimate_lighting(self, frame: np.ndarray) -> tuple[float, str]:
         """Estimate ambient brightness and color temperature from frame histogram (CPU).
 
-        Returns (brightness 0.0-1.0, temperature "warm"/"neutral"/"cool").
+        Returns (brightness 0.0-1.0, temperature "warm"/"neutral"/"cool"/"ir").
+
+        When IR illumination is active (flag file exists), returns fixed values
+        to prevent downstream systems from being misled by IR-inflated brightness.
         """
+        # IR guard: if IR illumination is active, visible-light metrics are meaningless
+        if self._IR_FLAG_PATH.exists():
+            return 0.5, "ir"
+
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         brightness = float(hsv[:, :, 2].mean()) / 255.0
 
@@ -1162,73 +1165,37 @@ class VisionBackend:
             log.debug("Action recognition failed: %s", exc)
             return "unknown"
 
-    def _run_depth_estimation(
-        self,
+    @staticmethod
+    def _estimate_person_distance(
         frame: np.ndarray,
         person_boxes: list[list[float]],
     ) -> str:
-        """Run Depth Anything V2 Small to estimate nearest person distance (GPU, ~800MB).
+        """Estimate nearest person distance from bbox height ratio (CPU-only).
 
-        Only runs every ~30s on operator camera. Returns "close", "medium", "far", or "none".
+        Replaces Depth Anything V2 (~800MB VRAM) with a simple heuristic:
+        bbox_height / frame_height ratio maps to close/medium/far.
+
+        Returns "close", "medium", "far", or "none".
         """
         if not person_boxes:
             return "none"
 
-        try:
-            import torch
-            from transformers import pipeline
-
-            if not hasattr(self, "_depth_pipe"):
-                self._depth_pipe = pipeline(
-                    "depth-estimation",
-                    model="depth-anything/Depth-Anything-V2-Small-hf",
-                    device=0 if torch.cuda.is_available() else -1,
-                )
-                self._depth_tick = 0
-                log.info("Depth Anything V2 Small loaded")
-
-            # Only run every 10 ticks (~30s at 3s interval)
-            self._depth_tick = getattr(self, "_depth_tick", 0) + 1
-            if self._depth_tick % 10 != 1:
-                return getattr(self, "_last_depth", "none")
-
-            from PIL import Image
-
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(rgb)
-            result = self._depth_pipe(pil_img)
-            depth_map = np.array(result["depth"])
-
-            # Sample depth at person box centers
-            min_depth = float("inf")
-            h, w = depth_map.shape[:2]
-            frame_h, frame_w = frame.shape[:2]
-            for box in person_boxes:
-                cx = int((box[0] + box[2]) / 2 * w / frame_w)
-                cy = int((box[1] + box[3]) / 2 * h / frame_h)
-                cx = max(0, min(w - 1, cx))
-                cy = max(0, min(h - 1, cy))
-                d = float(depth_map[cy, cx])
-                min_depth = min(min_depth, d)
-
-            # Depth values are relative (higher = farther)
-            # Heuristic thresholds based on typical indoor scenes
-            max_val = float(depth_map.max()) if depth_map.max() > 0 else 1.0
-            normalized = min_depth / max_val
-
-            if normalized < 0.3:
-                result_str = "close"
-            elif normalized < 0.6:
-                result_str = "medium"
-            else:
-                result_str = "far"
-
-            self._last_depth = result_str
-            return result_str
-
-        except Exception as exc:
-            log.debug("Depth estimation failed: %s", exc)
+        frame_h = frame.shape[0]
+        if frame_h < 1:
             return "none"
+
+        max_ratio = 0.0
+        for box in person_boxes:
+            box_h = box[3] - box[1]
+            ratio = box_h / frame_h
+            max_ratio = max(max_ratio, ratio)
+
+        if max_ratio > 0.6:
+            return "close"
+        elif max_ratio > 0.3:
+            return "medium"
+        else:
+            return "far"
 
     def _inference_loop(self) -> None:
         """Background thread: round-robin cameras → YOLO inference → cache."""
@@ -1429,16 +1396,12 @@ class VisionBackend:
                                 len(all_classes),
                             )
 
-                    # Adaptive resolution per camera: C920 wide shots need higher
-                    # resolution to detect small objects (cables, knobs, connectors)
                     if role == "operator":
-                        # BRIO 1080p close-up — objects are large, standard resolution
-                        results = model.track(frame, persist=True, verbose=False, conf=0.10)
+                        # BRIO 1080p close-up — higher conf eliminates ghost detections
+                        results = model.track(frame, persist=True, verbose=False, conf=0.25)
                     else:
-                        # C920 720p wide shots — increase resolution for small objects
-                        results = model.track(
-                            frame, persist=True, verbose=False, conf=0.10, imgsz=1280
-                        )
+                        # C920 720p — default 640 imgsz (input is 720p, upscaling wastes cycles)
+                        results = model.track(frame, persist=True, verbose=False, conf=0.20)
 
                     objects: list[dict] = []
                     person_count = 0
@@ -1504,6 +1467,7 @@ class VisionBackend:
                             ):
                                 kpts = pose_results[0].keypoints.data[0].cpu().numpy()
                                 pose_summary = _estimate_pose(kpts)
+                                posture_from_yolo = self._posture_from_keypoints(kpts)
                         except Exception as exc:
                             log.debug("Pose estimation failed: %s", exc)
 
@@ -1536,16 +1500,13 @@ class VisionBackend:
                         threading.Thread(target=_bg_load_clip, daemon=True).start()
                         log.info("CLIP scene classifier loading in background thread")
 
-                    # Depth estimation (GPU, every ~30s on operator camera only)
+                    # Person distance from bbox heuristic (CPU-only, replaces Depth Anything V2)
                     nearest_person_distance: str | None = None
                     if role == "operator" and person_count > 0:
                         person_boxes = [o["box"] for o in objects if o["label"] == "person"]
-                        try:
-                            nearest_person_distance = self._run_depth_estimation(
-                                frame, person_boxes
-                            )
-                        except Exception as exc:
-                            log.debug("Depth estimation failed: %s", exc)
+                        nearest_person_distance = self._estimate_person_distance(
+                            frame, person_boxes
+                        )
 
                 finally:
                     self._vram_lock.release()
