@@ -8,7 +8,6 @@ into VoiceSessionState for the visual overlay.
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
 
 from agents.visual_layer_aggregator import map_voice_session
 from agents.visual_layer_state import VoiceSessionState
