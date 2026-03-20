@@ -97,7 +97,7 @@ inotify watches `profiles/`, `axioms/`, `rag-sources/`. 12 rules. Three-phase ex
 | Voice routing (salience + hysteresis + stimmung) | **Built** | 27 salience router tests |
 | System anatomy visualization | **Built** | TypeScript + Rust compile-clean |
 | Alignment tax ≤ 20% | **Measured** | Label ops: 0.3µs join, 0.1µs flow check |
-| Conversational continuity (claims 1-5) | **Baseline** | 7 sessions, Bayesian sequential testing |
+| Conversational continuity (claims 1-5) | **Phase B** | 10/20 intervention sessions, BF=2.48 (continue) |
 | Temporal classification (vision) | **Built** | MoViNet-A2 + CLIP ViT-B/32 + ByteTrack |
 
 ## Active research
@@ -116,15 +116,24 @@ success, reference accuracy, acceptance type, frustration detection,
 salience activation), trajectory analysis (within-session grounding
 slopes), and turn-pair coherence metrics.
 
-**Phase A (baseline)**: all continuity components disabled. 7 of 20
-target sessions collected. Code frozen during collection.
+**Phase A (baseline)**: 20 sessions collected, all components OFF.
+Baseline mean context_anchor_success: 0.320. Anchor trajectory
+negative (-0.241) — grounding declines within sessions without thread.
+
+**Phase B (intervention)**: stable_frame=true (conversation thread
+injected). 10 of 20 sessions collected. Phase B mean anchor: 0.367
+(+0.046 over baseline). Bayes Factor: 2.48 (anecdotal, continue
+collecting). Sustained high-anchor sequences (0.7-0.8) observed in
+substantive discussions — never seen in baseline. First positive
+within-session trajectory at session 3.
 
 **Measurement framework**: three score classes distinguish grounding-native
 metrics (structurally zero for stateless systems), retrieval-parity
 metrics (must match industry baselines), and failure-mode detectors
 (alert if the system regresses toward profile-retrieval patterns).
 
-Design documents and pre-registered hypotheses in `agents/hapax_voice/proofs/`.
+Design documents, pre-registered hypotheses, and session data in
+`agents/hapax_voice/proofs/`.
 
 ### Temporal classification (vision)
 
