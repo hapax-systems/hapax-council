@@ -249,12 +249,17 @@ class PipelineGovernor:
         explicitly triggered the session (wake word / hotkey), so they're
         present even if the camera can't see them (under desk, lights off, etc).
 
-        When Bayesian presence is available, uses presence_state directly
-        (hysteresis is handled by the presence engine). Falls back to
-        timer-based absence detection otherwise.
+        Bayesian Tier 1: uses continuous presence_probability when available.
+        Only withdraws when very confident absent (< 0.2). Falls back to
+        binary presence_state, then timer-based detection.
         """
         if state.in_voice_session:
             return False
+
+        # Bayesian Tier 1: continuous probability → graduated response
+        presence_prob = getattr(state, "presence_probability", None)
+        if presence_prob is not None:
+            return presence_prob < 0.2  # only withdraw when very confident absent
 
         # Bayesian path: presence engine handles hysteresis
         presence_state = getattr(state, "presence_state", None)

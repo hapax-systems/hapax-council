@@ -1631,6 +1631,44 @@ class VoiceDaemon:
                 delivery_threshold = 0.5
                 if sleep_b is not None:
                     delivery_threshold = 0.5 + 0.3 * (1.0 - sleep_b.value)
+
+                # Bayesian Tier 1: BOCPD transition windows lower threshold
+                # (transitions are natural speaking moments)
+                try:
+                    import json as _json
+
+                    _vls_path = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
+                    _vls = _json.loads(_vls_path.read_text())
+                    _change_points = _vls.get("recent_change_points", [])
+                    _now_ts = time.time()
+                    _flow_transition = any(
+                        cp.get("signal") == "flow_score" and _now_ts - cp.get("timestamp", 0) < 60.0
+                        for cp in _change_points
+                    )
+                    if _flow_transition:
+                        delivery_threshold -= 0.15
+                        log.debug(
+                            "BOCPD flow transition: threshold reduced to %.2f", delivery_threshold
+                        )
+
+                    # Bayesian Tier 1: presence probability gates delivery
+                    _presence_prob = _vls.get("presence_probability", None)
+                    if _presence_prob is None:
+                        # Read from perception state as fallback
+                        _presence_prob = (
+                            getattr(latest, "presence_probability", None) if latest else None
+                        )
+                    if _presence_prob is not None and _presence_prob < 0.5:
+                        log.debug(
+                            "Proactive delivery skipped: presence_probability %.2f < 0.5",
+                            _presence_prob,
+                        )
+                        continue
+                    if _presence_prob is not None:
+                        delivery_threshold += 0.1 * (1.0 - _presence_prob)
+                except (FileNotFoundError, _json.JSONDecodeError, OSError):
+                    pass  # visual layer state unavailable — proceed with base threshold
+
                 if latest is not None and latest.interruptibility_score < delivery_threshold:
                     log.debug(
                         "Proactive delivery deferred: interruptibility %.2f < %.2f",

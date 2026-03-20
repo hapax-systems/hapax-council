@@ -17,6 +17,7 @@ import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from agents.hapax_voice.config import LITELLM_BASE as _voice_litellm_base
 
@@ -120,12 +121,29 @@ _TIER_MAX_TOKENS: dict[str, int] = {
     "CAPABLE": 150,
 }
 _MAX_RESPONSE_TOKENS = 150
-_MAX_SPOKEN_WORDS = 35  # Hard cutoff: stop speaking after this many words.
-# 35 words ≈ 2 spoken sentences ≈ 10-12 seconds of speech. 25 was too
-# aggressive — model used 5-8 words on preamble leaving insufficient
-# content. 40 produced 15-18s monologues. 35 is the compromise.
+_MAX_SPOKEN_WORDS = 35  # Default cutoff (overridden by density-driven limit)
+
+# Bayesian Tier 1: density-driven word limits from visual layer display_density
+_DENSITY_WORD_LIMITS: dict[str, int] = {
+    "presenting": 15,  # meetings: absolute minimum
+    "focused": 20,  # deep work: brief
+    "ambient": 35,  # baseline: current value
+    "receptive": 50,  # between tasks: can elaborate
+}
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
+
+_VLS_PATH = "/dev/shm/hapax-compositor/visual-layer-state.json"
+
+
+def _density_word_limit() -> int:
+    """Read display density from visual layer state and return word limit."""
+    try:
+        vls = json.loads(Path(_VLS_PATH).read_text())
+        density = vls.get("display_density", "ambient")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        density = "ambient"
+    return _DENSITY_WORD_LIMITS.get(density, _MAX_SPOKEN_WORDS)
 
 
 def _stimmung_downgrade(model: str, tier: ModelTier) -> tuple[str, ModelTier]:
@@ -859,6 +877,7 @@ class ConversationPipeline:
             _t_first_audio = 0.0
             _first_clause_spoken = False
             _spoken_words = 0  # Track words sent to TTS for cutoff
+            _word_limit = _density_word_limit()  # Bayesian Tier 1: density-driven
 
             self.state = ConvState.SPEAKING
             # set_speaking(True) already called by process_utterance before bridge
@@ -984,18 +1003,22 @@ class ConversationPipeline:
                 if self.buffer and self.buffer.barge_in_detected:
                     break
 
-                # Word cutoff: stop vocalizing after _MAX_SPOKEN_WORDS.
+                # Word cutoff: stop vocalizing after density-driven word limit.
                 # The LLM continues generating (full_text accumulates for
                 # context), but we stop sending to TTS.
                 _spoken_words = len(full_text.split()) - len(accumulated.split())
-                if _spoken_words >= _MAX_SPOKEN_WORDS:
-                    log.info("Word cutoff at %d words — stopping speech", _spoken_words)
+                if _spoken_words >= _word_limit:
+                    log.info(
+                        "Word cutoff at %d words (limit=%d) — stopping speech",
+                        _spoken_words,
+                        _word_limit,
+                    )
                     accumulated = ""  # discard unspoken remainder
                     break
 
             # Flush remaining text (skip if barge-in or word cutoff)
             if accumulated.strip() and not (self.buffer and self.buffer.barge_in_detected):
-                if _spoken_words < _MAX_SPOKEN_WORDS:
+                if _spoken_words < _word_limit:
                     await self._speak_sentence(accumulated.strip())
 
             # Log full response for debugging truncation

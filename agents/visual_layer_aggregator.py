@@ -1659,6 +1659,12 @@ class VisualLayerAggregator:
         # Classification detection overlay
         state.classification_detections = self._classification_detections
 
+        # BOCPD change points for voice pipeline (Bayesian Tier 1)
+        now_ts = time.time()
+        state.recent_change_points = [
+            cp for cp in self._last_change_points if now_ts - cp.get("timestamp", 0) < 120.0
+        ]
+
         # Activity label — what Hapax thinks operator is doing
         activity_label, activity_detail = self._infer_activity()
         state.activity_label = activity_label
