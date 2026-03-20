@@ -1258,7 +1258,16 @@ class StudioCompositor:
 
         mux_sink.connect("format-location-full", lambda s, fid, _sample: _format_location(s, fid))
 
-        elements = [queue, valve, rec_upload, rec_cuda_convert, nv12_caps, encoder, parser, mux_sink]
+        elements = [
+            queue,
+            valve,
+            rec_upload,
+            rec_cuda_convert,
+            nv12_caps,
+            encoder,
+            parser,
+            mux_sink,
+        ]
         for el in elements:
             pipeline.add(el)
 
