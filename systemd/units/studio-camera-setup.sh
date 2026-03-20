@@ -48,7 +48,7 @@ fi
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0
 if [ -e "$DEV" ]; then
   $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
-  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
+  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0 2>/dev/null || true
   echo "brio-room: configured (sharpness=128, exposure=333)"
 fi
 
@@ -56,6 +56,6 @@ fi
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0
 if [ -e "$DEV" ]; then
   $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
-  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
+  $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0 2>/dev/null || true
   echo "brio-aux: configured (sharpness=128, exposure=333)"
 fi
