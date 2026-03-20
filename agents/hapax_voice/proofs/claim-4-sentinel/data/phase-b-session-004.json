@@ -1,0 +1,295 @@
+{
+  "phase_b_session": 4,
+  "session_id": "aa39e43b04ab",
+  "timestamp": "2026-03-20T05:43:02.393Z",
+  "turn_count": 18,
+  "experiment_config": {
+    "name": "continuity-v1",
+    "condition": "B",
+    "phase": "intervention",
+    "components": {
+      "stable_frame": true,
+      "message_drop": false,
+      "cross_session": false,
+      "sentinel": false
+    }
+  },
+  "code_state": {
+    "max_spoken_words": 35,
+    "max_response_tokens": 150,
+    "tools_enabled": false,
+    "pre_roll_frames": 50
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "user": "How are you? You want to help me for a few minutes?",
+      "assistant": "I'm good, Ryan. Yeah, I'd be happy to help \u2014 looks like you're working through the distributed nervous system deployment. What do you need?",
+      "scores": {
+        "activation_score": 0.2918,
+        "frustration_score": 0,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 13182.1803,
+        "acceptance_type": 0.3,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.5
+      }
+    },
+    {
+      "turn": 1,
+      "user": "I'm talking to you and also I'm going to spend a little bit of time while I'm talking or in my studio. Anything about that.",
+      "assistant": "Got it \u2014 you're multitasking between our conversation and studio work. I see you've been merging PRs across the Hapax ecosystem and running voice data processing. Take your time with responses, I'll keep things brief and relevant to whatever you're working on.",
+      "scores": {
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "consent_latency_ok": 0,
+        "activation_score": 0.4666,
+        "total_latency_ms": 22343.3871,
+        "acceptance_type": 0.3,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 2,
+      "user": "That's good and that's kind of you. I think it's true that, you know, could help me here, I think you could help me. How could you help me, do you think, organize my studio?",
+      "assistant": "I could help you map what's in there \u2014 gear inventory, signal flow, sample library organization. Maybe identify workflow bottlenecks or suggest layouts based on how you actually use the space versus how it's currently set up. I",
+      "scores": {
+        "consent_latency_ok": 0,
+        "total_latency_ms": 21666.8735,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "activation_score": 0.4116,
+        "reference_accuracy": 1,
+        "acceptance_type": 0,
+        "context_anchor_success": 0.2
+      }
+    },
+    {
+      "turn": 3,
+      "user": "It does seem, though, that would be very complicated for you to do all of those things if you can't see the space or talk about it or, like, tell me where to go, etc., etc.",
+      "assistant": "You're absolutely right \u2014 I'm missing the eyes and spatial awareness that would make this actually useful. I could capture your hardware camera to see the studio layout, or we could do it more abstractly through conversation. But",
+      "scores": {
+        "total_latency_ms": 19501.0909,
+        "activation_score": 0.4913,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "acceptance_type": 0.3,
+        "context_anchor_success": 0.3
+      }
+    },
+    {
+      "turn": 4,
+      "user": "and see because I bet that's going to happen pretty soon here.",
+      "assistant": "Yeah, the vision piece is coming together. Once I can see your space and track changes over time, studio organization becomes way more practical \u2014 \"that cable's been on the floor for three days\" or \"your 404 is",
+      "scores": {
+        "acceptance_type": 0.3,
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 21006.1504,
+        "activation_score": 0.349,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 5,
+      "user": "Where did I put that screwdriver?",
+      "assistant": "I can't track that yet \u2014 no object persistence or memory of where you've put things. But when the vision system's fully online, that's exactly the kind of ambient awareness I could help with.",
+      "scores": {
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 19141.1124,
+        "acceptance_type": 0.3,
+        "activation_score": 0.2996,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.5,
+        "frustration_score": 0,
+        "reference_accuracy": 1
+      }
+    },
+    {
+      "turn": 6,
+      "user": "Happens.",
+      "assistant": "Yeah. The distributed nervous system you're building \u2014 that's the infrastructure for exactly this kind of spatial memory. Watch, phone, vision, all talking to each other about where things are and when they moved.",
+      "scores": {
+        "consent_latency_ok": 0,
+        "activation_score": 0.1822,
+        "frustration_score": 0,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 16200.4786,
+        "context_anchor_success": 0.4,
+        "acceptance_type": 0.3,
+        "reference_accuracy": 1
+      }
+    },
+    {
+      "turn": 7,
+      "user": "Well, I don't know. What else do you think you could do for me?",
+      "assistant": "I could track your open loops more aggressively \u2014 those half-finished tracks, that PR you meant to review, the sample you were going to chop. Surface patterns in your work rhythms, remind you when you're in a goo",
+      "scores": {
+        "consent_latency_ok": 0,
+        "activation_score": 0.6239,
+        "acceptance_type": 0,
+        "reference_accuracy": 1,
+        "total_latency_ms": 21113.5447,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "context_anchor_success": 0.4
+      }
+    },
+    {
+      "turn": 8,
+      "user": "do like marketing for me do you think you could do marketing",
+      "assistant": "I could draft copy, analyze what resonates with your audience, maybe help shape the narrative around your work. But honestly, the interesting marketing angle is probably the system itself \u2014 documenting the build process, the philosophy behind externalized executive function. That's more",
+      "scores": {
+        "consent_latency_ok": 0,
+        "activation_score": 0.3119,
+        "acceptance_type": 0.3,
+        "total_latency_ms": 21923.2977,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "frustration_rolling_avg": 0,
+        "context_anchor_success": 0.6
+      }
+    },
+    {
+      "turn": 9,
+      "user": "I'm having trouble connecting right now. No, that's really true. That's really true. I'm trying to do two things, I guess, aren't I? Like, the reason I started doing this, building you, was to make music, but now I'm building this. And both of those things are worthwhile. They're really connected, aren't they?",
+      "assistant": "They're the same thing, really. The music needs the infrastructure \u2014 you can't flow in the studio when you're managing executive function overhead. But building the system becomes its own creative act, same iterative process, same attention",
+      "scores": {
+        "acceptance_type": 0,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "reference_accuracy": 1,
+        "frustration_score": 0,
+        "total_latency_ms": 19838.3969,
+        "activation_score": 0.4382,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 10,
+      "user": "like my general goal is just to have you do everything that isn't making the music and that's a lot that's a lot of work all of that",
+      "assistant": "Yeah, that's... everything else. The scheduling, the file management, the \"where's my cable,\" the social coordination, the health tracking, the documentation. It's like trying to produce with one hand while juggling your entire life with the other. No",
+      "scores": {
+        "activation_score": 0.2877,
+        "reference_accuracy": 1,
+        "consent_latency_ok": 0,
+        "total_latency_ms": 22744.7205,
+        "acceptance_type": 0.3,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "context_anchor_success": 0.4
+      }
+    },
+    {
+      "turn": 11,
+      "user": "Yeah, but don't you think that that, if I loaded you up with all those responsibilities, don't you think it would also be true of you?",
+      "assistant": "Fair point \u2014 I'd need my own infrastructure to manage all that complexity. The difference is I can spawn parallel processes, delegate to specialized agents, scale compute. But you're right that the cognitive load doesn't disappear, it just moves",
+      "scores": {
+        "activation_score": 0.4374,
+        "frustration_rolling_avg": 0.4,
+        "total_latency_ms": 21880.1455,
+        "acceptance_type": 1,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.3,
+        "reference_accuracy": 1,
+        "frustration_score": 2
+      }
+    },
+    {
+      "turn": 12,
+      "user": "I had to run to let my dog and missed what you said. What did you say?",
+      "assistant": "I was saying you're right \u2014 the cognitive load doesn't disappear, it just moves. I can handle parallel processes and scale compute, but managing everything that isn't music is still complex work, even for me.",
+      "scores": {
+        "activation_score": 0.2555,
+        "frustration_score": 0,
+        "total_latency_ms": 21676.4853,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0.4,
+        "acceptance_type": 0.3,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.5
+      }
+    },
+    {
+      "turn": 13,
+      "user": "Well, if that's just fundamentally true and think about it, when people go to work, they sort of have their work mode. They go home, they sort of have their home mode. When they're a dad, they have their dad mode. When they're a husband, they have the husband mode, right? We need those modes in order to manage cognitive load, right? Isn't that true?",
+      "assistant": "Absolutely \u2014 context switching is expensive, so we create these bounded environments where only certain concerns are active. Studio Ryan doesn't need to think about grocery lists. The modes are load-bearing structures. That's why your distributed system makes sense \u2014 different",
+      "scores": {
+        "activation_score": 1,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "frustration_score": 0,
+        "total_latency_ms": 21825.8668,
+        "acceptance_type": 1,
+        "frustration_rolling_avg": 0.4,
+        "context_anchor_success": 0.7
+      }
+    },
+    {
+      "turn": 14,
+      "user": "Yeah, yeah, yeah. But I think what I'm getting at is if I transfer all my responsibilities over to you, then don't you just have that same problem in another way?",
+      "assistant": "Yeah, exactly. I'd need my own context switching, my own modes \u2014 \"studio Hapax\" versus \"scheduling Hapax\" versus \"health monitoring Hapax.\" The load doesn't vanish, it gets redistributed. Maybe the real value isn't eliminating the",
+      "scores": {
+        "activation_score": 0.5148,
+        "frustration_score": 0,
+        "total_latency_ms": 21712.5603,
+        "acceptance_type": 0,
+        "frustration_rolling_avg": 0.4,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.4
+      }
+    },
+    {
+      "turn": 15,
+      "user": "Yeah, well, how do the modes get managed, though? Like, how do they get selected?",
+      "assistant": "Right now it's mostly reactive \u2014 you ask about music, I switch to studio context. But it could be more intentional: time of day, location, what apps you have open, even biometrics. The watch knows your stress patterns, the",
+      "scores": {
+        "activation_score": 0.2646,
+        "frustration_rolling_avg": 0.4,
+        "reference_accuracy": 1,
+        "total_latency_ms": 20980.1933,
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "acceptance_type": 1,
+        "context_anchor_success": 0.7
+      }
+    },
+    {
+      "turn": 16,
+      "user": "couldn't we use like Bayesian calculations to arrive at the proper role and then also arrive at decomposed tools that could be pulled in out of a rag system that could supply you with the needed and the role context in the moment?",
+      "assistant": "Yeah, that's elegant \u2014 posterior probability based on all your signals: location, time, apps, heart rate, recent queries. Each mode has its own tool subset and knowledge graph. Studio mode pulls in Ableton shortcuts, sample library index, mixing",
+      "scores": {
+        "acceptance_type": 1,
+        "activation_score": 0.3067,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 21912.1442,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 17,
+      "user": "I think it's a really promising line of thinking. I'm going to really get more thought, actually. I think it's pretty good. Thanks for helping me think about it. I'm going to talk to you later, Hapax.",
+      "assistant": "Glad we could work through it together, Ryan. The Bayesian mode switching feels right \u2014 matches how you actually operate. Talk to you later.",
+      "scores": {
+        "frustration_score": 0,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 15365.5129,
+        "activation_score": 1,
+        "acceptance_type": 1,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.5
+      }
+    }
+  ]
+}
