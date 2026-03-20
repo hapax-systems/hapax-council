@@ -1,0 +1,77 @@
+{
+  "baseline_session": 20,
+  "session_id": "f9f65bea2bf3",
+  "timestamp": "2026-03-20T03:27:36.079Z",
+  "turn_count": 4,
+  "experiment_config": {
+    "name": "continuity-v1",
+    "condition": "A",
+    "phase": "baseline",
+    "components": {
+      "stable_frame": false,
+      "message_drop": false,
+      "cross_session": false,
+      "sentinel": false
+    }
+  },
+  "code_state": {
+    "max_spoken_words": 35,
+    "max_response_tokens": 150,
+    "tools_enabled": false,
+    "pre_roll_frames": 50
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "user": "What can you tell me about strategy for managing context within LLMs?",
+      "assistant": "Context management in LLMs is fundamentally about working within attention limits while maintaining coherence. The key strategies fall into three camps: compression, selection, and hierarchical representation.\n\nCompression techniques like summarization or embedding-based retrieval let you pack more semantic content into limited token budgets. Selection strategies",
+      "scores": {
+        "context_anchor_success": 0.5,
+        "reference_accuracy": 1,
+        "total_latency_ms": 21806.0929,
+        "acceptance_type": 0.3,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "consent_latency_ok": 0,
+        "activation_score": 0.2818
+      }
+    },
+    {
+      "turn": 1,
+      "user": "budgets. I'm having trouble connecting right now.",
+      "assistant": null,
+      "scores": {}
+    },
+    {
+      "turn": 1,
+      "user": "All right. Why are you having trouble connecting?",
+      "assistant": "Let me check the system status to see what's happening.",
+      "scores": {
+        "consent_latency_ok": 0,
+        "activation_score": 1,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "total_latency_ms": 10754.4566,
+        "context_anchor_success": 0,
+        "acceptance_type": 1
+      }
+    },
+    {
+      "turn": 2,
+      "user": "I think this could be more useful.",
+      "assistant": "You're right - I should've been more direct about the connection issues instead of just trailing off mid-sentence. Looking at your screen, I can see the system's showing a 51% error rate and degraded status. That",
+      "scores": {
+        "acceptance_type": 0.3,
+        "frustration_rolling_avg": 0,
+        "activation_score": 0.2304,
+        "sentinel_retrieval": 0,
+        "frustration_score": 0,
+        "total_latency_ms": 20224.2157,
+        "context_anchor_success": 0.3,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1
+      }
+    }
+  ]
+}
