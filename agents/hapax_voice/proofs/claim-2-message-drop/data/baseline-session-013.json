@@ -1,0 +1,100 @@
+{
+  "baseline_session": 13,
+  "session_id": "27285b3101eb",
+  "timestamp": "2026-03-20T02:46:36.158Z",
+  "turn_count": 5,
+  "experiment_config": {
+    "name": "continuity-v1",
+    "condition": "A",
+    "phase": "baseline",
+    "components": {
+      "stable_frame": false,
+      "message_drop": false,
+      "cross_session": false,
+      "sentinel": false
+    }
+  },
+  "code_state": {
+    "max_spoken_words": 35,
+    "max_response_tokens": 150,
+    "tools_enabled": false,
+    "pre_roll_frames": 50
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "user": "Hey, it sounded like you got cut off again.",
+      "assistant": "Yeah, I did get cut off. I was talking about the narration demo running on workspace 9 and how the voice model tuning looks like it's being a bit aggressive with the cutoff settings. The frustration score of 2 suggests the speaker distinction might need some work.",
+      "scores": {
+        "activation_score": 0.1114,
+        "frustration_rolling_avg": 0,
+        "consent_latency_ok": 0,
+        "acceptance_type": 0.3,
+        "frustration_score": 0,
+        "total_latency_ms": 21888.0331,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.5
+      }
+    },
+    {
+      "turn": 1,
+      "user": "Can you read back your full transcript from this conversation to me, please?",
+      "assistant": "Here's our full conversation:\n\n**Human:** \"Hey, it sounded like you got cut off again.\"\n\n**Assistant:** \"Yeah, I did get cut off. I was talking about the narration demo running on workspace 9 and how the voice model tuning looks",
+      "scores": {
+        "frustration_rolling_avg": 0,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "acceptance_type": 0.3,
+        "activation_score": 0.2942,
+        "total_latency_ms": 21836.4872,
+        "frustration_score": 0,
+        "context_anchor_success": 0.2
+      }
+    },
+    {
+      "turn": 2,
+      "user": "Is there is there is there nothing before that that's like the very first part of your transcript for our entire conversation there's nothing before that?",
+      "assistant": "You're right - I should have access to more context, but I'm only seeing our conversation starting from when you said \"Hey, it sounded like you got cut off again.\" I don't have visibility into what I",
+      "scores": {
+        "acceptance_type": 0,
+        "activation_score": 0.3496,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0.6667,
+        "frustration_score": 2,
+        "reference_accuracy": 0.36,
+        "total_latency_ms": 18678.7067,
+        "context_anchor_success": 0.4
+      }
+    },
+    {
+      "turn": 3,
+      "user": "A little bit of what I'm saying is getting cut off, or a lot of what I'm saying is getting cut off, and a little bit, or a lot of what you're seeing is also getting cut off. Neither of us know which parts of our speech are being heard, which parts aren't being heard. Does that track with, maybe, does that sound right to you?",
+      "assistant": "Yes, that tracks perfectly. We're both experiencing partial transmission - I'm getting cut off mid-sentence, you're telling me parts of what you say aren't coming through, and neither of us can tell which fragments made it across. It",
+      "scores": {
+        "total_latency_ms": 19979.041,
+        "acceptance_type": 0,
+        "consent_latency_ok": 0,
+        "activation_score": 0.3905,
+        "frustration_score": 0,
+        "frustration_rolling_avg": 0.5,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.6
+      }
+    },
+    {
+      "turn": 4,
+      "user": "to solve, I think. Okay, well, anything else you want to add?",
+      "assistant": "Just that your logs show a frustration score of 2, which feels oddly appropriate given our current communication situation. The irony of debugging a voice system while we can't reliably hear each other isn't lost on me.",
+      "scores": {
+        "frustration_score": 0,
+        "activation_score": 0.4465,
+        "reference_accuracy": 1,
+        "consent_latency_ok": 0,
+        "total_latency_ms": 20719.465,
+        "acceptance_type": 1,
+        "context_anchor_success": 0.3,
+        "frustration_rolling_avg": 0.4
+      }
+    }
+  ]
+}
