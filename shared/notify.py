@@ -35,6 +35,101 @@ from urllib.request import Request, urlopen
 
 _log = logging.getLogger(__name__)
 
+# ── Watershed event emission ────────────────────────────────────────────────
+# When logos is running, notifications also appear as ephemeral ripples in the
+# watershed region. Routine events suppress ntfy/desktop when logos is active.
+
+_WATERSHED_FILE = Path("/dev/shm/hapax-compositor/watershed-events.json")
+_VL_STATE_FILE = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
+
+# ntfy tag → (signal category, base severity, ttl_s)
+_TAG_ROUTING: dict[str, tuple[str, float, float]] = {
+    # Sync completions — routine, short ripple
+    "git": ("system_state", 0.15, 30.0),
+    "robot": ("system_state", 0.15, 30.0),
+    "chrome": ("system_state", 0.15, 30.0),
+    "obsidian": ("system_state", 0.15, 30.0),
+    "cloud": ("system_state", 0.15, 30.0),
+    "mail": ("system_state", 0.15, 30.0),
+    "calendar": ("system_state", 0.15, 30.0),
+    "langfuse": ("system_state", 0.15, 30.0),
+    # Media processing
+    "microphone": ("ambient_sensor", 0.20, 30.0),
+    "movie_camera": ("ambient_sensor", 0.20, 30.0),
+    "link": ("ambient_sensor", 0.20, 30.0),
+    # Actionable content
+    "clipboard": ("context_time", 0.35, 60.0),
+    "books": ("context_time", 0.35, 60.0),
+    "telescope": ("context_time", 0.35, 60.0),
+    # Maintenance
+    "broom": ("system_state", 0.25, 45.0),
+    # Governance
+    "warning": ("governance", 0.45, 60.0),
+    "gear": ("governance", 0.30, 45.0),
+    # Critical
+    "skull": ("health_infra", 0.90, 120.0),
+    "rotating_light": ("health_infra", 0.90, 120.0),
+    "white_check_mark": ("health_infra", 0.15, 30.0),
+    # Consent
+    "bust_in_silhouette": ("governance", 0.85, 120.0),
+}
+
+
+def _logos_is_active() -> bool:
+    """Check if logos visual layer is running (state file fresh < 10s)."""
+    try:
+        stat = _VL_STATE_FILE.stat()
+        return (time.time() - stat.st_mtime) < 10.0
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _emit_watershed_event(
+    title: str,
+    message: str,
+    tags: list[str] | None,
+    priority: str,
+) -> None:
+    """Write a watershed event for the visual layer aggregator to pick up."""
+    category = "system_state"
+    severity = 0.20
+    ttl = 30.0
+
+    if tags:
+        for tag in tags:
+            if tag in _TAG_ROUTING:
+                category, severity, ttl = _TAG_ROUTING[tag]
+                break
+
+    # Override severity for high/urgent priorities
+    if priority in ("high", "urgent"):
+        severity = max(severity, 0.70)
+        ttl = max(ttl, 60.0)
+
+    event = {
+        "category": category,
+        "severity": severity,
+        "title": title,
+        "detail": message[:200] if message else "",
+        "emitted_at": time.time(),
+        "ttl_s": ttl,
+    }
+
+    try:
+        events: list[dict] = []
+        if _WATERSHED_FILE.exists():
+            events = _json.loads(_WATERSHED_FILE.read_text())
+
+        events.append(event)
+        now = time.time()
+        events = [e for e in events if now - e.get("emitted_at", 0) < e.get("ttl_s", 30)]
+        events = events[-20:]
+
+        _WATERSHED_FILE.write_text(_json.dumps(events))
+    except Exception:
+        _log.debug("Failed to write watershed event", exc_info=True)
+
+
 # ── Deduplication ────────────────────────────────────────────────────────────
 # Suppress identical notifications within a cooldown window.
 # State is stored in a small JSON file keyed by hash(title+message).
@@ -125,6 +220,16 @@ def send_notification(
         _log.debug("Suppressed duplicate notification: %s", title)
         return True  # Pretend delivered — caller shouldn't retry
 
+    # Emit watershed event (always, when logos might be running)
+    _emit_watershed_event(title, message, tags, priority)
+
+    # When logos is active and operator is present, suppress ntfy/desktop
+    # for routine notifications (severity < 0.4). The visual layer handles it.
+    logos_active = _logos_is_active()
+    if logos_active and priority in ("min", "low", "default"):
+        _log.debug("Logos active, watershed-only for routine: %s", title)
+        return True
+
     delivered = False
 
     # Try ntfy first
@@ -135,17 +240,18 @@ def send_notification(
     except Exception as exc:
         _log.debug("ntfy failed: %s", exc)
 
-    # Always also send desktop notification (may not be visible if no display)
-    try:
-        if _send_desktop(title, message, priority=priority):
-            delivered = True
-    except Exception as exc:
-        _log.debug("notify-send failed: %s", exc)
+    # Desktop notification (skip if logos is handling it visually)
+    if not logos_active:
+        try:
+            if _send_desktop(title, message, priority=priority):
+                delivered = True
+        except Exception as exc:
+            _log.debug("notify-send failed: %s", exc)
 
-    if not delivered:
+    if not delivered and not logos_active:
         _log.warning("All notification channels failed for: %s", title)
 
-    return delivered
+    return delivered or logos_active
 
 
 def send_webhook(

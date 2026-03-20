@@ -480,8 +480,20 @@ export interface VisualLayerState {
   activity_label?: string;
   activity_detail?: string;
   display_density?: string;
+  watershed_events?: WatershedEvent[];
   timestamp: number;
   aggregator?: string;
+}
+
+// --- Watershed Events ---
+
+export interface WatershedEvent {
+  category: string;
+  severity: number;
+  title: string;
+  detail: string;
+  emitted_at: number;
+  ttl_s: number;
 }
 
 // --- Classification Detection ---
