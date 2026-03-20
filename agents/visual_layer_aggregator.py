@@ -54,6 +54,7 @@ from agents.visual_layer_state import (
     TemporalContext,
     VisualLayerState,
     VoiceSessionState,
+    WatershedEvent,
 )
 from shared.active_correction import CorrectionSeeker
 from shared.apperception_tick import ApperceptionTick
@@ -81,6 +82,7 @@ STIMMUNG_DIR = Path("/dev/shm/hapax-stimmung")
 STIMMUNG_FILE = STIMMUNG_DIR / "state.json"
 TEMPORAL_DIR = Path("/dev/shm/hapax-temporal")
 TEMPORAL_FILE = TEMPORAL_DIR / "bands.json"
+WATERSHED_FILE = OUTPUT_DIR / "watershed-events.json"
 
 # ── Stimmung data source paths ─────────────────────────────────────────────
 
@@ -1235,6 +1237,32 @@ class VisualLayerAggregator:
         except OSError:
             log.debug("Failed to write stimmung state", exc_info=True)
 
+    def _read_watershed_events(self) -> list[WatershedEvent]:
+        """Read and prune watershed events from shared file."""
+        try:
+            if not WATERSHED_FILE.exists():
+                return []
+            raw = json.loads(WATERSHED_FILE.read_text())
+            now = time.time()
+            live: list[WatershedEvent] = []
+            for e in raw:
+                age = now - e.get("emitted_at", 0)
+                ttl = e.get("ttl_s", 30.0)
+                if age < ttl:
+                    live.append(
+                        WatershedEvent(
+                            category=e.get("category", "system_state"),
+                            severity=e.get("severity", 0.2),
+                            title=e.get("title", ""),
+                            detail=e.get("detail", ""),
+                            emitted_at=e.get("emitted_at", now),
+                            ttl_s=ttl,
+                        )
+                    )
+            return live[-10:]  # max 10 visible
+        except (json.JSONDecodeError, OSError, KeyError):
+            return []
+
     def _write_temporal_bands(self) -> None:
         """Compute temporal bands from perception ring and write to shm.
 
@@ -1811,6 +1839,9 @@ class VisualLayerAggregator:
                 "ambient_modulation",
                 metadata={"stance": stimmung_stance},
             )
+
+        # Watershed events — ephemeral ripples from send_notification()
+        state.watershed_events = self._read_watershed_events()
 
         # Atomic write
         try:

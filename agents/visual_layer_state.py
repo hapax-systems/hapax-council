@@ -85,6 +85,22 @@ class SignalEntry(BaseModel, frozen=True):
     source_id: str = ""
 
 
+# ── Watershed Events ────────────────────────────────────────────────────────
+# Ephemeral ripples — notifications that arrive, are acknowledged, and dissolve.
+# Unlike signals (persistent state), events have a TTL and decay naturally.
+
+
+class WatershedEvent(BaseModel, frozen=True):
+    """A transient event rendered as a ripple in the watershed region."""
+
+    category: SignalCategory
+    severity: float  # 0.0 (routine) to 1.0 (critical)
+    title: str
+    detail: str = ""
+    emitted_at: float  # time.time() when emitted
+    ttl_s: float = 30.0  # how long the ripple persists
+
+
 # ── Ambient Parameters ───────────────────────────────────────────────────────
 
 
@@ -285,6 +301,8 @@ class VisualLayerState(BaseModel):
     classification_directives: dict[str, str] = Field(default_factory=dict)
     # BOCPD change points for voice pipeline (Bayesian Tier 1)
     recent_change_points: list[dict] = Field(default_factory=list)
+    # Watershed events — ephemeral notification ripples
+    watershed_events: list[WatershedEvent] = Field(default_factory=list)
     # Corpora next: environmental color influence
     environmental_color: EnvironmentalColor = Field(default_factory=EnvironmentalColor)
     # Corpora next: transition choreography
