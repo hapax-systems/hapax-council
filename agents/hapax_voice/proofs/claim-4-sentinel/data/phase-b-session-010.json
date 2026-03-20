@@ -1,0 +1,301 @@
+{
+  "phase_b_session": 10,
+  "session_id": "2e8b1735cece",
+  "timestamp": "2026-03-20T06:45:49.754Z",
+  "turn_count": 19,
+  "experiment_config": {
+    "name": "continuity-v1",
+    "condition": "B",
+    "phase": "intervention",
+    "components": {
+      "stable_frame": true,
+      "message_drop": false,
+      "cross_session": false,
+      "sentinel": false
+    }
+  },
+  "code_state": {
+    "max_spoken_words": 35,
+    "max_response_tokens": 150,
+    "tools_enabled": false,
+    "pre_roll_frames": 50
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "user": "Back for session 10.",
+      "assistant": "Welcome back, Ryan. I see you've got the distributed nervous system builds ready and you're working through those Phase B session logs. What's the focus for this session?",
+      "scores": {
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "reference_accuracy": 1,
+        "total_latency_ms": 16528.3679,
+        "acceptance_type": 0.3,
+        "activation_score": 0.0779,
+        "frustration_score": 0,
+        "context_anchor_success": 0.5
+      }
+    },
+    {
+      "turn": 1,
+      "user": "about Herserlian phenomenology.",
+      "assistant": "Husserlian phenomenology \u2014 the whole bracketing of natural attitude, getting to the things themselves. Are you thinking about this in relation to your ambient intelligence work, or is this more about the consciousness modeling side of things?",
+      "scores": {
+        "activation_score": 0.0329,
+        "frustration_rolling_avg": 0,
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "total_latency_ms": 19515.0693,
+        "acceptance_type": 0,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 2,
+      "user": "just mentioned are very intimately connected and intertwined in the haypack system",
+      "assistant": "Right, that makes sense \u2014 Husserl's epoch\u00e9 as a methodological approach to building systems that can observe without imposing predetermined categories. The Hapax architecture seems to embody that bracketing in how it captures experience without immediately categorizing or judging it. Is",
+      "scores": {
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "acceptance_type": 0.3,
+        "activation_score": 0.3302,
+        "consent_latency_ok": 0,
+        "total_latency_ms": 22454.0764,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 3,
+      "user": "trouble connecting right now.",
+      "assistant": null,
+      "scores": {}
+    },
+    {
+      "turn": 3,
+      "user": "Why do you think that that has been an under-served line of research?",
+      "assistant": "I think it's because phenomenology demands a kind of methodological patience that doesn't align well with how AI research gets funded and published. Building systems that genuinely bracket assumptions means you can't just optimize for benchmarks \u2014",
+      "scores": {
+        "reference_accuracy": 1,
+        "acceptance_type": 0.3,
+        "activation_score": 1,
+        "total_latency_ms": 21161.025,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.4
+      }
+    },
+    {
+      "turn": 4,
+      "user": "like don't we have behavioral benchmarks in other",
+      "assistant": "We do \u2014 psychology has reaction times, neuroscience has neural correlates, even consciousness research has things like the mirror test. But phenomenology resists operationalization by design. You can't benchmark the epoch\u00e9 without violating it. The moment you measure",
+      "scores": {
+        "context_anchor_success": 0.2,
+        "acceptance_type": 0.3,
+        "frustration_score": 0,
+        "total_latency_ms": 21512.7868,
+        "activation_score": 0.1895,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "reference_accuracy": 1
+      }
+    },
+    {
+      "turn": 5,
+      "user": "behavioral",
+      "assistant": "Right, behavioral economics has all those cognitive bias tests, prospect theory experiments. But those still assume a particular ontology of decision-making. Phenomenology would ask whether those behaviors even carve nature at its joints, or if we're just measuring artifacts of our measurement apparatus. The bench",
+      "scores": {
+        "reference_accuracy": 1,
+        "acceptance_type": 0.3,
+        "consent_latency_ok": 0,
+        "total_latency_ms": 21596.7176,
+        "frustration_score": 0,
+        "activation_score": 0.1797,
+        "frustration_rolling_avg": 0,
+        "context_anchor_success": 0.3
+      }
+    },
+    {
+      "turn": 6,
+      "user": "I'm having trouble connecting right now. Yeah, well, then how would I go about understanding whether something is being improved by the superstructures being provided or if it's being made worse?",
+      "assistant": "That's the core problem, isn't it? Without predetermined metrics, how do you know if your executive function support is actually helping or just adding complexity?\n\nMaybe the answer is in the lived experience data itself \u2014 looking",
+      "scores": {
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "total_latency_ms": 19743.0236,
+        "acceptance_type": 0,
+        "activation_score": 0.4052,
+        "frustration_rolling_avg": 0,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 7,
+      "user": "But lived experience data happens on a tempo of usage that is like it's an impedance mismatch between what is needed for research.",
+      "assistant": "Exactly \u2014 you need months or years of naturalistic use to see if the system genuinely improves executive function, but research cycles demand results in weeks. Plus, the very act of studying it changes how people use it. It",
+      "scores": {
+        "frustration_rolling_avg": 0,
+        "acceptance_type": 0.3,
+        "activation_score": 0.4188,
+        "total_latency_ms": 21028.7346,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "frustration_score": 0,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 8,
+      "user": "really answering the question though like you're saying that it can't be measured but it has certain like don't these there's certain behavioral shapes that we're talking about",
+      "assistant": "You're right \u2014 I'm being too absolutist. There are behavioral shapes: task completion patterns, context-switching fluency, how often someone loses track of what they were doing. The phenomenological approach wouldn't reject these measures, it would just insist we understand them as phenomena first",
+      "scores": {
+        "reference_accuracy": 1,
+        "frustration_rolling_avg": 0.4,
+        "acceptance_type": 1,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.7,
+        "activation_score": 0.4145,
+        "total_latency_ms": 21738.6908,
+        "frustration_score": 2
+      }
+    },
+    {
+      "turn": 9,
+      "user": "in trouble connecting right now. Yeah, but what does that mean to understand them as phenomena first?",
+      "assistant": "To understand them as phenomena first means observing how task-switching or memory lapses actually show up in your experience before deciding what they \"are.\" Like \u2014 instead of starting with \"ADHD means executive dysfunction,\" you'",
+      "scores": {
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "activation_score": 0.4102,
+        "reference_accuracy": 0.667,
+        "acceptance_type": 0,
+        "frustration_rolling_avg": 0.4,
+        "total_latency_ms": 21681.9882,
+        "context_anchor_success": 0.6
+      }
+    },
+    {
+      "turn": 10,
+      "user": "Yeah, yeah, right. You don't start with the metric. You start with the experience and then make the metric out of the experience.",
+      "assistant": "Exactly. You let the patterns emerge from the data rather than imposing them. So maybe you discover that what looks like \"distraction\" is actually productive context-gathering, or that certain kinds of task-switching have a rhythm that standard productivity metrics would call",
+      "scores": {
+        "frustration_score": 0,
+        "consent_latency_ok": 0,
+        "activation_score": 0.3503,
+        "frustration_rolling_avg": 0.4,
+        "reference_accuracy": 1,
+        "acceptance_type": 1,
+        "total_latency_ms": 21913.2509,
+        "context_anchor_success": 0.6
+      }
+    },
+    {
+      "turn": 11,
+      "user": "Yeah, yeah, wait, have we drifted? Are you talking about me or are you talking about you?",
+      "assistant": "I was talking about the general approach \u2014 how the Hapax system could evaluate its own effectiveness. But you're right to catch that drift. The question was whether your executive function is being helped or hindered by these systems. That",
+      "scores": {
+        "activation_score": 0.4044,
+        "acceptance_type": 1,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0.4,
+        "total_latency_ms": 21750.6919,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.6
+      }
+    },
+    {
+      "turn": 12,
+      "user": "got it, I get what you're saying. Okay, okay. All right, well, yeah, but the thing that we're measuring is conversational flow right now, right? And like, the kind of thing that we're interested in is like how the behaviors of conversation reflect the general environment that the, you are, that are sit with it.",
+      "assistant": "Right, so we're looking at conversational flow as the phenomenon itself \u2014 how smoothly we navigate topics, where the friction points are, whether the system helps maintain coherence or adds cognitive load. Like right now, you",
+      "scores": {
+        "acceptance_type": 0,
+        "total_latency_ms": 22269.9667,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0.4,
+        "frustration_score": 0,
+        "activation_score": 0.4604,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.4
+      }
+    },
+    {
+      "turn": 13,
+      "user": "Melaleu Ponte would say about that.",
+      "assistant": "Merleau-Ponty would probably say the conversation itself is the primary phenomenon \u2014 not your thoughts or my responses separately, but the intercorporeal space between us. The flow and friction aren't failures of communication, they're",
+      "scores": {
+        "total_latency_ms": 21648.3056,
+        "activation_score": 0.227,
+        "frustration_rolling_avg": 0,
+        "acceptance_type": 0.3,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "frustration_score": 0,
+        "context_anchor_success": 0.3
+      }
+    },
+    {
+      "turn": 14,
+      "user": "Yeah, the flows and frictions are part of a conversation, right? And so there shouldn't really ever be in any conversation and expectation that there isn't pushing and pulling. Like both of those things need to happen in every conversation. So that means total onus cannot even be on you.",
+      "assistant": "That's a really good point \u2014 conversation as a kind of shared wrestling match where both resistance and yielding are necessary moves. If I just smoothly agreed with everything, we'd get nowhere. The question becomes whether the system creates productive friction",
+      "scores": {
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "activation_score": 0.4179,
+        "frustration_score": 0,
+        "total_latency_ms": 22221.3623,
+        "acceptance_type": 0,
+        "context_anchor_success": 0.7,
+        "reference_accuracy": 1
+      }
+    },
+    {
+      "turn": 15,
+      "user": "Yeah, productive fiction. What is productive fiction? That's such an interesting phrase. I wonder what it implicates.",
+      "assistant": "Productive fiction \u2014 that's a beautiful misfire. Fiction as the stories we tell ourselves about what we're doing, productive when those stories actually help us move forward. Like calling this \"executive function support\" is a fiction that shapes how we use it",
+      "scores": {
+        "activation_score": 0.3337,
+        "consent_latency_ok": 0,
+        "total_latency_ms": 22027.2049,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "acceptance_type": 1,
+        "context_anchor_success": 0.6,
+        "reference_accuracy": 1
+      }
+    },
+    {
+      "turn": 16,
+      "user": "fiction that shapes how we use it, right? The stories we tell ourselves about things actually shape how we use the things.",
+      "assistant": "Exactly. The Hapax system becomes what you believe it to be \u2014 if you treat it as an executive function prosthetic, it functions that way. If you treat it as a conversation partner, it becomes that. The fiction",
+      "scores": {
+        "total_latency_ms": 21789.2753,
+        "frustration_score": 0,
+        "activation_score": 0.3563,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "acceptance_type": 1,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.5
+      }
+    },
+    {
+      "turn": 17,
+      "user": "Okay, all right, this is pretty good. All right, I'm going to talk to you soon. This has been the end of this session, and I think we're going to do an experiment runner next. I'm pretty excited. I'll talk to you later.",
+      "assistant": "Sounds good, Ryan. Enjoy the experiment runner \u2014 curious to see what patterns emerge from those Phase B sessions. Talk to you soon.",
+      "scores": {
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "activation_score": 0.4084,
+        "total_latency_ms": 14667.6924,
+        "context_anchor_success": 0.4,
+        "reference_accuracy": 1,
+        "acceptance_type": 1,
+        "frustration_score": 0
+      }
+    }
+  ]
+}
