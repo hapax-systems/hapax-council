@@ -1089,7 +1089,7 @@ class VisualLayerAggregator:
         # 2. Infra snapshot → GPU
         try:
             infra = json.loads(INFRA_SNAPSHOT_PATH.read_text(encoding="utf-8"))
-            gpu = infra.get("gpu", {})
+            gpu = infra.get("gpu") or {}
             used = gpu.get("used_mb", 0)
             total = gpu.get("total_mb", 0)
             if total > 0:
