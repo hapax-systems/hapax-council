@@ -618,7 +618,7 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", "snapshot-rate-caps")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=30/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=15/1"),
         )
         encoder = Gst.ElementFactory.make("jpegenc", "snapshot-jpeg")
         encoder.set_property("quality", 85)
@@ -786,7 +786,7 @@ class StudioCompositor:
 
         fx_rate = Gst.ElementFactory.make("videorate", "fx-rate")
         fx_rate_caps = Gst.ElementFactory.make("capsfilter", "fx-rate-caps")
-        fx_rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=30/1"))
+        fx_rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=15/1"))
 
         fx_jpeg = Gst.ElementFactory.make("jpegenc", "fx-jpeg")
         fx_jpeg.set_property("quality", 80)
@@ -1045,10 +1045,9 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=30/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=5/1"),
         )
         scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
-        # Use native resolution
         scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
         scale_caps.set_property(
             "caps",
@@ -1061,6 +1060,8 @@ class StudioCompositor:
         appsink.set_property("async", False)
         appsink.set_property("drop", True)
         appsink.set_property("max-buffers", 1)
+
+        chain = [queue, convert, rate, rate_caps, scale, scale_caps, encoder, appsink]
 
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         snap_role = cam.role  # capture for closure
@@ -1090,17 +1091,10 @@ class StudioCompositor:
         appsink.set_property("emit-signals", True)
         appsink.connect("new-sample", _on_new_sample)
 
-        elements = [queue, convert, rate, rate_caps, scale, scale_caps, encoder, appsink]
-        for el in elements:
+        for el in chain:
             pipeline.add(el)
-
-        queue.link(convert)
-        convert.link(rate)
-        rate.link(rate_caps)
-        rate_caps.link(scale)
-        scale.link(scale_caps)
-        scale_caps.link(encoder)
-        encoder.link(appsink)
+        for i in range(len(chain) - 1):
+            chain[i].link(chain[i + 1])
 
         # Explicit tee -> queue pad link
         tee_pad = camera_tee.request_pad(camera_tee.get_pad_template("src_%u"), None, None)
@@ -1133,13 +1127,11 @@ class StudioCompositor:
                 ),
             )
             decoder = Gst.ElementFactory.make("jpegdec", f"dec_{role}")
-            convert = Gst.ElementFactory.make("videoconvert", f"convert_{role}")
-            for el in [src, src_caps, decoder, convert]:
+            for el in [src, src_caps, decoder]:
                 pipeline.add(el)
             src.link(src_caps)
             src_caps.link(decoder)
-            decoder.link(convert)
-            last = convert
+            last = decoder
         else:
             src_caps = Gst.ElementFactory.make("capsfilter", f"srccaps_{role}")
             pix_fmt = cam.pixel_format or "GRAY8"
@@ -1157,8 +1149,9 @@ class StudioCompositor:
             src_caps.link(convert)
             last = convert
 
-        # Insert tee after decode/convert, before CUDA upload
+        # Insert tee after decode/convert
         camera_tee = Gst.ElementFactory.make("tee", f"tee_{role}")
+        camera_tee.set_property("allow-not-linked", True)
         pipeline.add(camera_tee)
         last.link(camera_tee)
 
@@ -1230,15 +1223,17 @@ class StudioCompositor:
 
         queue = Gst.ElementFactory.make("queue", f"queue-rec-{role}")
         queue.set_property("leaky", 2)  # downstream
-        queue.set_property("max-size-buffers", 30)
+        queue.set_property("max-size-buffers", 10)
         queue.set_property("max-size-time", 5 * 1_000_000_000)  # 5 seconds in ns
         valve = Gst.ElementFactory.make("valve", f"rec-valve-{role}")
         valve.set_property("drop", not self._consent_recording_allowed)
-        convert = Gst.ElementFactory.make("videoconvert", f"rec-convert-{role}")
+        # NV12 conversion on GPU instead of CPU videoconvert
+        rec_upload = Gst.ElementFactory.make("cudaupload", f"rec-upload-{role}")
+        rec_cuda_convert = Gst.ElementFactory.make("cudaconvert", f"rec-cudaconv-{role}")
         nv12_caps = Gst.ElementFactory.make("capsfilter", f"rec-nv12caps-{role}")
         nv12_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,format=NV12"),
+            Gst.Caps.from_string("video/x-raw(memory:CUDAMemory),format=NV12"),
         )
         encoder = Gst.ElementFactory.make("nvh264enc", f"rec-enc-{role}")
         encoder.set_property("preset", 2)  # hp
@@ -1263,13 +1258,14 @@ class StudioCompositor:
 
         mux_sink.connect("format-location-full", lambda s, fid, _sample: _format_location(s, fid))
 
-        elements = [queue, valve, convert, nv12_caps, encoder, parser, mux_sink]
+        elements = [queue, valve, rec_upload, rec_cuda_convert, nv12_caps, encoder, parser, mux_sink]
         for el in elements:
             pipeline.add(el)
 
         queue.link(valve)
-        valve.link(convert)
-        convert.link(nv12_caps)
+        valve.link(rec_upload)
+        rec_upload.link(rec_cuda_convert)
+        rec_cuda_convert.link(nv12_caps)
         nv12_caps.link(encoder)
         encoder.link(parser)
         parser.link(mux_sink)
@@ -1292,16 +1288,11 @@ class StudioCompositor:
 
         queue = Gst.ElementFactory.make("queue", "queue-hls")
         queue.set_property("leaky", 2)  # downstream
-        queue.set_property("max-size-buffers", 60)
+        queue.set_property("max-size-buffers", 20)
         queue.set_property("max-size-time", 3 * 1_000_000_000)  # 3 seconds in ns
         valve = Gst.ElementFactory.make("valve", "hls-valve")
         valve.set_property("drop", not self._consent_recording_allowed)
-        convert = Gst.ElementFactory.make("videoconvert", "hls-convert")
-        nv12_caps = Gst.ElementFactory.make("capsfilter", "hls-nv12caps")
-        nv12_caps.set_property(
-            "caps",
-            Gst.Caps.from_string("video/x-raw,format=NV12"),
-        )
+        # nvh264enc accepts BGRA directly — skip CPU videoconvert
         encoder = Gst.ElementFactory.make("nvh264enc", "hls-enc")
         encoder.set_property("preset", 2)  # hp
         encoder.set_property("rc-mode", 3)  # constqp
@@ -1320,16 +1311,14 @@ class StudioCompositor:
         hls_sink.set_property("playlist-location", str(hls_dir / "stream.m3u8"))
         hls_sink.set_property("async-handling", True)
 
-        elements = [queue, valve, convert, nv12_caps, encoder, parser, hls_sink]
+        elements = [queue, valve, encoder, parser, hls_sink]
         for el in elements:
             pipeline.add(el)
 
         self._hls_valve = valve
 
         queue.link(valve)
-        valve.link(convert)
-        convert.link(nv12_caps)
-        nv12_caps.link(encoder)
+        valve.link(encoder)
         encoder.link(parser)
         parser.link(hls_sink)
 

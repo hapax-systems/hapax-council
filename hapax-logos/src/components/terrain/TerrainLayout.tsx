@@ -161,15 +161,15 @@ export function TerrainLayout() {
                 className="w-full h-full overflow-hidden"
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "minmax(180px, 1fr) 3fr minmax(180px, 1fr)",
+                  gridTemplateColumns: coreMiddle ? "1fr" : "minmax(180px, 1fr) 3fr minmax(180px, 1fr)",
                   gridTemplateRows: gridRows,
                   transition: "grid-template-rows 300ms ease",
                 }}
               >
                 <HorizonRegion />
-                {splitRegion !== "field" && <FieldRegion />}
-                {splitRegion !== "ground" && <GroundRegion vl={vl} />}
-                {splitRegion !== "watershed" && <WatershedRegion />}
+                {(!coreMiddle || coreMiddle === "field") && <FieldRegion />}
+                {(!coreMiddle || coreMiddle === "ground") && <GroundRegion vl={vl} />}
+                {(!coreMiddle || coreMiddle === "watershed") && <WatershedRegion />}
                 <BedrockRegion />
               </div>
             }
