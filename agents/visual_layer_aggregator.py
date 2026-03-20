@@ -366,6 +366,13 @@ def map_voice_session(data: dict) -> tuple[list[SignalEntry], VoiceSessionState]
         routing_tier=vs.get("routing_tier", ""),
         routing_reason=vs.get("routing_reason", ""),
         routing_activation=vs.get("routing_activation", 0.0),
+        # Experiment monitoring: per-turn grounding scores
+        context_anchor_success=vs.get("context_anchor_success", 0.0),
+        frustration_score=vs.get("frustration_score", 0.0),
+        frustration_rolling_avg=vs.get("frustration_rolling_avg", 0.0),
+        acceptance_type=vs.get("acceptance_type", ""),
+        spoken_words=vs.get("spoken_words", 0),
+        word_limit=vs.get("word_limit", 35),
     )
 
     signals: list[SignalEntry] = []
@@ -415,14 +422,16 @@ def map_stimmung(stimmung: SystemStimmung) -> list[SignalEntry]:
     """Map non-nominal stimmung dimensions to system_state signals."""
     signals: list[SignalEntry] = []
     for name, dim in stimmung.non_nominal_dimensions.items():
-        severity = min(1.0, dim.value)
+        # Defensive clamp — prevents display corruption if value escapes 0-1
+        clamped = max(0.0, min(1.0, dim.value))
+        severity = clamped
         label = name.replace("_", " ")
         trend_suffix = f" ({dim.trend})" if dim.trend != "stable" else ""
         signals.append(
             SignalEntry(
                 category=SignalCategory.SYSTEM_STATE,
                 severity=severity,
-                title=f"{label}: {dim.value:.0%}{trend_suffix}",
+                title=f"{label}: {clamped:.0%}{trend_suffix}",
                 source_id=f"stimmung-{name}",
             )
         )

@@ -301,6 +301,12 @@ class ConversationPipeline:
         # Frustration detection (Batch 4)
         self._frustration_detector = None
 
+        # Experiment monitoring: per-turn scores exposed for visual overlay
+        self.last_anchor_score: float = 0.0
+        self.last_acceptance_label: str = ""
+        self.last_spoken_words: int = 0
+        self.last_word_limit: int = 35
+
     @property
     def is_active(self) -> bool:
         return self._running and self.state != ConvState.IDLE
@@ -707,13 +713,16 @@ class ConversationPipeline:
                         _utt_trace.update(output=_last_response)
                     except Exception:
                         pass
-                evaluate_turn(
+                _grounding_scores = evaluate_turn(
                     response=_last_response,
                     messages=self.messages,
                     conversation_thread=self._conversation_thread,
                     user_utterance=transcript,
                     langfuse_trace=_utt_trace,
                 )
+                # Expose for visual overlay monitoring
+                self.last_anchor_score = _grounding_scores.get("context_anchor_success", 0.0)
+                self.last_acceptance_label = _grounding_scores.get("acceptance_label", "")
 
                 # Probe question: check sentinel retrieval
                 sentinel_score = self.check_sentinel_retrieval(_last_response)
@@ -1020,6 +1029,10 @@ class ConversationPipeline:
             if accumulated.strip() and not (self.buffer and self.buffer.barge_in_detected):
                 if _spoken_words < _word_limit:
                     await self._speak_sentence(accumulated.strip())
+
+            # Expose word counts for visual overlay monitoring
+            self.last_spoken_words = _spoken_words
+            self.last_word_limit = _word_limit
 
             # Log full response for debugging truncation
             if full_text:
