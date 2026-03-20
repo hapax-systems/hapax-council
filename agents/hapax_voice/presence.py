@@ -7,6 +7,7 @@ import logging
 import threading
 import time
 from collections import deque
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,12 @@ import numpy as np
 import torch
 
 try:
-    from .watch_signals import WATCH_STATE_DIR, is_watch_connected, send_haptic_tap
+    from .watch_signals import (
+        WATCH_STATE_DIR,
+        is_phone_connected,
+        is_watch_connected,
+        send_haptic_tap,
+    )
 
     _WATCH_AVAILABLE = True
 except ImportError:
@@ -22,6 +28,16 @@ except ImportError:
     WATCH_STATE_DIR = Path()  # unused fallback — guarded by _WATCH_AVAILABLE
 
 log = logging.getLogger(__name__)
+
+
+class PresenceLevel(StrEnum):
+    """Graduated presence levels replacing binary presence."""
+
+    ENGAGED = "ENGAGED"  # Face/keyboard active + watch streaming
+    PERIPHERAL = "PERIPHERAL"  # No face, but watch BLE or phone in room
+    AMBIENT = "AMBIENT"  # No BLE, but phone KDE connected
+    ABSENT = "ABSENT"  # No signals for >5 minutes
+
 
 # Audio format constants
 SAMPLE_RATE = 16000
@@ -253,6 +269,41 @@ class PresenceDetector:
     def latest_vad_confidence(self) -> float:
         """Most recent VAD probability (0.0-1.0), regardless of threshold."""
         return self._latest_vad_confidence
+
+    @property
+    def presence_level(self) -> PresenceLevel:
+        """Compute graduated presence level from signal composition.
+
+        Combines face detection, VAD, watch BLE, and phone connectivity
+        into a 4-level gradient instead of binary present/absent.
+        """
+        face = self.face_detected
+        with self._lock:
+            self._prune_old_events()
+            vad_count = len(self._events)
+
+        # ENGAGED: face or active keyboard (proxied by high VAD) + watch streaming
+        if face or vad_count >= 5:
+            return PresenceLevel.ENGAGED
+
+        # Check device connectivity for lower levels
+        if _WATCH_AVAILABLE:
+            watch_connected = is_watch_connected()
+            phone_connected = is_phone_connected()
+        else:
+            watch_connected = False
+            phone_connected = False
+
+        # PERIPHERAL: no face/keyboard, but watch BLE or phone in room
+        if watch_connected or (phone_connected and vad_count >= 1):
+            return PresenceLevel.PERIPHERAL
+
+        # AMBIENT: phone KDE connected but no BLE/face
+        if phone_connected:
+            return PresenceLevel.AMBIENT
+
+        # ABSENT: no signals
+        return PresenceLevel.ABSENT
 
     @property
     def event_count(self) -> int:
