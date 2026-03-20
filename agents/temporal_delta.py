@@ -56,15 +56,20 @@ def compute_temporal_delta(
         TemporalDelta with derived motion signals.
     """
     # Filter to same-camera sightings for spatial computation
+    all_sightings = sightings
     if camera:
         sightings = [s for s in sightings if s.get("camera", "") == camera or not s.get("camera")]
     if len(sightings) < 2:
+        # Cross-camera: spatial velocity unavailable but entry/exit can use all sightings
+        use_all = len(all_sightings) >= 2
         return TemporalDelta(
             velocity=0.0,
             direction_deg=None,
             confidence_stability=0.0,
             dwell_s=now - first_seen if first_seen > 0 else 0.0,
-            is_entering=len(sightings) <= 2 and (now - first_seen) < 5.0,
+            is_entering=(len(all_sightings) <= 2 and (now - first_seen) < 5.0)
+            if use_all
+            else (len(sightings) <= 2 and (now - first_seen) < 5.0),
             is_exiting=(now - last_seen) > exit_threshold_s if last_seen > 0 else False,
         )
 

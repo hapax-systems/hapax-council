@@ -59,19 +59,47 @@ const EMOTION_TINTS: Record<string, string> = {
 const SUPPRESSED_COLOR = "#665c54";  // zinc-600, desaturated
 const EXITING_COLOR = "#504945";     // zinc-700, fading
 
-function haloColor(det: ClassificationDetection): string {
+// ── IR-aware high-contrast palette ──────────────────────────────────
+// Brighter colors that remain visible against mono/inverted IR backgrounds
+const IR_CATEGORY_HEX: Record<string, string> = {
+  person: "#00ffaa",
+  furniture: "#ffcc66",
+  electronics: "#66ddff",
+  instrument: "#ffee44",
+  container: "#ff99cc",
+};
+const IR_GAZE_COLORS: Record<string, string> = {
+  screen: "#44eeff",
+  hardware: "#ffee44",
+  person: "#ff88dd",
+  away: "#99aa88",
+};
+const IR_PRESETS = new Set(["nightvision", "silhouette", "thermal ir"]);
+
+function isIrPreset(preset?: string): boolean {
+  return !!preset && IR_PRESETS.has(preset.toLowerCase());
+}
+
+function haloColor(det: ClassificationDetection, irMode = false): string {
   // Consent suppressed → desaturated
   if (det.consent_suppressed) return SUPPRESSED_COLOR;
 
-  // Non-person objects → dim category color
-  if (det.label !== "person") return classColor(det.label);
+  // Non-person objects → dim category color (IR-aware)
+  if (det.label !== "person") {
+    if (irMode) {
+      const cat = LABEL_CATEGORY[det.label] ?? "electronics";
+      return IR_CATEGORY_HEX[cat] ?? "#66ddff";
+    }
+    return classColor(det.label);
+  }
 
   // Exiting → fade toward background
   if (det.is_exiting) return EXITING_COLOR;
 
   // Person: gaze is primary color driver (most actionable signal)
-  if (det.gaze_direction && GAZE_COLORS[det.gaze_direction]) {
-    return GAZE_COLORS[det.gaze_direction];
+  const gazeColors = irMode ? IR_GAZE_COLORS : GAZE_COLORS;
+  if (det.gaze_direction && gazeColors[det.gaze_direction]) {
+    return gazeColors[det.gaze_direction];
   }
 
   // Emotion as secondary (only non-neutral)
@@ -85,8 +113,8 @@ function haloColor(det: ClassificationDetection): string {
   // Dwelling person → cool shift
   if (det.dwell_s != null && det.dwell_s > 60) return "#83a598";
 
-  // Default person green
-  return "#8ec07c";
+  // Default person green (brighter in IR mode)
+  return irMode ? "#00ffaa" : "#8ec07c";
 }
 
 // ── Halo opacity scaling by entity type ──────────────────────────────
@@ -150,6 +178,7 @@ export interface DetectionOverlayProps {
   tier?: DetectionTier;
   visible?: boolean;
   objectFit?: "contain" | "cover";
+  activePreset?: string;
 }
 
 export function DetectionOverlay({
@@ -159,6 +188,7 @@ export function DetectionOverlay({
   tier = 1,
   visible = true,
   objectFit = "contain",
+  activePreset,
 }: DetectionOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const smoothedRef = useRef<Map<string, SmoothedBox>>(new Map());
@@ -352,12 +382,13 @@ export function DetectionOverlay({
 
       const now = Date.now();
       const currentHovered = hoveredIdRef.current;
+      const irMode = isIrPreset(activePreset);
 
       // Gradient cache — reuse gradients for similar positions
       const gradientCache = new Map<string, CanvasGradient>();
 
       for (const det of detections) {
-        const color = haloColor(det);           // enrichment-driven (gaze/emotion/state)
+        const color = haloColor(det, irMode);   // enrichment-driven (gaze/emotion/state)
         const pillColor = classColor(det.label); // category-stable for readability
         const opacityScale = haloOpacityScale(det);
         const isHovered = currentHovered === det.entity_id;
@@ -675,7 +706,7 @@ export function DetectionOverlay({
     return () => {
       running = false;
     };
-  }, [detections, effectiveVisible, effectiveTier, highlights, objectFit]);
+  }, [detections, effectiveVisible, effectiveTier, highlights, objectFit, activePreset]);
 
   if (!effectiveVisible) return null;
 
