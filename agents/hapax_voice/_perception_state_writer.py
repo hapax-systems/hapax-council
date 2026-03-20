@@ -216,21 +216,24 @@ def write_perception_state(
     audio_rms = float(_bval("audio_energy_rms", 0.0) or 0)
     vad = float(_bval("vad_confidence", 0.0) or 0)
 
-    # Gaze on screen + sustained → deeper flow
-    if gaze == "screen":
-        flow_modifier += 0.15
-    # Upright posture → engaged
-    if posture_val == "upright":
-        flow_modifier += 0.1
-    # Neutral/happy emotion → not disrupted
-    if emotion_val in ("neutral", "happy"):
-        flow_modifier += 0.05
-    # Hands at rest → not gesturing
-    if gesture_val in ("none", ""):
-        flow_modifier += 0.05
-    # Audio silence + no speech → undisturbed
-    if audio_rms < 0.05 and vad < 0.3:
-        flow_modifier += 0.1
+    # Only apply flow modifier when we have real classification signals
+    # (gaze != unknown means classifiers are actually running)
+    if gaze != "unknown":
+        # Gaze on screen + sustained → deeper flow
+        if gaze == "screen":
+            flow_modifier += 0.15
+        # Upright posture → engaged
+        if posture_val == "upright":
+            flow_modifier += 0.1
+        # Neutral/happy emotion → not disrupted
+        if emotion_val in ("neutral", "happy"):
+            flow_modifier += 0.05
+        # Hands at rest → not gesturing
+        if gesture_val in ("none", ""):
+            flow_modifier += 0.05
+        # Audio silence + no speech → undisturbed
+        if audio_rms < 0.05 and vad < 0.3:
+            flow_modifier += 0.1
 
     flow_score = min(1.0, base_flow + flow_modifier)
     if flow_score >= 0.6:
