@@ -191,11 +191,15 @@ class ReactiveEngine:
         # Voice state directory for presence/consent reactive rules
         _voice_state_dir = Path.home() / ".cache" / "hapax-voice"
 
+        # Watch biometric state directory for biometric cascade rules
+        _watch_state_dir = Path.home() / "hapax-state" / "watch"
+
         self._watch_paths = watch_paths or [
             PROFILES_DIR,
             RAG_SOURCES_DIR,
             AI_AGENTS_DIR / "axioms",
             _voice_state_dir,
+            _watch_state_dir,
         ]
 
         self._registry = RuleRegistry()

@@ -194,3 +194,100 @@ class TestStimmungCollector:
         c.update_gpu(used_mb=100, total_mb=0)
         s = c.snapshot(now=100.0)
         assert s.overall_stance == Stance.NOMINAL
+
+
+class TestBiometricDimensions:
+    """Tests for biometric Stimmung integration (Design A)."""
+
+    def test_biometric_dimensions_exist(self):
+        s = SystemStimmung()
+        assert s.operator_stress.value == 0.0
+        assert s.operator_energy.value == 0.0
+        assert s.physiological_coherence.value == 0.0
+
+    def test_update_biometrics_stress_from_hrv_drop(self):
+        c = StimmungCollector()
+        # HRV dropped 50% below baseline → high stress
+        c.update_biometrics(hrv_current=20.0, hrv_baseline=40.0)
+        s = c.snapshot()
+        assert s.operator_stress.value > 0.3  # significant stress
+
+    def test_update_biometrics_stress_from_eda(self):
+        c = StimmungCollector()
+        c.update_biometrics(eda_active=True, frustration_score=0.5)
+        s = c.snapshot()
+        assert s.operator_stress.value > 0.2
+
+    def test_update_biometrics_stress_no_data(self):
+        c = StimmungCollector()
+        c.update_biometrics()  # all defaults
+        s = c.snapshot()
+        # No HRV/EDA data → stress should be low
+        assert s.operator_stress.value == 0.0
+
+    def test_update_biometrics_energy(self):
+        c = StimmungCollector()
+        c.update_biometrics(sleep_quality=0.3, circadian_alignment=0.7)
+        s = c.snapshot()
+        # Poor sleep + bad circadian = high energy deficit
+        assert s.operator_energy.value > 0.3
+
+    def test_update_biometrics_coherence_stable(self):
+        c = StimmungCollector()
+        c.update_biometrics(hrv_cv=0.05, skin_temp_cv=0.01)
+        s = c.snapshot()
+        # Low CV = high coherence = low value (good)
+        assert s.physiological_coherence.value < 0.3
+
+    def test_update_biometrics_coherence_fragmented(self):
+        c = StimmungCollector()
+        c.update_biometrics(hrv_cv=0.4, skin_temp_cv=0.15)
+        s = c.snapshot()
+        # High CV = fragmented
+        assert s.physiological_coherence.value > 0.5
+
+    def test_biometric_weight_in_stance(self):
+        """Biometric dimensions should not drive stance alone due to 0.5x weight."""
+        c = StimmungCollector()
+        # Max out biometric stress
+        c.update_biometrics(
+            hrv_current=5.0,
+            hrv_baseline=50.0,
+            eda_active=True,
+            frustration_score=1.0,
+        )
+        s = c.snapshot()
+        # operator_stress.value should be high (~1.0)
+        assert s.operator_stress.value > 0.8
+        # But stance should NOT be critical because of 0.5x weight
+        assert s.overall_stance != Stance.CRITICAL
+        # It should be at most cautious (0.5 * 1.0 = 0.5 → cautious range)
+        assert s.overall_stance in (Stance.CAUTIOUS, Stance.NOMINAL)
+
+    def test_biometric_plus_infra_additive(self):
+        """Biometric stress + infra stress can compound."""
+        c = StimmungCollector()
+        c.update_health(healthy=4, total=10)  # infra degraded (0.6)
+        c.update_biometrics(
+            hrv_current=10.0,
+            hrv_baseline=50.0,
+            eda_active=True,
+            frustration_score=0.8,
+        )
+        s = c.snapshot()
+        # Infra at 0.6 → degraded, biometric compounds
+        assert s.overall_stance in (Stance.DEGRADED, Stance.CRITICAL)
+
+    def test_format_includes_biometrics(self):
+        s = SystemStimmung(
+            operator_stress=DimensionReading(value=0.5, trend="rising", freshness_s=5.0),
+        )
+        text = s.format_for_prompt()
+        assert "operator_stress: 0.50" in text
+
+    def test_non_nominal_includes_biometrics(self):
+        s = SystemStimmung(
+            operator_stress=DimensionReading(value=0.5, trend="rising", freshness_s=5.0),
+        )
+        nn = s.non_nominal_dimensions
+        assert "operator_stress" in nn
