@@ -120,10 +120,10 @@ _TIER_MAX_TOKENS: dict[str, int] = {
     "CAPABLE": 150,
 }
 _MAX_RESPONSE_TOKENS = 150
-_MAX_SPOKEN_WORDS = 25  # Hard cutoff: stop speaking after this many words.
-# 25 words ≈ 1-2 spoken sentences ≈ 6-8 seconds of speech. With ~3s TTFT,
-# total turn time is ~9-11 seconds. Previous value of 40 produced 15-18s
-# of TTS playback, making total turns 18-22s — too long for conversation.
+_MAX_SPOKEN_WORDS = 35  # Hard cutoff: stop speaking after this many words.
+# 35 words ≈ 2 spoken sentences ≈ 10-12 seconds of speech. 25 was too
+# aggressive — model used 5-8 words on preamble leaving insufficient
+# content. 40 produced 15-18s monologues. 35 is the compromise.
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
 
