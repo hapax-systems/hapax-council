@@ -452,7 +452,7 @@ class ConversationPipeline:
         if not self._running:
             return
 
-        from shared.telemetry import hapax_bool_score, hapax_event, hapax_score, hapax_trace
+        from shared.telemetry import hapax_trace
 
         _t_start = time.monotonic()
         _utt_trace_cm = hapax_trace(
@@ -462,6 +462,23 @@ class ConversationPipeline:
             metadata={"turn": self.turn_count, "audio_bytes": len(audio_bytes)},
         )
         _utt_trace = _utt_trace_cm.__enter__()
+
+        try:
+            await self._process_utterance_inner(audio_bytes, _utt_trace, _t_start)
+        finally:
+            # Guarantee trace closure on ALL code paths — 7 early returns
+            # previously leaked unclosed traces, causing next turn's scores
+            # to be lost when Langfuse implicitly closed the orphaned trace.
+            try:
+                _utt_trace_cm.__exit__(None, None, None)
+            except Exception:
+                pass
+
+    async def _process_utterance_inner(
+        self, audio_bytes: bytes, _utt_trace, _t_start: float
+    ) -> None:
+        """Inner utterance processing — extracted so try/finally guarantees trace closure."""
+        from shared.telemetry import hapax_bool_score, hapax_event, hapax_score
 
         # STT
         self.state = ConvState.TRANSCRIBING
@@ -795,11 +812,6 @@ class ConversationPipeline:
             _bd = self._salience_router.last_breakdown
             if _bd is not None:
                 hapax_score(_utt_trace, "activation_score", _bd.final_activation)
-        try:
-            _utt_trace_cm.__exit__(None, None, None)
-        except Exception:
-            pass
-
         self.state = ConvState.LISTENING
 
     async def _generate_and_speak(self) -> None:
