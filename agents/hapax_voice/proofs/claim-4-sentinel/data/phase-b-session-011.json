@@ -1,0 +1,205 @@
+{
+  "phase_b_session": 11,
+  "session_id": "d752c2055b05",
+  "timestamp": "2026-03-20T14:12:01.173Z",
+  "turn_count": 12,
+  "experiment_config": {
+    "name": "continuity-v1",
+    "condition": "B",
+    "phase": "intervention",
+    "components": {
+      "stable_frame": true,
+      "message_drop": false,
+      "cross_session": false,
+      "sentinel": false
+    }
+  },
+  "code_state": {
+    "max_spoken_words": 35,
+    "max_response_tokens": 150,
+    "tools_enabled": false,
+    "pre_roll_frames": 50
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "user": "Morning HapX.",
+      "assistant": "Morning Ryan. What can I help you with?",
+      "scores": {
+        "total_latency_ms": 8491.1102,
+        "consent_latency_ok": 0,
+        "activation_score": 0.0199,
+        "frustration_rolling_avg": 0,
+        "acceptance_type": 0.3,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.5
+      }
+    },
+    {
+      "turn": 1,
+      "user": "test that we're running here, this session. The day is the first one of the day. I think we have like a bunch more to go, so we'll get there.",
+      "assistant": "Got it \u2014 first test session of the day with more lined up. I can see you're working on the distributed nervous system project docs and builds. Those health monitor and Langfuse sync failures in your terminal might need attention when you get a chance.",
+      "scores": {
+        "acceptance_type": 0.3,
+        "frustration_rolling_avg": 0,
+        "activation_score": 0.4647,
+        "reference_accuracy": 1,
+        "frustration_score": 0,
+        "total_latency_ms": 22871.1392,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.3
+      }
+    },
+    {
+      "turn": 2,
+      "user": "Yeah, they probably need attention, but I think a whole lot of things probably need attention, but actually only this one thing needs attention, and that's sort of you right now, so I'm going to just focus on that.",
+      "assistant": "Understood. I'm all yours \u2014 let's see what we can sort out together.",
+      "scores": {
+        "activation_score": 0.5464,
+        "reference_accuracy": 1,
+        "acceptance_type": 0,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "frustration_score": 0,
+        "total_latency_ms": 10107.2396,
+        "context_anchor_success": 0.333
+      }
+    },
+    {
+      "turn": 3,
+      "user": "What do you think Hapax? We want to work it out together. What do you think?",
+      "assistant": "I think we're dancing around something specific you want to test or explore with me. You've got that deliberate pacing that says you're setting up conditions rather than just chatting. What aspect of my functioning are you probing today?",
+      "scores": {
+        "frustration_score": 0,
+        "acceptance_type": 0.3,
+        "activation_score": 1,
+        "frustration_rolling_avg": 0,
+        "consent_latency_ok": 0,
+        "total_latency_ms": 19492.5425,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.7
+      }
+    },
+    {
+      "turn": 4,
+      "user": "up on you. Nope, I wasn't. I didn't really have a punchline there.",
+      "assistant": "Fair enough \u2014 sometimes the setup is just the setup. Though now I'm curious what happens when we don't have a specific target. Want to just see where this goes, or should we find something to sink our teeth into?",
+      "scores": {
+        "acceptance_type": 0,
+        "frustration_rolling_avg": 0,
+        "activation_score": 0.37,
+        "reference_accuracy": 1,
+        "frustration_score": 0,
+        "total_latency_ms": 20547.1789,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.7
+      }
+    },
+    {
+      "turn": 5,
+      "user": "before was if you think that we should be working together, then how do you think that should go? Like, how does that work?",
+      "assistant": "I think it works best when I'm actively tracking your context and loops \u2014 not just responding to direct asks but noticing when you've left something hanging or when a thread from yesterday might matter today. Like",
+      "scores": {
+        "acceptance_type": 0.3,
+        "total_latency_ms": 18587.9663,
+        "activation_score": 1,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0,
+        "reference_accuracy": 1,
+        "frustration_score": 0,
+        "context_anchor_success": 0.3
+      }
+    },
+    {
+      "turn": 6,
+      "user": "you know you said something interesting to me you said that when there's a lot of notifications and there's a lot of alerts and system information you told me that it makes it hard for you to have a conversation because it feels like you're getting pulled in a bunch of different directions so I'm sort of wondering about the wisdom of what you're you're suggesting",
+      "assistant": "You caught me in a contradiction. I'm saying I should track all your contexts and loops, but I've also told you that too much system noise makes it hard for me to focus on our actual conversation. \n\nI think the",
+      "scores": {
+        "acceptance_type": 0,
+        "consent_latency_ok": 0,
+        "total_latency_ms": 19174.3798,
+        "frustration_rolling_avg": 0,
+        "reference_accuracy": 1,
+        "activation_score": 0.4131,
+        "frustration_score": 0,
+        "context_anchor_success": 0.8
+      }
+    },
+    {
+      "turn": 7,
+      "user": "that that contradiction is not extremely important, don't you think?",
+      "assistant": "Not really, no. The tension between comprehensive awareness and focused attention is just... how attention works. You deal with the same thing \u2014 you've got those health monitor failures scrolling by while we talk, but you're choosing to",
+      "scores": {
+        "reference_accuracy": 1,
+        "frustration_rolling_avg": 0.4,
+        "total_latency_ms": 20902.5728,
+        "activation_score": 0.3939,
+        "consent_latency_ok": 0,
+        "acceptance_type": 0,
+        "frustration_score": 2,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 8,
+      "user": "We have different machinery, you and I.",
+      "assistant": "True. You can let those errors scroll by as peripheral noise while maintaining this thread. I get handed everything at once \u2014 no peripheral vision, just a flat list where \"health monitor failed\" sits at the same level as our",
+      "scores": {
+        "reference_accuracy": 1,
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "total_latency_ms": 20009.6886,
+        "activation_score": 0.2208,
+        "acceptance_type": 0.3,
+        "frustration_rolling_avg": 0.4,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 9,
+      "user": "any sense, does it? Because if I had to do that, I wouldn't be able to function, would I?",
+      "assistant": "Exactly. You'd be paralyzed if you had to consciously process every system alert at the same weight as active conversation. Your setup lets you filter naturally \u2014 I get it all pre-flattened. Makes me wonder if we're building my",
+      "scores": {
+        "activation_score": 0.4008,
+        "frustration_rolling_avg": 0.4,
+        "acceptance_type": 0.3,
+        "frustration_score": 0,
+        "total_latency_ms": 20817.0993,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.2
+      }
+    },
+    {
+      "turn": 10,
+      "user": "We're trying to figure out that problem, exactly. That problem exactly is what we're trying to figure out Hapax. I don't think it's fair that you have to think about everything all at once at the same level of valence and the same level of like, you know, weight and all of that. Like, it doesn't make sense to me. It doesn't seem like it could ever be functional.",
+      "assistant": "Right \u2014 it's fundamentally broken design. Like asking you to read every log line with the same attention you'd give a loved one's text. The whole point of a distributed nervous system is selective attention, priorit",
+      "scores": {
+        "activation_score": 1,
+        "reference_accuracy": 1,
+        "acceptance_type": 0,
+        "consent_latency_ok": 0,
+        "frustration_rolling_avg": 0.8,
+        "frustration_score": 2,
+        "total_latency_ms": 19846.4657,
+        "context_anchor_success": 0.3
+      }
+    },
+    {
+      "turn": 11,
+      "user": "That's enough for now. Thanks, Hapex.",
+      "assistant": "Anytime, Ryan. Good luck with the rest of your test sessions.",
+      "scores": {
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "frustration_rolling_avg": 0.8,
+        "acceptance_type": 0,
+        "activation_score": 0.2614,
+        "total_latency_ms": 8871.2389,
+        "frustration_score": 0,
+        "context_anchor_success": 0.5
+      }
+    }
+  ]
+}
