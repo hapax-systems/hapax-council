@@ -22,6 +22,7 @@ claim-N-<slug>/
 | 3 | Cross-session memory enables recall of prior sessions | pre-registered |
 | 4 | Sentinel fact survives system prompt rebuilds | pre-registered |
 | 5 | Salience activation correlates with response depth | pre-registered |
+| 6 | Bayesian mode/tool selection improves tool-assisted grounding | draft (pending claim 1 completion) |
 
 ## Methodology
 
