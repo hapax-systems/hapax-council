@@ -87,6 +87,7 @@ TEMPORAL_FILE = TEMPORAL_DIR / "bands.json"
 HEALTH_HISTORY_PATH = Path("profiles/health-history.jsonl")
 INFRA_SNAPSHOT_PATH = Path("profiles/infra-snapshot.json")
 LANGFUSE_STATE_PATH = Path.home() / ".cache" / "langfuse-sync" / "state.json"
+WATCH_STATE_DIR = Path.home() / "hapax-state" / "watch"
 
 # ── Cadences ─────────────────────────────────────────────────────────────────
 
@@ -1104,10 +1105,13 @@ class VisualLayerAggregator:
         except (OSError, json.JSONDecodeError):
             pass
 
-        # 4. Engine status via API — done in poll_fast already, use cached response
+        # 4. Biometric data from watch state files
+        self._update_biometrics()
+
+        # 5. Engine status via API — done in poll_fast already, use cached response
         # (avoid double HTTP call — we'll update from _api_poll_loop directly)
 
-        # 5. Perception freshness + confidence
+        # 6. Perception freshness + confidence
         now = time.monotonic()
         perception_age = now - self._ts_perception if self._ts_perception else 60.0
         confidence = self._last_perception_data.get("aggregate_confidence", 1.0)
@@ -1115,11 +1119,11 @@ class VisualLayerAggregator:
             freshness_s=perception_age, confidence=float(confidence)
         )
 
-        # 6. Snapshot
+        # 7. Snapshot
         prev_stance = self._stimmung.overall_stance.value if self._stimmung else "nominal"
         self._stimmung = self._stimmung_collector.snapshot()
 
-        # 7. Telemetry
+        # 8. Telemetry
         trace_stimmung_update(
             stance=self._stimmung.overall_stance.value,
             health=self._stimmung.health.value,
@@ -1131,11 +1135,93 @@ class VisualLayerAggregator:
             prev_stance=prev_stance,
         )
 
-        # 8. Write atomically
+        # 9. Write atomically
         self._write_stimmung()
 
-        # 9. WS1: compute and write temporal bands for LLM prompt injection
+        # 10. WS1: compute and write temporal bands for LLM prompt injection
         self._write_temporal_bands()
+
+    def _update_biometrics(self) -> None:
+        """Read watch/phone biometric data and feed to stimmung collector.
+
+        Best-effort: silently falls back to defaults when sensors unavailable.
+        """
+        from agents.hapax_voice.watch_signals import read_watch_signal
+
+        # HRV data
+        hrv_current = None
+        hrv_baseline = None
+        hrv_cv = None
+        hrv_data = read_watch_signal(WATCH_STATE_DIR / "hrv.json")
+        if hrv_data is not None:
+            current = hrv_data.get("current", {})
+            window = hrv_data.get("window_1h", {})
+            hrv_current = current.get("rmssd_ms")
+            hrv_baseline = window.get("mean")
+            # Coefficient of variation from the 1h window
+            std = window.get("std")
+            mean = window.get("mean")
+            if std is not None and mean and mean > 0:
+                hrv_cv = std / mean
+
+        # EDA data
+        eda_active = False
+        eda_data = read_watch_signal(WATCH_STATE_DIR / "eda.json")
+        if eda_data is not None:
+            current = eda_data.get("current", {})
+            eda_active = bool(current.get("eda_event") and current.get("duration_seconds", 0) > 120)
+
+        # Frustration score from perception state
+        frustration = self._last_perception_data.get("frustration_score", 0.0)
+
+        # Sleep quality from phone health summary
+        sleep_quality = None
+        summary = read_watch_signal(
+            WATCH_STATE_DIR / "phone_health_summary.json", max_age_seconds=86400
+        )
+        if summary is not None:
+            sleep_min = summary.get("sleep_duration_min")
+            if sleep_min is not None:
+                # Normalize: 0 min → 0.0, 480 min (8h) → 1.0
+                sleep_quality = max(0.0, min(1.0, sleep_min / 480.0))
+
+        # Activity level from activity state
+        activity_level = 0.0
+        activity_data = read_watch_signal(WATCH_STATE_DIR / "activity.json")
+        if activity_data is not None:
+            state = activity_data.get("state", "")
+            activity_levels = {
+                "still": 0.1,
+                "walking": 0.4,
+                "running": 0.8,
+                "on_bicycle": 0.7,
+                "in_vehicle": 0.2,
+            }
+            activity_level = activity_levels.get(state, 0.1)
+
+        # HR zone from heart rate
+        hr_zone = 0.0
+        hr_data = read_watch_signal(WATCH_STATE_DIR / "heartrate.json")
+        if hr_data is not None:
+            bpm = hr_data.get("current", {}).get("bpm")
+            if bpm is not None:
+                # Simple zone: 60-100 bpm → 0.5 (resting), >140 → 1.0 (active)
+                hr_zone = max(0.0, min(1.0, (bpm - 60) / 80.0))
+
+        # Circadian alignment from perception data
+        circadian = self._last_perception_data.get("circadian_alignment", 0.5)
+
+        self._stimmung_collector.update_biometrics(
+            hrv_current=hrv_current,
+            hrv_baseline=hrv_baseline,
+            eda_active=eda_active,
+            frustration_score=float(frustration),
+            sleep_quality=sleep_quality,
+            circadian_alignment=float(circadian),
+            activity_level=activity_level,
+            hr_zone=hr_zone,
+            hrv_cv=hrv_cv,
+        )
 
     def _write_stimmung(self) -> None:
         """Write stimmung state to /dev/shm for external consumers."""

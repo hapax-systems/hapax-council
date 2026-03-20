@@ -914,8 +914,9 @@ def load_structured_facts() -> list[ProfileFact]:
     """Load pre-computed structured facts from profiler bridges.
 
     These are deterministic facts extracted from structured data
-    (Chrome history, search queries, Proton Mail, etc.) without LLM.
-    Produced by shared.takeout.profiler_bridge.generate_facts().
+    (Chrome history, search queries, Proton Mail, watch biometrics, etc.)
+    without LLM. Produced by shared.takeout.profiler_bridge.generate_facts()
+    and agents.profiler_sources.read_watch_facts().
     """
     facts: list[ProfileFact] = []
 
@@ -938,6 +939,15 @@ def load_structured_facts() -> list[ProfileFact]:
                 facts.append(ProfileFact.model_validate(item))
             except Exception:
                 pass
+
+    # Watch + Health Connect biometric facts (deterministic bridge)
+    from agents.profiler_sources import read_watch_facts
+
+    for item in read_watch_facts():
+        try:
+            facts.append(ProfileFact.model_validate(item))
+        except Exception:
+            pass
 
     return facts
 

@@ -56,7 +56,7 @@ def _registry() -> RuleRegistry:
 class TestRegistration:
     def test_registers_all_rules(self):
         reg = _registry()
-        assert len(reg) == 12
+        assert len(reg) == 14
 
     def test_rule_names(self):
         reg = _registry()
@@ -74,11 +74,13 @@ class TestRegistration:
             "audio-clap-indexed",
             "presence-transition",
             "consent-transition",
+            "biometric-state-change",
+            "phone-health-summary",
         }
 
     def test_phase_zero_rules(self):
         phase0 = [r for r in ALL_RULES if r.phase == 0]
-        assert len(phase0) == 7
+        assert len(phase0) == 9
 
     def test_phase_one_rules(self):
         phase1 = [r for r in ALL_RULES if r.phase == 1]
