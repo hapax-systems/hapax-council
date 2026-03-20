@@ -435,18 +435,51 @@ export interface SignalStaleness {
 
 export type StimmungStance = "nominal" | "cautious" | "degraded" | "critical";
 
+export interface VoiceSession {
+  active: boolean;
+  state: string;
+  turn_count: number;
+  last_utterance: string;
+  last_response: string;
+  active_tool: string | null;
+  barge_in: boolean;
+  routing_tier: string;
+  routing_reason: string;
+  routing_activation: number;
+  context_anchor_success: number;
+  frustration_score: number;
+  frustration_rolling_avg: number;
+  acceptance_type: string;
+  spoken_words: number;
+  word_limit: number;
+}
+
+export interface SupplementaryContent {
+  content_type: string;
+  title: string;
+  body: string;
+  image_path: string;
+  timestamp: number;
+}
+
 export interface VisualLayerState {
   available: boolean;
   display_state: "ambient" | "peripheral" | "informational" | "alert" | "performative";
   zone_opacities: Record<string, number>;
   signals: Record<string, VisualLayerSignal[]>;
   ambient_params: AmbientParams;
+  voice_session?: VoiceSession;
+  voice_content?: SupplementaryContent[];
   biometrics?: BiometricState;
   temporal_context?: TemporalContext;
   signal_staleness?: SignalStaleness;
   stimmung_stance?: StimmungStance;
   classification_detections?: ClassificationDetection[];
   classification_directives?: Record<string, string>;
+  ambient_text?: string;
+  activity_label?: string;
+  activity_detail?: string;
+  display_density?: string;
   timestamp: number;
   aggregator?: string;
 }
