@@ -45,6 +45,18 @@ CAMERA_PROFILES: dict[str, dict] = {
         "fps": 30,
         "description": "Logitech BRIO — operator camera (1080p)",
     },
+    "brio-room": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "description": "Logitech BRIO — room camera (1080p)",
+    },
+    "brio-aux": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30,
+        "description": "Logitech BRIO — auxiliary camera (1080p)",
+    },
     "c920-hardware": {
         "width": 1280,
         "height": 720,

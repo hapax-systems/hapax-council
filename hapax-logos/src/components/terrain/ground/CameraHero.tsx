@@ -63,6 +63,15 @@ export function CameraHero({
           liveFilter={liveFilter}
           smoothFilter={smoothFilter}
         />
+        <DetectionOverlay
+          containerRef={containerRef}
+          cameraRole={heroRole}
+          classificationDetections={classificationDetections}
+          tier={2}
+          visible={true}
+          objectFit="cover"
+          activePreset={preset.name}
+        />
         {/* Camera role label */}
         <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
           {heroRole} · {preset.name}

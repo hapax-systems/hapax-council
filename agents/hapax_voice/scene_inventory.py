@@ -276,7 +276,7 @@ class SceneInventory:
                                 label=label,
                             )
                             # Apply best merge suggestion: alias new entity to existing
-                            for s in suggestions[:1]:
+                            for s in suggestions:
                                 if s.confidence >= 0.4 and s.entity_a in self._objects:
                                     old_obj = self._objects[s.entity_a]
                                     # Transfer new entity's data to the existing one

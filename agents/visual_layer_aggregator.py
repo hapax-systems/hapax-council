@@ -487,9 +487,16 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
         label = obj.get("label", "")
         entity_id = obj.get("entity_id", "")
 
-        # Compute novelty from seen_count (fewer sightings = more novel)
+        # Compute novelty: blend seen_count, temporal recency, and mobility
         seen_count = obj.get("seen_count", 1)
-        novelty = max(0.0, min(1.0, 1.0 - (seen_count - 1) / 20.0))
+        count_novelty = max(0.0, 1.0 - (seen_count - 1) / 20.0)
+        first_seen_age_s = obj.get("first_seen_age_s") or 0.0
+        recency_novelty = min(1.0, 5.0 / max(float(first_seen_age_s), 0.1))
+        mob_score = obj.get("mobility_score")
+        mobility_novelty = float(mob_score) if mob_score is not None else 0.0
+        novelty = max(
+            0.0, min(1.0, 0.5 * count_novelty + 0.3 * recency_novelty + 0.2 * mobility_novelty)
+        )
 
         # Normalize bounding box to 0-1 coordinates
         # Objects from snapshot() don't include raw box, check for it

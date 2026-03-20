@@ -117,12 +117,12 @@ class TestNoveltyComputation:
     def test_new_object_high_novelty(self):
         data = _make_perception([_obj(seen_count=1)])
         dets = _map_scene_inventory(data)
-        assert dets[0].novelty == 1.0
+        assert dets[0].novelty >= 0.7  # blended: high count + high recency
 
     def test_familiar_object_low_novelty(self):
         data = _make_perception([_obj(seen_count=21)])
         dets = _map_scene_inventory(data)
-        assert dets[0].novelty == 0.0
+        assert dets[0].novelty <= 0.4  # blended: zero count + some recency
 
     def test_moderate_sighting_moderate_novelty(self):
         data = _make_perception([_obj(seen_count=11)])
