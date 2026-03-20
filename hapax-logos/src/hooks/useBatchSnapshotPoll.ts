@@ -25,8 +25,21 @@ function getRoles(): string[] {
   return [...roles];
 }
 
+let pageVisible = true;
+
+function onVisibilityChange() {
+  pageVisible = !document.hidden;
+  if (pageVisible && subscribers.size > 0 && !pollTimer) {
+    startPolling(currentIntervalMs || 250);
+  } else if (!pageVisible && pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+document.addEventListener("visibilitychange", onVisibilityChange);
+
 async function fetchBatch(): Promise<void> {
-  if (polling) return;
+  if (polling || !pageVisible) return;
   const roles = getRoles();
   if (roles.length === 0) return;
 

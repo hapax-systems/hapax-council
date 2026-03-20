@@ -13,8 +13,9 @@
  * Keys: f=fullscreen, c=cameras, v=video-bg, s=signals
  */
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { AmbientShader } from "../components/hapax/AmbientShader";
+import { usePageVisible } from "../hooks/usePageVisible";
 
 const API = "/api";
 const POLL_FAST_MS = 2000;
@@ -166,47 +167,68 @@ export function HapaxPage() {
   const [showCorrection, setShowCorrection] = useState(false);
   const [correctionInput, setCorrectionInput] = useState("");
   const snapshotRef = useRef<HTMLImageElement>(null);
+  const isVisible = usePageVisible();
 
-  // Poll visual layer state
+  // Consolidated rAF scheduler — replaces 4 independent setIntervals.
+  // Pauses all polling/timers when tab is hidden.
+  const showVideoRef = useRef(showVideo);
+  showVideoRef.current = showVideo;
+
   useEffect(() => {
-    let active = true;
-    const poll = async () => {
-      try {
-        const res = await fetch(`${API}/studio/visual-layer`);
-        if (res.ok && active) setVlState(await res.json());
-      } catch { /* offline */ }
+    let running = true;
+    let lastVlPoll = 0;
+    let lastSnapshot = 0;
+    let lastClock = 0;
+    let lastFragment = 0;
+    let vlPollInFlight = false;
+
+    const tick = (now: number) => {
+      if (!running) return;
+      if (!isVisible) {
+        requestAnimationFrame(tick);
+        return;
+      }
+
+      // VL poll (2s)
+      if (now - lastVlPoll >= POLL_FAST_MS) {
+        lastVlPoll = now;
+        if (!vlPollInFlight) {
+          vlPollInFlight = true;
+          fetch(`${API}/studio/visual-layer`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+              if (data && running) setVlState(data);
+            })
+            .catch(() => {})
+            .finally(() => { vlPollInFlight = false; });
+        }
+      }
+
+      // Snapshot refresh (200ms, only when video bg active)
+      if (showVideoRef.current && now - lastSnapshot >= SNAPSHOT_MS) {
+        lastSnapshot = now;
+        const img = snapshotRef.current;
+        if (img) img.src = `${API}/studio/stream/snapshot?t=${Date.now()}`;
+      }
+
+      // Clock (1s)
+      if (now - lastClock >= 1000) {
+        lastClock = now;
+        setTime(new Date());
+      }
+
+      // Fragment rotation (12s)
+      if (now - lastFragment >= FRAGMENT_CYCLE_MS) {
+        lastFragment = now;
+        setFragmentIdx((prev) => (prev + 1) % FALLBACK_FRAGMENTS.length);
+      }
+
+      requestAnimationFrame(tick);
     };
-    poll();
-    const id = setInterval(poll, POLL_FAST_MS);
-    return () => { active = false; clearInterval(id); };
-  }, []);
 
-  // Snapshot refresh for video background
-  useEffect(() => {
-    if (!showVideo) return;
-    const img = snapshotRef.current;
-    if (!img) return;
-    const refresh = () => {
-      img.src = `${API}/studio/stream/snapshot?t=${Date.now()}`;
-    };
-    refresh();
-    const id = setInterval(refresh, SNAPSHOT_MS);
-    return () => clearInterval(id);
-  }, [showVideo]);
-
-  // Clock
-  useEffect(() => {
-    const id = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Rotating fallback fragments (only used when no dynamic ambient_text)
-  useEffect(() => {
-    const id = setInterval(() => {
-      setFragmentIdx(prev => (prev + 1) % FALLBACK_FRAGMENTS.length);
-    }, FRAGMENT_CYCLE_MS);
-    return () => clearInterval(id);
-  }, []);
+    requestAnimationFrame(tick);
+    return () => { running = false; };
+  }, [isVisible]);
 
   // Keyboard
   const handleKey = useCallback((e: KeyboardEvent) => {
@@ -258,6 +280,36 @@ export function HapaxPage() {
   // Dynamic ambient text (from aggregator) or fallback
   const fragment = vlState?.ambient_text || FALLBACK_FRAGMENTS[fragmentIdx];
 
+  // Memoize drift animation styles (depend only on ambient.speed)
+  const drift1Style = useMemo(() => ({
+    width: "40vw" as const, height: "40vw" as const,
+    left: "10%", top: "20%",
+    background: "radial-gradient(circle, rgba(120,45,10,0.08) 0%, transparent 70%)",
+    animation: `drift1 ${25 + ambient.speed * 30}s ease-in-out infinite alternate`,
+  }), [ambient.speed]);
+
+  const drift2Style = useMemo(() => ({
+    width: "30vw" as const, height: "30vw" as const,
+    right: "5%", bottom: "10%",
+    background: "radial-gradient(circle, rgba(160,70,15,0.06) 0%, transparent 70%)",
+    animation: `drift2 ${30 + ambient.speed * 25}s ease-in-out infinite alternate`,
+  }), [ambient.speed]);
+
+  const drift3Style = useMemo(() => ({
+    width: "50vw" as const, height: "50vw" as const,
+    left: "40%", top: "-10%",
+    background: "radial-gradient(circle, rgba(90,25,8,0.07) 0%, transparent 70%)",
+    animation: `drift3 ${35 + ambient.speed * 20}s ease-in-out infinite alternate`,
+  }), [ambient.speed]);
+
+  // Memoize video overlay style
+  const videoStyle = useMemo(() => ({
+    opacity: isAlert ? 0.12 : isPerformative ? 0.5 : 0.2,
+    filter: `saturate(${isPerformative ? 1.0 : 0.3}) contrast(${isPerformative ? 1.1 : 0.9}) brightness(${isPerformative ? 0.8 : 0.5}) sepia(0.4)`,
+    transition: "opacity 2s ease, filter 2s ease",
+    zIndex: 1,
+  }), [isAlert, isPerformative]);
+
   return (
     <div
       className="h-screen w-screen overflow-hidden select-none cursor-none relative"
@@ -296,12 +348,7 @@ export function HapaxPage() {
           ref={snapshotRef}
           alt=""
           className="absolute inset-0 w-full h-full object-cover"
-          style={{
-            opacity: isAlert ? 0.12 : isPerformative ? 0.5 : 0.2,
-            filter: `saturate(${isPerformative ? 1.0 : 0.3}) contrast(${isPerformative ? 1.1 : 0.9}) brightness(${isPerformative ? 0.8 : 0.5}) sepia(0.4)`,
-            transition: "opacity 2s ease, filter 2s ease",
-            zIndex: 1,
-          }}
+          style={videoStyle}
         />
       )}
 
@@ -310,30 +357,15 @@ export function HapaxPage() {
         {/* Slowly drifting circles — visual richness, not emptiness */}
         <div
           className="absolute rounded-full"
-          style={{
-            width: "40vw", height: "40vw",
-            left: "10%", top: "20%",
-            background: "radial-gradient(circle, rgba(120,45,10,0.08) 0%, transparent 70%)",
-            animation: `drift1 ${25 + ambient.speed * 30}s ease-in-out infinite alternate`,
-          }}
+          style={drift1Style}
         />
         <div
           className="absolute rounded-full"
-          style={{
-            width: "30vw", height: "30vw",
-            right: "5%", bottom: "10%",
-            background: "radial-gradient(circle, rgba(160,70,15,0.06) 0%, transparent 70%)",
-            animation: `drift2 ${30 + ambient.speed * 25}s ease-in-out infinite alternate`,
-          }}
+          style={drift2Style}
         />
         <div
           className="absolute rounded-full"
-          style={{
-            width: "50vw", height: "50vw",
-            left: "40%", top: "-10%",
-            background: "radial-gradient(circle, rgba(90,25,8,0.07) 0%, transparent 70%)",
-            animation: `drift3 ${35 + ambient.speed * 20}s ease-in-out infinite alternate`,
-          }}
+          style={drift3Style}
         />
       </div>
 
