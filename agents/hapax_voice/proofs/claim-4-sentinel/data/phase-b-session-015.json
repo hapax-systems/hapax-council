@@ -1,0 +1,130 @@
+{
+  "phase_b_session": 15,
+  "session_id": "200c07b67467",
+  "timestamp": "2026-03-20T15:46:25.471Z",
+  "turn_count": 7,
+  "experiment_config": {
+    "name": "continuity-v1",
+    "condition": "B",
+    "phase": "intervention",
+    "components": {
+      "stable_frame": true,
+      "message_drop": false,
+      "cross_session": false,
+      "sentinel": false
+    }
+  },
+  "code_state": {
+    "max_spoken_words": 35,
+    "max_response_tokens": 150,
+    "tools_enabled": false,
+    "pre_roll_frames": 50
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "user": "I have a meeting in a few minutes where I have to go talk to my teammates. While I'm a manager for a platform services team, we do DevOps and platform engineering and observability and SRE work, and I've got to go talk to these people about how life is.",
+      "assistant": "Got it - you're switching from deep technical work to people mode for your platform team standup. That's a big context shift from debugging voice agents and building Android apps to discussing how your DevOps and S",
+      "scores": {
+        "consent_latency_ok": 0,
+        "acceptance_type": 0.3,
+        "activation_score": 0.4517,
+        "frustration_score": 0,
+        "frustration_rolling_avg": 0,
+        "reference_accuracy": 1,
+        "total_latency_ms": 17965.5992,
+        "context_anchor_success": 0.5
+      }
+    },
+    {
+      "turn": 1,
+      "user": "like my job a lot group of people",
+      "assistant": "That's great to hear - having a team you genuinely enjoy working with makes all the difference, especially in platform engineering where you're solving gnarly problems together. Hope the check-in goes well.",
+      "scores": {
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "reference_accuracy": 1,
+        "acceptance_type": 0.3,
+        "activation_score": 0.1216,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 17985.4817,
+        "context_anchor_success": 0.3
+      }
+    },
+    {
+      "turn": 2,
+      "user": "forward to the weekend. We have a work on-site trip coming up in a couple weeks here. We're all going to get together for PI planning.",
+      "assistant": "Nice - PI planning with a team you actually like is way better than the usual death-by-sticky-notes experience. Getting everyone in the same room for platform work especially, since so much of what you build touches everything else. Shoul",
+      "scores": {
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 20302.3093,
+        "acceptance_type": 0.3,
+        "activation_score": 0.5082,
+        "frustration_score": 0,
+        "context_anchor_success": 0.4
+      }
+    },
+    {
+      "turn": 3,
+      "user": "to everybody else in the business. It's a lot of responsibility. It makes the job very fulfilling, but so much risk.",
+      "assistant": "Yeah, platform teams carry the whole stack on their shoulders - when you're the foundation, every decision ripples out. That mix of impact and potential blast radius is what makes it both terrifying and addictive. At",
+      "scores": {
+        "acceptance_type": 0.3,
+        "consent_latency_ok": 0,
+        "activation_score": 0.5225,
+        "frustration_score": 0,
+        "total_latency_ms": 20990.2287,
+        "frustration_rolling_avg": 0,
+        "reference_accuracy": 1,
+        "context_anchor_success": 0.1
+      }
+    },
+    {
+      "turn": 4,
+      "user": "I started out as a site reliability engineer myself and now I'm in management. I actually never really thought of myself as somebody that would ever end up in kind of a managerial position, but it seems like it's a really good fit for me despite what I thought about myself previously.",
+      "assistant": "Funny how that works - SRE to management is such a natural path once you realize half of reliability work is already people coordination and incident psychology. Plus you actually understand the pain your team deals with, which",
+      "scores": {
+        "activation_score": 0.5762,
+        "consent_latency_ok": 0,
+        "context_anchor_success": 0.6,
+        "acceptance_type": 0,
+        "reference_accuracy": 1,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 20918.4218,
+        "frustration_score": 0
+      }
+    },
+    {
+      "turn": 5,
+      "user": "actually that's sort of true I'm also now in a position where a technical moron and everybody else around me is far far smarter than I am on all technical matters so it's sort of it's that's a little bit of a tough pill to swallow sometimes",
+      "assistant": "That's the classic manager's paradox - you go from being the person who knows the systems inside out to being the person who clears blockers for people who know them better. But honestly, having been in the trenches means you know which questions to",
+      "scores": {
+        "activation_score": 0.5328,
+        "frustration_rolling_avg": 0,
+        "total_latency_ms": 20792.2041,
+        "acceptance_type": 0,
+        "reference_accuracy": 1,
+        "consent_latency_ok": 0,
+        "frustration_score": 0,
+        "context_anchor_success": 0.3
+      }
+    },
+    {
+      "turn": 6,
+      "user": "True. True.",
+      "assistant": "Time to head to that meeting? Good luck with the team check-in.",
+      "scores": {
+        "frustration_score": 0,
+        "acceptance_type": 1,
+        "consent_latency_ok": 0,
+        "reference_accuracy": 1,
+        "activation_score": 0.2039,
+        "total_latency_ms": 11433.1164,
+        "context_anchor_success": 0.571,
+        "frustration_rolling_avg": 0
+      }
+    }
+  ]
+}
