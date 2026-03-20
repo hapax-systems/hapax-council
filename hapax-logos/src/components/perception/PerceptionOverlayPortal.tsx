@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ZoneOverlay } from "./ZoneOverlay";
 import { DisplayStateBadge } from "./DisplayStateBadge";
 import {
@@ -11,7 +12,7 @@ import type { SignalEntry } from "../../api/types";
  * Portable overlay — visual classification focus.
  * Three densities: off, minimal (HUD badges), full (zone overlays).
  */
-export function PerceptionOverlayPortal() {
+export const PerceptionOverlayPortal = memo(function PerceptionOverlayPortal() {
   const { visualLayer, filteredSignals, perception } = useSignals();
   const { overlayMode, zoneOpacityOverrides } = useOverlayControl();
 
@@ -129,4 +130,4 @@ export function PerceptionOverlayPortal() {
       })}
     </div>
   );
-}
+});

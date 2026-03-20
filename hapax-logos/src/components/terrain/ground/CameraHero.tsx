@@ -145,7 +145,7 @@ function SecondaryStrip({
 }
 
 function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }) {
-  const { imgRef } = useBatchSnapshot(role, 16); // 60fps secondary thumbs
+  const { imgRef } = useBatchSnapshot(role, 250); // 4fps — 48x27 thumbs don't need 60fps
 
   return (
     <button

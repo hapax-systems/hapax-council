@@ -6,6 +6,7 @@
  * turn counter, word cutoff indicator, and frustration trend.
  */
 
+import { memo } from "react";
 import type { VisualLayerState } from "../../../api/types";
 
 const VOICE_STATE_COLORS: Record<string, string> = {
@@ -45,7 +46,7 @@ interface VoiceOverlayProps {
   vl: VisualLayerState | undefined;
 }
 
-export function VoiceOverlay({ vl }: VoiceOverlayProps) {
+export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps) {
   const voiceSession = vl?.voice_session ?? DEFAULT_VOICE;
   const voiceContent = vl?.voice_content ?? [];
   if (!voiceSession.active) return null;
@@ -313,4 +314,4 @@ export function VoiceOverlay({ vl }: VoiceOverlayProps) {
       `}</style>
     </div>
   );
-}
+});

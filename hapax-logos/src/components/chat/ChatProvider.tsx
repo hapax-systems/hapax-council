@@ -43,12 +43,17 @@ type ChatAction =
 
 // ── Reducer ────────────────────────────────────────────────────────────
 
+const MAX_MESSAGES = 200;
+function capMessages(msgs: ChatMessage[]): ChatMessage[] {
+  return msgs.length > MAX_MESSAGES ? msgs.slice(-MAX_MESSAGES) : msgs;
+}
+
 function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "SET_SESSION":
       return { ...state, sessionId: action.sessionId, model: action.model };
     case "ADD_MESSAGE":
-      return { ...state, messages: [...state.messages, action.message] };
+      return { ...state, messages: capMessages([...state.messages, action.message]) };
     case "STREAM_START":
       return { ...state, isStreaming: true, streamingText: "", currentToolName: null, error: null };
     case "STREAM_DELTA":
@@ -62,7 +67,7 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         toolArgs: action.args,
         timestamp: Date.now(),
       };
-      return { ...state, messages: [...state.messages, toolMsg], currentToolName: action.name };
+      return { ...state, messages: capMessages([...state.messages, toolMsg]), currentToolName: action.name };
     }
     case "STREAM_TOOL_RESULT": {
       const resultMsg: ChatMessage = {
@@ -72,7 +77,7 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         toolName: action.name,
         timestamp: Date.now(),
       };
-      return { ...state, messages: [...state.messages, resultMsg] };
+      return { ...state, messages: capMessages([...state.messages, resultMsg]) };
     }
     case "STREAM_DONE": {
       const assistantMsg: ChatMessage = {
@@ -86,7 +91,7 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         isStreaming: false,
         streamingText: "",
         currentToolName: null,
-        messages: [...state.messages, assistantMsg],
+        messages: capMessages([...state.messages, assistantMsg]),
         totalTokens: action.totalTokens,
         lastTurnTokens: action.turnTokens,
       };
