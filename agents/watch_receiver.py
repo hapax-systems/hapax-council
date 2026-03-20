@@ -101,6 +101,24 @@ class VoiceTriggerPayload(BaseModel):
     device_id: str
 
 
+class GesturePayload(BaseModel):
+    device_id: str
+    gesture: str  # "double_tap", "wrist_twist", "cover"
+    timestamp: str
+
+
+class PhoneContextPayload(BaseModel):
+    device_id: str
+    ts: int = Field(ge=0)
+    activity_type: str = "still"  # still, walking, running, in_vehicle, on_bicycle
+    activity_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    screen_on: bool = False
+    ringer_mode: str = "normal"  # normal, vibrate, silent
+    battery_pct: int = Field(default=100, ge=0, le=100)
+    charging: bool = False
+    network_type: str = "none"  # wifi, cellular, none
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
@@ -344,6 +362,44 @@ def create_app() -> FastAPI:
             {
                 "triggered_at": datetime.now(UTC).isoformat(),
                 "device_id": payload.device_id,
+            },
+        )
+        return {"status": "ok"}
+
+    @_app.post("/watch/gesture")
+    async def watch_gesture(payload: GesturePayload) -> dict[str, str]:
+        """Receive gesture intent from watch accelerometer/gyro/proximity."""
+        if payload.device_id not in ALLOWED_DEVICE_IDS:
+            raise HTTPException(status_code=403, detail="Unknown device")
+        _atomic_write(
+            _get_watch_state_dir() / "gesture.json",
+            {
+                "gesture": payload.gesture,
+                "timestamp": payload.timestamp,
+                "device_id": payload.device_id,
+                "received_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        log.info("Watch gesture received: %s from %s", payload.gesture, payload.device_id)
+        return {"status": "ok", "gesture": payload.gesture}
+
+    @_app.post("/phone/context")
+    async def phone_context(payload: PhoneContextPayload) -> dict[str, str]:
+        """Receive coarse context from phone (activity, screen, ringer)."""
+        if payload.device_id not in ALLOWED_DEVICE_IDS:
+            raise HTTPException(status_code=403, detail="Unknown device")
+        _atomic_write(
+            _get_watch_state_dir() / "phone_context.json",
+            {
+                "source": DEVICE_NAMES.get(payload.device_id, payload.device_id),
+                "updated_at": datetime.now(UTC).isoformat(),
+                "activity_type": payload.activity_type,
+                "activity_confidence": payload.activity_confidence,
+                "screen_on": payload.screen_on,
+                "ringer_mode": payload.ringer_mode,
+                "battery_pct": payload.battery_pct,
+                "charging": payload.charging,
+                "network_type": payload.network_type,
             },
         )
         return {"status": "ok"}

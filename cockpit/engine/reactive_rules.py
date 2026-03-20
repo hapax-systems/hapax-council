@@ -784,6 +784,104 @@ CONSENT_TRANSITION_RULE = Rule(
 )
 
 
+# ── Phase 0: Biometric state cascade (Distributed Nervous System) ────────
+
+
+_BIOMETRIC_FILES = {"heartrate.json", "hrv.json", "activity.json", "eda.json"}
+_last_stress_elevated: bool = False
+
+
+async def _handle_biometric_state_change(*, path: str) -> str:
+    """Update Stimmung biometric dimensions from watch state files.
+
+    Reads current biometric data and writes a stress transition event
+    to perception-state.json if stress state crosses a threshold.
+    """
+    from pathlib import Path as _Path
+
+    from agents.hapax_voice.watch_signals import WATCH_STATE_DIR, is_stress_elevated
+
+    global _last_stress_elevated
+    stress_now = is_stress_elevated(WATCH_STATE_DIR)
+
+    if stress_now != _last_stress_elevated:
+        _log.info("Stress transition: %s → %s", _last_stress_elevated, stress_now)
+        hapax_event(
+            "biometric",
+            "stress_transition",
+            metadata={"from": _last_stress_elevated, "to": stress_now},
+        )
+        _last_stress_elevated = stress_now
+
+    _log.debug("Biometric state change processed: %s", path)
+    return f"biometric-update:{_Path(path).name}"
+
+
+def _biometric_state_filter(event: ChangeEvent) -> bool:
+    """Match watch biometric state file changes."""
+    return event.path.name in _BIOMETRIC_FILES and "watch" in event.path.parts
+
+
+def _biometric_state_produce(event: ChangeEvent) -> list[Action]:
+    return [
+        Action(
+            name=f"biometric-state:{event.path.name}",
+            handler=_handle_biometric_state_change,
+            args={"path": str(event.path)},
+            phase=0,
+            priority=15,
+        )
+    ]
+
+
+BIOMETRIC_STATE_RULE = Rule(
+    name="biometric-state-change",
+    description="Update Stimmung biometric dimensions on watch state file changes",
+    trigger_filter=_biometric_state_filter,
+    produce=_biometric_state_produce,
+    phase=0,
+    cooldown_s=30,  # match watch flush interval
+)
+
+
+async def _handle_phone_health_summary(*, path: str) -> str:
+    """Process daily phone health summary — update profiler bridge facts."""
+    _log.info("Phone health summary received: %s", path)
+    hapax_event(
+        "biometric",
+        "health_summary_received",
+        metadata={"path": path},
+    )
+    return f"phone-health:{path}"
+
+
+def _phone_health_filter(event: ChangeEvent) -> bool:
+    """Match phone_health_summary.json updates."""
+    return event.path.name == "phone_health_summary.json" and "watch" in event.path.parts
+
+
+def _phone_health_produce(event: ChangeEvent) -> list[Action]:
+    return [
+        Action(
+            name="phone-health-summary",
+            handler=_handle_phone_health_summary,
+            args={"path": str(event.path)},
+            phase=0,
+            priority=20,
+        )
+    ]
+
+
+PHONE_HEALTH_SUMMARY_RULE = Rule(
+    name="phone-health-summary",
+    description="Process daily phone health summary into profiler bridge facts",
+    trigger_filter=_phone_health_filter,
+    produce=_phone_health_produce,
+    phase=0,
+    cooldown_s=3600,  # daily data, no urgency
+)
+
+
 # ── Registration ────────────────────────────────────────────────────────────
 
 ALL_RULES: list[Rule] = [
@@ -818,6 +916,8 @@ ALL_RULES: list[Rule] = [
     CORRECTION_SYNTHESIS_RULE,
     PRESENCE_TRANSITION_RULE,
     CONSENT_TRANSITION_RULE,
+    BIOMETRIC_STATE_RULE,
+    PHONE_HEALTH_SUMMARY_RULE,
 ]
 
 # Backwards compat alias
