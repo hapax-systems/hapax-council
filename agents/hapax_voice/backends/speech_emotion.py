@@ -76,14 +76,14 @@ class _SpeechEmotionCache:
 def _capture_audio(duration_s: float, sample_rate: int = 16000) -> np.ndarray | None:
     """Capture audio from PipeWire monitor source."""
     import subprocess
-    import tempfile
 
     tmp_path: str | None = None
     try:
         import soundfile as sf
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
+        from shared.tmp_wav import tmp_wav_path
+
+        tmp_path = str(tmp_wav_path())
 
         with open(tmp_path, "wb") as out_fh:
             subprocess.run(

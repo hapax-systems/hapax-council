@@ -2052,6 +2052,16 @@ class VoiceDaemon:
                 # Prune expired notifications
                 self.notifications.prune_expired()
 
+                # Sweep orphan temp wav files every 60s (guards against SIGKILL/OOM leaks)
+                if not hasattr(self, "_wav_sweep_counter"):
+                    self._wav_sweep_counter = 0
+                self._wav_sweep_counter += 1
+                if self._wav_sweep_counter >= 60:
+                    self._wav_sweep_counter = 0
+                    from shared.tmp_wav import cleanup_stale_wavs
+
+                    cleanup_stale_wavs()
+
                 await asyncio.sleep(1)
 
                 # Update activity mode from latest workspace analysis
@@ -2159,6 +2169,20 @@ def main() -> None:
         return
 
     _enforce_single_instance()
+
+    # Clean up orphan temp wav files from prior unclean shutdown (SIGKILL/OOM)
+    from shared.tmp_wav import cleanup_all_wavs
+
+    cleanup_all_wavs()
+    # Also sweep /tmp for legacy orphans from before the managed directory
+    import glob as _glob
+
+    for stale_wav in _glob.glob("/tmp/tmp*.wav"):
+        try:
+            Path(stale_wav).unlink()
+            log.info("Cleaned legacy orphan temp file: %s", stale_wav)
+        except OSError:
+            pass
 
     daemon = VoiceDaemon(cfg=cfg)
     loop = asyncio.new_event_loop()

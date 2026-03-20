@@ -731,7 +731,6 @@ def _run_diarization(audio_path: str) -> list[tuple[float, float, str]]:
 
 def _transcribe_segment(waveform: np.ndarray, sr: int, start: float, end: float) -> str:
     """Transcribe a segment of audio using faster-whisper."""
-    import tempfile
 
     import soundfile
 
@@ -741,12 +740,13 @@ def _transcribe_segment(waveform: np.ndarray, sr: int, start: float, end: float)
     end_idx = int(end * sr)
     chunk = waveform[start_idx:end_idx]
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_path = tmp.name
+    from shared.tmp_wav import tmp_wav_path
+
+    tmp_path = tmp_wav_path()
     try:
-        soundfile.write(tmp_path, chunk, sr)
+        soundfile.write(str(tmp_path), chunk, sr)
         segments, _info = model.transcribe(
-            tmp_path,
+            str(tmp_path),
             language="en",
             beam_size=5,
             no_speech_threshold=0.2,
@@ -756,12 +756,11 @@ def _transcribe_segment(waveform: np.ndarray, sr: int, start: float, end: float)
         text_parts = [seg.text.strip() for seg in segments]
         return " ".join(text_parts)
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
 
 
 def _diarize_segment(waveform: np.ndarray, sr: int, start: float, end: float) -> list[str]:
     """Diarize a segment and return unique speaker labels."""
-    import tempfile
 
     import soundfile
 
@@ -769,14 +768,15 @@ def _diarize_segment(waveform: np.ndarray, sr: int, start: float, end: float) ->
     end_idx = int(end * sr)
     chunk = waveform[start_idx:end_idx]
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_path = tmp.name
+    from shared.tmp_wav import tmp_wav_path
+
+    tmp_path = tmp_wav_path()
     try:
-        soundfile.write(tmp_path, chunk, sr)
-        diar_segments = _run_diarization(tmp_path)
+        soundfile.write(str(tmp_path), chunk, sr)
+        diar_segments = _run_diarization(str(tmp_path))
         return list({s for _, _, s in diar_segments})
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
 
 
 # ── RAG Output Formatting ────────────────────────────────────────────────────

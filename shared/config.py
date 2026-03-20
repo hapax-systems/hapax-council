@@ -66,6 +66,7 @@ HEALTH_STATE_DIR: Path = HAPAX_CACHE_DIR / "health-watchdog"
 RAG_INGEST_STATE_DIR: Path = HAPAX_CACHE_DIR / "rag-ingest"
 TAKEOUT_STATE_DIR: Path = HAPAX_CACHE_DIR / "takeout-ingest"
 AUDIO_PROCESSOR_CACHE_DIR: Path = HAPAX_CACHE_DIR / "audio-processor"
+HAPAX_TMP_WAV_DIR: Path = HAPAX_CACHE_DIR / "hapax" / "tmp-wav"
 
 # Studio ingestion paths
 AUDIO_RAW_DIR: Path = HAPAX_HOME / "audio-recording" / "raw"
