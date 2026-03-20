@@ -45,6 +45,7 @@ from agents.visual_layer_state import (
     BiometricState,
     ClassificationDetection,
     DisplayStateMachine,
+    EnvironmentalColor,
     InjectedFeed,
     SignalCategory,
     SignalEntry,
@@ -1329,6 +1330,14 @@ class VisualLayerAggregator:
             perception_age_s=tc.perception_age_s,
             # WS2: stimmung stance
             stimmung_stance=self._stimmung.overall_stance.value if self._stimmung else "nominal",
+            # Classification consumption: enriched perception signals
+            gaze_direction=self._last_perception_data.get("gaze_direction", "unknown"),
+            emotion=self._last_perception_data.get("top_emotion", "neutral"),
+            posture=self._last_perception_data.get("posture", "unknown"),
+            # BOCPD: activity transition detected in last 30s
+            recent_transition=any(
+                time.time() - cp.get("timestamp", 0) < 30.0 for cp in self._last_change_points
+            ),
         )
 
         pools = ContentPools(
@@ -1515,6 +1524,19 @@ class VisualLayerAggregator:
         elif production:
             return production, ""
 
+        # CLIP scene_state inference — between workspace monitor and LLM fallback
+        scene_state_clip = perception_data.get("scene_state_clip", "")
+        _CLIP_ACTIVITY_MAP = {
+            "focused coding": "coding",
+            "music production": "making music",
+            "video meeting": "in a meeting",
+            "reading": "reading",
+            "conversation": "in conversation",
+        }
+        clip_activity = _CLIP_ACTIVITY_MAP.get(scene_state_clip, "")
+        if clip_activity:
+            return clip_activity, "(CLIP)"
+
         # LLM activity classification as fallback (WS5)
         # Precedence: operator correction > voice > workspace monitor > LLM > flow/music
         llm_activity = perception_data.get("llm_activity", "")
@@ -1604,6 +1626,28 @@ class VisualLayerAggregator:
 
         # Apply biometric modulation (Batch E)
         state.ambient_params = self._apply_biometric_modulation(state.ambient_params)
+
+        # Classification consumption: environmental color from ambient sensors
+        ambient_brightness = self._last_perception_data.get("ambient_brightness", 0.0)
+        color_temperature = self._last_perception_data.get("color_temperature", "unknown")
+        if ambient_brightness or color_temperature != "unknown":
+            hue_shift = 0.0
+            lightness_bias = 0.0
+            source = ""
+            # Warm color temperature → positive hue shift (amber)
+            # Cool → negative (blue)
+            _TEMP_HUE_MAP = {"warm": 15.0, "neutral": 0.0, "cool": -15.0}
+            hue_shift = _TEMP_HUE_MAP.get(color_temperature, 0.0)
+            if color_temperature != "unknown":
+                source = color_temperature
+            # Low brightness → darken, high → brighten
+            if ambient_brightness:
+                lightness_bias = round((ambient_brightness - 0.5) * 0.2, 3)
+            state.environmental_color = EnvironmentalColor(
+                hue_shift=hue_shift,
+                lightness_bias=lightness_bias,
+                source=source,
+            )
 
         # Attach additional state
         state.voice_session = self._voice_session

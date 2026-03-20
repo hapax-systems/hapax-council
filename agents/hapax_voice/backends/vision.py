@@ -157,6 +157,7 @@ class _VisionCache:
         self._operator_confirmed: bool = False
         self._scene_state_clip: str = ""
         self._updated_at: float = 0.0
+        self._per_camera_scene_types: dict[str, str] = {}  # role → scene_type
 
         # Audio behaviors injected externally for cross-modal fusion
         self._audio_activity: str = "idle"
@@ -226,6 +227,24 @@ class _VisionCache:
                 all_objects.update(o.strip() for o in objs.split(",") if o.strip())
         scene_objects = ", ".join(sorted(all_objects))
 
+        # ── Scene type consensus: majority vote across cameras ─────────
+        scene_type_votes: dict[str, int] = {}
+        per_camera_scenes: dict[str, str] = {}
+        for role, behaviors in self._per_camera_behaviors.items():
+            if now - behaviors.get("ts", 0) < stale_threshold:
+                st = self._per_camera_scene_types.get(role, "unknown")
+                if st and st != "unknown":
+                    scene_type_votes[st] = scene_type_votes.get(st, 0) + 1
+                    per_camera_scenes[role] = st
+        # Majority-vote scene type (fallback to stored global)
+        if scene_type_votes:
+            consensus_scene = max(scene_type_votes, key=scene_type_votes.get)  # type: ignore[arg-type]
+        else:
+            consensus_scene = self._scene_type
+
+        # Room occupancy: max person count across cameras (already computed)
+        room_occupancy = person_count
+
         # ── Cross-modal activity inference ──────────────────────────────
         activity, _confidence = _infer_cross_modal_activity(
             self._per_camera_behaviors,
@@ -244,14 +263,17 @@ class _VisionCache:
             "posture": posture,
             "pose_summary": pose_summary,
             "scene_objects": scene_objects,
-            # Global (not per-camera):
-            "scene_type": self._scene_type,
+            # Global (consensus across cameras):
+            "scene_type": consensus_scene,
             "ambient_brightness": self._ambient_brightness,
             "color_temperature": self._color_temperature,
             "detected_action": activity,
             "detected_objects": self._merged_detections(),
             "nearest_person_distance": self._nearest_person_distance,
             "scene_state_clip": self._scene_state_clip,
+            # Multi-camera scene awareness
+            "per_camera_scenes": per_camera_scenes,
+            "room_occupancy": room_occupancy,
         }
 
     def update(
@@ -294,6 +316,8 @@ class _VisionCache:
             self._scene_objects = scene_objects
             if scene_type is not None:
                 self._scene_type = scene_type
+                if hasattr(self, "_current_role"):
+                    self._per_camera_scene_types[self._current_role] = scene_type
             if gaze_direction is not None:
                 self._gaze_direction = gaze_direction
             if hand_gesture is not None:
@@ -431,10 +455,14 @@ class VisionBackend:
         # Weighted round-robin: operator gets 3x polls for responsive tracking.
         # Sequence: op, hw, op, room, op, aux, room-brio, aux-brio (repeat)
         self._camera_roles = camera_roles or [
-            "operator", "hardware",
-            "operator", "room",
-            "operator", "aux",
-            "room-brio", "aux-brio",
+            "operator",
+            "hardware",
+            "operator",
+            "room",
+            "operator",
+            "aux",
+            "room-brio",
+            "aux-brio",
         ]
         self._poll_interval = poll_interval
         self._cache = _VisionCache()
@@ -464,6 +492,8 @@ class VisionBackend:
         self._b_operator_confirmed: Behavior[bool] = Behavior(False)
         self._b_scene_state_clip: Behavior[str] = Behavior("")
         self._b_scene_inventory: Behavior[str] = Behavior("{}")
+        self._b_per_camera_scenes: Behavior[str] = Behavior("{}")  # JSON dict
+        self._b_room_occupancy: Behavior[int] = Behavior(0)
 
     @property
     def name(self) -> str:
@@ -489,6 +519,8 @@ class VisionBackend:
                 "operator_confirmed",
                 "scene_state_clip",
                 "scene_inventory",
+                "per_camera_scenes",
+                "room_occupancy",
             }
         )
 
@@ -576,6 +608,10 @@ class VisionBackend:
         self._b_emotion.update(cached["top_emotion"], now)
         self._b_operator_confirmed.update(cached.get("operator_confirmed", False), now)
         self._b_scene_state_clip.update(cached.get("scene_state_clip", ""), now)
+        # Multi-camera scene consensus
+        pcs = cached.get("per_camera_scenes", {})
+        self._b_per_camera_scenes.update(json.dumps(pcs) if pcs else "{}", now)
+        self._b_room_occupancy.update(cached.get("room_occupancy", 0), now)
 
         # Scene inventory snapshot
         try:
@@ -601,6 +637,8 @@ class VisionBackend:
         behaviors["operator_confirmed"] = self._b_operator_confirmed
         behaviors["scene_state_clip"] = self._b_scene_state_clip
         behaviors["scene_inventory"] = self._b_scene_inventory
+        behaviors["per_camera_scenes"] = self._b_per_camera_scenes
+        behaviors["room_occupancy"] = self._b_room_occupancy
 
     def _run_gaze_estimation(self, frame: np.ndarray) -> str:
         """Estimate gaze direction from SCRFD 5-point face landmarks.

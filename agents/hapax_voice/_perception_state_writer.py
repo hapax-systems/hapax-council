@@ -173,6 +173,17 @@ def _parse_scene_inventory(raw: object) -> dict[str, Any]:
     return {}
 
 
+def _safe_json_dict(val: object) -> dict:
+    """Parse a JSON string behavior value into a dict, tolerant of failures."""
+    if isinstance(val, dict):
+        return val
+    try:
+        result = json.loads(str(val))
+        return result if isinstance(result, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 # ── Main writer ───────────────────────────────────────────────────────────
 
 
@@ -195,14 +206,60 @@ def write_perception_state(
             return default
         return b.value
 
-    # Determine flow state from score
-    flow_score = float(_bval("flow_state_score", 0.0))
+    # Determine flow state from score + classification enrichment modifier
+    base_flow = float(_bval("flow_state_score", 0.0))
+    flow_modifier = 0.0
+    gaze = str(_bval("gaze_direction", "unknown"))
+    posture_val = str(_bval("posture", "unknown"))
+    emotion_val = str(_bval("top_emotion", "neutral"))
+    gesture_val = str(_bval("hand_gesture", "none"))
+    audio_rms = float(_bval("audio_energy_rms", 0.0) or 0)
+    vad = float(_bval("vad_confidence", 0.0) or 0)
+
+    # Gaze on screen + sustained → deeper flow
+    if gaze == "screen":
+        flow_modifier += 0.15
+    # Upright posture → engaged
+    if posture_val == "upright":
+        flow_modifier += 0.1
+    # Neutral/happy emotion → not disrupted
+    if emotion_val in ("neutral", "happy"):
+        flow_modifier += 0.05
+    # Hands at rest → not gesturing
+    if gesture_val in ("none", ""):
+        flow_modifier += 0.05
+    # Audio silence + no speech → undisturbed
+    if audio_rms < 0.05 and vad < 0.3:
+        flow_modifier += 0.1
+
+    flow_score = min(1.0, base_flow + flow_modifier)
     if flow_score >= 0.6:
         flow_state = "active"
     elif flow_score >= 0.3:
         flow_state = "warming"
     else:
         flow_state = "idle"
+
+    # Gesture-to-intent mapping
+    _GESTURE_INTENT_MAP = {
+        "thumb_up": "positive_feedback",
+        "open_palm": "stop",
+        "pointing_up": "attention",
+        "victory": "positive_mood",
+    }
+    gesture_intent = _GESTURE_INTENT_MAP.get(gesture_val, "")
+
+    # Frustration spike detection (multi-signal)
+    frustration_score = 0.0
+    if emotion_val in ("angry", "disgust", "contempt"):
+        frustration_score += 0.3
+    if posture_val == "slouching":
+        # Slouching alone is mild; combined with other signals = frustration
+        frustration_score += 0.2
+    if audio_rms > 0.3 and vad < 0.3:
+        # Audio energy spike without speech (sigh/groan)
+        frustration_score += 0.2
+    frustration_score = min(1.0, frustration_score)
 
     # Collect active consent contract IDs
     active_contracts: list[str] = []
@@ -224,6 +281,10 @@ def write_perception_state(
         "music_genre": str(_bval("music_genre", "")),
         "flow_state": flow_state,
         "flow_score": flow_score,
+        "flow_modifier": round(flow_modifier, 3),
+        # Classification consumption: derived signals
+        "gesture_intent": gesture_intent,
+        "frustration_score": round(frustration_score, 3),
         "emotion_valence": float(_bval("emotion_valence", 0.0)),
         "emotion_arousal": float(_bval("emotion_arousal", 0.0)),
         "audio_energy_rms": float(_bval("audio_energy_rms", 0.0)),
@@ -251,6 +312,9 @@ def write_perception_state(
         "detected_action": str(_bval("detected_action", "unknown")),
         "audio_scene": str(_bval("audio_scene", "silence")),
         "scene_state_clip": str(_bval("scene_state_clip", "")),
+        # Multi-camera scene consensus
+        "per_camera_scenes": _safe_json_dict(_bval("per_camera_scenes", "{}")),
+        "room_occupancy": int(_bval("room_occupancy", 0) or 0),
         "usb_devices": str(_bval("usb_devices", "")),
         "network_devices": str(_bval("network_devices", "")),
         "active_contracts": active_contracts,
