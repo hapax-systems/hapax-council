@@ -1,0 +1,18 @@
+[Unit]
+Description=Screen context — capture active window for behavioral profiling
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.screen_context
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=screen-context
+MemoryMax=128M
+CPUQuota=20%

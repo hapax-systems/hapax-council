@@ -219,6 +219,9 @@ def _extract_latency(trace_data: dict) -> float:
         return 0.0
 
 
+MAX_PAGES = 50  # Safety cap — prevent unbounded pagination
+
+
 def _fetch_traces(
     auth_header: str,
     from_timestamp: str | None = None,
@@ -228,7 +231,7 @@ def _fetch_traces(
     all_traces: list[dict] = []
     page = 1
 
-    while True:
+    while page <= MAX_PAGES:
         params: dict[str, str | int] = {
             "limit": limit,
             "page": page,

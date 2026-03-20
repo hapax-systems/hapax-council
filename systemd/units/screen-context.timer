@@ -1,0 +1,10 @@
+[Unit]
+Description=Screen context sync (every 5min)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

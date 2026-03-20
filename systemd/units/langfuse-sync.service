@@ -18,4 +18,4 @@ CPUQuota=50%
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=langfuse-sync
-TimeoutStartSec=300
+TimeoutStartSec=600

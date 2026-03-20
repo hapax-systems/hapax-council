@@ -1,0 +1,15 @@
+[Unit]
+Description=Stimmung sync — persist system self-state to RAG
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.stimmung_sync
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stimmung-sync
+MemoryMax=128M
+CPUQuota=20%

@@ -1,0 +1,11 @@
+[Unit]
+Description=Dev story index rebuild (every 6h)
+
+[Timer]
+OnBootSec=8min
+OnUnitActiveSec=6h
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
