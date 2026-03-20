@@ -259,6 +259,11 @@ class SchedulerContext(BaseModel):
     perception_age_s: float = 0.0  # staleness of perception data
     # WS2: system self-state
     stimmung_stance: str = "nominal"
+    # Classification consumption: enriched perception signals
+    gaze_direction: str = "unknown"  # screen | away | down | unknown
+    emotion: str = "neutral"  # happy | sad | angry | fear | neutral | ...
+    posture: str = "unknown"  # upright | slouching | leaning | unknown
+    recent_transition: bool = False  # BOCPD detected activity change in last 30s
 
 
 class ContentPools(BaseModel):
@@ -445,6 +450,24 @@ class ContentScheduler:
             ContentSource.TIME_OF_DAY,
         ):
             score *= 1.4
+
+        # Classification consumption: gaze/emotion/posture modulation
+        if ctx.gaze_direction == "screen" and source == ContentSource.CAMERA_FEED:
+            # Already looking at screen — suppress camera feed injection
+            score *= 0.1
+        if (
+            ctx.emotion in ("angry", "sad", "fear", "disgust")
+            and source == ContentSource.PROFILE_FACT
+        ):
+            # Negative emotion — suppress jovial content
+            score *= 0.3
+        if ctx.posture == "slouching" and source == ContentSource.STUDIO_MOMENT:
+            # Low energy posture — boost break/stretch content
+            score *= 1.5
+
+        # BOCPD: recent activity transition → suppress content switches
+        if ctx.recent_transition:
+            score *= 0.4  # don't interrupt flow entry/exit
 
         # Phase 6: stale perception → reduced scheduling confidence
         if ctx.perception_age_s > 10.0:

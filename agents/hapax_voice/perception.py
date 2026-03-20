@@ -84,6 +84,9 @@ def compute_interruptibility(
     physiological_load: float = 0.0,
     circadian_alignment: float = 0.1,
     system_health_ratio: float = 1.0,
+    gaze_direction: str = "unknown",
+    emotion: str = "neutral",
+    posture: str = "unknown",
 ) -> float:
     """Compute an interruptibility score from perception signals.
 
@@ -128,6 +131,14 @@ def compute_interruptibility(
     # System health (1.0=healthy→+0, 0.5=degraded→-0.25)
     if system_health_ratio < 1.0:
         score -= 0.5 * (1.0 - system_health_ratio)
+
+    # Classification consumption: gaze/emotion/posture enrichments
+    if gaze_direction == "away":
+        score -= 0.25  # looking elsewhere = occupied
+    if emotion in ("angry", "fear", "disgust"):
+        score -= 0.2  # stressed = don't interrupt
+    if posture == "slouching":
+        score -= 0.1  # low energy = gentler
 
     return max(0.0, min(1.0, score))
 
@@ -363,6 +374,9 @@ class PerceptionEngine:
             physiological_load=self._bval("physiological_load", 0.0),
             circadian_alignment=self._bval("circadian_alignment", 0.1),
             system_health_ratio=self._bval("system_health_ratio", 1.0),
+            gaze_direction=str(self._bval("gaze_direction", "unknown")),
+            emotion=str(self._bval("top_emotion", "neutral")),
+            posture=str(self._bval("posture", "unknown")),
         )
 
         presence_score = getattr(self._presence, "score", "likely_absent")

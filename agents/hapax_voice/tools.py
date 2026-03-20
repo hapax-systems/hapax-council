@@ -343,6 +343,54 @@ _set_detection_layers = FunctionSchema(
     required=["visible"],
 )
 
+_query_person_details = FunctionSchema(
+    name="query_person_details",
+    description=(
+        "Get enriched details about a person visible in the scene — gaze direction, "
+        "emotion, posture, gesture, action, depth, mobility, and dwell time."
+    ),
+    properties={
+        "entity_id": {
+            "type": "string",
+            "description": "Entity ID of the person. Omit to get the first/operator person.",
+        },
+        "camera": {
+            "type": "string",
+            "description": "Filter by camera role. Omit for any camera.",
+        },
+    },
+    required=[],
+)
+
+_query_object_motion = FunctionSchema(
+    name="query_object_motion",
+    description=(
+        "Query temporal motion data for a tracked object — velocity, direction, "
+        "dwell time, entering/exiting status, and sighting history."
+    ),
+    properties={
+        "label": {
+            "type": "string",
+            "description": "Object label to query (e.g. 'cup', 'phone'). Omit if using entity_id.",
+        },
+        "entity_id": {
+            "type": "string",
+            "description": "Specific entity ID. Omit if using label.",
+        },
+    },
+    required=[],
+)
+
+_query_scene_state = FunctionSchema(
+    name="query_scene_state",
+    description=(
+        "Get the current scene classification state — scene type, CLIP scene state, "
+        "audio scene, inferred activity, flow state, and object summary."
+    ),
+    properties={},
+    required=[],
+)
+
 TOOL_SCHEMAS: list[FunctionSchema] = [
     _search_documents,
     _search_drive,
@@ -362,6 +410,9 @@ TOOL_SCHEMAS: list[FunctionSchema] = [
     _query_scene_inventory,
     _highlight_detection,
     _set_detection_layers,
+    _query_person_details,
+    _query_object_motion,
+    _query_scene_state,
 ]
 
 
@@ -1258,6 +1309,185 @@ async def handle_set_detection_layers(params) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Scene intelligence tools (classification consumption)
+# ---------------------------------------------------------------------------
+
+
+async def handle_query_person_details(params) -> None:
+    """Query enriched details about a person in the scene."""
+    entity_id = params.arguments.get("entity_id", "")
+    camera_filter = params.arguments.get("camera", "")
+
+    try:
+        data = json.loads(PERCEPTION_STATE_PATH.read_text())
+        inventory = data.get("scene_inventory", {})
+        objects = inventory.get("objects", [])
+
+        # Filter to persons
+        persons = [o for o in objects if o.get("label") == "person"]
+        if entity_id:
+            persons = [o for o in persons if o.get("entity_id") == entity_id]
+        if camera_filter:
+            persons = [o for o in persons if o.get("camera") == camera_filter]
+
+        if not persons:
+            result = "No persons matching that query in the scene."
+        else:
+            lines = []
+            for p in persons[:5]:
+                eid = p.get("entity_id", "?")
+                cam = p.get("camera", "?")
+                parts = [f"Person {eid} on {cam}:"]
+                for key in (
+                    "gaze_direction",
+                    "emotion",
+                    "posture",
+                    "gesture",
+                    "action",
+                    "depth",
+                    "mobility",
+                ):
+                    val = p.get(key)
+                    if val and val not in ("unknown", "none", "None"):
+                        parts.append(f"  {key}: {val}")
+                # Dwell time from first_seen/last_seen
+                first = p.get("first_seen", 0)
+                last = p.get("last_seen", 0)
+                if first and last:
+                    dwell = last - first
+                    parts.append(f"  dwell: {dwell:.0f}s")
+                parts.append(f"  seen_count: {p.get('seen_count', 0)}")
+                lines.append("\n".join(parts))
+            result = "\n\n".join(lines)
+    except (FileNotFoundError, json.JSONDecodeError):
+        result = "Person details unavailable (perception not running)."
+    except Exception as e:
+        result = f"Error querying person details: {e}"
+
+    await params.result_callback(result)
+
+
+async def handle_query_object_motion(params) -> None:
+    """Query temporal motion data for a tracked object."""
+    label_filter = params.arguments.get("label", "")
+    entity_id = params.arguments.get("entity_id", "")
+
+    try:
+        data = json.loads(PERCEPTION_STATE_PATH.read_text())
+        inventory = data.get("scene_inventory", {})
+        objects = inventory.get("objects", [])
+
+        if entity_id:
+            objects = [o for o in objects if o.get("entity_id") == entity_id]
+        elif label_filter:
+            objects = [o for o in objects if o.get("label") == label_filter]
+
+        if not objects:
+            result = "No objects matching that query."
+        else:
+            now = time.time()
+            lines = []
+            for o in objects[:5]:
+                eid = o.get("entity_id", "?")
+                label = o.get("label", "?")
+                parts = [f"{label} ({eid}):"]
+                parts.append(f"  mobility: {o.get('mobility', 'unknown')}")
+                parts.append(f"  mobility_score: {o.get('mobility_score', 0):.2f}")
+                parts.append(f"  seen_count: {o.get('seen_count', 0)}")
+
+                first = o.get("first_seen", 0)
+                last = o.get("last_seen", 0)
+                if first and last:
+                    dwell = last - first
+                    parts.append(f"  dwell: {dwell:.0f}s")
+                    age = now - last
+                    parts.append(f"  last_seen: {age:.0f}s ago")
+
+                # Sighting-based velocity estimation
+                sightings = o.get("raw_sightings", [])
+                if len(sightings) >= 2:
+                    s0 = sightings[0]
+                    s1 = sightings[-1]
+                    dt = s1.get("t", 0) - s0.get("t", 0)
+                    if dt > 0:
+                        box0 = s0.get("box", [0, 0, 0, 0])
+                        box1 = s1.get("box", [0, 0, 0, 0])
+                        cx0 = (box0[0] + box0[2]) / 2
+                        cy0 = (box0[1] + box0[3]) / 2
+                        cx1 = (box1[0] + box1[2]) / 2
+                        cy1 = (box1[1] + box1[3]) / 2
+                        dx = cx1 - cx0
+                        dy = cy1 - cy0
+                        import math
+
+                        dist = math.sqrt(dx * dx + dy * dy)
+                        velocity = dist / dt
+                        direction = math.degrees(math.atan2(dy, dx))
+                        parts.append(f"  velocity: {velocity:.3f} px/s")
+                        parts.append(f"  direction: {direction:.0f}°")
+
+                # Camera history
+                cameras = o.get("camera_history", [])
+                if cameras:
+                    parts.append(f"  cameras: {', '.join(cameras)}")
+
+                lines.append("\n".join(parts))
+            result = "\n\n".join(lines)
+    except (FileNotFoundError, json.JSONDecodeError):
+        result = "Object motion data unavailable (perception not running)."
+    except Exception as e:
+        result = f"Error querying object motion: {e}"
+
+    await params.result_callback(result)
+
+
+async def handle_query_scene_state(params) -> None:
+    """Query the current scene classification state."""
+    try:
+        data = json.loads(PERCEPTION_STATE_PATH.read_text())
+
+        scene_type = data.get("scene_type", "unknown")
+        scene_state_clip = data.get("scene_state_clip", "")
+        audio_scene = data.get("audio_scene", "silence")
+        activity_mode = data.get("activity_mode", "unknown")
+        production = data.get("production_activity", "")
+        flow_state = data.get("flow_state", "idle")
+        flow_score = data.get("flow_score", 0.0)
+
+        lines = [
+            "Scene classification state:",
+            f"  scene_type (SigLIP): {scene_type}",
+        ]
+        if scene_state_clip:
+            lines.append(f"  scene_state (CLIP): {scene_state_clip}")
+        lines.append(f"  audio_scene: {audio_scene}")
+        if production:
+            lines.append(f"  production_activity: {production}")
+        lines.append(f"  activity_mode: {activity_mode}")
+        lines.append(f"  flow: {flow_state} ({flow_score:.2f})")
+
+        # Object summary
+        inventory = data.get("scene_inventory", {})
+        objects = inventory.get("objects", [])
+        if objects:
+            person_count = sum(1 for o in objects if o.get("label") == "person")
+            other_labels = sorted(
+                {o.get("label", "") for o in objects if o.get("label") != "person"}
+            )
+            lines.append(f"  persons: {person_count}")
+            if other_labels:
+                lines.append(f"  objects: {', '.join(other_labels)}")
+
+        result = "\n".join(lines)
+    except (FileNotFoundError, json.JSONDecodeError):
+        result = "Scene state unavailable (perception not running)."
+    except Exception as e:
+        result = f"Error querying scene state: {e}"
+
+    await params.result_callback(result)
+
+
+# ---------------------------------------------------------------------------
 # Module-level state initialization
 # ---------------------------------------------------------------------------
 
@@ -1327,5 +1557,10 @@ def register_tool_handlers(
     llm.register_function("query_scene_inventory", handle_query_scene_inventory)
     llm.register_function("highlight_detection", handle_highlight_detection)
     llm.register_function("set_detection_layers", handle_set_detection_layers)
+
+    # Scene intelligence tools (classification consumption)
+    llm.register_function("query_person_details", handle_query_person_details)
+    llm.register_function("query_object_motion", handle_query_object_motion)
+    llm.register_function("query_scene_state", handle_query_scene_state)
 
     log.info("Registered %d voice tools", len(TOOL_SCHEMAS) + len(DESKTOP_TOOL_SCHEMAS))
