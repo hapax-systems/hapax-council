@@ -2,10 +2,13 @@
 
 Pure-logic module: no I/O, no threading, no network. Aggregates readings
 from existing data sources (health, GPU, Langfuse, engine, perception)
-into a single Stimmung snapshot that colors system behavior.
+and operator biometrics (HR, HRV, EDA, sleep, activity) into a single
+Stimmung snapshot that colors system behavior.
 
-6 dimensions, each a DimensionReading with value/trend/freshness.
-Overall stance derived from worst non-stale dimension.
+9 dimensions (6 infrastructure + 3 biometric), each a DimensionReading
+with value/trend/freshness. Overall stance derived from worst non-stale
+dimension. Biometric dimensions use 0.5× weight so system stance remains
+primarily infrastructure-driven.
 """
 
 from __future__ import annotations
@@ -43,14 +46,21 @@ class DimensionReading(BaseModel, frozen=True):
 
 
 class SystemStimmung(BaseModel):
-    """Unified self-state vector — 6 dimensions + derived stance."""
+    """Unified self-state vector — 9 dimensions + derived stance."""
 
+    # Infrastructure dimensions (weight 1.0)
     health: DimensionReading = Field(default_factory=DimensionReading)
     resource_pressure: DimensionReading = Field(default_factory=DimensionReading)
     error_rate: DimensionReading = Field(default_factory=DimensionReading)
     processing_throughput: DimensionReading = Field(default_factory=DimensionReading)
     perception_confidence: DimensionReading = Field(default_factory=DimensionReading)
     llm_cost_pressure: DimensionReading = Field(default_factory=DimensionReading)
+
+    # Biometric dimensions (weight 0.5 — softer thresholds, operator changes slowly)
+    operator_stress: DimensionReading = Field(default_factory=DimensionReading)
+    operator_energy: DimensionReading = Field(default_factory=DimensionReading)
+    physiological_coherence: DimensionReading = Field(default_factory=DimensionReading)
+
     overall_stance: Stance = Stance.NOMINAL
     timestamp: float = 0.0
 
@@ -90,7 +100,7 @@ class SystemStimmung(BaseModel):
         return result
 
 
-_DIMENSION_NAMES = [
+_INFRA_DIMENSION_NAMES = [
     "health",
     "resource_pressure",
     "error_rate",
@@ -98,6 +108,18 @@ _DIMENSION_NAMES = [
     "perception_confidence",
     "llm_cost_pressure",
 ]
+
+_BIOMETRIC_DIMENSION_NAMES = [
+    "operator_stress",
+    "operator_energy",
+    "physiological_coherence",
+]
+
+_DIMENSION_NAMES = _INFRA_DIMENSION_NAMES + _BIOMETRIC_DIMENSION_NAMES
+
+# Biometric dimensions contribute at 0.5× weight to stance computation.
+# Operator physiological state changes slowly — infrastructure should dominate.
+_BIOMETRIC_STANCE_WEIGHT = 0.5
 
 _STALE_THRESHOLD_S = 120.0  # dimensions older than this are excluded from stance
 
@@ -205,6 +227,69 @@ class StimmungCollector:
         value = max(cost_value, error_ratio)
         self._record("llm_cost_pressure", value)
 
+    def update_biometrics(
+        self,
+        *,
+        hrv_current: float | None = None,
+        hrv_baseline: float | None = None,
+        eda_active: bool = False,
+        frustration_score: float = 0.0,
+        sleep_quality: float | None = None,
+        circadian_alignment: float = 0.5,
+        activity_level: float = 0.0,
+        hr_zone: float = 0.0,
+        hrv_cv: float | None = None,
+        skin_temp_cv: float | None = None,
+    ) -> None:
+        """Update biometric dimensions from watch/phone perception data.
+
+        All inputs are optional — gracefully degrades when sensors are unavailable.
+        """
+        # ── operator_stress ──────────────────────────────────────────────
+        # Weighted composite: 0.4×HRV_drop + 0.3×EDA_active + 0.3×frustration
+        hrv_drop = 0.0
+        if hrv_current is not None and hrv_baseline is not None and hrv_baseline > 0:
+            # HRV drop: how far below baseline (0=at baseline, 1=50%+ below)
+            ratio = hrv_current / hrv_baseline
+            hrv_drop = max(0.0, min(1.0, (1.0 - ratio) * 2.0))
+
+        eda_value = 1.0 if eda_active else 0.0
+        stress = 0.4 * hrv_drop + 0.3 * eda_value + 0.3 * min(1.0, frustration_score)
+        self._record("operator_stress", stress)
+
+        # ── operator_energy ──────────────────────────────────────────────
+        # Composite: 0.3×sleep + 0.3×circadian + 0.2×activity + 0.2×HR_zone
+        # Inverted: 0.0 = high energy (good), 1.0 = depleted (bad)
+        sleep_deficit = 1.0 - (sleep_quality if sleep_quality is not None else 0.5)
+        circadian_pressure = circadian_alignment  # 0=peak, 1=worst
+        activity_pressure = max(0.0, min(1.0, 1.0 - activity_level))
+        hr_pressure = max(0.0, min(1.0, 1.0 - hr_zone))
+
+        energy = (
+            0.3 * sleep_deficit
+            + 0.3 * circadian_pressure
+            + 0.2 * activity_pressure
+            + 0.2 * hr_pressure
+        )
+        self._record("operator_energy", energy)
+
+        # ── physiological_coherence ──────────────────────────────────────
+        # Rolling coefficient of variation — low CV = stable = good
+        # 0.0 = perfectly coherent (good), 1.0 = highly variable (bad)
+        coherence_values = []
+        if hrv_cv is not None:
+            # HRV CV: 0-10% = coherent, 30%+ = fragmented
+            coherence_values.append(max(0.0, min(1.0, hrv_cv / 0.3)))
+        if skin_temp_cv is not None:
+            # Skin temp CV: 0-2% = stable, 10%+ = unstable
+            coherence_values.append(max(0.0, min(1.0, skin_temp_cv / 0.1)))
+
+        if coherence_values:
+            coherence = sum(coherence_values) / len(coherence_values)
+        else:
+            coherence = 0.5  # unknown = neutral
+        self._record("physiological_coherence", coherence)
+
     def snapshot(self, now: float | None = None) -> SystemStimmung:
         """Produce a SystemStimmung from current readings."""
         if now is None:
@@ -257,12 +342,19 @@ class StimmungCollector:
 
     @staticmethod
     def _compute_stance(dimensions: dict[str, DimensionReading]) -> Stance:
-        """Derive stance from worst non-stale dimension."""
+        """Derive stance from worst non-stale dimension.
+
+        Biometric dimensions contribute at 0.5× weight — operator state
+        changes slowly and shouldn't dominate system stance.
+        """
         worst = 0.0
-        for dim in dimensions.values():
+        for name, dim in dimensions.items():
             if dim.freshness_s > _STALE_THRESHOLD_S:
                 continue
-            worst = max(worst, dim.value)
+            effective = dim.value
+            if name in _BIOMETRIC_DIMENSION_NAMES:
+                effective *= _BIOMETRIC_STANCE_WEIGHT
+            worst = max(worst, effective)
 
         if worst >= 0.85:
             return Stance.CRITICAL

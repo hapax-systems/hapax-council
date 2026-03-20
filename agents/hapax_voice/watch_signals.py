@@ -8,6 +8,7 @@ for the ContextGate veto chain and PresenceDetector.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -202,6 +203,82 @@ def is_phone_connected(watch_dir: Path | None = None) -> bool:
     watch_dir = watch_dir or WATCH_STATE_DIR
     conn_data = read_watch_signal(watch_dir / "phone_connection.json", max_age_seconds=120)
     return conn_data is not None
+
+
+# ── Stimmung Haptic Vocabulary ───────────────────────────────────────────────
+
+# Keywords map to haptic patterns on the watch. The watch's HapticNotificationListener
+# matches these keywords and plays the corresponding vibration waveform.
+HAPTIC_STIMMUNG_KEYWORDS = {
+    "nominal": "hapax stimmung calm",
+    "cautious": "hapax stimmung cautious",
+    "degraded": "hapax stimmung degraded",
+    "flow": "hapax stimmung flow",  # silence = the signal
+    "stress_ack": "hapax stress ack",
+    "transition": "hapax transition",
+}
+
+# Rate limit: at most one stimmung haptic every 5 minutes
+_MIN_HAPTIC_INTERVAL_S = 300.0
+_last_haptic_time: float = 0.0
+_last_haptic_stance: str = ""
+
+_log = logging.getLogger(__name__)
+
+
+def send_stimmung_haptic(stance: str, *, force: bool = False) -> bool:
+    """Send a Stimmung-encoded haptic pattern to the watch.
+
+    Only fires on stance transitions, and at most once per 5 minutes.
+    The "flow" stance sends nothing (silence IS the signal).
+
+    Args:
+        stance: Current Stimmung stance ("nominal", "cautious", "degraded", "critical").
+        force: Bypass rate limiting (for testing).
+
+    Returns:
+        True if a haptic was sent (or suppressed for flow).
+    """
+    global _last_haptic_time, _last_haptic_stance
+
+    now = time.time()
+
+    # Only fire on transitions
+    if stance == _last_haptic_stance and not force:
+        return False
+
+    # Rate limit
+    if not force and (now - _last_haptic_time) < _MIN_HAPTIC_INTERVAL_S:
+        return False
+
+    _last_haptic_stance = stance
+
+    # Flow = silence (no haptic sent, but we record the transition)
+    if stance == "flow" or stance == "nominal":
+        keyword = HAPTIC_STIMMUNG_KEYWORDS.get(stance, "")
+        if keyword:
+            _last_haptic_time = now
+            # nominal sends a gentle tap, flow sends nothing
+            if stance == "nominal":
+                return send_haptic_tap(pattern=keyword)
+        return True
+
+    # Critical maps to degraded pattern (we don't want a unique "alarm" feel)
+    effective_stance = "degraded" if stance == "critical" else stance
+    keyword = HAPTIC_STIMMUNG_KEYWORDS.get(effective_stance)
+    if keyword is None:
+        return False
+
+    _last_haptic_time = now
+    _log.info("Sending stimmung haptic: %s (keyword=%s)", stance, keyword)
+    return send_haptic_tap(pattern=keyword)
+
+
+def send_stress_ack_haptic() -> bool:
+    """Send the stress acknowledgment haptic — 'I see your stress, backing off'."""
+    keyword = HAPTIC_STIMMUNG_KEYWORDS["stress_ack"]
+    _log.info("Sending stress acknowledgment haptic")
+    return send_haptic_tap(pattern=keyword)
 
 
 class WatchSignalReader:
