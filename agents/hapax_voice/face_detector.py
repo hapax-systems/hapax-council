@@ -18,7 +18,9 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 _OPERATOR_EMBEDDING_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "operator_face.npy"
-_OPERATOR_SIMILARITY_THRESHOLD = 0.35  # 0.25 near-random for 512d; 0.40 deferred until multi-sample enrollment
+_OPERATOR_SIMILARITY_THRESHOLD = (
+    0.35  # 0.25 near-random for 512d; 0.40 deferred until multi-sample enrollment
+)
 _AUTO_ENROLL_CONFIDENCE = 0.7
 
 
