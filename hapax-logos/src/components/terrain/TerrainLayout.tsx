@@ -173,6 +173,13 @@ export function TerrainLayout() {
                 <BedrockRegion />
               </div>
             }
+            fullscreenLeft={
+              splitRegion === "ground" ? (
+                <div className="w-full h-full overflow-hidden relative" style={{ background: "#1d2021" }}>
+                  <GroundRegion vl={vl} />
+                </div>
+              ) : undefined
+            }
             right={<DetailPane region={splitRegion} />}
             fullscreen={splitFullscreen}
             onClose={() => setSplitRegion(null)}

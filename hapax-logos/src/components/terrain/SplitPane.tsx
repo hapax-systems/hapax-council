@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 interface SplitPaneProps {
   left: ReactNode;
   right: ReactNode;
+  fullscreenLeft?: ReactNode;
   fullscreen: boolean;
   onClose: () => void;
   onToggleFullscreen: () => void;
@@ -16,6 +17,7 @@ const DEFAULT_LEFT_PCT = 55;
 export function SplitPane({
   left,
   right,
+  fullscreenLeft,
   fullscreen,
   onClose,
   onToggleFullscreen,
@@ -70,7 +72,7 @@ export function SplitPane({
       >
         {/* Left pane: region content (camera feed for ground) */}
         <div className="h-full overflow-hidden relative" style={{ width: `${leftPct}%` }}>
-          {left}
+          {fullscreenLeft ?? left}
         </div>
 
         {/* Resize handle */}
