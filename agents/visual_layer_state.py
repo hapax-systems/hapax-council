@@ -276,6 +276,8 @@ class VisualLayerState(BaseModel):
     # Classification detection overlay
     classification_detections: list[ClassificationDetection] = Field(default_factory=list)
     classification_directives: dict[str, str] = Field(default_factory=dict)
+    # BOCPD change points for voice pipeline (Bayesian Tier 1)
+    recent_change_points: list[dict] = Field(default_factory=list)
     # Corpora next: environmental color influence
     environmental_color: EnvironmentalColor = Field(default_factory=EnvironmentalColor)
     # Corpora next: transition choreography
