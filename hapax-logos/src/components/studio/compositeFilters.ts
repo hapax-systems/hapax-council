@@ -29,4 +29,8 @@ export const SOURCE_FILTERS: SourceFilter[] = [
   { name: "Acid", css: "saturate(4) hue-rotate(90deg) contrast(1.4) brightness(0.8)" },
   { name: "Neon", css: "saturate(5) contrast(1.5) brightness(1.2)" },
   { name: "X-Ray", css: "invert(0.85) grayscale(1) contrast(2) brightness(1.3)" },
+  // IR layers — per-camera IR-processed views
+  { name: "IR Mono", css: "saturate(0) contrast(1.5) brightness(1.2)" },
+  { name: "IR Green", css: "saturate(0) contrast(1.4) brightness(1.3) sepia(0.3) hue-rotate(90deg)" },
+  { name: "IR Inverted", css: "saturate(0) contrast(2.0) invert(1)" },
 ];

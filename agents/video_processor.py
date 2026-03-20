@@ -66,8 +66,8 @@ CHANGES_LOG = CACHE_DIR / "changes.jsonl"
 
 from shared.cameras import CAMERA_ROLES
 
-# Number of keyframes to extract from each segment (start, middle, end)
-NUM_KEYFRAMES = 3
+# Number of keyframes to extract per segment for temporal coverage
+NUM_KEYFRAMES = 5
 
 # ── Classification Thresholds ────────────────────────────────────────────────
 
