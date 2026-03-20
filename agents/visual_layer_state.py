@@ -153,6 +153,13 @@ class VoiceSessionState(BaseModel):
     routing_tier: str = ""  # LOCAL | FAST | STRONG | CAPABLE
     routing_reason: str = ""  # salience:0.45 | consent_pending | phatic | etc
     routing_activation: float = 0.0  # 0.0-1.0 continuous activation score
+    # Experiment monitoring: per-turn grounding scores (already computed, now visible)
+    context_anchor_success: float = 0.0  # 0-1: response references established context
+    frustration_score: float = 0.0  # 0-1: multi-signal frustration detection
+    frustration_rolling_avg: float = 0.0  # 0-1: 5-turn rolling average
+    acceptance_type: str = ""  # accept | clarify | reject | ignore
+    spoken_words: int = 0  # words spoken this turn (for cutoff indicator)
+    word_limit: int = 35  # density-driven cutoff limit
 
 
 # ── Supplementary Content ────────────────────────────────────────────────────

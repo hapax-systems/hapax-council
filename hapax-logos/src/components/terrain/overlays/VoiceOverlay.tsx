@@ -1,6 +1,9 @@
 /**
  * VoiceOverlay — portal z-50 over Ground during voice sessions.
  * Extracted from HapaxPage voice session rendering.
+ *
+ * Experiment monitoring: shows live grounding scores, activation bar,
+ * turn counter, word cutoff indicator, and frustration trend.
  */
 
 import type { VisualLayerState } from "../../../api/types";
@@ -23,6 +26,19 @@ const DEFAULT_VOICE = {
   routing_tier: "",
   routing_reason: "",
   routing_activation: 0.0,
+  context_anchor_success: 0.0,
+  frustration_score: 0.0,
+  frustration_rolling_avg: 0.0,
+  acceptance_type: "",
+  spoken_words: 0,
+  word_limit: 35,
+};
+
+const ACCEPTANCE_COLORS: Record<string, string> = {
+  ACCEPT: "#4ddb99",
+  CLARIFY: "#dbb84d",
+  REJECT: "#db4d4d",
+  IGNORE: "#666",
 };
 
 interface VoiceOverlayProps {
@@ -42,6 +58,14 @@ export function VoiceOverlay({ vl }: VoiceOverlayProps) {
   };
   const voiceIntensity = tierIntensity[voiceSession.routing_tier] ?? 0.5;
   const stateColor = VOICE_STATE_COLORS[voiceSession.state] ?? "#999";
+  const activation = voiceSession.routing_activation ?? 0;
+  const anchor = voiceSession.context_anchor_success ?? 0;
+  const frustration = voiceSession.frustration_score ?? 0;
+  const frustrationAvg = voiceSession.frustration_rolling_avg ?? 0;
+  const acceptance = voiceSession.acceptance_type ?? "";
+  const spokenWords = voiceSession.spoken_words ?? 0;
+  const wordLimit = voiceSession.word_limit ?? 35;
+  const wordRatio = wordLimit > 0 ? Math.min(1, spokenWords / wordLimit) : 0;
 
   return (
     <div
@@ -83,6 +107,10 @@ export function VoiceOverlay({ vl }: VoiceOverlayProps) {
           >
             {voiceSession.state}
           </span>
+          {/* Turn counter */}
+          <span className="text-[9px] text-white/30 tabular-nums">
+            T{voiceSession.turn_count}
+          </span>
           {voiceIntensity >= 0.75 && (
             <span
               className="text-[9px] uppercase tracking-[0.2em]"
@@ -96,6 +124,116 @@ export function VoiceOverlay({ vl }: VoiceOverlayProps) {
           )}
           {voiceSession.barge_in && (
             <span className="text-[9px] text-amber-400/60 ml-1">&uarr;</span>
+          )}
+        </div>
+
+        {/* Experiment monitoring bar */}
+        <div
+          className="flex items-center gap-2 mt-2 px-4"
+          style={{ opacity: 0.5 }}
+        >
+          {/* Activation bar */}
+          <div className="flex items-center gap-1" title={`activation: ${activation.toFixed(2)}`}>
+            <span className="text-[8px] text-white/30 uppercase">act</span>
+            <div
+              style={{
+                width: "40px",
+                height: "3px",
+                background: "rgba(255,255,255,0.1)",
+                borderRadius: "1.5px",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${activation * 100}%`,
+                  height: "100%",
+                  background: stateColor,
+                  transition: "width 0.3s ease",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Context anchor score */}
+          <div className="flex items-center gap-1" title={`anchor: ${anchor.toFixed(2)}`}>
+            <span className="text-[8px] text-white/30 uppercase">ctx</span>
+            <div
+              style={{
+                width: "40px",
+                height: "3px",
+                background: "rgba(255,255,255,0.1)",
+                borderRadius: "1.5px",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${anchor * 100}%`,
+                  height: "100%",
+                  background: anchor > 0.5 ? "#4ddb99" : "#dbb84d",
+                  transition: "width 0.3s ease",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Frustration indicator */}
+          <div
+            className="flex items-center gap-1"
+            title={`frustration: ${frustration.toFixed(2)} (avg: ${frustrationAvg.toFixed(2)})`}
+          >
+            <span
+              className="text-[8px] uppercase"
+              style={{ color: frustrationAvg > 0.5 ? "#db4d4d" : "rgba(255,255,255,0.3)" }}
+            >
+              frs
+            </span>
+            <div
+              style={{
+                width: "40px",
+                height: "3px",
+                background: "rgba(255,255,255,0.1)",
+                borderRadius: "1.5px",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${Math.min(1, frustrationAvg) * 100}%`,
+                  height: "100%",
+                  background: frustrationAvg > 0.5 ? "#db4d4d" : frustrationAvg > 0.3 ? "#dbb84d" : "#4ddb99",
+                  transition: "width 0.3s ease",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Acceptance type */}
+          {acceptance && (
+            <span
+              className="text-[8px] uppercase"
+              style={{ color: ACCEPTANCE_COLORS[acceptance] ?? "#666" }}
+            >
+              {acceptance}
+            </span>
+          )}
+
+          {/* Word cutoff indicator */}
+          {spokenWords > 0 && (
+            <div
+              className="flex items-center gap-1"
+              title={`${spokenWords}/${wordLimit} words`}
+            >
+              <span
+                className="text-[8px] tabular-nums"
+                style={{
+                  color: wordRatio > 0.8 ? "#db4d4d" : "rgba(255,255,255,0.3)",
+                }}
+              >
+                {spokenWords}/{wordLimit}w
+              </span>
+            </div>
           )}
         </div>
 

@@ -122,6 +122,25 @@ def _snapshot_voice_session(
                 routing_reason = getattr(breakdown, "reason", "")
                 routing_activation = round(getattr(breakdown, "final_activation", 0.0), 3)
 
+    # Experiment monitoring: per-turn grounding scores
+    anchor_score = 0.0
+    frustration_score = 0.0
+    frustration_rolling = 0.0
+    acceptance_label = ""
+    spoken_words = 0
+    word_limit = 35
+    if pipeline is not None:
+        anchor_score = getattr(pipeline, "last_anchor_score", 0.0)
+        acceptance_label = getattr(pipeline, "last_acceptance_label", "")
+        spoken_words = getattr(pipeline, "last_spoken_words", 0)
+        word_limit = getattr(pipeline, "last_word_limit", 35)
+        fd = getattr(pipeline, "_frustration_detector", None)
+        if fd is not None:
+            window = getattr(fd, "_window", None)
+            if window:
+                frustration_score = round(float(window[-1]), 3)
+            frustration_rolling = round(getattr(fd, "rolling_average", 0.0), 3)
+
     return {
         "active": True,
         "state": state,
@@ -133,6 +152,12 @@ def _snapshot_voice_session(
         "routing_tier": routing_tier,
         "routing_reason": routing_reason,
         "routing_activation": routing_activation,
+        "context_anchor_success": anchor_score,
+        "frustration_score": frustration_score,
+        "frustration_rolling_avg": frustration_rolling,
+        "acceptance_type": acceptance_label,
+        "spoken_words": spoken_words,
+        "word_limit": word_limit,
     }
 
 

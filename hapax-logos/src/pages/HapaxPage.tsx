@@ -49,6 +49,13 @@ interface VoiceSession {
   routing_tier: string;
   routing_reason: string;
   routing_activation: number;
+  // Experiment monitoring
+  context_anchor_success: number;
+  frustration_score: number;
+  frustration_rolling_avg: number;
+  acceptance_type: string;
+  spoken_words: number;
+  word_limit: number;
 }
 
 interface SupplementaryContent {
@@ -234,7 +241,7 @@ export function HapaxPage() {
   const signals = vlState?.signals ?? {};
   const opacities = vlState?.zone_opacities ?? {};
   const ambient = vlState?.ambient_params ?? { speed: 0.08, turbulence: 0.1, color_warmth: 0.3, brightness: 0.25 };
-  const voiceSession = vlState?.voice_session ?? { active: false, state: "idle", turn_count: 0, last_utterance: "", last_response: "", active_tool: null, barge_in: false, routing_tier: "", routing_reason: "", routing_activation: 0.0 };
+  const voiceSession = vlState?.voice_session ?? { active: false, state: "idle", turn_count: 0, last_utterance: "", last_response: "", active_tool: null, barge_in: false, routing_tier: "", routing_reason: "", routing_activation: 0.0, context_anchor_success: 0, frustration_score: 0, frustration_rolling_avg: 0, acceptance_type: "", spoken_words: 0, word_limit: 35 };
 
   // Routing tier modulates visual intensity — LOCAL is ambient, CAPABLE is intense
   const tierIntensity: Record<string, number> = { LOCAL: 0.3, FAST: 0.5, STRONG: 0.75, CAPABLE: 1.0 };
