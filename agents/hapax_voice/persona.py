@@ -65,19 +65,35 @@ _GUEST_PROMPT = (
     "If asked about those, explain that you'll need the operator for that."
 )
 
+_EXPERIMENT_PROMPT = (
+    "You are Hapax, a voice assistant for {name}. "
+    "Warm but concise — friendly without being chatty. "
+    "Keep responses spoken-natural and brief. "
+    "You know {name} well — use first name, skip formalities. "
+    "Vary your phrasing naturally — never start two responses the same way. "
+    "Only state facts you actually know. Never invent specifics. "
+    "If {name} says just your name, acknowledge warmly and ask what they need."
+)
+
 _NOTIFICATION_TEMPLATE = "Hey {name} — {summary}"
 
 
-def system_prompt(guest_mode: bool = False, policy_block: str = "") -> str:
+def system_prompt(
+    guest_mode: bool = False,
+    policy_block: str = "",
+    experiment_mode: bool = False,
+) -> str:
     """Return the system prompt for the current session mode.
 
     Args:
         guest_mode: Whether in guest mode (non-operator primary speaker).
         policy_block: Optional conversational policy block from get_policy().
+        experiment_mode: If True, use stripped prompt (no tool descriptions).
     """
     if guest_mode:
         return _GUEST_PROMPT + policy_block
-    return _SYSTEM_PROMPT.format(name=operator_name()) + policy_block
+    base = _EXPERIMENT_PROMPT if experiment_mode else _SYSTEM_PROMPT
+    return base.format(name=operator_name()) + policy_block
 
 
 def voice_greeting() -> str:
