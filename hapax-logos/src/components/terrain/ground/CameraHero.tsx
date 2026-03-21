@@ -1,10 +1,10 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useSnapshotPoll } from "../../../hooks/useSnapshotPoll";
 import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
 import { CompositeCanvas } from "../../studio/CompositeCanvas";
 import { PRESETS } from "../../studio/compositePresets";
-import { sourceUrl } from "../../studio/effectSources";
+import { sourceUrl, selectEffect } from "../../studio/effectSources";
 import { useStudio } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
 
@@ -29,6 +29,8 @@ export function CameraHero({
 }: CameraHeroProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const effectUrl = sourceUrl(effectSourceId);
+  // Tell compositor to switch effect when source changes
+  useEffect(() => { selectEffect(effectSourceId); }, [effectSourceId]);
   // When an effect source is selected, use it as the live source for snapshots
   const batchResult = useBatchSnapshot(heroRole, 67);
   const fxResult = useSnapshotPoll(effectUrl ?? "/api/studio/stream/fx", 67, !!effectUrl);
