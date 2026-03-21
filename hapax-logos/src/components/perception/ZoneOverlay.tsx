@@ -35,21 +35,24 @@ interface ZoneOverlayProps {
 
 export const ZoneOverlay = memo(function ZoneOverlay({ category, signals, opacity, onClick, active }: ZoneOverlayProps) {
   const zone = ZONE_LAYOUT[category];
-  if (!zone) return null;
-
   const hasSignals = signals.length > 0;
   const effectiveOpacity = Math.max(0, Math.min(1, opacity));
   const zoneBg = CATEGORY_ZONE_BG[category];
   const zoneBorder = CATEGORY_BORDER[category];
   const zoneColor = CATEGORY_COLORS[category];
 
-  const positionStyle = useMemo(() => ({
-    left: `${zone.x * 100}%`,
-    top: `${zone.y * 100}%`,
-    width: `${zone.w * 100}%`,
-    height: `${zone.h * 100}%`,
-    opacity: hasSignals ? Math.max(effectiveOpacity, 0.6) : 0.15,
-  }), [zone.x, zone.y, zone.w, zone.h, hasSignals, effectiveOpacity]);
+  const positionStyle = useMemo(() => {
+    if (!zone) return {};
+    return {
+      left: `${zone.x * 100}%`,
+      top: `${zone.y * 100}%`,
+      width: `${zone.w * 100}%`,
+      height: `${zone.h * 100}%`,
+      opacity: hasSignals ? Math.max(effectiveOpacity, 0.6) : 0.15,
+    };
+  }, [zone, hasSignals, effectiveOpacity]);
+
+  if (!zone) return null;
 
   return (
     <div

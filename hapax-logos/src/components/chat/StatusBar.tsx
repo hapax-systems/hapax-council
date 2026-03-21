@@ -15,7 +15,7 @@ export function StatusBar() {
   const models = modelsData?.models ?? [];
 
   // Poll interview status when in interview mode
-  /* eslint-disable react-hooks/set-state-in-effect */
+   
   useEffect(() => {
     if (state.mode !== "interview") {
       setInterviewInfo(null);
@@ -41,7 +41,7 @@ export function StatusBar() {
       clearInterval(interval);
     };
   }, [state.mode, state.messages.length, getInterviewStatus]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+   
 
   return (
     <div className="flex items-center justify-between border-t border-zinc-800 bg-zinc-900/80 px-4 py-1 text-xs text-zinc-500">

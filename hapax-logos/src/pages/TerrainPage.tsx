@@ -46,7 +46,7 @@ function TerrainParamSync() {
 function TerrainChrome() {
   const [manualOpen, setManualOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const { modal, dismissModal, status: _status } = useHapaxIntrospection();
+  const { modal, dismissModal } = useHapaxIntrospection();
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {

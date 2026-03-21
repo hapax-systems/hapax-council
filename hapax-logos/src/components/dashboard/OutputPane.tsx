@@ -29,7 +29,7 @@ export function OutputPane({ lines, isRunning, agentName, startedAt, onCancel }:
   }, [lines]);
 
   // Elapsed timer
-  /* eslint-disable react-hooks/set-state-in-effect */
+   
   useEffect(() => {
     if (!isRunning || !startedAt) {
       setElapsed(0);
@@ -41,7 +41,7 @@ export function OutputPane({ lines, isRunning, agentName, startedAt, onCancel }:
     }, 1000);
     return () => clearInterval(interval);
   }, [isRunning, startedAt]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+   
 
   if (lines.length === 0 && !isRunning) return null;
 

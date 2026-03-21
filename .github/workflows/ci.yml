@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: council-web
+        working-directory: hapax-logos
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
@@ -56,7 +56,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: council-web/pnpm-lock.yaml
+          cache-dependency-path: hapax-logos/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build

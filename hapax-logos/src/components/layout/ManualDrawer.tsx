@@ -80,14 +80,14 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  /* eslint-disable react-hooks/preserve-manual-memoization */
+   
   const toc = useMemo(() => (manual?.content ? extractToc(manual.content) : []), [manual?.content]);
 
   const sections = useMemo(
     () => (manual?.content ? splitSections(manual.content) : []),
     [manual?.content],
   );
-  /* eslint-enable react-hooks/preserve-manual-memoization */
+   
 
   const filteredSections = useMemo(() => {
     if (!search.trim()) return sections;
@@ -176,7 +176,7 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
   }, [open, handleKeyDown]);
 
   // Reset state when drawer closes
-  /* eslint-disable react-hooks/set-state-in-effect */
+   
   useEffect(() => {
     if (!open) {
       setSearch("");
@@ -190,7 +190,7 @@ export function ManualDrawer({ open, onClose }: ManualDrawerProps) {
       if (first) setActiveSection(first.id);
     }
   }, [open, toc, activeSection]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+   
 
   const scrollToSection = (id: string) => {
     setShowToc(false);

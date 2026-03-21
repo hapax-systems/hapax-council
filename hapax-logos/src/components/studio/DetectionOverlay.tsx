@@ -126,6 +126,7 @@ function haloOpacityScale(det: ClassificationDetection): number {
   return 0.25; // static familiar objects barely visible
 }
 
+
 // ── Novelty → breathing period ──────────────────────────────────────────
 // Matches SignalPip severity tiers: static→8s, low→4s, mod→1.5s, high→0.6s
 function breathingPeriod(novelty: number): number {
@@ -584,6 +585,7 @@ export function DetectionOverlay({
           ctx.setLineDash([3, 3]);
           ctx.beginPath();
           ctx.moveTo(cx, cy);
+
           ctx.lineTo(cx + dw * 0.15, cy);
           ctx.stroke();
           ctx.setLineDash([]);
@@ -667,6 +669,7 @@ export function DetectionOverlay({
           ctx.lineTo(dx1 + cLen + jx, dy1 + jy);
           ctx.stroke();
         }
+
 
         // ── Annotation (from Hapax directive) ─────────────────────
         if (highlight?.annotation) {
