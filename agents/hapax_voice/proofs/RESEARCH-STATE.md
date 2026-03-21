@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-21
+**Last updated:** 2026-03-21 (session 2)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -13,10 +13,10 @@ We are building the first system that attempts to operationalize Clark & Brennan
 - **Cycle 2:** IMPLEMENTATION IN PROGRESS
   - All research complete (28 agents across 4 rounds, 80+ citations)
   - Refined model designed and justified
-  - Implementation: **Batches 1-4 COMPLETE** (85 tests passing, not yet committed)
-  - Remaining: code freeze, pre-registration update, OSF registration, lab journal backfill
+  - Implementation: **Batches 1-4 COMMITTED** (76 tests passing, PR #229)
+  - Remaining: pre-registration update, OSF registration, lab journal backfill
   - Context persistence system built (RESEARCH-STATE.md + memory pointer + CLAUDE.md directive)
-  - Operator had a "second thing" to address — not yet stated
+  - Workstation optimization: 7-layer research complete, all applied (PR #229). See WORKSTATION-OPTIMIZATION.md
 - **Cycle 3:** NOT STARTED (contingent on Cycle 2 results; may require fine-tuned model if RLHF anti-pattern binds)
 
 ## What Was Built (Batches 1-4)
