@@ -618,10 +618,10 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", "snapshot-rate-caps")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=15/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=20/1"),
         )
         encoder = Gst.ElementFactory.make("jpegenc", "snapshot-jpeg")
-        encoder.set_property("quality", 85)
+        encoder.set_property("quality", 92)
         appsink = Gst.ElementFactory.make("appsink", "snapshot-sink")
         appsink.set_property("sync", False)
         appsink.set_property("async", False)
@@ -859,10 +859,10 @@ class StudioCompositor:
 
         fx_rate = Gst.ElementFactory.make("videorate", "fx-rate")
         fx_rate_caps = Gst.ElementFactory.make("capsfilter", "fx-rate-caps")
-        fx_rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=15/1"))
+        fx_rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=20/1"))
 
         fx_jpeg = Gst.ElementFactory.make("jpegenc", "fx-jpeg")
-        fx_jpeg.set_property("quality", 80)
+        fx_jpeg.set_property("quality", 92)
 
         fx_sink = Gst.ElementFactory.make("appsink", "fx-snapshot-sink")
         fx_sink.set_property("sync", False)
@@ -1219,7 +1219,7 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=5/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=15/1"),
         )
         scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
         scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
@@ -1228,7 +1228,7 @@ class StudioCompositor:
             Gst.Caps.from_string(f"video/x-raw,width={cam.width},height={cam.height}"),
         )
         encoder = Gst.ElementFactory.make("jpegenc", f"camsnap-jpeg-{role}")
-        encoder.set_property("quality", 80)
+        encoder.set_property("quality", 92)
         appsink = Gst.ElementFactory.make("appsink", f"camsnap-sink-{role}")
         appsink.set_property("sync", False)
         appsink.set_property("async", False)
