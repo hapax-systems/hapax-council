@@ -22,12 +22,16 @@ _SLOT_DIR = Path(os.environ.get("GPU_SEM_DIR", "/run/hapax-gpu-sem"))
 _NUM_SLOTS = int(os.environ.get("GPU_SEM_SLOTS", "2"))
 
 
-def _ensure_slot_dir() -> None:
-    """Create slot directory if it doesn't exist."""
-    if not _SLOT_DIR.exists():
-        _SLOT_DIR.mkdir(parents=True, exist_ok=True)
-        for i in range(_NUM_SLOTS):
-            (_SLOT_DIR / f"slot.{i}").touch()
+def _ensure_slot_dir() -> bool:
+    """Create slot directory if it doesn't exist. Returns False if unavailable."""
+    try:
+        if not _SLOT_DIR.exists():
+            _SLOT_DIR.mkdir(parents=True, exist_ok=True)
+            for i in range(_NUM_SLOTS):
+                (_SLOT_DIR / f"slot.{i}").touch()
+        return True
+    except PermissionError:
+        return False
 
 
 @contextmanager
@@ -43,7 +47,10 @@ def gpu_slot():
         with gpu_slot():
             result = ollama_client.embed(model=model, input=text)
     """
-    _ensure_slot_dir()
+    if not _ensure_slot_dir():
+        log.debug("gpu_slot: slot dir unavailable, running without GPU semaphore")
+        yield
+        return
     fd = -1
     try:
         # Try non-blocking acquisition across all slots

@@ -277,9 +277,22 @@ async def get_current_effect():
         except OSError:
             pass
     available = [
-        "ghost", "trails", "screwed", "datamosh", "vhs", "neon",
-        "trap", "diff", "clean", "thermal", "halftone", "glitchblocks",
-        "pixsort", "ascii", "feedback", "slitscan",
+        "ghost",
+        "trails",
+        "screwed",
+        "datamosh",
+        "vhs",
+        "neon",
+        "trap",
+        "diff",
+        "clean",
+        "thermal",
+        "halftone",
+        "glitchblocks",
+        "pixsort",
+        "ascii",
+        "feedback",
+        "slitscan",
     ]
     return {"preset": preset, "available": available}
 

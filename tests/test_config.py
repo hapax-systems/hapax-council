@@ -64,8 +64,11 @@ def test_embed_error_handling():
     mock_client = MagicMock()
     mock_client.embed.side_effect = ConnectionError("Ollama is down")
     from contextlib import nullcontext
-    with patch("shared.config._get_ollama_client", return_value=mock_client), \
-         patch("shared.gpu_semaphore.gpu_slot", return_value=nullcontext()):
+
+    with (
+        patch("shared.config._get_ollama_client", return_value=mock_client),
+        patch("shared.gpu_semaphore.gpu_slot", return_value=nullcontext()),
+    ):
         with pytest.raises(RuntimeError, match="Embedding failed") as exc_info:
             embed("test text")
         assert "Ollama is down" in str(exc_info.value)
