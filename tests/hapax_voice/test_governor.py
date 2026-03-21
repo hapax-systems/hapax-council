@@ -189,7 +189,7 @@ class TestComplianceWindowTitle:
         win = WindowInfo(
             address="0x1",
             app_class="obsidian",
-            title="1-on-1 Agenda - Ryan",
+            title="1-on-1 Agenda - Operator",
             workspace_id=1,
             pid=1,
             x=0,

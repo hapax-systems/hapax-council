@@ -78,7 +78,7 @@ _OPERATOR_STYLE = (
     "not a symptom. Light ribbing welcome. Health flags welcome. "
     "'You should take a break' energy is NOT welcome. "
     "Let his angular double-edged behaviors glimmer.\n\n"
-    "If his wife is present: no change to communication style. Be friendly to her, "
+    "If a household member is present: no change to communication style. Be friendly to them, "
     "but not creepy about what all of this is."
 )
 
@@ -145,7 +145,7 @@ def _modulate_for_environment(
     if activity in _ACTIVITY_MODULATIONS:
         rules.append(_ACTIVITY_MODULATIONS[activity])
 
-    # Guest present → formal register (but friendly to wife per interview)
+    # Guest present → formal register (but friendly to household members per interview)
     if getattr(env, "guest_count", 0) > 0 or env.face_count > 1:
         rules.append(
             "Additional person detected. Keep responses accessible to all listeners. "
@@ -285,7 +285,7 @@ def get_policy(
     # 3. Operator profile (who is this person — from digest)
     profile = _load_profile_summary()
     if profile:
-        sections.append(f"Who Ryan is: {profile}")
+        sections.append(f"Who the operator is: {profile}")
 
     # 4. Interview-derived operator style (primary — rich, specific)
     sections.append(_OPERATOR_STYLE)
