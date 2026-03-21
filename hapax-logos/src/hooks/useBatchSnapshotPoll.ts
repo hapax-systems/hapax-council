@@ -194,7 +194,7 @@ export function useBatchSnapshot(
     startPolling(intervalMs);
 
     const staleTimer = setInterval(() => {
-      if (Date.now() - lastSuccess.current > 10_000) setIsStale(true);
+      if (Date.now() - lastSuccess.current > 5_000) setIsStale(true);
     }, 2_000);
 
     return () => {

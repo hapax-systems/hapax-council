@@ -45,7 +45,7 @@ export const HorizonRegion = memo(function HorizonRegion() {
   const horizonSignals = signalsByRegion.horizon;
 
   return (
-    <Region name="horizon" className="col-span-3" stimmungStance={stimmungStance}>
+    <Region name="horizon" className="col-span-3" style={{ zIndex: 0 }} stimmungStance={stimmungStance}>
       {(depth) => (
         <div className="h-full relative">
           {depth === "surface" && <HorizonSurface />}
@@ -85,7 +85,9 @@ export const HorizonRegion = memo(function HorizonRegion() {
               className={
                 depth === "surface"
                   ? "absolute bottom-1.5 right-8 pointer-events-none"
-                  : "absolute top-2 right-8"
+                  : depth === "core"
+                    ? "absolute bottom-2 right-8"
+                    : "absolute top-2 right-8"
               }
             />
           )}
