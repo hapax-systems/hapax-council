@@ -8,6 +8,8 @@ import { sourceUrl, selectEffect } from "../../studio/effectSources";
 import { useStudio } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
 
+const _BUILD_TS = "build-2026-03-21T01:20";
+
 interface CameraHeroProps {
   heroRole: string;
   classificationDetections: ClassificationDetection[];
@@ -108,21 +110,14 @@ export function CameraHero({
     );
   }
 
-  // HLS mode: render video element instead of snapshot
+  // HLS mode: composited stream already includes all cameras — fill entire container
   if (smoothMode) {
     return (
-      <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
-        <div className="relative flex-1 min-h-0">
-          <HlsPlayer />
-          {/* Camera role label */}
-          <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-            {heroRole} · HLS
-          </div>
+      <div ref={containerRef} className="relative h-full w-full overflow-hidden" onDoubleClick={handleDoubleClick}>
+        <HlsPlayer />
+        <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
+          HLS · {_BUILD_TS}
         </div>
-        {/* Secondary strip */}
-        {secondaryCameras.length > 0 && (
-          <SecondaryStrip cameras={secondaryCameras} onSelect={onHeroChange} />
-        )}
       </div>
     );
   }
@@ -251,7 +246,7 @@ function HlsPlayer() {
         (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = node;
         containerRef(node);
       }}
-      className="h-full w-full bg-black object-cover"
+      className="absolute inset-0 h-full w-full bg-black object-cover"
       muted
       playsInline
       poster="/api/studio/stream/fx"
