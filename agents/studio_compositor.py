@@ -1036,8 +1036,12 @@ class StudioCompositor:
         self._fx_vhs_shader.set_property("uniforms", vhs_uniforms[0])
 
         # Update thermal shader — passthrough when not active (edge_glow = -1)
-        t_edge = preset.thermal_params.get("u_edge_glow", -1.0) if preset.use_thermal_shader else -1.0
-        t_pal = preset.thermal_params.get("u_palette_shift", 0.0) if preset.use_thermal_shader else 0.0
+        t_edge = (
+            preset.thermal_params.get("u_edge_glow", -1.0) if preset.use_thermal_shader else -1.0
+        )
+        t_pal = (
+            preset.thermal_params.get("u_palette_shift", 0.0) if preset.use_thermal_shader else 0.0
+        )
         thermal_u = Gst.Structure.from_string(
             f"uniforms, u_time=(float)0.0, u_edge_glow=(float){t_edge}, "
             f"u_palette_shift=(float){t_pal}, "
@@ -1047,7 +1051,9 @@ class StudioCompositor:
 
         # Update halftone shader — passthrough when dot_size < 1
         h_dot = preset.halftone_params.get("u_dot_size", 0.0) if preset.use_halftone_shader else 0.0
-        h_mode = preset.halftone_params.get("u_color_mode", 0.0) if preset.use_halftone_shader else 0.0
+        h_mode = (
+            preset.halftone_params.get("u_color_mode", 0.0) if preset.use_halftone_shader else 0.0
+        )
         halftone_u = Gst.Structure.from_string(
             f"uniforms, u_time=(float)0.0, u_dot_size=(float){h_dot}, "
             f"u_color_mode=(float){h_mode}, "
@@ -1056,9 +1062,21 @@ class StudioCompositor:
         self._fx_halftone_shader.set_property("uniforms", halftone_u[0])
 
         # Update glitch blocks shader — passthrough when intensity < 0.01
-        g_block = preset.glitch_blocks_params.get("u_block_size", 16.0) if preset.use_glitch_blocks_shader else 16.0
-        g_int = preset.glitch_blocks_params.get("u_intensity", 0.0) if preset.use_glitch_blocks_shader else 0.0
-        g_rgb = preset.glitch_blocks_params.get("u_rgb_split", 0.0) if preset.use_glitch_blocks_shader else 0.0
+        g_block = (
+            preset.glitch_blocks_params.get("u_block_size", 16.0)
+            if preset.use_glitch_blocks_shader
+            else 16.0
+        )
+        g_int = (
+            preset.glitch_blocks_params.get("u_intensity", 0.0)
+            if preset.use_glitch_blocks_shader
+            else 0.0
+        )
+        g_rgb = (
+            preset.glitch_blocks_params.get("u_rgb_split", 0.0)
+            if preset.use_glitch_blocks_shader
+            else 0.0
+        )
         glitch_u = Gst.Structure.from_string(
             f"uniforms, u_time=(float)0.0, u_block_size=(float){g_block}, "
             f"u_intensity=(float){g_int}, u_rgb_split=(float){g_rgb}, "
@@ -1067,9 +1085,15 @@ class StudioCompositor:
         self._fx_glitch_shader.set_property("uniforms", glitch_u[0])
 
         # Update pixsort shader — passthrough when sort_length < 1
-        ps_low = preset.pixsort_params.get("u_threshold_low", 0.0) if preset.use_pixsort_shader else 0.0
-        ps_high = preset.pixsort_params.get("u_threshold_high", 1.0) if preset.use_pixsort_shader else 1.0
-        ps_len = preset.pixsort_params.get("u_sort_length", 0.0) if preset.use_pixsort_shader else 0.0
+        ps_low = (
+            preset.pixsort_params.get("u_threshold_low", 0.0) if preset.use_pixsort_shader else 0.0
+        )
+        ps_high = (
+            preset.pixsort_params.get("u_threshold_high", 1.0) if preset.use_pixsort_shader else 1.0
+        )
+        ps_len = (
+            preset.pixsort_params.get("u_sort_length", 0.0) if preset.use_pixsort_shader else 0.0
+        )
         ps_dir = preset.pixsort_params.get("u_direction", 0.0) if preset.use_pixsort_shader else 0.0
         pixsort_u = Gst.Structure.from_string(
             f"uniforms, u_time=(float)0.0, u_threshold_low=(float){ps_low}, "
@@ -1091,19 +1115,13 @@ class StudioCompositor:
 
         # Update slitscan shader — passthrough when scan_speed < 0.01
         ss_speed = (
-            preset.slitscan_params.get("u_scan_speed", 0.0)
-            if preset.use_slitscan_shader
-            else 0.0
+            preset.slitscan_params.get("u_scan_speed", 0.0) if preset.use_slitscan_shader else 0.0
         )
         ss_axis = (
-            preset.slitscan_params.get("u_scan_axis", 0.0)
-            if preset.use_slitscan_shader
-            else 0.0
+            preset.slitscan_params.get("u_scan_axis", 0.0) if preset.use_slitscan_shader else 0.0
         )
         ss_warp = (
-            preset.slitscan_params.get("u_warp_amount", 0.0)
-            if preset.use_slitscan_shader
-            else 0.0
+            preset.slitscan_params.get("u_warp_amount", 0.0) if preset.use_slitscan_shader else 0.0
         )
         slitscan_u = Gst.Structure.from_string(
             f"uniforms, u_time=(float)0.0, u_scan_speed=(float){ss_speed}, "
