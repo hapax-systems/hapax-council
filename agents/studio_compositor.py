@@ -88,7 +88,7 @@ class CameraProfile(BaseModel):
 class CameraSpec(BaseModel):
     """A single camera source."""
 
-    role: str  # e.g. "brio-operator", "c920-hardware", "c920-room", "c920-aux", "ir"
+    role: str  # e.g. "brio-operator", "c920-desk", "c920-room", "c920-overhead", "ir"
     device: str  # /dev/v4l/by-id/... or /dev/videoN
     width: int = 1280
     height: int = 720
@@ -148,7 +148,7 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "hero": True,
     },
     {
-        "role": "c920-hardware",
+        "role": "c920-desk",
         "device": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_2657DFCF-video-index0",
         "width": 1280,
         "height": 720,
@@ -162,7 +162,7 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "input_format": "mjpeg",
     },
     {
-        "role": "c920-aux",
+        "role": "c920-overhead",
         "device": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_7B88C71F-video-index0",
         "width": 1280,
         "height": 720,
@@ -176,7 +176,7 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "input_format": "mjpeg",
     },
     {
-        "role": "brio-aux",
+        "role": "brio-synths",
         "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0",
         "width": 1920,
         "height": 1080,

@@ -20,12 +20,12 @@ if [ -e "$DEV" ]; then
   echo "brio-operator: configured (sharpness=128, exposure=333)"
 fi
 
-# --- C920-hardware (faces monitors) — lower gain, infinity focus ---
+# --- C920-desk (high angle monitors/desk) — lower gain, infinity focus ---
 DEV=/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_2657DFCF-video-index0
 if [ -e "$DEV" ]; then
   $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=140,exposure_time_absolute=333,sharpness=110"
   $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0
-  echo "c920-hardware: configured (gain=140, exposure=333, sharpness=110)"
+  echo "c920-desk: configured (gain=140, exposure=333, sharpness=110)"
 fi
 
 # --- C920-room (wide room view) ---
@@ -36,12 +36,12 @@ if [ -e "$DEV" ]; then
   echo "c920-room: configured (gain=140, exposure=333, sharpness=110)"
 fi
 
-# --- C920-aux (hardware close-up) ---
+# --- C920-overhead (top-down over operator) ---
 DEV=/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_7B88C71F-video-index0
 if [ -e "$DEV" ]; then
   $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=140,exposure_time_absolute=333,sharpness=110"
   $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=30
-  echo "c920-aux: configured (gain=140, exposure=333, sharpness=110)"
+  echo "c920-overhead: configured (gain=140, exposure=333, sharpness=110)"
 fi
 
 # --- BRIO-room (full room view, 1080p) ---
@@ -52,10 +52,10 @@ if [ -e "$DEV" ]; then
   echo "brio-room: configured (sharpness=128, exposure=333)"
 fi
 
-# --- BRIO-aux (secondary angle, 1080p) ---
+# --- BRIO-synths (overhead synth corner, 1080p) ---
 DEV=/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0
 if [ -e "$DEV" ]; then
   $V4L2 -d "$DEV" --set-ctrl="$SHARED,gain=80,exposure_time_absolute=333,sharpness=128"
   $V4L2 -d "$DEV" --set-ctrl=focus_automatic_continuous=0,focus_absolute=0 2>/dev/null || true
-  echo "brio-aux: configured (sharpness=128, exposure=333)"
+  echo "brio-synths: configured (sharpness=128, exposure=333)"
 fi
