@@ -142,7 +142,7 @@ Critical semantic distinction for search results:
 
 The line: **structural facts about the operator's data (who is involved) are operator data. Behavioral, opinion, or state facts about other people are person-adjacent data.**
 
-This maps to the existing DLM label semantics: the owner of "Ryan has a meeting" is Ryan. The owner of "Alice said X in that meeting" is Alice.
+This maps to the existing DLM label semantics: the owner of "the operator has a meeting" is the operator. The owner of "Alice said X in that meeting" is Alice.
 
 ---
 
@@ -385,7 +385,7 @@ This means the consent check must consider not just the data subject's consent, 
 > **System** (was mid-briefing): "...and your 3pm is the all-hands about — actually, I notice someone else just came in. I'll keep things general until we sort that out."
 > (ConsentStateTracker transitions to GUEST_DETECTED)
 > (After debounce, if consent offering triggers):
-> **System**: "Hey, welcome. I'm Ryan's voice assistant, and the room has microphones and cameras. I won't record anything about you unless you're okay with it — want me to explain what that means, or are you good with it?"
+> **System**: "Hey, welcome. I'm the operator's voice assistant, and the room has microphones and cameras. I won't record anything about you unless you're okay with it — want me to explain what that means, or are you good with it?"
 
 ### 6.5 Pattern: The Proactive Privacy Bookmark
 

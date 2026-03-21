@@ -2,7 +2,7 @@
 
 **Status**: Exploratory pilot. Not confirmatory. Informs Cycle 2 design.
 **Date**: 2026-03-19 to 2026-03-20
-**Operator**: the operator
+**Operator**: (single operator)
 **System**: Hapax Council voice daemon (Claude Opus 4.6 via LiteLLM)
 
 ---

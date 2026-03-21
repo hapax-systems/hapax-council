@@ -71,7 +71,7 @@ Reciprocal transparency frameworks (sousveillance, Transparent Society) assume r
 
 **Environmental vs. personal sensing:** The axiom explicitly covers *persistent state about a specific person*, not transient environmental perception. VAD detecting a voice in the room = environmental. "Wife arrived home at 18:30" = personal modeling. This line is clear and enforceable.
 
-**Visitors and transient persons:** A guest walks through the studio and appears on a webcam feed. If the system doesn't persist anything about them specifically, no contract is needed. If it starts tracking "Ryan's friend visits Tuesdays," that's personal modeling and requires a contract.
+**Visitors and transient persons:** A guest walks through the studio and appears on a webcam feed. If the system doesn't persist anything about them specifically, no contract is needed. If it starts tracking "the operator's friend visits Tuesdays," that's personal modeling and requires a contract.
 
 **Derived/inferred state:** "Wife is probably on her way because she usually leaves work at 17:00" — this is inferred state about a non-operator person. The axiom covers it: persistent inference counts as persistent state.
 
