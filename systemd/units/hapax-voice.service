@@ -33,6 +33,9 @@ Environment=MKL_NUM_THREADS=2
 Environment=OPENBLAS_NUM_THREADS=2
 Environment=ONNXRUNTIME_INTRA_OP_NUM_THREADS=2
 MemoryMax=8G
+OOMScoreAdjust=-500
+Nice=-10
+LimitNOFILE=1048576
 SyslogIdentifier=hapax-voice
 
 [Install]

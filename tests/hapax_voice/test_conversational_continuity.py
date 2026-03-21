@@ -29,11 +29,11 @@ class TestExtractSubstance:
         result = _extract_substance("hey hapax")
         assert result  # should not be empty
 
-    def test_truncates_at_60_chars(self):
+    def test_truncates_at_100_chars(self):
         from agents.hapax_voice.conversation_pipeline import _extract_substance
 
-        long_text = "a" * 100
-        assert len(_extract_substance(long_text)) <= 60
+        long_text = "a" * 150
+        assert len(_extract_substance(long_text)) <= 100
 
 
 # ── Batch 1: Sentinel survival through system prompt rebuild ──────────────────
@@ -63,8 +63,13 @@ class TestSentinelSurvival:
         assert "number is 42" in content
 
     def test_sentinel_survives_thread_update(self):
+        from agents.hapax_voice.conversation_pipeline import ThreadEntry
+
         pipeline = self._make_pipeline()
-        pipeline._conversation_thread = ["topic A discussed", "topic B discussed"]
+        pipeline._conversation_thread = [
+            ThreadEntry(turn=1, user_text="topic A discussed", response_summary="noted"),
+            ThreadEntry(turn=2, user_text="topic B discussed", response_summary="got it"),
+        ]
         pipeline._last_env_hash = 0  # force refresh
         pipeline._update_system_context()
         content = pipeline.messages[0]["content"]

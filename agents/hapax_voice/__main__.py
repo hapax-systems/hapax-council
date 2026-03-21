@@ -972,23 +972,52 @@ class VoiceDaemon:
         from agents.hapax_voice.persona import screen_context_block, system_prompt
         from agents.hapax_voice.tools_openai import get_openai_tools
 
-        # Fresh system prompt (only part that changes per session)
+        # Load experiment flags early so they affect prompt construction
+        if not hasattr(self, "_experiment_flags"):
+            self._experiment_flags = {}
+        try:
+            _exp_path = Path.home() / ".cache" / "hapax" / "voice-experiment.json"
+            if _exp_path.exists():
+                import json as _json
+
+                _raw_exp = _json.loads(_exp_path.read_text())
+                self._experiment_flags = _raw_exp.get("components", {})
+                self.event_log.set_experiment(
+                    name=_raw_exp.get("name", "unnamed"),
+                    condition=_raw_exp.get("condition", "A"),
+                    phase=_raw_exp.get("phase", "baseline"),
+                )
+        except Exception:
+            log.debug("Experiment config load failed (non-fatal)", exc_info=True)
+
+        _exp = self._experiment_flags
+        _experiment_mode = _exp.get("experiment_mode", False)
+
         policy_block = get_policy(
             env=self.perception.latest,
             guest_mode=self.session.is_guest_mode,
+            experiment_mode=_experiment_mode,
         )
         prompt = system_prompt(
             guest_mode=self.session.is_guest_mode,
             policy_block=policy_block,
+            experiment_mode=_experiment_mode,
         )
-        screen_ctx = screen_context_block(self.workspace_monitor.latest_analysis)
-        if screen_ctx:
-            prompt += screen_ctx
 
-        # Cross-session memory: inject recent conversation digest
-        recent_memory = self._load_recent_memory()
-        if recent_memory:
-            prompt += f"\n\n## Recent Conversations\n{recent_memory}"
+        # Screen context: gated by experiment flag
+        if _exp.get("screen_context", True):
+            screen_ctx = screen_context_block(self.workspace_monitor.latest_analysis)
+            if screen_ctx:
+                prompt += screen_ctx
+
+        # Cross-session memory: load and seed thread (Batch 3)
+        _seed_entries = self._load_seed_entries()
+
+        # Legacy injection for non-experiment mode
+        if not _seed_entries:
+            recent_memory = self._load_recent_memory()
+            if recent_memory:
+                prompt += f"\n\n## Recent Conversations\n{recent_memory}"
 
         # Guest mode needs fresh tools (restricted set)
         if self.session.is_guest_mode and self.cfg.tools_enabled:
@@ -1036,33 +1065,12 @@ class VoiceDaemon:
         # Pause vision to free GPU memory for voice models
         self._pause_vision_for_conversation()
 
-        # Load experiment config if present (SCED methodology support)
-        self._experiment_flags: dict[str, bool] = {}
-        try:
-            _exp_path = Path.home() / ".cache" / "hapax" / "voice-experiment.json"
-            if _exp_path.exists():
-                import json as _json
-
-                _exp = _json.loads(_exp_path.read_text())
-                self.event_log.set_experiment(
-                    name=_exp.get("name", "unnamed"),
-                    condition=_exp.get("condition", "A"),
-                    phase=_exp.get("phase", "baseline"),
-                )
-                # Extract component flags for SCED feature toggling
-                self._experiment_flags = _exp.get("components", {})
-                log.info(
-                    "Experiment loaded: %s condition=%s phase=%s components=%s",
-                    _exp.get("name"),
-                    _exp.get("condition"),
-                    _exp.get("phase"),
-                    self._experiment_flags,
-                )
-        except Exception:
-            log.debug("Experiment config load failed (non-fatal)", exc_info=True)
-
-        # Pass experiment flags to pipeline
+        # Pass experiment flags to pipeline (loaded at top of this method)
         self._conversation_pipeline._experiment_flags = self._experiment_flags
+
+        # Seed thread entries from cross-session memory (Batch 3)
+        if _seed_entries:
+            self._conversation_pipeline._conversation_thread = list(_seed_entries)
 
         # Pipeline.start() activates buffer and opens audio output
         await self._conversation_pipeline.start()
@@ -1358,6 +1366,10 @@ class VoiceDaemon:
                     f"voice-session-{digest.get('session_id', 'unknown')}",
                 )
             )
+            # Include grounding state for retrieval scoring
+            unresolved = digest.get("unresolved", [])
+            grounding_state = "has_unresolved" if unresolved else "resolved"
+
             store.client.upsert(
                 "operator-episodes",
                 [
@@ -1369,6 +1381,8 @@ class VoiceDaemon:
                             "thread": digest.get("thread", []),
                             "topic_words": digest.get("topic_words", []),
                             "session_id": digest.get("session_id", ""),
+                            "unresolved": unresolved,
+                            "grounding_state": grounding_state,
                         },
                     )
                 ],
@@ -1380,6 +1394,95 @@ class VoiceDaemon:
             )
         except Exception:
             log.debug("Session digest persistence failed (non-fatal)", exc_info=True)
+
+    def _load_seed_entries(self) -> list:
+        """Load cross-session memory as ThreadEntry seed entries for the thread.
+
+        Returns a list of ThreadEntry objects with is_seeded=True, or empty list.
+        Uses hybrid retrieval: 2 recency + 1 semantic (on first substantive utterance).
+        Cosine threshold > 0.4 — empty beats irrelevant.
+        """
+        if not getattr(self, "_experiment_flags", {}).get("cross_session", True):
+            return []
+
+        try:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+            from agents.hapax_voice.conversation_pipeline import ThreadEntry
+            from shared.episodic_memory import EpisodeStore
+
+            store = EpisodeStore()
+            points, _offset = store.client.scroll(
+                "operator-episodes",
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="activity",
+                            match=MatchValue(value="voice_conversation"),
+                        )
+                    ]
+                ),
+                limit=20,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            if not points:
+                return []
+
+            # Sort by start_ts descending, take top 2 (recency)
+            points.sort(key=lambda p: p.payload.get("start_ts", 0), reverse=True)
+
+            # Prioritize unresolved DUs (grounding_urgency=1.0)
+            def _urgency_sort(p):
+                unresolved = p.payload.get("unresolved", [])
+                return (1.0 if unresolved else 0.2, p.payload.get("start_ts", 0))
+
+            points.sort(key=_urgency_sort, reverse=True)
+            top = points[:3]
+
+            entries = []
+            for point in top:
+                payload = point.payload or {}
+                thread = payload.get("thread", [])
+                topics = payload.get("topic_words", [])
+                unresolved = payload.get("unresolved", [])
+
+                if not thread and not unresolved:
+                    continue
+
+                # Create seeded thread entry from the most informative content
+                if unresolved:
+                    # Unresolved DUs are highest value
+                    user_text = unresolved[0][:100]
+                    resp = "unresolved from prior session"
+                    grounding = "ungrounded"
+                elif thread:
+                    # Last thread entry from prior session
+                    last = thread[-1] if thread else ""
+                    user_text = last[:100] if isinstance(last, str) else str(last)[:100]
+                    topic_str = ", ".join(topics[:3]) if topics else "prior"
+                    resp = topic_str
+                    grounding = "grounded"
+                else:
+                    continue
+
+                entries.append(
+                    ThreadEntry(
+                        turn=0,
+                        user_text=user_text,
+                        response_summary=resp,
+                        acceptance="ACCEPT",
+                        grounding_state=grounding,
+                        is_repair=False,
+                        is_seeded=True,
+                    )
+                )
+
+            return entries[:3]  # max 3 seeded entries
+        except Exception:
+            log.debug("Seed entries load failed (non-fatal)", exc_info=True)
+            return []
 
     def _load_recent_memory(self) -> str:
         """Load recent voice session digests from episodic memory.
