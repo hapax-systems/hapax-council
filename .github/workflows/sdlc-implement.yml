@@ -85,7 +85,7 @@ jobs:
 
             ## Rules
             1. Follow the plan exactly. Do not add features beyond what is planned.
-            2. Do NOT modify protected paths: axioms/, hooks/, systemd/, shared/config.py,
+            2. Do NOT modify protected paths: .github/, axioms/, hooks/, systemd/, shared/config.py,
                shared/axiom_enforcement.py, shared/alert_state.py, agents/health_monitor.py.
             3. Write or update tests for all new code paths.
             4. Run `uv run ruff check .` and `uv run ruff format .` before finishing.
@@ -196,7 +196,7 @@ jobs:
           NEXT_ROUND=$((CURRENT_ROUND + 1))
           echo "round=$NEXT_ROUND" >> "$GITHUB_OUTPUT"
 
-          if [ "$NEXT_ROUND" -gt 3 ]; then
+          if [ "$NEXT_ROUND" -ge 3 ]; then
             echo "exceeded=true" >> "$GITHUB_OUTPUT"
           else
             echo "exceeded=false" >> "$GITHUB_OUTPUT"
