@@ -207,7 +207,7 @@ class TestGuestMode:
     def test_not_guest_when_operator(self):
         session = VoiceLifecycle()
         session.open(trigger="test")
-        session.set_speaker("ryan", 0.9)
+        session.set_speaker("operator", 0.9)
         assert not session.is_guest_mode
 
     def test_guest_when_non_operator(self):

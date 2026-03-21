@@ -20,9 +20,9 @@ def test_no_enrollment_returns_uncertain() -> None:
     assert result.label == "uncertain"
 
 
-def test_high_similarity_returns_ryan(tmp_path) -> None:
+def test_high_similarity_returns_operator(tmp_path) -> None:
     enrollment = np.random.randn(192).astype(np.float32)
-    save_path = tmp_path / "ryan.npy"
+    save_path = tmp_path / "operator.npy"
     ident = SpeakerIdentifier(enrollment_path=None)
     ident.enroll(enrollment, save_path)
 
@@ -30,13 +30,13 @@ def test_high_similarity_returns_ryan(tmp_path) -> None:
     ident2 = SpeakerIdentifier(enrollment_path=save_path)
     # Use the same embedding — cosine similarity should be 1.0
     result = ident2.identify(enrollment)
-    assert result.label == "ryan"
+    assert result.label == "operator"
     assert result.confidence >= 0.75
 
 
-def test_low_similarity_returns_not_ryan(tmp_path) -> None:
+def test_low_similarity_returns_not_operator(tmp_path) -> None:
     enrollment = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-    save_path = tmp_path / "ryan.npy"
+    save_path = tmp_path / "operator.npy"
     ident = SpeakerIdentifier(enrollment_path=None)
     ident.enroll(enrollment, save_path)
 
@@ -44,7 +44,7 @@ def test_low_similarity_returns_not_ryan(tmp_path) -> None:
     # Orthogonal vector — cosine similarity near 0
     other = np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32)
     result = ident2.identify(other)
-    assert result.label == "not_ryan"
+    assert result.label == "not_operator"
     assert result.confidence < 0.4
 
 
@@ -126,7 +126,7 @@ def test_extract_embedding_converts_int16() -> None:
 
 
 def test_identify_audio_with_enrollment(tmp_path) -> None:
-    """End-to-end: identify_audio returns ryan when embedding matches."""
+    """End-to-end: identify_audio returns operator when embedding matches."""
     _reset_pyannote_state()
 
     enrollment = np.random.randn(192).astype(np.float32)
@@ -137,13 +137,13 @@ def test_identify_audio_with_enrollment(tmp_path) -> None:
     speaker_id_mod._pyannote_inference = mock_inference
     speaker_id_mod._pyannote_load_attempted = True
 
-    save_path = tmp_path / "ryan.npy"
+    save_path = tmp_path / "operator.npy"
     ident = SpeakerIdentifier(enrollment_path=None)
     ident.enroll(enrollment, save_path)
 
     audio = np.random.randn(16000).astype(np.float32)
     result = ident.identify_audio(audio)
-    assert result.label == "ryan"
+    assert result.label == "operator"
     assert result.confidence >= 0.75
     _reset_pyannote_state()
 

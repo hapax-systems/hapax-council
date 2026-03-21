@@ -56,7 +56,7 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 class SpeakerResult:
     """Result of speaker identification."""
 
-    label: str  # "ryan", "not_ryan", or "uncertain"
+    label: str  # "operator", "not_operator", or "uncertain"
     confidence: float
 
 
@@ -90,9 +90,9 @@ class SpeakerIdentifier:
 
         similarity = _cosine_similarity(embedding, self._enrolled)
         if similarity >= threshold_accept:
-            return SpeakerResult(label="ryan", confidence=similarity)
+            return SpeakerResult(label="operator", confidence=similarity)
         if similarity < threshold_reject:
-            return SpeakerResult(label="not_ryan", confidence=similarity)
+            return SpeakerResult(label="not_operator", confidence=similarity)
         return SpeakerResult(label="uncertain", confidence=similarity)
 
     def extract_embedding(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray | None:

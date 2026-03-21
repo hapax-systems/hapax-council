@@ -1245,7 +1245,7 @@ class VoiceDaemon:
             self.governor.wake_word_active = True
             self._frame_gate.set_directive("process")
             self.session.open(trigger="wake_word")
-            self.session.set_speaker("ryan", confidence=1.0)  # Wake word implies operator
+            self.session.set_speaker("operator", confidence=1.0)  # Wake word implies operator
             log.info("Session opened via wake word")
             self.event_log.set_session_id(self.session.session_id)
             self.event_log.emit("session_lifecycle", action="opened", trigger="wake_word")
@@ -1265,7 +1265,7 @@ class VoiceDaemon:
                     return
                 self._acknowledge("activation")
                 self.session.open(trigger="hotkey")
-                self.session.set_speaker("ryan", confidence=1.0)  # Physical access = operator
+                self.session.set_speaker("operator", confidence=1.0)  # Physical access = operator
                 self.event_log.set_session_id(self.session.session_id)
                 self.event_log.emit("session_lifecycle", action="opened", trigger="hotkey")
                 await self._start_pipeline()
@@ -1279,7 +1279,7 @@ class VoiceDaemon:
                 return
             self._acknowledge("activation")
             self.session.open(trigger="hotkey")
-            self.session.set_speaker("ryan", confidence=1.0)  # Physical access = operator
+            self.session.set_speaker("operator", confidence=1.0)  # Physical access = operator
             self.event_log.set_session_id(self.session.session_id)
             self.event_log.emit("session_lifecycle", action="opened", trigger="hotkey")
             await self._start_pipeline()
@@ -1880,7 +1880,7 @@ class VoiceDaemon:
                 try:
                     speaker_is_op = (
                         not self.session.is_active
-                        or getattr(self.session, "speaker", "ryan") == "ryan"
+                        or getattr(self.session, "speaker", "operator") == "operator"
                     )
                     # When the Bayesian presence engine is confident the operator
                     # is present, suppress guest detection. Face ReID alone is too

@@ -1270,7 +1270,7 @@ def _process_file(
             # Fixes T0 violation of it-consent-001.
             if len(all_speakers) > 1:
                 non_operator = {
-                    s for s in all_speakers if s not in ("SPEAKER_00", "operator", "ryan")
+                    s for s in all_speakers if s not in ("SPEAKER_00", "operator", "operator")
                 }
                 if non_operator:
                     from shared.governance.consent_gate import ConsentGatedWriter

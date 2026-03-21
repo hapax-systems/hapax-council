@@ -46,7 +46,7 @@ You should see facts from the interview flush. If neurocognitive_profile shows 0
 
 **Copilot greeting:**
 ```
-evening, ryan — all clear. no interview conducted.
+evening, operator — all clear. no interview conducted.
 ```
 
 The copilot knows the system is in bootstrap mode and says so directly.

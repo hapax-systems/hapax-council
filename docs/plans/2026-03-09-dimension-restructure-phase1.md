@@ -925,7 +925,7 @@ Verify only `hardware` facts are dropped (these live in component-registry.yaml)
 **Step 3: Execute migration**
 
 Run: `uv run python scripts/migrate_profile_dimensions.py`
-Expected: Backup created at `profiles/ryan.pre-migration.json`, profile updated
+Expected: Backup created at `profiles/operator.pre-migration.json`, profile updated
 
 **Step 4: Verify**
 

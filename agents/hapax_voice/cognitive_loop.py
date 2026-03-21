@@ -382,9 +382,9 @@ class CognitiveLoop:
                 longest = max(self._speaker_audio_buf, key=len)
                 speaker = await self._verify_speaker(longest)
 
-                if speaker == "ryan":
+                if speaker == "operator":
                     self._speaker_verified = True
-                    self._session.set_speaker("ryan", 0.0)
+                    self._session.set_speaker("operator", 0.0)
                     log.info("Speaker gate: operator verified, session trusted")
                     for buffered in self._speaker_audio_buf:
                         self._session.mark_activity()
@@ -393,7 +393,7 @@ class CognitiveLoop:
                     self._speaker_audio_buf.clear()
                     self._update_model_on_utterance(utterance)
                     return
-                elif speaker == "not_ryan":
+                elif speaker == "not_operator":
                     log.info("Speaker gate: DROPPED — not operator")
                     self._speaker_audio_buf.clear()
                     self._speaker_audio_samples = 0
@@ -402,7 +402,7 @@ class CognitiveLoop:
                     self._speaker_verify_attempts = getattr(self, "_speaker_verify_attempts", 0) + 1
                     if self._speaker_verify_attempts >= 2:
                         self._speaker_verified = True
-                        self._session.set_speaker("ryan", 0.0)
+                        self._session.set_speaker("operator", 0.0)
                         log.info(
                             "Speaker gate: verification inconclusive after %d attempts, "
                             "trusting wake word (fail-open)",
@@ -436,7 +436,7 @@ class CognitiveLoop:
     async def _verify_speaker(self, audio_bytes: bytes) -> str:
         """Run speaker verification on accumulated PCM audio.
 
-        Returns "ryan", "not_ryan", or "uncertain".
+        Returns "operator", "not_operator", or "uncertain".
         """
         try:
             import numpy as np

@@ -29,8 +29,8 @@ def test_session_tracks_speaker():
 
     sm = SessionManager(silence_timeout_s=30)
     sm.open(trigger="hotkey")
-    sm.set_speaker("ryan", confidence=0.92)
-    assert sm.speaker == "ryan"
+    sm.set_speaker("operator", confidence=0.92)
+    assert sm.speaker == "operator"
     assert sm.speaker_confidence == 0.92
 
 

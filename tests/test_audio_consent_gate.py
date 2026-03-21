@@ -111,14 +111,14 @@ class TestAudioConsentGate(unittest.TestCase):
     def test_operator_speakers_are_excluded(self):
         """Known operator identifiers are filtered BEFORE the gate.
 
-        The audio processor filters SPEAKER_00/operator/ryan from the
+        The audio processor filters SPEAKER_00/operator from the
         speaker set before calling the gate. The gate only sees
         non-operator person IDs. With no non-operator persons,
         the gate is not invoked (operator's own data, no consent needed).
         """
         # Simulate the audio processor's filtering logic
-        all_speakers = {"SPEAKER_00", "operator", "ryan", "SPEAKER_01"}
-        operator_ids = {"SPEAKER_00", "operator", "ryan"}
+        all_speakers = {"SPEAKER_00", "operator", "SPEAKER_01"}
+        operator_ids = {"SPEAKER_00", "operator"}
         non_operator = all_speakers - operator_ids
 
         # Only non-operator speakers go to the gate

@@ -118,7 +118,7 @@ class ExperientialWorld:
         self._registry = ConsentRegistry()
         self.reader = ConsentGatedReader(
             registry=self._registry,
-            operator_ids=frozenset({"operator", "ryan"}),
+            operator_ids=frozenset({"operator"}),
         )
 
         # Snapshot after each tick

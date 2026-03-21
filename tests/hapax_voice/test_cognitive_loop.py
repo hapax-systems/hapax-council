@@ -227,7 +227,7 @@ class TestCognitiveLoopBasic:
         # Second utterance — uncertain again, should fail-open
         await loop._process_utterance(audio_3s)
         assert loop._speaker_verified
-        session.set_speaker.assert_called_with("ryan", 0.0)
+        session.set_speaker.assert_called_with("operator", 0.0)
 
 
 # ── Batch 2: Turn Phase Tracking ──────────────────────────────────────

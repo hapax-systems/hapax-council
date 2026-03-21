@@ -26,7 +26,7 @@ from agents.hapax_voice.consent_identity import (
 
 class TestResolveGuestIdentity(unittest.TestCase):
     def test_operator_always_has_contract(self):
-        identity = resolve_guest_identity("ryan", confidence=0.9)
+        identity = resolve_guest_identity("operator", confidence=0.9)
         assert identity.person_id == "operator"
         assert identity.has_contract
 
@@ -36,7 +36,7 @@ class TestResolveGuestIdentity(unittest.TestCase):
             mock_reg.get_contract_for.return_value = None
             mock.return_value = mock_reg
 
-            identity = resolve_guest_identity("not_ryan", confidence=0.3)
+            identity = resolve_guest_identity("not_operator", confidence=0.3)
             assert identity.person_id == "unknown"
             assert not identity.has_contract
 
@@ -217,12 +217,14 @@ class TestIdentityProperties(unittest.TestCase):
             assert tracker.all_consented == (not tracker.any_pending)
 
     @given(
-        speaker=st.sampled_from(["ryan", "operator", "not_ryan", "uncertain", "wife", "friend"]),
+        speaker=st.sampled_from(
+            ["operator", "operator", "not_operator", "uncertain", "wife", "friend"]
+        ),
     )
     @settings(max_examples=30)
     def test_operator_always_has_contract(self, speaker):
         """∀ speaker: operator labels always resolve to has_contract=True."""
         identity = resolve_guest_identity(speaker)
-        if speaker in ("ryan", "operator"):
+        if speaker in ("operator", "operator"):
             assert identity.has_contract
             assert identity.person_id == "operator"

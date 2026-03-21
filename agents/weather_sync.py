@@ -29,7 +29,7 @@ RAG_DIR = Path.home() / "documents" / "rag-sources" / "weather"
 CACHE_DIR = Path.home() / ".cache" / "weather-sync"
 
 # OpenWeatherMap free tier — no API key needed for this endpoint
-# Default: Minneapolis (operator's location from profile)
+# Default coordinates (configurable via env vars)
 DEFAULT_LAT = "44.98"
 DEFAULT_LON = "-93.27"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"

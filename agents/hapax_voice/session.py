@@ -37,7 +37,7 @@ class VoiceLifecycle:
 
     @property
     def is_guest_mode(self) -> bool:
-        return self.is_active and self.speaker not in ("ryan", None)
+        return self.is_active and self.speaker not in ("operator", None)
 
     @property
     def is_timed_out(self) -> bool:

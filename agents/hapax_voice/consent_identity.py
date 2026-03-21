@@ -108,11 +108,11 @@ def resolve_guest_identity(
     the guest is identified and no consent flow is needed.
 
     Args:
-        speaker_label: From SpeakerIdentifier ("ryan", "not_ryan", "uncertain")
+        speaker_label: From SpeakerIdentifier ("operator", "not_operator", "uncertain")
                        or an enrolled person_id ("wife", "guest-1")
         confidence: Speaker ID confidence score
     """
-    if speaker_label in ("ryan", "operator"):
+    if speaker_label in ("operator", "operator"):
         return GuestIdentity(
             person_id="operator",
             has_contract=True,  # operator needs no contract
@@ -121,7 +121,7 @@ def resolve_guest_identity(
         )
 
     # Check if this speaker has an enrolled identity with a contract
-    person_id = speaker_label if speaker_label not in ("not_ryan", "uncertain") else "unknown"
+    person_id = speaker_label if speaker_label not in ("not_operator", "uncertain") else "unknown"
 
     try:
         from shared.governance.consent import load_contracts

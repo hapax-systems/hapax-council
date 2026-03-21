@@ -10,7 +10,7 @@ from agents.hapax_voice.persona import (
 )
 
 
-def test_system_prompt_contains_hapax_and_ryan() -> None:
+def test_system_prompt_contains_hapax_and_operator() -> None:
     prompt = system_prompt()
     assert "Hapax" in prompt
     assert "Operator" in prompt
