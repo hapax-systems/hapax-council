@@ -1,5 +1,5 @@
 {
-  "phase": "pre-registration",
+  "phase": "baseline",
   "updated": "2026-03-21",
-  "notes": "Cycle 2 implementation complete (Batches 1-4). Pre-registration and OSF registration pending."
+  "notes": "Cycle 2 Phase A baseline collection. Implementation complete, environment audited, config set. OSF registration pending."
 }

@@ -35,6 +35,9 @@
    - turn_pair_coherence present (Cycle 2+)
    - frustration_score present
    - total_latency_ms > 0
+   - response_monologic present (RLHF monitoring)
+   - directive_compliance present (Phase B only)
+   - acceptance_type present
 3. If scores missing: check docker logs langfuse-worker for errors
 4. Save session JSON to proofs/claim-*/data/
 5. Commit with descriptive message
@@ -68,27 +71,32 @@ Any deviation from this protocol during collection must be logged:
 |---------|-----------|-------------|-------------------|
 | (fill)  | (fill)    | (fill)      | (fill)            |
 
-## Experiment Lockdown Mode
+## Experiment Mode (Cycle 2)
 
-When `volatile_lockdown: true` is set in the experiment config, the
-following changes apply:
+Cycle 2 uses **selective flags** instead of monolithic `volatile_lockdown`.
+This allows grounding machinery (directive, effort modulation) to operate
+dynamically while stripping non-research context.
 
-| Component | Normal | Lockdown |
-|-----------|--------|----------|
-| Policy context | Live (per-turn) | Frozen at session start |
-| Environment context | Live (per-turn) | Frozen at session start |
-| Phenomenal context | Live (temporal bands + self-band) | Disabled |
-| Salience context | Live (activation + concern) | Disabled |
-| Display density word limit | Dynamic (15-50 words) | Fixed at 35 |
-| Stimmung downgrade | Can change model tier | Already disabled (intelligence-first) |
+### Infrastructure flags (ON in both phases)
 
-**Rationale**: Volatile components inject environment-dependent context
-that varies between sessions independently of the experiment variable.
-Freezing policy and env at session start provides consistent context
-within each session. Disabling phenomenal and salience removes the
-most stateful components that are impossible to freeze meaningfully.
+| Flag | Effect |
+|------|--------|
+| `experiment_mode` | Stripped system prompt (~800 tokens, no tools/profile/env modulation) |
+| `phenomenal_stimmung_only` | Only stimmung Layer 1 renders (includes GQI when treatment active) |
+| `salience_context: false` | Salience prompt block stripped (router still COMPUTES for mechanical use by effort calibrator and grounding ledger) |
+| `screen_context: false` | No screen context injection |
 
-**Config for Cycle 2**:
+### Treatment flags (ON in Phase B only, OFF in Phase A)
+
+| Flag | Component | Effect when ON |
+|------|-----------|---------------|
+| `stable_frame` | Conversation thread | ThreadEntry with verbatim text, acceptance, grounding state. Tiered compression. Max 10 entries. |
+| `grounding_directive` | Grounding ledger | DU state machine (Traum). Concern-aware repair thresholds. Strategy directives injected per turn. |
+| `effort_modulation` | Effort calibration | Dynamic word limit (22-48) from activation × GQI. 3 levels: EFFICIENT/BASELINE/ELABORATIVE. |
+| `cross_session` | Memory integration | Thread seeded with 2-3 prior session entries. Hybrid retrieval (recency + semantic). |
+| `sentinel` | Diagnostic | Random 2-digit number for prompt integrity verification (dependent measure, not treatment). |
+
+### Phase A (Baseline) Config
 ```json
 {
   "name": "continuity-v2",
@@ -99,7 +107,35 @@ most stateful components that are impossible to freeze meaningfully.
     "message_drop": false,
     "cross_session": false,
     "sentinel": false,
-    "volatile_lockdown": true
+    "grounding_directive": false,
+    "effort_modulation": false,
+    "experiment_mode": true,
+    "phenomenal_stimmung_only": true,
+    "salience_context": false,
+    "screen_context": false
   }
 }
 ```
+
+### Phase B (Intervention) Config
+```json
+{
+  "name": "continuity-v2",
+  "condition": "B",
+  "phase": "intervention",
+  "components": {
+    "stable_frame": true,
+    "sentinel": true,
+    "cross_session": true,
+    "grounding_directive": true,
+    "effort_modulation": true,
+    "experiment_mode": true,
+    "phenomenal_stimmung_only": true,
+    "salience_context": false,
+    "screen_context": false
+  }
+}
+```
+
+### Phase A' (Reversal) Config
+Same as Phase A with `"condition": "A-prime"`, `"phase": "reversal"`.
