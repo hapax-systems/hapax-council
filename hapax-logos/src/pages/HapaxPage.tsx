@@ -412,7 +412,7 @@ export function HapaxPage() {
       {/* Layer 3.5: Camera feeds (toggled with 'c') */}
       {showCameras && (
         <div className="absolute top-4 right-4 flex flex-col gap-2" style={{ zIndex: 5 }}>
-          {["brio-operator", "c920-hardware", "c920-room", "c920-aux"].map(cam => (
+          {["brio-operator", "c920-desk", "c920-room", "c920-overhead"].map(cam => (
             <div key={cam} className="relative">
               <img
                 src={`${API}/studio/stream/camera/${cam}?t=${time.getTime()}`}

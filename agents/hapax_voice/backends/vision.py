@@ -459,16 +459,16 @@ class VisionBackend:
     ) -> None:
         self._webcam_capturer = webcam_capturer
         # Weighted round-robin: operator gets 3x polls for responsive tracking.
-        # Sequence: op, hw, op, room, op, aux, room-brio, aux-brio (repeat)
+        # Sequence: op, desk, op, room, op, overhead, room-brio, synths-brio (repeat)
         self._camera_roles = camera_roles or [
             "operator",
-            "hardware",
+            "desk",
             "operator",
             "room",
             "operator",
-            "aux",
+            "overhead",
             "room-brio",
-            "aux-brio",
+            "synths-brio",
         ]
         self._poll_interval = poll_interval
         self._cache = _VisionCache()
@@ -1277,11 +1277,11 @@ class VisionBackend:
 
                 _role_to_shm2 = {
                     "operator": "brio-operator",
-                    "hardware": "c920-hardware",
+                    "desk": "c920-desk",
                     "room": "c920-room",
-                    "aux": "c920-aux",
+                    "overhead": "c920-overhead",
                     "room-brio": "brio-room",
-                    "aux-brio": "brio-aux",
+                    "synths-brio": "brio-synths",
                 }
                 _shm2 = _P(f"/dev/shm/hapax-compositor/{_role_to_shm2.get(role, role)}.jpg")
                 if not self._webcam_capturer.has_camera(role) and not _shm2.exists():
@@ -1294,11 +1294,11 @@ class VisionBackend:
                 # Map short role names to compositor snapshot filenames
                 _role_to_shm = {
                     "operator": "brio-operator",
-                    "hardware": "c920-hardware",
+                    "desk": "c920-desk",
                     "room": "c920-room",
-                    "aux": "c920-aux",
+                    "overhead": "c920-overhead",
                     "room-brio": "brio-room",
-                    "aux-brio": "brio-aux",
+                    "synths-brio": "brio-synths",
                 }
                 shm_name = _role_to_shm.get(role, role)
                 shm_path = Path(f"/dev/shm/hapax-compositor/{shm_name}.jpg")

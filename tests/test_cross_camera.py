@@ -11,8 +11,8 @@ class TestCrossCameraStitcher:
     def test_temporal_match_on_adjacent_cameras(self):
         st = CrossCameraStitcher(temporal_window_s=5.0)
         st.report_disappeared("p1", "brio-operator", "person")
-        suggestions = st.report_appeared("p2", "c920-hardware", "person")
-        # brio-operator and c920-hardware are adjacent
+        suggestions = st.report_appeared("p2", "c920-desk", "person")
+        # brio-operator and c920-desk are adjacent
         assert len(suggestions) >= 1
         assert suggestions[0].entity_a == "p1"
         assert suggestions[0].entity_b == "p2"
@@ -20,8 +20,8 @@ class TestCrossCameraStitcher:
     def test_no_match_on_non_adjacent_cameras(self):
         st = CrossCameraStitcher(temporal_window_s=5.0)
         st.report_disappeared("p1", "brio-operator", "person")
-        # c920-aux is not adjacent to brio-operator
-        suggestions = st.report_appeared("p2", "c920-aux", "person")
+        # c920-overhead is not adjacent to brio-operator
+        suggestions = st.report_appeared("p2", "c920-overhead", "person")
         assert len(suggestions) == 0
 
     def test_face_embedding_boosts_confidence(self):
@@ -30,7 +30,7 @@ class TestCrossCameraStitcher:
         emb /= np.linalg.norm(emb)
         st.report_disappeared("p1", "brio-operator", "person", face_embedding=emb)
         # Same embedding → high similarity
-        suggestions = st.report_appeared("p2", "c920-hardware", "person", face_embedding=emb)
+        suggestions = st.report_appeared("p2", "c920-desk", "person", face_embedding=emb)
         assert len(suggestions) >= 1
         assert suggestions[0].confidence > 0.5
         assert suggestions[0].reason == "both"
@@ -38,12 +38,12 @@ class TestCrossCameraStitcher:
     def test_different_labels_dont_match(self):
         st = CrossCameraStitcher(temporal_window_s=5.0)
         st.report_disappeared("p1", "brio-operator", "person")
-        suggestions = st.report_appeared("c1", "c920-hardware", "chair")
+        suggestions = st.report_appeared("c1", "c920-desk", "chair")
         assert len(suggestions) == 0
 
     def test_reset_clears_state(self):
         st = CrossCameraStitcher()
         st.report_disappeared("p1", "brio-operator", "person")
         st.reset()
-        suggestions = st.report_appeared("p2", "c920-hardware", "person")
+        suggestions = st.report_appeared("p2", "c920-desk", "person")
         assert len(suggestions) == 0

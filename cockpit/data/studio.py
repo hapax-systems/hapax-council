@@ -280,7 +280,7 @@ def _collect_capture_status(compositor: CompositorStatus | None = None) -> Captu
             if cam_status == "active":
                 status.video_cameras.append(role)
     else:
-        for role in ["brio", "c920-hardware", "c920-room", "c920-aux"]:
+        for role in ["brio", "c920-desk", "c920-room", "c920-overhead"]:
             try:
                 result = subprocess.run(
                     ["systemctl", "--user", "is-active", f"hapax-video-cam@{role}.service"],
