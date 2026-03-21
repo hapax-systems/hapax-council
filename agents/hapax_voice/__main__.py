@@ -2289,6 +2289,7 @@ def main() -> None:
 
     # --- Experiment runtime optimizations ---
     import gc
+
     import uvloop
 
     uvloop.install()  # 2-4x event loop throughput
