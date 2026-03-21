@@ -567,6 +567,17 @@ class ConversationPipeline:
             updated += f"\n\n## Effort Level\n{_effort.level_name} ({_effort.word_limit} words)"
             self.last_word_limit = _effort.word_limit
 
+        # Export GQI to shm for stimmung integration (cross-process)
+        if _ledger is not None:
+            try:
+                _gqi = _ledger.compute_gqi()
+                _gqi_dir = Path("/dev/shm/hapax-voice")
+                _gqi_dir.mkdir(parents=True, exist_ok=True)
+                _gqi_path = _gqi_dir / "grounding-quality.json"
+                _gqi_path.write_text(json.dumps({"gqi": round(_gqi, 3), "timestamp": time.time()}))
+            except Exception:
+                pass
+
         content_hash = hash(updated)
         if content_hash == self._last_env_hash:
             return
@@ -864,12 +875,27 @@ class ConversationPipeline:
                     e.user_text if isinstance(e, ThreadEntry) else e
                     for e in self._conversation_thread
                 ]
+                # Get current directive strategy from grounding ledger (if active)
+                _ledger = getattr(self, "_grounding_ledger", None)
+                _directive_strategy = None
+                if _ledger is not None and _ledger._units:
+                    _last_du = _ledger._units[-1]
+                    _directive_strategy = {
+                        "GROUNDED": "advance",
+                        "REPAIR-1": "rephrase",
+                        "REPAIR-2": "elaborate",
+                        "CONTESTED": "present_reasoning",
+                        "ABANDONED": "move_on",
+                        "UNGROUNDED": "ungrounded_caution",
+                    }.get(_last_du.state.value)
+
                 _grounding_scores = evaluate_turn(
                     response=_last_response,
                     messages=self.messages,
                     conversation_thread=_thread_texts,
                     user_utterance=transcript,
                     langfuse_trace=_utt_trace,
+                    directive_strategy=_directive_strategy,
                 )
                 # Expose for visual overlay monitoring
                 self.last_anchor_score = _grounding_scores.get("context_anchor_success", 0.0)

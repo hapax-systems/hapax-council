@@ -808,6 +808,7 @@ class VisualLayerAggregator:
         # Stimmung (WS2): system self-state
         self._stimmung_collector = StimmungCollector()
         self._stimmung: SystemStimmung | None = None
+        self._grounding_ledger = None  # set by voice daemon when session active
 
         # Protention engine (WS1): statistical transition predictions
         self._protention = ProtentionEngine()
@@ -858,6 +859,14 @@ class VisualLayerAggregator:
             trace_api_poll(path, latency_ms, success=False)
             log.debug("Failed to fetch %s", path, exc_info=True)
         return None
+
+    def set_grounding_ledger(self, ledger) -> None:
+        """Register the voice grounding ledger for stimmung integration.
+
+        Called by the voice daemon when a conversation session starts.
+        Set to None when the session ends to stop feeding GQI.
+        """
+        self._grounding_ledger = ledger
 
     async def poll_fast(self) -> None:
         """Poll fast-cadence endpoints (health, GPU)."""
@@ -1128,7 +1137,21 @@ class VisualLayerAggregator:
             freshness_s=perception_age, confidence=float(confidence)
         )
 
-        # 7. Snapshot
+        # 7. Grounding quality from voice session (via shm file)
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+
+            _gqi_path = _Path("/dev/shm/hapax-voice/grounding-quality.json")
+            if _gqi_path.exists():
+                _gqi_data = _json.loads(_gqi_path.read_text())
+                _gqi_age = time.time() - _gqi_data.get("timestamp", 0)
+                if _gqi_age < 120:  # stale after 2 min (session probably ended)
+                    self._stimmung_collector.update_grounding_quality(_gqi_data.get("gqi", 0.5))
+        except Exception:
+            pass
+
+        # 8. Snapshot
         prev_stance = self._stimmung.overall_stance.value if self._stimmung else "nominal"
         self._stimmung = self._stimmung_collector.snapshot()
 

@@ -186,8 +186,13 @@ def evaluate_turn(
     conversation_thread: list[str],
     user_utterance: str | None = None,
     langfuse_trace=None,
+    directive_strategy: str | None = None,
 ) -> dict[str, float]:
     """Run all per-turn scores and push to Langfuse.
+
+    Args:
+        directive_strategy: Current grounding ledger strategy (e.g. "advance",
+            "rephrase", "elaborate"). If provided, scores directive compliance.
 
     Returns dict of score_name → value for logging.
     """
@@ -228,6 +233,12 @@ def evaluate_turn(
     # RLHF anti-pattern monitoring (Batch 4)
     if response:
         scores["response_monologic"] = round(_score_monologic(response), 3)
+
+    # Directive compliance: did the model follow the grounding strategy?
+    if response and directive_strategy:
+        scores["directive_compliance"] = round(
+            score_directive_compliance(response, directive_strategy), 3
+        )
 
     # Push to Langfuse
     if langfuse_trace is not None:

@@ -1,22 +1,30 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-21 (session 2)
+**Last updated:** 2026-03-21 (session 3)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
 
-We are building the first system that attempts to operationalize Clark & Brennan's (1991) conversational grounding theory in a production voice AI. We position AGAINST the industry convergence on profile-gated retrieval (ChatGPT Memory, Gemini, Mem0). No commercial system implements Clark. Shaikh et al. (ACL 2025) showed all frontier LLMs score 23.23% on grounding tasks (worse than random). RLHF actively suppresses grounding acts (Shaikh NAACL 2024). OpenAI's model spec explicitly instructs models NOT to ask clarifying questions. We are genuinely novel and genuinely alone.
+This project implements Clark & Brennan's (1991) conversational grounding theory in a production voice AI. Current voice AI systems use profile-gated retrieval (ChatGPT Memory, Gemini, Mem0); none implement Clark's contribution-acceptance cycle. Shaikh et al. (ACL 2025) report frontier LLMs score 23.23% on grounding tasks. Shaikh et al. (NAACL 2024) identify RLHF as a factor suppressing grounding acts.
 
 ## Current Phase
 
-- **Cycle 1:** COMPLETE (pilot, 37 sessions, BF=3.66 inconclusive, word overlap metric wrong)
-- **Cycle 2:** IMPLEMENTATION IN PROGRESS
+- **Cycle 1:** COMPLETE (pilot, 37 sessions, BF=3.66 inconclusive, word overlap metric replaced)
+- **Cycle 2:** IMPLEMENTATION COMPLETE — INFRASTRUCTURE PHASE
   - All research complete (28 agents across 4 rounds, 80+ citations)
   - Refined model designed and justified
-  - Implementation: **Batches 1-4 COMMITTED** (76 tests passing, PR #229)
-  - Remaining: pre-registration update, OSF registration, lab journal backfill
+  - Implementation: **Batches 1-4 COMMITTED** (76 tests passing)
+  - **Repository optimization COMPLETE** (session 3):
+    - CITATION.cff in council + constitution
+    - Apache 2.0 LICENSE added to watch, cockpit-mcp, distro-work
+    - `research/` compendium directory (TIER/Psych-DS/Turing Way conventions)
+    - `research/THEORY-MAP.md` traceability matrix (theory → code → tests)
+    - All READMEs rewritten: council as research hub, spokes with ecosystem tables
+    - `experiment-phase.json` for future CI phase-gating
+    - `REPO-OPTIMIZATION-RESEARCH.md` (140+ sources, 6 research streams)
+    - Tone pass: all READMEs neutralized to scientific register
+  - Remaining: ORCID, OSF project, pre-registration, Zenodo, GitHub Pages
   - Context persistence system built (RESEARCH-STATE.md + memory pointer + CLAUDE.md directive)
-  - Workstation optimization: 7-layer research complete, all applied (PR #229). See WORKSTATION-OPTIMIZATION.md
 - **Cycle 3:** NOT STARTED (contingent on Cycle 2 results; may require fine-tuned model if RLHF anti-pattern binds)
 
 ## What Was Built (Batches 1-4)
@@ -78,36 +86,55 @@ We are building the first system that attempts to operationalize Clark & Brennan
 
 ## Open Questions
 
-- A-B-A vs A-B-A-B design (Barlow: reversal inappropriate for learning interventions)
+- A-B-A vs A-B-A-B design (Barlow: reversal inappropriate for learning interventions; Johnson & Cook 2019 SCED pre-registration framework)
 - Effect size target from Cycle 2 baseline data
-- OSF registration timing and format
 - RLHF anti-pattern: prompted Opus sufficient or fine-tuning needed? (Cycle 3 decision)
-- GitHub Pages still needs enabling for lab journal
 - Redis noeviction policy needs persistent config
+- Verify Shaikh et al. ACL 2025 citation accuracy (23.23% figure, venue)
+
+## Operator Action Items (from session 3 research)
+
+1. Get ORCID → update CITATION.cff files
+2. Create OSF project → link GitHub repos
+3. File pre-registration on OSF (comprehensive template + SCED addendum)
+4. Connect Zenodo to GitHub → enable for council + constitution
+5. Enable GitHub Pages for lab journal
+6. Verify Shaikh et al. citation accuracy
 
 ## Key Documents (read to reconstruct full context)
 
 | Document | Tokens | Content |
 |----------|--------|---------|
-| `THEORETICAL-FOUNDATIONS.md` | ~8K | Full literature review: Clark, Traum, Brennan, counter-positions, SCED methodology, emergence, LLM architectures |
+| `THEORETICAL-FOUNDATIONS.md` | ~8K | Literature review: Clark, Traum, Brennan, SCED methodology, LLM architectures |
 | `REFINEMENT-RESEARCH.md` | ~5K | 8 research streams → refined model design |
-| `PACKAGE-ASSESSMENT.md` | ~4K | Component analysis, 2x2 matrix, structural analogies, SCED methodology |
-| `POSITION.md` | ~3K | Counter-positioning vs profile retrieval, 5 failure modes |
-| `WHY-NO-ONE-IMPLEMENTED-CLARK.md` | ~3K | 32-year gap analysis: obstacles, misconceptions, historical accidents |
+| `PACKAGE-ASSESSMENT.md` | ~4K | Component analysis, 2x2 matrix, SCED methodology |
+| `POSITION.md` | ~3K | Positioning vs profile retrieval, 5 failure modes |
+| `WHY-NO-ONE-IMPLEMENTED-CLARK.md` | ~3K | 35-year gap analysis: obstacles, misconceptions |
 | `CYCLE-2-PREREGISTRATION.md` | ~3K | Experiment design: ABA, BEST, HDI+ROPE, session protocol |
 | `CYCLE-1-PILOT-REPORT.md` | ~2K | Methods, results, 6 deviations, limitations |
 | `BASELINE-ANALYSIS.md` | ~2K | 17 sessions, 8 patterns |
 | `REFINEMENT-DECISION.md` | ~1K | Decision to refine before testing |
 | `SYSTEM-CLEANUP-DECISION.md` | ~1K | Strip to research essentials directive |
+| `REPO-OPTIMIZATION-RESEARCH.md` | ~12K | Repository optimization research (140+ sources, 6 streams) |
 | Plan: `shimmering-growing-lollipop.md` | ~3K | Implementation batches 1-4 |
+
+## Research Infrastructure (added session 3)
+
+| Artifact | Location | Purpose |
+|----------|----------|---------|
+| Research compendium | `research/` | TIER/Psych-DS directory structure |
+| Theory traceability | `research/THEORY-MAP.md` | Theory → code → test matrix |
+| Experiment phase | `experiment-phase.json` | CI phase-gating state |
+| CITATION.cff | repo root | Academic citation metadata |
+| Handoff doc | `~/gdrive-drop/research-infrastructure-handoff.docx` | Operator action items |
 
 ## Operator Research Preferences
 
-- "Clean out ALL GUNK. No need for ANYTHING other than what's justified for research."
-- Independent research agents per major concern — deep, broad, don't leave anything out
-- Substrate independence: phenomena don't care about implementation
+- Strip system to research essentials only
+- Independent research agents per major concern
+- Substrate independence: phenomena are implementation-agnostic
 - Composable perspectives: decomposable, independently tappable
-- Always CAPABLE model — willing to wait if indicated and justified
+- Always CAPABLE model tier; willing to wait if justified
 - Continuous cognitive loop, not request-response state machine
-- No stale branches ever — PR completed work immediately
-- "If we are talking about a gestalt, let's not be soft idiots about it"
+- No stale branches; PR completed work immediately
+- Scientific register in all documentation; no rhetorical valence

@@ -60,7 +60,7 @@ def gpu_slot():
                 fd = -1
 
         # All slots taken — block on slot 0
-        slot_path = _SLOT_DIR / f"slot.0"
+        slot_path = _SLOT_DIR / "slot.0"
         fd = os.open(str(slot_path), os.O_CREAT | os.O_RDWR)
         log.debug("gpu_slot: all %d slots taken, blocking on slot 0", _NUM_SLOTS)
         fcntl.flock(fd, fcntl.LOCK_EX)
