@@ -1,0 +1,30 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Hapax Research Lab Journal"
+  description: "Open research on conversational grounding in voice AI systems"
+  navbar:
+    left:
+      - text: "Home"
+        href: index.md
+      - text: "Position"
+        href: ../agents/hapax_voice/proofs/POSITION.md
+      - text: "Observability"
+        href: ../agents/hapax_voice/proofs/OBSERVABILITY.md
+      - text: "Pilot Report"
+        href: ../agents/hapax_voice/proofs/CYCLE-1-PILOT-REPORT.md
+      - text: "Baseline Analysis"
+        href: ../agents/hapax_voice/proofs/BASELINE-ANALYSIS.md
+      - text: "Claim 6"
+        href: ../agents/hapax_voice/proofs/claim-6-bayesian-tools/RESEARCH.md
+      - text: "Observations"
+        href: observations.md
+
+format:
+  html:
+    theme: darkly
+    toc: true
+    toc-depth: 3
+    code-fold: true

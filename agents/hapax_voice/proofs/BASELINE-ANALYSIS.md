@@ -1,7 +1,7 @@
-# Baseline Analysis: 20 Sessions, Phase A Complete
+# Baseline Analysis: 17 Sessions, Phase A Complete
 
 **Date:** 2026-03-19
-**Sessions:** 20 (sessions 1-20, numbered per collection order)
+**Sessions:** 17 (numbered 001-008, 012-020; sessions 009-011 were pre-baseline engineering and excluded a priori)
 **Turns:** 115 scored turns across 17 unique Langfuse sessions
 **Condition:** All components OFF (stable_frame, message_drop, cross_session, sentinel)
 **Code state:** max_spoken_words=35, max_response_tokens=150, tools disabled
