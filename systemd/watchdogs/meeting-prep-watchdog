@@ -2,14 +2,14 @@
 set -euo pipefail
 
 # Meeting prep generator — auto-generates 1:1 prep docs for upcoming meetings
-cd /home/hapax/projects/hapax-council
+cd /home/operator/projects/hapax-council
 
 # Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
 export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
 export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null || true)
 export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null || true)
 
-UV=/home/hapax/.local/bin/uv
+UV=/home/operator/.local/bin/uv
 REPORT=$($UV run python -m agents.meeting_lifecycle --prepare --save --json 2>/dev/null)
 
 # Notify via shared.notify

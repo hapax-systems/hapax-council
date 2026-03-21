@@ -5,14 +5,14 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
+WorkingDirectory=/home/operator/projects/hapax-council
 ExecStartPre=/bin/bash -c 'echo "LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key)" > /run/user/1000/langfuse-sync.env && echo "LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key)" >> /run/user/1000/langfuse-sync.env && echo "LITELLM_API_KEY=$(pass show litellm/master-key)" >> /run/user/1000/langfuse-sync.env && chmod 600 /run/user/1000/langfuse-sync.env'
-ExecStart=/bin/bash -c 'set -a && source /run/user/1000/langfuse-sync.env && set +a && /home/hapax/.local/bin/uv run python -m agents.langfuse_sync --auto'
+ExecStart=/bin/bash -c 'set -a && source /run/user/1000/langfuse-sync.env && set +a && /home/operator/.local/bin/uv run python -m agents.langfuse_sync --auto'
 ExecStopPost=/bin/rm -f /run/user/1000/langfuse-sync.env
-Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/operator/.local/bin:/home/operator/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
-Environment=GNUPGHOME=/home/hapax/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+Environment=GNUPGHOME=/home/operator/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/operator/.password-store
 MemoryMax=512M
 CPUQuota=50%
 StandardOutput=journal

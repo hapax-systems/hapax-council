@@ -9,14 +9,14 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/hapax/projects/hapax-council
+WorkingDirectory=/home/operator/projects/hapax-council
 ExecStartPre=/usr/bin/mkdir -p %h/video-recording %h/.cache/hapax-compositor/hls
 ExecStartPre=/usr/bin/find %h/.cache/hapax-compositor/hls -type f -delete
-ExecStartPre=/home/hapax/projects/hapax-council/systemd/units/studio-camera-setup.sh
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.studio_compositor
+ExecStartPre=/home/operator/projects/hapax-council/systemd/units/studio-camera-setup.sh
+ExecStart=/home/operator/projects/hapax-council/.venv/bin/python -m agents.studio_compositor
 Restart=on-failure
 RestartSec=10
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 MemoryMax=4G

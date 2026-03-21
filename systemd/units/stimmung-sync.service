@@ -4,9 +4,9 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.stimmung_sync
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/operator/projects/hapax-council
+ExecStart=/home/operator/.local/bin/uv run python -m agents.stimmung_sync
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 StandardOutput=journal
 StandardError=journal

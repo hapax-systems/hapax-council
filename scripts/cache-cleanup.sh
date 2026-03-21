@@ -28,7 +28,7 @@ if command -v paccache &>/dev/null; then
 fi
 
 # 5. Remove worktree .venvs that haven't been touched in 7+ days
-for venv in /home/hapax/projects/*--*/.venv; do
+for venv in /home/operator/projects/*--*/.venv; do
     if [ -d "$venv" ]; then
         age_days=$(( ($(date +%s) - $(stat -c %Y "$venv" 2>/dev/null || echo 0)) / 86400 ))
         if [ "$age_days" -gt 7 ]; then
@@ -50,12 +50,12 @@ fi
 find /tmp -name "webcam-*" -type d -user hapax -mmin +10 -exec rm -rf {} + 2>/dev/null || true
 
 # 7. Chrome crash reports and shader cache
-rm -rf /home/hapax/.config/google-chrome/Crash\ Reports/ 2>/dev/null || true
-rm -rf /home/hapax/.config/google-chrome/ShaderCache/ 2>/dev/null || true
-rm -rf /home/hapax/.config/google-chrome/GrShaderCache/ 2>/dev/null || true
+rm -rf /home/operator/.config/google-chrome/Crash\ Reports/ 2>/dev/null || true
+rm -rf /home/operator/.config/google-chrome/ShaderCache/ 2>/dev/null || true
+rm -rf /home/operator/.config/google-chrome/GrShaderCache/ 2>/dev/null || true
 
 # 7. Python __pycache__ cleanup (stale bytecode from old code)
-find /home/hapax/projects -name "__pycache__" -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+find /home/operator/projects -name "__pycache__" -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
 
 # 8. Systemd journal vacuum (keep 7 days)
 journalctl --user --vacuum-time=7d >/dev/null 2>&1 || true

@@ -8,12 +8,12 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/hapax/projects/hapax-council
+WorkingDirectory=/home/operator/projects/hapax-council
 ExecStartPre=/usr/bin/mkdir -p /dev/shm/hapax-compositor
 ExecStart=/usr/bin/python3 -m agents.studio_fx
 Restart=on-failure
 RestartSec=5
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 MemoryMax=2G

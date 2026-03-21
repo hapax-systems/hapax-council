@@ -3,7 +3,7 @@
 # Runs via systemd timer. Saves report and notifies on actionable findings.
 set -euo pipefail
 
-cd /home/hapax/projects/hapax-council
+cd /home/operator/projects/hapax-council
 
 # Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
 export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
@@ -11,8 +11,8 @@ export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null || true)
 export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null || true)
 export TAVILY_API_KEY=$(pass show api/tavily 2>/dev/null || true)
 
-PROFILES=/home/hapax/projects/hapax-council/profiles
-UV=/home/hapax/.local/bin/uv
+PROFILES=/home/operator/projects/hapax-council/profiles
+UV=/home/operator/.local/bin/uv
 
 # Run horizon scan
 $UV run python -m agents.scout --save --notify 2>/dev/null || {

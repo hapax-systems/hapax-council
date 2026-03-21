@@ -31,7 +31,7 @@ class TestCollectLastQueries(unittest.TestCase):
                 json.dumps(
                     {
                         "display": "fix the bug",
-                        "project": "/home/hapax/projects/hapax-council",
+                        "project": "/home/operator/projects/hapax-council",
                         "timestamp": now_ms - 60000,
                         "sessionId": "s1",
                     }
@@ -39,7 +39,7 @@ class TestCollectLastQueries(unittest.TestCase):
                 json.dumps(
                     {
                         "display": "unrelated work",
-                        "project": "/home/hapax/projects/other",
+                        "project": "/home/operator/projects/other",
                         "timestamp": now_ms,
                         "sessionId": "s2",
                     }
@@ -52,7 +52,7 @@ class TestCollectLastQueries(unittest.TestCase):
 
         try:
             with patch("agents.context_restore.CC_HISTORY", path):
-                queries = collect_last_queries("/home/hapax/projects/hapax-council", n=3)
+                queries = collect_last_queries("/home/operator/projects/hapax-council", n=3)
                 assert len(queries) == 1
                 assert queries[0]["query"] == "fix the bug"
         finally:

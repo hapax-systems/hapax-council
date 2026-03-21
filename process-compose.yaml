@@ -14,7 +14,7 @@
 version: "0.5"
 
 environment:
-  - "PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin"
+  - "PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin"
   - "HOME=/home/hapax"
   - "XDG_RUNTIME_DIR=/run/user/1000"
   - "LITELLM_BASE_URL=http://127.0.0.1:4000"
@@ -36,17 +36,17 @@ processes:
         chmod 600 /run/user/1000/hapax-voice.env
         echo "Secrets loaded"
       '
-    working_dir: /home/hapax/projects/hapax-council
+    working_dir: /home/operator/projects/hapax-council
     environment:
-      - "GNUPGHOME=/home/hapax/.gnupg"
-      - "PASSWORD_STORE_DIR=/home/hapax/.password-store"
+      - "GNUPGHOME=/home/operator/.gnupg"
+      - "PASSWORD_STORE_DIR=/home/operator/.password-store"
     availability:
       restart: "no"  # run once
 
   # ── Logos API (FastAPI on :8051) ────────────────────────────────
   logos-api:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/hapax/projects/hapax-council/.venv/bin/python -m cockpit.api --host 0.0.0.0'
-    working_dir: /home/hapax/projects/hapax-council
+    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m cockpit.api --host 0.0.0.0'
+    working_dir: /home/operator/projects/hapax-council
     disabled: true  # Managed by systemd logos-api.service to avoid port conflicts
     depends_on:
       secrets:
@@ -65,8 +65,8 @@ processes:
 
   # ── Voice Daemon ────────────────────────────────────────────────
   voice:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/hapax/projects/hapax-council/.venv/bin/python -m agents.hapax_voice'
-    working_dir: /home/hapax/projects/hapax-council
+    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m agents.hapax_voice'
+    working_dir: /home/operator/projects/hapax-council
     depends_on:
       secrets:
         condition: process_completed_successfully
@@ -78,14 +78,14 @@ processes:
       max_restarts: 10
     readiness_probe:
       exec:
-        command: "test -f /home/hapax/.cache/hapax-voice/perception-state.json"
+        command: "test -f /home/operator/.cache/hapax-voice/perception-state.json"
       initial_delay_seconds: 15
       period_seconds: 10
 
   # ── Visual Layer Aggregator ─────────────────────────────────────
   visual:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/hapax/projects/hapax-council/.venv/bin/python -m agents.visual_layer_aggregator'
-    working_dir: /home/hapax/projects/hapax-council
+    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m agents.visual_layer_aggregator'
+    working_dir: /home/operator/projects/hapax-council
     depends_on:
       logos-api:
         condition: process_healthy
@@ -99,8 +99,8 @@ processes:
   # ── Watch Sensor Receiver ───────────────────────────────────────
   watch-receiver:
     disabled: true
-    command: /home/hapax/projects/hapax-council/.venv/bin/python -m agents.watch_receiver
-    working_dir: /home/hapax/projects/hapax-council
+    command: /home/operator/projects/hapax-council/.venv/bin/python -m agents.watch_receiver
+    working_dir: /home/operator/projects/hapax-council
     availability:
       restart: on_failure
       backoff_seconds: 10
@@ -108,11 +108,11 @@ processes:
 
   # ── Health Monitor (periodic) ───────────────────────────────────
   health-monitor:
-    command: bash /home/hapax/.local/bin/health-watchdog
-    working_dir: /home/hapax/projects/hapax-council
+    command: bash /home/operator/.local/bin/health-watchdog
+    working_dir: /home/operator/projects/hapax-council
     environment:
-      - "GNUPGHOME=/home/hapax/.gnupg"
-      - "PASSWORD_STORE_DIR=/home/hapax/.password-store"
+      - "GNUPGHOME=/home/operator/.gnupg"
+      - "PASSWORD_STORE_DIR=/home/operator/.password-store"
     availability:
       restart: "no"
     # Runs via systemd timer, not continuously — this is for manual runs
@@ -122,10 +122,10 @@ processes:
   vram-watchdog:
     command: |
       bash -c 'while true; do
-        /home/hapax/projects/hapax-council/scripts/vram-watchdog.sh
+        /home/operator/projects/hapax-council/scripts/vram-watchdog.sh
         sleep 30
       done'
-    working_dir: /home/hapax/projects/hapax-council
+    working_dir: /home/operator/projects/hapax-council
     availability:
       restart: on_failure
       backoff_seconds: 10

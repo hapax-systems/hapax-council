@@ -34,14 +34,14 @@ def _make_event(path_str, event_type="created"):
 def test_audio_archive_sidecar_filter_matches():
     from cockpit.engine.reactive_rules import _audio_archive_sidecar_filter
 
-    event = _make_event("/home/hapax/audio-recording/archive/rec-20260308.md")
+    event = _make_event("/home/operator/audio-recording/archive/rec-20260308.md")
     assert _audio_archive_sidecar_filter(event) is True
 
 
 def test_audio_archive_sidecar_filter_rejects_non_md():
     from cockpit.engine.reactive_rules import _audio_archive_sidecar_filter
 
-    event = _make_event("/home/hapax/audio-recording/archive/rec-20260308.flac")
+    event = _make_event("/home/operator/audio-recording/archive/rec-20260308.flac")
     assert _audio_archive_sidecar_filter(event) is False
 
 
@@ -49,7 +49,7 @@ def test_audio_archive_sidecar_filter_rejects_modified():
     from cockpit.engine.reactive_rules import _audio_archive_sidecar_filter
 
     event = _make_event(
-        "/home/hapax/audio-recording/archive/rec-20260308.md",
+        "/home/operator/audio-recording/archive/rec-20260308.md",
         event_type="modified",
     )
     assert _audio_archive_sidecar_filter(event) is False
@@ -58,42 +58,44 @@ def test_audio_archive_sidecar_filter_rejects_modified():
 def test_audio_archive_sidecar_filter_rejects_wrong_dir():
     from cockpit.engine.reactive_rules import _audio_archive_sidecar_filter
 
-    event = _make_event("/home/hapax/documents/rag-sources/audio/sample-20260308.md")
+    event = _make_event("/home/operator/documents/rag-sources/audio/sample-20260308.md")
     assert _audio_archive_sidecar_filter(event) is False
 
 
 def test_audio_clap_indexed_filter_matches_listening():
     from cockpit.engine.reactive_rules import _audio_clap_indexed_filter
 
-    event = _make_event("/home/hapax/documents/rag-sources/audio/listening-rec-20260308-s000000.md")
+    event = _make_event(
+        "/home/operator/documents/rag-sources/audio/listening-rec-20260308-s000000.md"
+    )
     assert _audio_clap_indexed_filter(event) is True
 
 
 def test_audio_clap_indexed_filter_matches_sample():
     from cockpit.engine.reactive_rules import _audio_clap_indexed_filter
 
-    event = _make_event("/home/hapax/documents/rag-sources/audio/sample-rec-20260308-s000530.md")
+    event = _make_event("/home/operator/documents/rag-sources/audio/sample-rec-20260308-s000530.md")
     assert _audio_clap_indexed_filter(event) is True
 
 
 def test_audio_clap_indexed_filter_matches_note():
     from cockpit.engine.reactive_rules import _audio_clap_indexed_filter
 
-    event = _make_event("/home/hapax/documents/rag-sources/audio/note-rec-20260308-s000530.md")
+    event = _make_event("/home/operator/documents/rag-sources/audio/note-rec-20260308-s000530.md")
     assert _audio_clap_indexed_filter(event) is True
 
 
 def test_audio_clap_indexed_filter_matches_conv():
     from cockpit.engine.reactive_rules import _audio_clap_indexed_filter
 
-    event = _make_event("/home/hapax/documents/rag-sources/audio/conv-rec-20260308-s000530.md")
+    event = _make_event("/home/operator/documents/rag-sources/audio/conv-rec-20260308-s000530.md")
     assert _audio_clap_indexed_filter(event) is True
 
 
 def test_audio_clap_indexed_filter_rejects_non_audio():
     from cockpit.engine.reactive_rules import _audio_clap_indexed_filter
 
-    event = _make_event("/home/hapax/documents/rag-sources/gdrive/meeting-notes.md")
+    event = _make_event("/home/operator/documents/rag-sources/gdrive/meeting-notes.md")
     assert _audio_clap_indexed_filter(event) is False
 
 
@@ -101,7 +103,7 @@ def test_audio_clap_indexed_filter_rejects_modified():
     from cockpit.engine.reactive_rules import _audio_clap_indexed_filter
 
     event = _make_event(
-        "/home/hapax/documents/rag-sources/audio/listening-rec-20260308.md",
+        "/home/operator/documents/rag-sources/audio/listening-rec-20260308.md",
         event_type="modified",
     )
     assert _audio_clap_indexed_filter(event) is False
@@ -119,7 +121,7 @@ def test_audio_rules_registered():
 def test_audio_archive_sidecar_produce_phase0():
     from cockpit.engine.reactive_rules import _audio_archive_sidecar_produce
 
-    event = _make_event("/home/hapax/audio-recording/archive/rec-20260308.md")
+    event = _make_event("/home/operator/audio-recording/archive/rec-20260308.md")
     actions = _audio_archive_sidecar_produce(event)
     assert len(actions) == 1
     assert actions[0].phase == 0
@@ -128,7 +130,7 @@ def test_audio_archive_sidecar_produce_phase0():
 def test_audio_clap_indexed_produce_phase1():
     from cockpit.engine.reactive_rules import _audio_clap_indexed_produce
 
-    event = _make_event("/home/hapax/documents/rag-sources/audio/listening-rec-20260308.md")
+    event = _make_event("/home/operator/documents/rag-sources/audio/listening-rec-20260308.md")
     actions = _audio_clap_indexed_produce(event)
     assert len(actions) == 1
     assert actions[0].phase == 1

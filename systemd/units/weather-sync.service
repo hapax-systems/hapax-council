@@ -4,8 +4,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python -m agents.weather_sync
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/operator/.local/bin/uv run --directory /home/operator/projects/hapax-council python -m agents.weather_sync
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 StandardOutput=journal
 StandardError=journal

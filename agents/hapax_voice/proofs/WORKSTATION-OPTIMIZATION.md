@@ -121,7 +121,7 @@ redis-server --maxmemory-policy noeviction --hz 100 --save 300 1 --save 60 1000 
 ```
 
 ### Qdrant Tuning
-Create `/home/hapax/llm-stack/qdrant-config.yaml`:
+Create `/home/operator/llm-stack/qdrant-config.yaml`:
 ```yaml
 storage:
   wal:

@@ -5,12 +5,12 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/bin/bash -c 'set -a && source .envrc && set +a && /home/hapax/.local/bin/uv run python -m agents.introspect --save'
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/operator/projects/hapax-council
+ExecStart=/bin/bash -c 'set -a && source .envrc && set +a && /home/operator/.local/bin/uv run python -m agents.introspect --save'
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
-Environment=GNUPGHOME=/home/hapax/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+Environment=GNUPGHOME=/home/operator/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/operator/.password-store
 MemoryMax=512M
 CPUQuota=30%
 StandardOutput=journal

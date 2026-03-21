@@ -11,14 +11,14 @@ OnFailure=notify-failure@%n.service
 [Service]
 Type=simple
 ExecStartPre=/usr/bin/mkdir -p /dev/shm/hapax-logos /dev/shm/hapax-visual /dev/shm/hapax-compositor /dev/shm/hapax-stimmung
-ExecStart=/home/hapax/.local/bin/hapax-logos
+ExecStart=/home/operator/.local/bin/hapax-logos
 Restart=on-failure
 RestartSec=5
 Environment=RUST_LOG=info
 Environment=WAYLAND_DISPLAY=wayland-1
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=HOME=/home/hapax
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
 # WebKit2GTK needs dbus
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 # Vulkan for wgpu visual surface

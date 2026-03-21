@@ -5,16 +5,16 @@ OnFailure=notify-failure@%n.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/home/hapax/llm-stack
+WorkingDirectory=/home/operator/llm-stack
 Environment=HOME=/home/hapax
-Environment=GNUPGHOME=/home/hapax/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=GNUPGHOME=/home/operator/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/operator/.password-store
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStartPre=/usr/bin/docker info -f '{{.ServerVersion}}'
-ExecStartPre=/home/hapax/llm-stack/generate-env.sh
+ExecStartPre=/home/operator/llm-stack/generate-env.sh
 ExecStart=/usr/bin/docker compose --profile full up -d
 ExecStop=/usr/bin/docker compose --profile full down
-ExecStopPost=/bin/rm -f /home/hapax/llm-stack/.env
+ExecStopPost=/bin/rm -f /home/operator/llm-stack/.env
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=llm-stack

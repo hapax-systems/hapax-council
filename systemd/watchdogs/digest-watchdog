@@ -2,14 +2,14 @@
 set -euo pipefail
 
 # Content digest generator — saves to profiles/ + vault and sends notification
-cd /home/hapax/projects/hapax-council
+cd /home/operator/projects/hapax-council
 
 # Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
 export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
 export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null || true)
 export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null || true)
 
-UV=/home/hapax/.local/bin/uv
+UV=/home/operator/.local/bin/uv
 REPORT=$($UV run python -m agents.digest --hours 24 --save --json 2>/dev/null)
 
 # Notify via shared.notify (pass JSON via stdin)
@@ -26,4 +26,4 @@ if new_docs > 0:
 " 2>/dev/null || true
 
 # Append to history
-echo "$REPORT" >> /home/hapax/projects/hapax-council/profiles/digest-history.jsonl 2>/dev/null || true
+echo "$REPORT" >> /home/operator/projects/hapax-council/profiles/digest-history.jsonl 2>/dev/null || true
