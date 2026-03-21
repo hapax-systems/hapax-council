@@ -619,6 +619,46 @@ def _collect_contradiction_nudges(nudges: list[Nudge]) -> None:
         pass
 
 
+def _collect_task_nudges(nudges: list[Nudge]) -> None:
+    """Surface stale, blocked, or active research tasks."""
+    try:
+        from cockpit.data.tasks import collect_tasks
+
+        snapshot = collect_tasks()
+        for t in snapshot.tasks:
+            if t.status == "done":
+                continue
+            if t.status == "blocked":
+                nudges.append(
+                    Nudge(
+                        category="task",
+                        priority_score=70,
+                        priority_label="high",
+                        title=f"Blocked: {t.title}",
+                        detail=f"Blocked by: {t.blocked_by}" if t.blocked_by else "No blocker specified",
+                        suggested_action="Resolve blocker or update task status",
+                        source_id=f"task:{t.id}",
+                    )
+                )
+            elif t.status in ("pending", "active") and t.updated:
+                age = _age_hours(t.updated)
+                if age is not None and age > 48:
+                    days = int(age / 24)
+                    nudges.append(
+                        Nudge(
+                            category="task",
+                            priority_score=55,
+                            priority_label="medium",
+                            title=f"Stale task: {t.title}",
+                            detail=f"No update in {days} days",
+                            suggested_action="Update status or add progress notes",
+                            source_id=f"task:{t.id}",
+                        )
+                    )
+    except Exception:
+        pass
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 
@@ -665,6 +705,7 @@ def collect_nudges(
     _collect_rag_quality_nudges(nudges)
     _collect_emergence_nudges(nudges)
     _collect_contradiction_nudges(nudges)
+    _collect_task_nudges(nudges)
 
     # Filter out recently dismissed nudges
     nudges = _filter_dismissed(nudges)
