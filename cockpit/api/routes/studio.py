@@ -286,6 +286,8 @@ async def get_current_effect():
             "glitchblocks",
             "pixsort",
             "ascii",
+            "feedback",
+            "slitscan",
         ],
     }
 
