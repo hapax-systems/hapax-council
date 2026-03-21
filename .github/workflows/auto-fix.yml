@@ -128,7 +128,7 @@ jobs:
         if: steps.pr.outputs.skip != 'true' && steps.guard.outputs.tripped != 'true'
         run: uv sync --extra ci 2>/dev/null || uv sync 2>/dev/null || echo "No uv project — skipping"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         if: >-
           steps.pr.outputs.skip != 'true' && steps.guard.outputs.tripped != 'true' &&
           contains(steps.classify.outputs.categories, 'web-build')
