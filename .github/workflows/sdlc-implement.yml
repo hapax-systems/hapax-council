@@ -196,7 +196,7 @@ jobs:
           NEXT_ROUND=$((CURRENT_ROUND + 1))
           echo "round=$NEXT_ROUND" >> "$GITHUB_OUTPUT"
 
-          if [ "$NEXT_ROUND" -gt 2 ]; then
+          if [ "$NEXT_ROUND" -gt 3 ]; then
             echo "exceeded=true" >> "$GITHUB_OUTPUT"
           else
             echo "exceeded=false" >> "$GITHUB_OUTPUT"
