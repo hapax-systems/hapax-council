@@ -42,14 +42,22 @@ jobs:
           OVERALL=$(echo "$OUTPUT" | jq -r '.overall')
           echo "overall=$OVERALL" >> "$GITHUB_OUTPUT"
 
-      - name: Mark ready and auto-merge on pass
+      - name: Mark ready and merge on pass (after CI green)
         if: steps.gate.outputs.overall == 'pass'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR=${{ github.event.pull_request.number }}
           gh pr edit "$PR" --add-label "sdlc:ready-for-human"
-          gh pr merge "$PR" --auto --squash
+
+          # Wait for ALL required CI checks to pass before merging.
+          # Prevents the race where axiom gate merges before lint/test finish.
+          if gh pr checks "$PR" --watch --fail-level all; then
+            gh pr merge "$PR" --squash --delete-branch
+          else
+            echo "::warning::CI checks failed after axiom gate passed — not auto-merging"
+            gh pr edit "$PR" --add-label "needs-human"
+          fi
 
       - name: Mark advisory for human review
         if: steps.gate.outputs.overall == 'advisory'
