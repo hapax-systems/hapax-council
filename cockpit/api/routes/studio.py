@@ -281,6 +281,11 @@ async def get_current_effect():
             "trap",
             "diff",
             "clean",
+            "thermal",
+            "halftone",
+            "glitchblocks",
+            "pixsort",
+            "ascii",
         ],
     }
 

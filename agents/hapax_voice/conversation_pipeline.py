@@ -329,6 +329,20 @@ class ConversationPipeline:
         # Sentinel injected by _update_system_context, not here — survives rebuilds
         self.messages = [{"role": "system", "content": self.system_prompt}]
 
+        # Experiment lockdown: freeze volatile context at session start
+        if self._experiment_flags.get("volatile_lockdown", False):
+            if self._policy_fn is not None:
+                try:
+                    self._frozen_policy = self._policy_fn()
+                except Exception:
+                    self._frozen_policy = ""
+            if self._env_context_fn is not None:
+                try:
+                    self._frozen_env = self._env_context_fn()
+                except Exception:
+                    self._frozen_env = ""
+            log.info("Experiment lockdown: volatile context frozen at session start")
+
         # Create frustration detector for this session
         from agents.hapax_voice.frustration_detector import FrustrationDetector
 
@@ -400,43 +414,53 @@ class ConversationPipeline:
             updated += self._sentinel_line
 
         # ── VOLATILE band: environment + policy + salience ─────────────
+        # In experiment lockdown mode, volatile components are frozen at
+        # session start or disabled entirely to minimize system prompt
+        # variance between turns. This isolates the experiment variable
+        # (stable_frame) from environmental confounds.
+        _lockdown = self._experiment_flags.get("volatile_lockdown", False)
+
         # Refresh conversational policy (adapts to environment changes)
-        if self._policy_fn is not None:
+        if self._policy_fn is not None and not _lockdown:
             try:
                 policy = self._policy_fn()
                 if policy:
                     updated += policy
             except Exception:
                 log.debug("policy_fn failed (non-fatal)", exc_info=True)
+        elif hasattr(self, "_frozen_policy") and self._frozen_policy:
+            updated += self._frozen_policy
 
         # Append environment TOON block
-        if self._env_context_fn is not None:
+        if self._env_context_fn is not None and not _lockdown:
             try:
                 env_toon = self._env_context_fn()
                 if env_toon:
                     updated += "\n\n## Current Environment\n" + env_toon
             except Exception:
                 log.debug("env_context_fn failed (non-fatal)", exc_info=True)
+        elif hasattr(self, "_frozen_env") and self._frozen_env:
+            updated += "\n\n## Current Environment\n" + self._frozen_env
 
-        # Phenomenal context: temporal bands + self-band — always full fidelity
-        try:
-            from agents.hapax_voice.phenomenal_context import render as render_phenomenal
+        # Phenomenal context: disabled in lockdown (too stateful to freeze)
+        if not _lockdown:
+            try:
+                from agents.hapax_voice.phenomenal_context import render as render_phenomenal
 
-            phenom = render_phenomenal(tier="CAPABLE")
-            if phenom:
-                updated += "\n\n" + phenom
-        except Exception:
-            log.debug("phenomenal context render failed (non-fatal)", exc_info=True)
+                phenom = render_phenomenal(tier="CAPABLE")
+                if phenom:
+                    updated += "\n\n" + phenom
+            except Exception:
+                log.debug("phenomenal context render failed (non-fatal)", exc_info=True)
 
-        # Salience context: activation signals from the concern graph,
-        # injected as orientation so the model can self-modulate response
-        # depth and investment. Replaces tier-based gating.
-        try:
-            salience_ctx = self._build_salience_context()
-            if salience_ctx:
-                updated += "\n\n## Conversational Salience\n" + salience_ctx
-        except Exception:
-            log.debug("salience context build failed (non-fatal)", exc_info=True)
+        # Salience context: disabled in lockdown
+        if not _lockdown:
+            try:
+                salience_ctx = self._build_salience_context()
+                if salience_ctx:
+                    updated += "\n\n## Conversational Salience\n" + salience_ctx
+            except Exception:
+                log.debug("salience context build failed (non-fatal)", exc_info=True)
 
         content_hash = hash(updated)
         if content_hash == self._last_env_hash:
@@ -898,7 +922,11 @@ class ConversationPipeline:
             _t_first_audio = 0.0
             _first_clause_spoken = False
             _spoken_words = 0  # Track words sent to TTS for cutoff
-            _word_limit = _density_word_limit()  # Bayesian Tier 1: density-driven
+            # In experiment lockdown, use fixed word limit to prevent display_density variance
+            if self._experiment_flags.get("volatile_lockdown", False):
+                _word_limit = _MAX_SPOKEN_WORDS
+            else:
+                _word_limit = _density_word_limit()  # Bayesian Tier 1: density-driven
 
             self.state = ConvState.SPEAKING
             # set_speaking(True) already called by process_utterance before bridge

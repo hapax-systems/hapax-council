@@ -67,3 +67,39 @@ Any deviation from this protocol during collection must be logged:
 | Session | Deviation | When Decided | Impact Assessment |
 |---------|-----------|-------------|-------------------|
 | (fill)  | (fill)    | (fill)      | (fill)            |
+
+## Experiment Lockdown Mode
+
+When `volatile_lockdown: true` is set in the experiment config, the
+following changes apply:
+
+| Component | Normal | Lockdown |
+|-----------|--------|----------|
+| Policy context | Live (per-turn) | Frozen at session start |
+| Environment context | Live (per-turn) | Frozen at session start |
+| Phenomenal context | Live (temporal bands + self-band) | Disabled |
+| Salience context | Live (activation + concern) | Disabled |
+| Display density word limit | Dynamic (15-50 words) | Fixed at 35 |
+| Stimmung downgrade | Can change model tier | Already disabled (intelligence-first) |
+
+**Rationale**: Volatile components inject environment-dependent context
+that varies between sessions independently of the experiment variable.
+Freezing policy and env at session start provides consistent context
+within each session. Disabling phenomenal and salience removes the
+most stateful components that are impossible to freeze meaningfully.
+
+**Config for Cycle 2**:
+```json
+{
+  "name": "continuity-v2",
+  "condition": "A",
+  "phase": "baseline",
+  "components": {
+    "stable_frame": false,
+    "message_drop": false,
+    "cross_session": false,
+    "sentinel": false,
+    "volatile_lockdown": true
+  }
+}
+```

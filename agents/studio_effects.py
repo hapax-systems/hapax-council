@@ -81,6 +81,18 @@ class EffectPreset:
     use_glow: bool = False  # gleffects glow pass
     use_vhs_shader: bool = False  # VHS-specific shader
     use_sobel: bool = False  # edge detection
+    use_thermal_shader: bool = False  # thermal/infrared shader
+    thermal_params: dict[str, float] = field(default_factory=dict)
+    use_halftone_shader: bool = False  # halftone dots shader
+    halftone_params: dict[str, float] = field(default_factory=dict)
+    use_glitch_blocks_shader: bool = False  # block corruption shader
+    glitch_blocks_params: dict[str, float] = field(default_factory=dict)
+    use_pixsort_shader: bool = False  # pseudo pixel sorting shader
+    pixsort_params: dict[str, float] = field(default_factory=dict)
+    use_ascii_shader: bool = False  # ASCII art shader
+    ascii_params: dict[str, float] = field(default_factory=dict)
+    use_slitscan_shader: bool = False  # slit-scan temporal displacement shader
+    slitscan_params: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +273,88 @@ PRESETS: dict[str, EffectPreset] = {
         color_grade=ColorGradeConfig(saturation=0.15, brightness=0.3, contrast=0.95),
         trail=TrailConfig(count=2, opacity=0.1, blend_mode="add"),
         post_process=PostProcessConfig(vignette_strength=0.3),
+    ),
+    "thermal": EffectPreset(
+        name="thermal",
+        color_grade=ColorGradeConfig(saturation=0.0, contrast=1.3),
+        trail=TrailConfig(count=2, opacity=0.1, blend_mode="add"),
+        post_process=PostProcessConfig(vignette_strength=0.25),
+        use_thermal_shader=True,
+        thermal_params={"u_edge_glow": 0.6, "u_palette_shift": 0.0},
+    ),
+    "halftone": EffectPreset(
+        name="halftone",
+        color_grade=ColorGradeConfig(saturation=1.1, contrast=1.15),
+        trail=TrailConfig(count=1, opacity=0.05, blend_mode="source-over"),
+        use_halftone_shader=True,
+        halftone_params={"u_dot_size": 8.0, "u_color_mode": 1.0},
+    ),
+    "glitchblocks": EffectPreset(
+        name="glitchblocks",
+        color_grade=ColorGradeConfig(saturation=0.8, brightness=1.05, contrast=1.2),
+        trail=TrailConfig(count=2, opacity=0.15, blend_mode="add"),
+        post_process=PostProcessConfig(scanline_alpha=0.06),
+        use_glitch_blocks_shader=True,
+        glitch_blocks_params={
+            "u_block_size": 16.0,
+            "u_intensity": 0.4,
+            "u_rgb_split": 0.6,
+        },
+    ),
+    "pixsort": EffectPreset(
+        name="pixsort",
+        color_grade=ColorGradeConfig(saturation=0.9, brightness=1.05, contrast=1.2),
+        trail=TrailConfig(count=2, opacity=0.15, blend_mode="add"),
+        post_process=PostProcessConfig(vignette_strength=0.2),
+        use_pixsort_shader=True,
+        pixsort_params={
+            "u_threshold_low": 0.2,
+            "u_threshold_high": 0.85,
+            "u_sort_length": 32.0,
+            "u_direction": 0.0,
+        },
+    ),
+    "ascii": EffectPreset(
+        name="ascii",
+        color_grade=ColorGradeConfig(saturation=0.0, contrast=1.3),
+        trail=TrailConfig(count=1, opacity=0.05, blend_mode="source-over"),
+        post_process=PostProcessConfig(vignette_strength=0.15),
+        use_ascii_shader=True,
+        ascii_params={"u_cell_size": 8.0, "u_color_mode": 0.0},
+    ),
+    "feedback": EffectPreset(
+        name="feedback",
+        # High feedback_amount = near-infinite recursion via temporalfx accumulation
+        # The visual feedback loop comes from the FBO ping-pong with slow decay + hue shift
+        color_grade=ColorGradeConfig(saturation=1.4, brightness=0.9, contrast=1.3),
+        trail=TrailConfig(
+            count=5,
+            opacity=0.85,  # high — near-infinite recursion
+            blend_mode="add",
+            filter_params={
+                "brightness": 0.92,
+                "hue_rotate": 2.0,  # slow rainbow rotation through accumulated feedback
+                # Explicit per-channel decay — slight blue shift on decay
+                "decay_r": 0.92,
+                "decay_g": 0.90,
+                "decay_b": 0.95,
+            },
+        ),
+        post_process=PostProcessConfig(vignette_strength=0.3),
+        use_glow=True,
+    ),
+    "slitscan": EffectPreset(
+        name="slitscan",
+        # Ethereal desaturation — the temporal displacement creates enough visual interest
+        color_grade=ColorGradeConfig(saturation=0.7, brightness=1.05, contrast=1.1),
+        trail=TrailConfig(count=2, opacity=0.2, blend_mode="add"),
+        post_process=PostProcessConfig(vignette_strength=0.25),
+        use_slitscan_shader=True,
+        slitscan_params={
+            "u_scan_speed": 0.5,
+            "u_scan_axis": 0.0,  # horizontal scan
+            "u_warp_amount": 0.3,
+        },
     ),
 }
 

@@ -736,6 +736,79 @@ class StudioCompositor:
             )
             vhs_shader.set_property("uniforms", vhs_uniforms[0])
 
+        # Thermal shader (infrared/predator vision)
+        thermal_shader = Gst.ElementFactory.make("glshader", "fx-thermal")
+        thermal_frag = load_shader("thermal.frag")
+        if thermal_frag:
+            thermal_shader.set_property("fragment", thermal_frag)
+            thermal_uniforms = Gst.Structure.from_string(
+                "uniforms, u_time=(float)0.0, u_edge_glow=(float)-1.0, "
+                "u_palette_shift=(float)0.0, "
+                "u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            thermal_shader.set_property("uniforms", thermal_uniforms[0])
+
+        # Halftone shader (print dots)
+        halftone_shader = Gst.ElementFactory.make("glshader", "fx-halftone")
+        halftone_frag = load_shader("halftone.frag")
+        if halftone_frag:
+            halftone_shader.set_property("fragment", halftone_frag)
+            halftone_uniforms = Gst.Structure.from_string(
+                "uniforms, u_time=(float)0.0, u_dot_size=(float)0.0, "
+                "u_color_mode=(float)0.0, "
+                "u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            halftone_shader.set_property("uniforms", halftone_uniforms[0])
+
+        # Glitch blocks shader (digital block corruption)
+        glitch_shader = Gst.ElementFactory.make("glshader", "fx-glitch-blocks")
+        glitch_frag = load_shader("glitch_blocks.frag")
+        if glitch_frag:
+            glitch_shader.set_property("fragment", glitch_frag)
+            glitch_uniforms = Gst.Structure.from_string(
+                "uniforms, u_time=(float)0.0, u_block_size=(float)16.0, "
+                "u_intensity=(float)0.0, u_rgb_split=(float)0.0, "
+                "u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            glitch_shader.set_property("uniforms", glitch_uniforms[0])
+
+        # Pixel sorting shader (pseudo pixel sort)
+        pixsort_shader = Gst.ElementFactory.make("glshader", "fx-pixsort")
+        pixsort_frag = load_shader("pixsort.frag")
+        if pixsort_frag:
+            pixsort_shader.set_property("fragment", pixsort_frag)
+            pixsort_uniforms = Gst.Structure.from_string(
+                "uniforms, u_time=(float)0.0, u_threshold_low=(float)0.0, "
+                "u_threshold_high=(float)1.0, u_sort_length=(float)0.0, "
+                "u_direction=(float)0.0, "
+                "u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            pixsort_shader.set_property("uniforms", pixsort_uniforms[0])
+
+        # ASCII art shader
+        ascii_shader = Gst.ElementFactory.make("glshader", "fx-ascii")
+        ascii_frag = load_shader("ascii.frag")
+        if ascii_frag:
+            ascii_shader.set_property("fragment", ascii_frag)
+            ascii_uniforms = Gst.Structure.from_string(
+                "uniforms, u_time=(float)0.0, u_cell_size=(float)0.0, "
+                "u_color_mode=(float)0.0, "
+                "u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            ascii_shader.set_property("uniforms", ascii_uniforms[0])
+
+        # Slit-scan shader (temporal displacement approximation)
+        slitscan_shader = Gst.ElementFactory.make("glshader", "fx-slitscan")
+        slitscan_frag = load_shader("slitscan.frag")
+        if slitscan_frag:
+            slitscan_shader.set_property("fragment", slitscan_frag)
+            slitscan_uniforms = Gst.Structure.from_string(
+                "uniforms, u_time=(float)0.0, u_scan_speed=(float)0.0, "
+                "u_scan_axis=(float)0.0, u_warp_amount=(float)0.0, "
+                "u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            slitscan_shader.set_property("uniforms", slitscan_uniforms[0])
+
         # Slice warp shader (pan, rotate, zoom, horizontal slice displacement)
         warp_shader = Gst.ElementFactory.make("glshader", "fx-warp")
         warp_frag = load_shader("slice_warp.frag")
@@ -836,6 +909,12 @@ class StudioCompositor:
             glcolorconvert_in,
             color_grade,
             vhs_shader,
+            thermal_shader,
+            halftone_shader,
+            glitch_shader,
+            pixsort_shader,
+            ascii_shader,
+            slitscan_shader,
             warp_shader,
             glow_effect,
             post_proc,
@@ -861,7 +940,13 @@ class StudioCompositor:
         glupload.link(glcolorconvert_in)
         glcolorconvert_in.link(color_grade)
         color_grade.link(vhs_shader)
-        vhs_shader.link(warp_shader)
+        vhs_shader.link(thermal_shader)
+        thermal_shader.link(halftone_shader)
+        halftone_shader.link(glitch_shader)
+        glitch_shader.link(pixsort_shader)
+        pixsort_shader.link(ascii_shader)
+        ascii_shader.link(slitscan_shader)
+        slitscan_shader.link(warp_shader)
         warp_shader.link(glow_effect)
         # Temporal feedback via custom Rust GstGLFilter plugin (FBO ping-pong)
         #
@@ -903,6 +988,12 @@ class StudioCompositor:
         self._fx_stutter = stutter_el
         self._fx_color_grade = color_grade
         self._fx_vhs_shader = vhs_shader
+        self._fx_thermal_shader = thermal_shader
+        self._fx_halftone_shader = halftone_shader
+        self._fx_glitch_shader = glitch_shader
+        self._fx_pixsort_shader = pixsort_shader
+        self._fx_ascii_shader = ascii_shader
+        self._fx_slitscan_shader = slitscan_shader
         self._fx_warp_shader = warp_shader
         self._fx_glow_effect = glow_effect
         self._fx_post_proc = post_proc
@@ -943,6 +1034,83 @@ class StudioCompositor:
             f"u_width=(float)1920.0, u_height=(float)1080.0"
         )
         self._fx_vhs_shader.set_property("uniforms", vhs_uniforms[0])
+
+        # Update thermal shader — passthrough when not active (edge_glow = -1)
+        t_edge = preset.thermal_params.get("u_edge_glow", -1.0) if preset.use_thermal_shader else -1.0
+        t_pal = preset.thermal_params.get("u_palette_shift", 0.0) if preset.use_thermal_shader else 0.0
+        thermal_u = Gst.Structure.from_string(
+            f"uniforms, u_time=(float)0.0, u_edge_glow=(float){t_edge}, "
+            f"u_palette_shift=(float){t_pal}, "
+            f"u_width=(float)1920.0, u_height=(float)1080.0"
+        )
+        self._fx_thermal_shader.set_property("uniforms", thermal_u[0])
+
+        # Update halftone shader — passthrough when dot_size < 1
+        h_dot = preset.halftone_params.get("u_dot_size", 0.0) if preset.use_halftone_shader else 0.0
+        h_mode = preset.halftone_params.get("u_color_mode", 0.0) if preset.use_halftone_shader else 0.0
+        halftone_u = Gst.Structure.from_string(
+            f"uniforms, u_time=(float)0.0, u_dot_size=(float){h_dot}, "
+            f"u_color_mode=(float){h_mode}, "
+            f"u_width=(float)1920.0, u_height=(float)1080.0"
+        )
+        self._fx_halftone_shader.set_property("uniforms", halftone_u[0])
+
+        # Update glitch blocks shader — passthrough when intensity < 0.01
+        g_block = preset.glitch_blocks_params.get("u_block_size", 16.0) if preset.use_glitch_blocks_shader else 16.0
+        g_int = preset.glitch_blocks_params.get("u_intensity", 0.0) if preset.use_glitch_blocks_shader else 0.0
+        g_rgb = preset.glitch_blocks_params.get("u_rgb_split", 0.0) if preset.use_glitch_blocks_shader else 0.0
+        glitch_u = Gst.Structure.from_string(
+            f"uniforms, u_time=(float)0.0, u_block_size=(float){g_block}, "
+            f"u_intensity=(float){g_int}, u_rgb_split=(float){g_rgb}, "
+            f"u_width=(float)1920.0, u_height=(float)1080.0"
+        )
+        self._fx_glitch_shader.set_property("uniforms", glitch_u[0])
+
+        # Update pixsort shader — passthrough when sort_length < 1
+        ps_low = preset.pixsort_params.get("u_threshold_low", 0.0) if preset.use_pixsort_shader else 0.0
+        ps_high = preset.pixsort_params.get("u_threshold_high", 1.0) if preset.use_pixsort_shader else 1.0
+        ps_len = preset.pixsort_params.get("u_sort_length", 0.0) if preset.use_pixsort_shader else 0.0
+        ps_dir = preset.pixsort_params.get("u_direction", 0.0) if preset.use_pixsort_shader else 0.0
+        pixsort_u = Gst.Structure.from_string(
+            f"uniforms, u_time=(float)0.0, u_threshold_low=(float){ps_low}, "
+            f"u_threshold_high=(float){ps_high}, u_sort_length=(float){ps_len}, "
+            f"u_direction=(float){ps_dir}, "
+            f"u_width=(float)1920.0, u_height=(float)1080.0"
+        )
+        self._fx_pixsort_shader.set_property("uniforms", pixsort_u[0])
+
+        # Update ASCII shader — passthrough when cell_size < 2
+        a_cell = preset.ascii_params.get("u_cell_size", 0.0) if preset.use_ascii_shader else 0.0
+        a_mode = preset.ascii_params.get("u_color_mode", 0.0) if preset.use_ascii_shader else 0.0
+        ascii_u = Gst.Structure.from_string(
+            f"uniforms, u_time=(float)0.0, u_cell_size=(float){a_cell}, "
+            f"u_color_mode=(float){a_mode}, "
+            f"u_width=(float)1920.0, u_height=(float)1080.0"
+        )
+        self._fx_ascii_shader.set_property("uniforms", ascii_u[0])
+
+        # Update slitscan shader — passthrough when scan_speed < 0.01
+        ss_speed = (
+            preset.slitscan_params.get("u_scan_speed", 0.0)
+            if preset.use_slitscan_shader
+            else 0.0
+        )
+        ss_axis = (
+            preset.slitscan_params.get("u_scan_axis", 0.0)
+            if preset.use_slitscan_shader
+            else 0.0
+        )
+        ss_warp = (
+            preset.slitscan_params.get("u_warp_amount", 0.0)
+            if preset.use_slitscan_shader
+            else 0.0
+        )
+        slitscan_u = Gst.Structure.from_string(
+            f"uniforms, u_time=(float)0.0, u_scan_speed=(float){ss_speed}, "
+            f"u_scan_axis=(float){ss_axis}, u_warp_amount=(float){ss_warp}, "
+            f"u_width=(float)1920.0, u_height=(float)1080.0"
+        )
+        self._fx_slitscan_shader.set_property("uniforms", slitscan_u[0])
 
         # Update warp shader
         warp = preset.warp
@@ -994,13 +1162,19 @@ class StudioCompositor:
             if trail.count > 0 and trail.opacity > 0:
                 self._fx_temporal.set_property("feedback-amount", trail.opacity)
 
-                # Decay from filter_params brightness (lower = faster fade)
+                # Decay from filter_params — explicit per-channel or derived from brightness
                 fp = trail.filter_params
-                decay_base = fp.get("brightness", 0.7)
-                # Per-channel decay for color shift effects
-                self._fx_temporal.set_property("decay-r", min(decay_base * 1.0, 0.99))
-                self._fx_temporal.set_property("decay-g", min(decay_base * 0.98, 0.99))
-                self._fx_temporal.set_property("decay-b", min(decay_base * 0.96, 0.99))
+                if "decay_r" in fp:
+                    # Explicit per-channel decay (e.g. feedback preset)
+                    self._fx_temporal.set_property("decay-r", min(fp["decay_r"], 0.99))
+                    self._fx_temporal.set_property("decay-g", min(fp["decay_g"], 0.99))
+                    self._fx_temporal.set_property("decay-b", min(fp["decay_b"], 0.99))
+                else:
+                    decay_base = fp.get("brightness", 0.7)
+                    # Per-channel decay for color shift effects
+                    self._fx_temporal.set_property("decay-r", min(decay_base * 1.0, 0.99))
+                    self._fx_temporal.set_property("decay-g", min(decay_base * 0.98, 0.99))
+                    self._fx_temporal.set_property("decay-b", min(decay_base * 0.96, 0.99))
 
                 # Hue shift from filter_params
                 self._fx_temporal.set_property("hue-shift", fp.get("hue_rotate", 0.0))
@@ -1680,6 +1854,70 @@ class StudioCompositor:
                 f"u_width=(float)1920.0, u_height=(float)1080.0"
             )
             self._fx_vhs_shader.set_property("uniforms", vhs_u[0])
+
+        # --- Thermal: update time uniform for noise animation ---
+        if preset.use_thermal_shader:
+            t_edge = preset.thermal_params.get("u_edge_glow", 0.6)
+            t_pal = preset.thermal_params.get("u_palette_shift", 0.0)
+            thermal_u = Gst.Structure.from_string(
+                f"uniforms, u_time=(float){t}, u_edge_glow=(float){t_edge}, "
+                f"u_palette_shift=(float){t_pal}, "
+                f"u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            self._fx_thermal_shader.set_property("uniforms", thermal_u[0])
+
+        # --- Halftone: update time ---
+        if preset.use_halftone_shader:
+            h_dot = preset.halftone_params.get("u_dot_size", 8.0)
+            h_mode = preset.halftone_params.get("u_color_mode", 0.0)
+            halftone_u = Gst.Structure.from_string(
+                f"uniforms, u_time=(float){t}, u_dot_size=(float){h_dot}, "
+                f"u_color_mode=(float){h_mode}, "
+                f"u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            self._fx_halftone_shader.set_property("uniforms", halftone_u[0])
+
+        # --- Glitch blocks: update time + beat-reactive intensity ---
+        if preset.use_glitch_blocks_shader:
+            g_block = preset.glitch_blocks_params.get("u_block_size", 16.0)
+            g_int = preset.glitch_blocks_params.get("u_intensity", 0.4)
+            g_rgb = preset.glitch_blocks_params.get("u_rgb_split", 0.6)
+            # Beat increases corruption intensity
+            beat_int = g_int + b * 0.3
+            beat_rgb = g_rgb + b * 0.2
+            glitch_u = Gst.Structure.from_string(
+                f"uniforms, u_time=(float){t}, u_block_size=(float){g_block}, "
+                f"u_intensity=(float){beat_int}, u_rgb_split=(float){beat_rgb}, "
+                f"u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            self._fx_glitch_shader.set_property("uniforms", glitch_u[0])
+
+        # --- Pixsort: update time + beat-reactive sort length ---
+        if preset.use_pixsort_shader:
+            ps_low = preset.pixsort_params.get("u_threshold_low", 0.2)
+            ps_high = preset.pixsort_params.get("u_threshold_high", 0.85)
+            ps_len = preset.pixsort_params.get("u_sort_length", 32.0)
+            ps_dir = preset.pixsort_params.get("u_direction", 0.0)
+            # Beat increases sort length for more dramatic streaking
+            beat_len = ps_len + b * 16.0
+            pixsort_u = Gst.Structure.from_string(
+                f"uniforms, u_time=(float){t}, u_threshold_low=(float){ps_low}, "
+                f"u_threshold_high=(float){ps_high}, u_sort_length=(float){beat_len}, "
+                f"u_direction=(float){ps_dir}, "
+                f"u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            self._fx_pixsort_shader.set_property("uniforms", pixsort_u[0])
+
+        # --- ASCII: update time ---
+        if preset.use_ascii_shader:
+            a_cell = preset.ascii_params.get("u_cell_size", 8.0)
+            a_mode = preset.ascii_params.get("u_color_mode", 0.0)
+            ascii_u = Gst.Structure.from_string(
+                f"uniforms, u_time=(float){t}, u_cell_size=(float){a_cell}, "
+                f"u_color_mode=(float){a_mode}, "
+                f"u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            self._fx_ascii_shader.set_property("uniforms", ascii_u[0])
 
         # --- Post-process: beat-triggered band displacement ---
         pp = preset.post_process
