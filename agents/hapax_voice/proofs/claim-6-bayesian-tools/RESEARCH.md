@@ -5,7 +5,7 @@
 completion of Claim 1 experiment cycle.
 
 **Prepared**: 2026-03-20
-**Authors**: Operator (the operator), Claude Opus 4.6 (beta session)
+**Authors**: the operator, Claude Opus 4.6 (beta session)
 
 ---
 

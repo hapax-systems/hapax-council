@@ -2,7 +2,7 @@
 
 **Epistemic status of this document:** Working. Initially written 2026-03-18 by Claude (alpha session) from exhaustive codebase audit. Updated 2026-03-19 to incorporate conversational continuity research (beta session) and temporal classification system (alpha session). Covers everything that exists, everything that was attempted, and everything that is projected — clearly distinguished throughout.
 
-**Audience:** The operator (Ryan). You built this. This document exists so you can hold the whole system in your head, find anything, and restart any thread from cold. Strong intuitions about formal systems, not PhD-level notation. Math stays dumb, explanations stay smart.
+**Audience:** The operator. You built this. This document exists so you can hold the whole system in your head, find anything, and restart any thread from cold. Strong intuitions about formal systems, not PhD-level notation. Math stays dumb, explanations stay smart.
 
 **How to read this:** Front-to-back for the first pass to build the full mental model. Then by section for reference. Every subsystem entry is self-contained. Cross-references use `→ Section Name` notation.
 
