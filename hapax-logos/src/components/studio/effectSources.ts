@@ -25,7 +25,23 @@ export const EFFECT_SOURCES: EffectSource[] = [
 ];
 
 /** Convert source ID to fetch URL. "camera" returns undefined (use default). */
+/** All non-camera sources read from the single FX snapshot endpoint.
+ *  The compositor is told which effect to render via POST /api/studio/effect/select.
+ */
 export function sourceUrl(id: string): string | undefined {
   if (id === "camera") return undefined;
-  return `/api/studio/stream/live/${id}`;
+  return "/api/studio/stream/fx";
+}
+
+/** Tell the compositor to switch to a different effect preset.
+ *  Strip the 'fx-' prefix since the backend uses bare names (e.g. 'vhs' not 'fx-vhs').
+ */
+export async function selectEffect(id: string): Promise<void> {
+  if (id === "camera") return;
+  const name = id.startsWith("fx-") ? id.slice(3) : id;
+  await fetch("/api/studio/effect/select", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ effect: name }),
+  }).catch(() => {});
 }
