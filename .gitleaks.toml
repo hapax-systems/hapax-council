@@ -8,12 +8,16 @@ id = "operator-full-name"
 description = "Operator full name"
 regex = '''(?i)Ryan\s+Kleeberger'''
 tags = ["pii", "name"]
+[rules.allowlist]
+paths = ['''hooks/''', '''\.gitleaks\.toml''']
 
 [[rules]]
 id = "operator-location"
 description = "Operator location"
 regex = '''Minneapolis[- ]St\.?\s*Paul'''
 tags = ["pii", "location"]
+[rules.allowlist]
+paths = ['''hooks/''', '''\.gitleaks\.toml''']
 
 [[rules]]
 id = "home-directory-path"
@@ -34,6 +38,8 @@ id = "browsing-data-path"
 description = "Browsing or audio capture data path"
 regex = '''rag-sources/(chrome|audio)/'''
 tags = ["pii", "browsing"]
+[rules.allowlist]
+paths = ['''hooks/''', '''\.gitleaks\.toml''']
 
 # Allow known false positives
 [allowlist]
