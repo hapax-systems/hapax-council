@@ -17,6 +17,7 @@ import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from agents.hapax_voice.config import LITELLM_BASE as _voice_litellm_base
@@ -65,15 +66,88 @@ _GREETING_PREFIX_RE = re.compile(
 )
 
 
-def _extract_substance(text: str) -> str:
-    """Strip greeting prefixes before extracting the first clause.
+@dataclass
+class ThreadEntry:
+    """Structured thread entry preserving conceptual pacts (Brennan & Clark 1996).
 
-    "Hey hapax, what's the weather" → "what's the weather"
+    Stores verbatim operator text to maintain lexical entrainment.
+    Acceptance signal enables grounding state tracking (Traum 1994).
+    """
+
+    turn: int
+    user_text: str  # verbatim post-greeting-strip, max 100 chars
+    response_summary: str  # first clause of response, max 60 chars
+    acceptance: str = "IGNORE"  # ACCEPT/CLARIFY/REJECT/IGNORE
+    grounding_state: str = "pending"  # grounded/in-repair/ungrounded/pending
+    is_repair: bool = False
+    is_seeded: bool = False
+
+    @staticmethod
+    def acceptance_to_grounding(acceptance: str) -> str:
+        """Map acceptance label to grounding state (Tier 1: acceptance-as-proxy)."""
+        return {
+            "ACCEPT": "grounded",
+            "CLARIFY": "in-repair",
+            "REJECT": "ungrounded",
+            "IGNORE": "ungrounded",
+        }.get(acceptance, "pending")
+
+
+def _extract_substance(text: str) -> str:
+    """Strip greeting prefixes, return verbatim text (max 100 chars).
+
+    Preserves operator's referring expressions for conceptual pact maintenance.
+    No clause splitting — voice utterances are already short (10-30 words).
     """
     stripped = _GREETING_PREFIX_RE.sub("", text).strip()
     if not stripped:
         stripped = text
-    return stripped.split(",")[0].split(".")[0][:60]
+    return stripped[:100]
+
+
+def _extract_response_clause(text: str) -> str:
+    """Extract first clause of system response for thread compression."""
+    return text.split(",")[0].split(".")[0][:60]
+
+
+# Abbreviated acceptance labels for older thread tiers (saves tokens)
+_ACCEPTANCE_SHORT = {"ACCEPT": "OK", "CLARIFY": "?", "REJECT": "NO", "IGNORE": "-"}
+
+
+def _render_thread(entries: list[ThreadEntry]) -> str:
+    """Render thread entries with tiered compression.
+
+    Recent 3: full user text in quotes + response + acceptance (~20 tokens)
+    Middle 4: user referring expression + topic + abbrev acceptance (~10 tokens)
+    Oldest 3: topic keyword + acceptance (~8 tokens)
+    """
+    n = len(entries)
+    lines: list[str] = []
+    for i, e in enumerate(entries):
+        age = n - 1 - i  # 0 = most recent, n-1 = oldest
+        prefix = "REPAIR:" if e.is_repair else ""
+        seeded = "[PRIOR] " if e.is_seeded else ""
+
+        if age < 3:
+            # Recent tier: full verbatim + response + acceptance
+            lines.append(
+                f'- {seeded}T{e.turn} "{e.user_text}" | {prefix}{e.response_summary} | {e.acceptance}'
+            )
+        elif age < 7:
+            # Middle tier: referring expression + topic + abbrev acceptance
+            # Take first significant noun phrase (first 40 chars of user text)
+            short_user = e.user_text[:40]
+            short_accept = _ACCEPTANCE_SHORT.get(e.acceptance, e.acceptance)
+            lines.append(
+                f"- {seeded}T{e.turn} {short_user} | {prefix}{e.response_summary[:30]} | {short_accept}"
+            )
+        else:
+            # Oldest tier: topic keyword + acceptance
+            topic = " ".join(w for w in e.user_text.split()[:3] if len(w) >= 3)
+            short_accept = _ACCEPTANCE_SHORT.get(e.acceptance, e.acceptance)
+            lines.append(f"- {seeded}T{e.turn} {topic} | {short_accept}")
+
+    return "\n".join(lines)
 
 
 def _lcs_word_length(a: list[str], b: list[str]) -> int:
@@ -296,7 +370,10 @@ class ConversationPipeline:
         self._last_user_topic: str = ""  # rough topic tracking for abandonment detection
 
         # Conversational continuity: incremental per-turn thread summaries
-        self._conversation_thread: list[str] = []
+        self._conversation_thread: list[ThreadEntry] = []
+
+        # Grounding ledger: DU state tracking + effort calibration
+        self._grounding_ledger = None  # initialized in start() if experiment flag set
 
         # Frustration detection (Batch 4)
         self._frustration_detector = None
@@ -319,6 +396,12 @@ class ConversationPipeline:
         self._session_id = uuid.uuid4().hex[:12]
         self._session_start_ts = time.time()
         self._conversation_thread = []
+
+        # Initialize grounding ledger if experiment flags enable it
+        if self._experiment_flags.get("grounding_directive", False):
+            from agents.hapax_voice.grounding_ledger import GroundingLedger
+
+            self._grounding_ledger = GroundingLedger()
 
         # Generate sentinel fact for probe question testing
         self._sentinel_number = random.randint(10, 99)
@@ -404,10 +487,10 @@ class ConversationPipeline:
         # ── STABLE band: prompt + conversation thread ──────────────────
         updated = self.system_prompt
 
-        # Conversation thread: accumulated topic summaries (~15 tokens each)
+        # Conversation thread: tiered compression (Brennan pacts + Traum grounding state)
         if self._conversation_thread and self._experiment_flags.get("stable_frame", True):
-            thread_text = "\n".join(f"- {entry}" for entry in self._conversation_thread)
-            updated += f"\n\n## Conversation So Far\n{thread_text}"
+            thread_text = _render_thread(self._conversation_thread)
+            updated += f"\n\n## Conversation Thread (most recent last)\n{thread_text}"
 
         # Sentinel fact: injected here so it survives system prompt rebuilds
         if self._experiment_flags.get("sentinel", True) and hasattr(self, "_sentinel_line"):
@@ -442,25 +525,47 @@ class ConversationPipeline:
         elif hasattr(self, "_frozen_env") and self._frozen_env:
             updated += "\n\n## Current Environment\n" + self._frozen_env
 
-        # Phenomenal context: disabled in lockdown (too stateful to freeze)
+        # Phenomenal context: stimmung-only in experiment mode, disabled in lockdown
+        _stimmung_only = self._experiment_flags.get("phenomenal_stimmung_only", False)
         if not _lockdown:
             try:
                 from agents.hapax_voice.phenomenal_context import render as render_phenomenal
 
-                phenom = render_phenomenal(tier="CAPABLE")
+                phenom = render_phenomenal(tier="LOCAL" if _stimmung_only else "CAPABLE")
                 if phenom:
                     updated += "\n\n" + phenom
             except Exception:
                 log.debug("phenomenal context render failed (non-fatal)", exc_info=True)
 
-        # Salience context: disabled in lockdown
-        if not _lockdown:
+        # Salience context PROMPT BLOCK: stripped in experiment mode.
+        # The salience router still COMPUTES (for mechanical use by effort
+        # calibrator and grounding ledger) — only the LLM-facing text is gated.
+        _salience_prompt = self._experiment_flags.get("salience_context", True)
+        if not _lockdown and _salience_prompt:
             try:
                 salience_ctx = self._build_salience_context()
                 if salience_ctx:
                     updated += "\n\n## Conversational Salience\n" + salience_ctx
             except Exception:
                 log.debug("salience context build failed (non-fatal)", exc_info=True)
+
+        # Grounding directive: injected per turn from ledger (Batch 2)
+        _ledger = getattr(self, "_grounding_ledger", None)
+        if _ledger is not None:
+            directive = _ledger.grounding_directive()
+            if directive:
+                updated += "\n\n" + directive
+
+        # Effort level: dynamic word limit from activation × GQI (Batch 2)
+        if _ledger is not None and self._experiment_flags.get("effort_modulation", False):
+            _activation = 0.5
+            if self._salience_router is not None:
+                _bd = self._salience_router.last_breakdown
+                if _bd is not None:
+                    _activation = _bd.final_activation
+            _effort = _ledger.effort_calibration(_activation)
+            updated += f"\n\n## Effort Level\n{_effort.level_name} ({_effort.word_limit} words)"
+            self.last_word_limit = _effort.word_limit
 
         content_hash = hash(updated)
         if content_hash == self._last_env_hash:
@@ -754,10 +859,15 @@ class ConversationPipeline:
                         _utt_trace.update(output=_last_response)
                     except Exception:
                         pass
+                # Pass thread text (not ThreadEntry objects) to evaluator
+                _thread_texts = [
+                    e.user_text if isinstance(e, ThreadEntry) else e
+                    for e in self._conversation_thread
+                ]
                 _grounding_scores = evaluate_turn(
                     response=_last_response,
                     messages=self.messages,
-                    conversation_thread=self._conversation_thread,
+                    conversation_thread=_thread_texts,
                     user_utterance=transcript,
                     langfuse_trace=_utt_trace,
                 )
@@ -765,17 +875,66 @@ class ConversationPipeline:
                 self.last_anchor_score = _grounding_scores.get("context_anchor_success", 0.0)
                 self.last_acceptance_label = _grounding_scores.get("acceptance_label", "")
 
+                # Feed acceptance into grounding ledger (Batch 2: close the loop)
+                if self._grounding_ledger is not None:
+                    _concern = 0.5
+                    if self._salience_router is not None:
+                        _bd = self._salience_router.last_breakdown
+                        if _bd is not None:
+                            _concern = _bd.concern_overlap
+                    self._grounding_ledger.update_from_acceptance(
+                        self.last_acceptance_label, _concern
+                    )
+
                 # Probe question: check sentinel retrieval
                 sentinel_score = self.check_sentinel_retrieval(_last_response)
                 if sentinel_score is not None:
                     hapax_score(_utt_trace, "sentinel_retrieval", sentinel_score)
 
-                # Update conversation thread with this turn's summary
-                _user_clause = _extract_substance(transcript)
-                _resp_clause = _last_response.split(",")[0].split(".")[0][:60]
-                self._conversation_thread.append(f"{_user_clause} → {_resp_clause}")
-                if len(self._conversation_thread) > 15:
-                    self._conversation_thread = self._conversation_thread[-15:]
+                # Update conversation thread with structured entry
+                _user_text = _extract_substance(transcript)
+                _resp_clause = _extract_response_clause(_last_response)
+                _acceptance = _grounding_scores.get("acceptance_label", "IGNORE")
+                _prev_acceptance = (
+                    self._conversation_thread[-1].acceptance
+                    if self._conversation_thread
+                    else "IGNORE"
+                )
+                _entry = ThreadEntry(
+                    turn=self.turn_count,
+                    user_text=_user_text,
+                    response_summary=_resp_clause,
+                    acceptance=_acceptance,
+                    grounding_state=ThreadEntry.acceptance_to_grounding(_acceptance),
+                    is_repair=_prev_acceptance in ("CLARIFY", "REJECT"),
+                )
+                self._conversation_thread.append(_entry)
+
+                # Age out seeded entries as current conversation fills
+                _current_count = sum(1 for e in self._conversation_thread if not e.is_seeded)
+                if _current_count >= 11:
+                    # Drop all seeded entries (current conversation has enough context)
+                    self._conversation_thread = [
+                        e for e in self._conversation_thread if not e.is_seeded
+                    ]
+                elif _current_count >= 6:
+                    # Compress seeded entries: keep only 1
+                    _seeded = [e for e in self._conversation_thread if e.is_seeded]
+                    _current = [e for e in self._conversation_thread if not e.is_seeded]
+                    self._conversation_thread = _seeded[:1] + _current
+
+                # Hard cap at 10
+                if len(self._conversation_thread) > 10:
+                    self._conversation_thread = self._conversation_thread[-10:]
+
+                # Register this response as a new DU in the grounding ledger
+                if self._grounding_ledger is not None:
+                    _concern = 0.5
+                    if self._salience_router is not None:
+                        _bd = self._salience_router.last_breakdown
+                        if _bd is not None:
+                            _concern = _bd.concern_overlap
+                    self._grounding_ledger.add_du(self.turn_count, _resp_clause, _concern)
         except Exception:
             log.debug("Grounding evaluation failed (non-fatal)", exc_info=True)
 
@@ -922,8 +1081,14 @@ class ConversationPipeline:
             _t_first_audio = 0.0
             _first_clause_spoken = False
             _spoken_words = 0  # Track words sent to TTS for cutoff
-            # In experiment lockdown, use fixed word limit to prevent display_density variance
-            if self._experiment_flags.get("volatile_lockdown", False):
+            # Word limit: effort-driven (Batch 2) > lockdown fixed > density-driven
+            if self._grounding_ledger is not None and self._experiment_flags.get(
+                "effort_modulation", False
+            ):
+                _word_limit = (
+                    self.last_word_limit
+                )  # set by effort calibration in _update_system_context
+            elif self._experiment_flags.get("volatile_lockdown", False):
                 _word_limit = _MAX_SPOKEN_WORDS
             else:
                 _word_limit = _density_word_limit()  # Bayesian Tier 1: density-driven
@@ -1670,7 +1835,8 @@ class ConversationPipeline:
     def get_session_digest(self) -> dict:
         """Generate a digest of the current conversation for cross-session memory.
 
-        Returns dict with thread summary, turn count, and dominant topic.
+        Returns dict with thread summary, turn count, dominant topic,
+        conceptual pacts, and unresolved discourse units.
         Used by the daemon to persist session memory via EpisodeStore.
         """
         if not self._conversation_thread:
@@ -1679,18 +1845,37 @@ class ConversationPipeline:
         # Dominant topic: most common significant words across thread entries
         word_counts: dict[str, int] = {}
         for entry in self._conversation_thread:
-            for word in entry.lower().split():
+            text = entry.user_text if isinstance(entry, ThreadEntry) else entry
+            for word in text.lower().split():
                 if len(word) >= 4 and word.isalpha():
                     word_counts[word] = word_counts.get(word, 0) + 1
 
         top_words = sorted(word_counts, key=word_counts.get, reverse=True)[:5]  # type: ignore[arg-type]
 
+        # Extract thread text for storage (backward-compatible list[str])
+        thread_texts = []
+        for entry in self._conversation_thread[-10:]:
+            if isinstance(entry, ThreadEntry):
+                thread_texts.append(f"{entry.user_text} → {entry.response_summary}")
+            else:
+                thread_texts.append(entry)
+
+        # Unresolved DUs: entries still in-repair or ungrounded at session end
+        unresolved = []
+        for entry in self._conversation_thread:
+            if isinstance(entry, ThreadEntry) and entry.grounding_state in (
+                "in-repair",
+                "ungrounded",
+            ):
+                unresolved.append(f"T{entry.turn}: {entry.user_text[:60]}")
+
         return {
-            "thread": self._conversation_thread[-10:],
+            "thread": thread_texts,
             "turn_count": self.turn_count,
             "topic_words": top_words,
             "session_id": self._session_id,
             "start_ts": getattr(self, "_session_start_ts", time.time()),
+            "unresolved": unresolved,
         }
 
     def check_sentinel_retrieval(self, response: str) -> float | None:
