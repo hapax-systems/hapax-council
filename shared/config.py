@@ -226,8 +226,11 @@ def embed(text: str, model: str | None = None, prefix: str = "search_query") -> 
         prefixed = f"{prefix}: {text}" if prefix else text
         _log.debug("embed: model=%s len=%d prefix=%s", model_name, len(text), prefix)
         try:
+            from shared.gpu_semaphore import gpu_slot
+
             client = _get_ollama_client()
-            result = client.embed(model=model_name, input=prefixed)
+            with gpu_slot():
+                result = client.embed(model=model_name, input=prefixed)
         except Exception as exc:
             span.set_attribute("rag.error", str(exc)[:500])
             raise RuntimeError(f"Embedding failed (model={model_name}): {exc}") from exc
@@ -291,8 +294,11 @@ def embed_batch(
         prefixed = [f"{prefix}: {t}" if prefix else t for t in texts]
         _log.debug("embed_batch: model=%s count=%d prefix=%s", model_name, len(texts), prefix)
         try:
+            from shared.gpu_semaphore import gpu_slot
+
             client = _get_ollama_client()
-            result = client.embed(model=model_name, input=prefixed)
+            with gpu_slot():
+                result = client.embed(model=model_name, input=prefixed)
         except Exception as exc:
             span.set_attribute("rag.error", str(exc)[:500])
             raise RuntimeError(f"Batch embedding failed (model={model_name}): {exc}") from exc
