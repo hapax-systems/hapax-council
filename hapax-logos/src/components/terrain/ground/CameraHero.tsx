@@ -213,12 +213,13 @@ function HlsPlayer() {
     const Hls = (await import("hls.js")).default;
     if (!Hls.isSupported()) return;
     const hls = new Hls({
-      liveSyncDurationCount: 3,
-      liveMaxLatencyDurationCount: 6,
-      maxBufferLength: 8,
-      backBufferLength: 2,
+      liveSyncDurationCount: 2,
+      liveMaxLatencyDurationCount: Infinity,  // never jump forward to catch up
+      maxBufferLength: 30,
+      backBufferLength: 5,
       enableWorker: true,
       lowLatencyMode: false,
+      highBufferWatchdogPeriod: 0,  // disable buffer watchdog that triggers seeks
     });
     hlsRef.current = hls;
     hls.loadSource("/api/studio/hls/stream.m3u8");
