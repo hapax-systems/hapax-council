@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from shared.gpu_semaphore import gpu_slot, _NUM_SLOTS
+from shared.gpu_semaphore import _NUM_SLOTS, gpu_slot
 
 
 @pytest.fixture
