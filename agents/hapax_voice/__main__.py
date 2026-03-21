@@ -878,16 +878,19 @@ class VoiceDaemon:
             log.warning("ConsentGatedReader unavailable, proceeding without consent filtering")
 
         # Callbacks (closures over self — stable)
+        # experiment_mode read at call time from self._experiment_flags
         self._env_context_fn = lambda: serialize_environment(
             self.perception.latest or EnvironmentState(timestamp=0),
             self.workspace_monitor.latest_analysis,
             self.gate._ambient_result,
             perception_tier=self._perception_tier.value,
+            experiment_mode=getattr(self, "_experiment_flags", {}).get("experiment_mode", False),
         )
         self._ambient_fn = lambda: self.gate._ambient_result
         self._policy_fn = lambda: get_policy(
             env=self.perception.latest,
             guest_mode=self.session.is_guest_mode,
+            experiment_mode=getattr(self, "_experiment_flags", {}).get("experiment_mode", False),
         )
 
         log.info("Pipeline dependencies precomputed")

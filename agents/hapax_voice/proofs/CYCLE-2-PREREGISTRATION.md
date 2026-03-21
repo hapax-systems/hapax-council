@@ -95,11 +95,21 @@ without replication.
 ## 4. Variables
 
 ### 4.1 Independent Variable
-Conversation thread injection into the LLM system prompt.
-When `stable_frame=true`, per-turn summaries accumulate in
-`_conversation_thread` (max 15 entries) and are injected as
-"## Conversation So Far" in the STABLE band of the system prompt.
-Implementation: `conversation_pipeline.py:388-390`.
+Conversational grounding package (3+1 framework):
+
+**Treatment components** (toggled together):
+1. **Conversation thread** (`stable_frame=true`): `ThreadEntry` dataclass with verbatim operator text, acceptance signal, grounding state. Max 10 entries with tiered compression. Injected as `## Conversation Thread` in the STABLE band.
+2. **Grounding ledger** (`grounding_directive=true`): DU state machine (Traum 1994) with concern-aware repair thresholds. Injects `## Grounding Directive` per turn in VOLATILE band.
+3. **Effort modulation** (`effort_modulation=true`): 2D calibration (activation × GQI). Dynamic word limit (22-48 words) via `## Effort Level` in VOLATILE band.
+
+**Diagnostic instrument** (always on, not part of IV):
+4. **Sentinel fact** (`sentinel=true`): random 2-digit number for prompt integrity verification.
+
+**Cross-session memory** (`cross_session=true`): seeds thread with 2-3 prior session entries at session start. Hybrid retrieval (recency + semantic).
+
+System prompt stripped to ~800-1000 tokens for experiment (`experiment_mode=true`). No tool descriptions, no profile digest, no environmental modulation.
+
+Implementation: `conversation_pipeline.py`, `grounding_ledger.py`, `persona.py`, `conversational_policy.py`.
 
 ### 4.2 Primary Dependent Variable
 **Name:** `turn_pair_coherence`
@@ -114,12 +124,18 @@ Implementation: `conversation_pipeline.py:388-390`.
 - `acceptance_type` — ACCEPT(1.0)/CLARIFY(0.7)/IGNORE(0.3)/REJECT(0.0)
 - `frustration_score` — 8-signal mechanical detector
 - `context_anchor_success` — word overlap (retained for Cycle 1 comparison)
+- `response_monologic` — RLHF anti-pattern detector (1.0=monologic, 0.0=dialogic)
+- `directive_compliance` — did model follow the grounding directive? (1.0=compliant, 0.0=non-compliant)
+- `gqi` — Grounding Quality Index (composite: 50% EWMA acceptance + 25% trend + 15% consecutive negatives + 10% engagement)
+- `du_state` — last Discourse Unit grounding state (GROUNDED/REPAIR/ABANDONED/CONTESTED/UNGROUNDED)
 
 ### 4.4 Behavioral Covariates
 - `user_word_count` — words per operator utterance
 - `assistant_word_count` — words per system response
 - `total_latency_ms` — end-to-end turn time
-- `activation_score` — salience router activation
+- `activation_score` — salience router activation (still computed, not used for model selection)
+- `concern_overlap` — salience router concern overlap (feeds grounding criterion modulation)
+- `effort_level` — EFFICIENT/BASELINE/ELABORATIVE (from activation × GQI)
 
 ---
 
@@ -219,12 +235,13 @@ Code: `agents/hapax_voice/stats.py` (committed at pre-registration)
 ## 8. Effect Size
 
 ### 8.1 Target
-[TO BE FILLED from Cycle 2 baseline: 0.3-0.5 × baseline SD]
+To be calibrated from Cycle 2 Phase A baseline data: target = 0.3-0.5 × baseline SD of session-level mean `turn_pair_coherence`. Expected d=0.3-0.6 based on grounding research literature (Clark & Wilkes-Gibbs 1986 transfer, dialogue intervention meta-analysis d=0.44-0.53).
 
 ### 8.2 Justification
-Calibrated from Cycle 1 pilot baseline data. A medium effect (0.3-0.5 SD)
-represents a meaningful shift in semantic coherence that is detectable
-with 10+ sessions per phase.
+Calibrated from Cycle 2 baseline (not Cycle 1, which used a different metric).
+A medium effect (0.3-0.5 SD) represents a meaningful shift in semantic coherence.
+Power analysis: at d=0.5 with 20 sessions/phase, ~40-50% probability of decisive BF.
+Pre-commit to extending to 20+ sessions if inconclusive (3 < BF < 10).
 
 ---
 
@@ -235,8 +252,11 @@ Any deviation after data collection begins documented in:
 | # | Section | Original | Deviation | Justification | Impact |
 |---|---------|----------|-----------|---------------|--------|
 
-Analysis code versioned at commit [TO BE FILLED]. Post-registration
-code changes are deviations.
+Analysis code versioned at code freeze commit (SHA to be recorded here
+after freeze). Post-registration code changes are deviations.
+
+See `lab-journal/posts/2026-03-21-deviation-disclosure/` for Cycle 1→2
+deviation disclosure table (Willroth & Atherton 2024 format).
 
 ---
 

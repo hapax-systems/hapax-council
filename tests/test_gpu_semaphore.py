@@ -1,8 +1,7 @@
 """Tests for the flock-based GPU semaphore."""
 
-import os
 import fcntl
-import tempfile
+import os
 from unittest.mock import patch
 
 import pytest
