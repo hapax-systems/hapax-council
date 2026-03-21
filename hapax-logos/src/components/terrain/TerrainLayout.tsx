@@ -111,7 +111,7 @@ export function TerrainLayout() {
       }
 
       // S key: toggle split for focused region
-      if (e.key.toLowerCase() === "s" && !isInput && !e.ctrlKey && !e.metaKey && activeOverlay !== "investigation") {
+      if (e.key.toLowerCase() === "s" && !isInput && !e.ctrlKey && !e.metaKey && !e.altKey && activeOverlay !== "investigation") {
         if (splitRegion) {
           setSplitRegion(null);
         } else if (focusedRegion) {

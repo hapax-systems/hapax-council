@@ -22,24 +22,24 @@ export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps
   const groundSignals = signalsByRegion.ground;
   const {
     heroRole, setHeroRole,
-    fxMode, smoothMode, compositeMode,
-    presetIdx, liveFilterIdx, smoothFilterIdx,
+    effectSourceId, smoothMode, compositeMode,
+    presetIdx,
   } = useGroundStudio();
 
-  /** CameraPip click → advance to stratum */
+  /** CameraPip click -> advance to stratum */
   const handlePipClick = useCallback(() => {
     focusRegion("ground");
     setRegionDepth("ground", "stratum");
   }, [focusRegion, setRegionDepth]);
 
-  /** CameraGrid tile click → set hero + advance to core */
+  /** CameraGrid tile click -> set hero + advance to core */
   const handleGridSelect = useCallback(
     (role: string) => {
       setHeroRole(role);
       focusRegion("ground");
       setRegionDepth("ground", "core");
     },
-    [focusRegion, setRegionDepth],
+    [focusRegion, setRegionDepth, setHeroRole],
   );
 
   return (
@@ -54,7 +54,7 @@ export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps
             displayState={vl?.display_state ?? "ambient"}
           />
 
-          {/* Surface: small camera pip — bottom-right, above presence indicator */}
+          {/* Surface: small camera pip -- bottom-right, above presence indicator */}
           {depth === "surface" && (
             <div className="absolute bottom-8 right-8 pointer-events-auto" style={{ zIndex: 4 }}>
               <CameraPip
@@ -82,17 +82,15 @@ export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps
                 heroRole={heroRole}
                 classificationDetections={vl?.classification_detections ?? []}
                 onHeroChange={setHeroRole}
-                fxMode={fxMode}
+                effectSourceId={effectSourceId}
                 smoothMode={smoothMode}
                 compositeMode={compositeMode}
                 presetIdx={presetIdx}
-                liveFilterIdx={liveFilterIdx}
-                smoothFilterIdx={smoothFilterIdx}
               />
             </div>
           )}
 
-          {/* Presence indicator — bottom-right */}
+          {/* Presence indicator -- bottom-right */}
           {perception && (
             <div className="absolute bottom-1.5 right-8 pointer-events-none" style={{ zIndex: 3 }}>
               <PresenceIndicator
@@ -104,7 +102,7 @@ export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps
             </div>
           )}
 
-          {/* Signal pips — bottom-left */}
+          {/* Signal pips -- bottom-left */}
           {groundSignals.length > 0 && (
             <SignalCluster
               signals={groundSignals}

@@ -1,12 +1,11 @@
 /**
- * DetailPane — renders a single region's content for the split-view right pane.
+ * DetailPane -- renders a single region's content for the split-view right pane.
  * The region is rendered inside a Region wrapper so depth cycling, breadcrumbs, etc. work.
  *
  * Ground region gets a specialized StudioDetailPane with camera controls instead of
  * rendering the full GroundRegion again.
  */
 
-import { useState } from "react";
 import { HorizonRegion } from "./regions/HorizonRegion";
 import { FieldRegion } from "./regions/FieldRegion";
 import { WatershedRegion } from "./regions/WatershedRegion";
@@ -21,9 +20,6 @@ interface DetailPaneProps {
 
 export function DetailPane({ region }: DetailPaneProps) {
   const { data: vl } = useVisualLayer();
-  const [heroRole, setHeroRole] = useState("brio-operator");
-  const [fxMode, setFxMode] = useState(false);
-  const [smoothMode, setSmoothMode] = useState(false);
 
   return (
     <div
@@ -39,13 +35,7 @@ export function DetailPane({ region }: DetailPaneProps) {
       {region === "field" && <FieldRegion />}
       {region === "ground" && (
         <StudioDetailPane
-          heroRole={heroRole}
-          onHeroChange={setHeroRole}
-          classificationDetections={vl.classificationDetections}
-          fxMode={fxMode}
-          onFxModeChange={setFxMode}
-          smoothMode={smoothMode}
-          onSmoothModeChange={setSmoothMode}
+          classificationDetections={vl?.classification_detections ?? []}
         />
       )}
       {region === "watershed" && <WatershedRegion />}

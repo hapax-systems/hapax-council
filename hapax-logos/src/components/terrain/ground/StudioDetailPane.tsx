@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Circle, Square } from "lucide-react";
 import { PRESETS } from "../../studio/compositePresets";
-import { SOURCE_FILTERS } from "../../studio/compositeFilters";
+import { EFFECT_SOURCES } from "../../studio/effectSources";
 import VisualLayerPanel from "../../studio/VisualLayerPanel";
 import {
   useStudio,
@@ -11,7 +11,6 @@ import {
   useRecordingToggle,
 } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
-import { api } from "../../../api/client";
 import { useGroundStudio } from "../../../contexts/GroundStudioContext";
 
 interface StudioDetailPaneProps {
@@ -23,12 +22,10 @@ export function StudioDetailPane({
 }: StudioDetailPaneProps) {
   const {
     heroRole, setHeroRole,
-    fxMode, setFxMode,
+    effectSourceId, setEffectSourceId,
     smoothMode, setSmoothMode,
     compositeMode, setCompositeMode,
     presetIdx, setPresetIdx,
-    liveFilterIdx, setLiveFilterIdx,
-    smoothFilterIdx, setSmoothFilterIdx,
   } = useGroundStudio();
   const { data: studio } = useStudio();
   const { data: streamInfo } = useStudioStreamInfo();
@@ -239,8 +236,25 @@ export function StudioDetailPane({
         <VisualLayerPanel />
       </Section>
 
-      {/* COMPOSITE */}
-      <Section title="Composite">
+      {/* STUDIO CONTROLS — unified source + composite + streaming */}
+      <Section title="Studio Controls">
+        {/* Effect source selector */}
+        <label className="mb-2 flex items-center gap-1.5">
+          <span className="shrink-0 text-[10px] text-zinc-400">Source</span>
+          <select
+            value={effectSourceId}
+            onChange={(e) => setEffectSourceId(e.target.value)}
+            className="flex-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+          >
+            {EFFECT_SOURCES.map((src) => (
+              <option key={src.id} value={src.id}>
+                {src.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {/* Composite toggle */}
         <button
           onClick={() => setCompositeMode(!compositeMode)}
           className={`mb-2 w-full rounded px-2 py-1 text-[10px] font-medium transition-colors ${
@@ -252,82 +266,14 @@ export function StudioDetailPane({
           {compositeMode ? "Composite Active" : "Enable Composite"}
         </button>
         {compositeMode && (
-          <>
-            {/* Preset selector */}
-            <div className="mb-2 flex flex-col gap-0.5">
-              {PRESETS.map((p, i) => (
-                <button
-                  key={p.name}
-                  onClick={() => setPresetIdx(i)}
-                  className={`rounded px-2 py-1 text-left text-[10px] transition-colors ${
-                    presetIdx === i
-                      ? "bg-indigo-950/30 text-zinc-200"
-                      : "text-zinc-400 hover:bg-zinc-800/50"
-                  }`}
-                >
-                  {p.name}
-                </button>
-              ))}
-            </div>
-            {/* Per-layer filter selectors */}
-            <div className="flex flex-col gap-2">
-              <label className="flex items-center gap-1.5">
-                <span className="shrink-0 text-[10px] text-zinc-400">Live</span>
-                <select
-                  value={liveFilterIdx}
-                  onChange={(e) => setLiveFilterIdx(Number(e.target.value))}
-                  className="flex-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
-                >
-                  {SOURCE_FILTERS.map((f, i) => (
-                    <option key={f.name} value={i}>
-                      {f.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center gap-1.5">
-                <span className="shrink-0 text-[10px] text-zinc-400">Smooth</span>
-                <select
-                  value={smoothFilterIdx}
-                  onChange={(e) => setSmoothFilterIdx(Number(e.target.value))}
-                  className="flex-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
-                >
-                  {SOURCE_FILTERS.map((f, i) => (
-                    <option key={f.name} value={i}>
-                      {f.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          </>
-        )}
-      </Section>
-
-      {/* FX MODE */}
-      <Section title="FX Mode">
-        <button
-          onClick={() => setFxMode(!fxMode)}
-          className={`mb-2 w-full rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-            fxMode
-              ? "bg-purple-900/50 text-purple-300"
-              : "bg-zinc-800 text-zinc-500 hover:text-zinc-300"
-          }`}
-        >
-          {fxMode ? "FX Active" : "Enable FX"}
-        </button>
-        {fxMode && (
-          <div className="flex flex-col gap-0.5">
+          <div className="mb-2 flex flex-col gap-0.5">
             {PRESETS.map((p, i) => (
               <button
                 key={p.name}
-                onClick={() => {
-                  setPresetIdx(i);
-                  api.selectEffect(p.name.toLowerCase()).catch(() => {});
-                }}
+                onClick={() => setPresetIdx(i)}
                 className={`rounded px-2 py-1 text-left text-[10px] transition-colors ${
                   presetIdx === i
-                    ? "bg-purple-950/30 text-zinc-200"
+                    ? "bg-indigo-950/30 text-zinc-200"
                     : "text-zinc-400 hover:bg-zinc-800/50"
                 }`}
               >
@@ -336,10 +282,8 @@ export function StudioDetailPane({
             ))}
           </div>
         )}
-      </Section>
 
-      {/* STREAM */}
-      <Section title="Stream">
+        {/* HLS streaming toggle */}
         <button
           onClick={() => setSmoothMode(!smoothMode)}
           className={`mb-2 w-full rounded px-2 py-1 text-[10px] font-medium transition-colors ${

@@ -4,7 +4,7 @@ import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
 import { CompositeCanvas } from "../../studio/CompositeCanvas";
 import { PRESETS } from "../../studio/compositePresets";
-import { SOURCE_FILTERS } from "../../studio/compositeFilters";
+import { sourceUrl } from "../../studio/effectSources";
 import { useStudio } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
 
@@ -12,30 +12,27 @@ interface CameraHeroProps {
   heroRole: string;
   classificationDetections: ClassificationDetection[];
   onHeroChange: (role: string) => void;
-  fxMode?: boolean;
+  effectSourceId?: string;
   smoothMode?: boolean;
   compositeMode?: boolean;
   presetIdx?: number;
-  liveFilterIdx?: number;
-  smoothFilterIdx?: number;
 }
 
 export function CameraHero({
   heroRole,
   classificationDetections,
   onHeroChange,
-  fxMode,
+  effectSourceId = "camera",
   smoothMode,
   compositeMode,
   presetIdx = 0,
-  liveFilterIdx = 0,
-  smoothFilterIdx = 0,
 }: CameraHeroProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  // FX mode uses single-camera endpoint; normal mode uses batch
-  const batchResult = useBatchSnapshot(heroRole, 67); // 15fps — matches compositor snapshot rate
-  const fxResult = useSnapshotPoll("/api/studio/stream/fx", 67, !!fxMode); // 15fps
-  const { imgRef, isStale } = fxMode ? fxResult : batchResult;
+  const effectUrl = sourceUrl(effectSourceId);
+  // When an effect source is selected, use it as the live source for snapshots
+  const batchResult = useBatchSnapshot(heroRole, 67);
+  const fxResult = useSnapshotPoll(effectUrl ?? "/api/studio/stream/fx", 67, !!effectUrl);
+  const { imgRef, isStale } = effectUrl ? fxResult : batchResult;
 
   const { data: studio } = useStudio();
   const cameras = studio?.compositor ? Object.keys(studio.compositor.cameras) : [];
@@ -51,17 +48,16 @@ export function CameraHero({
   // Composite mode: dual-ring-buffer canvas with temporal parallax
   if (compositeMode) {
     const preset = PRESETS[presetIdx] ?? PRESETS[0];
-    const liveFilter = liveFilterIdx > 0 ? SOURCE_FILTERS[liveFilterIdx]?.css : undefined;
-    const smoothFilter = smoothFilterIdx > 0 ? SOURCE_FILTERS[smoothFilterIdx]?.css : undefined;
+    // If a GPU effect source is selected, use it as the smooth (overlay) source
+    const smoothSource = effectUrl ?? "/api/studio/stream/fx";
     return (
       <div ref={containerRef} className="relative h-full w-full" onDoubleClick={handleDoubleClick}>
         <CompositeCanvas
           role={heroRole}
           preset={preset}
           className="h-full w-full bg-black object-cover"
-          smoothSource="/api/studio/stream/fx"
-          liveFilter={liveFilter}
-          smoothFilter={smoothFilter}
+          liveSource={effectUrl}
+          smoothSource={smoothSource}
         />
         <DetectionOverlay
           containerRef={containerRef}
@@ -74,7 +70,7 @@ export function CameraHero({
         />
         {/* Camera role label */}
         <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-          {heroRole} · {preset.name}
+          {heroRole} · {preset.name}{effectUrl ? ` · ${effectSourceId}` : ""}
         </div>
         {/* Secondary strip */}
         {secondaryCameras.length > 0 && (
@@ -91,7 +87,7 @@ export function CameraHero({
         <HlsPlayer />
         {/* Camera role label */}
         <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-          {heroRole} {fxMode && "· FX"} {smoothMode && "· HLS"}
+          {heroRole} · HLS
         </div>
         {/* Secondary strip */}
         {secondaryCameras.length > 0 && (
@@ -110,7 +106,7 @@ export function CameraHero({
       />
       <DetectionOverlay
         containerRef={containerRef}
-        cameraRole={fxMode ? undefined : heroRole}
+        cameraRole={effectUrl ? undefined : heroRole}
         classificationDetections={classificationDetections}
         tier={2}
         visible={true}
@@ -126,7 +122,7 @@ export function CameraHero({
       )}
       {/* Camera role label */}
       <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-        {heroRole} {fxMode && "· FX"}
+        {heroRole}{effectUrl ? ` · ${effectSourceId}` : ""}
       </div>
       {/* Secondary camera strip */}
       {secondaryCameras.length > 0 && (
@@ -154,7 +150,7 @@ function SecondaryStrip({
 }
 
 function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }) {
-  const { imgRef } = useBatchSnapshot(role, 250); // 4fps — 48x27 thumbs don't need 60fps
+  const { imgRef } = useBatchSnapshot(role, 250);
 
   return (
     <button
@@ -174,10 +170,8 @@ function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }
 /** Simple HLS player for smooth mode. */
 function HlsPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  // Dynamic import to avoid bundling hls.js when not needed
   const hlsRef = useRef<import("hls.js").default | null>(null);
 
-  // Initialize HLS on mount
   const containerRef = useCallback(async (node: HTMLVideoElement | null) => {
     if (!node) {
       hlsRef.current?.destroy();
