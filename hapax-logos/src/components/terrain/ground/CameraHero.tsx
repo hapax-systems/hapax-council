@@ -207,16 +207,29 @@ function HlsPlayer() {
     const Hls = (await import("hls.js")).default;
     if (!Hls.isSupported()) return;
     const hls = new Hls({
-      liveSyncDurationCount: 1,
-      liveMaxLatencyDurationCount: 3,
-      maxBufferLength: 2,
-      backBufferLength: 0,
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDurationCount: 6,
+      maxBufferLength: 8,
+      backBufferLength: 2,
+      enableWorker: true,
+      lowLatencyMode: false,
     });
     hlsRef.current = hls;
     hls.loadSource("/api/studio/hls/stream.m3u8");
     hls.attachMedia(node);
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       node.play().catch(() => {});
+    });
+    // Recover from buffer stalls — hold last frame instead of going black
+    hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
+      if (data.fatal) {
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+        } else {
+          hls.destroy();
+          setTimeout(() => containerRef(node), 2000);
+        }
+      }
     });
   }, []);
 
