@@ -8,8 +8,8 @@ to discard.
 Four cameras record 24/7 as 5-minute MKV segments to ~/video-recording/{role}/:
   - brio-operator: Logitech BRIO on operator (primary camera)
   - c920-room: C920 wide room shot
-  - c920-hardware: C920 aimed at hardware desk
-  - c920-aux: C920 auxiliary angle
+  - c920-desk: C920 high angle monitors/desk
+  - c920-overhead: C920 top-down over operator
 
 Classification is CPU-only using OpenCV haar cascades and frame differencing:
   - Person detection via haar cascade face/upper body detection

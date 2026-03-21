@@ -47,12 +47,12 @@ class EntityAppearance:
 # Camera adjacency graph — which cameras have overlapping FOVs
 # Updated for 6-camera setup (3 Brio + 3 C920)
 DEFAULT_ADJACENCY: dict[str, list[str]] = {
-    "brio-operator": ["c920-hardware", "brio-room"],
-    "brio-room": ["brio-operator", "c920-room", "brio-aux"],
-    "brio-aux": ["brio-room", "c920-aux"],
-    "c920-hardware": ["brio-operator"],
-    "c920-room": ["brio-room", "c920-aux"],
-    "c920-aux": ["brio-aux", "c920-room"],
+    "brio-operator": ["c920-desk", "brio-room"],
+    "brio-room": ["brio-operator", "c920-room", "brio-synths"],
+    "brio-synths": ["brio-room", "c920-overhead"],
+    "c920-desk": ["brio-operator"],
+    "c920-room": ["brio-room", "c920-overhead"],
+    "c920-overhead": ["brio-synths", "c920-room"],
 }
 
 

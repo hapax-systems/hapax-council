@@ -35,11 +35,11 @@ CAMERAS: tuple[CameraSpec, ...] = (
     # Brio cameras — high-res, person enrichment capable
     CameraSpec("brio-operator", "operator", 1920, 1080, "brio", True),
     CameraSpec("brio-room", "room-brio", 1920, 1080, "brio", True),
-    CameraSpec("brio-aux", "aux-brio", 1920, 1080, "brio", True),
+    CameraSpec("brio-synths", "synths-brio", 1920, 1080, "brio", True),
     # C920 cameras — environment/object sensing
-    CameraSpec("c920-hardware", "hardware", 1280, 720, "c920", False),
+    CameraSpec("c920-desk", "desk", 1280, 720, "c920", False),
     CameraSpec("c920-room", "room", 1280, 720, "c920", False),
-    CameraSpec("c920-aux", "aux", 1280, 720, "c920", False),
+    CameraSpec("c920-overhead", "overhead", 1280, 720, "c920", False),
 )
 
 # ── Derived lookups ───────────────────────────────────────────────────

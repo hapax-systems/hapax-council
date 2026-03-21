@@ -51,17 +51,17 @@ CAMERA_PROFILES: dict[str, dict] = {
         "fps": 30,
         "description": "Logitech BRIO — room camera (1080p)",
     },
-    "brio-aux": {
+    "brio-synths": {
         "width": 1920,
         "height": 1080,
         "fps": 30,
-        "description": "Logitech BRIO — auxiliary camera (1080p)",
+        "description": "Logitech BRIO — synth corner camera (1080p)",
     },
-    "c920-hardware": {
+    "c920-desk": {
         "width": 1280,
         "height": 720,
         "fps": 30,
-        "description": "Logitech C920 — hardware camera (720p)",
+        "description": "Logitech C920 — desk camera (720p)",
     },
     "c920-room": {
         "width": 1280,
@@ -69,11 +69,11 @@ CAMERA_PROFILES: dict[str, dict] = {
         "fps": 30,
         "description": "Logitech C920 — room camera (720p)",
     },
-    "c920-aux": {
+    "c920-overhead": {
         "width": 1280,
         "height": 720,
         "fps": 30,
-        "description": "Logitech C920 — auxiliary camera (720p)",
+        "description": "Logitech C920 — overhead camera (720p)",
     },
 }
 
