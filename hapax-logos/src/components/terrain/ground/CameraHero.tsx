@@ -73,10 +73,16 @@ export function CameraHero({
     return (
       <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
         <div className="relative flex-1 min-h-0">
+          {/* When HLS is also active, layer it behind composite at reduced opacity */}
+          {smoothMode && (
+            <div className="absolute inset-0 z-0 opacity-30">
+              <HlsPlayer />
+            </div>
+          )}
           <CompositeCanvas
             role={heroRole}
             preset={preset}
-            className="h-full w-full bg-black object-cover"
+            className={`h-full w-full bg-black object-cover ${smoothMode ? "relative z-10 mix-blend-screen" : ""}`}
             liveSource={effectUrl}
             smoothSource={smoothSource}
           />
@@ -91,7 +97,7 @@ export function CameraHero({
           />
           {/* Camera role label */}
           <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-            {heroRole} · {preset.name}{effectUrl ? ` · ${effectSourceId}` : ""}
+            {heroRole} · {preset.name}{smoothMode ? " · HLS" : ""}{effectUrl ? ` · ${effectSourceId}` : ""}
           </div>
         </div>
         {/* Secondary strip */}
