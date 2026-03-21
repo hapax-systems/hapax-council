@@ -2,7 +2,7 @@
 
 **Pre-registration date:** [TO BE FILLED — before Cycle 2 baseline begins]
 **Registration location:** [OSF URL] + Git commit [SHA]
-**Registered by:** Ryan Kleeberger
+**Registered by:** the operator
 
 ---
 
