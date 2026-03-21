@@ -1,0 +1,46 @@
+# Custom gitleaks rules for PII detection (supplements built-in rules)
+# Used by CI secrets-scan job and local pre-commit checks
+
+title = "hapax PII rules"
+
+[[rules]]
+id = "operator-full-name"
+description = "Operator full name"
+regex = '''(?i)Ryan\s+Kleeberger'''
+tags = ["pii", "name"]
+
+[[rules]]
+id = "operator-location"
+description = "Operator location"
+regex = '''Minneapolis[- ]St\.?\s*Paul'''
+tags = ["pii", "location"]
+
+[[rules]]
+id = "home-directory-path"
+description = "Home directory absolute path (reveals username)"
+regex = '''/home/hapax/'''
+tags = ["pii", "path"]
+[rules.allowlist]
+paths = [
+  '''.gitignore''',
+  '''CLAUDE\.md''',
+  '''hooks/''',
+  '''\.claude/''',
+  '''\.gitleaks\.toml''',
+]
+
+[[rules]]
+id = "browsing-data-path"
+description = "Browsing or audio capture data path"
+regex = '''rag-sources/(chrome|audio)/'''
+tags = ["pii", "browsing"]
+
+# Allow known false positives
+[allowlist]
+paths = [
+  '''LICENSE''',
+  '''CITATION\.cff''',
+  '''\.gitleaksignore''',
+  '''node_modules/''',
+  '''\.venv/''',
+]
