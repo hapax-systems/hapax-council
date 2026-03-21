@@ -14,16 +14,17 @@ wheels/
 .envrc
 
 # Profile outputs (generated, may contain personal data)
-profiles/*.json
-profiles/*.md
-profiles/*.jsonl
-profiles/*.yaml
+# Use ** to match subdirectories (engine-audit/, deliberations/, etc.)
+profiles/**/*.json
+profiles/**/*.md
+profiles/**/*.jsonl
+profiles/**/*.yaml
 !profiles/presenter-style.yaml
 !profiles/component-registry.yaml
 !profiles/demo-audiences.yaml
 !profiles/workflow-registry.yaml
-profiles/*.bak
-profiles/*.db
+profiles/**/*.bak
+profiles/**/*.db
 profiles/.quarantine/*
 !profiles/.quarantine/.gitkeep
 
@@ -55,6 +56,9 @@ hapax-visual/
 
 # Temp profiles
 profiles/tmp*
+
+# Voice experiment session data (contains operator interactions)
+agents/hapax_voice/proofs/**/data/
 
 # Screenshots (smoke tests, stress tests, explorations)
 *.png
