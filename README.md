@@ -1,15 +1,15 @@
 # hapax-council
 
-**Operationalizing Clark & Brennan's (1991) conversational grounding theory in a production voice AI** — the first system to implement collaborative grounding mechanics rather than profile-gated retrieval.
+An implementation of Clark & Brennan's (1991) conversational grounding theory in a production voice AI, evaluated via Single Case Experimental Design (SCED) with Bayesian analysis.
 
 [![CI](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-## Statement of Need
+## Background
 
-Every frontier voice AI treats memory as profile retrieval — storing facts about the user and injecting them into context. None implement Clark & Brennan's contribution-acceptance cycle, repair sequences, or effort calibration. Shaikh et al. (ACL 2025) showed all frontier LLMs score 23.23% on grounding tasks — worse than random. RLHF actively suppresses grounding acts (Shaikh, NAACL 2024). OpenAI's model spec instructs models *not* to ask clarifying questions. The 35-year gap between Clark's theory and any implementation is not accidental — it reflects structural obstacles in how conversational AI is built.
+Current voice AI systems implement memory as profile-gated retrieval. Clark & Brennan's (1991) contribution-acceptance cycle, repair sequences, and effort calibration have not been implemented in production systems. Shaikh et al. (ACL 2025) report that frontier LLMs score 23.23% on grounding tasks. Shaikh et al. (NAACL 2024) identify RLHF as a factor suppressing grounding acts in trained models.
 
-This project implements the grounding theory mechanically: a discourse unit state machine (Traum 1994), concern-aware repair thresholds, acceptance classification, Grounding Quality Index (GQI), and 2D effort calibration — all external to the LLM, injected as directives. The system is evaluated via Single Case Experimental Design (SCED) with Bayesian analysis (BEST).
+This project implements grounding mechanics external to the LLM: a discourse unit state machine (Traum 1994), concern-aware repair thresholds, acceptance classification, Grounding Quality Index (GQI), and 2D effort calibration. These are injected as directives into the system prompt rather than trained into model weights.
 
 ## Research Design
 
@@ -21,11 +21,11 @@ This project implements the grounding theory mechanically: a discourse unit stat
 3. Memory integration with cross-session DU persistence
 4. Sentinel fact (diagnostic only — tests retrieval, not grounding)
 
-**Dependent variables:** Turn-pair coherence (embedding-based), GQI, acceptance rate, monologic score (RLHF anti-pattern detector), directive compliance.
+**Dependent variables:** Turn-pair coherence (embedding-based), GQI, acceptance rate, monologic score, directive compliance.
 
 **Current status:**
-- Cycle 1 (pilot): Complete. 37 sessions, BF=3.66 inconclusive, word overlap metric inadequate.
-- Cycle 2: Implementation complete (Batches 1-4, 76 tests passing). Pre-registration and OSF registration pending.
+- Cycle 1 (pilot): Complete. 37 sessions, BF=3.66 (inconclusive). Word overlap metric replaced by embedding-based turn-pair coherence.
+- Cycle 2: Implementation complete (Batches 1-4, 76 tests). Pre-registration and OSF registration pending.
 
 See [`research/`](research/) for the research compendium and [`agents/hapax_voice/proofs/`](agents/hapax_voice/proofs/) for theoretical foundations.
 
@@ -119,7 +119,7 @@ Husserlian temporal bands (retention/impression/protention/surprise), Bayesian p
 | Apperception cascade safeguards | **Proven** | 113 tests |
 | Grounding ledger DU state machine | **Built** | 76 tests (Batches 1-4) |
 | Turn-pair coherence metric | **Built** | Embedding-based, replaces word overlap |
-| Conversational grounding (Cycle 1) | **Pilot** | 37 sessions, BF=3.66, metric inadequate |
+| Conversational grounding (Cycle 1) | **Pilot** | 37 sessions, BF=3.66 (inconclusive) |
 
 ## Infrastructure
 
