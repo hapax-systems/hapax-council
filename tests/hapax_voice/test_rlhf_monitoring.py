@@ -70,7 +70,7 @@ class TestDirectiveCompliance:
 
 class TestSelectiveLockdown:
     def test_grounding_directive_not_locked(self):
-        from agents.hapax_voice.conversation_pipeline import ConversationPipeline, ThreadEntry
+        from agents.hapax_voice.conversation_pipeline import ConversationPipeline
 
         pipeline = ConversationPipeline.__new__(ConversationPipeline)
         pipeline.system_prompt = "You are Hapax."
