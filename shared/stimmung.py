@@ -1,14 +1,15 @@
 """SystemStimmung — unified self-state vector for system self-awareness.
 
 Pure-logic module: no I/O, no threading, no network. Aggregates readings
-from existing data sources (health, GPU, Langfuse, engine, perception)
-and operator biometrics (HR, HRV, EDA, sleep, activity) into a single
-Stimmung snapshot that colors system behavior.
+from existing data sources (health, GPU, Langfuse, engine, perception),
+operator biometrics (HR, HRV, EDA, sleep, activity), and cognitive state
+(grounding quality from voice sessions) into a single Stimmung snapshot
+that colors system behavior.
 
-9 dimensions (6 infrastructure + 3 biometric), each a DimensionReading
-with value/trend/freshness. Overall stance derived from worst non-stale
-dimension. Biometric dimensions use 0.5× weight so system stance remains
-primarily infrastructure-driven.
+10 dimensions (6 infrastructure + 1 cognitive + 3 biometric), each a
+DimensionReading with value/trend/freshness. Overall stance derived from
+worst non-stale dimension. Biometric dimensions use 0.5× weight, cognitive
+dimensions use 0.3× weight, so system stance remains infrastructure-driven.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ class DimensionReading(BaseModel, frozen=True):
 
 
 class SystemStimmung(BaseModel):
-    """Unified self-state vector — 9 dimensions + derived stance."""
+    """Unified self-state vector — 10 dimensions + derived stance."""
 
     # Infrastructure dimensions (weight 1.0)
     health: DimensionReading = Field(default_factory=DimensionReading)
@@ -55,6 +56,9 @@ class SystemStimmung(BaseModel):
     processing_throughput: DimensionReading = Field(default_factory=DimensionReading)
     perception_confidence: DimensionReading = Field(default_factory=DimensionReading)
     llm_cost_pressure: DimensionReading = Field(default_factory=DimensionReading)
+
+    # Cognitive dimensions (weight 0.3 — epistemic state, lighter than infrastructure)
+    grounding_quality: DimensionReading = Field(default_factory=DimensionReading)
 
     # Biometric dimensions (weight 0.5 — softer thresholds, operator changes slowly)
     operator_stress: DimensionReading = Field(default_factory=DimensionReading)
@@ -109,17 +113,25 @@ _INFRA_DIMENSION_NAMES = [
     "llm_cost_pressure",
 ]
 
+_COGNITIVE_DIMENSION_NAMES = [
+    "grounding_quality",
+]
+
 _BIOMETRIC_DIMENSION_NAMES = [
     "operator_stress",
     "operator_energy",
     "physiological_coherence",
 ]
 
-_DIMENSION_NAMES = _INFRA_DIMENSION_NAMES + _BIOMETRIC_DIMENSION_NAMES
+_DIMENSION_NAMES = _INFRA_DIMENSION_NAMES + _COGNITIVE_DIMENSION_NAMES + _BIOMETRIC_DIMENSION_NAMES
 
 # Biometric dimensions contribute at 0.5× weight to stance computation.
 # Operator physiological state changes slowly — infrastructure should dominate.
 _BIOMETRIC_STANCE_WEIGHT = 0.5
+
+# Cognitive dimensions contribute at 0.3× weight — epistemic state matters
+# for conversation quality but doesn't override system health.
+_COGNITIVE_STANCE_WEIGHT = 0.3
 
 _STALE_THRESHOLD_S = 120.0  # dimensions older than this are excluded from stance
 
@@ -290,6 +302,16 @@ class StimmungCollector:
             coherence = 0.5  # unknown = neutral
         self._record("physiological_coherence", coherence)
 
+    def update_grounding_quality(self, gqi: float) -> None:
+        """Update from voice grounding ledger.
+
+        Args:
+            gqi: Grounding Quality Index (0.0=poor, 1.0=excellent).
+                 Inverted for stimmung (where 0.0=good, 1.0=bad).
+        """
+        value = 1.0 - max(0.0, min(1.0, gqi))
+        self._record("grounding_quality", value)
+
     def snapshot(self, now: float | None = None) -> SystemStimmung:
         """Produce a SystemStimmung from current readings."""
         if now is None:
@@ -354,6 +376,8 @@ class StimmungCollector:
             effective = dim.value
             if name in _BIOMETRIC_DIMENSION_NAMES:
                 effective *= _BIOMETRIC_STANCE_WEIGHT
+            elif name in _COGNITIVE_DIMENSION_NAMES:
+                effective *= _COGNITIVE_STANCE_WEIGHT
             worst = max(worst, effective)
 
         if worst >= 0.85:
