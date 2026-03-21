@@ -182,6 +182,12 @@ def get_qdrant() -> QdrantClient:
     return QdrantClient(QDRANT_URL)
 
 
+@functools.lru_cache(maxsize=1)
+def get_qdrant_grpc() -> QdrantClient:
+    """Return a QdrantClient using gRPC transport (lower latency for hot paths)."""
+    return QdrantClient(QDRANT_URL, prefer_grpc=True, grpc_port=6334)
+
+
 _log = logging.getLogger("shared.config")
 _rag_tracer = trace.get_tracer("hapax.rag")
 

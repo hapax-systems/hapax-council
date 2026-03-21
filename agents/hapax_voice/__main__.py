@@ -2287,6 +2287,13 @@ def main() -> None:
         except OSError:
             pass
 
+    # --- Experiment runtime optimizations ---
+    import gc
+    import uvloop
+
+    uvloop.install()  # 2-4x event loop throughput
+    gc.set_threshold(50_000, 30, 10)  # reduce GC pressure in long-running daemon
+
     daemon = VoiceDaemon(cfg=cfg)
     loop = asyncio.new_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
