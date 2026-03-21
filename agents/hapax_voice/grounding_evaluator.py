@@ -214,6 +214,17 @@ def evaluate_turn(
         scores["acceptance_type"] = round(acceptance_val, 3)
         scores["acceptance_label"] = label  # type: ignore[assignment]
 
+    # Turn-pair semantic coherence (embedding-based, replaces word overlap for Cycle 2)
+    if user_utterance and response:
+        coherence = score_turn_pair_coherence(user_utterance, response)
+        if coherence is not None:
+            scores["turn_pair_coherence"] = round(coherence, 3)
+
+    # Behavioral covariates
+    if user_utterance:
+        scores["user_word_count"] = len(user_utterance.split())
+    scores["assistant_word_count"] = len(response.split()) if response else 0
+
     # Push to Langfuse
     if langfuse_trace is not None:
         for name, val in scores.items():
@@ -221,6 +232,41 @@ def evaluate_turn(
                 hapax_score(langfuse_trace, name, val)
 
     return scores
+
+
+# ── Turn-Pair Semantic Coherence ─────────────────────────────────────────────
+
+
+def score_turn_pair_coherence(user_text: str, assistant_text: str) -> float | None:
+    """Compute embedding-based semantic coherence between user utterance and response.
+
+    Uses nomic-embed (768-dim) cosine similarity. Captures semantic grounding
+    that word overlap misses: paraphrasing, abstraction, synthesis all produce
+    high coherence even with zero word overlap.
+
+    Returns float 0.0-1.0, or None if embedding fails.
+    """
+    try:
+        from shared.config import embed_safe
+
+        user_vec = embed_safe(user_text, prefix="search_query")
+        asst_vec = embed_safe(assistant_text, prefix="search_document")
+
+        if user_vec is None or asst_vec is None:
+            return None
+
+        import numpy as np
+
+        dot = np.dot(user_vec, asst_vec)
+        norm_u = np.linalg.norm(user_vec)
+        norm_a = np.linalg.norm(asst_vec)
+        if norm_u == 0 or norm_a == 0:
+            return 0.0
+        sim = float(dot / (norm_u * norm_a))
+        # Clamp to [0, 1] — negative cosine similarity means orthogonal/opposing
+        return max(0.0, min(1.0, sim))
+    except Exception:
+        return None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
