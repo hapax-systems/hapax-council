@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-21 (session 3)
+**Last updated:** 2026-03-21 (session 4)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -10,21 +10,16 @@ This project implements Clark & Brennan's (1991) conversational grounding theory
 ## Current Phase
 
 - **Cycle 1:** COMPLETE (pilot, 37 sessions, BF=3.66 inconclusive, word overlap metric replaced)
-- **Cycle 2:** IMPLEMENTATION COMPLETE — INFRASTRUCTURE PHASE
+- **Cycle 2:** READY FOR BASELINE DATA COLLECTION
   - All research complete (28 agents across 4 rounds, 80+ citations)
-  - Refined model designed and justified
-  - Implementation: **Batches 1-4 COMMITTED** (76 tests passing)
-  - **Repository optimization COMPLETE** (session 3):
-    - CITATION.cff in council + constitution
-    - Apache 2.0 LICENSE added to watch, cockpit-mcp, distro-work
-    - `research/` compendium directory (TIER/Psych-DS/Turing Way conventions)
-    - `research/THEORY-MAP.md` traceability matrix (theory → code → tests)
-    - All READMEs rewritten: council as research hub, spokes with ecosystem tables
-    - `experiment-phase.json` for future CI phase-gating
-    - `REPO-OPTIMIZATION-RESEARCH.md` (140+ sources, 6 research streams)
-    - Tone pass: all READMEs neutralized to scientific register
-  - Remaining: ORCID, OSF project, pre-registration, Zenodo, GitHub Pages
-  - Context persistence system built (RESEARCH-STATE.md + memory pointer + CLAUDE.md directive)
+  - Implementation: **Batches 1-4 COMMITTED** + **wiring gaps closed** (PR #236, 85 tests)
+  - **GQI-stimmung coupling** implemented (10th dimension, weight 0.3, cross-process via shm)
+  - **Pre-registration updated** with 3+1 package, new DVs, effect size calibration
+  - **Repository optimization** complete (session 3)
+  - **Environment audited** (session 4): 10 audit agents, resource hogs killed, worktrees cleaned, configs corrected
+  - **Experiment config** set to Phase A baseline (continuity-v2)
+  - **SESSION-PROTOCOL** updated with selective flags (replaces monolithic volatile_lockdown)
+  - Remaining: ORCID, OSF project, pre-registration filing, Zenodo, GitHub Pages
 - **Cycle 3:** NOT STARTED (contingent on Cycle 2 results; may require fine-tuned model if RLHF anti-pattern binds)
 
 ## What Was Built (Batches 1-4)
@@ -86,10 +81,10 @@ This project implements Clark & Brennan's (1991) conversational grounding theory
 
 ## Open Questions
 
-- A-B-A vs A-B-A-B design (Barlow: reversal inappropriate for learning interventions; Johnson & Cook 2019 SCED pre-registration framework)
+- A-B-A vs A-B-A-B design (Barlow: reversal inappropriate for learning interventions)
 - Effect size target from Cycle 2 baseline data
 - RLHF anti-pattern: prompted Opus sufficient or fine-tuning needed? (Cycle 3 decision)
-- Redis noeviction policy needs persistent config
+- 13 L8-L9 test failures (wake word debounce) — pre-existing, not from grounding changes. Decision: do these block code freeze for grounding research specifically?
 - Verify Shaikh et al. ACL 2025 citation accuracy (23.23% figure, venue)
 
 ## Operator Action Items (from session 3 research)
