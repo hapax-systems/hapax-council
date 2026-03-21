@@ -19,5 +19,8 @@ systemd/                     @ryanklee
 # Backup scripts
 hapax-backup-*.sh            @ryanklee
 
+# Scripts
+scripts/                     @ryanklee
+
 # CI/CD workflows themselves
 .github/                     @ryanklee
