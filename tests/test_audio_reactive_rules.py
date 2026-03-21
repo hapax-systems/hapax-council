@@ -65,7 +65,9 @@ def test_audio_archive_sidecar_filter_rejects_wrong_dir():
 def test_audio_clap_indexed_filter_matches_listening():
     from cockpit.engine.reactive_rules import _audio_clap_indexed_filter
 
-    event = _make_event("/home/operator/documents/rag-sources/audio/listening-rec-20260308-s000000.md")
+    event = _make_event(
+        "/home/operator/documents/rag-sources/audio/listening-rec-20260308-s000000.md"
+    )
     assert _audio_clap_indexed_filter(event) is True
 
 
