@@ -292,7 +292,7 @@ PRESETS: dict[str, EffectPreset] = {
     ),
     "glitchblocks": EffectPreset(
         name="glitchblocks",
-        color_grade=ColorGradeConfig(saturation=0.8, brightness=1.05, contrast=1.2),
+        color_grade=ColorGradeConfig(saturation=0.85, brightness=1.3, contrast=1.4),
         trail=TrailConfig(count=2, opacity=0.15, blend_mode="add"),
         post_process=PostProcessConfig(scanline_alpha=0.06),
         use_glitch_blocks_shader=True,
@@ -304,7 +304,7 @@ PRESETS: dict[str, EffectPreset] = {
     ),
     "pixsort": EffectPreset(
         name="pixsort",
-        color_grade=ColorGradeConfig(saturation=0.9, brightness=1.05, contrast=1.2),
+        color_grade=ColorGradeConfig(saturation=0.85, brightness=1.4, contrast=1.5),
         trail=TrailConfig(count=2, opacity=0.15, blend_mode="add"),
         post_process=PostProcessConfig(vignette_strength=0.2),
         use_pixsort_shader=True,
@@ -327,7 +327,7 @@ PRESETS: dict[str, EffectPreset] = {
         name="feedback",
         # High feedback_amount = near-infinite recursion via temporalfx accumulation
         # The visual feedback loop comes from the FBO ping-pong with slow decay + hue shift
-        color_grade=ColorGradeConfig(saturation=1.4, brightness=0.9, contrast=1.3),
+        color_grade=ColorGradeConfig(saturation=1.6, brightness=1.1, contrast=1.4, hue_rotate=15.0),
         trail=TrailConfig(
             count=8,
             opacity=0.92,  # very high — deep recursive accumulation
@@ -345,8 +345,7 @@ PRESETS: dict[str, EffectPreset] = {
     ),
     "slitscan": EffectPreset(
         name="slitscan",
-        # Ethereal desaturation — the temporal displacement creates enough visual interest
-        color_grade=ColorGradeConfig(saturation=0.7, brightness=1.05, contrast=1.1),
+        color_grade=ColorGradeConfig(saturation=0.8, brightness=1.3, contrast=1.3),
         trail=TrailConfig(count=4, opacity=0.35, blend_mode="add"),
         post_process=PostProcessConfig(vignette_strength=0.3),
         use_slitscan_shader=True,
