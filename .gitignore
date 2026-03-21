@@ -55,3 +55,6 @@ hapax-visual/
 
 # Temp profiles
 profiles/tmp*
+
+# Screenshots (smoke tests, stress tests, explorations)
+*.png
