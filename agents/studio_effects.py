@@ -284,10 +284,11 @@ PRESETS: dict[str, EffectPreset] = {
     ),
     "halftone": EffectPreset(
         name="halftone",
-        color_grade=ColorGradeConfig(saturation=1.1, contrast=1.15),
-        trail=TrailConfig(count=1, opacity=0.05, blend_mode="source-over"),
+        color_grade=ColorGradeConfig(saturation=1.3, contrast=1.4, brightness=1.1),
+        trail=TrailConfig(count=1, opacity=0.08, blend_mode="source-over"),
+        post_process=PostProcessConfig(vignette_strength=0.15),
         use_halftone_shader=True,
-        halftone_params={"u_dot_size": 8.0, "u_color_mode": 1.0},
+        halftone_params={"u_dot_size": 12.0, "u_color_mode": 1.0},
     ),
     "glitchblocks": EffectPreset(
         name="glitchblocks",
@@ -296,9 +297,9 @@ PRESETS: dict[str, EffectPreset] = {
         post_process=PostProcessConfig(scanline_alpha=0.06),
         use_glitch_blocks_shader=True,
         glitch_blocks_params={
-            "u_block_size": 16.0,
-            "u_intensity": 0.4,
-            "u_rgb_split": 0.6,
+            "u_block_size": 24.0,
+            "u_intensity": 0.65,
+            "u_rgb_split": 0.8,
         },
     ),
     "pixsort": EffectPreset(
@@ -308,10 +309,10 @@ PRESETS: dict[str, EffectPreset] = {
         post_process=PostProcessConfig(vignette_strength=0.2),
         use_pixsort_shader=True,
         pixsort_params={
-            "u_threshold_low": 0.2,
-            "u_threshold_high": 0.85,
-            "u_sort_length": 32.0,
-            "u_direction": 0.0,
+            "u_threshold_low": 0.08,
+            "u_threshold_high": 0.92,
+            "u_sort_length": 56.0,
+            "u_direction": 0.15,  # slight diagonal for organic look
         },
     ),
     "ascii": EffectPreset(
@@ -328,32 +329,31 @@ PRESETS: dict[str, EffectPreset] = {
         # The visual feedback loop comes from the FBO ping-pong with slow decay + hue shift
         color_grade=ColorGradeConfig(saturation=1.4, brightness=0.9, contrast=1.3),
         trail=TrailConfig(
-            count=5,
-            opacity=0.85,  # high — near-infinite recursion
+            count=8,
+            opacity=0.92,  # very high — deep recursive accumulation
             blend_mode="add",
             filter_params={
-                "brightness": 0.92,
-                "hue_rotate": 2.0,  # slow rainbow rotation through accumulated feedback
-                # Explicit per-channel decay — slight blue shift on decay
-                "decay_r": 0.92,
-                "decay_g": 0.90,
-                "decay_b": 0.95,
+                "brightness": 0.88,
+                "hue_rotate": 5.0,  # faster rainbow rotation for visible color cycling
+                "decay_r": 0.88,
+                "decay_g": 0.85,
+                "decay_b": 0.92,
             },
         ),
-        post_process=PostProcessConfig(vignette_strength=0.3),
+        post_process=PostProcessConfig(vignette_strength=0.4, scanline_alpha=0.04),
         use_glow=True,
     ),
     "slitscan": EffectPreset(
         name="slitscan",
         # Ethereal desaturation — the temporal displacement creates enough visual interest
         color_grade=ColorGradeConfig(saturation=0.7, brightness=1.05, contrast=1.1),
-        trail=TrailConfig(count=2, opacity=0.2, blend_mode="add"),
-        post_process=PostProcessConfig(vignette_strength=0.25),
+        trail=TrailConfig(count=4, opacity=0.35, blend_mode="add"),
+        post_process=PostProcessConfig(vignette_strength=0.3),
         use_slitscan_shader=True,
         slitscan_params={
-            "u_scan_speed": 0.5,
+            "u_scan_speed": 1.2,
             "u_scan_axis": 0.0,  # horizontal scan
-            "u_warp_amount": 0.3,
+            "u_warp_amount": 0.6,
         },
     ),
 }
