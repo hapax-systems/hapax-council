@@ -196,7 +196,7 @@ jobs:
             ## Rules
             - Make MINIMAL changes — fix only what's broken
             - Do NOT modify files in: axioms/, hooks/, systemd/
-            - Do NOT modify: shared/config.py, shared/axiom_enforcement.py, shared/alert_state.py
+            - Do NOT modify: shared/config.py, shared/axiom_enforcement.py, shared/alert_state.py, agents/health_monitor.py
             - If you cannot fix a failure, say so clearly — do not make speculative changes
 
       # Commit and push the fix
