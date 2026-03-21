@@ -269,27 +269,19 @@ async def fx_snapshot():
 @router.get("/studio/effect/current")
 async def get_current_effect():
     """Return the currently active visual effect preset name."""
-    return {
-        "preset": "clean",
-        "available": [
-            "ghost",
-            "trails",
-            "screwed",
-            "datamosh",
-            "vhs",
-            "neon",
-            "trap",
-            "diff",
-            "clean",
-            "thermal",
-            "halftone",
-            "glitchblocks",
-            "pixsort",
-            "ascii",
-            "feedback",
-            "slitscan",
-        ],
-    }
+    current_path = Path("/dev/shm/hapax-compositor/fx-current.txt")
+    preset = "clean"
+    if current_path.exists():
+        try:
+            preset = current_path.read_text().strip() or "clean"
+        except OSError:
+            pass
+    available = [
+        "ghost", "trails", "screwed", "datamosh", "vhs", "neon",
+        "trap", "diff", "clean", "thermal", "halftone", "glitchblocks",
+        "pixsort", "ascii", "feedback", "slitscan",
+    ]
+    return {"preset": preset, "available": available}
 
 
 class EffectSelectRequest(BaseModel):
