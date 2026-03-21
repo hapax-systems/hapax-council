@@ -239,16 +239,26 @@ def _guest_policy(consent_phase: str, child_mode: bool = False) -> str:
 # ── Public API ───────────────────────────────────────────────────────────────
 
 
+_EXPERIMENT_STYLE = (
+    "Warm, concise, answer first. Dry wit. Epistemic honesty — mark genuine uncertainty. "
+    "Never interrupt pauses. Direct pushback welcome. No hedging, no filler."
+)
+
+
 def get_policy(
     env: EnvironmentState | None = None,
     guest_mode: bool = False,
     child_mode: bool = False,
     session_start: float | None = None,
+    experiment_mode: bool = False,
 ) -> str:
     """Compute the conversational policy block for system prompt injection.
 
     Returns a formatted string ready for insertion into the system prompt.
     Empty string if no policy can be computed (graceful degradation).
+
+    When experiment_mode is True, strips all non-grounding-justified content:
+    no profile digest, no environmental modulation, minimal operator style.
     """
     sections: list[str] = []
 
@@ -258,16 +268,19 @@ def get_policy(
     # 2. Guest/multi-principal policy (overrides profile-driven style)
     if guest_mode:
         sections.append(_guest_policy("guest_mode", child_mode=child_mode))
-        # In guest mode, skip profile-driven style entirely
         return _format_block(sections)
 
     consent_phase = getattr(env, "consent_phase", "no_guest") if env else "no_guest"
     guest_rule = _guest_policy(consent_phase)
     if guest_rule:
         sections.append(guest_rule)
-        # With unconsented guest, dignity floor is primary — skip profile style
         if consent_phase == "pending_consent":
             return _format_block(sections)
+
+    if experiment_mode:
+        # Minimal style only — no profile, no environment modulation
+        sections.append(_EXPERIMENT_STYLE)
+        return _format_block(sections)
 
     # 3. Operator profile (who is this person — from digest)
     profile = _load_profile_summary()

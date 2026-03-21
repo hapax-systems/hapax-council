@@ -55,6 +55,10 @@ LLM-driven lifecycle via GitHub Actions: Triage → Plan → Implement → Adver
 - **`shared/consent.py`** — `ConsentContract`, `ConsentRegistry`, `contract_check()`
 - **`shared/agent_registry.py`** — `AgentManifest` (4-layer schema), query by category/capability/RACI
 
+## Voice Grounding Research Continuity
+
+Research state persists in `agents/hapax_voice/proofs/RESEARCH-STATE.md`. After any session with research decisions or implementation progress on the voice grounding project, update this file before ending. When the operator says "refresh research context" or "update research context", read the state file and selectively read the tier-2 documents it references.
+
 ## Composition Ladder Protocol (hapax_voice)
 
 Bottom-up building discipline for the hapax_voice type system. 10 layers (L0–L9), all proven. 7-dimension test matrix per layer. Gate rule: no new composition on layer N unless N-1 is matrix-complete. See `agents/hapax_voice/LAYER_STATUS.yaml` for current status and `tests/hapax_voice/test_type_system_matrix*.py` for the 192 matrix tests.

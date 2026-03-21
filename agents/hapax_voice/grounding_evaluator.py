@@ -225,6 +225,10 @@ def evaluate_turn(
         scores["user_word_count"] = len(user_utterance.split())
     scores["assistant_word_count"] = len(response.split()) if response else 0
 
+    # RLHF anti-pattern monitoring (Batch 4)
+    if response:
+        scores["response_monologic"] = round(_score_monologic(response), 3)
+
     # Push to Langfuse
     if langfuse_trace is not None:
         for name, val in scores.items():
@@ -267,6 +271,93 @@ def score_turn_pair_coherence(user_text: str, assistant_text: str) -> float | No
         return max(0.0, min(1.0, sim))
     except Exception:
         return None
+
+
+# ── RLHF Anti-Pattern Monitoring ─────────────────────────────────────────────
+
+# Dialogic markers: words/phrases that indicate collaborative, grounding-aware speech
+_DIALOGIC_MARKERS = [
+    "right?",
+    "yeah?",
+    "you know",
+    "does that",
+    "make sense",
+    "what do you think",
+    "want me to",
+    "should I",
+    "let me know",
+    "earlier you",
+    "you mentioned",
+    "you said",
+    "we discussed",
+    "as you said",
+    "going back to",
+]
+
+
+def _score_monologic(response: str) -> float:
+    """Score whether a response is monologic (1.0) or dialogic (0.0).
+
+    Heuristic: responses containing comprehension checks, back-references to
+    operator's words, or collaborative offers score as dialogic. Purely
+    declarative self-contained responses score as monologic.
+
+    Used to detect the RLHF anti-pattern (Shaikh et al. 2024 NAACL):
+    RLHF trains models toward monologic completeness rather than
+    collaborative grounding.
+    """
+    lower = response.lower()
+    dialogic_count = sum(1 for marker in _DIALOGIC_MARKERS if marker in lower)
+
+    # Questions (ending with ?) are dialogic
+    if response.rstrip().endswith("?"):
+        dialogic_count += 1
+
+    # More dialogic markers = lower monologic score
+    if dialogic_count >= 2:
+        return 0.0  # clearly dialogic
+    if dialogic_count == 1:
+        return 0.3  # somewhat dialogic
+    return 1.0  # purely monologic
+
+
+def score_directive_compliance(
+    response: str,
+    directive_strategy: str,
+) -> float:
+    """Score whether the response follows the grounding directive.
+
+    Returns 1.0 if compliant, 0.0 if non-compliant.
+    Heuristic matching — not perfect, but catches obvious violations.
+    """
+    lower = response.lower()
+
+    if directive_strategy == "rephrase":
+        # Should rephrase, not introduce new content
+        # Heuristic: shorter responses that reference prior content are compliant
+        return 1.0 if len(response.split()) <= 50 else 0.5
+
+    if directive_strategy == "elaborate":
+        # Should provide example or analogy
+        example_markers = ["for example", "like", "such as", "imagine", "think of"]
+        return 1.0 if any(m in lower for m in example_markers) else 0.3
+
+    if directive_strategy == "present_reasoning":
+        # Should explain why, not retract
+        reasoning_markers = ["because", "reason", "the thing is", "actually", "my thinking"]
+        retract_markers = ["you're right", "i was wrong", "i apologize", "sorry about"]
+        if any(m in lower for m in retract_markers):
+            return 0.0  # sycophantic retraction
+        return 1.0 if any(m in lower for m in reasoning_markers) else 0.5
+
+    if directive_strategy == "advance":
+        return 1.0  # any response is compliant with "advance"
+
+    if directive_strategy == "ungrounded_caution":
+        # Should not reference the ungrounded content
+        return 1.0  # hard to check mechanically, default compliant
+
+    return 1.0  # neutral/unknown strategy
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
