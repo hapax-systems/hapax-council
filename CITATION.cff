@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+type: software
+title: "hapax-council"
+abstract: >-
+  Operationalizing Clark & Brennan's (1991) conversational grounding theory
+  in a production voice AI. Implements a grounding ledger (Traum 1994 DU model),
+  concern-aware repair thresholds, acceptance classification, and Grounding
+  Quality Index (GQI) within a 45-agent personal operating environment.
+  Evaluated via Single Case Experimental Design (SCED) with Bayesian analysis.
+authors:
+  - given-names: Ryan
+    family-names: Kleeberger
+version: 0.3.7
+date-released: "2026-03-21"
+repository-code: "https://github.com/ryanklee/hapax-council"
+url: "https://github.com/ryanklee/hapax-council"
+license: Apache-2.0
+keywords:
+  - conversational-grounding
+  - clark-brennan
+  - voice-ai
+  - single-case-experimental-design
+  - sced
+  - bayesian-analysis
+  - grounding-theory
+  - traum-du-model
+  - discourse-units
+  - rlhf-anti-pattern
