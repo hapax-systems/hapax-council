@@ -42,6 +42,6 @@ export async function selectEffect(id: string): Promise<void> {
   await fetch("/api/studio/effect/select", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ effect: name }),
+    body: JSON.stringify({ preset: name }),
   }).catch(() => {});
 }
