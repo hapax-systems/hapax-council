@@ -133,7 +133,7 @@ export function CameraHero({
       <div className="relative flex-1 min-h-0">
         <img
           ref={imgRef}
-          className={`h-full w-full bg-black ${effectUrl ? "object-contain" : "object-cover"}`}
+          className="h-full w-full bg-black object-cover"
           alt={heroRole}
         />
         <DetectionOverlay
@@ -142,7 +142,7 @@ export function CameraHero({
           classificationDetections={classificationDetections}
           tier={2}
           visible={true}
-          objectFit={effectUrl ? "contain" : "cover"}
+          objectFit="cover"
         />
         {/* Staleness warning */}
         {isStale && (
@@ -214,12 +214,13 @@ function HlsPlayer() {
     if (!Hls.isSupported()) return;
     const hls = new Hls({
       liveSyncDurationCount: 2,
-      liveMaxLatencyDurationCount: Infinity,  // never jump forward to catch up
+      liveMaxLatencyDurationCount: 999999,  // effectively never jump forward
       maxBufferLength: 30,
       backBufferLength: 5,
       enableWorker: true,
       lowLatencyMode: false,
       highBufferWatchdogPeriod: 0,  // disable buffer watchdog that triggers seeks
+      startPosition: -1,  // start from earliest available, don't chase live edge
     });
     hlsRef.current = hls;
     hls.loadSource("/api/studio/hls/stream.m3u8");
