@@ -242,6 +242,16 @@ function HlsPlayer() {
       className="h-full w-full bg-black object-cover"
       muted
       playsInline
+      poster="/api/studio/stream/fx"
+      onWaiting={(e) => {
+        // When buffering, pause to hold last frame instead of showing black
+        const v = e.currentTarget;
+        if (v.readyState < 3) v.pause();
+      }}
+      onCanPlay={(e) => {
+        // Resume when buffer is ready
+        e.currentTarget.play().catch(() => {});
+      }}
     />
   );
 }
