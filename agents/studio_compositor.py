@@ -111,8 +111,8 @@ class HlsConfig(BaseModel):
 
     enabled: bool = True
     target_duration: int = 2
-    playlist_length: int = 3
-    max_files: int = 6
+    playlist_length: int = 10
+    max_files: int = 15
     output_dir: str = str(CACHE_DIR / "hls")
     bitrate: int = 4000
 
