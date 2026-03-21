@@ -187,9 +187,9 @@ class TestMapSceneInventoryEnrichments:
         assert det.gaze_direction == "screen"
         assert det.emotion == "happy"
 
-    def test_person_on_aux_brio_gets_enrichments(self):
+    def test_person_on_synths_brio_gets_enrichments(self):
         data = _make_perception_data(
-            objects=[_make_object(camera="aux-brio")],
+            objects=[_make_object(camera="synths-brio")],
             gaze="hardware",
             posture="slouching",
         )
