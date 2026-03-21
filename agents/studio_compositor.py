@@ -1919,6 +1919,18 @@ class StudioCompositor:
             )
             self._fx_ascii_shader.set_property("uniforms", ascii_u[0])
 
+        # --- Slit-scan: update time ---
+        if preset.use_slitscan_shader:
+            ss_speed = preset.slitscan_params.get("u_scan_speed", 0.5)
+            ss_axis = preset.slitscan_params.get("u_scan_axis", 0.0)
+            ss_warp = preset.slitscan_params.get("u_warp_amount", 0.3)
+            slitscan_u = Gst.Structure.from_string(
+                f"uniforms, u_time=(float){t}, u_scan_speed=(float){ss_speed}, "
+                f"u_scan_axis=(float){ss_axis}, u_warp_amount=(float){ss_warp}, "
+                f"u_width=(float)1920.0, u_height=(float)1080.0"
+            )
+            self._fx_slitscan_shader.set_property("uniforms", slitscan_u[0])
+
         # --- Post-process: beat-triggered band displacement ---
         pp = preset.post_process
         # Increase band displacement probability and intensity on beats
