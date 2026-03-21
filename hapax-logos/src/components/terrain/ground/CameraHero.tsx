@@ -32,9 +32,27 @@ export function CameraHero({
   // Tell compositor to switch effect when source changes
   useEffect(() => { selectEffect(effectSourceId); }, [effectSourceId]);
   // When an effect source is selected, use it as the live source for snapshots
-  const batchResult = useBatchSnapshot(heroRole, 67);
-  const fxResult = useSnapshotPoll(effectUrl ?? "/api/studio/stream/fx", 67, !!effectUrl);
+  const batchResult = useBatchSnapshot(heroRole, 50);
+  const fxResult = useSnapshotPoll(effectUrl ?? "/api/studio/stream/fx", 50, !!effectUrl);
   const { imgRef, isStale } = effectUrl ? fxResult : batchResult;
+
+  // Pre-warm: eagerly fetch first frame so there's no blank/black initial state
+  const prewarmed = useRef(false);
+  useEffect(() => {
+    if (prewarmed.current) return;
+    prewarmed.current = true;
+    const url = effectUrl
+      ? `${effectUrl}${effectUrl.includes("?") ? "&" : "?"}_t=${Date.now()}`
+      : `/api/studio/stream/cameras/batch?roles=${heroRole}&_t=${Date.now()}`;
+    // For batch endpoint we just trigger the poll; for direct URL, pre-load into imgRef
+    if (effectUrl) {
+      const loader = new Image();
+      loader.onload = () => {
+        if (imgRef.current) imgRef.current.src = loader.src;
+      };
+      loader.src = url;
+    }
+  }, [effectUrl, heroRole, imgRef]);
 
   const { data: studio } = useStudio();
   const cameras = studio?.compositor ? Object.keys(studio.compositor.cameras) : [];
@@ -53,26 +71,28 @@ export function CameraHero({
     // If a GPU effect source is selected, use it as the smooth (overlay) source
     const smoothSource = effectUrl ?? "/api/studio/stream/fx";
     return (
-      <div ref={containerRef} className="relative h-full w-full" onDoubleClick={handleDoubleClick}>
-        <CompositeCanvas
-          role={heroRole}
-          preset={preset}
-          className="h-full w-full bg-black object-cover"
-          liveSource={effectUrl}
-          smoothSource={smoothSource}
-        />
-        <DetectionOverlay
-          containerRef={containerRef}
-          cameraRole={heroRole}
-          classificationDetections={classificationDetections}
-          tier={2}
-          visible={true}
-          objectFit="cover"
-          activePreset={preset.name}
-        />
-        {/* Camera role label */}
-        <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-          {heroRole} · {preset.name}{effectUrl ? ` · ${effectSourceId}` : ""}
+      <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
+        <div className="relative flex-1 min-h-0">
+          <CompositeCanvas
+            role={heroRole}
+            preset={preset}
+            className="h-full w-full bg-black object-cover"
+            liveSource={effectUrl}
+            smoothSource={smoothSource}
+          />
+          <DetectionOverlay
+            containerRef={containerRef}
+            cameraRole={heroRole}
+            classificationDetections={classificationDetections}
+            tier={2}
+            visible={true}
+            objectFit="cover"
+            activePreset={preset.name}
+          />
+          {/* Camera role label */}
+          <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
+            {heroRole} · {preset.name}{effectUrl ? ` · ${effectSourceId}` : ""}
+          </div>
         </div>
         {/* Secondary strip */}
         {secondaryCameras.length > 0 && (
@@ -85,11 +105,13 @@ export function CameraHero({
   // HLS mode: render video element instead of snapshot
   if (smoothMode) {
     return (
-      <div ref={containerRef} className="relative h-full w-full" onDoubleClick={handleDoubleClick}>
-        <HlsPlayer />
-        {/* Camera role label */}
-        <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-          {heroRole} · HLS
+      <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
+        <div className="relative flex-1 min-h-0">
+          <HlsPlayer />
+          {/* Camera role label */}
+          <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
+            {heroRole} · HLS
+          </div>
         </div>
         {/* Secondary strip */}
         {secondaryCameras.length > 0 && (
@@ -100,33 +122,36 @@ export function CameraHero({
   }
 
   return (
-    <div ref={containerRef} className="relative h-full w-full" onDoubleClick={handleDoubleClick}>
-      <img
-        ref={imgRef}
-        className="h-full w-full bg-black object-cover"
-        alt={heroRole}
-      />
-      <DetectionOverlay
-        containerRef={containerRef}
-        cameraRole={effectUrl ? undefined : heroRole}
-        classificationDetections={classificationDetections}
-        tier={2}
-        visible={true}
-        objectFit="cover"
-      />
-      {/* Staleness warning */}
-      {isStale && (
-        <div className="absolute inset-x-0 top-2 flex justify-center">
-          <div className="rounded-full bg-amber-900/80 px-3 py-1 text-[11px] font-medium text-amber-200 backdrop-blur-sm">
-            Camera stale
+    <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
+      {/* Hero fills all available space above the thumbnail strip */}
+      <div className="relative flex-1 min-h-0">
+        <img
+          ref={imgRef}
+          className={`h-full w-full bg-black ${effectUrl ? "object-contain" : "object-cover"}`}
+          alt={heroRole}
+        />
+        <DetectionOverlay
+          containerRef={containerRef}
+          cameraRole={effectUrl ? undefined : heroRole}
+          classificationDetections={classificationDetections}
+          tier={2}
+          visible={true}
+          objectFit={effectUrl ? "contain" : "cover"}
+        />
+        {/* Staleness warning */}
+        {isStale && (
+          <div className="absolute inset-x-0 top-2 flex justify-center">
+            <div className="rounded-full bg-amber-900/80 px-3 py-1 text-[11px] font-medium text-amber-200 backdrop-blur-sm">
+              Camera stale
+            </div>
           </div>
+        )}
+        {/* Camera role label */}
+        <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
+          {heroRole}{effectUrl ? ` · ${effectSourceId}` : ""}
         </div>
-      )}
-      {/* Camera role label */}
-      <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-        {heroRole}{effectUrl ? ` · ${effectSourceId}` : ""}
       </div>
-      {/* Secondary camera strip */}
+      {/* Secondary camera strip — edge-to-edge at the bottom */}
       {secondaryCameras.length > 0 && (
         <SecondaryStrip cameras={secondaryCameras} onSelect={onHeroChange} />
       )}
@@ -143,7 +168,7 @@ function SecondaryStrip({
   onSelect: (role: string) => void;
 }) {
   return (
-    <div className="absolute bottom-2 left-2 z-20 flex gap-1.5">
+    <div className="z-20 flex gap-[3px] bg-black shrink-0" style={{ height: 36 }}>
       {cameras.map((role) => (
         <SecondaryThumb key={role} role={role} onClick={() => onSelect(role)} />
       ))}
@@ -160,8 +185,7 @@ function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }
         e.stopPropagation();
         onClick();
       }}
-      className="overflow-hidden rounded border border-zinc-700 transition-colors hover:border-zinc-400"
-      style={{ width: 48, height: 27 }}
+      className="flex-1 min-w-0 overflow-hidden border border-zinc-700 transition-colors hover:border-zinc-400"
       title={role}
     >
       <img ref={imgRef} className="h-full w-full object-cover bg-black" alt={role} />

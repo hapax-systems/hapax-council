@@ -47,7 +47,7 @@ export function useSnapshotPoll(
 
     // Staleness check every 2s
     const staleTimer = setInterval(() => {
-      if (Date.now() - lastSuccess.current > 10_000) {
+      if (Date.now() - lastSuccess.current > 5_000) {
         setIsStale(true);
       }
     }, 2_000);

@@ -8,7 +8,7 @@ import { CameraHero } from "../ground/CameraHero";
 import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
 import { PresenceIndicator } from "../ground/PresenceIndicator";
 import { useSignals } from "../../../contexts/ClassificationOverlayContext";
-import { useTerrainActions } from "../../../contexts/TerrainContext";
+import { useTerrainActions, useTerrainDisplay } from "../../../contexts/TerrainContext";
 import { useGroundStudio } from "../../../contexts/GroundStudioContext";
 import type { VisualLayerState } from "../../../api/types";
 
@@ -19,6 +19,7 @@ interface GroundRegionProps {
 export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps) {
   const { signalsByRegion, stimmungStance, perception } = useSignals();
   const { setRegionDepth, focusRegion } = useTerrainActions();
+  const { regionDepths } = useTerrainDisplay();
   const groundSignals = signalsByRegion.ground;
   const {
     heroRole, setHeroRole,
@@ -43,7 +44,7 @@ export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps
   );
 
   return (
-    <Region name="ground" stimmungStance={stimmungStance}>
+    <Region name="ground" style={regionDepths.ground === "core" ? { zIndex: 1 } : undefined} stimmungStance={stimmungStance}>
       {(depth) => (
         <div className="h-full relative">
           {/* Surface: ambient canvas + time + camera pip */}
