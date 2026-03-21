@@ -298,9 +298,9 @@ def build_context_distillation(
             # Take first sentence
             first = ws.split(".")[0].strip()
             if first:
-                parts.append(f"Ryan is {first.lower()}" if not first[0].isupper() else first)
+                parts.append(f"Operator is {first.lower()}" if not first[0].isupper() else first)
         elif activity != "idle":
-            parts.append(f"Ryan is {activity}")
+            parts.append(f"Operator is {activity}")
 
     # Time context
     import time

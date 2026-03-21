@@ -62,3 +62,4 @@ agents/hapax_voice/proofs/**/data/
 
 # Screenshots (smoke tests, stress tests, explorations)
 *.png
+.claude/settings.json
