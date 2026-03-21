@@ -16,7 +16,7 @@ export function AgentGrid({ onRun, disabled }: AgentGridProps) {
   const { pendingRun, clearPendingRun } = useAgentRun();
   const [prefilledFlags, setPrefilledFlags] = useState<Record<string, string> | undefined>();
 
-  /* eslint-disable react-hooks/set-state-in-effect */
+   
   useEffect(() => {
     if (pendingRun && agents) {
       const needle = pendingRun.agent.replace(/_/g, "-");
@@ -28,7 +28,7 @@ export function AgentGrid({ onRun, disabled }: AgentGridProps) {
       clearPendingRun();
     }
   }, [pendingRun, agents, clearPendingRun]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+   
 
   function handleRun(agent: AgentInfo, flags: string[]) {
     setConfigAgent(null);

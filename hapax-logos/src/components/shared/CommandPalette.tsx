@@ -63,7 +63,7 @@ export function CommandPalette({ open, onClose, onManualToggle }: CommandPalette
       })
     : commands;
 
-  /* eslint-disable react-hooks/set-state-in-effect */
+   
   useEffect(() => {
     if (open) {
       setQuery("");
@@ -75,7 +75,7 @@ export function CommandPalette({ open, onClose, onManualToggle }: CommandPalette
   useEffect(() => {
     setSelected(0);
   }, [query]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+   
 
   if (!open) return null;
 

@@ -496,6 +496,7 @@ export interface WatershedEvent {
   ttl_s: number;
 }
 
+
 // --- Classification Detection ---
 
 export interface ClassificationDetection {

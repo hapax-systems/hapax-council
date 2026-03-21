@@ -46,11 +46,11 @@ export function ChatInput() {
   }, [input]);
 
   // Reset selection when suggestions change
-  /* eslint-disable react-hooks/set-state-in-effect */
+   
   useEffect(() => {
     setSelectedSuggestion(0);
   }, [suggestions.length]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+   
 
   function applySuggestion(cmd: string) {
     // If the command takes args, add a space; otherwise submit directly

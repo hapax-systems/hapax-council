@@ -55,7 +55,7 @@ function BedrockSurface() {
 
       {/* Health summary */}
       <div className="text-[10px] text-zinc-500">
-        {healthScore !== null ? `${healthScore}/${healthTotal}` : "—"}
+        {healthScore !== null ? `${healthScore}/${healthTotal}` : "\u2014"}
       </div>
 
       {/* Stance word */}
@@ -72,7 +72,7 @@ function BedrockSurface() {
                   : "#504945",
         }}
       >
-        {stance === "unknown" ? "—" : stance}
+        {stance === "unknown" ? "\u2014" : stance}
       </div>
 
       {/* Cost tax % */}

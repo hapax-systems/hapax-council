@@ -33,8 +33,8 @@ export function CameraHero({
 }: CameraHeroProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // FX mode uses single-camera endpoint; normal mode uses batch
-  const batchResult = useBatchSnapshot(heroRole, 16); // 60fps
-  const fxResult = useSnapshotPoll("/api/studio/stream/fx", 16, !!fxMode); // 60fps
+  const batchResult = useBatchSnapshot(heroRole, 67); // 15fps — matches compositor snapshot rate
+  const fxResult = useSnapshotPoll("/api/studio/stream/fx", 67, !!fxMode); // 15fps
   const { imgRef, isStale } = fxMode ? fxResult : batchResult;
 
   const { data: studio } = useStudio();

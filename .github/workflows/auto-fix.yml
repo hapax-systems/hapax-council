@@ -148,7 +148,7 @@ jobs:
           contains(steps.classify.outputs.categories, 'web-build')
         run: |
           # Find and install in whatever frontend dir exists
-          for dir in council-web web frontend; do
+          for dir in hapax-logos council-web web frontend; do
             if [ -f "$dir/pnpm-lock.yaml" ]; then
               cd "$dir" && pnpm install --frozen-lockfile && cd ..
             elif [ -f "$dir/package-lock.json" ]; then

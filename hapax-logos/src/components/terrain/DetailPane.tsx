@@ -6,6 +6,7 @@
  * rendering the full GroundRegion again.
  */
 
+import { useState } from "react";
 import { HorizonRegion } from "./regions/HorizonRegion";
 import { FieldRegion } from "./regions/FieldRegion";
 import { WatershedRegion } from "./regions/WatershedRegion";
@@ -20,6 +21,9 @@ interface DetailPaneProps {
 
 export function DetailPane({ region }: DetailPaneProps) {
   const { data: vl } = useVisualLayer();
+  const [heroRole, setHeroRole] = useState("brio-operator");
+  const [fxMode, setFxMode] = useState(false);
+  const [smoothMode, setSmoothMode] = useState(false);
 
   return (
     <div
@@ -35,7 +39,13 @@ export function DetailPane({ region }: DetailPaneProps) {
       {region === "field" && <FieldRegion />}
       {region === "ground" && (
         <StudioDetailPane
-          classificationDetections={vl?.classification_detections ?? []}
+          heroRole={heroRole}
+          onHeroChange={setHeroRole}
+          classificationDetections={vl.classificationDetections}
+          fxMode={fxMode}
+          onFxModeChange={setFxMode}
+          smoothMode={smoothMode}
+          onSmoothModeChange={setSmoothMode}
         />
       )}
       {region === "watershed" && <WatershedRegion />}
