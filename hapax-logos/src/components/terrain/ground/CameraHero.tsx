@@ -213,14 +213,13 @@ function HlsPlayer() {
     const Hls = (await import("hls.js")).default;
     if (!Hls.isSupported()) return;
     const hls = new Hls({
-      liveSyncDurationCount: 2,
-      liveMaxLatencyDurationCount: 999999,  // effectively never jump forward
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDurationCount: 30,
       maxBufferLength: 30,
-      backBufferLength: 5,
+      backBufferLength: 10,
       enableWorker: true,
       lowLatencyMode: false,
-      highBufferWatchdogPeriod: 0,  // disable buffer watchdog that triggers seeks
-      startPosition: -1,  // start from earliest available, don't chase live edge
+      liveDurationInfinity: true,  // treat as infinite live stream
     });
     hlsRef.current = hls;
     hls.loadSource("/api/studio/hls/stream.m3u8");
@@ -228,14 +227,19 @@ function HlsPlayer() {
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       node.play().catch(() => {});
     });
-    // Recover from buffer stalls — hold last frame instead of going black
+    // On buffer gap, skip forward smoothly instead of jumping
     hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
+      if (data.details === "bufferStalledError") {
+        // Don't seek — just wait for buffer to refill
+        return;
+      }
       if (data.fatal) {
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           hls.recoverMediaError();
         } else {
+          // Network error — retry after delay
           hls.destroy();
-          setTimeout(() => containerRef(node), 2000);
+          setTimeout(() => containerRef(node), 3000);
         }
       }
     });

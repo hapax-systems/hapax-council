@@ -87,9 +87,13 @@ export function CompositeCanvas({
         if (prev) releaseImage(prev);
         frameRing[writeHead % RING_SIZE] = loader;
         writeHead++;
-        if (canvas.width !== loader.naturalWidth && loader.naturalWidth > 0) {
-          canvas.width = loader.naturalWidth;
-          canvas.height = loader.naturalHeight;
+        // Size canvas to container (fill, no letterbox)
+        const rect = canvas.getBoundingClientRect();
+        const cw = Math.round(rect.width * devicePixelRatio);
+        const ch = Math.round(rect.height * devicePixelRatio);
+        if (cw > 0 && ch > 0 && (canvas.width !== cw || canvas.height !== ch)) {
+          canvas.width = cw;
+          canvas.height = ch;
         }
         pending = false;
       };
@@ -408,7 +412,7 @@ export function CompositeCanvas({
   return (
     <canvas
       ref={canvasRef}
-      className={className ?? "h-full w-full bg-black object-contain"}
+      className={className ?? "h-full w-full bg-black"}
     />
   );
 }
