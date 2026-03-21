@@ -11,6 +11,7 @@ permissions:
 
 concurrency:
   group: sdlc-axiom-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   axiom-gate:

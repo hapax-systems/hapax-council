@@ -8,11 +8,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "npm"
+  - package-ecosystem: "pnpm"
     directory: "/hapax-logos"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "npm"
+  - package-ecosystem: "pnpm"
     directory: "/vscode"
     schedule:
       interval: "weekly"
