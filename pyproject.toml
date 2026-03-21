@@ -35,6 +35,7 @@ dependencies = [
     "python-toon>=0.1.3",
     "llmlingua>=0.2.2",
     "model2vec>=0.7.0",
+    "uvloop>=0.21.0",
 ]
 
 [project.optional-dependencies]
