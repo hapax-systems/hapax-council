@@ -56,7 +56,10 @@ def compute_temporal_delta(
         TemporalDelta with derived motion signals.
     """
     # Filter to same-camera sightings for spatial computation
+<<<<<<< HEAD
     all_sightings = sightings
+=======
+>>>>>>> origin/feat/six-camera-wiring
     if camera:
         sightings = [s for s in sightings if s.get("camera", "") == camera or not s.get("camera")]
     if len(sightings) < 2:
