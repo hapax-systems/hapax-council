@@ -149,3 +149,74 @@ def bayes_correlation(
         "bf": bf,
         "ci_95": ci_95,
     }
+
+
+def baseline_corrected_tau(
+    baseline: list[float],
+    intervention: list[float],
+) -> dict[str, float]:
+    """Baseline Corrected Tau (BCTau) for SCED effect size.
+
+    Corrects for monotonic baseline trend using Theil-Sen estimator,
+    then computes Kendall's Tau-like non-overlap statistic.
+    Bounded [-1, +1]. Standard SCED effect size (Tarlow 2017).
+
+    Returns {"tau", "p_value", "baseline_slope", "n_baseline", "n_intervention"}.
+    """
+    import numpy as np
+
+    n_a = len(baseline)
+    n_b = len(intervention)
+
+    if n_a < 3 or n_b < 3:
+        return {
+            "tau": 0.0,
+            "p_value": 1.0,
+            "baseline_slope": 0.0,
+            "n_baseline": n_a,
+            "n_intervention": n_b,
+        }
+
+    # Theil-Sen slope of baseline trend
+    slopes: list[float] = []
+    for i in range(n_a):
+        for j in range(i + 1, n_a):
+            if j != i:
+                slopes.append((baseline[j] - baseline[i]) / (j - i))
+    baseline_slope = float(np.median(slopes)) if slopes else 0.0
+
+    # Detrend: subtract expected trend from both phases
+    detrended_a = [baseline[i] - baseline_slope * i for i in range(n_a)]
+    detrended_b = [intervention[i] - baseline_slope * (n_a + i) for i in range(n_b)]
+
+    # Non-overlap: count pairs where intervention > baseline
+    concordant = 0
+    discordant = 0
+    ties = 0
+    for a_val in detrended_a:
+        for b_val in detrended_b:
+            if b_val > a_val:
+                concordant += 1
+            elif b_val < a_val:
+                discordant += 1
+            else:
+                ties += 1
+
+    total_pairs = n_a * n_b
+    tau = (concordant - discordant) / total_pairs if total_pairs > 0 else 0.0
+
+    # Approximate p-value (normal approximation for Mann-Whitney U)
+    u = concordant
+    mu_u = n_a * n_b / 2
+    sigma_u = math.sqrt(n_a * n_b * (n_a + n_b + 1) / 12) if (n_a + n_b) > 1 else 1.0
+    z = (u - mu_u) / sigma_u if sigma_u > 0 else 0.0
+    # Two-tailed p from z
+    p_value = 2 * (1 - 0.5 * (1 + math.erf(abs(z) / math.sqrt(2))))
+
+    return {
+        "tau": round(tau, 4),
+        "p_value": round(p_value, 4),
+        "baseline_slope": round(baseline_slope, 4),
+        "n_baseline": n_a,
+        "n_intervention": n_b,
+    }
