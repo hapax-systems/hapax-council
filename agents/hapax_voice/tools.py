@@ -30,7 +30,7 @@ from agents.hapax_voice.desktop_tools import (
     handle_open_app,
     handle_switch_workspace,
 )
-from shared.config import embed, get_qdrant
+from shared.config import embed, get_qdrant_grpc
 from shared.google_auth import build_service
 
 if TYPE_CHECKING:
@@ -447,7 +447,7 @@ async def handle_search_documents(params) -> None:
 
     try:
         vector = embed(query, prefix="search_query")
-        client = get_qdrant()
+        client = get_qdrant_grpc()
 
         query_filter = None
         if source:
@@ -573,7 +573,7 @@ async def handle_search_emails(params) -> None:
 async def _search_emails_qdrant(params, query: str, max_results: int) -> None:
     """Search emails via Qdrant semantic search."""
     vector = embed(query, prefix="search_query")
-    client = get_qdrant()
+    client = get_qdrant_grpc()
     query_filter = Filter(
         must=[FieldCondition(key="source_service", match=MatchValue(value="gmail"))]
     )
@@ -915,7 +915,7 @@ async def handle_search_drive(params) -> None:
 
     try:
         vector = embed(query, prefix="search_query")
-        client = get_qdrant()
+        client = get_qdrant_grpc()
 
         query_filter = Filter(
             should=[
