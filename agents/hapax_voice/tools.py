@@ -30,7 +30,7 @@ from agents.hapax_voice.desktop_tools import (
     handle_open_app,
     handle_switch_workspace,
 )
-from shared.config import embed, get_qdrant, get_qdrant_grpc
+from shared.config import embed, get_qdrant_grpc
 from shared.google_auth import build_service
 
 if TYPE_CHECKING:
