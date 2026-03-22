@@ -70,15 +70,26 @@ class TestConsentGating:
         assert len(dets) == 1
         assert dets[0].consent_suppressed
 
-    def test_consent_refused_person_removed(self):
-        data = _make_perception([_obj(label="person")], consent_phase="consent_refused")
+    def test_consent_refused_non_operator_person_removed(self):
+        # Non-operator camera person should be removed during refusal
+        data = _make_perception(
+            [_obj(label="person", camera="room")], consent_phase="consent_refused"
+        )
         dets = _map_scene_inventory(data)
-        # Person detections entirely removed during refusal
         assert len(dets) == 0
+
+    def test_consent_refused_operator_person_preserved(self):
+        # Operator's own person on "operator" camera must be preserved (single_user axiom)
+        data = _make_perception(
+            [_obj(label="person", camera="operator")], consent_phase="consent_refused"
+        )
+        dets = _map_scene_inventory(data)
+        assert len(dets) == 1
+        assert dets[0].label == "person"
 
     def test_consent_refused_non_person_retained(self):
         data = _make_perception(
-            [_obj(label="person"), _obj(label="keyboard", entity_id="kb1")],
+            [_obj(label="person", camera="room"), _obj(label="keyboard", entity_id="kb1")],
             consent_phase="consent_refused",
         )
         dets = _map_scene_inventory(data)

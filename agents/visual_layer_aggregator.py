@@ -514,7 +514,8 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
         is_person = label == "person"
 
         # CONSENT_REFUSED: remove non-operator person detections entirely
-        if is_person and remove_person_detections:
+        # Operator's own person (on "operator" camera) is always preserved
+        if is_person and remove_person_detections and camera_raw != "operator":
             continue
 
         consent_suppressed = suppress_person_enrichments and is_person
@@ -573,13 +574,17 @@ def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
                 now=now_ts,
                 camera=camera_raw,  # filter to same-camera sightings
             )
+            # Use inventory-level staleness for entering/exiting (more stable
+            # than per-frame temporal_delta which flickers near the 10s boundary)
+            last_seen_age = obj.get("last_seen_age_s", 0.0)
+            seen_count = obj.get("seen_count", 0)
             temporal_kwargs = {
                 "velocity": delta.velocity,
                 "direction_deg": delta.direction_deg,
                 "confidence_stability": delta.confidence_stability,
                 "dwell_s": delta.dwell_s,
-                "is_entering": delta.is_entering,
-                "is_exiting": delta.is_exiting,
+                "is_entering": seen_count <= 3 and last_seen_age < 5.0,
+                "is_exiting": last_seen_age > 20.0,
             }
 
         detections.append(
