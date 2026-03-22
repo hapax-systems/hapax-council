@@ -1419,11 +1419,23 @@ class VisionBackend:
                             )
 
                     if role == "operator":
-                        # BRIO 1080p close-up — higher conf eliminates ghost detections
-                        results = model.track(frame, persist=True, verbose=False, conf=0.25)
+                        # YOLO11m for operator camera — COCO person class is native,
+                        # avoids YOLO-World open-vocabulary confidence penalty on
+                        # close-ups where subject fills the frame
+                        if not hasattr(self, "_operator_model") or self._operator_model is None:
+                            from ultralytics import YOLO as _OpYOLO
+
+                            self._operator_model = _OpYOLO("yolo11m.pt")
+                            log.info("YOLO11m loaded for operator camera")
+                        results = self._operator_model.track(
+                            frame, persist=True, verbose=False, conf=0.25
+                        )
+                        active_model = self._operator_model
                     else:
-                        # C920 720p — default 640 imgsz (input is 720p, upscaling wastes cycles)
+                        # YOLO-World for other cameras — open-vocabulary detection
+                        # of studio equipment, furniture, instruments
                         results = model.track(frame, persist=True, verbose=False, conf=0.20)
+                        active_model = model
 
                     objects: list[dict] = []
                     person_count = 0
@@ -1435,7 +1447,7 @@ class VisionBackend:
                         boxes = results[0].boxes
                         for i in range(len(boxes)):
                             cls_id = int(boxes.cls[i])
-                            label = model.names.get(cls_id, f"class_{cls_id}")
+                            label = active_model.names.get(cls_id, f"class_{cls_id}")
                             conf = float(boxes.conf[i])
                             xyxy = boxes.xyxy[i].tolist()
                             track_id = int(boxes.id[i]) if boxes.id is not None else None
