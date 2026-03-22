@@ -1,10 +1,10 @@
-"""Tests for cockpit.data.momentum — domain momentum tracking."""
+"""Tests for logos.data.momentum — domain momentum tracking."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from cockpit.data.momentum import (
+from logos.data.momentum import (
     MomentumVector,
     classify_direction,
     classify_regularity,

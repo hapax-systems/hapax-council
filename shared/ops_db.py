@@ -1,6 +1,6 @@
 """shared/ops_db.py — Build in-memory SQLite from operational JSONL/JSON files.
 
-Reusable by query agents, voice tools, cockpit collectors, or any consumer
+Reusable by query agents, voice tools, logos collectors, or any consumer
 needing SQL access to operational history data.
 """
 

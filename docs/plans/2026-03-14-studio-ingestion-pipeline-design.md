@@ -673,7 +673,7 @@ Only coordination: **Ollama GPU contention.** Pipeline systemd services should s
 ### Hapax Source Files
 - Voice daemon: `agents/hapax_voice/perception.py`, `ambient_classifier.py`, `vram.py`
 - Audio processor: `agents/audio_processor.py`
-- Reactive engine: `cockpit/engine/reactive_rules.py`, `executor.py`, `rules.py`
+- Reactive engine: `logos/engine/reactive_rules.py`, `executor.py`, `rules.py`
 - Consent: `shared/consent.py`, `axioms/constitutive-rules.yaml`
 - Config: `shared/config.py` (Qdrant, embeddings)
 - Constitution: `axioms/registry.yaml`, `axioms/implications/`

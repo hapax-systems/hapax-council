@@ -144,9 +144,9 @@ The Hapax system already tracks considerable self-state, but it is fragmented an
 
 | Signal | Current Location | Current Use |
 |--------|-----------------|-------------|
-| System health (99 checks) | `cockpit/data/health.py` → `health-history.jsonl` | Dashboard display, visual layer aggregator |
-| GPU/VRAM | `cockpit/data/gpu.py` → `infra-snapshot.json` | Dashboard display, visual layer |
-| Reactive engine counters | `cockpit/engine/__init__.py` (events, rules, actions, errors) | `/api/engine/status` endpoint |
+| System health (99 checks) | `logos/data/health.py` → `health-history.jsonl` | Dashboard display, visual layer aggregator |
+| GPU/VRAM | `logos/data/gpu.py` → `infra-snapshot.json` | Dashboard display, visual layer |
+| Reactive engine counters | `logos/engine/__init__.py` (events, rules, actions, errors) | `/api/engine/status` endpoint |
 | Processing latency | Langfuse traces | Observability dashboard |
 | LLM call quality | Langfuse traces | Manual inspection |
 | Perception backend health | `PerceptionBackend.available()` in perception engine | Skip unavailable backends |
@@ -208,7 +208,7 @@ For agents making LLM calls through LiteLLM, novelty detection involves:
 - Adding verbalized confidence prompts with known bias correction
 - For high-stakes decisions, multi-model consistency checks (route the same prompt to Claude and Gemini, compare)
 
-**Reactive Engine Level** (`cockpit/engine/`):
+**Reactive Engine Level** (`logos/engine/`):
 
 When a filesystem event triggers rule evaluation, the system should assess whether the event pattern is familiar:
 
@@ -274,7 +274,7 @@ Create `shared/stimmung.py` with a `SystemStimmung` dataclass and a collector th
 - Read reactive engine status via internal API
 - Compute rolling averages over configurable windows
 - Write atomically to `/dev/shm/hapax-stimmung/state.json`
-- Run as a 15-second timer in the cockpit API process
+- Run as a 15-second timer in the logos API process
 
 This requires no new data collection -- it aggregates what already exists. The `SystemStimmung` data structure becomes the single source of truth for "how is the system doing right now?"
 

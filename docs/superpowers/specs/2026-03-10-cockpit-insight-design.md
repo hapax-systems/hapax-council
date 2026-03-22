@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add a new "Insight" section to the cockpit web dashboard for natural language system introspection queries. The first query agent is dev-story (development archaeology); the architecture supports adding future query agents (health, infrastructure, etc.) without frontend changes.
+Add a new "Insight" section to the logos web dashboard for natural language system introspection queries. The first query agent is dev-story (development archaeology); the architecture supports adding future query agents (health, infrastructure, etc.) without frontend changes.
 
 ## Architecture
 
@@ -29,7 +29,7 @@ src/components/insight/MermaidBlock.tsx
 
 **Dependencies:** Add `mermaid` (lazy-loaded, ~2.8MB ESM, zero impact on other pages).
 
-### Backend (cockpit API)
+### Backend (logos API)
 
 Three endpoints in a new `routes/query.py` router:
 
@@ -51,7 +51,7 @@ GET  /api/query/agents  → [{ type, name, description }]
 **New files:**
 
 ```
-cockpit/api/routes/query.py       — FastAPI route handlers + SSE streaming
+logos/api/routes/query.py       — FastAPI route handlers + SSE streaming
 cockpit/query_dispatch.py         — Agent registry, classification, dispatch
 ```
 

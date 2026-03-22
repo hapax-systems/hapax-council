@@ -120,26 +120,26 @@ class TestEngineCodeIntegrity:
     """Verify the engine code contains the novelty detection we added."""
 
     def test_engine_has_pattern_counters(self):
-        source = Path(__file__).parent.parent / "cockpit" / "engine" / "__init__.py"
+        source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"
         text = source.read_text()
         assert "_pattern_counters" in text
         assert "_load_counters" in text
         assert "_save_counters" in text
 
     def test_engine_has_novelty_score(self):
-        source = Path(__file__).parent.parent / "cockpit" / "engine" / "__init__.py"
+        source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"
         text = source.read_text()
         assert "novelty_score" in text
         assert "NOVEL event pattern" in text
 
     def test_engine_saves_on_stop(self):
-        source = Path(__file__).parent.parent / "cockpit" / "engine" / "__init__.py"
+        source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"
         text = source.read_text()
         assert "_save_counters(self._pattern_counters)" in text
 
     def test_counter_functions_match_engine(self):
         """Verify our test replicas match the engine source."""
-        source = Path(__file__).parent.parent / "cockpit" / "engine" / "__init__.py"
+        source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"
         text = source.read_text()
         # Key format must match
         assert "f\"{event_type}|{doc_type or 'unknown'}|{rules_str}\"" in text

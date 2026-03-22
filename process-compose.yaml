@@ -2,7 +2,7 @@
 #
 # Manages all hapax processes on top of the Docker infrastructure layer.
 # Docker Compose handles: Qdrant, LiteLLM, PostgreSQL, Langfuse, Grafana, etc.
-# Process Compose handles: voice daemon, cockpit API, visual aggregator, logos app.
+# Process Compose handles: voice daemon, logos API, visual aggregator, logos app.
 #
 # Start:  process-compose up
 # TUI:    process-compose attach
@@ -45,7 +45,7 @@ processes:
 
   # ── Logos API (FastAPI on :8051) ────────────────────────────────
   logos-api:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m cockpit.api --host 0.0.0.0'
+    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/operator/projects/hapax-council/.venv/bin/python -m logos.api --host 0.0.0.0'
     working_dir: /home/operator/projects/hapax-council
     disabled: true  # Managed by systemd logos-api.service to avoid port conflicts
     depends_on:

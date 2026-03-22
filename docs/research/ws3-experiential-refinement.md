@@ -427,7 +427,7 @@ Store every operator correction permanently. On each activity classification, re
 - Add semantic embedding of correction context (signals + label)
 - Retrieve top-3 corrections at classification time
 - Include retrieved corrections in activity classifier logic
-- Dashboard in cockpit showing correction history
+- Dashboard in logos showing correction history
 
 This alone would eliminate the "same mistake twice" problem. The system would never again classify "reading documentation" as "idle" after being corrected once, because the correction memory would be retrieved for any future low-typing-high-presence situation.
 
@@ -453,7 +453,7 @@ LLM-driven reflection that extracts general patterns from specific episodes.
 - Patterns stored with validity intervals (bi-temporal model)
 - Old patterns that stop being confirmed decay in confidence
 - New patterns that contradict old patterns close old pattern validity
-- Pattern library browsable in cockpit web UI
+- Pattern library browsable in logos web UI
 
 The system develops "intuitions" -- pre-computed interpretations for known situations that are fast and confident, paralleling Dreyfus's expert-level pattern recognition.
 
@@ -489,7 +489,7 @@ Replace flat vector storage with a temporal knowledge graph following the Graphi
 - Community nodes for high-level summaries: "evening coding sessions" as a recognized context with known properties
 - Graph queries that combine entity matching with temporal filtering
 - Contradiction detection: new patterns that conflict with existing graph relationships
-- Graph visualization in cockpit web UI
+- Graph visualization in logos web UI
 
 This would give the system a genuine "world model" of the operator's patterns -- not just isolated memories but a connected understanding of how activities, states, contexts, and outcomes relate.
 

@@ -970,7 +970,7 @@ def test_insight_dimension_map_neurocognitive():
     """insight_dimension_map maps neurocognitive_pattern to neurocognitive_profile."""
     # Access the map from flush_interview_to_profile scope
     # It's defined inline, so we verify the mapping indirectly via the constant
-    from cockpit.interview import RecordedInsight
+    from logos.interview import RecordedInsight
 
     # Verify neurocognitive_pattern is a valid category
     insight = RecordedInsight(

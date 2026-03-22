@@ -17,7 +17,7 @@ from unittest.mock import patch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from cockpit.data.governance import (
+from logos.data.governance import (
     GovernanceHeartbeat,
     collect_consent_coverage,
     collect_consent_lifecycle,
@@ -47,7 +47,7 @@ class TestGovernanceHeartbeat(unittest.TestCase):
     def test_heartbeat_returns_score(self):
         with (
             patch("shared.governance.consent.load_contracts", return_value=_registry()),
-            patch("cockpit.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
+            patch("logos.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
         ):
             hb = collect_governance_heartbeat()
             assert isinstance(hb, GovernanceHeartbeat)
@@ -59,7 +59,7 @@ class TestGovernanceHeartbeat(unittest.TestCase):
         reg = _registry(_contract("wife", frozenset({"audio"})))
         with (
             patch("shared.governance.consent.load_contracts", return_value=reg),
-            patch("cockpit.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
+            patch("logos.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
         ):
             hb = collect_governance_heartbeat()
             assert hb.score >= 0.8
@@ -78,7 +78,7 @@ class TestGovernanceHeartbeat(unittest.TestCase):
         try:
             with (
                 patch("shared.governance.consent.load_contracts", return_value=reg),
-                patch("cockpit.data.governance.CONSENT_AUDIT", audit_path),
+                patch("logos.data.governance.CONSENT_AUDIT", audit_path),
             ):
                 hb = collect_governance_heartbeat()
                 assert hb.score < 0.8  # degraded due to 80% denial rate
@@ -89,7 +89,7 @@ class TestGovernanceHeartbeat(unittest.TestCase):
     def test_heartbeat_components_present(self):
         with (
             patch("shared.governance.consent.load_contracts", return_value=_registry()),
-            patch("cockpit.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
+            patch("logos.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
         ):
             hb = collect_governance_heartbeat()
             assert "consent_coverage" in hb.components
@@ -124,7 +124,7 @@ class TestConsentCoverage(unittest.TestCase):
 
 class TestConsentLifecycle(unittest.TestCase):
     def test_no_audit_log_returns_empty(self):
-        with patch("cockpit.data.governance.CONSENT_AUDIT", Path("/nonexistent")):
+        with patch("logos.data.governance.CONSENT_AUDIT", Path("/nonexistent")):
             lc = collect_consent_lifecycle()
             assert lc.total_gate_decisions == 0
             assert lc.denial_rate == 0.0
@@ -142,7 +142,7 @@ class TestConsentLifecycle(unittest.TestCase):
             path = Path(f.name)
 
         try:
-            with patch("cockpit.data.governance.CONSENT_AUDIT", path):
+            with patch("logos.data.governance.CONSENT_AUDIT", path):
                 lc = collect_consent_lifecycle()
                 assert lc.total_gate_decisions == 3
                 assert lc.allowed == 2
@@ -181,7 +181,7 @@ class TestGovernanceHeartbeatProperties(unittest.TestCase):
         try:
             with (
                 patch("shared.governance.consent.load_contracts", return_value=reg),
-                patch("cockpit.data.governance.CONSENT_AUDIT", audit_path),
+                patch("logos.data.governance.CONSENT_AUDIT", audit_path),
             ):
                 hb = collect_governance_heartbeat()
                 assert 0.0 <= hb.score <= 1.0, f"Score {hb.score} out of bounds"
@@ -200,7 +200,7 @@ class TestGovernanceHeartbeatProperties(unittest.TestCase):
 
         with (
             patch("shared.governance.consent.load_contracts", return_value=reg),
-            patch("cockpit.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
+            patch("logos.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
         ):
             hb = collect_governance_heartbeat()
             assert hb.components["consent_coverage"] == 1.0
@@ -227,7 +227,7 @@ class TestGovernanceHeartbeatProperties(unittest.TestCase):
         try:
             with (
                 patch("shared.governance.consent.load_contracts", return_value=_registry()),
-                patch("cockpit.data.governance.CONSENT_AUDIT", audit_path),
+                patch("logos.data.governance.CONSENT_AUDIT", audit_path),
             ):
                 hb = collect_governance_heartbeat()
                 denial_rate = denial_count / total * 100

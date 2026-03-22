@@ -120,7 +120,7 @@ def test_list_source_ids_without_pending_facts():
 
 def test_discover_finds_pending_facts(tmp_path):
     """discover_sources detects pending-facts.jsonl when it exists."""
-    facts_path = tmp_path / ".cache" / "cockpit" / "pending-facts.jsonl"
+    facts_path = tmp_path / ".cache" / "logos" / "pending-facts.jsonl"
     facts_path.parent.mkdir(parents=True)
     facts_path.write_text('{"dimension": "test"}\n')
     with patch("agents.profiler_sources.HOME", tmp_path):
@@ -147,27 +147,27 @@ def test_discover_no_pending_facts(tmp_path):
 
 def test_flush_pending_facts_no_file(tmp_path):
     """Flush with no file returns empty message."""
-    from cockpit.interview import flush_pending_facts as _flush_pending_facts
+    from logos.interview import flush_pending_facts as _flush_pending_facts
 
-    with patch("shared.config.COCKPIT_STATE_DIR", tmp_path):
+    with patch("shared.config.LOGOS_STATE_DIR", tmp_path):
         result = _flush_pending_facts()
     assert "no pending facts" in result
 
 
 def test_flush_pending_facts_empty_file(tmp_path):
     """Flush with empty file returns empty message."""
-    from cockpit.interview import flush_pending_facts as _flush_pending_facts
+    from logos.interview import flush_pending_facts as _flush_pending_facts
 
     facts_path = tmp_path / "pending-facts.jsonl"
     facts_path.write_text("")
-    with patch("shared.config.COCKPIT_STATE_DIR", tmp_path):
+    with patch("shared.config.LOGOS_STATE_DIR", tmp_path):
         result = _flush_pending_facts()
     assert "no pending facts" in result
 
 
 def test_flush_pending_facts_with_data(tmp_path):
     """Flush converts facts and calls flush_interview_facts."""
-    from cockpit.interview import flush_pending_facts as _flush_pending_facts
+    from logos.interview import flush_pending_facts as _flush_pending_facts
 
     facts_path = tmp_path / "pending-facts.jsonl"
     entry = {
@@ -179,7 +179,7 @@ def test_flush_pending_facts_with_data(tmp_path):
     }
     facts_path.write_text(json.dumps(entry) + "\n")
 
-    with patch("shared.config.COCKPIT_STATE_DIR", tmp_path):
+    with patch("shared.config.LOGOS_STATE_DIR", tmp_path):
         with patch(
             "agents.profiler.flush_interview_facts", return_value="merged 1 fact"
         ) as mock_flush:
@@ -201,8 +201,8 @@ def test_flush_clears_file_after_success(tmp_path):
     }
     facts_path.write_text(json.dumps(entry) + "\n")
 
-    with patch("shared.config.COCKPIT_STATE_DIR", tmp_path):
-        with patch("cockpit.interview.flush_pending_facts") as mock:
+    with patch("shared.config.LOGOS_STATE_DIR", tmp_path):
+        with patch("logos.interview.flush_pending_facts") as mock:
             mock.return_value = "Flushed 1 facts."
             result = mock()
     assert "Flushed" in result
@@ -224,7 +224,7 @@ def test_conversation_does_not_override_interview():
             key="preferred_editor",
             value="neovim",
             confidence=0.9,
-            source="interview:cockpit",
+            source="interview:logos",
             evidence="operator said neovim",
         )
     ]
@@ -234,7 +234,7 @@ def test_conversation_does_not_override_interview():
             key="preferred_editor",
             value="vscode",
             confidence=0.6,
-            source="conversation:cockpit",
+            source="conversation:logos",
             evidence="mentioned vscode in passing",
         )
     ]
@@ -252,7 +252,7 @@ def test_conversation_adds_new_facts():
             key="preferred_editor",
             value="neovim",
             confidence=0.9,
-            source="interview:cockpit",
+            source="interview:logos",
             evidence="operator said neovim",
         )
     ]
@@ -262,7 +262,7 @@ def test_conversation_adds_new_facts():
             key="keyboard_shortcuts",
             value="prefers vim keybindings",
             confidence=0.6,
-            source="conversation:cockpit",
+            source="conversation:logos",
             evidence="mentioned in chat",
         )
     ]
@@ -280,7 +280,7 @@ def test_interview_overrides_conversation():
             key="preferred_editor",
             value="vscode",
             confidence=0.6,
-            source="conversation:cockpit",
+            source="conversation:logos",
             evidence="mentioned in passing",
         )
     ]
@@ -290,7 +290,7 @@ def test_interview_overrides_conversation():
             key="preferred_editor",
             value="neovim",
             confidence=0.9,
-            source="interview:cockpit",
+            source="interview:logos",
             evidence="explicitly stated",
         )
     ]

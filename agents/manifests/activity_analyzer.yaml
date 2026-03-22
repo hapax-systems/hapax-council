@@ -52,7 +52,7 @@ narrative: 'The Activity Analyzer watches what the system does. Every LLM call, 
 
   "are any agents running more than expected?" Its output feeds into the daily
 
-  briefing and cockpit dashboards.
+  briefing and logos dashboards.
 
   '
 short_description: Telemetry aggregation

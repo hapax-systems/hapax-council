@@ -16,7 +16,7 @@ from agents.profiler_sources import (
     list_source_ids,
     read_decisions_log,
 )
-from cockpit.data.decisions import Decision, _rotate_decisions, collect_decisions, record_decision
+from logos.data.decisions import Decision, _rotate_decisions, collect_decisions, record_decision
 
 # ── record_decision tests ─────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ from cockpit.data.decisions import Decision, _rotate_decisions, collect_decision
 def test_record_decision_creates_file(tmp_path):
     """record_decision creates the JSONL file and writes an entry."""
     path = tmp_path / "decisions.jsonl"
-    with patch("cockpit.data.decisions._DECISIONS_PATH", path):
+    with patch("logos.data.decisions._DECISIONS_PATH", path):
         record_decision(
             Decision(
                 timestamp="2026-03-01T10:00:00+00:00",
@@ -43,7 +43,7 @@ def test_record_decision_creates_file(tmp_path):
 def test_record_decision_appends(tmp_path):
     """Multiple decisions are appended to the same file."""
     path = tmp_path / "decisions.jsonl"
-    with patch("cockpit.data.decisions._DECISIONS_PATH", path):
+    with patch("logos.data.decisions._DECISIONS_PATH", path):
         record_decision(
             Decision(
                 timestamp="2026-03-01T10:00:00+00:00",
@@ -88,7 +88,7 @@ def test_collect_decisions_basic(tmp_path):
         },
     ]
     path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
-    with patch("cockpit.data.decisions._DECISIONS_PATH", path):
+    with patch("logos.data.decisions._DECISIONS_PATH", path):
         decisions = collect_decisions(hours=168)  # 7 days
     # Only the recent one should be included
     assert len(decisions) == 1
@@ -99,7 +99,7 @@ def test_collect_decisions_empty_file(tmp_path):
     """Empty file returns empty list."""
     path = tmp_path / "decisions.jsonl"
     path.write_text("")
-    with patch("cockpit.data.decisions._DECISIONS_PATH", path):
+    with patch("logos.data.decisions._DECISIONS_PATH", path):
         decisions = collect_decisions()
     assert decisions == []
 
@@ -107,7 +107,7 @@ def test_collect_decisions_empty_file(tmp_path):
 def test_collect_decisions_no_file(tmp_path):
     """Missing file returns empty list."""
     path = tmp_path / "nonexistent.jsonl"
-    with patch("cockpit.data.decisions._DECISIONS_PATH", path):
+    with patch("logos.data.decisions._DECISIONS_PATH", path):
         decisions = collect_decisions()
     assert decisions == []
 
@@ -128,7 +128,7 @@ def test_collect_decisions_corrupt_lines(tmp_path):
         )
         + "\n"
     )
-    with patch("cockpit.data.decisions._DECISIONS_PATH", path):
+    with patch("logos.data.decisions._DECISIONS_PATH", path):
         decisions = collect_decisions()
     assert len(decisions) == 1
     assert decisions[0].nudge_title == "Valid"
@@ -203,7 +203,7 @@ def test_list_source_ids_without_decisions():
 
 def test_discover_finds_decisions(tmp_path):
     """discover_sources detects decisions.jsonl when it exists."""
-    decisions_path = tmp_path / ".cache" / "cockpit" / "decisions.jsonl"
+    decisions_path = tmp_path / ".cache" / "logos" / "decisions.jsonl"
     decisions_path.parent.mkdir(parents=True)
     decisions_path.write_text('{"action": "test"}\n')
     with patch("agents.profiler_sources.HOME", tmp_path):
@@ -246,7 +246,7 @@ def test_rotate_decisions_over_500(tmp_path):
     path.write_text("\n".join(lines) + "\n")
     assert len(path.read_text().strip().splitlines()) == 520
 
-    with patch("cockpit.data.decisions._DECISIONS_PATH", path):
+    with patch("logos.data.decisions._DECISIONS_PATH", path):
         _rotate_decisions(max_lines=500)
 
     result_lines = path.read_text().strip().splitlines()
@@ -274,7 +274,7 @@ def test_rotate_decisions_under_limit(tmp_path):
         lines.append(json.dumps(entry))
     path.write_text("\n".join(lines) + "\n")
 
-    with patch("cockpit.data.decisions._DECISIONS_PATH", path):
+    with patch("logos.data.decisions._DECISIONS_PATH", path):
         _rotate_decisions(max_lines=500)
 
     assert len(path.read_text().strip().splitlines()) == 10
@@ -285,7 +285,7 @@ def test_rotate_decisions_under_limit(tmp_path):
 
 def test_record_decision_populates_active_accommodations(tmp_path):
     """Active accommodations are populated using Accommodation.id attribute."""
-    from cockpit.accommodations import Accommodation
+    from logos.accommodations import Accommodation
 
     path = tmp_path / "decisions.jsonl"
     mock_accommodations = [
@@ -313,8 +313,8 @@ def test_record_decision_populates_active_accommodations(tmp_path):
     ]
 
     with (
-        patch("cockpit.data.decisions._DECISIONS_PATH", path),
-        patch("cockpit.accommodations.load_accommodations", return_value=mock_accommodations),
+        patch("logos.data.decisions._DECISIONS_PATH", path),
+        patch("logos.accommodations.load_accommodations", return_value=mock_accommodations),
     ):
         record_decision(
             Decision(

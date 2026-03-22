@@ -1,6 +1,6 @@
-"""Tests for cockpit.data.knowledge_sufficiency — domain registry loader."""
+"""Tests for logos.data.knowledge_sufficiency — domain registry loader."""
 
-from cockpit.data.knowledge_sufficiency import (
+from logos.data.knowledge_sufficiency import (
     DOMAIN_REGISTRY_PATH,
     KnowledgeGap,
     SufficiencyReport,
@@ -52,7 +52,7 @@ class TestMultiDomainAudit:
 
     def test_management_report_matches_single_domain(self) -> None:
         """Multi-domain management report matches single-domain collect_knowledge_gaps."""
-        from cockpit.data.knowledge_sufficiency import collect_knowledge_gaps
+        from logos.data.knowledge_sufficiency import collect_knowledge_gaps
 
         single = collect_knowledge_gaps()
         multi = collect_all_domain_gaps()
@@ -90,7 +90,7 @@ class TestDomainScopedNudges:
             interview_question="Test?",
             satisfied=False,
         )
-        from cockpit.data.knowledge_sufficiency import gaps_to_nudges
+        from logos.data.knowledge_sufficiency import gaps_to_nudges
 
         nudges = gaps_to_nudges([gap], domain_id="music")
         assert len(nudges) == 1
@@ -107,7 +107,7 @@ class TestDomainScopedNudges:
             interview_question="Test?",
             satisfied=False,
         )
-        from cockpit.data.knowledge_sufficiency import gaps_to_nudges
+        from logos.data.knowledge_sufficiency import gaps_to_nudges
 
         nudges = gaps_to_nudges([gap])
         assert nudges[0].source_id == "knowledge:test-req"

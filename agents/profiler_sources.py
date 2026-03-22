@@ -183,12 +183,12 @@ def discover_sources() -> DiscoveredSources:
         sources.drift_report = drift_path
 
     # Pending conversational facts
-    pending_path = HOME / ".cache" / "cockpit" / "pending-facts.jsonl"
+    pending_path = HOME / ".cache" / "logos" / "pending-facts.jsonl"
     if pending_path.exists():
         sources.pending_facts = pending_path
 
     # Decision log
-    decisions_path = HOME / ".cache" / "cockpit" / "decisions.jsonl"
+    decisions_path = HOME / ".cache" / "logos" / "decisions.jsonl"
     if decisions_path.exists():
         sources.decisions_log = decisions_path
 

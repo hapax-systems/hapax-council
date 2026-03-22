@@ -14,8 +14,8 @@
 - `shared/management_bridge.py`
 
 ### Cockpit data collectors (2 files)
-- `cockpit/data/management.py` — PersonState, ManagementSnapshot, collect_management_state
-- `cockpit/data/team_health.py` — depends entirely on management.py
+- `logos/data/management.py` — PersonState, ManagementSnapshot, collect_management_state
+- `logos/data/team_health.py` — depends entirely on management.py
 
 ### Tests (5 files)
 - `tests/test_management_prep.py`
@@ -38,10 +38,10 @@ Remove people-specific functions:
 
 Keep: `write_digest_to_vault`, `write_briefing_to_vault`, `write_nudges_to_vault`, `write_to_vault`
 
-### `cockpit/data/nudges.py`
+### `logos/data/nudges.py`
 Remove management-related nudge rules that import from `cockpit.data.management`. Keep system/knowledge nudge rules.
 
-### `cockpit/api/cache.py`
+### `logos/api/cache.py`
 Remove the `collect_management_state` call and `/management` cache path.
 
 ### `tests/test_nudges.py`
@@ -56,7 +56,7 @@ Remove PersonState imports/references.
 ## Unchanged (knowledge flow)
 - briefing.py, digest.py, profiler.py, scout.py, all *_sync.py agents
 - shared/calendar_context.py, shared/vault_writer.py (trimmed)
-- cockpit/data/goals.py, agents.py, emergence.py (non-people collectors)
+- logos/data/goals.py, agents.py, emergence.py (non-people collectors)
 - All systemd timers except meeting-prep
 
 ## Constraints

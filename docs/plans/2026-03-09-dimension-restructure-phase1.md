@@ -398,7 +398,7 @@ Add to `tests/test_profiler.py`:
 ```python
 def test_flush_insight_dimension_mapping_uses_new_dims():
     """flush_interview_facts maps insights to new dimension names."""
-    from cockpit.interview import RecordedInsight
+    from logos.interview import RecordedInsight
     from unittest.mock import patch
 
     insight = RecordedInsight(
@@ -453,15 +453,15 @@ git commit -m "refactor: update insight-to-dimension mapping for new taxonomy"
 **Files:**
 - Modify: `tests/test_interview.py:27`
 - Modify: `tests/test_profile_visibility.py:22`
-- Modify: `cockpit/interview.py:116-134`
-- Modify: `cockpit/chat_agent.py:415`
-- Modify: `cockpit/api/routes/profile.py:25,64`
+- Modify: `logos/interview.py:116-134`
+- Modify: `logos/chat_agent.py:415`
+- Modify: `logos/api/routes/profile.py:25,64`
 
 **Step 1: Audit and update imports**
 
-Every file that does `from agents.profiler import ... PROFILE_DIMENSIONS` should switch to `from shared.dimensions import get_dimension_names` or continue importing from profiler (which re-exports). The profiler re-export keeps backward compatibility, so no import changes strictly needed — but `cockpit/interview.py` directly references the list for gap analysis and should use the registry for richer data.
+Every file that does `from agents.profiler import ... PROFILE_DIMENSIONS` should switch to `from shared.dimensions import get_dimension_names` or continue importing from profiler (which re-exports). The profiler re-export keeps backward compatibility, so no import changes strictly needed — but `logos/interview.py` directly references the list for gap analysis and should use the registry for richer data.
 
-Update `cockpit/interview.py` lines 115-134 — change:
+Update `logos/interview.py` lines 115-134 — change:
 ```python
     from agents.profiler import (
         PROFILE_DIMENSIONS,
@@ -500,7 +500,7 @@ Address each failure by updating old dimension names to new ones in test data.
 **Step 5: Commit**
 
 ```bash
-git add cockpit/interview.py cockpit/chat_agent.py cockpit/api/routes/profile.py tests/
+git add logos/interview.py logos/chat_agent.py logos/api/routes/profile.py tests/
 git commit -m "refactor: update all PROFILE_DIMENSIONS consumers for new taxonomy"
 ```
 

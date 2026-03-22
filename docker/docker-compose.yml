@@ -3,10 +3,10 @@ networks:
     driver: bridge
 
 services:
-  cockpit-api:
+  logos-api:
     build:
       context: .
-      dockerfile: Dockerfile.cockpit-api
+      dockerfile: Dockerfile.logos-api
     image: hapax-agents-api:latest
     container_name: hapax-agents-api
     networks:
@@ -22,9 +22,9 @@ services:
       - LITELLM_API_KEY=${LITELLM_API_KEY}
     volumes:
       - ./profiles:/app/profiles
-      # Read-only: management data for cockpit collectors
+      # Read-only: management data for logos collectors
       - ${HOME}/Documents/Work:/root/Documents/Work:ro
-      - ${HOME}/.cache/cockpit:/root/.cache/cockpit
+      - ${HOME}/.cache/logos:/root/.cache/logos
       - ${HOME}/.cache/hapax:/root/.cache/hapax:ro
     mem_limit: 512m
     cpus: 0.5

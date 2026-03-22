@@ -31,6 +31,8 @@ paths = [
   '''hooks/''',
   '''\.claude/''',
   '''\.gitleaks\.toml''',
+  '''systemd/''',
+  '''process-compose\.yaml''',
 ]
 
 [[rules]]

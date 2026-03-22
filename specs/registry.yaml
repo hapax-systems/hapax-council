@@ -523,7 +523,7 @@ systems:
           - /v1/models returns available models
         verification: runtime
 
-      - id: inf-cockpit-api-001
+      - id: inf-logos-api-001
         tier: V1
         text: >
           Cockpit API must be reachable at localhost:8051. Without it,
@@ -691,7 +691,7 @@ systems:
         text: >
           The health monitor must run at least every 15 minutes. Health
           data feeds stimmung (health dimension), the visual layer
-          (HEALTH_INFRA signals), and the cockpit dashboard. Stale
+          (HEALTH_INFRA signals), and the logos dashboard. Stale
           health data causes stimmung to lose its health dimension.
         properties:
           - 'systemd timer: 15min interval with ±1min randomization'

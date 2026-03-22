@@ -527,7 +527,7 @@ class TestSSEEventOrder:
 
 Add import at top if needed:
 ```python
-from cockpit.query_dispatch import QueryResult
+from logos.query_dispatch import QueryResult
 ```
 
 - [ ] **Step 2: Add dispatch edge case tests**
@@ -1504,14 +1504,14 @@ from __future__ import annotations
 
 import pytest
 
-from cockpit.query_dispatch import classify_query
+from logos.query_dispatch import classify_query
 
 
 class TestDevStoryClassification:
     """Queries that should route to dev_story."""
 
     @pytest.mark.parametrize("query,expected", [
-        ("show me commit history for the cockpit module", "dev_story"),
+        ("show me commit history for logos module", "dev_story"),
         ("what files changed most in the last week", "dev_story"),
         ("how many sessions were there yesterday", "dev_story"),
         ("what's the average session duration", "dev_story"),
@@ -1706,8 +1706,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cockpit.api.app import app
-from cockpit.query_dispatch import QueryResult
+from logos.api.app import app
+from logos.query_dispatch import QueryResult
 
 
 def _parse_sse_events(body: str) -> list[dict]:
@@ -2174,7 +2174,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cockpit.query_dispatch import run_query
+from logos.query_dispatch import run_query
 from tests.query_integration._helpers import (
     POPULATED_PROFILES,
     POPULATED_DEV_STORY_DB,

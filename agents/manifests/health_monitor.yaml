@@ -21,7 +21,7 @@ inputs:
 outputs:
 - profiles/health-report.json
 - ntfy alerts (degraded/failed)
-- cockpit health API
+- logos health API
 capabilities:
 - health_check
 - alert_dispatch
@@ -68,7 +68,7 @@ narrative: 'The Health Monitor is the system''s primary sentinel. It runs every 
   degradation or failure, it pushes alerts via ntfy and writes a structured report
   that
 
-  the briefing agent, cockpit, and drift detector all consume. It is the only agent
+  the briefing agent, logos, and drift detector all consume. It is the only agent
   at
 
   service tier 0 (critical) because if it goes down, the operator loses all automated
@@ -126,4 +126,4 @@ manual_section:
   - '```'
   - ''
   - The health monitor timer runs every 15 minutes automatically.
-  - The cockpit status strip shows the latest health state at a glance.
+  - The logos status strip shows the latest health state at a glance.

@@ -57,7 +57,7 @@ def profile_dir(tmp_path):
             key="preferred_editor",
             value="neovim",
             confidence=0.9,
-            source="interview:cockpit",
+            source="interview:logos",
             evidence="operator said neovim",
         ),
         ProfileFact(
@@ -196,7 +196,7 @@ def test_correction_overrides_interview():
             key="preferred_editor",
             value="neovim",
             confidence=0.9,
-            source="interview:cockpit",
+            source="interview:logos",
             evidence="said so",
         )
     ]

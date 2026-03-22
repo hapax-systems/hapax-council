@@ -1,4 +1,4 @@
-"""Tests for cockpit.data.nudges — nudge collection and priority scoring.
+"""Tests for logos.data.nudges — nudge collection and priority scoring.
 
 All deterministic, no LLM calls.
 """
@@ -8,10 +8,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
-from cockpit.data.briefing import ActionItem, BriefingData
-from cockpit.data.drift import DriftItem, DriftSummary
-from cockpit.data.health import HealthHistory, HealthHistoryEntry
-from cockpit.data.nudges import (
+from logos.data.briefing import ActionItem, BriefingData
+from logos.data.drift import DriftItem, DriftSummary
+from logos.data.health import HealthHistory, HealthHistoryEntry
+from logos.data.nudges import (
     STALE_BRIEFING_H,
     STALE_DRIFT_H,
     STALE_SCOUT_H,
@@ -28,7 +28,7 @@ from cockpit.data.nudges import (
     _collect_scout_nudges,
     collect_nudges,
 )
-from cockpit.data.scout import ScoutData, ScoutRecommendation
+from logos.data.scout import ScoutData, ScoutRecommendation
 
 # ── _age_hours tests ─────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ def _health_history(status: str, failed: int = 0, healthy: int = 44) -> HealthHi
     )
 
 
-@patch("cockpit.data.nudges.collect_health_history")
+@patch("logos.data.nudges.collect_health_history")
 def test_health_failure_produces_critical(mock_health):
     mock_health.return_value = _health_history("failed", failed=3, healthy=41)
     nudges: list[Nudge] = []
@@ -98,7 +98,7 @@ def test_health_failure_produces_critical(mock_health):
     assert "3 health checks failing" in nudges[0].title
 
 
-@patch("cockpit.data.nudges.collect_health_history")
+@patch("logos.data.nudges.collect_health_history")
 def test_health_degraded_produces_critical(mock_health):
     mock_health.return_value = _health_history("degraded", failed=1, healthy=43)
     nudges: list[Nudge] = []
@@ -108,7 +108,7 @@ def test_health_degraded_produces_critical(mock_health):
     assert nudges[0].priority_label == "critical"
 
 
-@patch("cockpit.data.nudges.collect_health_history")
+@patch("logos.data.nudges.collect_health_history")
 def test_health_healthy_produces_nothing(mock_health):
     mock_health.return_value = _health_history("healthy", failed=0, healthy=44)
     nudges: list[Nudge] = []
@@ -116,7 +116,7 @@ def test_health_healthy_produces_nothing(mock_health):
     assert len(nudges) == 0
 
 
-@patch("cockpit.data.nudges.collect_health_history")
+@patch("logos.data.nudges.collect_health_history")
 def test_health_no_history_produces_nothing(mock_health):
     mock_health.return_value = HealthHistory()
     nudges: list[Nudge] = []
@@ -124,7 +124,7 @@ def test_health_no_history_produces_nothing(mock_health):
     assert len(nudges) == 0
 
 
-@patch("cockpit.data.nudges.collect_health_history")
+@patch("logos.data.nudges.collect_health_history")
 def test_health_exception_produces_nothing(mock_health):
     mock_health.side_effect = RuntimeError("boom")
     nudges: list[Nudge] = []
@@ -132,7 +132,7 @@ def test_health_exception_produces_nothing(mock_health):
     assert len(nudges) == 0
 
 
-@patch("cockpit.data.nudges.collect_health_history")
+@patch("logos.data.nudges.collect_health_history")
 def test_health_single_failure_singular(mock_health):
     mock_health.return_value = _health_history("failed", failed=1, healthy=43)
     nudges: list[Nudge] = []
@@ -152,7 +152,7 @@ def _stale_ts() -> str:
     return (datetime.now(UTC) - timedelta(hours=STALE_BRIEFING_H + 4)).isoformat()
 
 
-@patch("cockpit.data.nudges.collect_briefing")
+@patch("logos.data.nudges.collect_briefing")
 def test_briefing_high_items_score_80(mock_briefing):
     mock_briefing.return_value = BriefingData(
         headline="Test",
@@ -164,7 +164,7 @@ def test_briefing_high_items_score_80(mock_briefing):
     assert any(n.priority_score == 80 for n in nudges)
 
 
-@patch("cockpit.data.nudges.collect_briefing")
+@patch("logos.data.nudges.collect_briefing")
 def test_briefing_stale_with_items_score_75(mock_briefing):
     mock_briefing.return_value = BriefingData(
         headline="Test",
@@ -176,7 +176,7 @@ def test_briefing_stale_with_items_score_75(mock_briefing):
     assert any(n.priority_score == 75 for n in nudges)
 
 
-@patch("cockpit.data.nudges.collect_briefing")
+@patch("logos.data.nudges.collect_briefing")
 def test_briefing_stale_no_items_score_55(mock_briefing):
     mock_briefing.return_value = BriefingData(
         headline="Test",
@@ -188,7 +188,7 @@ def test_briefing_stale_no_items_score_55(mock_briefing):
     assert nudges[0].priority_score == 55
 
 
-@patch("cockpit.data.nudges.collect_briefing")
+@patch("logos.data.nudges.collect_briefing")
 def test_briefing_none_produces_medium(mock_briefing):
     mock_briefing.return_value = None
     nudges: list[Nudge] = []
@@ -198,7 +198,7 @@ def test_briefing_none_produces_medium(mock_briefing):
     assert "No briefing" in nudges[0].title
 
 
-@patch("cockpit.data.nudges.collect_briefing")
+@patch("logos.data.nudges.collect_briefing")
 def test_briefing_fresh_no_high_items_nothing(mock_briefing):
     mock_briefing.return_value = BriefingData(
         headline="Test",
@@ -210,7 +210,7 @@ def test_briefing_fresh_no_high_items_nothing(mock_briefing):
     assert len(nudges) == 0
 
 
-@patch("cockpit.data.nudges.collect_briefing")
+@patch("logos.data.nudges.collect_briefing")
 def test_briefing_fresh_empty_nothing(mock_briefing):
     mock_briefing.return_value = BriefingData(
         headline="Test",
@@ -297,9 +297,9 @@ def test_action_items_preserve_reason_as_detail():
 # ── Goal nudges ─────────────────────────────────────────────────────────────
 
 
-@patch("cockpit.data.goals.collect_goals")
+@patch("logos.data.goals.collect_goals")
 def test_goal_stale_primary_score_60(mock_goals):
-    from cockpit.data.goals import GoalSnapshot, GoalStatus
+    from logos.data.goals import GoalSnapshot, GoalStatus
 
     mock_goals.return_value = GoalSnapshot(
         goals=[
@@ -326,9 +326,9 @@ def test_goal_stale_primary_score_60(mock_goals):
     assert "Stale goal" in nudges[0].title
 
 
-@patch("cockpit.data.goals.collect_goals")
+@patch("logos.data.goals.collect_goals")
 def test_goal_stale_secondary_score_35(mock_goals):
-    from cockpit.data.goals import GoalSnapshot, GoalStatus
+    from logos.data.goals import GoalSnapshot, GoalStatus
 
     mock_goals.return_value = GoalSnapshot(
         goals=[
@@ -354,9 +354,9 @@ def test_goal_stale_secondary_score_35(mock_goals):
     assert nudges[0].priority_label == "low"
 
 
-@patch("cockpit.data.goals.collect_goals")
+@patch("logos.data.goals.collect_goals")
 def test_goal_not_stale_no_nudge(mock_goals):
-    from cockpit.data.goals import GoalSnapshot, GoalStatus
+    from logos.data.goals import GoalSnapshot, GoalStatus
 
     mock_goals.return_value = GoalSnapshot(
         goals=[
@@ -380,7 +380,7 @@ def test_goal_not_stale_no_nudge(mock_goals):
     assert len(nudges) == 0
 
 
-@patch("cockpit.data.goals.collect_goals")
+@patch("logos.data.goals.collect_goals")
 def test_goal_exception_produces_nothing(mock_goals):
     mock_goals.side_effect = RuntimeError("goals broken")
     nudges: list[Nudge] = []
@@ -394,7 +394,7 @@ def test_goal_exception_produces_nothing(mock_goals):
 def _mock_readiness(
     interview_conducted=False, priorities_known=False, neurocognitive_mapped=False, total_facts=100
 ):
-    from cockpit.data.readiness import ReadinessSnapshot
+    from logos.data.readiness import ReadinessSnapshot
 
     return ReadinessSnapshot(
         interview_conducted=interview_conducted,
@@ -404,7 +404,7 @@ def _mock_readiness(
     )
 
 
-@patch("cockpit.data.readiness.collect_readiness")
+@patch("logos.data.readiness.collect_readiness")
 def test_readiness_no_interview_score_65(mock_collect):
     snap = _mock_readiness(interview_conducted=False, total_facts=1103)
     mock_collect.return_value = snap
@@ -417,7 +417,7 @@ def test_readiness_no_interview_score_65(mock_collect):
     assert "1103 facts" in nudges[0].detail
 
 
-@patch("cockpit.data.readiness.collect_readiness")
+@patch("logos.data.readiness.collect_readiness")
 def test_readiness_priorities_unvalidated_score_55(mock_collect):
     snap = _mock_readiness(
         interview_conducted=True, priorities_known=False, neurocognitive_mapped=True
@@ -429,7 +429,7 @@ def test_readiness_priorities_unvalidated_score_55(mock_collect):
     assert any("Goals not validated" in n.title for n in nudges)
 
 
-@patch("cockpit.data.readiness.collect_readiness")
+@patch("logos.data.readiness.collect_readiness")
 def test_readiness_neurocognitive_empty_score_50(mock_collect):
     snap = _mock_readiness(
         interview_conducted=True, priorities_known=True, neurocognitive_mapped=False
@@ -441,7 +441,7 @@ def test_readiness_neurocognitive_empty_score_50(mock_collect):
     assert any("Neurocognitive" in n.title for n in nudges)
 
 
-@patch("cockpit.data.readiness.collect_readiness")
+@patch("logos.data.readiness.collect_readiness")
 def test_readiness_all_good_nothing(mock_collect):
     snap = _mock_readiness(
         interview_conducted=True, priorities_known=True, neurocognitive_mapped=True
@@ -452,7 +452,7 @@ def test_readiness_all_good_nothing(mock_collect):
     assert len(nudges) == 0
 
 
-@patch("cockpit.data.readiness.collect_readiness")
+@patch("logos.data.readiness.collect_readiness")
 def test_readiness_exception_nothing(mock_collect):
     mock_collect.side_effect = RuntimeError("readiness broken")
     nudges: list[Nudge] = []
@@ -464,7 +464,7 @@ def test_readiness_exception_nothing(mock_collect):
 
 
 def _mock_analysis(missing=None, sparse=None, dimension_stats=None):
-    from cockpit.interview import ProfileAnalysis
+    from logos.interview import ProfileAnalysis
 
     return ProfileAnalysis(
         missing_dimensions=missing or [],
@@ -473,7 +473,7 @@ def _mock_analysis(missing=None, sparse=None, dimension_stats=None):
     )
 
 
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.interview.analyze_profile")
 def test_profile_3_missing_score_60(mock_analyze):
     mock_analyze.return_value = _mock_analysis(
         missing=["identity", "workflow", "philosophy"],
@@ -488,7 +488,7 @@ def test_profile_3_missing_score_60(mock_analyze):
     assert nudges[0].priority_score == 60
 
 
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.interview.analyze_profile")
 def test_profile_1_missing_score_50(mock_analyze):
     mock_analyze.return_value = _mock_analysis(
         missing=["identity"],
@@ -502,7 +502,7 @@ def test_profile_1_missing_score_50(mock_analyze):
     assert nudges[0].priority_score == 50
 
 
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.interview.analyze_profile")
 def test_profile_sparse_only_score_40(mock_analyze):
     mock_analyze.return_value = _mock_analysis(
         sparse=[{"dimension": "work_patterns", "fact_count": 2, "avg_confidence": 0.6}],
@@ -517,7 +517,7 @@ def test_profile_sparse_only_score_40(mock_analyze):
     assert nudges[0].priority_score == 40
 
 
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.interview.analyze_profile")
 def test_profile_complete_nothing(mock_analyze):
     mock_analyze.return_value = _mock_analysis(
         dimension_stats={
@@ -530,7 +530,7 @@ def test_profile_complete_nothing(mock_analyze):
     assert len(nudges) == 0
 
 
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.interview.analyze_profile")
 def test_profile_error_produces_nothing(mock_analyze):
     mock_analyze.side_effect = RuntimeError("profiler broken")
     nudges: list[Nudge] = []
@@ -541,7 +541,7 @@ def test_profile_error_produces_nothing(mock_analyze):
 # ── Scout nudges ─────────────────────────────────────────────────────────────
 
 
-@patch("cockpit.data.nudges.collect_scout")
+@patch("logos.data.nudges.collect_scout")
 def test_scout_adopt_score_30(mock_scout):
     mock_scout.return_value = ScoutData(
         generated_at=_fresh_ts(),
@@ -558,7 +558,7 @@ def test_scout_adopt_score_30(mock_scout):
     assert any(n.priority_score == 30 for n in nudges)
 
 
-@patch("cockpit.data.nudges.collect_scout")
+@patch("logos.data.nudges.collect_scout")
 def test_scout_evaluate_only_score_20(mock_scout):
     mock_scout.return_value = ScoutData(
         generated_at=_fresh_ts(),
@@ -574,7 +574,7 @@ def test_scout_evaluate_only_score_20(mock_scout):
     assert any(n.priority_score == 20 for n in nudges)
 
 
-@patch("cockpit.data.nudges.collect_scout")
+@patch("logos.data.nudges.collect_scout")
 def test_scout_stale_score_25(mock_scout):
     stale = (datetime.now(UTC) - timedelta(hours=STALE_SCOUT_H + 10)).isoformat()
     mock_scout.return_value = ScoutData(
@@ -589,7 +589,7 @@ def test_scout_stale_score_25(mock_scout):
     assert nudges[0].priority_score == 25
 
 
-@patch("cockpit.data.nudges.collect_scout")
+@patch("logos.data.nudges.collect_scout")
 def test_scout_none_produces_nothing(mock_scout):
     mock_scout.return_value = None
     nudges: list[Nudge] = []
@@ -600,7 +600,7 @@ def test_scout_none_produces_nothing(mock_scout):
 # ── Drift nudges ─────────────────────────────────────────────────────────────
 
 
-@patch("cockpit.data.nudges.collect_drift")
+@patch("logos.data.nudges.collect_drift")
 def test_drift_items_high_priority(mock_drift):
     mock_drift.return_value = DriftSummary(
         drift_count=3,
@@ -615,7 +615,7 @@ def test_drift_items_high_priority(mock_drift):
     assert any("3 drift items" in n.title for n in nudges)
 
 
-@patch("cockpit.data.nudges.collect_drift")
+@patch("logos.data.nudges.collect_drift")
 def test_drift_with_high_severity_items_critical(mock_drift):
     mock_drift.return_value = DriftSummary(
         drift_count=2,
@@ -634,7 +634,7 @@ def test_drift_with_high_severity_items_critical(mock_drift):
     assert any("1 high" in n.title for n in nudges)
 
 
-@patch("cockpit.data.nudges.collect_drift")
+@patch("logos.data.nudges.collect_drift")
 def test_drift_stale_score_25(mock_drift):
     stale = (datetime.now(UTC) - timedelta(hours=STALE_DRIFT_H + 10)).isoformat()
     mock_drift.return_value = DriftSummary(
@@ -648,7 +648,7 @@ def test_drift_stale_score_25(mock_drift):
     assert nudges[0].priority_score == 25
 
 
-@patch("cockpit.data.nudges.collect_drift")
+@patch("logos.data.nudges.collect_drift")
 def test_drift_single_item_singular(mock_drift):
     mock_drift.return_value = DriftSummary(
         drift_count=1,
@@ -662,7 +662,7 @@ def test_drift_single_item_singular(mock_drift):
     assert "items" not in nudges[0].title
 
 
-@patch("cockpit.data.nudges.collect_drift")
+@patch("logos.data.nudges.collect_drift")
 def test_drift_none_produces_nothing(mock_drift):
     mock_drift.return_value = None
     nudges: list[Nudge] = []
@@ -673,13 +673,13 @@ def test_drift_none_produces_nothing(mock_drift):
 # ── Integration tests ────────────────────────────────────────────────────────
 
 
-@patch("cockpit.data.nudges._collect_knowledge_sufficiency_nudges")
-@patch("cockpit.data.nudges.collect_drift")
-@patch("cockpit.data.nudges.collect_scout")
-@patch("cockpit.interview.analyze_profile")
-@patch("cockpit.data.nudges.collect_briefing")
-@patch("cockpit.data.nudges.collect_health_history")
-@patch("cockpit.data.readiness.collect_readiness")
+@patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
+@patch("logos.data.nudges.collect_drift")
+@patch("logos.data.nudges.collect_scout")
+@patch("logos.interview.analyze_profile")
+@patch("logos.data.nudges.collect_briefing")
+@patch("logos.data.nudges.collect_health_history")
+@patch("logos.data.readiness.collect_readiness")
 def test_collect_nudges_sorted_by_priority(
     mock_readiness,
     mock_health,
@@ -724,13 +724,13 @@ def test_collect_nudges_sorted_by_priority(
         assert non_meta[i].priority_score >= non_meta[i + 1].priority_score
 
 
-@patch("cockpit.data.nudges._collect_knowledge_sufficiency_nudges")
-@patch("cockpit.data.nudges.collect_drift")
-@patch("cockpit.data.nudges.collect_scout")
-@patch("cockpit.interview.analyze_profile")
-@patch("cockpit.data.nudges.collect_briefing")
-@patch("cockpit.data.nudges.collect_health_history")
-@patch("cockpit.data.readiness.collect_readiness")
+@patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
+@patch("logos.data.nudges.collect_drift")
+@patch("logos.data.nudges.collect_scout")
+@patch("logos.interview.analyze_profile")
+@patch("logos.data.nudges.collect_briefing")
+@patch("logos.data.nudges.collect_health_history")
+@patch("logos.data.readiness.collect_readiness")
 def test_collect_nudges_max_nudges_truncates(
     mock_readiness,
     mock_health,
@@ -774,15 +774,15 @@ def test_collect_nudges_max_nudges_truncates(
     assert nudges[2].category == "meta"
 
 
-@patch("cockpit.data.nudges._collect_knowledge_sufficiency_nudges")
-@patch("cockpit.data.nudges._collect_sufficiency_nudges")
-@patch("cockpit.data.goals.collect_goals")
-@patch("cockpit.data.nudges.collect_drift")
-@patch("cockpit.data.nudges.collect_scout")
-@patch("cockpit.interview.analyze_profile")
-@patch("cockpit.data.nudges.collect_briefing")
-@patch("cockpit.data.nudges.collect_health_history")
-@patch("cockpit.data.readiness.collect_readiness")
+@patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
+@patch("logos.data.nudges._collect_sufficiency_nudges")
+@patch("logos.data.goals.collect_goals")
+@patch("logos.data.nudges.collect_drift")
+@patch("logos.data.nudges.collect_scout")
+@patch("logos.interview.analyze_profile")
+@patch("logos.data.nudges.collect_briefing")
+@patch("logos.data.nudges.collect_health_history")
+@patch("logos.data.readiness.collect_readiness")
 def test_all_healthy_returns_empty(
     mock_readiness,
     mock_health,
@@ -794,7 +794,7 @@ def test_all_healthy_returns_empty(
     mock_sufficiency,
     mock_knowledge_sufficiency,
 ):
-    from cockpit.data.goals import GoalSnapshot
+    from logos.data.goals import GoalSnapshot
 
     mock_readiness.return_value = _mock_readiness(
         interview_conducted=True,
@@ -826,12 +826,12 @@ def test_all_healthy_returns_empty(
     assert nudges == []
 
 
-@patch("cockpit.data.nudges._collect_knowledge_sufficiency_nudges")
-@patch("cockpit.data.nudges.collect_drift")
-@patch("cockpit.data.nudges.collect_scout")
-@patch("cockpit.interview.analyze_profile")
-@patch("cockpit.data.nudges.collect_health_history")
-@patch("cockpit.data.readiness.collect_readiness")
+@patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
+@patch("logos.data.nudges.collect_drift")
+@patch("logos.data.nudges.collect_scout")
+@patch("logos.interview.analyze_profile")
+@patch("logos.data.nudges.collect_health_history")
+@patch("logos.data.readiness.collect_readiness")
 def test_collect_nudges_with_briefing_param_injects_action_items(
     mock_readiness,
     mock_health,
@@ -868,7 +868,7 @@ def test_collect_nudges_with_briefing_param_injects_action_items(
         ],
     )
     # Patch collect_briefing since _collect_briefing_nudges calls it internally
-    with patch("cockpit.data.nudges.collect_briefing", return_value=briefing):
+    with patch("logos.data.nudges.collect_briefing", return_value=briefing):
         nudges = collect_nudges(briefing=briefing)
     # Should contain action item nudges (category "action")
     action_nudges = [n for n in nudges if n.category == "action"]
@@ -921,15 +921,15 @@ class TestNudgeBudgetCap:
             for i in range(count)
         ]
 
-    @patch("cockpit.data.nudges._collect_health_nudges")
-    @patch("cockpit.data.nudges._collect_briefing_nudges")
-    @patch("cockpit.data.nudges._collect_readiness_nudges")
-    @patch("cockpit.data.nudges._collect_profile_nudges")
-    @patch("cockpit.data.nudges._collect_scout_nudges")
-    @patch("cockpit.data.nudges._collect_drift_nudges")
-    @patch("cockpit.data.nudges._collect_goal_nudges")
-    @patch("cockpit.data.nudges._collect_sufficiency_nudges")
-    @patch("cockpit.data.nudges._collect_knowledge_sufficiency_nudges")
+    @patch("logos.data.nudges._collect_health_nudges")
+    @patch("logos.data.nudges._collect_briefing_nudges")
+    @patch("logos.data.nudges._collect_readiness_nudges")
+    @patch("logos.data.nudges._collect_profile_nudges")
+    @patch("logos.data.nudges._collect_scout_nudges")
+    @patch("logos.data.nudges._collect_drift_nudges")
+    @patch("logos.data.nudges._collect_goal_nudges")
+    @patch("logos.data.nudges._collect_sufficiency_nudges")
+    @patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
     def test_under_cap_no_meta(self, *mocks):
         def inject(nudges):
             nudges.extend(self._make_nudges(3))
@@ -939,17 +939,17 @@ class TestNudgeBudgetCap:
         assert len(result) == 3
         assert all(n.category != "meta" for n in result)
 
-    @patch("cockpit.data.nudges._collect_health_nudges")
-    @patch("cockpit.data.nudges._collect_briefing_nudges")
-    @patch("cockpit.data.nudges._collect_readiness_nudges")
-    @patch("cockpit.data.nudges._collect_profile_nudges")
-    @patch("cockpit.data.nudges._collect_scout_nudges")
-    @patch("cockpit.data.nudges._collect_drift_nudges")
-    @patch("cockpit.data.nudges._collect_goal_nudges")
-    @patch("cockpit.data.nudges._collect_sufficiency_nudges")
-    @patch("cockpit.data.nudges._collect_knowledge_sufficiency_nudges")
+    @patch("logos.data.nudges._collect_health_nudges")
+    @patch("logos.data.nudges._collect_briefing_nudges")
+    @patch("logos.data.nudges._collect_readiness_nudges")
+    @patch("logos.data.nudges._collect_profile_nudges")
+    @patch("logos.data.nudges._collect_scout_nudges")
+    @patch("logos.data.nudges._collect_drift_nudges")
+    @patch("logos.data.nudges._collect_goal_nudges")
+    @patch("logos.data.nudges._collect_sufficiency_nudges")
+    @patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
     def test_over_cap_adds_meta(self, *mocks):
-        from cockpit.data.nudges import MAX_VISIBLE_NUDGES
+        from logos.data.nudges import MAX_VISIBLE_NUDGES
 
         def inject(nudges):
             nudges.extend(self._make_nudges(15))

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add System Operations and Knowledge & Context query agents to the cockpit query dispatch system, with shared data-access modules reusable by voice daemon and future consumers.
+**Goal:** Add System Operations and Knowledge & Context query agents to logos query dispatch system, with shared data-access modules reusable by voice daemon and future consumers.
 
 **Architecture:** Each agent follows the established dev-story pattern (factory in query_dispatch.py, pydantic-ai agent with tools, SSE streaming). Data-access functions live in `shared/` modules (not agent internals), so voice and other consumers can call them directly. System Operations uses a hybrid SQLite-for-history + live-HTTP-tools pattern. Knowledge & Context uses Qdrant semantic search + file artifact reads.
 
@@ -14,7 +14,7 @@
 
 ## Chunk 1: Shared Data-Access Modules
 
-These modules contain the pure data-fetching logic. No pydantic-ai dependency. Reusable by query agents, voice tools, cockpit collectors, or any future consumer.
+These modules contain the pure data-fetching logic. No pydantic-ai dependency. Reusable by query agents, voice tools, logos collectors, or any future consumer.
 
 ### Task 1: shared/ops_db.py — Operations SQLite Builder
 
@@ -271,7 +271,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'shared.ops_db'`
 # shared/ops_db.py
 """shared/ops_db.py — Build in-memory SQLite from operational JSONL/JSON files.
 
-Reusable by query agents, voice tools, cockpit collectors, or any consumer
+Reusable by query agents, voice tools, logos collectors, or any consumer
 needing SQL access to operational history data.
 """
 from __future__ import annotations
@@ -2157,12 +2157,12 @@ Expected: `system_ops: 6 tools` and `knowledge: 8 tools`
 
 - [ ] **Step 4: Verify query dispatch lists all 3 agents**
 
-Run: `uv run python -c "from cockpit.query_dispatch import get_agent_list; agents = get_agent_list(); print([(a.agent_type, a.name) for a in agents])"`
+Run: `uv run python -c "from logos.query_dispatch import get_agent_list; agents = get_agent_list(); print([(a.agent_type, a.name) for a in agents])"`
 Expected: List containing all three agent types: dev_story, system_ops, knowledge
 
 - [ ] **Step 5: Verify classification routes correctly**
 
-Run: `uv run python -c "from cockpit.query_dispatch import classify_query; tests = [('show commit history', 'dev_story'), ('system health status', 'system_ops'), ('search my documents', 'knowledge')]; [print(f'{q!r} -> {classify_query(q)} (expected {e})') for q, e in tests]"`
+Run: `uv run python -c "from logos.query_dispatch import classify_query; tests = [('show commit history', 'dev_story'), ('system health status', 'system_ops'), ('search my documents', 'knowledge')]; [print(f'{q!r} -> {classify_query(q)} (expected {e})') for q, e in tests]"`
 Expected: All three queries route to the correct agent
 
 - [ ] **Step 6: Commit any fixes if needed, then tag completion**
@@ -2185,7 +2185,7 @@ Run (on host with .envrc loaded):
 cd ~/projects/hapax-council && eval "$(<.envrc)"
 uv run python -c "
 import asyncio
-from cockpit.query_dispatch import run_query
+from logos.query_dispatch import run_query
 
 async def main():
     result = await run_query('system_ops', 'What is the current system health status? Show uptime for the last 24 hours.')
@@ -2206,7 +2206,7 @@ Run (on host with .envrc loaded):
 ```bash
 uv run python -c "
 import asyncio
-from cockpit.query_dispatch import run_query
+from logos.query_dispatch import run_query
 
 async def main():
     result = await run_query('knowledge', 'What are my current active goals?')
@@ -2223,7 +2223,7 @@ Expected: Markdown response with goal data, no errors
 
 - [ ] **Step 3: Test SSE streaming via curl**
 
-Run (with cockpit-api running on host or container):
+Run (with logos-api running on host or container):
 ```bash
 curl -N -X POST http://localhost:8051/api/query/run \
   -H 'Content-Type: application/json' \
@@ -2236,8 +2236,8 @@ Expected: SSE events with `event: status`, `event: text_delta`, `event: done`
 
 ```bash
 cd ~/projects/hapax-council && eval "$(<.envrc)"
-docker compose build cockpit-api
-docker compose up -d cockpit-api
+docker compose build logos-api
+docker compose up -d logos-api
 sleep 5
 curl -s http://localhost:8051/api/query/agents | python3 -m json.tool
 ```
@@ -2250,7 +2250,7 @@ git add -A
 git status  # Verify only expected files
 git commit -m "feat: add system operations and knowledge query agents
 
-Two new query agents registered in cockpit dispatch:
+Two new query agents registered in logos dispatch:
 - system_ops: hybrid SQLite + live HTTP for infrastructure health,
   drift, costs, and operational analytics
 - knowledge: Qdrant semantic search + artifact reads for documents,

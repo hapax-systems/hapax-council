@@ -456,7 +456,7 @@ def trace_api_poll(
     success: bool,
     status_code: int = 0,
 ) -> None:
-    """Trace a cockpit API poll cycle (only logged when slow or failed)."""
+    """Trace a logos API poll cycle (only logged when slow or failed)."""
     if success and latency_ms < 500:
         return  # Only trace slow or failed polls
     client = _get_langfuse()

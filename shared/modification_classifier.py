@@ -34,7 +34,7 @@ CLASSIFICATION_RULES: list[tuple[str, ModificationClass]] = [
     # REVIEW REQUIRED — application code and config
     ("agents/*", ModificationClass.REVIEW_REQUIRED),
     ("shared/*", ModificationClass.REVIEW_REQUIRED),
-    ("cockpit/*", ModificationClass.REVIEW_REQUIRED),
+    ("logos/*", ModificationClass.REVIEW_REQUIRED),
     ("scripts/*", ModificationClass.REVIEW_REQUIRED),
     ("tests/*", ModificationClass.REVIEW_REQUIRED),
     ("configs/*", ModificationClass.REVIEW_REQUIRED),

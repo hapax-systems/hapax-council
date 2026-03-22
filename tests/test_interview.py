@@ -15,7 +15,7 @@ from agents.profiler import (
     flush_interview_facts,
     load_existing_profile,
 )
-from cockpit.interview import (
+from logos.interview import (
     InterviewPlan,
     InterviewState,
     InterviewTopic,
@@ -286,11 +286,11 @@ def test_recorded_fact_to_profile_fact():
         key=rf.key,
         value=rf.value,
         confidence=rf.confidence,
-        source="interview:cockpit",
+        source="interview:logos",
         evidence=rf.evidence,
     )
     assert pf.dimension == "work_patterns"
-    assert pf.source == "interview:cockpit"
+    assert pf.source == "interview:logos"
     assert pf.key == "preferred_editor"
 
 
@@ -354,9 +354,7 @@ def test_flush_facts_creates_profile_facts(tmp_path, monkeypatch):
     assert "existing_fact" in fact_keys
     assert "new_fact" in fact_keys
     insight_facts = [
-        f
-        for f in work_dim["facts"]
-        if f["source"] == "interview:cockpit" and "insight_" in f["key"]
+        f for f in work_dim["facts"] if f["source"] == "interview:logos" and "insight_" in f["key"]
     ]
     assert len(insight_facts) == 1
 
@@ -434,7 +432,7 @@ def test_format_interview_summary_with_data():
 
 def test_chat_session_saves_interview_state(tmp_path):
     """ChatSession serializes interview state alongside message history."""
-    from cockpit.chat_agent import ChatSession
+    from logos.chat_agent import ChatSession
 
     session = ChatSession(project_dir=tmp_path)
     session.mode = "interview"
@@ -451,7 +449,7 @@ def test_chat_session_saves_interview_state(tmp_path):
 
 def test_chat_session_loads_interview_state(tmp_path):
     """ChatSession restores interview state from JSON."""
-    from cockpit.chat_agent import ChatSession
+    from logos.chat_agent import ChatSession
 
     session = ChatSession(project_dir=tmp_path)
     session.mode = "interview"
@@ -485,7 +483,7 @@ def test_chat_session_loads_interview_state(tmp_path):
 
 def test_chat_session_loads_without_interview_state(tmp_path):
     """ChatSession loads cleanly when no interview state is present (backward compat)."""
-    from cockpit.chat_agent import ChatSession
+    from logos.chat_agent import ChatSession
 
     session = ChatSession(project_dir=tmp_path)
     save_path = tmp_path / "session.json"
@@ -498,7 +496,7 @@ def test_chat_session_loads_without_interview_state(tmp_path):
 
 def test_clear_resets_interview_state(tmp_path):
     """clear() resets mode and interview state back to chat defaults."""
-    from cockpit.chat_agent import ChatSession
+    from logos.chat_agent import ChatSession
 
     session = ChatSession(project_dir=tmp_path)
     session.mode = "interview"
@@ -514,7 +512,7 @@ def test_clear_resets_interview_state(tmp_path):
 
 def test_interview_status_no_interview(tmp_path):
     """interview_status() returns message when no interview active."""
-    from cockpit.chat_agent import ChatSession
+    from logos.chat_agent import ChatSession
 
     session = ChatSession(project_dir=tmp_path)
     assert session.interview_status() == "No active interview."
@@ -522,7 +520,7 @@ def test_interview_status_no_interview(tmp_path):
 
 def test_interview_status_with_progress(tmp_path):
     """interview_status() includes model, topic count, facts, insights."""
-    from cockpit.chat_agent import ChatSession
+    from logos.chat_agent import ChatSession
 
     session = ChatSession(project_dir=tmp_path)
     session.mode = "interview"
@@ -552,7 +550,7 @@ def test_interview_status_with_progress(tmp_path):
 
 def test_skip_interview_topic(tmp_path):
     """skip_interview_topic() advances to next topic."""
-    from cockpit.chat_agent import ChatSession
+    from logos.chat_agent import ChatSession
 
     session = ChatSession(project_dir=tmp_path)
     session.mode = "interview"
@@ -577,7 +575,7 @@ def test_skip_interview_topic(tmp_path):
 
 def test_skip_interview_topic_last():
     """skip_interview_topic() on last topic reports all explored."""
-    from cockpit.chat_agent import ChatSession
+    from logos.chat_agent import ChatSession
 
     session = ChatSession(project_dir=Path("."))
     session.mode = "interview"
@@ -593,7 +591,7 @@ def test_skip_interview_topic_last():
 
 def test_skip_interview_topic_no_interview(tmp_path):
     """skip_interview_topic() without active interview returns message."""
-    from cockpit.chat_agent import ChatSession
+    from logos.chat_agent import ChatSession
 
     session = ChatSession(project_dir=tmp_path)
     assert "No active interview" in session.skip_interview_topic()

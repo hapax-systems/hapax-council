@@ -135,13 +135,13 @@ Layer 1 (bottom): Generative Shader Base       — noise flow field / audio-reac
 ### Already built:
 - `cairooverlay` on every compositor frame (reads perception-state.json)
 - `glshader` available in GStreamer pipeline
-- Cockpit API at :8051 with all signal data
+- Logos API at :8051 with all signal data
 - `studio_effects.py` with 9 GPU shader presets
 - `perception-state.json` with flow state, audio energy, consent phase
 - Compositor status at `~/.cache/hapax-compositor/status.json`
 
 ### Needs building:
-1. **Signal aggregator** — polls cockpit API, produces VisualLayerState JSON
+1. **Signal aggregator** — polls logos API, produces VisualLayerState JSON
 2. **Generative ambient shader** — Perlin noise fBM flow field, uniforms from system health
 3. **Audio-reactive shader variant** — FFT band uniforms for performative mode
 4. **Enhanced Cairo overlay** — renders 6 category zones, state-machine-gated

@@ -163,7 +163,7 @@ Triggered when trait dimensions have insufficient coverage or behavioral dimensi
 Closest to current bootstrap mode but scoped to specific gaps, not full survey.
 
 #### 3. Operator-initiated: on-demand
-Operator starts via cockpit UI or voice. Planner asks what they want to discuss or operator states intent. No gap analysis required — operator intent drives topic selection.
+Operator starts via logos UI or voice. Planner asks what they want to discuss or operator states intent. No gap analysis required — operator intent drives topic selection.
 
 ### Interview Trigger Model
 

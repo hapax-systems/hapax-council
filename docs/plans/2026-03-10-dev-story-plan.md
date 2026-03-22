@@ -2263,7 +2263,7 @@ def test_classify_session_scale_single_file():
 
 
 def test_classify_session_scale_cross_module():
-    file_paths = ["agents/foo.py", "shared/config.py", "cockpit/api/routes/data.py"]
+    file_paths = ["agents/foo.py", "shared/config.py", "logos/api/routes/data.py"]
     result = classify_session_scale(file_paths)
     assert result.value == "cross-module"
 ```

@@ -2,7 +2,7 @@
 
 Single source of truth for the current cycle mode (dev or prod).
 The mode file is written by the hapax-mode CLI script and the
-cockpit API. Agents read it at invocation to adjust thresholds.
+logos API. Agents read it at invocation to adjust thresholds.
 """
 
 from __future__ import annotations

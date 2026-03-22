@@ -1,11 +1,11 @@
-"""Tests for cockpit.data.emergence — undomained activity detection."""
+"""Tests for logos.data.emergence — undomained activity detection."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from cockpit.data.emergence import (
+from logos.data.emergence import (
     CANDIDATE_MIN_EVENTS,
     EmergenceSnapshot,
     UndomainedEvent,

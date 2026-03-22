@@ -142,7 +142,7 @@ The latency implication: calm technology must never *demand* attention through t
 |------|---------|-----------|-----------|
 | **DETERMINISTIC** | 15s tick | `VisualLayerAggregator.poll_fast()`, `DisplayStateMachine.tick()`, `ContentScheduler` | Pure logic. Polls health/GPU, computes state transitions, selects content. No ML, no LLM. Writes to `/dev/shm`. |
 | **LOCAL ML** | 3-8s per source | Vision backend (YOLO11n ~3s/camera), BlazeFace (<5ms/frame CPU), HSEmotion (~20ms/face GPU), Places365 ResNet18 (~30ms GPU), Silero VAD (~5ms/frame CPU), SenseVoice, gaze/gesture (MediaPipe CPU) | GPU inference via VRAMLock coordination. Results cached in thread-safe structures. `contribute()` reads from cache, never blocks. |
-| **API/COCKPIT** | 60s tick | `VisualLayerAggregator.poll_slow()` -- nudges, briefing, drift, goals, copilot | HTTP calls to cockpit API. Results are LLM-produced by upstream agents but cached server-side. |
+| **API/COCKPIT** | 60s tick | `VisualLayerAggregator.poll_slow()` -- nudges, briefing, drift, goals, copilot | HTTP calls to logos API. Results are LLM-produced by upstream agents but cached server-side. |
 | **LLM WORKSPACE** | Event-driven (~60s staleness) | `WorkspaceMonitor` -- screen capture + webcam → `WorkspaceAnalyzer` (Gemini Flash) | Full LLM call with multi-image input. 2-5 second latency. Triggered by focus change or staleness timer. |
 | **REACTIVE ENGINE** | File-change events | inotify watcher → 12 rules → phased execution | LLM agents bounded at 2 concurrent. Seconds to minutes per agent. |
 
@@ -153,7 +153,7 @@ Cameras (3s)  ──► Vision Backend ──► perception-state.json ──►
                                                                                           │
 Microphone ──► Silero VAD ──► PresenceDetector ──► perception-state.json ──────────────────┘
                                                                                           │
-Cockpit API (60s) ──► Aggregator ──────────────────────────────────────────────────────────┘
+Logos API (60s) ──► Aggregator ──────────────────────────────────────────────────────────┘
                                                                                           │
 Hyprland IPC ──► WorkspaceMonitor ──► WorkspaceAnalyzer (LLM) ──► workspace_state.json ───┘
                                                                                           │
@@ -211,7 +211,7 @@ Ordered by impact and feasibility. Each builds on the previous.
 
 Split the aggregator's single 15s loop into two:
 - **Fast loop (1-2s)**: Read perception-state.json, run DisplayStateMachine, write visual-layer-state.json. Pure file I/O + arithmetic. Negligible CPU cost.
-- **Slow loop (15s/60s)**: Poll cockpit API endpoints as currently implemented.
+- **Slow loop (15s/60s)**: Poll logos API endpoints as currently implemented.
 
 The fast loop always has access to the latest perception data. The slow loop enriches the signal set with API-derived information. The state machine merges both on every fast tick.
 

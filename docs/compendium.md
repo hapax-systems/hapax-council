@@ -71,7 +71,7 @@ The governing claim: alignment and governance are not costs bolted onto a useful
 | Axioms | 5 active (3 constitutional, 2 domain) |
 | Voice daemon | running, baseline experiment in progress |
 | Visual aggregator | running |
-| Cockpit API | running on :8051 |
+| Logos API | running on :8051 |
 | Reactive engine | running (12 rules, presence-gated) |
 | Stimmung | cautious (health monitor degraded, watch offline) |
 | Baseline sessions | 7 of 20 collected (code frozen for experiment) |
@@ -83,7 +83,7 @@ The governing claim: alignment and governance are not costs bolted onto a useful
 |-----------|-------|
 | shared/ modules | 83 files across 8 subsystems |
 | agents/ modules | 221 files across 7 subsystems |
-| cockpit/ modules | 43 files |
+| logos/ modules | 43 files |
 | hapax_voice/ | 95 files (largest subsystem) |
 | Test files | 470+ |
 | Agent manifests | 33 (YAML, 4-layer schema) |
@@ -151,7 +151,7 @@ The system aggregates signals and prepares context for management decisions. LLM
 ### The Three Tiers
 
 **Tier 1 — Interactive Interfaces**
-- Council-web React SPA at :5173 (via cockpit API proxy)
+- Council-web React SPA at :5173 (via logos API proxy)
 - Hapax Logos Tauri app (wgpu visual surface + React control panel)
 - VS Code extension (not covered in this compendium)
 
@@ -225,7 +225,7 @@ These loops do not share memory. They communicate exclusively through files. Thi
 
 3. Studio compositor reads visual layer state from shm. Renders GStreamer pipeline with overlays. Outputs to /dev/video42 (v4l2loopback virtual webcam) and HLS stream.
 
-4. Cockpit API polls health (15s), nudges/briefing (60s). Serves React SPA. Reactive engine watches filesystem.
+4. Logos API polls health (15s), nudges/briefing (60s). Serves React SPA. Reactive engine watches filesystem.
 
 ### What Happens When Someone Walks In
 
@@ -413,7 +413,7 @@ Output is XML written to `/dev/shm/hapax-temporal/bands.json`. Consumed by `shar
 
 ### Reactive Engine
 
-Located in `cockpit/engine/`. Starts as part of the cockpit API lifespan handler.
+Located in `logos/engine/`. Starts as part of the logos API lifespan handler.
 
 **Architecture:**
 - Watcher: inotify (via watchdog) on `profiles/`, `axioms/`, `rag-sources/`
@@ -430,7 +430,7 @@ Located in `cockpit/engine/`. Starts as part of the cockpit API lifespan handler
 
 ### Current Rules (12)
 
-The reactive engine evaluates rules defined in `cockpit/engine/reactive_rules.py`. Each rule has a filter (which events match) and a producer (what actions to emit).
+The reactive engine evaluates rules defined in `logos/engine/reactive_rules.py`. Each rule has a filter (which events match) and a producer (what actions to emit).
 
 **Categories:**
 - RAG source landing → ingest pipeline
@@ -441,7 +441,7 @@ The reactive engine evaluates rules defined in `cockpit/engine/reactive_rules.py
 
 ### History and Observability
 
-The engine maintains a ring buffer of recent events (last 100). Each entry: timestamp, event path, doc_type, rules matched, actions executed, errors. Exposed via cockpit API `GET /engine/status`.
+The engine maintains a ring buffer of recent events (last 100). Each entry: timestamp, event path, doc_type, rules matched, actions executed, errors. Exposed via logos API `GET /engine/status`.
 
 Frequency window tracks event patterns for novelty detection: events with pattern_count ≤ 2 are "novel" (the engine is seeing something new).
 
@@ -779,7 +779,7 @@ React Flow visualization of the system's circulatory anatomy. 9 nodes (Perceptio
 - Consent state dots (5-dot state machine)
 - Gate barrier (amber dot on blocked consent edges)
 
-**Data sources:** Rust command reads all `/dev/shm/hapax-*` files + perception cache (Tauri IPC). Cockpit API fallback at `GET /api/flow/state` for browser access.
+**Data sources:** Rust command reads all `/dev/shm/hapax-*` files + perception cache (Tauri IPC). Logos API fallback at `GET /api/flow/state` for browser access.
 
 ### Known Issues
 
@@ -827,7 +827,7 @@ React Flow visualization of the system's circulatory anatomy. 9 nodes (Perceptio
 
 | Service | Port | Purpose | Container? |
 |---------|------|---------|-----------|
-| Cockpit API | :8051 | FastAPI dashboard + API | No (systemd) |
+| Logos API | :8051 | FastAPI dashboard + API | No (systemd) |
 | LiteLLM (council) | :4000 | LLM gateway | Yes |
 | LiteLLM (officium) | :4100 | LLM gateway (officium) | Yes |
 | Qdrant | :6333 | Vector database | Yes |
@@ -1269,7 +1269,7 @@ Single contributor: the operator (+ Dependabot).
 ```bash
 # Start infrastructure
 docker compose up -d                    # 13 containers
-systemctl --user start cockpit-api      # FastAPI on :8051
+systemctl --user start logos-api      # FastAPI on :8051
 systemctl --user start visual-layer-aggregator  # Stimmung + temporal + shm
 systemctl --user start hapax-voice      # Voice daemon
 systemctl --user start studio-compositor # GStreamer pipeline
@@ -1303,7 +1303,7 @@ curl http://localhost:8051/api/health
 |---------|---------------|--------|
 | Stimmung shows critical | LLM cost > $50/day or stale health data | Check `cat /dev/shm/hapax-stimmung/state.json`, restart visual-layer-aggregator |
 | Voice daemon not responding | Service crashed | `systemctl --user restart hapax-voice` |
-| Flow page shows "connecting..." | Cockpit API not running or not restarted after code change | `fuser -k 8051/tcp; systemctl --user start cockpit-api` |
+| Flow page shows "connecting..." | Logos API not running or not restarted after code change | `fuser -k 8051/tcp; systemctl --user start logos-api` |
 | Temporal bands stale | Visual aggregator not running | `systemctl --user restart visual-layer-aggregator` |
 | Consent stuck in pending | Face detector seeing screen reflections as faces | Check `/dev/shm/hapax-compositor/visual-layer-state.json` voice_session.consent_phase |
 

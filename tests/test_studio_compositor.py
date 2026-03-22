@@ -364,7 +364,7 @@ class TestStateReader:
 class TestCompositorCockpitStatus:
     def test_reads_status_file(self, tmp_path: Path) -> None:
         """CompositorStatus should be populated from status.json."""
-        from cockpit.data.studio import CompositorStatus
+        from logos.data.studio import CompositorStatus
 
         status_data = {
             "state": "running",
@@ -389,7 +389,7 @@ class TestCompositorCockpitStatus:
         assert status.hls_url == "/api/studio/hls/stream.m3u8"
 
     def test_default_status(self) -> None:
-        from cockpit.data.studio import CompositorStatus
+        from logos.data.studio import CompositorStatus
 
         status = CompositorStatus()
         assert status.state == "unknown"
@@ -398,7 +398,7 @@ class TestCompositorCockpitStatus:
         assert status.hls_enabled is False
 
     def test_studio_snapshot_includes_compositor(self) -> None:
-        from cockpit.data.studio import StudioSnapshot
+        from logos.data.studio import StudioSnapshot
 
         snap = StudioSnapshot()
         assert hasattr(snap, "compositor")

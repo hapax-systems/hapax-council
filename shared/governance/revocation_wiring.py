@@ -4,7 +4,7 @@ Connects RevocationPropagator to the carrier registry from the reactive
 engine, so consent revocations cascade into carrier fact purges at runtime.
 
 The propagator is a module-level singleton, lazily initialized with the
-carrier registry from cockpit.engine.reactive_rules and a ConsentRegistry
+carrier registry from logos.engine.reactive_rules and a ConsentRegistry
 loaded from the axioms/contracts/ directory.
 """
 
@@ -39,7 +39,7 @@ def get_revocation_propagator(
 
     # Wire carrier registry from reactive engine
     try:
-        from cockpit.engine.reactive_rules import get_carrier_registry
+        from logos.engine.reactive_rules import get_carrier_registry
 
         carrier = get_carrier_registry()
         prop.register_carrier_registry(carrier)

@@ -859,7 +859,7 @@ class SoakManager:
    - If revert_rate > 20%: disable all auto-merge, create GitHub issue `autonomy-regression`.
    - If revert_rate stays < 5% for 30 days: consider expanding auto-merge criteria (operator decision, not automated).
 
-3. **Dashboard:** Expose metrics via the cockpit API (`/api/autonomy-metrics`) for the React SPA. Shows:
+3. **Dashboard:** Expose metrics via the logos API (`/api/autonomy-metrics`) for the React SPA. Shows:
    - Rolling 30-day revert rate per category
    - Total auto-merges vs reverts
    - Soak period pass/fail ratio

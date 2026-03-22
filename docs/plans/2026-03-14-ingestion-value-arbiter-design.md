@@ -109,7 +109,7 @@ For each confirmed trim:
 
 ## Reactive Engine Rules
 
-Three new rules added to `cockpit/engine/`:
+Three new rules added to `logos/engine/`:
 
 ```yaml
 - name: arbiter-report-written

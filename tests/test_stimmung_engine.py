@@ -124,17 +124,17 @@ class TestEngineCodeIntegrity:
     def test_engine_module_has_stimmung_import(self):
         """Verify the engine imports Stance from stimmung."""
 
-        source = Path(__file__).parent.parent / "cockpit" / "engine" / "__init__.py"
+        source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"
         text = source.read_text()
         assert "from shared.stimmung import Stance" in text
 
     def test_engine_has_read_stimmung_method(self):
-        source = Path(__file__).parent.parent / "cockpit" / "engine" / "__init__.py"
+        source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"
         text = source.read_text()
         assert "_read_stimmung_stance" in text
 
     def test_engine_handle_change_checks_stance(self):
-        source = Path(__file__).parent.parent / "cockpit" / "engine" / "__init__.py"
+        source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"
         text = source.read_text()
         assert "Stance.DEGRADED" in text
         assert "Stance.CRITICAL" in text

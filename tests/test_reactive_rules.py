@@ -1,4 +1,4 @@
-"""Tests for cockpit/engine/reactive_rules.py — reactive engine rules.
+"""Tests for logos/engine/reactive_rules.py — reactive engine rules.
 
 Self-contained, asyncio_mode="auto", unittest.mock only.
 """
@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cockpit.engine.models import ChangeEvent
-from cockpit.engine.reactive_rules import (
+from logos.engine.models import ChangeEvent
+from logos.engine.reactive_rules import (
     ALL_RULES,
     INFRASTRUCTURE_RULES,
     QuietWindowScheduler,
@@ -25,7 +25,7 @@ from cockpit.engine.reactive_rules import (
     get_knowledge_scheduler,
     register_infrastructure_rules,
 )
-from cockpit.engine.rules import RuleRegistry, evaluate_rules
+from logos.engine.rules import RuleRegistry, evaluate_rules
 
 
 def _event(path: str, event_type: str = "modified") -> ChangeEvent:
@@ -133,14 +133,14 @@ class TestCollectorRefreshRule:
         plan = evaluate_rules(_event("/data/profiles/random-file.txt"), reg)
         assert len(plan.actions) == 0
 
-    @patch("cockpit.api.cache.cache")
+    @patch("logos.api.cache.cache")
     async def test_handler_fast(self, mock_cache):
         mock_cache.refresh_fast = AsyncMock()
         result = await _handle_collector_refresh(tier="fast")
         mock_cache.refresh_fast.assert_awaited_once()
         assert result == "cache.refresh_fast"
 
-    @patch("cockpit.api.cache.cache")
+    @patch("logos.api.cache.cache")
     async def test_handler_slow(self, mock_cache):
         mock_cache.refresh_slow = AsyncMock()
         result = await _handle_collector_refresh(tier="slow")
@@ -208,7 +208,7 @@ class TestSdlcEventRule:
         rule = next(r for r in INFRASTRUCTURE_RULES if r.name == "sdlc-event-logged")
         assert rule.cooldown_s == 30
 
-    @patch("cockpit.api.cache.cache")
+    @patch("logos.api.cache.cache")
     @patch("shared.notify.send_notification", return_value=True)
     async def test_handler_sends_notification_and_refreshes(self, mock_notify, mock_cache):
         mock_cache.refresh_slow = AsyncMock()

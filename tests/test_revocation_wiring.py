@@ -90,7 +90,7 @@ class TestRevocationWiringModule(unittest.TestCase):
         with patch("shared.governance.revocation_wiring.load_contracts") as mock_load:
             mock_load.return_value = cr
             with patch(
-                "cockpit.engine.reactive_rules.get_carrier_registry",
+                "logos.engine.reactive_rules.get_carrier_registry",
                 side_effect=ImportError("no reactive engine"),
             ):
                 prop2 = get_revocation_propagator()
@@ -101,7 +101,7 @@ class TestRevocationWiringModule(unittest.TestCase):
         """First call to get_revocation_propagator loads consent contracts."""
         cr = _make_consent_registry()
         mock_load.return_value = cr
-        with patch("cockpit.engine.reactive_rules.get_carrier_registry") as mock_carrier:
+        with patch("logos.engine.reactive_rules.get_carrier_registry") as mock_carrier:
             mock_carrier.return_value = CarrierRegistry()
             prop = get_revocation_propagator()
             assert prop is not None
@@ -114,7 +114,7 @@ class TestRevocationWiringModule(unittest.TestCase):
         mock_load.return_value = cr
         carrier = CarrierRegistry()
 
-        with patch("cockpit.engine.reactive_rules.get_carrier_registry") as mock_get:
+        with patch("logos.engine.reactive_rules.get_carrier_registry") as mock_get:
             mock_get.return_value = carrier
             prop = get_revocation_propagator()
             # Verify the carrier registry handler was registered
@@ -127,7 +127,7 @@ class TestRevocationWiringModule(unittest.TestCase):
         mock_load.return_value = cr
 
         with patch(
-            "cockpit.engine.reactive_rules.get_carrier_registry",
+            "logos.engine.reactive_rules.get_carrier_registry",
             side_effect=ImportError("no watchdog"),
         ):
             prop = get_revocation_propagator()
@@ -140,7 +140,7 @@ class TestRevocationWiringModule(unittest.TestCase):
         contract = _make_contract("c1", "alice")
         cr = _make_consent_registry(contract)
 
-        with patch("cockpit.engine.reactive_rules.get_carrier_registry") as mock_get:
+        with patch("logos.engine.reactive_rules.get_carrier_registry") as mock_get:
             mock_get.return_value = CarrierRegistry()
             prop = get_revocation_propagator(consent_registry=cr)
             # Revoke should find alice's contract
@@ -241,7 +241,7 @@ class TestConsentRoute(unittest.TestCase):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from cockpit.api.routes.consent import router
+        from logos.api.routes.consent import router
 
         test_app = FastAPI()
         test_app.include_router(router)
@@ -268,7 +268,7 @@ class TestConsentRoute(unittest.TestCase):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from cockpit.api.routes.consent import router
+        from logos.api.routes.consent import router
 
         test_app = FastAPI()
         test_app.include_router(router)

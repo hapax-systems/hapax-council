@@ -1,4 +1,4 @@
-"""Tests for cockpit/api/routes/engine.py — engine API endpoints.
+"""Tests for logos/api/routes/engine.py — engine API endpoints.
 
 Self-contained, asyncio_mode="auto", unittest.mock only.
 """
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from cockpit.api.routes.engine import router
+from logos.api.routes.engine import router
 
 
 def _make_app(engine=None) -> FastAPI:

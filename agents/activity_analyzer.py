@@ -313,7 +313,7 @@ def _collect_langfuse_impl(since: datetime) -> LangfuseActivity:
 
     # GAP-10/G1: Attach cost trend if available
     try:
-        from cockpit.data.cost import collect_cost_trend
+        from logos.data.cost import collect_cost_trend
 
         trend = collect_cost_trend(days=14)
         if trend.available:

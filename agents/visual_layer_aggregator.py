@@ -1,6 +1,6 @@
-"""Visual layer signal aggregator — polls cockpit API and perception state.
+"""Visual layer signal aggregator — polls logos API and perception state.
 
-Standalone async process. Reads signals from the cockpit API and perception
+Standalone async process. Reads signals from the logos API and perception
 state file, runs the DisplayStateMachine, and writes VisualLayerState
 atomically to /dev/shm for the studio compositor to render.
 
@@ -761,7 +761,7 @@ def time_of_day_warmth_offset() -> float:
 
 
 class VisualLayerAggregator:
-    """Polls cockpit API and perception state, runs state machine, writes output."""
+    """Polls logos API and perception state, runs state machine, writes output."""
 
     def __init__(self) -> None:
         self._sm = DisplayStateMachine()
@@ -845,7 +845,7 @@ class VisualLayerAggregator:
         self._last_change_points: list[dict] = []
 
     async def _fetch_json(self, path: str) -> dict | list | None:
-        """Fetch a cockpit API endpoint. Returns None on any error."""
+        """Fetch a logos API endpoint. Returns None on any error."""
         t0 = time.monotonic()
         try:
             resp = await self._client.get(path)
@@ -1437,7 +1437,7 @@ class VisualLayerAggregator:
         return max(0.5, min(5.0, interval))
 
     async def poll_ambient_content(self) -> None:
-        """Fetch ambient content from cockpit API (profile facts, moments, nudges)."""
+        """Fetch ambient content from logos API (profile facts, moments, nudges)."""
         now = time.monotonic()
         if now - self._last_ambient_fetch < 300.0:  # refresh pool every 5 min
             return

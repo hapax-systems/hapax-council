@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def client():
-    """Create a TestClient for the cockpit API.
+    """Create a TestClient for the logos API.
 
     Uses importlib to avoid side-effects from lifespan (cache refresh, etc.).
     """
@@ -15,12 +15,12 @@ def client():
 
     # Patch lifespan dependencies that require running services
     with (
-        patch("cockpit.api.cache.start_refresh_loop", new_callable=AsyncMock),
-        patch("cockpit.api.sessions.agent_run_manager", shutdown=AsyncMock()),
+        patch("logos.api.cache.start_refresh_loop", new_callable=AsyncMock),
+        patch("logos.api.sessions.agent_run_manager", shutdown=AsyncMock()),
     ):
         from starlette.testclient import TestClient
 
-        from cockpit.api.app import app
+        from logos.api.app import app
 
         with TestClient(app, raise_server_exceptions=False) as c:
             yield c
@@ -31,7 +31,7 @@ def test_root_returns_ok(client):
     resp = client.get("/")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["name"] == "cockpit-api"
+    assert data["name"] == "logos-api"
 
 
 def test_traceparent_header_accepted(client):

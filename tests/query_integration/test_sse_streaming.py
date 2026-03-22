@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
 
-from cockpit.api.app import app
-from cockpit.query_dispatch import QueryResult
+from logos.api.app import app
+from logos.query_dispatch import QueryResult
 
 
 def _parse_sse_events(body: str) -> list[dict]:
@@ -25,8 +25,8 @@ def _parse_sse_events(body: str) -> list[dict]:
 
 
 class TestSSEEventContract:
-    @patch("cockpit.api.routes.query.run_query")
-    @patch("cockpit.api.routes.query.classify_query", return_value="dev_story")
+    @patch("logos.api.routes.query.run_query")
+    @patch("logos.api.routes.query.classify_query", return_value="dev_story")
     async def test_event_sequence_status_text_done(self, mock_classify, mock_run):
         mock_run.return_value = QueryResult(
             markdown="## Results\nSome content",
@@ -51,8 +51,8 @@ class TestSSEEventContract:
         done_idx = event_types.index("done")
         assert status_idx < text_idx < done_idx
 
-    @patch("cockpit.api.routes.query.run_query")
-    @patch("cockpit.api.routes.query.classify_query", return_value="dev_story")
+    @patch("logos.api.routes.query.run_query")
+    @patch("logos.api.routes.query.classify_query", return_value="dev_story")
     async def test_status_event_has_phase_and_agent(self, mock_classify, mock_run):
         mock_run.return_value = QueryResult(
             markdown="test",
@@ -71,8 +71,8 @@ class TestSSEEventContract:
         assert data["phase"] == "querying"
         assert data["agent"] == "dev_story"
 
-    @patch("cockpit.api.routes.query.run_query")
-    @patch("cockpit.api.routes.query.classify_query", return_value="dev_story")
+    @patch("logos.api.routes.query.run_query")
+    @patch("logos.api.routes.query.classify_query", return_value="dev_story")
     async def test_done_event_has_metadata(self, mock_classify, mock_run):
         mock_run.return_value = QueryResult(
             markdown="test",
@@ -98,8 +98,8 @@ class TestSSEEventContract:
             resp = await client.post("/api/query/run", json={"query": "  "})
         assert resp.status_code == 422
 
-    @patch("cockpit.api.routes.query.run_query")
-    @patch("cockpit.api.routes.query.classify_query", return_value="dev_story")
+    @patch("logos.api.routes.query.run_query")
+    @patch("logos.api.routes.query.classify_query", return_value="dev_story")
     async def test_empty_markdown_still_completes(self, mock_classify, mock_run):
         mock_run.return_value = QueryResult(
             markdown="",

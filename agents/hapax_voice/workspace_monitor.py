@@ -449,7 +449,7 @@ class WorkspaceMonitor:
         return ""
 
     def _persist_analysis(self, analysis: WorkspaceAnalysis) -> None:
-        """Write latest analysis to shared state file for cockpit API."""
+        """Write latest analysis to shared state file for logos API."""
         import json
         from pathlib import Path
 

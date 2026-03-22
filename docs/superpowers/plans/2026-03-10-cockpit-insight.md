@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a new "Insight" section to the cockpit for natural language system introspection queries with markdown + Mermaid diagram rendering.
+**Goal:** Add a new "Insight" section to logos for natural language system introspection queries with markdown + Mermaid diagram rendering.
 
 **Architecture:** Backend query dispatch router classifies natural language queries and routes to registered agents (initially dev-story). Agents produce markdown with mermaid fences. Frontend streams results via SSE and renders with react-markdown + lazy-loaded mermaid.js. Refinement passes prior context forward.
 
@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cockpit.query_dispatch import (
+from logos.query_dispatch import (
     QueryAgentInfo,
     classify_query,
     get_agent_list,
@@ -239,8 +239,8 @@ git commit -m "feat: query dispatch module — agent registry, classification, e
 ### Task 2: Query API Route with SSE Streaming
 
 **Files:**
-- Create: `cockpit/api/routes/query.py`
-- Modify: `cockpit/api/app.py:44-64` (add router import + include)
+- Create: `logos/api/routes/query.py`
+- Modify: `logos/api/app.py:44-64` (add router import + include)
 - Test: `tests/test_query_api.py`
 
 - [ ] **Step 1: Write tests for the query API endpoints**
@@ -255,12 +255,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cockpit.query_dispatch import QueryAgentInfo, QueryResult
+from logos.query_dispatch import QueryAgentInfo, QueryResult
 
 
 @pytest.fixture
 async def client():
-    from cockpit.api.app import app
+    from logos.api.app import app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -344,7 +344,7 @@ Expected: FAIL with import errors
 - [ ] **Step 3: Implement the query route**
 
 ```python
-# cockpit/api/routes/query.py
+# logos/api/routes/query.py
 """Query endpoints — natural language system introspection with SSE streaming."""
 from __future__ import annotations
 
@@ -355,7 +355,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
 
-from cockpit.query_dispatch import classify_query, get_agent_list, run_query
+from logos.query_dispatch import classify_query, get_agent_list, run_query
 
 log = logging.getLogger(__name__)
 
@@ -486,10 +486,10 @@ async def refine_query_endpoint(req: QueryRefineRequest):
 
 - [ ] **Step 4: Register the router in app.py**
 
-Add to `cockpit/api/app.py` after line 53 (the scout import):
+Add to `logos/api/app.py` after line 53 (the scout import):
 
 ```python
-from cockpit.api.routes.query import router as query_router
+from logos.api.routes.query import router as query_router
 ```
 
 Add after line 64 (the scout include):
@@ -506,7 +506,7 @@ Expected: All tests PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cockpit/api/routes/query.py cockpit/api/app.py tests/test_query_api.py
+git add logos/api/routes/query.py logos/api/app.py tests/test_query_api.py
 git commit -m "feat: query API route — SSE streaming for natural language queries"
 ```
 
@@ -1247,7 +1247,7 @@ Expected: Build succeeds
 Start both services and verify:
 ```bash
 # Terminal 1: Backend
-cd ~/projects/hapax-council && docker compose up -d cockpit-api
+cd ~/projects/hapax-council && docker compose up -d logos-api
 
 # Terminal 2: Frontend
 cd ~/projects/hapax-logos && pnpm dev

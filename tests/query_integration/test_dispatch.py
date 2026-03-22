@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from cockpit.query_dispatch import classify_query
+from logos.query_dispatch import classify_query
 
 
 class TestDevStoryClassification:
@@ -13,7 +13,7 @@ class TestDevStoryClassification:
     @pytest.mark.parametrize(
         "query,expected",
         [
-            ("show me commit history for the cockpit module", "dev_story"),
+            ("show me commit history for the logos module", "dev_story"),
             ("what files changed most in the last week", "dev_story"),
             ("how many sessions were there yesterday", "dev_story"),
             ("what's the average session duration", "dev_story"),

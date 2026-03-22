@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cockpit.api.app import app
+from logos.api.app import app
 
 
 @pytest.fixture
@@ -18,7 +18,7 @@ def decisions_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_record_decision(decisions_file):
-    with patch("cockpit.api.routes.scout.DECISIONS_FILE", decisions_file):
+    with patch("logos.api.routes.scout.DECISIONS_FILE", decisions_file):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/api/scout/litellm-proxy/decide",
@@ -63,7 +63,7 @@ async def test_get_decisions(decisions_file):
         )
         + "\n"
     )
-    with patch("cockpit.api.routes.scout.DECISIONS_FILE", decisions_file):
+    with patch("logos.api.routes.scout.DECISIONS_FILE", decisions_file):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/scout/decisions")
     assert resp.status_code == 200

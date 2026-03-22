@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SOURCE_DIRS = ["agents", "shared", "cockpit", "scripts"]
+SOURCE_DIRS = ["agents", "shared", "logos", "scripts"]
 DEFAULT_OUTPUT = PROJECT_ROOT / "codebase-map.json"
 
 

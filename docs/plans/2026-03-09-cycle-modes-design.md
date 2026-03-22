@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-09
 **Status**: Approved
-**Scope**: Two-mode cycle system — timer overrides, agent-internal threshold adjustments, CLI script, cockpit API.
+**Scope**: Two-mode cycle system — timer overrides, agent-internal threshold adjustments, CLI script, logos API.
 
 ## Problem Statement
 
@@ -23,10 +23,10 @@ Timer schedules are hardcoded for steady-state operation. There is no mechanism 
 ## Design Decisions
 
 1. **Two discrete modes**: `dev` and `prod`. No continuous dial — the operator is either heads-down coding or in normal work mode.
-2. **Manual switching**: CLI command + cockpit web toggle. No auto-detection.
+2. **Manual switching**: CLI command + logos web toggle. No auto-detection.
 3. **Systemd timer overrides**: Uses systemd's native drop-in directory pattern. Base timer files remain unchanged.
 4. **Agent-aware**: Agents read the mode file at invocation to adjust internal thresholds (probe cooldowns, cache TTLs).
-5. **Single source of truth**: Mode file at `~/.cache/hapax/cycle-mode`. CLI script and cockpit API both read/write it.
+5. **Single source of truth**: Mode file at `~/.cache/hapax/cycle-mode`. CLI script and logos API both read/write it.
 
 ## Mode File
 
@@ -105,8 +105,8 @@ Agents that have time-based thresholds read `get_cycle_mode()` at invocation. No
 |---|---|---|---|---|
 | `cockpit/micro_probes.py` | PROBE_COOLDOWN | 600s (10min) | 1800s (30min) | Don't interrupt deep work |
 | `cockpit/micro_probes.py` | PROBE_IDLE_THRESHOLD | 300s (5min) | 900s (15min) | Longer focus blocks in dev |
-| `cockpit/api/cache.py` | FAST_INTERVAL | 30s | 15s | Cockpit reflects changes faster |
-| `cockpit/api/cache.py` | SLOW_INTERVAL | 300s | 120s | Same |
+| `logos/api/cache.py` | FAST_INTERVAL | 30s | 15s | Cockpit reflects changes faster |
+| `logos/api/cache.py` | SLOW_INTERVAL | 300s | 120s | Same |
 
 ### Implementation Pattern
 
@@ -150,9 +150,9 @@ hapax-mode           # print current mode
 
 **Error handling:** Validates argument is `dev` or `prod`, checks systemd user session available, exits non-zero on failure.
 
-## Cockpit API
+## Logos API
 
-**Endpoints on existing FastAPI server (`cockpit/api/`):**
+**Endpoints on existing FastAPI server (`logos/api/`):**
 
 ```
 GET  /api/cycle-mode  → {"mode": "prod", "switched_at": "2026-03-09T14:30:00Z"}
@@ -176,8 +176,8 @@ The PUT handler calls `hapax-mode` via subprocess — single source of truth for
 
 - `micro_probes._probe_cooldown()` returns 1800 in dev, 600 in prod (mock mode file)
 - `cache.py` intervals adjust correctly per mode
-- Cockpit API `GET /api/cycle-mode` returns current mode
-- Cockpit API `PUT /api/cycle-mode` writes mode file and returns new state
+- Logos API `GET /api/cycle-mode` returns current mode
+- Logos API `PUT /api/cycle-mode` writes mode file and returns new state
 
 ### Timer Override Validation
 
@@ -185,7 +185,7 @@ The PUT handler calls `hapax-mode` via subprocess — single source of truth for
 
 ### CLI Script
 
-Not unit-tested (bash). Validated manually and by the cockpit API integration test which exercises the same flow.
+Not unit-tested (bash). Validated manually and by the logos API integration test which exercises the same flow.
 
 ## Implementation Phases
 
@@ -206,11 +206,11 @@ Not unit-tested (bash). Validated manually and by the cockpit API integration te
 
 ### Phase 4: Agent threshold adjustments
 - Update `cockpit/micro_probes.py` (PROBE_COOLDOWN, PROBE_IDLE_THRESHOLD)
-- Update `cockpit/api/cache.py` (FAST_INTERVAL, SLOW_INTERVAL)
+- Update `logos/api/cache.py` (FAST_INTERVAL, SLOW_INTERVAL)
 - Integration tests
 - Commit
 
-### Phase 5: Cockpit API
+### Phase 5: Logos API
 - Add GET/PUT `/api/cycle-mode` endpoints
 - Integration tests
 - Commit

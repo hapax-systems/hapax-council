@@ -1,4 +1,4 @@
-"""Tests for cockpit.data.cost — dataclasses and collector.
+"""Tests for logos.data.cost — dataclasses and collector.
 
 All I/O is mocked. No real HTTP requests.
 """
@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cockpit.data.cost import CostSnapshot, ModelCost, collect_cost
+from logos.data.cost import CostSnapshot, ModelCost, collect_cost
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -53,22 +53,22 @@ def test_model_cost_dataclass():
 # ── Collector tests ──────────────────────────────────────────────────────────
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "")
+@patch("logos.data.cost.LANGFUSE_PK", "")
 def test_collect_cost_no_credentials():
     result = collect_cost()
     assert result.available is False
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
-@patch("cockpit.data.cost.langfuse_get")
+@patch("logos.data.cost.LANGFUSE_PK", "pk-test")
+@patch("logos.data.cost.langfuse_get")
 def test_collect_cost_api_failure(mock_get):
     mock_get.return_value = {}
     result = collect_cost()
     assert result.available is False
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
-@patch("cockpit.data.cost.langfuse_get")
+@patch("logos.data.cost.LANGFUSE_PK", "pk-test")
+@patch("logos.data.cost.langfuse_get")
 def test_collect_cost_empty_window(mock_get):
     mock_get.return_value = {"data": [], "meta": {"totalItems": 0}}
     result = collect_cost()
@@ -79,8 +79,8 @@ def test_collect_cost_empty_window(mock_get):
     assert result.top_models == []
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
-@patch("cockpit.data.cost.langfuse_get")
+@patch("logos.data.cost.LANGFUSE_PK", "pk-test")
+@patch("logos.data.cost.langfuse_get")
 def test_collect_cost_single_day(mock_get):
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     mock_get.return_value = _make_obs_response(
@@ -96,8 +96,8 @@ def test_collect_cost_single_day(mock_get):
     assert result.daily_average == pytest.approx(0.80, abs=1e-6)
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
-@patch("cockpit.data.cost.langfuse_get")
+@patch("logos.data.cost.LANGFUSE_PK", "pk-test")
+@patch("logos.data.cost.langfuse_get")
 def test_collect_cost_multi_day(mock_get):
     now = datetime.now(UTC)
     today = now.strftime("%Y-%m-%d")
@@ -119,8 +119,8 @@ def test_collect_cost_multi_day(mock_get):
     assert result.daily_average == pytest.approx(2.0 / 3, abs=1e-4)
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
-@patch("cockpit.data.cost.langfuse_get")
+@patch("logos.data.cost.LANGFUSE_PK", "pk-test")
+@patch("logos.data.cost.langfuse_get")
 def test_collect_cost_model_grouping(mock_get):
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     mock_get.return_value = _make_obs_response(
@@ -139,8 +139,8 @@ def test_collect_cost_model_grouping(mock_get):
     assert result.top_models[1].cost == pytest.approx(0.10, abs=1e-6)
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
-@patch("cockpit.data.cost.langfuse_get")
+@patch("logos.data.cost.LANGFUSE_PK", "pk-test")
+@patch("logos.data.cost.langfuse_get")
 def test_collect_cost_skips_zero_cost(mock_get):
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     mock_get.return_value = _make_obs_response(
@@ -155,8 +155,8 @@ def test_collect_cost_skips_zero_cost(mock_get):
     assert result.period_cost == pytest.approx(0.50, abs=1e-6)
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
-@patch("cockpit.data.cost.langfuse_get")
+@patch("logos.data.cost.LANGFUSE_PK", "pk-test")
+@patch("logos.data.cost.langfuse_get")
 def test_collect_cost_missing_start_time(mock_get):
     """Obs without startTime counted in total/model but not daily bucket."""
     mock_get.return_value = {
@@ -173,8 +173,8 @@ def test_collect_cost_missing_start_time(mock_get):
     assert result.top_models[0].cost == pytest.approx(0.70, abs=1e-6)
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
-@patch("cockpit.data.cost.langfuse_get")
+@patch("logos.data.cost.LANGFUSE_PK", "pk-test")
+@patch("logos.data.cost.langfuse_get")
 def test_collect_cost_pagination(mock_get):
     today = datetime.now(UTC).strftime("%Y-%m-%d")
 
@@ -203,8 +203,8 @@ def test_collect_cost_pagination(mock_get):
     assert call_count == 2
 
 
-@patch("cockpit.data.cost.LANGFUSE_PK", "pk-test")
-@patch("cockpit.data.cost.langfuse_get")
+@patch("logos.data.cost.LANGFUSE_PK", "pk-test")
+@patch("logos.data.cost.langfuse_get")
 def test_collect_cost_partial_failure(mock_get):
     """First page succeeds, second fails — partial data preserved."""
     today = datetime.now(UTC).strftime("%Y-%m-%d")

@@ -487,8 +487,8 @@ git commit -m "feat: connect briefing actions and nudge commands to agent runner
 ### Task 5: Scout Decision Backend
 
 **Files:**
-- Create: `~/projects/hapax-council/cockpit/api/routes/scout.py`
-- Modify: `~/projects/hapax-council/cockpit/api/app.py`
+- Create: `~/projects/hapax-council/logos/api/routes/scout.py`
+- Modify: `~/projects/hapax-council/logos/api/app.py`
 - Create: `~/projects/hapax-council/tests/test_scout_decisions.py`
 
 **Step 1: Write the tests**
@@ -506,7 +506,7 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cockpit.api.app import app
+from logos.api.app import app
 
 
 @pytest.fixture
@@ -568,10 +568,10 @@ Expected: FAIL (import error — `cockpit.api.routes.scout` doesn't exist)
 
 **Step 3: Create scout routes**
 
-Create `~/projects/hapax-council/cockpit/api/routes/scout.py`:
+Create `~/projects/hapax-council/logos/api/routes/scout.py`:
 
 ```python
-"""Cockpit API routes for scout decision tracking."""
+"""Logos API routes for scout decision tracking."""
 from __future__ import annotations
 
 import json
@@ -625,10 +625,10 @@ async def get_decisions():
 
 **Step 4: Register the router**
 
-Modify `~/projects/hapax-council/cockpit/api/app.py`. Add import and registration:
+Modify `~/projects/hapax-council/logos/api/app.py`. Add import and registration:
 
 ```python
-from cockpit.api.routes.scout import router as scout_router
+from logos.api.routes.scout import router as scout_router
 ```
 
 Add after the existing router registrations:
@@ -645,7 +645,7 @@ Expected: 3 passed
 
 ```bash
 cd ~/projects/hapax-council
-git add cockpit/api/routes/scout.py cockpit/api/app.py tests/test_scout_decisions.py
+git add logos/api/routes/scout.py logos/api/app.py tests/test_scout_decisions.py
 git commit -m "feat: add scout decision API endpoints (record + retrieve)"
 ```
 
@@ -873,7 +873,7 @@ Expected: Build succeeds, no TypeScript errors.
 
 **Step 3: Manual validation checklist**
 
-Start the cockpit stack:
+Start logos stack:
 ```bash
 cd ~/projects/hapax-council && uv run python -m cockpit.api &
 cd ~/projects/hapax-logos && pnpm dev &

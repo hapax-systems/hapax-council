@@ -55,7 +55,7 @@ narrative: 'The Infrastructure Introspector takes periodic snapshots of the actu
   observational: it queries system APIs but never modifies anything. The manifest
   also
 
-  feeds into the cockpit UI for at-a-glance infrastructure visibility.
+  feeds into the logos UI for at-a-glance infrastructure visibility.
 
   '
 short_description: Infrastructure manifest generator

@@ -1127,7 +1127,7 @@ async def handle_check_consent_status(params) -> None:
         # Check blast radius if contract exists
         if contract and contract.active:
             try:
-                from cockpit.data.governance import collect_revocation_blast_radius
+                from logos.data.governance import collect_revocation_blast_radius
 
                 blast = collect_revocation_blast_radius(person_id)
                 if blast.total_items > 0:
@@ -1184,7 +1184,7 @@ async def handle_describe_consent_flow(params) -> None:
 async def handle_check_governance_health(params) -> None:
     """Check governance heartbeat and consent coverage."""
     try:
-        from cockpit.data.governance import collect_governance_heartbeat
+        from logos.data.governance import collect_governance_heartbeat
 
         hb = collect_governance_heartbeat()
         result = f"Governance health: {hb.label.upper()} ({hb.score})\n\nComponents:\n"

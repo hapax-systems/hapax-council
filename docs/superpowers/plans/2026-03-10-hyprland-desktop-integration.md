@@ -1512,7 +1512,7 @@ git commit -m "feat: inject deterministic hyprctl context into workspace analysi
 
 **1. Fail-open consistency.** Every component follows the same pattern: if Hyprland is unavailable (container, test, different compositor), it degrades gracefully. `HyprlandIPC` returns `None`/`[]`/`False`. `HyprlandEventListener.available` is `False` and `run()` blocks silently. `_build_deterministic_context()` returns `""`. Desktop tools return `{"status": "failed"}`. This means:
 - Tests run without Hyprland (all subprocess calls are mocked)
-- The cockpit-api container (no compositor) is unaffected
+- The logos-api container (no compositor) is unaffected
 - A future compositor switch only requires replacing `shared/hyprland.py`
 
 **2. Import chain safety.** `shared/hyprland.py` has zero project imports (only stdlib). `hyprland_listener.py` imports from `shared/hyprland.py`. `desktop_tools.py` imports from `shared/hyprland.py`. `workspace_monitor.py` imports from `hyprland_listener.py`. No circular dependencies. The `EnvironmentState.active_window` field uses `TYPE_CHECKING` for the `WindowInfo` import to avoid runtime coupling.

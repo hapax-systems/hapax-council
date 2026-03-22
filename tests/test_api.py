@@ -1,4 +1,4 @@
-"""Tests for cockpit API."""
+"""Tests for logos API."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 @pytest.fixture
 async def client():
-    from cockpit.api.app import app
+    from logos.api.app import app
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -20,7 +20,7 @@ class TestAppSkeleton:
         resp = await client.get("/")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["name"] == "cockpit-api"
+        assert data["name"] == "logos-api"
         assert "version" in data
 
     async def test_cors_headers_present(self, client):
@@ -34,7 +34,7 @@ class TestAppSkeleton:
 
 from dataclasses import dataclass, field
 
-from cockpit.api.cache import cache
+from logos.api.cache import cache
 
 
 @dataclass

@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cockpit.query_dispatch import run_query
+from logos.query_dispatch import run_query
 from tests.query_integration._helpers import (
     EMPTY_DEV_STORY_DB,
     EMPTY_PROFILES,
@@ -94,7 +94,7 @@ class TestEmptyStateLLM:
         # Patch PROFILES_DIR in both modules
         self._patches = [
             patch("shared.config.PROFILES_DIR", EMPTY_PROFILES),
-            patch("cockpit.query_dispatch.PROFILES_DIR", EMPTY_PROFILES),
+            patch("logos.query_dispatch.PROFILES_DIR", EMPTY_PROFILES),
         ]
         for p in self._patches:
             p.start()

@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["agents", "cockpit", "shared"]
+packages = ["agents", "logos", "shared"]
 
 [project]
 name = "hapax-council"
@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cockpit-api = [
+logos-api = [
     "fastapi>=0.115.0",
     "jinja2>=3.1",
     "langfuse>=3.14.5",
@@ -89,7 +89,7 @@ audio = [
 ]
 ci = [
     # CI testing — everything except hardware-only audio deps
-    "hapax-council[cockpit-api]",
+    "hapax-council[logos-api]",
     "hapax-council[sync-pipeline]",
     "google-genai>=1.0.0",
     "matplotlib>=3.9",
@@ -109,8 +109,8 @@ host = [
 ]
 
 [project.scripts]
-cockpit = "cockpit.__main__:main"
-cockpit-api = "cockpit.api.__main__:main"
+logos = "logos.__main__:main"
+logos-api = "logos.api.__main__:main"
 
 [dependency-groups]
 dev = [

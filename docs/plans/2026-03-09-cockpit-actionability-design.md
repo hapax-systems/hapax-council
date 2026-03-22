@@ -6,7 +6,7 @@
 
 ## Problem Statement
 
-The cockpit displays rich operational data (scout recommendations, briefing action items, health failures, drift findings) but is mostly read-only. Users see what needs doing but can't act on it. Scout recommendations dead-end entirely — no decision tracking or adoption workflow exists.
+Logos displays rich operational data (scout recommendations, briefing action items, health failures, drift findings) but is mostly read-only. Users see what needs doing but can't act on it. Scout recommendations dead-end entirely — no decision tracking or adoption workflow exists.
 
 ## Design Decisions
 

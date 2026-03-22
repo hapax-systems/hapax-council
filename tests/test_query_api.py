@@ -7,12 +7,12 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cockpit.query_dispatch import QueryAgentInfo, QueryResult
+from logos.query_dispatch import QueryAgentInfo, QueryResult
 
 
 @pytest.fixture
 async def client():
-    from cockpit.api.app import app
+    from logos.api.app import app
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -20,7 +20,7 @@ async def client():
 
 
 class TestQueryAgentsList:
-    @patch("cockpit.api.routes.query.get_agent_list")
+    @patch("logos.api.routes.query.get_agent_list")
     async def test_list_agents(self, mock_list, client):
         mock_list.return_value = [
             QueryAgentInfo(
@@ -37,8 +37,8 @@ class TestQueryAgentsList:
 
 
 class TestQueryRun:
-    @patch("cockpit.api.routes.query.run_query")
-    @patch("cockpit.api.routes.query.classify_query")
+    @patch("logos.api.routes.query.run_query")
+    @patch("logos.api.routes.query.classify_query")
     async def test_run_returns_sse_stream(self, mock_classify, mock_run, client):
         mock_classify.return_value = "dev_story"
         mock_run.return_value = QueryResult(
@@ -55,15 +55,15 @@ class TestQueryRun:
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers.get("content-type", "")
 
-    @patch("cockpit.api.routes.query.run_query")
-    @patch("cockpit.api.routes.query.classify_query")
+    @patch("logos.api.routes.query.run_query")
+    @patch("logos.api.routes.query.classify_query")
     async def test_run_empty_query_rejected(self, mock_classify, mock_run, client):
         resp = await client.post("/api/query/run", json={"query": ""})
         assert resp.status_code == 422 or resp.status_code == 400
 
 
 class TestQueryRefine:
-    @patch("cockpit.api.routes.query.run_query")
+    @patch("logos.api.routes.query.run_query")
     async def test_refine_passes_context(self, mock_run, client):
         mock_run.return_value = QueryResult(
             markdown="## Refined\nResult",
@@ -90,8 +90,8 @@ class TestQueryRefine:
 
 
 class TestSSEEventOrder:
-    @patch("cockpit.api.routes.query.run_query")
-    @patch("cockpit.api.routes.query.classify_query", return_value="dev_story")
+    @patch("logos.api.routes.query.run_query")
+    @patch("logos.api.routes.query.classify_query", return_value="dev_story")
     async def test_events_follow_status_text_done_sequence(self, mock_classify, mock_run, client):
         mock_run.return_value = QueryResult(
             markdown="## Test\nContent here",
@@ -113,8 +113,8 @@ class TestSSEEventOrder:
         assert done_pos >= 0, "Missing done event"
         assert status_pos < text_pos < done_pos, "Events out of order"
 
-    @patch("cockpit.api.routes.query.run_query")
-    @patch("cockpit.api.routes.query.classify_query", return_value="dev_story")
+    @patch("logos.api.routes.query.run_query")
+    @patch("logos.api.routes.query.classify_query", return_value="dev_story")
     async def test_empty_result_still_completes(self, mock_classify, mock_run, client):
         mock_run.return_value = QueryResult(
             markdown="",

@@ -1,4 +1,4 @@
-"""Tests for cockpit.data.readiness — data maturity assessment.
+"""Tests for logos.data.readiness — data maturity assessment.
 
 All deterministic, no LLM calls.
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from cockpit.data.readiness import (
+from logos.data.readiness import (
     ReadinessSnapshot,
     _check_interview_facts,
     _check_priorities_validated,
@@ -26,7 +26,7 @@ def _mock_analysis(
     neurocognitive_gap=False,
     goal_gaps=None,
 ):
-    from cockpit.interview import ProfileAnalysis
+    from logos.interview import ProfileAnalysis
 
     return ProfileAnalysis(
         missing_dimensions=missing or [],
@@ -121,8 +121,8 @@ def test_level_operational():
 def test_interview_facts_detected(mock_profiler_load):
     profile = _mock_profile(
         {
-            "identity": ["config:CLAUDE.md", "interview:cockpit"],
-            "workflow": ["config:operator.json", "interview:cockpit"],
+            "identity": ["config:CLAUDE.md", "interview:logos"],
+            "workflow": ["config:operator.json", "interview:logos"],
         }
     )
     mock_profiler_load.return_value = profile
@@ -193,9 +193,9 @@ def test_priorities_no_goals_defined(mock_goals):
 # ── collect_readiness integration ───────────────────────────────────────────
 
 
-@patch("cockpit.data.readiness._check_priorities_validated")
-@patch("cockpit.data.readiness._check_interview_facts")
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.data.readiness._check_priorities_validated")
+@patch("logos.data.readiness._check_interview_facts")
+@patch("logos.interview.analyze_profile")
 def test_collect_bootstrapping(mock_analyze, mock_interview, mock_priorities):
     mock_analyze.return_value = _mock_analysis(
         missing=["identity", "philosophy"],
@@ -218,9 +218,9 @@ def test_collect_bootstrapping(mock_analyze, mock_interview, mock_priorities):
     assert snap.top_gap == "no interview conducted"
 
 
-@patch("cockpit.data.readiness._check_priorities_validated")
-@patch("cockpit.data.readiness._check_interview_facts")
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.data.readiness._check_priorities_validated")
+@patch("logos.data.readiness._check_interview_facts")
+@patch("logos.interview.analyze_profile")
 def test_collect_developing(mock_analyze, mock_interview, mock_priorities):
     mock_analyze.return_value = _mock_analysis(
         missing=["identity"],
@@ -242,9 +242,9 @@ def test_collect_developing(mock_analyze, mock_interview, mock_priorities):
     assert any("missing" in g for g in snap.gaps)
 
 
-@patch("cockpit.data.readiness._check_priorities_validated")
-@patch("cockpit.data.readiness._check_interview_facts")
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.data.readiness._check_priorities_validated")
+@patch("logos.data.readiness._check_interview_facts")
+@patch("logos.interview.analyze_profile")
 def test_collect_operational(mock_analyze, mock_interview, mock_priorities):
     mock_analyze.return_value = _mock_analysis(
         missing=[],
@@ -276,7 +276,7 @@ def test_collect_operational(mock_analyze, mock_interview, mock_priorities):
     assert snap.top_gap == ""
 
 
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.interview.analyze_profile")
 def test_collect_readiness_analyze_exception(mock_analyze):
     mock_analyze.side_effect = RuntimeError("profile broken")
     snap = collect_readiness()
@@ -288,9 +288,9 @@ def test_collect_readiness_analyze_exception(mock_analyze):
 # ── Gap ordering ────────────────────────────────────────────────────────────
 
 
-@patch("cockpit.data.readiness._check_priorities_validated")
-@patch("cockpit.data.readiness._check_interview_facts")
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.data.readiness._check_priorities_validated")
+@patch("logos.data.readiness._check_interview_facts")
+@patch("logos.interview.analyze_profile")
 def test_gap_ordering(mock_analyze, mock_interview, mock_priorities):
     """Gaps are ordered by impact: interview > priorities > neurocognitive > missing > sparse."""
     mock_analyze.return_value = _mock_analysis(
@@ -313,9 +313,9 @@ def test_gap_ordering(mock_analyze, mock_interview, mock_priorities):
 # ── Coverage percentage ─────────────────────────────────────────────────────
 
 
-@patch("cockpit.data.readiness._check_priorities_validated")
-@patch("cockpit.data.readiness._check_interview_facts")
-@patch("cockpit.interview.analyze_profile")
+@patch("logos.data.readiness._check_priorities_validated")
+@patch("logos.data.readiness._check_interview_facts")
+@patch("logos.interview.analyze_profile")
 def test_coverage_percentage(mock_analyze, mock_interview, mock_priorities):
     mock_analyze.return_value = _mock_analysis(
         missing=["identity", "philosophy"],
