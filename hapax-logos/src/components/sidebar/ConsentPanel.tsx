@@ -10,16 +10,16 @@ export function ConsentPanel() {
   const cov = coverage as any;
 
   return (
-    <div className="space-y-2 text-xs">
+    <div className="space-y-1 text-xs">
       <div className="flex justify-between">
         <span className="text-zinc-500">contracts</span>
-        <span className="text-zinc-300">
-          <span className="text-emerald-400">{active.length}</span>
+        <span>
+          <span className="text-green-400">{active.length}</span>
           {revoked.length > 0 && <span className="text-zinc-600"> / {revoked.length} revoked</span>}
         </span>
       </div>
       {active.map((c: any, i: number) => (
-        <div key={i} className="rounded bg-zinc-800/50 px-2 py-1 text-[10px]">
+        <div key={i} className="text-[10px] pl-2 border-l border-zinc-800/40">
           <div className="text-zinc-300">{c?.parties?.[1] || "unknown"}</div>
           <div className="text-zinc-600">{Array.isArray(c?.scope) ? c.scope.join(", ") : String(c?.scope || "")}</div>
         </div>
@@ -30,7 +30,7 @@ export function ConsentPanel() {
       {cov && typeof cov === "object" && (
         <div className="flex justify-between text-[10px]">
           <span className="text-zinc-500">coverage</span>
-          <span className="text-zinc-400">{cov.coverage_ratio != null ? `${(cov.coverage_ratio * 100).toFixed(0)}%` : "—"}</span>
+          <span className="text-zinc-300">{cov.coverage_ratio != null ? `${(cov.coverage_ratio * 100).toFixed(0)}%` : "—"}</span>
         </div>
       )}
     </div>

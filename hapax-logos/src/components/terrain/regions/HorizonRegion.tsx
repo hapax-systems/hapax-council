@@ -22,18 +22,22 @@ function HorizonSurface() {
       {/* Briefing one-liner */}
       <div className="text-xs text-zinc-400 flex-1 truncate">{oneLiner || "—"}</div>
 
-      {/* Top nudges as compact pills */}
-      <div className="flex gap-2">
-        {topNudges.map((n, i) => (
-          <div
-            key={n.source_id ?? i}
-            className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-800/60 text-zinc-500 truncate max-w-[200px]"
-          >
-            {n.title ?? "nudge"}
-          </div>
-        ))}
+      {/* Top nudges as plain text */}
+      <div className="flex gap-1 items-center text-[10px] text-zinc-500 truncate">
+        {topNudges.map((n, i) => {
+          const color = n.priority_label === "critical" ? "text-red-400"
+            : n.priority_label === "high" ? "text-orange-400"
+            : n.priority_label === "medium" ? "text-amber-400"
+            : "text-zinc-500";
+          return (
+            <span key={n.source_id ?? i}>
+              {i > 0 && <span className="text-zinc-700 mx-0.5">·</span>}
+              <span className={color}>{n.title ?? "nudge"}</span>
+            </span>
+          );
+        })}
         {nudgeItems.length > 3 && (
-          <div className="text-[10px] text-zinc-600">+{nudgeItems.length - 3}</div>
+          <span className="text-zinc-600 ml-1">+{nudgeItems.length - 3}</span>
         )}
       </div>
     </div>

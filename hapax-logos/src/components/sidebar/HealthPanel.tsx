@@ -2,11 +2,22 @@ import { useState } from "react";
 import { useHealth } from "../../api/hooks";
 import { useAgentRun } from "../../contexts/AgentRunContext";
 import { DetailModal } from "../shared/DetailModal";
-import { StatusBadge } from "../shared/StatusBadge";
 import { SidebarSection } from "./SidebarSection";
 import { HealthHistoryChart } from "./HealthHistoryChart";
 import { formatAge } from "../../utils";
 import { Wrench } from "lucide-react";
+
+const STATUS_COLOR: Record<string, string> = {
+  healthy: "text-green-400",
+  degraded: "text-amber-400",
+  failed: "text-red-400",
+};
+
+function healthSeverity(status?: string): "nominal" | "degraded" | "critical" | undefined {
+  if (status === "failed") return "critical";
+  if (status === "degraded") return "degraded";
+  return undefined;
+}
 
 export function HealthPanel() {
   const { data: health, dataUpdatedAt } = useHealth();
@@ -15,17 +26,26 @@ export function HealthPanel() {
 
   return (
     <>
-      <SidebarSection title="Health" onClick={() => setDetailOpen(true)} clickable loading={!health} age={health ? formatAge(dataUpdatedAt) : undefined}>
+      <SidebarSection
+        title="Health"
+        onClick={() => setDetailOpen(true)}
+        clickable
+        loading={!health}
+        age={health ? formatAge(dataUpdatedAt) : undefined}
+        severity={health ? healthSeverity(health.overall_status) : undefined}
+      >
         {health && (
           <>
             <div className="flex items-center gap-2">
-              <StatusBadge status={health.overall_status} />
-              <span className="text-zinc-400">
-                {health.healthy}/{health.total_checks} ({health.duration_ms}ms)
+              <span className={STATUS_COLOR[health.overall_status] ?? "text-zinc-500"}>
+                {health.overall_status}
+              </span>
+              <span className="text-zinc-500">
+                {health.healthy}/{health.total_checks}
               </span>
             </div>
             {health.failed_checks.map((c) => (
-              <p key={c} className="text-red-400">{c}</p>
+              <p key={c} className="text-red-400 text-[10px]">{c}</p>
             ))}
           </>
         )}
@@ -35,19 +55,19 @@ export function HealthPanel() {
         {health ? (
           <div className="space-y-3 text-xs">
             <div className="flex items-center gap-2">
-              <StatusBadge status={health.overall_status} />
-              <span className="text-zinc-400">
-                {health.healthy} healthy, {health.degraded} degraded, {health.failed} failed
+              <span className={STATUS_COLOR[health.overall_status] ?? "text-zinc-500"}>
+                {health.overall_status}
+              </span>
+              <span className="text-zinc-500">
+                {health.healthy} healthy, {health.degraded} degraded, {health.failed} failed — {health.duration_ms}ms
               </span>
             </div>
-            <p className="text-zinc-500">Duration: {health.duration_ms}ms</p>
-            <p className="text-zinc-500">Timestamp: {health.timestamp}</p>
             {health.failed_checks.length > 0 && (
               <div>
-                <h3 className="mb-1 font-medium text-red-400">Failed Checks</h3>
+                <h3 className="mb-1 text-[11px] font-semibold text-red-400">Failed Checks</h3>
                 <ul className="space-y-1">
                   {health.failed_checks.map((c) => (
-                    <li key={c} className="text-red-400">- {c}</li>
+                    <li key={c} className="text-red-400 text-[10px]">{c}</li>
                   ))}
                 </ul>
               </div>
@@ -58,19 +78,19 @@ export function HealthPanel() {
                   setDetailOpen(false);
                   requestAgentRun({ agent: "health_monitor", flags: { "--fix": "" } });
                 }}
-                className="flex items-center gap-1.5 rounded border border-green-500/30 bg-green-500/10 px-3 py-1.5 text-xs font-medium text-green-400 hover:bg-green-500/20 active:scale-[0.97]"
+                className="flex items-center gap-1.5 rounded-sm border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 active:scale-[0.97]"
               >
-                <Wrench className="h-3.5 w-3.5" />
+                <Wrench className="h-3 w-3" />
                 Auto-fix
               </button>
             )}
             <div>
-              <h3 className="mb-2 font-medium text-zinc-300">7-Day History</h3>
+              <h3 className="mb-2 text-[11px] font-semibold text-zinc-500">7-Day History</h3>
               <HealthHistoryChart />
             </div>
           </div>
         ) : (
-          <p className="text-zinc-500">No health data available.</p>
+          <p className="text-zinc-600 text-[10px]">No health data available.</p>
         )}
       </DetailModal>
     </>

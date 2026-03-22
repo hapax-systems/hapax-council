@@ -14,6 +14,7 @@ interface TerrainDisplayValue {
   investigationTab: InvestigationTab;
   splitRegion: RegionName | null;
   splitFullscreen: boolean;
+  highlightedRegion: RegionName | null;
 }
 
 const TerrainDisplayContext = createContext<TerrainDisplayValue | null>(null);
@@ -28,6 +29,7 @@ interface TerrainActionValue {
   setInvestigationTab: (tab: InvestigationTab) => void;
   setSplitRegion: (region: RegionName | null) => void;
   setSplitFullscreen: (fs: boolean) => void;
+  highlightRegion: (region: RegionName | null) => void;
 }
 
 const TerrainActionContext = createContext<TerrainActionValue | null>(null);
@@ -51,6 +53,11 @@ export function TerrainProvider({ children }: { children: ReactNode }) {
   const [investigationTab, setInvestigationTab] = useState<InvestigationTab>("chat");
   const [splitRegion, setSplitRegionState] = useState<RegionName | null>(null);
   const [splitFullscreen, setSplitFullscreen] = useState(false);
+  const [highlightedRegion, setHighlightedRegion] = useState<RegionName | null>(null);
+
+  const highlightRegion = useCallback((region: RegionName | null) => {
+    setHighlightedRegion(region);
+  }, []);
 
   const setSplitRegion = useCallback((region: RegionName | null) => {
     setSplitRegionState(region);
@@ -86,13 +93,13 @@ export function TerrainProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const displayValue = useMemo(
-    () => ({ focusedRegion, regionDepths, activeOverlay, investigationTab, splitRegion, splitFullscreen }),
-    [focusedRegion, regionDepths, activeOverlay, investigationTab, splitRegion, splitFullscreen],
+    () => ({ focusedRegion, regionDepths, activeOverlay, investigationTab, splitRegion, splitFullscreen, highlightedRegion }),
+    [focusedRegion, regionDepths, activeOverlay, investigationTab, splitRegion, splitFullscreen, highlightedRegion],
   );
 
   const actionValue = useMemo(
-    () => ({ focusRegion, setRegionDepth, cycleDepth, setOverlay, setInvestigationTab, setSplitRegion, setSplitFullscreen }),
-    [focusRegion, setRegionDepth, cycleDepth, setOverlay, setInvestigationTab, setSplitRegion, setSplitFullscreen],
+    () => ({ focusRegion, setRegionDepth, cycleDepth, setOverlay, setInvestigationTab, setSplitRegion, setSplitFullscreen, highlightRegion }),
+    [focusRegion, setRegionDepth, cycleDepth, setOverlay, setInvestigationTab, setSplitRegion, setSplitFullscreen, highlightRegion],
   );
 
   return (
@@ -114,6 +121,7 @@ const DISPLAY_FALLBACK: TerrainDisplayValue = {
   investigationTab: "chat",
   splitRegion: null,
   splitFullscreen: false,
+  highlightedRegion: null,
 };
 const ACTION_FALLBACK: TerrainActionValue = {
   focusRegion: noopFn,
@@ -123,6 +131,7 @@ const ACTION_FALLBACK: TerrainActionValue = {
   setInvestigationTab: noopFn,
   setSplitRegion: noopFn,
   setSplitFullscreen: noopFn,
+  highlightRegion: noopFn,
 };
 
 export function useTerrainDisplay(): TerrainDisplayValue {
