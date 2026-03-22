@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.research
+
 
 class TestDUStateTransitions:
     def _make_ledger(self):

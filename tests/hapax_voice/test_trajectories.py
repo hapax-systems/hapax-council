@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import unittest
 
+import pytest
+
+pytestmark = pytest.mark.research
+
 from agents.hapax_voice.eval_grounding import (
     SessionEval,
     collect_per_turn_scores,

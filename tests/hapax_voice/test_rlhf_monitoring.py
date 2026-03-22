@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.research
+
 
 class TestMonologicScoring:
     def test_purely_declarative_is_monologic(self):

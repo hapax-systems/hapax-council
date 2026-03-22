@@ -131,4 +131,5 @@ markers = [
     "integration: marks integration tests",
     "hardware: marks tests needing real hardware (deselect with '-m \"not hardware\"')",
     "llm: tests requiring live LLM access via LiteLLM (deselect with '-m \"not llm\"')",
+    "research: tests for experiment/grounding research infrastructure (deselect with '-m \"not research\"')",
 ]
