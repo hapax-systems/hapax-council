@@ -19,7 +19,9 @@ import asyncio
 import json
 import os
 import socket
+import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -106,6 +108,7 @@ class InfrastructureManifest(BaseModel):
     pass_entries: list[str] = Field(default_factory=list)
     compose_file: str = ""
     profile_files: list[str] = Field(default_factory=list)
+    edge_nodes: list[dict] = Field(default_factory=list)
 
 
 # ── Collectors ───────────────────────────────────────────────────────────────
@@ -458,6 +461,16 @@ async def _generate_manifest_inner() -> InfrastructureManifest:
     # OS info
     rc, os_info, _ = await run_cmd(["uname", "-sr"])
 
+    # Collect edge node heartbeats
+    edge_state_dir = Path.home() / "hapax-state" / "edge"
+    edge_nodes = []
+    if edge_state_dir.is_dir():
+        for f in sorted(edge_state_dir.glob("*.json")):
+            try:
+                edge_nodes.append(json.loads(f.read_text()))
+            except (json.JSONDecodeError, OSError):
+                edge_nodes.append({"hostname": f.stem, "error": "unreadable"})
+
     return InfrastructureManifest(
         timestamp=datetime.now(UTC).isoformat(),
         hostname=socket.gethostname(),
@@ -475,6 +488,7 @@ async def _generate_manifest_inner() -> InfrastructureManifest:
         pass_entries=collect_pass_entries(),
         compose_file=str(COMPOSE_FILE) if COMPOSE_FILE.is_file() else "",
         profile_files=collect_profile_files(),
+        edge_nodes=edge_nodes,
     )
 
 
@@ -536,6 +550,20 @@ def format_summary(m: InfrastructureManifest) -> str:
     lines.append(f"Pass Entries ({len(m.pass_entries)}): {', '.join(m.pass_entries)}")
     lines.append(f"Profile Files: {', '.join(m.profile_files)}")
     lines.append(f"Listening Ports: {', '.join(m.listening_ports)}")
+
+    if m.edge_nodes:
+        lines.append("")
+        lines.append(f"Edge Nodes ({len(m.edge_nodes)}):")
+        for node in m.edge_nodes:
+            hostname = node.get("hostname", "unknown")
+            role = node.get("role", "?")
+            cpu_temp = node.get("cpu_temp_c", "?")
+            mem_avail = node.get("mem_available_mb", "?")
+            age = time.time() - node.get("last_seen_epoch", 0)
+            status = "online" if age < 300 else f"stale ({age / 60:.0f}m)"
+            lines.append(
+                f"  {hostname:15s} ({role:10s}) {status}, CPU {cpu_temp}°C, {mem_avail}MB free"
+            )
 
     return "\n".join(lines)
 
