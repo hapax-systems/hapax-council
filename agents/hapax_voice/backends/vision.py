@@ -211,16 +211,25 @@ class _VisionCache:
 
         # ── Camera specialization: authoritative camera per behavior ───
         op = self._per_camera_behaviors.get("operator", {})
-        room = self._per_camera_behaviors.get("room", {})
+        room_brio = self._per_camera_behaviors.get("room-brio", {})
+        synths_brio = self._per_camera_behaviors.get("synths-brio", {})
 
-        # Face/emotion/gaze: BRIO operator cam only (close-up)
-        gaze = op.get("gaze_direction", "unknown")
-        emotion = op.get("top_emotion", "neutral")
-        hand_gesture = op.get("hand_gesture", "none")
+        # Face/emotion/gaze: best result across all Brio cameras.
+        # Prefer operator (close-up), fall back to room-brio, then synths-brio.
+        def _best_enrichment(key: str, default: str) -> str:
+            for cam in (op, room_brio, synths_brio):
+                val = cam.get(key)
+                if val and val != default and val != "unknown":
+                    return val
+            return default
 
-        # Posture: prefer room cam (full body), fallback to operator
-        posture = room.get("posture", op.get("posture", "unknown"))
-        pose_summary = room.get("pose_summary", op.get("pose_summary", "unknown"))
+        gaze = _best_enrichment("gaze_direction", "unknown")
+        emotion = _best_enrichment("top_emotion", "neutral")
+        hand_gesture = _best_enrichment("hand_gesture", "none")
+
+        # Posture: prefer room-brio (full body), fallback to operator, then synths
+        posture = _best_enrichment("posture", "unknown")
+        pose_summary = _best_enrichment("pose_summary", "unknown")
 
         # Scene objects: union across all cameras
         all_objects: set[str] = set()
@@ -1566,23 +1575,26 @@ class VisionBackend:
                     except Exception as exc:
                         log.debug("ReID face check failed: %s", exc)
 
-                if role in ("operator", "room-brio"):
-                    # Gaze/emotion/gesture: operator cam only (close-up face needed)
-                    if role == "operator":
+                if role in ("operator", "room-brio", "synths-brio"):
+                    # Gaze/emotion/gesture: any Brio camera with a person detected.
+                    # Multi-camera coverage means enrichments work regardless of
+                    # which camera the operator happens to face.
+                    if person_count > 0:
                         try:
                             gaze_direction = self._smooth_gaze(self._run_gaze_estimation(frame))
                         except Exception:
-                            log.debug("Gaze estimation failed", exc_info=True)
-                        try:
-                            hand_gesture = self._run_hand_gesture(frame)
-                        except Exception:
-                            log.debug("Hand gesture failed", exc_info=True)
+                            log.debug("Gaze estimation failed on %s", role, exc_info=True)
                         try:
                             top_emotion = self._run_emotion_recognition(frame)
                         except Exception:
-                            log.debug("Emotion recognition failed", exc_info=True)
+                            log.debug("Emotion recognition failed on %s", role, exc_info=True)
+                    # Hand gesture: any enrichment camera (doesn't require face)
+                    try:
+                        hand_gesture = self._run_hand_gesture(frame)
+                    except Exception:
+                        log.debug("Hand gesture failed", exc_info=True)
 
-                    # Posture: both operator and room-brio (full body from room)
+                    # Posture: all enrichment cameras (full body or close-up)
                     try:
                         posture = (
                             posture_from_yolo
