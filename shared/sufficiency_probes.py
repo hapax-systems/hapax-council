@@ -23,9 +23,9 @@ from datetime import UTC, datetime
 
 from shared.config import (
     AI_AGENTS_DIR,
-    COCKPIT_STATE_DIR,
     HAPAX_VSCODE_DIR,
     HAPAXROMANA_DIR,
+    LOGOS_STATE_DIR,
     OBSIDIAN_HAPAX_DIR,
     load_expected_timers,
 )
@@ -151,7 +151,7 @@ def _check_state_persistence() -> tuple[bool, str]:
     """Check that agents with resume capability persist state files."""
     AI_AGENTS_DIR / "agents"
     profiles_dir = AI_AGENTS_DIR / "profiles"
-    cache_dir = COCKPIT_STATE_DIR
+    cache_dir = LOGOS_STATE_DIR
 
     state_locations = []
     if profiles_dir.exists():
@@ -164,7 +164,7 @@ def _check_state_persistence() -> tuple[bool, str]:
     if len(state_locations) >= 3:
         return (
             True,
-            f"{len(state_locations)} state files found across profiles/ and ~/.cache/cockpit/",
+            f"{len(state_locations)} state files found across profiles/ and ~/.cache/logos/",
         )
     return (
         False,

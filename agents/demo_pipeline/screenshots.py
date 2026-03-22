@@ -77,7 +77,7 @@ def fix_localhost_url(url: str) -> str:
     if parsed.hostname not in ("localhost", "127.0.0.1"):
         return url
 
-    # Known valid ports: 5173 (hapax-logos), 8051 (cockpit API), 3080 (Open WebUI)
+    # Known valid ports: 5173 (hapax-logos), 8051 (logos API), 3080 (Open WebUI)
     if parsed.port not in (5173, 8051, 3080):
         url = f"http://localhost:5173{parsed.path or '/'}"
         log.warning("Rewrote invalid URL %s -> %s", parsed.geturl(), url)
@@ -174,16 +174,16 @@ def _resolve_selector(spec: ScreenshotSpec) -> str | None:
 
 
 def _clear_chat_session() -> None:
-    """Delete the persisted cockpit chat session so new sessions start in chat mode.
+    """Delete the persisted logos chat session so new sessions start in chat mode.
 
-    The cockpit API loads persisted session state on every session create.
+    The logos API loads persisted session state on every session create.
     If the last interactive session was in interview mode, demo screenshots
     would show "I'm the interview agent" responses instead of system tool responses.
     """
     try:
-        from shared.config import COCKPIT_STATE_DIR
+        from shared.config import LOGOS_STATE_DIR
 
-        session_file = COCKPIT_STATE_DIR / "chat-session.json"
+        session_file = LOGOS_STATE_DIR / "chat-session.json"
         if session_file.exists():
             session_file.unlink()
             log.info("Cleared persisted chat session to ensure chat mode for screenshots")
@@ -222,7 +222,7 @@ async def capture_screenshots(
     await _preflight_check(specs)
 
     # Clear persisted chat session so new sessions start in chat mode (not interview mode).
-    # The cockpit API restores persisted sessions on creation, and if the last session
+    # The logos API restores persisted sessions on creation, and if the last session
     # was in interview mode, new sessions will also be in interview mode.
     _clear_chat_session()
 

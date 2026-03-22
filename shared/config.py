@@ -61,7 +61,7 @@ SYSTEMD_USER_DIR: Path = Path.home() / ".config" / "systemd" / "user"
 
 # State directories under ~/.cache/
 AXIOM_AUDIT_DIR: Path = HAPAX_CACHE_DIR / "axiom-audit"
-COCKPIT_STATE_DIR: Path = HAPAX_CACHE_DIR / "cockpit"
+LOGOS_STATE_DIR: Path = HAPAX_CACHE_DIR / "logos"
 HEALTH_STATE_DIR: Path = HAPAX_CACHE_DIR / "health-watchdog"
 RAG_INGEST_STATE_DIR: Path = HAPAX_CACHE_DIR / "rag-ingest"
 TAKEOUT_STATE_DIR: Path = HAPAX_CACHE_DIR / "takeout-ingest"

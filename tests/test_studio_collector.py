@@ -1,4 +1,4 @@
-"""Tests for cockpit/data/studio.py — studio ingestion data collector."""
+"""Tests for logos/data/studio.py — studio ingestion data collector."""
 
 from __future__ import annotations
 
@@ -28,15 +28,15 @@ def _write_sidecar(path, **overrides):
 
 
 def test_collect_processor_stats_no_state(tmp_path):
-    from cockpit.data.studio import _collect_processor_stats
+    from logos.data.studio import _collect_processor_stats
 
-    with patch("cockpit.data.studio.AUDIO_PROCESSOR_CACHE_DIR", tmp_path):
+    with patch("logos.data.studio.AUDIO_PROCESSOR_CACHE_DIR", tmp_path):
         stats = _collect_processor_stats()
     assert stats.total_processed == 0
 
 
 def test_collect_processor_stats_with_data(tmp_path):
-    from cockpit.data.studio import _collect_processor_stats
+    from logos.data.studio import _collect_processor_stats
 
     state = {
         "processed_files": {
@@ -63,7 +63,7 @@ def test_collect_processor_stats_with_data(tmp_path):
     }
     (tmp_path / "state.json").write_text(json.dumps(state))
 
-    with patch("cockpit.data.studio.AUDIO_PROCESSOR_CACHE_DIR", tmp_path):
+    with patch("logos.data.studio.AUDIO_PROCESSOR_CACHE_DIR", tmp_path):
         stats = _collect_processor_stats()
 
     assert stats.total_processed == 2
@@ -73,7 +73,7 @@ def test_collect_processor_stats_with_data(tmp_path):
 
 
 def test_collect_archive_stats(tmp_path):
-    from cockpit.data.studio import _collect_archive_stats
+    from logos.data.studio import _collect_archive_stats
 
     # Create 3 FLAC + sidecar pairs
     for i in range(3):
@@ -83,9 +83,9 @@ def test_collect_archive_stats(tmp_path):
         score = 0.1 * (i + 1)  # 0.1, 0.2, 0.3
         _write_sidecar(sidecar, value_score=score)
 
-    with patch("cockpit.data.studio.AUDIO_ARCHIVE_DIR", tmp_path):
-        with patch("cockpit.data.studio.AUDIO_RAW_DIR", tmp_path / "raw"):
-            with patch("cockpit.data.studio.AUDIO_RAG_DIR", tmp_path / "rag"):
+    with patch("logos.data.studio.AUDIO_ARCHIVE_DIR", tmp_path):
+        with patch("logos.data.studio.AUDIO_RAW_DIR", tmp_path / "raw"):
+            with patch("logos.data.studio.AUDIO_RAG_DIR", tmp_path / "rag"):
                 stats, values, recent = _collect_archive_stats()
 
     assert stats.total_files == 3
@@ -94,7 +94,7 @@ def test_collect_archive_stats(tmp_path):
 
 
 def test_collect_archive_value_distribution(tmp_path):
-    from cockpit.data.studio import _collect_archive_stats
+    from logos.data.studio import _collect_archive_stats
 
     scores = [0.1, 0.2, 0.5, 0.6, 0.8, 0.9]
     for i, score in enumerate(scores):
@@ -103,9 +103,9 @@ def test_collect_archive_value_distribution(tmp_path):
         _write_sidecar(tmp_path / f"rec-{i}.md", value_score=score)
 
     with (
-        patch("cockpit.data.studio.AUDIO_ARCHIVE_DIR", tmp_path),
-        patch("cockpit.data.studio.AUDIO_RAW_DIR", tmp_path / "raw"),
-        patch("cockpit.data.studio.AUDIO_RAG_DIR", tmp_path / "rag"),
+        patch("logos.data.studio.AUDIO_ARCHIVE_DIR", tmp_path),
+        patch("logos.data.studio.AUDIO_RAW_DIR", tmp_path / "raw"),
+        patch("logos.data.studio.AUDIO_RAG_DIR", tmp_path / "rag"),
     ):
         _, values, _ = _collect_archive_stats()
 
@@ -115,7 +115,7 @@ def test_collect_archive_value_distribution(tmp_path):
 
 
 def test_collect_arbiter_summary(tmp_path):
-    from cockpit.data.studio import _collect_arbiter_summary
+    from logos.data.studio import _collect_arbiter_summary
 
     report = """---
 timestamp: "2026-03-15T05:00:00+00:00"
@@ -129,7 +129,7 @@ files_eligible_for_reap: 3
 """
     (tmp_path / "storage-arbiter-report.md").write_text(report)
 
-    with patch("cockpit.data.studio.PROFILES_DIR", tmp_path):
+    with patch("logos.data.studio.PROFILES_DIR", tmp_path):
         summary = _collect_arbiter_summary()
 
     assert summary.total_files == 50
@@ -138,16 +138,16 @@ files_eligible_for_reap: 3
 
 
 def test_collect_arbiter_no_report(tmp_path):
-    from cockpit.data.studio import _collect_arbiter_summary
+    from logos.data.studio import _collect_arbiter_summary
 
-    with patch("cockpit.data.studio.PROFILES_DIR", tmp_path):
+    with patch("logos.data.studio.PROFILES_DIR", tmp_path):
         summary = _collect_arbiter_summary()
 
     assert summary.total_files == 0
 
 
 def test_collect_capture_status():
-    from cockpit.data.studio import _collect_capture_status
+    from logos.data.studio import _collect_capture_status
 
     mock_result = MagicMock()
     mock_result.stdout = "active\n"
@@ -159,14 +159,14 @@ def test_collect_capture_status():
 
 
 def test_collect_studio_snapshot(tmp_path):
-    from cockpit.data.studio import collect_studio
+    from logos.data.studio import collect_studio
 
     with (
-        patch("cockpit.data.studio.AUDIO_PROCESSOR_CACHE_DIR", tmp_path),
-        patch("cockpit.data.studio.AUDIO_ARCHIVE_DIR", tmp_path / "archive"),
-        patch("cockpit.data.studio.AUDIO_RAW_DIR", tmp_path / "raw"),
-        patch("cockpit.data.studio.AUDIO_RAG_DIR", tmp_path / "rag"),
-        patch("cockpit.data.studio.PROFILES_DIR", tmp_path),
+        patch("logos.data.studio.AUDIO_PROCESSOR_CACHE_DIR", tmp_path),
+        patch("logos.data.studio.AUDIO_ARCHIVE_DIR", tmp_path / "archive"),
+        patch("logos.data.studio.AUDIO_RAW_DIR", tmp_path / "raw"),
+        patch("logos.data.studio.AUDIO_RAG_DIR", tmp_path / "rag"),
+        patch("logos.data.studio.PROFILES_DIR", tmp_path),
         patch("subprocess.run", side_effect=FileNotFoundError),
     ):
         snapshot = collect_studio()

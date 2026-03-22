@@ -84,7 +84,7 @@ class AuditReport:
 
 def _find_python_files(root: Path) -> list[Path]:
     """All .py files in agents/, shared/, cockpit/ (not tests, not __pycache__)."""
-    dirs = [root / "agents", root / "shared", root / "cockpit"]
+    dirs = [root / "agents", root / "shared", root / "logos"]
     files = []
     for d in dirs:
         if d.exists():

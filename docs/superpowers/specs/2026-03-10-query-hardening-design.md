@@ -198,7 +198,7 @@ Empty state:
 10 curated queries per agent:
 
 Dev Story queries:
-- "show me commit history for the cockpit module"
+- "show me commit history for logos module"
 - "what files changed most in the last week"
 - "how many sessions were there yesterday"
 - "what's the average session duration"

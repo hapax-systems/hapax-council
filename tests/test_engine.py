@@ -1,4 +1,4 @@
-"""Tests for cockpit/engine/ — reactive engine core infrastructure.
+"""Tests for logos/engine/ — reactive engine core infrastructure.
 
 Self-contained, asyncio_mode="auto", unittest.mock only.
 """
@@ -10,9 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from cockpit.engine.executor import PhasedExecutor
-from cockpit.engine.models import Action, ActionPlan, ChangeEvent
-from cockpit.engine.rules import Rule, RuleRegistry, evaluate_rules
+from logos.engine.executor import PhasedExecutor
+from logos.engine.models import Action, ActionPlan, ChangeEvent
+from logos.engine.rules import Rule, RuleRegistry, evaluate_rules
 from shared.frontmatter import parse_frontmatter
 
 # ── TestParseFrontmatter ────────────────────────────────────────────────────
@@ -396,7 +396,7 @@ class TestPhasedExecutor:
 class TestDirectoryWatcher:
     async def test_debounce_collapses_events(self):
         """Multiple events on same path within window → single callback."""
-        from cockpit.engine.watcher import DirectoryWatcher
+        from logos.engine.watcher import DirectoryWatcher
 
         callback = AsyncMock()
         loop = asyncio.get_running_loop()
@@ -422,7 +422,7 @@ class TestDirectoryWatcher:
         assert event.event_type == "created"  # First event type preserved
 
     async def test_self_trigger_prevention(self):
-        from cockpit.engine.watcher import DirectoryWatcher
+        from logos.engine.watcher import DirectoryWatcher
 
         watcher = DirectoryWatcher(
             watch_paths=[],
@@ -441,21 +441,21 @@ class TestDirectoryWatcher:
         await watcher.stop()
 
     async def test_dotfile_filtering(self):
-        from cockpit.engine.watcher import _should_skip
+        from logos.engine.watcher import _should_skip
 
         assert _should_skip(Path("/data/.hidden/file.md")) is True
         assert _should_skip(Path("/data/processed/file.md")) is True
         assert _should_skip(Path("/data/profiles/health.jsonl")) is False
 
     async def test_doc_type_inference_path_based(self):
-        from cockpit.engine.watcher import _infer_doc_type
+        from logos.engine.watcher import _infer_doc_type
 
         doc_type, fm = _infer_doc_type(Path("/data/profiles/health-history.jsonl"))
         assert doc_type == "health-event"
         assert fm is None
 
     async def test_doc_type_inference_axiom_dir(self):
-        from cockpit.engine.watcher import _infer_doc_type
+        from logos.engine.watcher import _infer_doc_type
 
         doc_type, fm = _infer_doc_type(Path("/project/axioms/implications/single_user.yaml"))
         assert doc_type == "axiom-implication"
@@ -465,9 +465,9 @@ class TestDirectoryWatcher:
 
 
 class TestReactiveEngine:
-    @patch("cockpit.engine.DirectoryWatcher")
+    @patch("logos.engine.DirectoryWatcher")
     async def test_lifecycle_start_stop(self, mock_watcher_cls):
-        from cockpit.engine import ReactiveEngine
+        from logos.engine import ReactiveEngine
 
         mock_watcher = AsyncMock()
         mock_watcher_cls.return_value = mock_watcher
@@ -480,7 +480,7 @@ class TestReactiveEngine:
         assert engine.status["running"] is False
 
     async def test_pause_resume(self):
-        from cockpit.engine import ReactiveEngine
+        from logos.engine import ReactiveEngine
 
         engine = ReactiveEngine(data_dir=Path("/tmp/test"))
         assert engine.status["paused"] is False
@@ -492,7 +492,7 @@ class TestReactiveEngine:
         assert engine.status["paused"] is False
 
     async def test_status_counters_initial(self):
-        from cockpit.engine import ReactiveEngine
+        from logos.engine import ReactiveEngine
 
         engine = ReactiveEngine(data_dir=Path("/tmp/test"))
         status = engine.status
@@ -502,14 +502,14 @@ class TestReactiveEngine:
         assert status["errors"] == 0
 
     async def test_empty_registry(self):
-        from cockpit.engine import ReactiveEngine
+        from logos.engine import ReactiveEngine
 
         engine = ReactiveEngine(data_dir=Path("/tmp/test"))
         assert len(engine.registry) == 0
 
-    @patch("cockpit.engine.DirectoryWatcher")
+    @patch("logos.engine.DirectoryWatcher")
     async def test_handle_change_paused(self, mock_watcher_cls):
-        from cockpit.engine import ReactiveEngine
+        from logos.engine import ReactiveEngine
 
         mock_watcher = AsyncMock()
         mock_watcher_cls.return_value = mock_watcher

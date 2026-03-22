@@ -1,8 +1,8 @@
-"""Tests for cockpit.copilot — CopilotEngine rule evaluation."""
+"""Tests for logos.copilot — CopilotEngine rule evaluation."""
 
 from __future__ import annotations
 
-from cockpit.copilot import (
+from logos.copilot import (
     _BOOTSTRAPPING_OBSERVATIONS,
     _READINESS_COOLDOWN,
     CopilotContext,
@@ -418,7 +418,7 @@ def test_developing_message_formats_gap():
 
 def test_idle_with_probe_surfaces_question():
     """Probe surfaces during idle when eval count aligns."""
-    from cockpit.micro_probes import MicroProbe
+    from logos.micro_probes import MicroProbe
 
     probe = MicroProbe(
         dimension="neurocognitive",

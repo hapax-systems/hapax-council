@@ -63,7 +63,7 @@ Based on TIER Protocol 4.0, BIDS, Psych-DS, The Turing Way, and Marwick et al.:
 hapax-council/
 ├── agents/                     # Production agent code (existing)
 ├── shared/                     # Shared libraries (existing)
-├── cockpit/                    # API server (existing)
+├── logos/                    # API server (existing)
 │
 ├── research/                   # ← Research compendium root
 │   ├── protocols/              # Pre-registrations, experiment protocols (versioned)

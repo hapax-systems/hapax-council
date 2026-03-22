@@ -4,7 +4,7 @@
 
 **Goal:** Add dev/prod cycle modes to contract timer schedules and agent thresholds during heavy development.
 
-**Architecture:** A mode file (`~/.cache/hapax/cycle-mode`) is the single source of truth. A shared Python module reads it. A bash script writes it and installs systemd timer overrides. The cockpit API exposes GET/PUT endpoints. Agents read the mode at invocation to adjust internal thresholds.
+**Architecture:** A mode file (`~/.cache/hapax/cycle-mode`) is the single source of truth. A shared Python module reads it. A bash script writes it and installs systemd timer overrides. The logos API exposes GET/PUT endpoints. Agents read the mode at invocation to adjust internal thresholds.
 
 **Tech Stack:** Python 3.12, FastAPI, systemd timers, bash, pytest
 
@@ -83,7 +83,7 @@ Create `shared/cycle_mode.py`:
 
 Single source of truth for the current cycle mode (dev or prod).
 The mode file is written by the hapax-mode CLI script and the
-cockpit API. Agents read it at invocation to adjust thresholds.
+logos API. Agents read it at invocation to adjust thresholds.
 """
 from __future__ import annotations
 
@@ -424,7 +424,7 @@ git commit -m "feat: add hapax-mode CLI script for cycle switching"
 
 **Files:**
 - Modify: `cockpit/micro_probes.py:17-19`
-- Modify: `cockpit/api/cache.py:131-132`
+- Modify: `logos/api/cache.py:131-132`
 - Modify: `tests/test_micro_probes.py:13-14`
 - Create: `tests/test_cycle_mode_integration.py`
 
@@ -447,7 +447,7 @@ def test_probe_cooldown_prod(tmp_path):
     mode_file = tmp_path / "cycle-mode"
     mode_file.write_text("prod\n")
     with patch("shared.cycle_mode.MODE_FILE", mode_file):
-        from cockpit.micro_probes import _probe_cooldown
+        from logos.micro_probes import _probe_cooldown
         assert _probe_cooldown() == 600
 
 
@@ -455,7 +455,7 @@ def test_probe_cooldown_dev(tmp_path):
     mode_file = tmp_path / "cycle-mode"
     mode_file.write_text("dev\n")
     with patch("shared.cycle_mode.MODE_FILE", mode_file):
-        from cockpit.micro_probes import _probe_cooldown
+        from logos.micro_probes import _probe_cooldown
         assert _probe_cooldown() == 1800
 
 
@@ -463,7 +463,7 @@ def test_probe_idle_threshold_prod(tmp_path):
     mode_file = tmp_path / "cycle-mode"
     mode_file.write_text("prod\n")
     with patch("shared.cycle_mode.MODE_FILE", mode_file):
-        from cockpit.micro_probes import _probe_idle_threshold
+        from logos.micro_probes import _probe_idle_threshold
         assert _probe_idle_threshold() == 300
 
 
@@ -471,7 +471,7 @@ def test_probe_idle_threshold_dev(tmp_path):
     mode_file = tmp_path / "cycle-mode"
     mode_file.write_text("dev\n")
     with patch("shared.cycle_mode.MODE_FILE", mode_file):
-        from cockpit.micro_probes import _probe_idle_threshold
+        from logos.micro_probes import _probe_idle_threshold
         assert _probe_idle_threshold() == 900
 
 
@@ -479,7 +479,7 @@ def test_cache_fast_interval_prod(tmp_path):
     mode_file = tmp_path / "cycle-mode"
     mode_file.write_text("prod\n")
     with patch("shared.cycle_mode.MODE_FILE", mode_file):
-        from cockpit.api.cache import _fast_interval, _slow_interval
+        from logos.api.cache import _fast_interval, _slow_interval
         assert _fast_interval() == 30
         assert _slow_interval() == 300
 
@@ -488,7 +488,7 @@ def test_cache_intervals_dev(tmp_path):
     mode_file = tmp_path / "cycle-mode"
     mode_file.write_text("dev\n")
     with patch("shared.cycle_mode.MODE_FILE", mode_file):
-        from cockpit.api.cache import _fast_interval, _slow_interval
+        from logos.api.cache import _fast_interval, _slow_interval
         assert _fast_interval() == 15
         assert _slow_interval() == 120
 ```
@@ -535,7 +535,7 @@ Then update line 162 where `PROBE_COOLDOWN` is used in `get_probe()`:
         if time.time() - self._last_probe_time < _probe_cooldown():
 ```
 
-**Step 4: Update `cockpit/api/cache.py`**
+**Step 4: Update `logos/api/cache.py`**
 
 Replace lines 131-132 (the constants) with mode-aware functions:
 
@@ -579,17 +579,17 @@ Expected: All pass
 **Step 6: Commit**
 
 ```bash
-git add cockpit/micro_probes.py cockpit/api/cache.py tests/test_cycle_mode_integration.py
+git add cockpit/micro_probes.py logos/api/cache.py tests/test_cycle_mode_integration.py
 git commit -m "feat: make probe cooldowns and cache intervals cycle-mode-aware"
 ```
 
 ---
 
-### Task 5: Add cockpit API endpoints
+### Task 5: Add logos API endpoints
 
 **Files:**
-- Create: `cockpit/api/routes/cycle_mode.py`
-- Modify: `cockpit/api/app.py:40,49-60`
+- Create: `logos/api/routes/cycle_mode.py`
+- Modify: `logos/api/app.py:40,49-60`
 - Create: `tests/test_cycle_mode_api.py`
 
 **Step 1: Write the failing tests**
@@ -597,7 +597,7 @@ git commit -m "feat: make probe cooldowns and cache intervals cycle-mode-aware"
 Create `tests/test_cycle_mode_api.py`:
 
 ```python
-"""Tests for cockpit API cycle-mode endpoints."""
+"""Tests for logos API cycle-mode endpoints."""
 from __future__ import annotations
 
 from unittest.mock import patch, AsyncMock
@@ -606,7 +606,7 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient, ASGITransport
 
-from cockpit.api.app import app
+from logos.api.app import app
 
 
 @pytest.fixture
@@ -659,10 +659,10 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'cockpit.api.routes.cy
 
 **Step 3: Create the route module**
 
-Create `cockpit/api/routes/cycle_mode.py`:
+Create `logos/api/routes/cycle_mode.py`:
 
 ```python
-"""Cockpit API routes for cycle mode switching."""
+"""Logos API routes for cycle mode switching."""
 from __future__ import annotations
 
 import asyncio
@@ -729,12 +729,12 @@ async def put_cycle_mode(body: CycleModeRequest):
     return await get_cycle_mode()
 ```
 
-**Step 4: Register the router in `cockpit/api/app.py`**
+**Step 4: Register the router in `logos/api/app.py`**
 
 Add after line 51 (after the demos import):
 
 ```python
-from cockpit.api.routes.cycle_mode import router as cycle_mode_router
+from logos.api.routes.cycle_mode import router as cycle_mode_router
 ```
 
 Add after line 60 (after `app.include_router(demos_router)`):
@@ -766,6 +766,6 @@ Expected: All pass
 **Step 7: Commit**
 
 ```bash
-git add cockpit/api/routes/cycle_mode.py cockpit/api/app.py tests/test_cycle_mode_api.py
-git commit -m "feat: add cockpit API cycle-mode endpoints (GET/PUT)"
+git add logos/api/routes/cycle_mode.py logos/api/app.py tests/test_cycle_mode_api.py
+git commit -m "feat: add logos API cycle-mode endpoints (GET/PUT)"
 ```

@@ -196,19 +196,19 @@ class TestCarrierIntakeReactiveRule(unittest.TestCase):
     """Test the reactive rule filter and produce functions.
 
     Uses importlib to import reactive_rules directly, bypassing
-    cockpit.engine.__init__ which requires watchdog (optional dep).
+    logos.engine.__init__ which requires watchdog (optional dep).
     """
 
     @classmethod
     def _import_rules(cls) -> Any:
         import importlib
 
-        return importlib.import_module("cockpit.engine.reactive_rules")
+        return importlib.import_module("logos.engine.reactive_rules")
 
     def _make_event(self, frontmatter: dict | None = None) -> Any:
         from datetime import datetime
 
-        from cockpit.engine.models import ChangeEvent
+        from logos.engine.models import ChangeEvent
 
         return ChangeEvent(
             path=Path("/data/test.md"),

@@ -1,5 +1,5 @@
 [Unit]
-Description=Hapax Logos — native cockpit + wgpu visual surface
+Description=Hapax Logos — native visual + wgpu rendering surface
 After=graphical-session.target logos-api.service
 Wants=graphical-session.target
 # Replaces standalone hapax-visual (visual surface is now a second window)

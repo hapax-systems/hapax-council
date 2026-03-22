@@ -2738,7 +2738,7 @@ async def check_langfuse_error_spikes() -> list[CheckResult]:
             )
         ]
 
-    services = ["cockpit", "briefing", "health", "drift", "scout", "voice"]
+    services = ["logos", "briefing", "health", "drift", "scout", "voice"]
     results: list[CheckResult] = []
 
     for svc in services:
@@ -3450,11 +3450,11 @@ def _collect_all_timers() -> list[dict]:
 
 
 def write_infra_snapshot(report: HealthReport) -> None:
-    """Write infrastructure snapshot for cockpit-api container to read.
+    """Write infrastructure snapshot for logos-api container to read.
 
-    The cockpit-api runs in Docker without access to docker/systemctl/nvidia-smi.
+    The logos-api runs in Docker without access to docker/systemctl/nvidia-smi.
     This function extracts infrastructure data from health check results and
-    writes it to a JSON file that cockpit data collectors read instead.
+    writes it to a JSON file that logos data collectors read instead.
     """
     containers: list[dict] = []
     timers: list[dict] = []
@@ -3690,7 +3690,7 @@ async def main() -> None:
 
     report = await run_checks(groups)
 
-    # Write infra snapshot for cockpit-api container (full runs only)
+    # Write infra snapshot for logos-api container (full runs only)
     if groups is None:
         write_infra_snapshot(report)
 

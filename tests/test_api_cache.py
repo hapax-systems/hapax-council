@@ -1,10 +1,10 @@
-"""Tests for cockpit API data cache."""
+"""Tests for logos API data cache."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from cockpit.api.cache import DataCache
+from logos.api.cache import DataCache
 
 
 class TestDataCache:
@@ -34,10 +34,10 @@ class TestDataCache:
             },
         )()
         with (
-            patch("cockpit.data.health.collect_live_health", mock_health),
-            patch("cockpit.data.infrastructure.collect_docker", AsyncMock(return_value=[])),
-            patch("cockpit.data.infrastructure.collect_timers", AsyncMock(return_value=[])),
-            patch("cockpit.data.gpu.collect_vram", AsyncMock(return_value=None)),
+            patch("logos.data.health.collect_live_health", mock_health),
+            patch("logos.data.infrastructure.collect_docker", AsyncMock(return_value=[])),
+            patch("logos.data.infrastructure.collect_timers", AsyncMock(return_value=[])),
+            patch("logos.data.gpu.collect_vram", AsyncMock(return_value=None)),
         ):
             await cache.refresh_fast()
         assert cache.health is not None
@@ -46,7 +46,7 @@ class TestDataCache:
     async def test_refresh_slow_populates_nudges(self):
         cache = DataCache()
         with patch(
-            "cockpit.data.nudges.collect_nudges",
+            "logos.data.nudges.collect_nudges",
             return_value=[
                 type(
                     "N",

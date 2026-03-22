@@ -9,7 +9,7 @@
 The Claude Code layer (rules, hooks, skills, MCP servers) was designed early and hasn't tracked system growth. Three major developments are invisible to Claude Code:
 
 1. **Profile system** — 13 dimensions, 500+ facts, distilled manifest. Claude Code generates operator data via claude_code_sync but never receives profile context back.
-2. **Cockpit API** — 17+ real-time state endpoints (health, nudges, briefing, profile, momentum, cycle mode). No integration.
+2. **Logos API** — 17+ real-time state endpoints (health, nudges, briefing, profile, momentum, cycle mode). No integration.
 3. **Calendar/meeting context** — Synced and queryable via `shared/calendar_context.py`. Not surfaced.
 
 Additionally, `system-context.md` (read every session) has drifted: missing 7 agents, wrong module paths, stale timer schedules, no cycle-mode reference. No cross-session memory exists.

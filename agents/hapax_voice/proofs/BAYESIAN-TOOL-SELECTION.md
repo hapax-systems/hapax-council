@@ -219,7 +219,7 @@ functions. A mode composes from a shared pool:
 | lookup_fact(query, source) | 500ms | Single-result Qdrant search |
 | read_perception(aspect) | 0ms | Read one behavior from perception state |
 | read_shm(path, key) | 0ms | Read one value from /dev/shm state |
-| query_api(endpoint) | 1-3s | Hit cockpit API endpoint |
+| query_api(endpoint) | 1-3s | Hit logos API endpoint |
 | search_external(service, query) | 2-5s | Google/calendar/email API |
 
 A mode like "studio" would compose: `read_perception("audio_energy")`,

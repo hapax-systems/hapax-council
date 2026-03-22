@@ -494,7 +494,7 @@ of the most impressive or relatable capability, not an architecture diagram.
 
 ## Visual Rules
 
-The cockpit web dashboard is at http://localhost:5173 with these pages:
+The logos web dashboard is at http://localhost:5173 with these pages:
 - / — Main dashboard with health, VRAM, containers, timers, briefing, scout, drift, goals, cost panels
 - /chat — Chat interface with streaming LLM responses
 - /demos — Demo listing page

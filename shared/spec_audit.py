@@ -138,7 +138,7 @@ def audit_structural(project_root: Path | None = None) -> SpecReport:
         )
     )
 
-    engine_path = root / "cockpit" / "engine" / "__init__.py"
+    engine_path = root / "logos" / "engine" / "__init__.py"
     ok, detail = _check_file_contains(
         engine_path,
         [
@@ -229,7 +229,7 @@ def audit_structural(project_root: Path | None = None) -> SpecReport:
     )
 
     # ex-consolidation-trigger-001: reactive rule exists
-    rules_path = root / "cockpit" / "engine" / "reactive_rules.py"
+    rules_path = root / "logos" / "engine" / "reactive_rules.py"
     ok, detail = _check_file_contains(
         rules_path,
         [

@@ -1,4 +1,4 @@
-"""Tests for cockpit.data.goals — goal collection and staleness."""
+"""Tests for logos.data.goals — goal collection and staleness."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import shared.operator
-from cockpit.data.goals import (
+from logos.data.goals import (
     _activity_hours,
     _is_stale,
     collect_goals,

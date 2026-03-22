@@ -1,4 +1,4 @@
-"""Tests for cockpit API cycle-mode endpoints."""
+"""Tests for logos API cycle-mode endpoints."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cockpit.api.app import app
+from logos.api.app import app
 
 
 @pytest.fixture
@@ -19,8 +19,8 @@ def mode_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_cycle_mode_returns_current(mode_file):
-    with patch("cockpit.api.routes.cycle_mode.MODE_FILE", mode_file):
-        with patch("cockpit.api.cache.start_refresh_loop", new_callable=AsyncMock):
+    with patch("logos.api.routes.cycle_mode.MODE_FILE", mode_file):
+        with patch("logos.api.cache.start_refresh_loop", new_callable=AsyncMock):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.get("/api/cycle-mode")
@@ -36,9 +36,9 @@ async def test_put_cycle_mode_switches(mode_file):
         mode_file.write_text(mode + "\n")
         return (0, f"Cycle mode -> {mode}\n")
 
-    with patch("cockpit.api.routes.cycle_mode.MODE_FILE", mode_file):
-        with patch("cockpit.api.routes.cycle_mode._run_hapax_mode", side_effect=_fake_run):
-            with patch("cockpit.api.cache.start_refresh_loop", new_callable=AsyncMock):
+    with patch("logos.api.routes.cycle_mode.MODE_FILE", mode_file):
+        with patch("logos.api.routes.cycle_mode._run_hapax_mode", side_effect=_fake_run):
+            with patch("logos.api.cache.start_refresh_loop", new_callable=AsyncMock):
                 transport = ASGITransport(app=app)
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     resp = await client.put("/api/cycle-mode", json={"mode": "dev"})
@@ -49,8 +49,8 @@ async def test_put_cycle_mode_switches(mode_file):
 
 @pytest.mark.asyncio
 async def test_put_cycle_mode_rejects_invalid(mode_file):
-    with patch("cockpit.api.routes.cycle_mode.MODE_FILE", mode_file):
-        with patch("cockpit.api.cache.start_refresh_loop", new_callable=AsyncMock):
+    with patch("logos.api.routes.cycle_mode.MODE_FILE", mode_file):
+        with patch("logos.api.cache.start_refresh_loop", new_callable=AsyncMock):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.put("/api/cycle-mode", json={"mode": "turbo"})

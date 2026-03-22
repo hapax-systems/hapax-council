@@ -1,6 +1,6 @@
 # Project Consolidation Implementation Plan
 
-**Goal:** Simplify the development surface from 16 repos to 10, eliminate code duplication, and containerize the cockpit API and RAG sync pipeline.
+**Goal:** Simplify the development surface from 16 repos to 10, eliminate code duplication, and containerize the logos API and RAG sync pipeline.
 
 **Design:** See `~/projects/hapax-mgmt/docs/plans/2026-03-09-project-consolidation-design.md`
 
@@ -14,8 +14,8 @@
 - Claude Code memory migrated to new project path.
 
 ### Phase 2: Containerization
-- Split pyproject.toml into extras: core (base), cockpit-api, sync-pipeline, audio, host.
-- Dockerfile.cockpit-api: multi-stage slim build (~675MB vs 15.4GB). Port 8051. Lazy demos import avoids playwright dependency.
+- Split pyproject.toml into extras: core (base), logos-api, sync-pipeline, audio, host.
+- Dockerfile.logos-api: multi-stage slim build (~675MB vs 15.4GB). Port 8051. Lazy demos import avoids playwright dependency.
 - Dockerfile.sync-pipeline: 7 RAG sync agents on supercronic (~838MB). GPG agent socket forwarding for Google OAuth. CYCLE_MODE env var selects crontab.
 - docker-compose.yml: wires both containers with host networking + init:true for sync-pipeline.
 - All 7 sync agents verified end-to-end inside container (4 Google OAuth + 3 local filesystem).
@@ -32,8 +32,8 @@
 - obsidian-webui-sync stays as systemd timer (Open WebUI, not RAG).
 
 ### Phase 4: System Review Fixes
-- Unified cockpit API port to 8051 everywhere (CORS, __main__.py defaults, README, demo pipeline).
-- Health monitor now checks ai-agents containers (cockpit-api, sync-pipeline) in addition to llm-stack.
+- Unified logos API port to 8051 everywhere (CORS, __main__.py defaults, README, demo pipeline).
+- Health monitor now checks ai-agents containers (logos-api, sync-pipeline) in addition to llm-stack.
 - Health monitor gdrive check updated from systemd timer to container status.
 - Drift detector fixed: hapax-containerization → hapax-mgmt (HAPAX_MGMT_DIR).
 - Profiler sources fixed: rag-pipeline → hapax-mgmt.

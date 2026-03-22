@@ -13,13 +13,13 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 - **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000)
 - **Tier 3** — Deterministic agents (sync, health, maintenance — no LLM calls)
 
-**Reactive engine** (`cockpit/engine/`): inotify watcher → 12 rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).
+**Reactive engine** (`logos/engine/`): inotify watcher → 12 rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).
 
 **Infrastructure**: Qdrant (4 collections), LiteLLM (:4000), Ollama (RTX 3090), PostgreSQL, Langfuse, ntfy (push notifications).
 
-## Cockpit API
+## Logos API
 
-FastAPI on `:8051`. `uv run cockpit-api` to start. Containers: `docker compose up -d`.
+FastAPI on `:8051`. `uv run logos-api` to start. Containers: `docker compose up -d`.
 
 ## Council-Specific Conventions
 

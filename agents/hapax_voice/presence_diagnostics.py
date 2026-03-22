@@ -1,7 +1,7 @@
 """Presence engine diagnostics — observability and signal calibration.
 
 Provides structured logging of Bayesian presence state and per-signal
-contributions. Exposes data for cockpit API `/api/presence` endpoint.
+contributions. Exposes data for logos API `/api/presence` endpoint.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def format_tick_log(
 def build_presence_snapshot(engine: Any) -> dict[str, Any]:
     """Build a JSON-serializable snapshot of the presence engine state.
 
-    Used by cockpit API `/api/presence` endpoint.
+    Used by logos API `/api/presence` endpoint.
     """
     history = engine.history[-10:] if hasattr(engine, "history") else []
 

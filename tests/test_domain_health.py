@@ -1,8 +1,8 @@
-"""Tests for cockpit.data.domain_health — aggregated domain health."""
+"""Tests for logos.data.domain_health — aggregated domain health."""
 
 from __future__ import annotations
 
-from cockpit.data.domain_health import (
+from logos.data.domain_health import (
     DomainHealthSnapshot,
     DomainStatus,
     collect_domain_health,

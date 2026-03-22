@@ -357,7 +357,7 @@ conversation_state: Behavior[str]    # "listening", "thinking", "speaking"
 last_utterance: Behavior[str]        # most recent user transcript
 ```
 
-This lets the perception layer and other consumers (OBS compositor, cockpit API) know the conversation state without coupling to the pipeline.
+This lets the perception layer and other consumers (OBS compositor, logos API) know the conversation state without coupling to the pipeline.
 
 ---
 

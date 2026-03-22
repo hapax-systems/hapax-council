@@ -39,7 +39,7 @@ This research spans six repositories (plus one external dependency):
 | [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Governance specification | Axioms, implications, canons. Publishes `hapax-sdlc` package |
 | [hapax-officium](https://github.com/ryanklee/hapax-officium) | Supporting software | Management decision support (17 agents) |
 | [hapax-watch](https://github.com/ryanklee/hapax-watch) | Research instrument | Wear OS biometric companion (HR, HRV, skin temp) |
-| [hapax-mcp](https://github.com/ryanklee/hapax-mcp) | Infrastructure | MCP server bridging cockpit APIs to Claude Code (40 tools) |
+| [hapax-mcp](https://github.com/ryanklee/hapax-mcp) | Infrastructure | MCP server bridging logos APIs to Claude Code (40 tools) |
 | [tabbyAPI](https://github.com/theroyallab/tabbyAPI) | Infrastructure (external) | ExllamaV2/V3 LLM inference backend (upstream, not forked) |
 | [distro-work](https://github.com/ryanklee/distro-work) | System maintenance | Scripts and configuration |
 
@@ -53,7 +53,7 @@ uv run ruff check .               # lint
 uv run pyright                    # type check
 ```
 
-For production use (agents, cockpit API, voice daemon), see [Architecture](#architecture).
+For production use (agents, logos API, voice daemon), see [Architecture](#architecture).
 
 ## Architecture
 
@@ -125,7 +125,7 @@ Husserlian temporal bands (retention/impression/protention/surprise), Bayesian p
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| Cockpit API | :8051 | FastAPI (20+ routes, SSE streaming) |
+| Logos API | :8051 | FastAPI (20+ routes, SSE streaming) |
 | LiteLLM | :4000 | LLM gateway → Claude/Gemini/Ollama |
 | Qdrant | :6333 | Vector DB (6 collections, 768d nomic-embed) |
 | Ollama | :11434 | Local inference (RTX 3090) |
@@ -141,7 +141,7 @@ hapax-council/
 ├── research/         Research compendium (protocols, data, analysis, results)
 ├── lab-journal/      Quarto lab journal (GitHub Pages)
 ├── shared/           83 modules (governance, consent, perception, config)
-├── cockpit/          43 modules (FastAPI API, reactive engine)
+├── logos/          43 modules (FastAPI API, reactive engine)
 ├── hapax-logos/      Tauri 2 desktop app (wgpu + React)
 ├── axioms/           5 axioms, 90 implications, precedents, contracts
 ├── tests/            470+ test files

@@ -311,9 +311,9 @@ class TestPipelineBenchmark:
         """Evaluate carrier-intake rule against a ChangeEvent."""
         from datetime import datetime
 
-        from cockpit.engine.models import ChangeEvent
-        from cockpit.engine.reactive_rules import ALL_RULES
-        from cockpit.engine.rules import RuleRegistry, evaluate_rules
+        from logos.engine.models import ChangeEvent
+        from logos.engine.reactive_rules import ALL_RULES
+        from logos.engine.rules import RuleRegistry, evaluate_rules
 
         registry = RuleRegistry()
         carrier_rule = next(r for r in ALL_RULES if r.name == "carrier-intake")

@@ -54,7 +54,7 @@ def _make_carrier_file(
 
 def _make_change_event(path: Path) -> ChangeEvent:
     """Create a ChangeEvent from a carrier file, parsing its frontmatter."""
-    from cockpit.engine.models import ChangeEvent
+    from logos.engine.models import ChangeEvent
     from shared.frontmatter import parse_frontmatter
 
     fm, _ = parse_frontmatter(path)
@@ -84,10 +84,10 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     def test_carrier_file_triggers_rule_and_registers_fact(self):
         """A carrier-flagged file matches the rule and produces an action."""
-        from cockpit.engine.reactive_rules import (
+        from logos.engine.reactive_rules import (
             ALL_RULES,
         )
-        from cockpit.engine.rules import RuleRegistry, evaluate_rules
+        from logos.engine.rules import RuleRegistry, evaluate_rules
 
         path = _make_carrier_file()
         try:
@@ -110,7 +110,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     async def test_handler_registers_carrier_fact(self):
         """The carrier-intake handler parses the file and registers the fact."""
-        from cockpit.engine.reactive_rules import (
+        from logos.engine.reactive_rules import (
             _handle_carrier_intake,
             set_carrier_registry,
         )
@@ -138,7 +138,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     async def test_handler_with_governor_allows_public_data(self):
         """Governor with interpersonal_transparency enforcer allows public data."""
-        from cockpit.engine.reactive_rules import (
+        from logos.engine.reactive_rules import (
             _handle_carrier_intake,
             set_carrier_registry,
         )
@@ -157,7 +157,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     async def test_full_chain_intake_then_revoke(self):
         """End-to-end: intake a carrier fact, then revoke consent and verify purge."""
-        from cockpit.engine.reactive_rules import (
+        from logos.engine.reactive_rules import (
             _handle_carrier_intake,
             set_carrier_registry,
         )
@@ -204,7 +204,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     async def test_revocation_leaves_unrelated_facts(self):
         """Revoking alice doesn't purge bob's carrier facts."""
-        from cockpit.engine.reactive_rules import (
+        from logos.engine.reactive_rules import (
             _handle_carrier_intake,
             set_carrier_registry,
         )
@@ -252,12 +252,12 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     async def test_executor_runs_carrier_intake_action(self):
         """PhasedExecutor successfully runs a carrier-intake action."""
-        from cockpit.engine.executor import PhasedExecutor
-        from cockpit.engine.reactive_rules import (
+        from logos.engine.executor import PhasedExecutor
+        from logos.engine.reactive_rules import (
             ALL_RULES,
             set_carrier_registry,
         )
-        from cockpit.engine.rules import RuleRegistry, evaluate_rules
+        from logos.engine.rules import RuleRegistry, evaluate_rules
 
         carrier_reg = CarrierRegistry()
         set_carrier_registry(carrier_reg)
@@ -296,9 +296,9 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     def test_non_carrier_file_no_match(self):
         """A regular markdown file does NOT trigger the carrier-intake rule."""
-        from cockpit.engine.models import ChangeEvent
-        from cockpit.engine.reactive_rules import ALL_RULES
-        from cockpit.engine.rules import RuleRegistry, evaluate_rules
+        from logos.engine.models import ChangeEvent
+        from logos.engine.reactive_rules import ALL_RULES
+        from logos.engine.rules import RuleRegistry, evaluate_rules
 
         event = ChangeEvent(
             path=Path("/tmp/regular-file.md"),
@@ -372,7 +372,7 @@ class TestPipelineHypothesis(unittest.TestCase):
         """For any domain and value: intake with provenance, then revoke = empty registry."""
         import asyncio
 
-        from cockpit.engine.reactive_rules import set_carrier_registry
+        from logos.engine.reactive_rules import set_carrier_registry
 
         carrier_reg = CarrierRegistry()
         set_carrier_registry(carrier_reg)
@@ -388,7 +388,7 @@ class TestPipelineHypothesis(unittest.TestCase):
             provenance=[contract_id],
         )
         try:
-            from cockpit.engine.reactive_rules import _handle_carrier_intake
+            from logos.engine.reactive_rules import _handle_carrier_intake
 
             asyncio.run(_handle_carrier_intake(path=str(path), principal_id="operator"))
 
@@ -414,7 +414,7 @@ class TestPipelineHypothesis(unittest.TestCase):
         """Revocation purges exactly the facts with matching provenance."""
         import asyncio
 
-        from cockpit.engine.reactive_rules import set_carrier_registry
+        from logos.engine.reactive_rules import set_carrier_registry
 
         carrier_reg = CarrierRegistry()
         set_carrier_registry(carrier_reg)
@@ -426,7 +426,7 @@ class TestPipelineHypothesis(unittest.TestCase):
 
         paths = []
         try:
-            from cockpit.engine.reactive_rules import _handle_carrier_intake
+            from logos.engine.reactive_rules import _handle_carrier_intake
 
             # Intake n facts with matching provenance
             for i in range(n_facts):

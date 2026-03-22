@@ -10,7 +10,7 @@ VS Code extension that embeds the Hapax autonomous agent system into the vault e
 - **Knowledge search** -- semantic search across Qdrant vector collections using Ollama embeddings
 - **Management commands** -- 1:1 prep, team snapshots, nudge viewer, operator profile, decision capture
 - **Setup interview** -- guided data collection to bootstrap the management knowledge base
-- **Health status bar** -- live system health from the cockpit API
+- **Health status bar** -- live system health from the logos API
 - **Corporate boundary support** -- auto-switches to direct provider APIs when the LiteLLM proxy is unreachable
 
 ## Installation
@@ -93,5 +93,5 @@ The extension is bundled with esbuild to a single `dist/extension.js`. Runtime d
 | Repo | Purpose |
 |------|---------|
 | [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Architecture specs, axioms, design authority |
-| [hapax-council](https://github.com/ryanklee/hapax-council) | Tier 2 agent implementations + cockpit API |
-| [hapax-officium](https://github.com/ryanklee/hapax-officium) | Management decision support (cockpit API on :8050) |
+| [hapax-council](https://github.com/ryanklee/hapax-council) | Tier 2 agent implementations + logos API |
+| [hapax-officium](https://github.com/ryanklee/hapax-officium) | Management decision support (logos API on :8050) |

@@ -287,7 +287,7 @@ def collect_time_since_last_session(project_path: str) -> str:
 def collect_pending_nudges(max_nudges: int = 5) -> list[dict]:
     """Collect top pending nudges from the 12-source aggregator."""
     try:
-        from cockpit.data.nudges import collect_nudges
+        from logos.data.nudges import collect_nudges
 
         accom = _load_accommodations_raw()
         nudges = collect_nudges(max_nudges=max_nudges, accommodations=accom)
@@ -341,7 +341,7 @@ def collect_flow_state() -> dict:
 def _load_accommodations_raw():
     """Load AccommodationSet from disk for nudge priority adjustment."""
     try:
-        from cockpit.accommodations import load_accommodations
+        from logos.accommodations import load_accommodations
 
         return load_accommodations()
     except Exception:
@@ -352,7 +352,7 @@ def collect_accommodations() -> Accommodations:
     """Load active accommodations and determine current energy state."""
     acc = Accommodations()
     try:
-        from cockpit.accommodations import load_accommodations
+        from logos.accommodations import load_accommodations
 
         acc_set = load_accommodations()
         acc.soft_framing = getattr(acc_set, "soft_framing", False)
@@ -582,7 +582,7 @@ def collect_context(project_path: str | None = None) -> ContextSnapshot:
     # Governance heartbeat
     gov_heartbeat = ""
     try:
-        from cockpit.data.governance import collect_governance_heartbeat
+        from logos.data.governance import collect_governance_heartbeat
 
         hb = collect_governance_heartbeat()
         gov_heartbeat = f"{hb.label} ({hb.score})"

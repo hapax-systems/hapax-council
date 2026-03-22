@@ -87,7 +87,7 @@ def check_readiness(
 
             if report.failed_count > 0:
                 # Health failures are warnings, not blockers — the demo only
-                # needs LiteLLM, Qdrant, cockpit, and TTS (checked separately)
+                # needs LiteLLM, Qdrant, logos, and TTS (checked separately)
                 warnings.append(
                     f"Health monitor: {report.failed_count} failed checks (non-blocking)"
                 )
@@ -105,7 +105,7 @@ def check_readiness(
     except Exception:
         issues.append(
             "Cockpit API (:8051) not reachable — start with: "
-            "cd ~/projects/ai-agents && uv run cockpit"
+            "cd ~/projects/ai-agents && uv run logos"
         )
 
     # 3. Cockpit web

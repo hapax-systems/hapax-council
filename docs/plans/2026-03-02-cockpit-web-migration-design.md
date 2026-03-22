@@ -7,7 +7,7 @@
 ## Motivation
 
 The Textual TUI has hit two fundamental ceilings:
-1. **Mobile/remote access** — cockpit is locked to a local terminal, inaccessible from phone or other machines via Tailscale
+1. **Mobile/remote access** — logos is locked to a local terminal, inaccessible from phone or other machines via Tailscale
 2. **Feature ceiling** — rich visualizations (charts, gauges), responsive layout, interactive UI patterns that terminals fundamentally can't support
 
 ## Decision
@@ -21,41 +21,41 @@ Replace the Textual TUI entirely with a web-based cockpit. No dual-maintenance �
 ```
 ┌─────────────────┐    HTTP/SSE     ┌──────────────────┐
 │  React SPA       │ ◄────────────► │  FastAPI Backend  │
-│  (hapax-logos)   │                │  (cockpit/api/)   │
+│  (hapax-logos)   │                │  (logos/api/)   │
 │  Vite + pnpm     │                │  in ai-agents     │
 └─────────────────┘                └──────────┬───────┘
                                               │
                                imports directly│
                                               ▼
                                    ┌──────────────────┐
-                                   │  cockpit/data/*   │
+                                   │  logos/data/*   │
                                    │  cockpit/chat_*   │
-                                   │  cockpit/runner   │
+                                   │  logos/runner   │
                                    │  (existing Python)│
                                    └──────────────────┘
 ```
 
-**Backend** stays in `~/projects/hapax-council/`. The existing `cockpit/data/` pure dataclass collectors are imported directly by the FastAPI app. No reimplementation.
+**Backend** stays in `~/projects/hapax-council/`. The existing `logos/data/` pure dataclass collectors are imported directly by the FastAPI app. No reimplementation.
 
 **Frontend** is a new repo at `~/projects/hapax-logos/` (React 19 + Vite + TypeScript + pnpm).
 
-**Deployment** is a new Docker service `cockpit-api` bound to `127.0.0.1:8050`, accessible over Tailscale.
+**Deployment** is a new Docker service `logos-api` bound to `127.0.0.1:8050`, accessible over Tailscale.
 
 ### What stays, what goes
 
 | Component | Action |
 |-----------|--------|
-| `cockpit/data/` (14 collectors) | **Keep** — unchanged, consumed by API |
-| `cockpit/chat_agent.py` (985 LOC) | **Keep** — consumed by chat API endpoints |
-| `cockpit/interview.py` (655 LOC) | **Keep** — consumed by interview API endpoints |
-| `cockpit/copilot.py` (255 LOC) | **Keep** — consumed by copilot API endpoint |
-| `cockpit/runner.py` (160 LOC) | **Keep** — consumed by agent execution endpoint |
-| `cockpit/snapshot.py` (364 LOC) | **Keep** — `--once` CLI mode |
-| `cockpit/accommodations.py` | **Keep** — consumed by API |
+| `logos/data/` (14 collectors) | **Keep** — unchanged, consumed by API |
+| `logos/chat_agent.py` (985 LOC) | **Keep** — consumed by chat API endpoints |
+| `logos/interview.py` (655 LOC) | **Keep** — consumed by interview API endpoints |
+| `logos/copilot.py` (255 LOC) | **Keep** — consumed by copilot API endpoint |
+| `logos/runner.py` (160 LOC) | **Keep** — consumed by agent execution endpoint |
+| `logos/snapshot.py` (364 LOC) | **Keep** — `--once` CLI mode |
+| `logos/accommodations.py` | **Keep** — consumed by API |
 | `cockpit/micro_probes.py` | **Keep** — consumed by API |
 | `cockpit/manual.py` | **Keep** — consumed by API |
 | `cockpit/voice.py` | **Keep** — consumed by API |
-| `cockpit/api/` | **New** — FastAPI app |
+| `logos/api/` | **New** — FastAPI app |
 | `cockpit/app.py` (545 LOC) | **Delete** — Textual app |
 | `cockpit/screens/` (4 screens) | **Delete** — Textual UI |
 | `cockpit/widgets/` (7 widgets) | **Delete** — Textual UI |
@@ -252,6 +252,6 @@ Each phase is independently deployable.
 |------|-----------|
 | Chat streaming fidelity | Phase 3 is dedicated to this. Existing ChatSession class stays in Python. |
 | Interview system complexity | Interview agent + state machine stay unchanged. API just wraps them. |
-| Docker socket access | cockpit-api container needs docker socket mount (same as existing services) |
+| Docker socket access | logos-api container needs docker socket mount (same as existing services) |
 | CORS | FastAPI CORS middleware, restrict to localhost origins |
 | Mobile performance | TanStack Query deduplication + stale-while-revalidate. Minimal bundle with code splitting. |

@@ -18,7 +18,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from cockpit.chat_agent import (
+from logos.chat_agent import (
     ChatSession,
     _find_safe_split,
     classify_chat_error,
@@ -265,7 +265,7 @@ def test_interview_agent_accepts_model_alias():
     """create_interview_agent accepts model_alias parameter with default 'balanced'."""
     import inspect
 
-    from cockpit.interview import create_interview_agent
+    from logos.interview import create_interview_agent
 
     sig = inspect.signature(create_interview_agent)
     assert "model_alias" in sig.parameters
@@ -276,7 +276,7 @@ def test_interview_plan_accepts_model_alias():
     """generate_interview_plan accepts model_alias parameter with default 'balanced'."""
     import inspect
 
-    from cockpit.interview import generate_interview_plan
+    from logos.interview import generate_interview_plan
 
     sig = inspect.signature(generate_interview_plan)
     assert "model_alias" in sig.parameters
@@ -291,7 +291,7 @@ async def test_end_interview_preserves_state_on_flush_failure():
     """Interview state is preserved when flush_interview_facts raises."""
     from unittest.mock import AsyncMock
 
-    from cockpit.interview import InterviewPlan, InterviewState, InterviewTopic, RecordedFact
+    from logos.interview import InterviewPlan, InterviewState, InterviewTopic, RecordedFact
 
     session = ChatSession.__new__(ChatSession)
     session.mode = "interview"

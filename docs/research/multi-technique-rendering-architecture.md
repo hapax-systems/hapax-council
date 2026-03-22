@@ -293,7 +293,7 @@ None of these apply to 1080p60 generative art on a single GPU.
 - **wgpu access**: Direct. You can create compute pipelines, render pipelines, manage textures.
 - **Status**: 6.6k stars but "still early days." Last active development unclear. The framework adds convenience (windowing, audio capture) but you're writing wgpu code underneath.
 - **Web output**: Not directly. Would need separate web compilation target.
-- **Assessment**: Using nannou is essentially using wgpu with a convenience layer. If the convenience layer fits, great. If it constrains, you're fighting it. For this project, raw wgpu is likely better — the "convenience" needed is specific (GStreamer integration, audio data from existing agents, parameter control from cockpit API).
+- **Assessment**: Using nannou is essentially using wgpu with a convenience layer. If the convenience layer fits, great. If it constrains, you're fighting it. For this project, raw wgpu is likely better — the "convenience" needed is specific (GStreamer integration, audio data from existing agents, parameter control from logos API).
 
 ### openFrameworks (C++)
 
@@ -447,7 +447,7 @@ This is purely a data-flow problem, not a rendering problem. The render architec
 │  Uniform Sources:                                   │
 │    ├─ Visual layer state (JSON from /dev/shm)       │
 │    ├─ Audio energy (from hapax_voice agent)          │
-│    └─ Cockpit API parameters (HTTP/WebSocket)       │
+│    └─ Logos API parameters (HTTP/WebSocket)       │
 │                                                     │
 │  Output:                                            │
 │    ├─ Window (winit/Wayland → dedicated monitor)    │
@@ -473,7 +473,7 @@ This is purely a data-flow problem, not a rendering problem. The render architec
 
 4. **Web path exists.** The same WGSL shaders compile to WASM+WebGPU for a browser-native version. Chrome and Edge support WebGPU now. This is the future-proof path — when browser support is universal, the web view can run the same render engine directly instead of streaming frames.
 
-5. **Rust integrates with the existing system.** The `temporalfx` GstGLFilter plugin is already written in Rust. A standalone wgpu binary reads state from the same /dev/shm files and cockpit API. No new language, no new paradigm.
+5. **Rust integrates with the existing system.** The `temporalfx` GstGLFilter plugin is already written in Rust. A standalone wgpu binary reads state from the same /dev/shm files and logos API. No new language, no new paradigm.
 
 6. **wgpu-py exists for prototyping.** Quick iteration on shader parameters and layer composition in Python before committing to the Rust binary.
 

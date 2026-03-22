@@ -174,7 +174,7 @@ def write_nudges_to_vault(nudges: list[dict]) -> Path | None:
         "30-system",
         "nudges.md",
         "\n".join(lines),
-        frontmatter={"type": "nudges", "updated": now, "source": "cockpit", "tags": ["system"]},
+        frontmatter={"type": "nudges", "updated": now, "source": "logos", "tags": ["system"]},
     )
 
 

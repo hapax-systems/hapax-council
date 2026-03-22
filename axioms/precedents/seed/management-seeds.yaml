@@ -22,7 +22,7 @@ precedents:
 
   - id: sp-mgmt-002
     axiom_id: management_governance
-    situation: "cockpit/data/management.py collects all management state deterministically — zero LLM calls for PersonState, CoachingState, FeedbackState"
+    situation: "logos/data/management.py collects all management state deterministically — zero LLM calls for PersonState, CoachingState, FeedbackState"
     decision: compliant
     reasoning: >
       Management data collection uses pure filesystem reads and frontmatter

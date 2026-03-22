@@ -1,6 +1,6 @@
 # First Run Guide
 
-Your cockpit has infrastructure, agents, and a deep passive profile (1,103 facts from configs, shell history, git, transcripts). What it doesn't have yet is **your direct input** — the interview-sourced neurocognitive data that makes the system actually adaptive.
+Your logos has infrastructure, agents, and a deep passive profile (1,103 facts from configs, shell history, git, transcripts). What it doesn't have yet is **your direct input** — the interview-sourced neurocognitive data that makes the system actually adaptive.
 
 This guide gets you from build-and-test to daily use.
 
@@ -8,10 +8,10 @@ This guide gets you from build-and-test to daily use.
 
 ### 1. Flush the in-progress interview
 
-You have ~40 neurocognitive facts and 16 insights sitting in `~/.cache/cockpit/chat-session.json` from an earlier interview session exploring `task_initiation_patterns`. These haven't been merged into your profile yet.
+You have ~40 neurocognitive facts and 16 insights sitting in `~/.cache/logos/chat-session.json` from an earlier interview session exploring `task_initiation_patterns`. These haven't been merged into your profile yet.
 
 ```bash
-uv run cockpit
+uv run logos
 # press 'c' for chat
 ```
 
@@ -34,7 +34,7 @@ This detects new facts, re-extracts if needed, and rebuilds `operator.json` incl
 
 ### 3. Verify
 
-Back in the cockpit chat:
+Back in the logos chat:
 ```
 /profile
 /profile neurocognitive_profile
@@ -69,7 +69,7 @@ These are real nudges from the unified attention system. They point you at the c
 ### Day 1 (tonight)
 
 1. Flush interview, run profiler (above)
-2. Launch cockpit, scan the dashboard — get oriented
+2. Launch logos, scan the dashboard — get oriented
 3. Open chat, run `/interview` — the interview agent will plan topics based on your profile gaps
 4. Explore 2-3 topics. Don't force it. `/interview end` when done
 5. Run `uv run python -m agents.profiler --auto` after ending
@@ -79,7 +79,7 @@ These are real nudges from the unified attention system. They point you at the c
 The system bootstraps itself through normal use:
 
 - **Micro-probes** surface during idle time (5+ minutes quiet). Single experiential questions. Answer in chat or ignore — no pressure. One probe every 10 minutes max.
-- **Conversational learning** picks up durable facts from normal chat. The `record_observation` tool fires when you reveal preferences or patterns organically. These land in `~/.cache/cockpit/pending-facts.jsonl` and flush to the profile on the next `profiler --auto` run (every 12h via timer, or manually).
+- **Conversational learning** picks up durable facts from normal chat. The `record_observation` tool fires when you reveal preferences or patterns organically. These land in `~/.cache/logos/pending-facts.jsonl` and flush to the profile on the next `profiler --auto` run (every 12h via timer, or manually).
 - **Decision capture** records which action items you engage with. Over time this builds a behavioral signal for the profiler.
 - **Daily briefing** generates at 07:00 automatically. Check it from the dashboard or `/briefing`.
 
@@ -103,7 +103,7 @@ Proposals are **inert until you confirm them**. Check and manage via:
 
 ## What won't self-correct
 
-**The accommodation catalog is static.** `_PROPOSALS` in `cockpit/accommodations.py` is a hardcoded dict mapping pattern categories to specific system behaviors. If the interview reveals patterns in categories not in that dict (e.g., `task_persistence`, `decision_making`, `motivation`), no accommodations will be proposed for them.
+**The accommodation catalog is static.** `_PROPOSALS` in `logos/accommodations.py` is a hardcoded dict mapping pattern categories to specific system behaviors. If the interview reveals patterns in categories not in that dict (e.g., `task_persistence`, `decision_making`, `motivation`), no accommodations will be proposed for them.
 
 This is a deliberate design choice — accommodations should be concrete system behavior changes, not vague suggestions. But it means the catalog needs manual expansion as your neurocognitive profile fills in. The data flows through; the behavioral adaptations don't generate themselves.
 
@@ -146,7 +146,7 @@ This is a deliberate design choice — accommodations should be concrete system 
 | `profiles/operator.json` | Structured operator context (agents consume this) |
 | `profiles/accommodations.json` | Active/proposed accommodations (created on first confirm) |
 | `profiles/briefing.md` | Latest daily briefing |
-| `~/.cache/cockpit/chat-session.json` | Chat state including interview progress |
-| `~/.cache/cockpit/probe-state.json` | Which micro-probes have been asked |
-| `~/.cache/cockpit/pending-facts.jsonl` | Conversational facts awaiting profiler flush |
-| `~/.cache/cockpit/decisions.jsonl` | Operator action log on nudges |
+| `~/.cache/logos/chat-session.json` | Chat state including interview progress |
+| `~/.cache/logos/probe-state.json` | Which micro-probes have been asked |
+| `~/.cache/logos/pending-facts.jsonl` | Conversational facts awaiting profiler flush |
+| `~/.cache/logos/decisions.jsonl` | Operator action log on nudges |

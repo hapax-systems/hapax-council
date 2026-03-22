@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from cockpit.voice import greeting, operator_name
+from logos.voice import greeting, operator_name
 
 if TYPE_CHECKING:
     from agents.hapax_voice.screen_models import ScreenAnalysis
@@ -97,7 +97,7 @@ def system_prompt(
 
 
 def voice_greeting() -> str:
-    """Return a time-of-day greeting from the cockpit voice module."""
+    """Return a time-of-day greeting from the logos voice module."""
     return greeting()
 
 

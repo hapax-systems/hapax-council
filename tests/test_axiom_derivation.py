@@ -13,7 +13,7 @@ class TestBuildPrompt:
         prompt = build_derivation_prompt(
             axiom_id="single_user",
             axiom_text="This is a single-user system.",
-            codebase_context="File tree: agents/, shared/, cockpit/",
+            codebase_context="File tree: agents/, shared/, logos/",
         )
         assert "single-user system" in prompt
         assert "textualist" in prompt.lower() or "Textualist" in prompt

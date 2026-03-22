@@ -2,7 +2,7 @@
 
 Consumes activity data (Langfuse traces, health trend, drift status, service
 events) plus a live health snapshot, then synthesizes into a concise actionable
-briefing. The briefing is the operator's cockpit instrument panel — everything
+briefing. The briefing is the operator's logos instrument panel — everything
 needed to know the system's state at a glance.
 
 Zero LLM calls for data collection; one fast LLM call for synthesis.
@@ -902,7 +902,7 @@ async def main() -> None:
             log.warning("Failed to write briefing to vault")
 
         # Write nudges to vault (consumed by daily note embed)
-        from cockpit.data.nudges import collect_nudges
+        from logos.data.nudges import collect_nudges
 
         nudges = collect_nudges(max_nudges=15, briefing=briefing)
         nudge_dicts = [

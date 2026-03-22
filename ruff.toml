@@ -30,7 +30,7 @@ ignore = [
 ]
 
 [lint.isort]
-known-first-party = ["agents", "shared", "cockpit"]
+known-first-party = ["agents", "shared", "logos"]
 
 [format]
 quote-style = "double"

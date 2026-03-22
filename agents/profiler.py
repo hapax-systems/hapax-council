@@ -690,7 +690,7 @@ def _profile_to_markdown(profile: UserProfile) -> str:
 def flush_interview_facts(
     facts: list,
     insights: list,
-    source: str = "interview:cockpit",
+    source: str = "interview:logos",
 ) -> str:
     """Merge interview-sourced facts into the profile pipeline.
 
@@ -699,8 +699,8 @@ def flush_interview_facts(
     synthesis — just merges facts and saves.
 
     Args:
-        facts: list of RecordedFact (from cockpit.interview).
-        insights: list of RecordedInsight (from cockpit.interview).
+        facts: list of RecordedFact (from logos.interview).
+        insights: list of RecordedInsight (from logos.interview).
         source: Source tag for provenance tracking.
 
     Returns:

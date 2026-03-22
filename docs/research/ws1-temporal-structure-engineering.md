@@ -187,7 +187,7 @@ Studio Compositor (Cairo overlay rendering)
 ```
 
 Additionally:
-- Cockpit API (`:8051`) serves health, GPU, nudges, briefing, drift, goals, copilot
+- Logos API (`:8051`) serves health, GPU, nudges, briefing, drift, goals, copilot
 - Reactive engine (inotify watcher) cascades filesystem changes to downstream agents
 - Qdrant stores profile facts, documents, axiom precedents, claude-memory
 - Health history in JSONL, SDLC events in JSONL
@@ -214,7 +214,7 @@ Additionally:
 
 **`DisplayStateMachine`** — Has de-escalation cooldowns, which are a primitive form of protention (expecting the system to calm down). Can be extended with explicit state transition probabilities.
 
-**`cockpit/engine/watcher.py`** — The reactive engine already watches for filesystem changes with frontmatter parsing and document-type inference. A temporal state file could trigger reactive rules.
+**`logos/engine/watcher.py`** — The reactive engine already watches for filesystem changes with frontmatter parsing and document-type inference. A temporal state file could trigger reactive rules.
 
 **Qdrant collections** — Profile facts and claude-memory could store temporal metadata. The `documents` collection already supports metadata filtering.
 
@@ -411,7 +411,7 @@ The context rot research suggests that *less is more* — 2,500 tokens is the sw
 
 ### 5.5 Temporal Structure in the Reactive Engine
 
-The reactive engine (`cockpit/engine/`) uses inotify to watch filesystem changes. If `perception-state.json` gains temporal structure, should the reactive engine's rules become temporally aware? E.g., a rule that fires not on "state X exists" but on "state X persisted for >60s" or "state X followed state Y within 30s." This is a significant architectural question that connects temporal structure to the engine's rule evaluation model.
+The reactive engine (`logos/engine/`) uses inotify to watch filesystem changes. If `perception-state.json` gains temporal structure, should the reactive engine's rules become temporally aware? E.g., a rule that fires not on "state X exists" but on "state X persisted for >60s" or "state X followed state Y within 30s." This is a significant architectural question that connects temporal structure to the engine's rule evaluation model.
 
 ### 5.6 Bidirectional Temporal Flow
 

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cockpit.query_dispatch import (
+from logos.query_dispatch import (
     classify_query,
     get_agent_list,
     run_query,
@@ -81,8 +81,8 @@ class TestGetAgentListAll:
 
 
 class TestRunQuerySystemOps:
-    @patch("cockpit.query_dispatch.extract_full_output", return_value="## Health\nAll good")
-    @patch("cockpit.query_dispatch._call_factory")
+    @patch("logos.query_dispatch.extract_full_output", return_value="## Health\nAll good")
+    @patch("logos.query_dispatch._call_factory")
     async def test_run_system_ops_query(self, mock_factory, mock_extract):
         mock_result = MagicMock()
         mock_result.usage.return_value = MagicMock(input_tokens=800, output_tokens=400)
@@ -105,8 +105,8 @@ class TestGetAgentList:
 
 
 class TestRunQuery:
-    @patch("cockpit.query_dispatch.extract_full_output", return_value="## Test\nHello")
-    @patch("cockpit.query_dispatch._call_factory")
+    @patch("logos.query_dispatch.extract_full_output", return_value="## Test\nHello")
+    @patch("logos.query_dispatch._call_factory")
     async def test_run_query_returns_markdown(self, mock_factory, mock_extract):
         mock_result = MagicMock()
         mock_result.usage.return_value = MagicMock(input_tokens=1000, output_tokens=500)

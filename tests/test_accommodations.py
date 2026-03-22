@@ -1,10 +1,10 @@
-"""Tests for cockpit.accommodations — negotiated accommodation engine."""
+"""Tests for logos.accommodations — negotiated accommodation engine."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from cockpit.accommodations import (
+from logos.accommodations import (
     Accommodation,
     AccommodationSet,
     confirm_accommodation,
@@ -77,8 +77,8 @@ def test_save_and_load(tmp_path):
             ),
         ]
     )
-    with patch("cockpit.accommodations._ACCOMMODATIONS_PATH", path):
-        with patch("cockpit.accommodations.PROFILES_DIR", tmp_path):
+    with patch("logos.accommodations._ACCOMMODATIONS_PATH", path):
+        with patch("logos.accommodations.PROFILES_DIR", tmp_path):
             save_accommodations(acc)
             loaded = load_accommodations()
     assert len(loaded.accommodations) == 1
@@ -89,7 +89,7 @@ def test_save_and_load(tmp_path):
 
 def test_load_missing_file(tmp_path):
     path = tmp_path / "does_not_exist.json"
-    with patch("cockpit.accommodations._ACCOMMODATIONS_PATH", path):
+    with patch("logos.accommodations._ACCOMMODATIONS_PATH", path):
         loaded = load_accommodations()
     assert loaded.accommodations == []
     assert loaded.time_anchor_enabled is False
@@ -98,7 +98,7 @@ def test_load_missing_file(tmp_path):
 def test_load_corrupt_file(tmp_path):
     path = tmp_path / "accommodations.json"
     path.write_text("not valid json")
-    with patch("cockpit.accommodations._ACCOMMODATIONS_PATH", path):
+    with patch("logos.accommodations._ACCOMMODATIONS_PATH", path):
         loaded = load_accommodations()
     assert loaded.accommodations == []
 
@@ -119,8 +119,8 @@ def test_confirm_accommodation(tmp_path):
             ),
         ]
     )
-    with patch("cockpit.accommodations._ACCOMMODATIONS_PATH", path):
-        with patch("cockpit.accommodations.PROFILES_DIR", tmp_path):
+    with patch("logos.accommodations._ACCOMMODATIONS_PATH", path):
+        with patch("logos.accommodations.PROFILES_DIR", tmp_path):
             result = confirm_accommodation(acc, "soft_framing")
     assert result is True
     assert acc.accommodations[0].active is True
@@ -129,7 +129,7 @@ def test_confirm_accommodation(tmp_path):
 
 def test_confirm_nonexistent():
     acc = AccommodationSet()
-    with patch("cockpit.accommodations._ACCOMMODATIONS_PATH"):
+    with patch("logos.accommodations._ACCOMMODATIONS_PATH"):
         result = confirm_accommodation(acc, "nonexistent")
     assert result is False
 
@@ -148,8 +148,8 @@ def test_disable_accommodation(tmp_path):
             ),
         ]
     )
-    with patch("cockpit.accommodations._ACCOMMODATIONS_PATH", path):
-        with patch("cockpit.accommodations.PROFILES_DIR", tmp_path):
+    with patch("logos.accommodations._ACCOMMODATIONS_PATH", path):
+        with patch("logos.accommodations.PROFILES_DIR", tmp_path):
             result = disable_accommodation(acc, "time_anchor")
     assert result is True
     assert acc.accommodations[0].active is False
@@ -160,7 +160,7 @@ def test_disable_accommodation(tmp_path):
 
 
 def test_copilot_time_anchor():
-    from cockpit.copilot import CopilotContext, CopilotEngine
+    from logos.copilot import CopilotContext, CopilotEngine
 
     acc = AccommodationSet(time_anchor_enabled=True)
     ctx = CopilotContext(
@@ -174,7 +174,7 @@ def test_copilot_time_anchor():
 
 
 def test_copilot_no_time_anchor_when_disabled():
-    from cockpit.copilot import CopilotContext, CopilotEngine
+    from logos.copilot import CopilotContext, CopilotEngine
 
     acc = AccommodationSet(time_anchor_enabled=False)
     ctx = CopilotContext(
@@ -188,7 +188,7 @@ def test_copilot_no_time_anchor_when_disabled():
 
 
 def test_copilot_no_accommodations():
-    from cockpit.copilot import CopilotContext, CopilotEngine
+    from logos.copilot import CopilotContext, CopilotEngine
 
     ctx = CopilotContext(
         health_status="healthy",

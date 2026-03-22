@@ -99,6 +99,6 @@ manual_section:
   - uv run python -m agents.briefing --save
   - '```'
   - ''
-  - 'Or from the cockpit: select **briefing** in the agent launcher, enable `--save`,
+  - 'Or from the logos: select **briefing** in the agent launcher, enable `--save`,
     press Enter.'
   - 'The `--hours` flag adjusts the lookback window (default: 24).'

@@ -1,4 +1,4 @@
-"""Tests for cockpit.micro_probes — micro-probe engine."""
+"""Tests for logos.micro_probes — micro-probe engine."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import time
 from unittest.mock import patch
 
-from cockpit.micro_probes import (
+from logos.micro_probes import (
     _PROBE_POOL,
     PROBE_COOLDOWN,
     MicroProbeEngine,
@@ -46,7 +46,7 @@ def _engine(asked=None) -> MicroProbeEngine:
 
 def _mock_analysis(neurocognitive_gap=True):
     """Create a mock ProfileAnalysis with configurable neurocognitive_gap."""
-    from cockpit.interview import ProfileAnalysis
+    from logos.interview import ProfileAnalysis
 
     return ProfileAnalysis(
         missing_dimensions=[],
@@ -129,7 +129,7 @@ def test_get_probe_no_neuro_gap():
 def test_save_and_load_state(tmp_path):
     state_file = tmp_path / "probe-state.json"
     e = _engine(asked=["task_initiation", "energy_cycles"])
-    with patch("cockpit.micro_probes._STATE_PATH", state_file):
+    with patch("logos.micro_probes._STATE_PATH", state_file):
         e.save_state()
         assert state_file.exists()
 
@@ -141,7 +141,7 @@ def test_save_and_load_state(tmp_path):
 
 def test_load_state_missing_file():
     e = MicroProbeEngine()
-    with patch("cockpit.micro_probes._STATE_PATH") as mock_path:
+    with patch("logos.micro_probes._STATE_PATH") as mock_path:
         mock_path.exists.return_value = False
         e.load_state()
     assert e._asked == set()
@@ -151,7 +151,7 @@ def test_load_state_corrupt_json(tmp_path):
     state_file = tmp_path / "probe-state.json"
     state_file.write_text("not valid json")
     e = MicroProbeEngine()
-    with patch("cockpit.micro_probes._STATE_PATH", state_file):
+    with patch("logos.micro_probes._STATE_PATH", state_file):
         e.load_state()
     assert e._asked == set()
 
@@ -165,7 +165,7 @@ def test_save_state_atomic(tmp_path):
     e = MicroProbeEngine()
     e._asked = {"time_perception"}
     e._last_probe_time = 12345.0
-    with patch("cockpit.micro_probes._STATE_PATH", state_file):
+    with patch("logos.micro_probes._STATE_PATH", state_file):
         e.save_state()
     assert state_file.exists()
     data = json.loads(state_file.read_text())

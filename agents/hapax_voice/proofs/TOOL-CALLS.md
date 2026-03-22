@@ -4,7 +4,7 @@
 
 Tool calls in the current voice system are monolithic retrieval operations
 that interrupt the grounding process. Each tool is a complete round-trip
-to an external system (Qdrant, Google APIs, cockpit API, Gemini vision)
+to an external system (Qdrant, Google APIs, logos API, Gemini vision)
 that returns a blob of information. They add 1-10 seconds of latency per
 call, with tool call + second LLM round-trip easily consuming the entire
 20-second turn budget.
@@ -19,7 +19,7 @@ operator waits in silence. The returned data has no grounding history.
 |------|-------------|----------------|-------------------|
 | search_documents | Full RAG against Qdrant | 1-3s | Heavy retrieval |
 | analyze_scene | Camera frame → Gemini Flash | 3-10s | Heavy inference |
-| get_system_status | Cockpit API health report | 1-2s | Status dump |
+| get_system_status | Logos API health report | 1-2s | Status dump |
 | search_emails | Google API query | 2-5s | External retrieval |
 | get_calendar_today | Google Calendar API | 1-3s | External retrieval |
 | get_briefing | Full system briefing | 3-8s | Heavy aggregation |

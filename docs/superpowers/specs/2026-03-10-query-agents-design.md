@@ -6,7 +6,7 @@
 
 ## Context
 
-The cockpit query engine currently has one registered agent: Development Archaeology (dev_story), which queries a SQLite database of git/session data. This design adds two more agents to cover the remaining data surfaces: operational infrastructure and semantic knowledge.
+Logos query engine currently has one registered agent: Development Archaeology (dev_story), which queries a SQLite database of git/session data. This design adds two more agents to cover the remaining data surfaces: operational infrastructure and semantic knowledge.
 
 ## Agent 1: System Operations
 

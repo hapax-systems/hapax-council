@@ -143,7 +143,7 @@ class AgentManifest(BaseModel):
     narrative: str = ""  # human-readable description of what this agent is and why
 
     # ── Integration ──────────────────────────────────────────────────────
-    short_description: str = ""  # terse cockpit label (falls back to purpose)
+    short_description: str = ""  # terse logos label (falls back to purpose)
     cli: CLISpec | None = None
     timer_display: TimerDisplay | None = None
     manual_section: ManualSection | None = None

@@ -136,19 +136,19 @@ Keeps briefing, digest, nudges, goals, and decision vault writers."
 
 ## Chunk 2: Remove Cockpit People-Data Path
 
-### Task 4: Delete cockpit/data/management.py and cockpit/data/team_health.py
+### Task 4: Delete logos/data/management.py and logos/data/team_health.py
 
 **Files:**
-- Delete: `cockpit/data/management.py`
-- Delete: `cockpit/data/team_health.py`
+- Delete: `logos/data/management.py`
+- Delete: `logos/data/team_health.py`
 - Delete: `tests/test_management.py`
 - Delete: `tests/test_team_health.py`
 
 - [ ] **Step 1: Delete files**
 
 ```bash
-rm cockpit/data/management.py
-rm cockpit/data/team_health.py
+rm logos/data/management.py
+rm logos/data/team_health.py
 rm tests/test_management.py
 rm tests/test_team_health.py
 ```
@@ -156,7 +156,7 @@ rm tests/test_team_health.py
 - [ ] **Step 2: Run tests (expect some failures from dependents)**
 
 Run: `uv run pytest tests/ -q --tb=line 2>&1 | tail -30`
-Expected: Failures in test_nudges.py, test_transcript_parser.py, and possibly cockpit API tests. These are fixed in Tasks 5-7.
+Expected: Failures in test_nudges.py, test_transcript_parser.py, and possibly logos API tests. These are fixed in Tasks 5-7.
 
 - [ ] **Step 3: Commit (with known breakage — fixed in next tasks)**
 
@@ -164,14 +164,14 @@ Expected: Failures in test_nudges.py, test_transcript_parser.py, and possibly co
 git add -u
 git commit -m "refactor: remove cockpit people-data collectors
 
-Removes cockpit/data/management.py (PersonState, ManagementSnapshot) and
-cockpit/data/team_health.py. Dependents fixed in following commits."
+Removes logos/data/management.py (PersonState, ManagementSnapshot) and
+logos/data/team_health.py. Dependents fixed in following commits."
 ```
 
 ### Task 5: Remove management nudge rules from nudges.py
 
 **Files:**
-- Modify: `cockpit/data/nudges.py` — remove `_collect_management_nudges`, `_collect_team_health_nudges`, `_collect_career_staleness_nudges` functions and their calls in `collect_nudges`
+- Modify: `logos/data/nudges.py` — remove `_collect_management_nudges`, `_collect_team_health_nudges`, `_collect_career_staleness_nudges` functions and their calls in `collect_nudges`
 - Modify: `tests/test_nudges.py` — remove tests for management nudge rules
 
 - [ ] **Step 1: Remove management nudge functions from nudges.py**
@@ -202,18 +202,18 @@ Expected: All remaining nudge tests pass
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cockpit/data/nudges.py tests/test_nudges.py
+git add logos/data/nudges.py tests/test_nudges.py
 git commit -m "refactor: remove management nudge rules
 
 Removes _collect_management_nudges, _collect_team_health_nudges,
 _collect_career_staleness_nudges and their tests. System/knowledge nudges intact."
 ```
 
-### Task 6: Remove management from cockpit API cache and routes
+### Task 6: Remove management from logos API cache and routes
 
 **Files:**
-- Modify: `cockpit/api/cache.py` — remove management field and collector call
-- Modify: `cockpit/api/routes/data.py` — remove `/management` endpoint
+- Modify: `logos/api/cache.py` — remove management field and collector call
+- Modify: `logos/api/routes/data.py` — remove `/management` endpoint
 
 - [ ] **Step 1: Edit cache.py**
 
@@ -224,7 +224,7 @@ In `DataCache` class, remove:
 
 In `_refresh_slow_sync`, remove the import:
 ```python
-        from cockpit.data.management import collect_management_state
+        from logos.data.management import collect_management_state
 ```
 
 And remove from the collector list:
@@ -241,7 +241,7 @@ async def get_management():
     return _slow_response(_to_dict(cache.management))
 ```
 
-- [ ] **Step 3: Run cockpit API tests**
+- [ ] **Step 3: Run logos API tests**
 
 Run: `uv run pytest tests/ -k "cockpit or cache or route" -v 2>&1 | tail -30`
 Expected: PASS
@@ -249,8 +249,8 @@ Expected: PASS
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cockpit/api/cache.py cockpit/api/routes/data.py
-git commit -m "refactor: remove management from cockpit API cache and routes
+git add logos/api/cache.py logos/api/routes/data.py
+git commit -m "refactor: remove management from logos API cache and routes
 
 Removes /management endpoint and collect_management_state from refresh loop."
 ```
@@ -272,7 +272,7 @@ from types import SimpleNamespace
 
 For example, change:
 ```python
-from cockpit.data.management import PersonState
+from logos.data.management import PersonState
 segments = [TranscriptSegment(speaker="Alice Smith", text="hi")]
 people = [PersonState(name="Alice Smith")]
 ```
@@ -294,7 +294,7 @@ Expected: PASS
 git add tests/test_transcript_parser.py
 git commit -m "fix: replace PersonState with SimpleNamespace in transcript parser tests
 
-PersonState was removed with cockpit/data/management.py. map_speakers_to_people
+PersonState was removed with logos/data/management.py. map_speakers_to_people
 only uses .name attribute, so SimpleNamespace works identically."
 ```
 
@@ -340,8 +340,8 @@ Expected: No matches in source files (docs/plans references are fine).
 - [ ] **Step 3: Verify no broken imports**
 
 ```bash
-uv run python -c "from cockpit.api.cache import DataCache; print('cache OK')"
-uv run python -c "from cockpit.data.nudges import collect_nudges; print('nudges OK')"
+uv run python -c "from logos.api.cache import DataCache; print('cache OK')"
+uv run python -c "from logos.data.nudges import collect_nudges; print('nudges OK')"
 uv run python -c "from shared.vault_writer import write_briefing_to_vault; print('vault OK')"
 ```
 

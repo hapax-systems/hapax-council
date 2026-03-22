@@ -66,7 +66,7 @@ class TestReadiness:
             assert any("failed" in w.lower() for w in result.warnings)
             mock_fixes.assert_not_called()
 
-    def test_readiness_cockpit_api_down(self):
+    def test_readiness_logos_api_down(self):
         """Cockpit API down -> ready=False."""
         mock_report = _make_report()
 
@@ -86,7 +86,7 @@ class TestReadiness:
             assert result.ready is False
             assert any("8051" in i for i in result.issues)
 
-    def test_readiness_cockpit_web_down(self):
+    def test_readiness_logos_web_down(self):
         """Cockpit web down -> ready=False."""
         mock_report = _make_report()
 

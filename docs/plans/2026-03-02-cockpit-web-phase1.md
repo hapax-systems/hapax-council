@@ -4,7 +4,7 @@
 
 **Goal:** Deployable FastAPI backend serving cockpit data + React SPA dashboard accessible from phone via Tailscale.
 
-**Architecture:** FastAPI in `cockpit/api/` imports existing `cockpit/data/` collectors directly. React 19 SPA in `~/projects/hapax-logos/` polls the API. Docker service on :8050.
+**Architecture:** FastAPI in `logos/api/` imports existing `logos/data/` collectors directly. React 19 SPA in `~/projects/hapax-logos/` polls the API. Docker service on :8050.
 
 **Tech Stack:** FastAPI, uvicorn, httpx (test client), React 19, Vite, TypeScript, pnpm, TanStack Query, Tailwind CSS 4, Lucide React
 
@@ -69,8 +69,8 @@ git commit -m "build: add fastapi, uvicorn, sse-starlette dependencies"
 ## Task 2: FastAPI app skeleton with CORS
 
 **Files:**
-- Create: `cockpit/api/__init__.py`
-- Create: `cockpit/api/app.py`
+- Create: `logos/api/__init__.py`
+- Create: `logos/api/app.py`
 - Test: `tests/test_api.py`
 
 **Step 1: Write the failing test**
@@ -78,7 +78,7 @@ git commit -m "build: add fastapi, uvicorn, sse-starlette dependencies"
 Create `tests/test_api.py`:
 
 ```python
-"""Tests for cockpit API."""
+"""Tests for logos API."""
 from __future__ import annotations
 
 import pytest
@@ -87,7 +87,7 @@ from httpx import ASGITransport, AsyncClient
 
 @pytest.fixture
 async def client():
-    from cockpit.api.app import app
+    from logos.api.app import app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -98,7 +98,7 @@ class TestAppSkeleton:
         resp = await client.get("/")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["name"] == "cockpit-api"
+        assert data["name"] == "logos-api"
         assert "version" in data
 
     async def test_cors_headers_present(self, client):
@@ -117,18 +117,18 @@ Expected: ImportError — `cockpit.api.app` doesn't exist yet.
 
 **Step 3: Write minimal implementation**
 
-Create `cockpit/api/__init__.py`:
+Create `logos/api/__init__.py`:
 
 ```python
-"""cockpit.api — FastAPI backend for the cockpit web UI."""
+"""cockpit.api — FastAPI backend for the logos web UI."""
 ```
 
-Create `cockpit/api/app.py`:
+Create `logos/api/app.py`:
 
 ```python
-"""FastAPI application for the cockpit API.
+"""FastAPI application for the logos API.
 
-Serves data from cockpit/data/ collectors over HTTP.
+Serves data from logos/data/ collectors over HTTP.
 Designed to be consumed by the React SPA at hapax-logos/.
 """
 from __future__ import annotations
@@ -137,7 +137,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
-    title="cockpit-api",
+    title="logos-api",
     description="Cockpit dashboard API",
     version="0.1.0",
 )
@@ -158,7 +158,7 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"name": "cockpit-api", "version": "0.1.0"}
+    return {"name": "logos-api", "version": "0.1.0"}
 ```
 
 **Step 4: Run test to verify it passes**
@@ -169,7 +169,7 @@ Expected: 2 passed.
 **Step 5: Commit**
 
 ```bash
-git add cockpit/api/__init__.py cockpit/api/app.py tests/test_api.py
+git add logos/api/__init__.py logos/api/app.py tests/test_api.py
 git commit -m "feat(api): FastAPI app skeleton with CORS"
 ```
 
@@ -180,7 +180,7 @@ git commit -m "feat(api): FastAPI app skeleton with CORS"
 The API caches collector results in memory and refreshes them on timers (30s fast, 5min slow), same as the Textual TUI.
 
 **Files:**
-- Create: `cockpit/api/cache.py`
+- Create: `logos/api/cache.py`
 - Test: `tests/test_api_cache.py`
 
 **Step 1: Write the failing test**
@@ -188,7 +188,7 @@ The API caches collector results in memory and refreshes them on timers (30s fas
 Create `tests/test_api_cache.py`:
 
 ```python
-"""Tests for cockpit API data cache."""
+"""Tests for logos API data cache."""
 from __future__ import annotations
 
 import asyncio
@@ -196,7 +196,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from cockpit.api.cache import DataCache
+from logos.api.cache import DataCache
 
 
 class TestDataCache:
@@ -243,10 +243,10 @@ Expected: ImportError — `cockpit.api.cache` doesn't exist.
 
 **Step 3: Write implementation**
 
-Create `cockpit/api/cache.py`:
+Create `logos/api/cache.py`:
 
 ```python
-"""Background data cache for the cockpit API.
+"""Background data cache for the logos API.
 
 Refreshes data collectors on timers matching the original TUI cadence:
 - Fast (30s): health, GPU, containers, timers
@@ -286,9 +286,9 @@ class DataCache:
 
     async def refresh_fast(self) -> None:
         """Refresh fast-cadence data (health, GPU, infra)."""
-        from cockpit.data.gpu import collect_vram
-        from cockpit.data.health import collect_live_health
-        from cockpit.data.infrastructure import collect_docker, collect_timers
+        from logos.data.gpu import collect_vram
+        from logos.data.health import collect_live_health
+        from logos.data.infrastructure import collect_docker, collect_timers
 
         try:
             health, containers, vram, timers = await asyncio.gather(
@@ -311,15 +311,15 @@ class DataCache:
 
     async def refresh_slow(self) -> None:
         """Refresh slow-cadence data (briefing, scout, nudges, etc.)."""
-        from cockpit.data.agents import get_agent_registry
-        from cockpit.data.briefing import collect_briefing
-        from cockpit.data.cost import collect_cost
-        from cockpit.data.drift import collect_drift
-        from cockpit.data.goals import collect_goals
-        from cockpit.data.management import collect_management_state
-        from cockpit.data.nudges import collect_nudges
-        from cockpit.data.readiness import collect_readiness
-        from cockpit.data.scout import collect_scout
+        from logos.data.agents import get_agent_registry
+        from logos.data.briefing import collect_briefing
+        from logos.data.cost import collect_cost
+        from logos.data.drift import collect_drift
+        from logos.data.goals import collect_goals
+        from logos.data.management import collect_management_state
+        from logos.data.nudges import collect_nudges
+        from logos.data.readiness import collect_readiness
+        from logos.data.scout import collect_scout
 
         try:
             self.briefing = collect_briefing()
@@ -339,7 +339,7 @@ class DataCache:
             log.warning("Nudge collection error: %s", e)
 
         try:
-            from cockpit.accommodations import load_accommodations
+            from logos.accommodations import load_accommodations
             self.accommodations = load_accommodations()
         except Exception as e:
             log.warning("Accommodation load error: %s", e)
@@ -380,7 +380,7 @@ Expected: 3 passed.
 **Step 5: Commit**
 
 ```bash
-git add cockpit/api/cache.py tests/test_api_cache.py
+git add logos/api/cache.py tests/test_api_cache.py
 git commit -m "feat(api): background data cache with 30s/5min refresh"
 ```
 
@@ -389,16 +389,16 @@ git commit -m "feat(api): background data cache with 30s/5min refresh"
 ## Task 4: Wire lifespan into FastAPI app
 
 **Files:**
-- Modify: `cockpit/api/app.py`
+- Modify: `logos/api/app.py`
 
 **Step 1: Add lifespan to app.py**
 
-Update `cockpit/api/app.py` to wire the cache refresh loop into FastAPI's lifespan:
+Update `logos/api/app.py` to wire the cache refresh loop into FastAPI's lifespan:
 
 ```python
 from contextlib import asynccontextmanager
 
-from cockpit.api.cache import start_refresh_loop
+from logos.api.cache import start_refresh_loop
 
 
 @asynccontextmanager
@@ -408,7 +408,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="cockpit-api",
+    title="logos-api",
     description="Cockpit dashboard API",
     version="0.1.0",
     lifespan=lifespan,
@@ -423,7 +423,7 @@ Expected: All pass (the test client fixture creates the app, lifespan runs in te
 **Step 3: Commit**
 
 ```bash
-git add cockpit/api/app.py
+git add logos/api/app.py
 git commit -m "feat(api): wire cache refresh into FastAPI lifespan"
 ```
 
@@ -432,9 +432,9 @@ git commit -m "feat(api): wire cache refresh into FastAPI lifespan"
 ## Task 5: Data endpoints — fast cadence (health, GPU, infrastructure)
 
 **Files:**
-- Create: `cockpit/api/routes/data.py`
-- Create: `cockpit/api/routes/__init__.py`
-- Modify: `cockpit/api/app.py`
+- Create: `logos/api/routes/data.py`
+- Create: `logos/api/routes/__init__.py`
+- Modify: `logos/api/app.py`
 - Test: `tests/test_api.py` (append)
 
 **Step 1: Write the failing tests**
@@ -443,7 +443,7 @@ Append to `tests/test_api.py`:
 
 ```python
 from unittest.mock import AsyncMock, patch
-from cockpit.api.cache import cache
+from logos.api.cache import cache
 
 
 class TestHealthEndpoint:
@@ -503,13 +503,13 @@ Expected: 404 — route doesn't exist.
 
 **Step 3: Write implementation**
 
-Create `cockpit/api/routes/__init__.py`:
+Create `logos/api/routes/__init__.py`:
 
 ```python
 """API route modules."""
 ```
 
-Create `cockpit/api/routes/data.py`:
+Create `logos/api/routes/data.py`:
 
 ```python
 """Data endpoints — serve cached collector results.
@@ -524,7 +524,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from cockpit.api.cache import cache
+from logos.api.cache import cache
 
 router = APIRouter(prefix="/api", tags=["data"])
 
@@ -549,7 +549,7 @@ async def get_health():
 
 @router.get("/health/history")
 async def get_health_history():
-    from cockpit.data.health import collect_health_history
+    from logos.data.health import collect_health_history
     history = collect_health_history()
     return _to_dict(history)
 
@@ -619,10 +619,10 @@ async def get_accommodations():
     return _to_dict(cache.accommodations)
 ```
 
-Register the router in `cockpit/api/app.py` — add after `app.add_middleware(...)`:
+Register the router in `logos/api/app.py` — add after `app.add_middleware(...)`:
 
 ```python
-from cockpit.api.routes.data import router as data_router
+from logos.api.routes.data import router as data_router
 app.include_router(data_router)
 ```
 
@@ -634,7 +634,7 @@ Expected: All pass (skeleton + health + GPU + infrastructure tests).
 **Step 5: Commit**
 
 ```bash
-git add cockpit/api/routes/__init__.py cockpit/api/routes/data.py cockpit/api/app.py tests/test_api.py
+git add logos/api/routes/__init__.py logos/api/routes/data.py logos/api/app.py tests/test_api.py
 git commit -m "feat(api): data endpoints for health, GPU, infrastructure, and all slow-cadence collectors"
 ```
 
@@ -643,14 +643,14 @@ git commit -m "feat(api): data endpoints for health, GPU, infrastructure, and al
 ## Task 6: API entry point
 
 **Files:**
-- Create: `cockpit/api/__main__.py`
+- Create: `logos/api/__main__.py`
 
 **Step 1: Write the entry point**
 
-Create `cockpit/api/__main__.py`:
+Create `logos/api/__main__.py`:
 
 ```python
-"""Run the cockpit API server.
+"""Run the logos API server.
 
 Usage:
     uv run python -m cockpit.api
@@ -666,7 +666,7 @@ import uvicorn
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Cockpit API server",
+        description="Logos API server",
         prog="python -m cockpit.api",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
@@ -703,13 +703,13 @@ Expected: uvicorn startup log, then timeout.
 ```toml
 [project.scripts]
 cockpit = "cockpit.__main__:main"
-cockpit-api = "cockpit.api.__main__:main"
+logos-api = "cockpit.api.__main__:main"
 ```
 
 **Step 4: Commit**
 
 ```bash
-git add cockpit/api/__main__.py pyproject.toml
+git add logos/api/__main__.py pyproject.toml
 git commit -m "feat(api): uvicorn entry point with CLI flags"
 ```
 
@@ -790,7 +790,7 @@ Expected: Clean build in `dist/`.
 Create `src/api/types.ts`:
 
 ```typescript
-// Types matching cockpit/data/ Python dataclasses
+// Types matching logos/data/ Python dataclasses
 
 export interface HealthSnapshot {
   overall_status: "healthy" | "degraded" | "failed";
@@ -1380,11 +1380,11 @@ CMD ["uv", "run", "python", "-m", "cockpit.api", "--host", "0.0.0.0"]
 Add to `~/llm-stack/docker-compose.yml` under services:
 
 ```yaml
-  cockpit-api:
+  logos-api:
     build:
       context: ~/projects/hapax-council
       dockerfile: Dockerfile.api
-    container_name: cockpit-api
+    container_name: logos-api
     restart: unless-stopped
     ports:
       - "127.0.0.1:8050:8050"
@@ -1413,7 +1413,7 @@ Add to `~/llm-stack/docker-compose.yml` under services:
 ```bash
 cd ~/projects/hapax-council
 git add Dockerfile.api
-git commit -m "build: Dockerfile for cockpit-api service"
+git commit -m "build: Dockerfile for logos-api service"
 ```
 
 ---
@@ -1465,10 +1465,10 @@ kill %1  # or the PID
 After all 12 tasks:
 
 - [ ] FastAPI + uvicorn + sse-starlette in pyproject.toml
-- [ ] `cockpit/api/app.py` — FastAPI app with CORS + lifespan
-- [ ] `cockpit/api/cache.py` — background refresh (30s/5min)
-- [ ] `cockpit/api/routes/data.py` — 15 data endpoints
-- [ ] `cockpit/api/__main__.py` — uvicorn entry point
+- [ ] `logos/api/app.py` — FastAPI app with CORS + lifespan
+- [ ] `logos/api/cache.py` — background refresh (30s/5min)
+- [ ] `logos/api/routes/data.py` — 15 data endpoints
+- [ ] `logos/api/__main__.py` — uvicorn entry point
 - [ ] `tests/test_api.py` — endpoint tests
 - [ ] `tests/test_api_cache.py` — cache tests
 - [ ] `~/projects/hapax-logos/` — React SPA with dashboard

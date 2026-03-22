@@ -338,10 +338,10 @@ Create directory and file `~/projects/hapax-system/skills/nudges/SKILL.md`:
 ```markdown
 ---
 name: nudges
-description: Review and act on active nudges from the cockpit. Use when the user asks about nudges, suggestions, or runs /nudges.
+description: Review and act on active nudges from logos. Use when the user asks about nudges, suggestions, or runs /nudges.
 ---
 
-Show active nudges from the cockpit API.
+Show active nudges from the logos API.
 
 **Default (no args):** List active nudges:
 
@@ -363,7 +363,7 @@ curl -s -X POST http://127.0.0.1:8051/api/nudges/$ID/act | jq .
 curl -s -X POST http://127.0.0.1:8051/api/nudges/$ID/dismiss | jq .
 ```
 
-If the cockpit API is not running (connection refused), suggest:
+If the logos API is not running (connection refused), suggest:
 `cd ~/projects/hapax-council && uv run python -m cockpit.api`
 ```
 
@@ -583,7 +583,7 @@ Stable patterns confirmed across multiple sessions:
 - **Tests**: Use `unittest.mock` — no pytest fixtures in conftest. Each test file is self-contained. Currently 1524+ tests.
 - **Profile facts**: JSONL format with fields: `dimension`, `key`, `value`, `confidence`, `source`, `evidence`. 13 dimensions defined in `shared/dimensions.py` (6 trait, 6 behavioral, 1 neurocognitive).
 - **Sync agents**: All sync agent `_generate_profile_facts()` methods produce behavioral dimension facts only. Validated by `shared.dimensions.validate_behavioral_write()`.
-- **Cockpit API**: FastAPI at `:8051` with routers in `cockpit/api/routes/`. CORS configured for hapax-logos at `:5173`.
+- **Logos API**: FastAPI at `:8051` with routers in `logos/api/routes/`. CORS configured for hapax-logos at `:5173`.
 - **Cycle modes**: `shared/cycle_mode.py` reads `~/.cache/hapax/cycle-mode`. Agents call `get_cycle_mode()` at invocation to adjust thresholds. CLI: `hapax-mode dev|prod`.
 - **LLM calls**: All Tier 2 agent LLM calls route through LiteLLM at `:4000` via `shared.config.get_model()`. Never direct to providers.
 - **Notifications**: Use `shared.notify.send_notification()` for ntfy + desktop. Topic: `hapax-alerts`.

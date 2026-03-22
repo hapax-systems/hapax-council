@@ -1886,16 +1886,6 @@ ci = [
     { name = "uvicorn" },
     { name = "watchdog" },
 ]
-cockpit-api = [
-    { name = "fastapi" },
-    { name = "jinja2" },
-    { name = "langfuse" },
-    { name = "opentelemetry-instrumentation-fastapi" },
-    { name = "prometheus-fastapi-instrumentator" },
-    { name = "sse-starlette" },
-    { name = "uvicorn" },
-    { name = "watchdog" },
-]
 host = [
     { name = "fastapi" },
     { name = "faster-whisper" },
@@ -1931,6 +1921,16 @@ host = [
     { name = "uvicorn" },
     { name = "watchdog" },
 ]
+logos-api = [
+    { name = "fastapi" },
+    { name = "jinja2" },
+    { name = "langfuse" },
+    { name = "opentelemetry-instrumentation-fastapi" },
+    { name = "prometheus-fastapi-instrumentator" },
+    { name = "sse-starlette" },
+    { name = "uvicorn" },
+    { name = "watchdog" },
+]
 studio = [
     { name = "ultralytics" },
 ]
@@ -1953,23 +1953,23 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", marker = "extra == 'cockpit-api'", specifier = ">=0.115.0" },
+    { name = "fastapi", marker = "extra == 'logos-api'", specifier = ">=0.115.0" },
     { name = "faster-whisper", marker = "extra == 'audio'", specifier = ">=1.1.0" },
     { name = "google-api-python-client", marker = "extra == 'sync-pipeline'", specifier = ">=2.100.0" },
     { name = "google-auth-oauthlib", marker = "extra == 'sync-pipeline'", specifier = ">=1.2.0" },
     { name = "google-genai", marker = "extra == 'ci'", specifier = ">=1.0.0" },
     { name = "hapax-council", extras = ["audio"], marker = "extra == 'host'" },
     { name = "hapax-council", extras = ["ci"], marker = "extra == 'host'" },
-    { name = "hapax-council", extras = ["cockpit-api"], marker = "extra == 'ci'" },
+    { name = "hapax-council", extras = ["logos-api"], marker = "extra == 'ci'" },
     { name = "hapax-council", extras = ["studio"], marker = "extra == 'host'" },
     { name = "hapax-council", extras = ["sync-pipeline"], marker = "extra == 'ci'" },
     { name = "hapax-sdlc", git = "https://github.com/ryanklee/hapax-constitution.git" },
     { name = "hsemotion-onnx", marker = "extra == 'audio'", specifier = ">=0.3" },
     { name = "httpx", specifier = ">=0.28.0" },
-    { name = "jinja2", marker = "extra == 'cockpit-api'", specifier = ">=3.1" },
+    { name = "jinja2", marker = "extra == 'logos-api'", specifier = ">=3.1" },
     { name = "kokoro", specifier = ">=0.9.4" },
     { name = "kokoro", marker = "extra == 'audio'", specifier = ">=0.9.0" },
-    { name = "langfuse", marker = "extra == 'cockpit-api'", specifier = ">=3.14.5" },
+    { name = "langfuse", marker = "extra == 'logos-api'", specifier = ">=3.14.5" },
     { name = "langfuse", marker = "extra == 'sync-pipeline'", specifier = ">=3.14.5" },
     { name = "litellm", specifier = ">=1.82.2" },
     { name = "llmlingua", specifier = ">=0.2.2" },
@@ -1983,7 +1983,7 @@ requires-dist = [
     { name = "opencv-python-headless", marker = "extra == 'audio'", specifier = ">=4.10.0" },
     { name = "opentelemetry-api", specifier = ">=1.39.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.39.0" },
-    { name = "opentelemetry-instrumentation-fastapi", marker = "extra == 'cockpit-api'", specifier = ">=0.50b0" },
+    { name = "opentelemetry-instrumentation-fastapi", marker = "extra == 'logos-api'", specifier = ">=0.50b0" },
     { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.50b0" },
     { name = "opentelemetry-instrumentation-logging", specifier = ">=0.50b0" },
     { name = "opentelemetry-sdk", specifier = ">=1.39.0" },
@@ -1993,7 +1993,7 @@ requires-dist = [
     { name = "pipecat-ai", extras = ["silero", "openai"], marker = "extra == 'audio'", specifier = ">=0.0.50" },
     { name = "piper-tts", marker = "extra == 'audio'", specifier = ">=1.2.0" },
     { name = "playwright", marker = "extra == 'ci'", specifier = ">=1.49.0" },
-    { name = "prometheus-fastapi-instrumentator", marker = "extra == 'cockpit-api'", specifier = ">=7.0.0" },
+    { name = "prometheus-fastapi-instrumentator", marker = "extra == 'logos-api'", specifier = ">=7.0.0" },
     { name = "pvporcupine", marker = "extra == 'audio'", specifier = ">=4.0.0" },
     { name = "pyannote-audio", marker = "extra == 'audio'", specifier = ">=3.3.0" },
     { name = "pyaudio", marker = "extra == 'audio'", specifier = ">=0.2.14" },
@@ -2006,15 +2006,15 @@ requires-dist = [
     { name = "qdrant-client", specifier = ">=1.17.0" },
     { name = "silero-vad", marker = "extra == 'audio'", specifier = ">=5.1" },
     { name = "soundfile", marker = "extra == 'audio'", specifier = ">=0.13.0" },
-    { name = "sse-starlette", marker = "extra == 'cockpit-api'", specifier = ">=2.0.0" },
+    { name = "sse-starlette", marker = "extra == 'logos-api'", specifier = ">=2.0.0" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = ">=2.0.0" },
     { name = "ultralytics", marker = "extra == 'studio'", specifier = ">=8.3.0" },
-    { name = "uvicorn", marker = "extra == 'cockpit-api'", specifier = ">=0.34.0" },
+    { name = "uvicorn", marker = "extra == 'logos-api'", specifier = ">=0.34.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "watchdog", marker = "extra == 'ci'", specifier = ">=6.0.0" },
-    { name = "watchdog", marker = "extra == 'cockpit-api'", specifier = ">=6.0.0" },
+    { name = "watchdog", marker = "extra == 'logos-api'", specifier = ">=6.0.0" },
 ]
-provides-extras = ["cockpit-api", "sync-pipeline", "audio", "ci", "studio", "host"]
+provides-extras = ["logos-api", "sync-pipeline", "audio", "ci", "studio", "host"]
 
 [package.metadata.requires-dev]
 dev = [
