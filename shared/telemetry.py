@@ -26,7 +26,9 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("hapax.telemetry")
@@ -35,6 +37,20 @@ log = logging.getLogger("hapax.telemetry")
 
 _langfuse = None
 _available: bool | None = None
+
+_LANGFUSE_ENV_FILE = Path.home() / ".cache" / "hapax" / "langfuse-env"
+
+
+def _apply_langfuse_environment() -> None:
+    """Set LANGFUSE_TRACING_ENVIRONMENT from working mode if not already set."""
+    if "LANGFUSE_TRACING_ENVIRONMENT" in os.environ:
+        return
+    try:
+        env = _LANGFUSE_ENV_FILE.read_text().strip()
+        if env:
+            os.environ["LANGFUSE_TRACING_ENVIRONMENT"] = env
+    except FileNotFoundError:
+        pass
 
 
 def _get_langfuse():
@@ -45,6 +61,7 @@ def _get_langfuse():
     if _langfuse is not None:
         return _langfuse
     try:
+        _apply_langfuse_environment()
         from langfuse import get_client
 
         _langfuse = get_client()

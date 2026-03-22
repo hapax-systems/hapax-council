@@ -1,0 +1,82 @@
+name: Experiment Freeze Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  freeze-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check experiment phase
+        id: phase
+        run: |
+          phase=$(python3 -c "import json; print(json.load(open('experiment-phase.json')).get('phase', 'off'))" 2>/dev/null || echo "off")
+          echo "phase=$phase" >> "$GITHUB_OUTPUT"
+          echo "Experiment phase: $phase"
+
+      - name: Check frozen paths
+        if: steps.phase.outputs.phase != 'off'
+        run: |
+          MANIFEST="experiment-freeze-manifest.txt"
+          if [[ ! -f "$MANIFEST" ]]; then
+            echo "No freeze manifest found, skipping"
+            exit 0
+          fi
+
+          # Get files changed in this PR
+          changed=$(git diff --name-only origin/main...HEAD)
+          if [[ -z "$changed" ]]; then
+            echo "No files changed"
+            exit 0
+          fi
+
+          # Load frozen paths
+          mapfile -t frozen < <(grep -v '^#' "$MANIFEST" | grep -v '^\s*$')
+
+          # Find violations
+          violations=()
+          while IFS= read -r file; do
+            for fp in "${frozen[@]}"; do
+              fp=$(echo "$fp" | xargs)
+              if [[ "$fp" == */ ]]; then
+                [[ "$file" == "$fp"* ]] && violations+=("$file") && break
+              elif [[ "$file" == "$fp" ]]; then
+                violations+=("$file") && break
+              fi
+            done
+          done <<< "$changed"
+
+          if [[ ${#violations[@]} -eq 0 ]]; then
+            echo "✓ No frozen paths modified"
+            exit 0
+          fi
+
+          # Check for deviation record
+          has_deviation=false
+          while IFS= read -r file; do
+            [[ "$file" == research/protocols/deviations/DEVIATION-*.md ]] && has_deviation=true && break
+          done <<< "$changed"
+
+          if [[ "$has_deviation" == true ]]; then
+            echo "::warning::${#violations[@]} frozen path(s) modified WITH deviation record"
+            for v in "${violations[@]}"; do
+              echo "  → $v"
+            done
+            exit 0
+          fi
+
+          echo "::error::EXPERIMENT FREEZE: ${#violations[@]} frozen path(s) modified without deviation record"
+          for v in "${violations[@]}"; do
+            echo "::error::  ✗ $v"
+          done
+          echo ""
+          echo "Add a deviation record: research/protocols/deviations/DEVIATION-NNN.md"
+          exit 1

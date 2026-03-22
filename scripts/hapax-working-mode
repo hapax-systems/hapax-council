@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Working mode switcher: RESEARCH ↔ R&D
+# Usage: hapax-working-mode [research|rnd]
+#   No argument: print current mode.
+
+MODE_FILE="$HOME/.cache/hapax/working-mode"
+RELAY_DIR="$HOME/.cache/hapax/relay"
+LANGFUSE_ENV_FILE="$HOME/.cache/hapax/langfuse-env"
+REPOS_DIR="$HOME/projects"
+
+# Repos to check for stale branches
+REPOS=(hapax-council hapax-officium hapax-constitution hapax-mcp)
+
+current_mode() {
+    if [[ -f "$MODE_FILE" ]]; then
+        cat "$MODE_FILE"
+    else
+        echo "rnd"
+    fi
+}
+
+check_stale_branches() {
+    local stale=0
+    for repo in "${REPOS[@]}"; do
+        local repo_path="$REPOS_DIR/$repo"
+        if [[ ! -d "$repo_path/.git" ]]; then
+            continue
+        fi
+        local branches
+        branches=$(git -C "$repo_path" branch --list | grep -v '^\*' | grep -v 'main$' | xargs || true)
+        if [[ -n "$branches" ]]; then
+            echo "  ✗ $repo has branches: $branches"
+            stale=1
+        fi
+    done
+    return $stale
+}
+
+check_clean_worktree() {
+    local dirty=0
+    for repo in "${REPOS[@]}"; do
+        local repo_path="$REPOS_DIR/$repo"
+        if [[ ! -d "$repo_path/.git" ]]; then
+            continue
+        fi
+        local status
+        status=$(git -C "$repo_path" status --porcelain 2>/dev/null | head -5)
+        if [[ -n "$status" ]]; then
+            echo "  ✗ $repo has uncommitted changes"
+            dirty=1
+        fi
+    done
+    return $dirty
+}
+
+write_relay_mode() {
+    local mode="$1"
+    mkdir -p "$RELAY_DIR"
+    cat > "$RELAY_DIR/working-mode.yaml" << EOF
+mode: $mode
+switched_at: "$(date -Iseconds)"
+EOF
+}
+
+write_inflection() {
+    local mode="$1"
+    local ts
+    ts=$(date +%Y%m%d-%H%M%S)
+    mkdir -p "$RELAY_DIR/inflections"
+
+    local label
+    if [[ "$mode" == "research" ]]; then
+        label="RESEARCH"
+    else
+        label="R&D"
+    fi
+
+    cat > "$RELAY_DIR/inflections/${ts}-mode-switch.md" << EOF
+---
+for: both
+priority: high
+---
+
+# Working Mode → $label
+
+Switched at $(date -Iseconds).
+
+**$label mode is now active.** All work must align with this mode.
+
+$(if [[ "$mode" == "research" ]]; then
+    echo "- Experiment code paths are FROZEN. Do not modify frozen paths without a deviation record."
+    echo "- All voice traces are tagged environment=research."
+    echo "- Focus: data collection, analysis, experiment infrastructure only."
+else
+    echo "- R&D work is free. All code paths modifiable (except experiment-frozen paths)."
+    echo "- All voice traces are tagged environment=development."
+    echo "- Focus: feature development, infrastructure, non-experiment work."
+fi)
+EOF
+}
+
+write_langfuse_env() {
+    local mode="$1"
+    mkdir -p "$(dirname "$LANGFUSE_ENV_FILE")"
+    if [[ "$mode" == "research" ]]; then
+        echo "research" > "$LANGFUSE_ENV_FILE"
+    else
+        echo "development" > "$LANGFUSE_ENV_FILE"
+    fi
+}
+
+notify() {
+    local mode="$1"
+    local priority="default"
+    local label="R&D"
+    if [[ "$mode" == "research" ]]; then
+        priority="high"
+        label="RESEARCH"
+    fi
+
+    if command -v curl &>/dev/null; then
+        curl -s -o /dev/null \
+            -H "Title: Working Mode → $label" \
+            -H "Priority: $priority" \
+            -H "Tags: $(if [[ "$mode" == "research" ]]; then echo "microscope"; else echo "wrench"; fi)" \
+            -d "Working mode switched to $label" \
+            "http://127.0.0.1:8090/hapax" 2>/dev/null || true
+    fi
+}
+
+signal_waybar() {
+    pkill -RTMIN+10 waybar 2>/dev/null || true
+}
+
+# ── No argument: print current mode ──
+if [[ $# -eq 0 ]]; then
+    echo "$(current_mode)"
+    exit 0
+fi
+
+MODE="$1"
+if [[ "$MODE" != "research" && "$MODE" != "rnd" ]]; then
+    echo "Usage: hapax-working-mode [research|rnd]" >&2
+    exit 1
+fi
+
+CURRENT=$(current_mode)
+if [[ "$CURRENT" == "$MODE" ]]; then
+    echo "Already in $MODE mode."
+    exit 0
+fi
+
+# ── Pre-flight checklist ──
+echo "Pre-flight checklist for $CURRENT → $MODE:"
+echo ""
+
+failed=0
+
+echo "Checking for stale branches..."
+if ! check_stale_branches; then
+    failed=1
+fi
+
+echo "Checking for clean worktrees..."
+if ! check_clean_worktree; then
+    failed=1
+fi
+
+if [[ $failed -eq 1 ]]; then
+    echo ""
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║  Mode switch blocked — resolve issues above first.  ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    exit 1
+fi
+
+echo "  ✓ All checks passed"
+echo ""
+
+# ── Switch ──
+mkdir -p "$(dirname "$MODE_FILE")"
+echo "$MODE" > "$MODE_FILE"
+
+write_langfuse_env "$MODE"
+write_relay_mode "$MODE"
+write_inflection "$MODE"
+notify "$MODE"
+signal_waybar
+
+LABEL="R&D"
+[[ "$MODE" == "research" ]] && LABEL="RESEARCH"
+
+echo "Working mode → $LABEL"
