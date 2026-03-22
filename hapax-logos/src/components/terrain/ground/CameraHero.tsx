@@ -208,7 +208,7 @@ function HlsPlayer() {
     const Hls = (await import("hls.js")).default;
     if (!Hls.isSupported()) return;
     const hls = new Hls({
-      liveSyncDurationCount: 3,
+      liveSyncDurationCount: 5,
       liveMaxLatencyDurationCount: 30,
       maxBufferLength: 30,
       backBufferLength: 10,
@@ -250,15 +250,6 @@ function HlsPlayer() {
       muted
       playsInline
       poster="/api/studio/stream/fx"
-      onWaiting={(e) => {
-        // When buffering, pause to hold last frame instead of showing black
-        const v = e.currentTarget;
-        if (v.readyState < 3) v.pause();
-      }}
-      onCanPlay={(e) => {
-        // Resume when buffer is ready
-        e.currentTarget.play().catch(() => {});
-      }}
     />
   );
 }

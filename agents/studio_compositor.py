@@ -2459,8 +2459,20 @@ class StudioCompositor:
 
         ret = self.pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
-            self._write_status("error")
-            raise RuntimeError("Failed to start pipeline")
+            # Pipeline failed — likely a camera that passed device-exists check
+            # but couldn't actually open. Log and continue with available cameras.
+            log.error("Pipeline set_state(PLAYING) returned FAILURE — attempting recovery")
+            with self._camera_status_lock:
+                offline = [r for r, s in self._camera_status.items() if s != "offline"]
+            # Mark all non-offline cameras as needing reconnect
+            for role in offline:
+                self._mark_camera_offline(role)
+            self._write_status("degraded")
+            # Try again — GStreamer may succeed with fewer active sources
+            ret2 = self.pipeline.set_state(Gst.State.PLAYING)
+            if ret2 == Gst.StateChangeReturn.FAILURE:
+                self._write_status("error")
+                raise RuntimeError("Failed to start pipeline after recovery attempt")
 
         log.info("Pipeline started -- output on %s", self.config.output_device)
 

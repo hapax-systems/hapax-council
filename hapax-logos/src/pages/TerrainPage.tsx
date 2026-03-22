@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { lazy, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { TerrainProvider, useTerrainActions, type RegionName, type Depth, type InvestigationTab } from "../contexts/TerrainContext";
+
+const DemoRunner = lazy(() => import("../demo/DemoRunner").then((m) => ({ default: m.DemoRunner })));
 import { TerrainLayout } from "../components/terrain/TerrainLayout";
 import { ToastProvider } from "../components/shared/ToastProvider";
 import { AgentRunProvider } from "../contexts/AgentRunContext";
@@ -89,6 +91,13 @@ function TerrainChrome() {
   );
 }
 
+function DemoGate() {
+  const [params] = useSearchParams();
+  const demoName = params.get("demo");
+  if (!demoName) return null;
+  return <DemoRunner demoName={demoName} />;
+}
+
 export function TerrainPage() {
   return (
     <ToastProvider>
@@ -98,6 +107,7 @@ export function TerrainPage() {
             <TerrainParamSync />
             <TerrainLayout />
             <TerrainChrome />
+            <DemoGate />
           </ErrorBoundary>
         </TerrainProvider>
       </AgentRunProvider>

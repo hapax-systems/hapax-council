@@ -94,11 +94,27 @@ async def snapshot():
     return Response(content=data, media_type="image/jpeg", headers=_NO_CACHE)
 
 
+_OFFLINE_PLACEHOLDER = Path(__file__).parent.parent / "static" / "camera-offline.jpg"
+
+
 @router.get("/studio/stream/camera/{role}")
 async def camera_snapshot(role: str):
-    """Single JPEG snapshot of an individual camera feed."""
+    """Single JPEG snapshot of an individual camera feed.
+
+    Returns an 'OFFLINE' placeholder image (200) instead of 404 when
+    the camera snapshot file doesn't exist, so the frontend always gets
+    a valid image and can display a clear offline state.
+    """
     cam_path = Path(f"/dev/shm/hapax-compositor/{role}.jpg")
     if not cam_path.exists():
+        if _OFFLINE_PLACEHOLDER.exists():
+            from starlette.responses import Response
+
+            return Response(
+                content=_OFFLINE_PLACEHOLDER.read_bytes(),
+                media_type="image/jpeg",
+                headers={**_NO_CACHE, "X-Camera-Status": "offline"},
+            )
         return JSONResponse({"error": f"camera {role} not available"}, status_code=404)
     try:
         data = cam_path.read_bytes()

@@ -12,7 +12,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from opentelemetry.trace import get_tracer
+from opentelemetry.trace import get_current_span, get_tracer
 from pydantic_ai import Agent
 
 try:
@@ -426,8 +426,21 @@ content_agent = Agent(
     model_settings={"max_tokens": 16384},
 )
 
+# Opus-tier content planner — used for app format where content quality is paramount
+content_agent_opus = Agent(
+    get_model("claude-opus"),
+    system_prompt=(
+        "You are a content planner for technical demos. Your job is to decide WHAT to show "
+        "and WHAT facts to state — not how to say them. Output a structured content skeleton "
+        "with specific facts, data citations, visual choices, and design rationale. "
+        "Do NOT write narration prose. Only output structured content plans."
+    ),
+    output_type=ContentSkeleton,
+    model_settings={"max_tokens": 16384},
+)
+
 voice_agent = Agent(
-    get_model("balanced"),
+    get_model("claude-opus"),
     system_prompt=(
         "You are a narration writer. You transform structured content plans into spoken "
         "narration that matches provided voice examples exactly. You write in the voice "
@@ -596,152 +609,199 @@ def build_voice_prompt(
     duration_constraints: dict,
     target_seconds: int,
     never_rules: list[str] | None = None,
+    audience_dossier_text: str = "",
+    style_guide: dict | None = None,
 ) -> str:
-    """Build the Pass 2 prompt — voice application from skeleton + examples."""
-    # Format voice examples as few-shot demonstrations
-    examples_text = ""
-    bad_example_text = ""
-    for key, example in voice_examples.get("examples", {}).items():
+    """Build the Pass 2 prompt — voice application from skeleton + examples.
+
+    Prompt structure is ordered for maximum constraint adherence:
+    1. Audience context + never rules (WHO is listening — set direction early)
+    2. Voice identity + contrastive pairs (WHO is speaking — anchor register)
+    3. Anti-fabrication + certainty levels (grounding rules)
+    4. Good examples (gold-standard narration)
+    5. Bad examples with annotations (what NOT to do)
+    6. Content skeleton (what to say)
+    7. Word count + formatting
+    8. Constraint summary repeated (recency bias)
+    """
+    # ── Collect examples ──
+    good_examples: list[str] = []
+    bad_examples: list[str] = []
+    for key, ex in voice_examples.get("examples", {}).items():
+        text = ex.get("text", "").strip()
+        label = ex.get("label", "")
+        violation = ex.get("violation", "")
         if key.startswith("bad_"):
-            bad_example_text += f"""
-## BAD EXAMPLE — {example["label"]}:
-"{example["text"].strip()}"
-"""
+            entry = f'### BAD: {label}\n"{text}"'
+            if violation:
+                entry += f"\nWHY THIS FAILS: {violation}"
+            bad_examples.append(entry)
         else:
-            examples_text += f"""
-### Example: {example["label"]}
-"{example["text"].strip()}"
-"""
+            good_examples.append(f'### {label}\n"{text}"')
 
-    # Format voice profile dimensions
-    profile_text = ""
-    if voice_profile:
-        identity = voice_profile.get("identity", {})
-        profile_text += f"""Role: {identity.get("role", "builder")}
-Register: {identity.get("register", "technical-conversational")}
-Relationship to subject: {identity.get("relationship", "explaining own work")}
-Rhetorical strategy: {voice_profile.get("rhetorical_strategy", "descriptive")}
-"""
-        attr = voice_profile.get("attribution", {})
-        profile_text += f"""Person: {attr.get("person", "first-person")}
-Grounding: {attr.get("grounding", "concrete")}
-Maturity framing: {attr.get("maturity", "developmental")}
-"""
-        patterns = voice_profile.get("sentence_patterns", {})
-        profile_text += f"""Primary sentence type: {patterns.get("primary", "declarative")}
-Secondary sentence type: {patterns.get("secondary", "compound-causal")}
-"""
-        transitions = voice_profile.get("transitions", {})
-        profile_text += f"""Transition style: {transitions.get("style", "functional")}
-"""
-        opening = voice_profile.get("opening", {})
-        closing = voice_profile.get("closing", {})
-        profile_text += f"""Opening: {opening.get("style", "direct")}
-Closing: {closing.get("style", "landing")}
-"""
-        beyond = voice_profile.get("content_beyond_facts", [])
-        if beyond:
-            profile_text += "Content beyond facts: " + ", ".join(beyond) + "\n"
+    # ── Collect contrastive pairs from style guide ──
+    contrastive_text = ""
+    if style_guide:
+        pairs = style_guide.get("contrastive_pairs", [])
+        if pairs:
+            lines = []
+            for pair in pairs:
+                lines.append(f'NOT THIS: "{pair["bad"]}"')
+                lines.append(f'THIS: "{pair["good"]}"')
+                lines.append(f"({pair['violation']})\n")
+            contrastive_text = "\n".join(lines)
 
-    # Word count targets — inflate because Sonnet consistently writes 70-80% of target.
-    # Longer demos compress MORE (model fatigues), so scale inflation with duration.
-    inflation = 1.45 if target_seconds <= 600 else 1.55  # 45% for <=10m, 55% for >10m
+    # ── Format certainty levels ──
+    certainty_text = ""
+    levels = voice_profile.get("certainty_levels", {})
+    if levels:
+        lines = []
+        for level_name, level_data in levels.items():
+            if isinstance(level_data, dict):
+                lines.append(
+                    f"- {level_name.upper()}: {level_data.get('description', '')} "
+                    f'Example: "{level_data.get("example", "")}"'
+                )
+        certainty_text = "\n".join(lines)
+
+    # ── Format voice constraints ──
+    constraints = voice_profile.get("constraints", [])
+    constraint_lines = "\n".join(f"- {c}" for c in constraints) if constraints else ""
+
+    # ── Format sentence patterns, transitions, opening, closing ──
+    profile_parts: list[str] = []
+    profile_parts.append(f"Role: {voice_profile.get('role', 'operator')}")
+    profile_parts.append(f"Register: {voice_profile.get('register', 'technical-conversational')}")
+    profile_parts.append(f"Person: {voice_profile.get('person', 'first-person')}")
+    profile_parts.append(f"Grounding: {voice_profile.get('grounding', 'concrete')}")
+    for key in ("sentence_patterns", "transitions", "opening", "closing"):
+        val = voice_profile.get(key, [])
+        if isinstance(val, list):
+            profile_parts.append(f"{key}: " + "; ".join(str(v) for v in val))
+        elif isinstance(val, str):
+            profile_parts.append(f"{key}: {val}")
+    maturity = voice_profile.get("maturity_framing", {})
+    if isinstance(maturity, dict):
+        use = maturity.get("use", [])
+        avoid = maturity.get("avoid", [])
+        if use:
+            profile_parts.append("Maturity — USE: " + ", ".join(f'"{u}"' for u in use))
+        if avoid:
+            profile_parts.append("Maturity — AVOID: " + ", ".join(f'"{a}"' for a in avoid))
+    profile_text = "\n".join(profile_parts)
+
+    # ── Word count targets ──
+    inflation = 1.45 if target_seconds <= 600 else 1.55
     words_min, words_max = duration_constraints["words_per_scene"]
     words_min = int(words_min * inflation)
     words_max = int(words_max * inflation)
     total_words = int(target_seconds * 2.5 * inflation)
+    num_scenes = len(skeleton.scenes)
 
     skeleton_json = skeleton.model_dump_json(indent=2)
 
+    # ── Never rules with concrete examples ──
+    never_text = ""
+    if never_rules:
+        never_text = "\n".join(f"- NEVER: {r}" for r in never_rules)
+
+    # ── Build prompt in research-validated order ──
     result = f"""Transform this content skeleton into a complete DemoScript with spoken narration.
 
-## ANTI-FABRICATION — READ THIS FIRST (violations are the #1 reason demos fail)
-Fabricated content sounds immediately fake and destroys credibility. This is the most common failure mode.
+<audience>
+## WHO IS LISTENING — read this first, it determines everything else
 
-FORBIDDEN PATTERNS — if you write ANY of these, the demo WILL be rejected:
-- "Yesterday the system..." / "Last week it..." / "Last Tuesday..." / "This morning..." / "For example, yesterday..." — ALL temporal references to events that supposedly happened
-- "For instance, last week when the knowledge search started returning empty results..." — fabricated troubleshooting story
-- "it reminded me that Sarah mentioned..." — fabricated people and events
-- "three client emails need responses" — fabricated specific counts
-- "Claude cost forty-three dollars" — fabricated dollar amounts
-- "disk cleanup freed up eight gigabytes" — fabricated metrics
-- "eighty-five percent capacity" — fabricated percentages not in research context
-- Any sentence describing a SPECIFIC EVENT that happened at a specific time
+{audience_dossier_text if audience_dossier_text else "General audience. No specific dossier provided."}
 
-ALLOWED PATTERNS — use ONLY these:
-- Present tense capability: "The system runs health checks every 15 minutes" (if 15 minutes is in research context)
-- General capability: "When something breaks, it tries to fix it automatically"
-- Hypothetical/conditional: "If a service crashes overnight, I get a notification"
-- Exact data from research context: quote exact numbers that appear in the provided research
+### HARD CONSTRAINTS — violating ANY of these causes immediate rejection
+{never_text if never_text else "No audience-specific constraints."}
+</audience>
 
-SELF-CHECK REQUIREMENT: Before finalizing, scan EVERY sentence for temporal markers (yesterday, last week, this morning, last Tuesday, recently, the other day, for example/instance + past tense). If found, rewrite as present-tense capability or hypothetical.
+<voice>
+## WHO IS SPEAKING — the register and identity of the narrator
 
-## Content Skeleton (WHAT to say)
-{skeleton_json}
+You are the system's architect explaining it to a technically sharp friend over coffee.
+You are not selling anything. You are not performing. You are thinking out loud about
+something you built. You are not teaching — the audience is smart enough. You are sharing.
 
-## Voice Examples (HOW to say it)
-Match the voice of these examples. Every narration passage you write should sound like it was written by the same person.
-{examples_text}
-{bad_example_text}
-
-## Voice Profile
 {profile_text}
 
-## Word Count Targets (MUST HIT THESE — scripts that are too short WILL FAIL)
-- Target per scene: {(words_min + words_max) // 2} words ({words_min} minimum, {words_max} maximum).
-- Total target: ~{total_words} words across all narrations = {target_seconds}s at 150 wpm.
-- With {len(skeleton.scenes)} scenes + intro + outro, each scene needs ~{total_words // (len(skeleton.scenes) + 2)} words.
-- Each scene should have 4-6 sentences, each developing ONE specific point from the skeleton's facts.
-- Intro narration: 15-30 words MAXIMUM (1-2 sentences). Plays over a static title card. MUST say what this is — "I built a personal AI system that..." NOT vague framing like "I've been working on something." For family audiences, keep it warm and personal — NO jargon like "infrastructure" or "externalized executive function".
-- Outro narration: 15-30 words MAXIMUM (1-2 sentences). A simple closing. Match the intro's register.
-- PACING: Each scene = one focused idea with one visual. The viewer should never wonder "why am I still looking at this same image?" If you're making 5+ points in one scene, the scene is too long.
+### CONTRASTIVE PAIRS — study these before writing
+{contrastive_text if contrastive_text else "No contrastive pairs provided."}
+</voice>
 
-## Title
-- For family/non-technical audiences: use a short, conversational title (e.g. "What I've Been Building"). NOT clinical terms like "Executive Function Infrastructure".
-- Keep the title under 6 words. It appears on a title card.
+<grounding>
+## ANTI-FABRICATION — the #1 reason demos fail
 
-## Visual-Narration Alignment (CRITICAL)
-For each scene, the narration MUST describe what is visible in the visual:
-- If the visual is a screenshot of the dashboard → narrate what the dashboard shows
-- If the visual is a diagram of agent architecture → narrate the architecture shown in the diagram
-- If the visual is a chart of health scores → narrate the data shown in the chart
-- If the visual is a screencast → narrate what happens in real time ("the system streams its response...", "watch as the health check runs...")
-- Do NOT narrate features or concepts that are not represented in the scene's visual
-- Do NOT show a visual that illustrates something different from what the narration describes
-- Self-check each scene: "If I mute the audio and show only the image, does the topic remain clear?"
-- For screencast scenes: narration should be timed to describe what the viewer sees happening in the recording
+FORBIDDEN — if you write ANY of these, the demo WILL be rejected:
+- ALL temporal references to events: "Yesterday...", "This morning...", "Last week..."
+- Fabricated people, events, counts, dollars, percentages not in source material
+- Any specific event at a specific time that is not documented
 
-## Personal Connection (family/non-technical audiences)
-For family audiences, every scene should answer "why does this matter to the operator's daily life?"
-- Don't just describe WHAT the system does — explain WHY it helps or what changes because of it
-- Connect technical capabilities to human outcomes: less stress, better preparation, fewer things forgotten
-- Use the profile facts to ground narration in real details about how the operator works, thinks, and lives
-- The viewer should feel like they understand the person better after watching, not just the technology
-- Technical architecture scenes (tiers, data flow) should be reframed through personal impact
+ALLOWED — use ONLY these patterns:
+- Present tense capability: "The system runs health checks every 15 minutes"
+- Hypothetical: "If a service crashes overnight, I get a notification"
+- Exact data from source material: quote numbers that appear in the research context
 
-## Instructions
-1. Use the skeleton's facts and data_citations as raw material for each scene's narration
-2. Write narration in the voice demonstrated by the examples above
-3. Include design_rationale and limitation_or_tradeoff from the skeleton where provided
-4. Preserve the skeleton's visual_type, screenshot specs, diagram_spec, and interaction specs exactly
-5. Generate 3-6 key_points per scene (concrete, specific bullets — these appear as bullet lists on the slide)
-6. Set duration_hint based on word count / 2.5
-7. Narration describes concepts and how things work — visuals are static images, not live demos
-8. Each scene's narration must match its visual (see Visual-Narration Alignment above)
-9. For comparison/contrast scenes (e.g. "generic AI vs personal system"), use slide_table instead of key_points — provide a list of rows where the first row is the header
+### CERTAINTY LEVELS — use the right framing for each claim
+{certainty_text if certainty_text else "No certainty levels defined."}
 
-Return a complete DemoScript with title, audience (set to the archetype name like 'family' or 'technical-peer', NOT a description), intro_narration, scenes, and outro_narration."""
+{constraint_lines}
 
-    # Inject voice profile constraints
-    constraints = voice_profile.get("constraints", [])
-    if constraints:
-        constraint_lines = "\n".join(f"- {c}" for c in constraints)
-        result += (
-            f"\n\n## VOICE CONSTRAINTS (violations cause evaluation failure)\n{constraint_lines}"
-        )
-    if never_rules:
-        rules = "\n".join(f"- NEVER: {r}" for r in never_rules)
-        result += f"\n\n## AUDIENCE-SPECIFIC HARD CONSTRAINTS\n{rules}"
+SELF-CHECK: Before finalizing, scan EVERY sentence for temporal markers and hedging language
+("seems to", "promising", "might"). Rewrite as present-tense fact or quantified uncertainty.
+</grounding>
+
+<good_examples>
+## GOLD STANDARD — every passage you write should sound like these
+
+{chr(10).join(good_examples)}
+</good_examples>
+
+<bad_examples>
+## FAILURES — if your output resembles ANY of these, rewrite it
+
+{chr(10).join(bad_examples)}
+</bad_examples>
+
+<content>
+## CONTENT SKELETON — what to say (transform this into narration)
+
+{skeleton_json}
+</content>
+
+<formatting>
+## WORD COUNT & STRUCTURE
+
+- Target per scene: {(words_min + words_max) // 2} words ({words_min} min, {words_max} max)
+- Total: ~{total_words} words across all narrations = {target_seconds}s at 150 wpm
+- With {num_scenes} scenes + intro + outro, each scene needs ~{total_words // (num_scenes + 2)} words
+- Each scene: 4-6 sentences developing ONE specific point from the skeleton
+- Intro: 15-30 words MAX. Say what this is. No vague framing.
+- Outro: 15-30 words MAX. Land on impact. No ceremony.
+- Title: under 6 words. Conversational for family audiences.
+
+## INSTRUCTIONS
+1. Use skeleton facts + data_citations as raw material
+2. Write in the voice demonstrated by good_examples
+3. Include design_rationale and limitation_or_tradeoff where provided
+4. Preserve visual_type, screenshot specs, diagram_spec, interaction specs exactly
+5. Generate 3-6 key_points per scene (concrete, specific)
+6. Set duration_hint = word_count / 2.5
+7. For comparison scenes, use slide_table instead of key_points
+8. Return: DemoScript with title, audience (archetype name), intro_narration, scenes, outro_narration
+</formatting>
+
+<constraints_repeated>
+## FINAL REMINDER — these are the rules that get violated most often
+
+1. Do NOT fabricate events, routines, or temporal specificity
+2. Do NOT pitch, sell, or use marketing language ("powerful", "seamlessly", "meaningfully")
+3. Do NOT explain neurodivergence to someone who knows it — describe the system, not the condition
+4. Do NOT hedge with "promising", "seems to", "might" — state the fact or state the uncertainty with numbers
+5. Do NOT use generic descriptions — name the component, state the number, cite the source
+</constraints_repeated>"""
+
     return result
 
 
@@ -771,6 +831,7 @@ async def generate_demo(
     personas = load_personas(extra_path=persona_file)
     archetype, extra_context = resolve_audience(audience_text, personas)
     persona = personas[archetype]
+    dossier_matched = bool(extra_context)
     progress(f"Resolved audience: {archetype}")
 
     # 3. Parse duration
@@ -778,7 +839,17 @@ async def generate_demo(
     progress(f"Target duration: {target_seconds}s ({target_seconds / 60:.0f}m)")
 
     # 4. System readiness gate
-    with tracer.start_as_current_span("demo.readiness"):
+    with tracer.start_as_current_span(
+        "demo.readiness",
+        attributes={
+            "demo.scope": scope,
+            "demo.audience": archetype,
+            "demo.audience_text": audience_text,
+            "demo.dossier_matched": dossier_matched,
+            "demo.target_seconds": target_seconds,
+            "demo.format": format,
+        },
+    ):
         from agents.demo_pipeline.readiness import check_readiness
 
         progress("Checking system readiness...")
@@ -905,7 +976,11 @@ async def generate_demo(
     with tracer.start_as_current_span(
         "demo.content_plan", attributes={"scope": scope, "audience": archetype}
     ):
-        progress("Pass 1: Planning content structure...")
+        # Use Opus for app format (content quality is paramount for live demos)
+        active_content_agent = content_agent_opus if format == "app" else content_agent
+        progress(
+            f"Pass 1: Planning content structure ({'opus' if format == 'app' else 'balanced'})..."
+        )
         content_prompt = build_content_prompt(
             scope,
             archetype,
@@ -923,15 +998,47 @@ async def generate_demo(
             content_prompt += (
                 f"\n\n## EVALUATION FEEDBACK — CRITICAL CORRECTIONS\n{planning_overrides}"
             )
-        skeleton_result = await content_agent.run(content_prompt)
+        skeleton_result = await active_content_agent.run(content_prompt)
         skeleton = skeleton_result.output
         progress(f"Content plan: {len(skeleton.scenes)} scenes")
+
+        # Emit LLM call metrics
+        span = get_current_span()
+        span.set_attribute("llm.pass", "content_plan")
+        span.set_attribute("llm.scene_count", len(skeleton.scenes))
+        span.set_attribute("llm.prompt_chars", len(content_prompt))
+
+    # 7a.5: Intermediate retrieval — pull full source text for planned topics
+    with tracer.start_as_current_span("demo.intermediate_retrieval"):
+        from agents.demo_pipeline.research import retrieve_for_topics
+
+        topic_list = [scene.title for scene in skeleton.scenes]
+        progress(f"Retrieving deep context for {len(topic_list)} topics...")
+        deep_context = await retrieve_for_topics(topic_list, audience=archetype, token_budget=30000)
+        if deep_context:
+            research_context += (
+                f"\n\n## Deep Context (Retrieved for Selected Topics)\n\n{deep_context}"
+            )
+            progress(f"Deep context: {len(deep_context)} chars added to research")
 
     # 7b: Voice application (how to say it) — prose from skeleton + voice examples
     with tracer.start_as_current_span(
         "demo.voice_apply", attributes={"scenes": len(skeleton.scenes)}
     ):
         progress("Pass 2: Applying voice to content...")
+        # Build audience dossier text for the voice prompt
+        audience_dossier_text = ""
+        if sufficiency.audience_dossier:
+            d = sufficiency.audience_dossier
+            audience_dossier_text = f"Name: {d.name}\n"
+            if d.context:
+                audience_dossier_text += f"Context:\n{d.context}\n"
+            cal = d.calibration or {}
+            if cal.get("emphasize"):
+                audience_dossier_text += "Emphasize: " + ", ".join(cal["emphasize"]) + "\n"
+            if cal.get("skip"):
+                audience_dossier_text += "Skip: " + ", ".join(cal["skip"]) + "\n"
+
         voice_prompt = build_voice_prompt(
             skeleton,
             voice_examples,
@@ -939,6 +1046,8 @@ async def generate_demo(
             duration_constraints,
             target_seconds,
             never_rules=dossier_never or None,
+            audience_dossier_text=audience_dossier_text,
+            style_guide=style_guide,
         )
         voice_result = await voice_agent.run(voice_prompt)
         script = voice_result.output
@@ -978,6 +1087,22 @@ async def generate_demo(
 
         progress(f"Narration complete: {len(script.scenes)} scenes, {actual_words}w")
 
+        # Emit voice pass metrics
+        span = get_current_span()
+        span.set_attribute("llm.pass", "voice_apply")
+        span.set_attribute("llm.actual_words", actual_words)
+        span.set_attribute("llm.target_words", target_words)
+        span.set_attribute("llm.word_ratio", round(actual_words / max(target_words, 1), 2))
+        span.set_attribute(
+            "llm.retried",
+            actual_words
+            != (
+                len((voice_result.output.intro_narration or "").split())
+                + len((voice_result.output.outro_narration or "").split())
+                + sum(len(s.narration.split()) for s in voice_result.output.scenes)
+            ),
+        )
+
     # 8. Self-critique & revision
     with tracer.start_as_current_span("demo.critique"):
         from agents.demo_pipeline.critique import critique_and_revise
@@ -992,10 +1117,26 @@ async def generate_demo(
             on_progress=progress,
             voice_examples=voice_examples,
             forbidden_terms=persona.forbidden_terms or None,
+            output_format=format,
         )
+        # Emit quality metrics
+        span = get_current_span()
+        span.set_attribute("quality.overall_pass", quality_report.overall_pass)
+        critical_count = sum(
+            1 for d in quality_report.dimensions if not d.passed and d.severity == "critical"
+        )
+        important_count = sum(
+            1 for d in quality_report.dimensions if not d.passed and d.severity == "important"
+        )
+        span.set_attribute("quality.critical_issues", critical_count)
+        span.set_attribute("quality.important_issues", important_count)
+        span.set_attribute("quality.total_dimensions", len(quality_report.dimensions))
+        for dim in quality_report.dimensions:
+            span.set_attribute(f"quality.dim.{dim.name}", dim.passed)
+
         if not quality_report.overall_pass:
             progress(
-                f"WARNING: Script has {sum(1 for d in quality_report.dimensions if not d.passed)} quality issues remaining"
+                f"WARNING: Script has {critical_count + important_count} quality issues remaining"
             )
 
     # 8.5 Safety net: truncate intro/outro if still too long (plays over static title card)
@@ -1120,6 +1261,46 @@ async def generate_demo(
 
     # Save script for reproducibility
     (demo_dir / "script.json").write_text(script.model_dump_json(indent=2))
+
+    # 8.5 App format: render audio + app-script.json, skip visuals/slides/video
+    if format == "app":
+        with tracer.start_as_current_span("demo.app_format"):
+            from agents.demo_pipeline.app_scenes import convert_to_app_scenes, render_app_demo_audio
+            from agents.demo_pipeline.choreography import choreograph
+
+            progress("Choreographing UI actions (Opus)...")
+            choreography_actions = await choreograph(script, on_progress=progress)
+
+            # Use ElevenLabs if available (higher quality), fall back to Kokoro
+            from agents.demo_pipeline.voice import check_elevenlabs_available
+
+            tts_backend = "elevenlabs" if check_elevenlabs_available() else "auto"
+            speed = 1.0 if tts_backend == "elevenlabs" else 0.90
+            progress(f"Rendering app demo audio ({tts_backend})...")
+            audio_dir = demo_dir / "audio"
+            render_app_demo_audio(
+                script, audio_dir, speed_factor=speed, on_progress=progress, backend=tts_backend
+            )
+
+            progress("Generating app scene script...")
+            convert_to_app_scenes(
+                script, demo_dir, on_progress=progress, choreography=choreography_actions
+            )
+
+            # Save metadata
+            metadata = {
+                "title": script.title,
+                "audience": archetype,
+                "scope": scope,
+                "scenes": len(script.scenes),
+                "format": "app",
+                "quality_pass": quality_report.overall_pass if quality_report else None,
+            }
+            (demo_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+
+            demo_name = demo_dir.name
+            progress(f"App demo ready: {demo_dir}\nOpen: http://localhost:5173/?demo={demo_name}")
+            return demo_dir
 
     # 9. Generate visuals (screenshots + diagrams + charts + screencasts)
     with tracer.start_as_current_span("demo.visuals", attributes={"count": len(script.scenes)}):
@@ -1421,7 +1602,7 @@ async def main() -> None:
     )
     parser.add_argument(
         "--format",
-        choices=["slides", "video", "markdown-only"],
+        choices=["slides", "video", "markdown-only", "app"],
         default="slides",
         help="Output format",
     )

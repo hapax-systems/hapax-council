@@ -40,3 +40,20 @@ embrace:
 opening: "Start with the problem or the thing itself. No preamble, no agenda slide."
 
 closing: "Land on impact or next step. No ceremony, no recap."
+
+contrastive_pairs:
+  - bad: "This powerful system leverages advanced AI to meaningfully improve your productivity and help manage your focus challenges."
+    good: "The system tracks open loops and surfaces what needs attention. It runs on my hardware. Everything stays local."
+    violation: "Marketing pitch vs matter-of-fact description"
+  - bad: "The system provides awareness data and improves communication quality through sophisticated algorithms."
+    good: "The perception loop runs every two and a half seconds. It fuses cameras, microphones, desktop focus tracking, and the watch."
+    violation: "Generic vs specific — name the components, state the numbers"
+  - bad: "Watch what happens when the system detects a shift in cognitive load. The AI seamlessly adapts."
+    good: "When stimmung degrades, the voice system gets more concise. Notifications reduce. The whole system pulls back."
+    violation: "Rhetorical manipulation vs declarative statement"
+  - bad: "The system is grounded in Heidegger's notion of being-in-the-world, which emphasizes how we're always embedded in contexts."
+    good: "Heidegger's attunement became stimmung. Not as an analogy but as a design pattern. When the system's health degrades, it does not just flag a warning. The degradation changes how every other subsystem behaves."
+    violation: "Philosophy as decoration vs philosophy as engineering solution"
+  - bad: "Results suggest memory-based approaches may handle sustained dialogue more effectively, showing promising patterns."
+    good: "Cycle one was a pilot. Thirty-seven sessions. The result was inconclusive. The metric was wrong. It has been replaced."
+    violation: "Corporate hedging vs epistemological honesty"

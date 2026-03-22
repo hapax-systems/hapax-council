@@ -38,7 +38,7 @@ critique_agent = Agent(
 )
 
 revision_agent = Agent(
-    get_model("long-context"),  # revision needs full script JSON (including visual specs)
+    get_model("balanced"),  # Sonnet — Flash was causing empty responses on large scripts
     system_prompt=(
         "You are revising a demo script based on quality feedback. Fix ONLY the issues "
         "identified in the quality report. Do not rewrite scenes that passed review. "
@@ -402,6 +402,91 @@ def _check_intro_outro_length(script: DemoScript) -> QualityDimension | None:
         name="intro_outro_length",
         passed=False,
         severity="critical",
+        issues=issues,
+    )
+
+
+def _check_tone_register(script: DemoScript) -> QualityDimension | None:
+    """Deterministic tone check — catches marketing language, hedging, and rhetorical hooks."""
+    issues: list[str] = []
+    all_narration = " ".join(
+        [script.intro_narration or ""]
+        + [s.narration for s in script.scenes]
+        + [script.outro_narration or ""]
+    ).lower()
+
+    # Marketing / pitch language
+    pitch_words = [
+        "powerful",
+        "seamlessly",
+        "meaningfully",
+        "game-changing",
+        "revolutionary",
+        "incredible",
+        "amazing",
+        "cutting-edge",
+        "leverage",
+        "synergize",
+        "best-in-class",
+        "robust",
+        "scalable",
+        "proactive",
+        "genuinely useful",
+        "genuinely affects",
+        "transforms",
+        "revolutionize",
+    ]
+    found_pitch = [w for w in pitch_words if w in all_narration]
+    if found_pitch:
+        issues.append(f"Marketing language detected: {', '.join(found_pitch[:5])}")
+
+    # Rhetorical hooks
+    hooks = [
+        "watch what happens",
+        "imagine",
+        "what if i told you",
+        "let me show you",
+        "as you can see",
+        "notice how",
+    ]
+    found_hooks = [h for h in hooks if h in all_narration]
+    if found_hooks:
+        issues.append(f"Rhetorical hooks: {', '.join(found_hooks[:3])}")
+
+    # RLHF hedging (vague instead of quantified)
+    hedges = [
+        "seems to",
+        "appears to",
+        "promising",
+        "might improve",
+        "may handle",
+        "could potentially",
+        "suggests that",
+    ]
+    found_hedges = [h for h in hedges if h in all_narration]
+    if found_hedges:
+        issues.append(f"Hedging language (use numbers instead): {', '.join(found_hedges[:3])}")
+
+    # Temporal fabrication
+    temporal = [
+        "yesterday",
+        "last week",
+        "this morning",
+        "last tuesday",
+        "the other day",
+        "recently when",
+    ]
+    found_temporal = [t for t in temporal if t in all_narration]
+    if found_temporal:
+        issues.append(f"Fabricated temporal markers: {', '.join(found_temporal[:3])}")
+
+    if not issues:
+        return None
+
+    return QualityDimension(
+        name="tone_register",
+        passed=False,
+        severity="critical" if len(issues) >= 2 else "important",
         issues=issues,
     )
 
@@ -1051,6 +1136,7 @@ async def critique_and_revise(
     on_progress: callable | None = None,
     voice_examples: dict | None = None,
     forbidden_terms: list[str] | None = None,
+    output_format: str = "slides",
 ) -> tuple[DemoScript, DemoQualityReport]:
     """Evaluate script quality and revise if needed. Returns (final_script, final_report).
 
@@ -1088,10 +1174,12 @@ async def critique_and_revise(
 
         # Deterministic pre-checks (inject into LLM report)
         word_check = _check_word_count(current_script, target_seconds)
-        variety_check = _check_visual_variety(current_script)
+        # Skip visual variety check for app format — no screenshots/diagrams
+        variety_check = _check_visual_variety(current_script) if output_format != "app" else None
         intro_check = _check_intro_outro_length(current_script)
+        tone_check = _check_tone_register(current_script)
         deterministic_failures = [
-            d for d in [word_check, variety_check, intro_check] if d is not None
+            d for d in [word_check, variety_check, intro_check, tone_check] if d is not None
         ]
 
         if deterministic_failures:
@@ -1281,15 +1369,21 @@ async def critique_and_revise(
     final_report = final_critique.output
 
     # Recheck deterministic failures against the FINAL script (may have improved)
-    det_names = {"duration_feasibility", "visual_appropriateness", "intro_outro_length"}
+    det_names = {
+        "duration_feasibility",
+        "visual_appropriateness",
+        "intro_outro_length",
+        "tone_register",
+    }
     # Remove any stale deterministic dimensions from LLM report
     final_report.dimensions = [d for d in final_report.dimensions if d.name not in det_names]
     # Re-run deterministic checks on the final script
-    for check_fn in [_check_word_count, _check_visual_variety, _check_intro_outro_length]:
+    check_fns = [_check_word_count, _check_intro_outro_length, _check_tone_register]
+    if output_format != "app":
+        check_fns.append(_check_visual_variety)
+    for check_fn in check_fns:
         if check_fn == _check_word_count:
             result = check_fn(current_script, target_seconds)
-        elif check_fn == _check_intro_outro_length:
-            result = check_fn(current_script)
         else:
             result = check_fn(current_script)
         if result:

@@ -125,6 +125,12 @@ app.include_router(logos_router)
 app.include_router(flow_router)
 
 # Mount HLS segment directory for live stream serving
+# Override .ts MIME type: Starlette defaults to Qt Linguist (text/vnd.trolltech.linguist)
+# but HLS transport stream segments need video/mp2t.
+import mimetypes as _mimetypes
+
+_mimetypes.add_type("video/mp2t", ".ts")
+
 from pathlib import Path as _Path
 
 _HLS_DIR = _Path.home() / ".cache" / "hapax-compositor" / "hls"
@@ -136,7 +142,12 @@ app.mount("/api/studio/hls", _StaticFiles(directory=_HLS_DIR), name="hls-stream"
 
 @app.get("/")
 async def root():
-    return {"name": "logos-api", "version": "0.2.0"}
+    return {
+        "name": "logos-api",
+        "version": "0.2.0",
+        "docs": "/docs",
+        "app": "/app/",
+    }
 
 
 from pathlib import Path

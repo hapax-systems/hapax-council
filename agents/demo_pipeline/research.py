@@ -24,6 +24,7 @@ WORKFLOW_REGISTRY_PATH = (
 # Audience -> which sources to gather
 AUDIENCE_SOURCES: dict[str, list[str]] = {
     "family": [
+        "knowledge_base",
         "major_components",
         "component_registry",
         "health_summary",
@@ -32,8 +33,10 @@ AUDIENCE_SOURCES: dict[str, list[str]] = {
         "operator_philosophy",
         "domain_literature",
         "workflow_patterns",
+        "live_system_state",
     ],
     "team-member": [
+        "knowledge_base",
         "major_components",
         "component_registry",
         "health_summary",
@@ -45,6 +48,7 @@ AUDIENCE_SOURCES: dict[str, list[str]] = {
         "workflow_patterns",
     ],
     "leadership": [
+        "knowledge_base",
         "major_components",
         "component_registry_rich",
         "health_summary",
@@ -63,6 +67,7 @@ AUDIENCE_SOURCES: dict[str, list[str]] = {
         "workflow_patterns",
     ],
     "technical-peer": [
+        "knowledge_base",
         "major_components",
         "component_registry_rich",
         "health_summary",
@@ -631,6 +636,68 @@ async def _gather_live_system_state() -> str:
         except Exception:
             log.debug("Qdrant unavailable for live system state")
 
+        # Logos API live data (health, nudges, briefing, agents, governance)
+        try:
+            import httpx
+
+            from shared.config import COCKPIT_API_URL
+
+            base = COCKPIT_API_URL.rstrip("/")
+            api = httpx.Client(timeout=5)
+
+            try:
+                r = api.get(f"{base}/health")
+                if r.status_code == 200:
+                    h = r.json()
+                    parts.append(
+                        f"Health: {h.get('overall_status', '?')} "
+                        f"({h.get('healthy', '?')}/{h.get('total_checks', '?')} checks)"
+                    )
+            except Exception:
+                pass
+
+            try:
+                r = api.get(f"{base}/nudges")
+                if r.status_code == 200:
+                    nudges = r.json()
+                    if isinstance(nudges, list) and nudges:
+                        titles = [n.get("title", "?") for n in nudges[:5]]
+                        parts.append(f"Active nudges ({len(nudges)} total): " + "; ".join(titles))
+            except Exception:
+                pass
+
+            try:
+                r = api.get(f"{base}/agents")
+                if r.status_code == 200:
+                    agents = r.json()
+                    if isinstance(agents, list):
+                        parts.append(f"Available agents: {len(agents)}")
+            except Exception:
+                pass
+
+            try:
+                r = api.get(f"{base}/governance/heartbeat")
+                if r.status_code == 200:
+                    gov = r.json()
+                    score = gov.get("score", gov.get("heartbeat", "?"))
+                    parts.append(f"Governance heartbeat: {score}")
+            except Exception:
+                pass
+
+            try:
+                r = api.get(f"{base}/briefing")
+                if r.status_code == 200:
+                    b = r.json()
+                    headline = b.get("headline") or b.get("one_liner") or ""
+                    if headline:
+                        parts.append(f"Today's briefing headline: {headline}")
+            except Exception:
+                pass
+
+            api.close()
+        except Exception:
+            log.debug("Logos API unavailable for live system state")
+
         return "\n".join(parts)
     except Exception:
         log.exception("Failed to gather live system state")
@@ -912,6 +979,158 @@ def _gather_profile_digest_summary(scope: str) -> str:
         return ""
 
 
+def _gather_knowledge_base(audience: str) -> str:
+    """Load pre-computed knowledge base, filter by audience relevance."""
+    kb_path = (
+        Path(__file__).resolve().parent.parent.parent / "profiles" / "demo-knowledge-base.yaml"
+    )
+    if not kb_path.exists():
+        log.info("Knowledge base not found at %s — run scripts/build_demo_kb.py", kb_path)
+        return ""
+
+    try:
+        data = yaml.safe_load(kb_path.read_text())
+        if not data or "themes" not in data:
+            return ""
+
+        sections: list[str] = []
+        for theme_name, theme_data in data["themes"].items():
+            relevance = theme_data.get("audience_relevance", {})
+            score = relevance.get(audience, 0.5)
+            if score < 0.5:
+                continue
+
+            theme_lines = [f"### {theme_name.replace('_', ' ').title()} (relevance: {score:.1f})"]
+            for entry in theme_data.get("entries", []):
+                source = entry.get("source", "")
+                theme_lines.append(f"\n**Source:** {source}")
+
+                # P0 entries have claims + citations
+                claims = entry.get("claims", [])
+                if claims:
+                    for claim in claims[:10]:
+                        theme_lines.append(f"- {claim}")
+                citations = entry.get("citations", [])
+                if citations:
+                    theme_lines.append(f"Citations: {', '.join(citations[:8])}")
+                insights = entry.get("key_insights", [])
+                for insight in insights[:3]:
+                    theme_lines.append(f"**Key insight:** {insight}")
+
+                # P1 entries have summary — use full text (we have 150K+ headroom)
+                summary = entry.get("summary", "")
+                if summary and not claims:
+                    theme_lines.append(summary)
+
+                # P2 entries have description
+                desc = entry.get("description", "")
+                if desc and not claims and not summary:
+                    theme_lines.append(desc)
+
+                # Agent manifest entries
+                agent_count = entry.get("agent_count")
+                if agent_count:
+                    theme_lines.append(f"Total agents: {agent_count}")
+                    for a in entry.get("agents", [])[:10]:
+                        theme_lines.append(f"- {a['name']}: {a.get('purpose', '')[:100]}")
+
+            sections.append("\n".join(theme_lines))
+
+        return "\n\n".join(sections)
+    except Exception:
+        log.exception("Failed to load knowledge base")
+        return ""
+
+
+async def retrieve_for_topics(
+    topics: list[str],
+    audience: str = "family",
+    token_budget: int = 60000,
+) -> str:
+    """Retrieve full source text for topics selected by the content planner.
+
+    Maps topic strings to source files via the knowledge base, reads full text
+    for matched sources, applies progressive disclosure by priority.
+    """
+    kb_path = (
+        Path(__file__).resolve().parent.parent.parent / "profiles" / "demo-knowledge-base.yaml"
+    )
+    if not kb_path.exists():
+        return ""
+
+    try:
+        data = yaml.safe_load(kb_path.read_text())
+        if not data or "themes" not in data:
+            return ""
+
+        project_root = Path(__file__).resolve().parent.parent.parent
+
+        # Collect all source paths with their priority
+        source_priorities: dict[str, int] = {}
+        for theme_data in data["themes"].values():
+            for entry in theme_data.get("entries", []):
+                source = entry.get("source", "")
+                if not source:
+                    continue
+                # Infer priority from entry structure
+                if "claims" in entry:
+                    source_priorities[source] = 0  # P0
+                elif "summary" in entry:
+                    source_priorities[source] = 1  # P1
+                else:
+                    source_priorities[source] = 2  # P2
+
+        # Match topics to sources via keyword overlap
+        topics_lower = [t.lower() for t in topics]
+        matched_sources: list[tuple[str, int]] = []
+
+        for source_path, priority in source_priorities.items():
+            source_lower = source_path.lower()
+            for topic in topics_lower:
+                topic_words = topic.split()
+                if any(w in source_lower for w in topic_words if len(w) > 3):
+                    matched_sources.append((source_path, priority))
+                    break
+
+        # Sort by priority (P0 first)
+        matched_sources.sort(key=lambda x: x[1])
+
+        # Read files with budget
+        sections: list[str] = []
+        chars_used = 0
+        char_budget = token_budget * 4
+
+        for source_path, priority in matched_sources:
+            full_path = (project_root / source_path).resolve()
+            if not full_path.exists():
+                continue
+
+            text = full_path.read_text()
+
+            # Progressive disclosure: P0 full, P1 truncated, P2 skip
+            if priority == 0:
+                content = text
+            elif priority == 1:
+                content = text[:8000]
+            else:
+                continue
+
+            if chars_used + len(content) > char_budget:
+                remaining = char_budget - chars_used
+                if remaining > 1000:
+                    content = content[:remaining]
+                else:
+                    break
+
+            sections.append(f"## {source_path}\n\n{content}")
+            chars_used += len(content)
+
+        return "\n\n---\n\n".join(sections)
+    except Exception:
+        log.exception("Failed to retrieve topic sources")
+        return ""
+
+
 def _format_audience_dossier(dossier: AudienceDossier) -> str:
     """Format dossier as a ## Audience Profile section."""
 
@@ -958,6 +1177,7 @@ _SECTION_HEADERS: dict[str, str] = {
     "profile_digest": "## Profile Digest",
     "architecture_rag": "## Architecture Documentation (RAG)",
     "design_plans": "## Design Plans",
+    "knowledge_base": "## Knowledge Base (Pre-Computed)",
     "live_system_state": "## Live System State",
     "audit_findings": "## System Audit Findings",
     "domain_literature": "## Domain Literature",
@@ -1041,6 +1261,8 @@ async def gather_research(
                 content = _gather_architecture_rag(scope)
             elif source_name == "design_plans":
                 content = _gather_design_plans(scope)
+            elif source_name == "knowledge_base":
+                content = _gather_knowledge_base(audience)
             elif source_name == "live_system_state":
                 content = await _gather_live_system_state()
             elif source_name == "audit_findings":

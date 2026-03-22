@@ -109,9 +109,9 @@ class TestResolveRecipe:
         steps = [InteractionStep(action="click", target="textarea")]
         spec = InteractionSpec(url="http://localhost:5173/chat", steps=steps)
         resolved = resolve_recipe(spec)
-        # Infers chat-health-query from /chat URL
+        # Infers terrain-chat from /chat URL
         assert len(resolved.steps) > 1
-        assert resolved.url == "http://localhost:5173/chat"
+        assert resolved.url == "http://localhost:5173/?overlay=investigation&tab=chat"
 
     def test_all_recipes_are_valid(self):
         for name, recipe in RECIPES.items():

@@ -77,6 +77,132 @@ RECIPES: dict[str, InteractionSpec] = {
         ],
         max_duration=30.0,
     ),
+    # --- Terrain-aware recipes (keyboard-driven, no fragile CSS selectors) ---
+    "terrain-overview": InteractionSpec(
+        url="http://localhost:5173/",
+        steps=[
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="h"),  # horizon: surface→stratum
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="f"),  # field: surface→stratum
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="g"),  # ground: surface→stratum
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="w"),  # watershed: surface→stratum
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="b"),  # bedrock: surface→stratum
+            InteractionStep(action="wait", value="3000"),
+            InteractionStep(action="press", value="Escape"),  # collapse back
+            InteractionStep(action="wait", value="2000"),
+        ],
+        max_duration=30.0,
+    ),
+    "terrain-investigation": InteractionSpec(
+        url="http://localhost:5173/",
+        steps=[
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="/"),  # open investigation overlay
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="click", target="text=Insight"),
+            InteractionStep(action="wait", value="3000"),
+            InteractionStep(action="click", target="text=Demos"),
+            InteractionStep(action="wait", value="3000"),
+            InteractionStep(action="click", target="text=Chat"),
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="Escape"),  # dismiss overlay
+            InteractionStep(action="wait", value="2000"),
+        ],
+        max_duration=30.0,
+    ),
+    "terrain-chat": InteractionSpec(
+        url="http://localhost:5173/?overlay=investigation&tab=chat",
+        steps=[
+            InteractionStep(action="wait", value="3000"),  # let overlay + chat load
+            InteractionStep(action="click", target="textarea"),
+            InteractionStep(action="type", value="What is the current system health?"),
+            InteractionStep(action="press", value="Enter"),
+            InteractionStep(action="wait", value="25000"),  # LLM streaming
+        ],
+        max_duration=40.0,
+    ),
+    "terrain-region-dive": InteractionSpec(
+        url="http://localhost:5173/",
+        steps=[
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="g"),  # ground: surface→stratum
+            InteractionStep(action="wait", value="3000"),
+            InteractionStep(action="press", value="g"),  # ground: stratum→core
+            InteractionStep(action="wait", value="4000"),
+            InteractionStep(action="press", value="g"),  # ground: core→surface
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="f"),  # field: surface→stratum
+            InteractionStep(action="wait", value="3000"),
+            InteractionStep(action="press", value="f"),  # field: stratum→core
+            InteractionStep(action="wait", value="4000"),
+            InteractionStep(action="press", value="Escape"),  # collapse
+            InteractionStep(action="wait", value="2000"),
+        ],
+        max_duration=35.0,
+    ),
+    "terrain-camera": InteractionSpec(
+        url="http://localhost:5173/?region=ground&depth=core",
+        steps=[
+            InteractionStep(action="wait", value="4000"),  # let ground expand to core
+            InteractionStep(action="wait", value="8000"),  # hero camera stream loads
+        ],
+        max_duration=20.0,
+    ),
+    "terrain-ambient": InteractionSpec(
+        url="http://localhost:5173/",
+        steps=[
+            InteractionStep(action="wait", value="3000"),  # let terrain render + ambient start
+        ],
+        max_duration=120.0,  # extended — timeline orchestrator controls actual duration
+    ),
+    "terrain-horizon": InteractionSpec(
+        url="http://localhost:5173/",
+        steps=[
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="h"),  # horizon: surface→stratum
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="h"),  # horizon: stratum→core
+            InteractionStep(action="wait", value="3000"),
+        ],
+        max_duration=60.0,
+    ),
+    "terrain-field-perception": InteractionSpec(
+        url="http://localhost:5173/",
+        steps=[
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="f"),  # field: surface→stratum
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="f"),  # field: stratum→core (perception)
+            InteractionStep(action="wait", value="3000"),
+        ],
+        max_duration=60.0,
+    ),
+    "terrain-bedrock": InteractionSpec(
+        url="http://localhost:5173/",
+        steps=[
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="b"),  # bedrock: surface→stratum
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="b"),  # bedrock: stratum→core
+            InteractionStep(action="wait", value="3000"),
+        ],
+        max_duration=60.0,
+    ),
+    "terrain-watershed": InteractionSpec(
+        url="http://localhost:5173/",
+        steps=[
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="w"),  # watershed: surface→stratum
+            InteractionStep(action="wait", value="2000"),
+            InteractionStep(action="press", value="w"),  # watershed: stratum→core
+            InteractionStep(action="wait", value="3000"),
+        ],
+        max_duration=60.0,
+    ),
 }
 
 
@@ -86,11 +212,13 @@ def _url_to_default_recipe(url: str) -> str:
 
     path = urlparse(url).path.rstrip("/") or "/"
     if path == "/chat":
-        return "chat-health-query"
+        return "terrain-chat"
+    elif path in ("/", "/terrain"):
+        return "terrain-overview"
     elif path == "/demos":
-        return "dashboard-overview"  # best available fallback
+        return "terrain-investigation"
     else:
-        return "dashboard-overview"
+        return "terrain-overview"
 
 
 def resolve_recipe(spec: InteractionSpec) -> InteractionSpec:
@@ -105,6 +233,10 @@ def resolve_recipe(spec: InteractionSpec) -> InteractionSpec:
     if not recipe_name:
         recipe_name = _url_to_default_recipe(spec.url)
         log.info("No recipe specified for %s, using '%s'", spec.url, recipe_name)
+
+    # "custom" = pre-built steps from timeline orchestrator, trust as-is
+    if recipe_name == "custom":
+        return spec
 
     if recipe_name in RECIPES:
         recipe = RECIPES[recipe_name]

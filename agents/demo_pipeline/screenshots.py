@@ -19,7 +19,8 @@ log = logging.getLogger(__name__)
 # values are unreliable because the LLM guesses element text without DOM
 # inspection. These selectors match text that is always rendered.
 ROUTE_SELECTORS: dict[str, str] = {
-    "/": "text=Action Items",  # NudgeList heading, always present
+    "/": "[data-region='ground']",  # Terrain layout — always present
+    "/terrain": "[data-region='ground']",  # Explicit terrain route
     "/chat": "textarea",  # ChatInput textarea (placeholder not visible to text= selector)
     "/demos": "text=Demos",  # Page heading (loading detection handles the rest)
 }

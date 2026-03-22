@@ -137,7 +137,7 @@ class TestScreenshotRetry:
 class TestResolveSelector:
     def test_known_route_dashboard(self):
         spec = ScreenshotSpec(url="http://localhost:5173/")
-        assert _resolve_selector(spec) == "text=Action Items"
+        assert _resolve_selector(spec) == "[data-region='ground']"
 
     def test_known_route_chat(self):
         spec = ScreenshotSpec(url="http://localhost:5173/chat")
@@ -146,7 +146,7 @@ class TestResolveSelector:
     def test_known_route_overrides_wait_for(self):
         """Known route selector takes priority over LLM-generated wait_for."""
         spec = ScreenshotSpec(url="http://localhost:5173/", wait_for="Overall")
-        assert _resolve_selector(spec) == "text=Action Items"
+        assert _resolve_selector(spec) == "[data-region='ground']"
 
     def test_unknown_route_uses_wait_for(self):
         spec = ScreenshotSpec(url="http://example.com/page", wait_for="Submit")
@@ -162,7 +162,7 @@ class TestResolveSelector:
 
     def test_port_8051_also_matched(self):
         spec = ScreenshotSpec(url="http://localhost:8051/")
-        assert _resolve_selector(spec) == "text=Action Items"
+        assert _resolve_selector(spec) == "[data-region='ground']"
 
 
 class TestGracefulDegradation:
