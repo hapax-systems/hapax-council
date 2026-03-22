@@ -39,7 +39,7 @@ This research spans six repositories (plus one external dependency):
 | [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Governance specification | Axioms, implications, canons. Publishes `hapax-sdlc` package |
 | [hapax-officium](https://github.com/ryanklee/hapax-officium) | Supporting software | Management decision support (17 agents) |
 | [hapax-watch](https://github.com/ryanklee/hapax-watch) | Research instrument | Wear OS biometric companion (HR, HRV, skin temp) |
-| [cockpit-mcp](https://github.com/ryanklee/cockpit-mcp) | Infrastructure | MCP server bridging cockpit APIs to Claude Code (40 tools) |
+| [hapax-mcp](https://github.com/ryanklee/hapax-mcp) | Infrastructure | MCP server bridging cockpit APIs to Claude Code (40 tools) |
 | [tabbyAPI](https://github.com/theroyallab/tabbyAPI) | Infrastructure (external) | ExllamaV2/V3 LLM inference backend (upstream, not forked) |
 | [distro-work](https://github.com/ryanklee/distro-work) | System maintenance | Scripts and configuration |
 

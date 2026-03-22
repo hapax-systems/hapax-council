@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Harden the query system with real-data integration tests, empty-state contracts, and cockpit-web test foundation.
+**Goal:** Harden the query system with real-data integration tests, empty-state contracts, and hapax-logos test foundation.
 
-**Architecture:** Three categories of work: (1) fix pre-existing bugs and add empty-state instructions to system prompts, (2) create a test data corpus extracted from real profiles and build an integration test suite against it, (3) bootstrap vitest in cockpit-web for Insight page tests. All Python tests follow the project's self-contained pattern (no conftest fixtures, unittest.mock only).
+**Architecture:** Three categories of work: (1) fix pre-existing bugs and add empty-state instructions to system prompts, (2) create a test data corpus extracted from real profiles and build an integration test suite against it, (3) bootstrap vitest in hapax-logos for Insight page tests. All Python tests follow the project's self-contained pattern (no conftest fixtures, unittest.mock only).
 
 **Tech Stack:** pytest, unittest.mock, httpx (ASGI transport), sqlite3, vitest, @testing-library/react, jsdom
 
@@ -1816,19 +1816,19 @@ git add tests/query_integration/test_empty_state.py tests/query_integration/test
 git commit -m "test: add empty-state contract and SSE streaming integration tests"
 ```
 
-## Chunk 6: cockpit-web Test Foundation
+## Chunk 6: hapax-logos Test Foundation
 
-### Task 17: Bootstrap vitest in cockpit-web
+### Task 17: Bootstrap vitest in hapax-logos
 
 **Files:**
-- Modify: `~/projects/cockpit-web/package.json`
-- Modify: `~/projects/cockpit-web/vite.config.ts`
-- Create: `~/projects/cockpit-web/src/test-setup.ts`
+- Modify: `~/projects/hapax-logos/package.json`
+- Modify: `~/projects/hapax-logos/vite.config.ts`
+- Create: `~/projects/hapax-logos/src/test-setup.ts`
 
 - [ ] **Step 1: Install test dependencies**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm add -D vitest @testing-library/react @testing-library/jest-dom jsdom @testing-library/user-event
+cd ~/projects/hapax-logos && pnpm add -D vitest @testing-library/react @testing-library/jest-dom jsdom @testing-library/user-event
 ```
 
 - [ ] **Step 2: Add test config to vite.config.ts**
@@ -1845,7 +1845,7 @@ test: {
 
 - [ ] **Step 3: Create test setup file**
 
-Create `~/projects/cockpit-web/src/test-setup.ts`:
+Create `~/projects/hapax-logos/src/test-setup.ts`:
 
 ```typescript
 import "@testing-library/jest-dom/vitest";
@@ -1858,21 +1858,21 @@ Add `"test": "vitest"` to the `scripts` section.
 - [ ] **Step 5: Verify setup**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm test -- --run 2>&1 | head -5
+cd ~/projects/hapax-logos && pnpm test -- --run 2>&1 | head -5
 ```
 Expected: vitest starts (may say "no test files found" — that's fine)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/projects/cockpit-web && git add package.json pnpm-lock.yaml vite.config.ts src/test-setup.ts
+cd ~/projects/hapax-logos && git add package.json pnpm-lock.yaml vite.config.ts src/test-setup.ts
 git commit -m "feat: bootstrap vitest test infrastructure"
 ```
 
 ### Task 18: Add SSE client unit tests
 
 **Files:**
-- Create: `~/projects/cockpit-web/src/api/__tests__/sse.test.ts`
+- Create: `~/projects/hapax-logos/src/api/__tests__/sse.test.ts`
 
 - [ ] **Step 1: Create SSE client tests**
 
@@ -1990,22 +1990,22 @@ describe("connectSSE", () => {
 - [ ] **Step 2: Run the tests**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm test -- --run src/api/__tests__/sse.test.ts
+cd ~/projects/hapax-logos && pnpm test -- --run src/api/__tests__/sse.test.ts
 ```
 Expected: 4 tests PASS
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/projects/cockpit-web && git add src/api/__tests__/sse.test.ts
+cd ~/projects/hapax-logos && git add src/api/__tests__/sse.test.ts
 git commit -m "test: add SSE client unit tests"
 ```
 
 ### Task 19: Add QueryInput and QueryResult component tests
 
 **Files:**
-- Create: `~/projects/cockpit-web/src/components/insight/__tests__/QueryInput.test.tsx`
-- Create: `~/projects/cockpit-web/src/components/insight/__tests__/QueryResult.test.tsx`
+- Create: `~/projects/hapax-logos/src/components/insight/__tests__/QueryInput.test.tsx`
+- Create: `~/projects/hapax-logos/src/components/insight/__tests__/QueryResult.test.tsx`
 
 - [ ] **Step 1: Create QueryInput tests**
 
@@ -2135,14 +2135,14 @@ describe("QueryResult", () => {
 - [ ] **Step 3: Run the tests**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm test -- --run src/components/insight/__tests__/
+cd ~/projects/hapax-logos && pnpm test -- --run src/components/insight/__tests__/
 ```
 Expected: All tests PASS
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~/projects/cockpit-web && git add src/components/insight/__tests__/
+cd ~/projects/hapax-logos && git add src/components/insight/__tests__/
 git commit -m "test: add QueryInput and QueryResult component tests"
 ```
 
@@ -2310,10 +2310,10 @@ uv run pytest tests/query_integration/ -v --tb=short
 ```
 Expected: All integration tests pass (LLM tests skipped)
 
-- [ ] **Step 3: Run cockpit-web tests**
+- [ ] **Step 3: Run hapax-logos tests**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm test -- --run
+cd ~/projects/hapax-logos && pnpm test -- --run
 ```
 Expected: All frontend tests pass
 

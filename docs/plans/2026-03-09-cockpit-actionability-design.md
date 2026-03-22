@@ -70,7 +70,7 @@ Each scout recommendation: `pending` (default), `adopted`, `deferred`, `dismisse
 
 **Plan generation:** When adopted, research agent triggered via agent execution system with prompt scoped to migration evaluation. Output saved to `profiles/scout-plans/{component}.md`.
 
-### Frontend (cockpit-web)
+### Frontend (hapax-logos)
 
 Each scout recommendation gets 3 action buttons: Adopt (green), Defer (yellow), Dismiss (red).
 
@@ -92,7 +92,7 @@ Each scout recommendation gets 3 action buttons: Adopt (green), Defer (yellow), 
 - Scout decision endpoint: 3 tests (record, retrieve, adopt triggers plan flag)
 
 ### Frontend
-- Manual validation (no test suite in cockpit-web):
+- Manual validation (no test suite in hapax-logos):
   - Health: fail a check → "Auto-fix" appears → navigates to agent grid with `health_monitor --fix`
   - Drift: "Fix drift" when drift_count > 0
   - Briefing: play button on command items → parses and navigates

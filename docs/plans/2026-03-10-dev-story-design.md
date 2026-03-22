@@ -323,7 +323,7 @@ agents/dev_story/
 - **pyproject.toml**: Falls under existing `core` extra
 - **No systemd timer**: On-demand indexing and querying
 - **No cockpit integration** for MVP
-- **Scope**: All repos with Claude Code session data (ai-agents, hapaxromana, cockpit-web, distro-work, etc.)
+- **Scope**: All repos with Claude Code session data (ai-agents, hapaxromana, hapax-logos, distro-work, etc.)
 
 ## CLI
 

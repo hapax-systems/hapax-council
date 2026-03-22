@@ -222,8 +222,8 @@ def test_generate_profile_facts():
         ),
         "/path/sess3.jsonl": TranscriptMetadata(
             session_id="sess3",
-            project_name="cockpit-web",
-            project_path="/home/user/projects/cockpit-web",
+            project_name="hapax-logos",
+            project_path="/home/user/projects/hapax-logos",
             message_count=30,
         ),
     }

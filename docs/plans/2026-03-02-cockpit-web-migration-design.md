@@ -21,7 +21,7 @@ Replace the Textual TUI entirely with a web-based cockpit. No dual-maintenance �
 ```
 ┌─────────────────┐    HTTP/SSE     ┌──────────────────┐
 │  React SPA       │ ◄────────────► │  FastAPI Backend  │
-│  (cockpit-web)   │                │  (cockpit/api/)   │
+│  (hapax-logos)   │                │  (cockpit/api/)   │
 │  Vite + pnpm     │                │  in ai-agents     │
 └─────────────────┘                └──────────┬───────┘
                                               │
@@ -37,7 +37,7 @@ Replace the Textual TUI entirely with a web-based cockpit. No dual-maintenance �
 
 **Backend** stays in `~/projects/hapax-council/`. The existing `cockpit/data/` pure dataclass collectors are imported directly by the FastAPI app. No reimplementation.
 
-**Frontend** is a new repo at `~/projects/cockpit-web/` (React 19 + Vite + TypeScript + pnpm).
+**Frontend** is a new repo at `~/projects/hapax-logos/` (React 19 + Vite + TypeScript + pnpm).
 
 **Deployment** is a new Docker service `cockpit-api` bound to `127.0.0.1:8050`, accessible over Tailscale.
 

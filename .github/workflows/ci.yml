@@ -102,7 +102,7 @@ jobs:
           python-version: "3.12"
       - run: pip install bandit
       - name: Run Bandit security scan
-        run: bandit -r . -x ./tests,./council-web,./vscode --severity-level medium -f json -o bandit-report.json || true
+        run: bandit -r . -x ./tests,./hapax-logos,./vscode --severity-level medium -f json -o bandit-report.json || true
       - name: Check for high-severity findings
         run: |
           if command -v jq &>/dev/null; then

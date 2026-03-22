@@ -29,15 +29,15 @@ Six independent research streams, 140+ sources consulted.
 | hapax-constitution | ✓ 136 lines | ✓ 7 | ✓ extensive | ✓ AL2 | ✗ | Research artifact (spec) |
 | hapax-officium | ✓ 133 lines | ✓ 8 | ✓ extensive | ✓ AL2 | ✗ | Supporting software |
 | hapax-watch | ✓ 58 lines | ✗ | ✗ | ✗ | ✗ | Research instrument |
-| cockpit-mcp | ✓ 32 lines | ✗ | ✗ | ✗ | ✗ | Infrastructure |
+| hapax-mcp | ✓ 32 lines | ✗ | ✗ | ✗ | ✗ | Infrastructure |
 | tabbyAPI | ✓ ~50 lines | ✓ 4 | ✓ | ✓ AGPL3 | ✗ | Infrastructure (external) |
 | distro-work | ✗ | ✓ 3 | ✓ rich | ✗ | ✗ | System scripts |
 
 ### Critical Gaps
 
 - **No CITATION.cff** in any repository
-- **No LICENSE** in hapax-watch, cockpit-mcp, distro-work
-- **No GitHub Actions** in hapax-watch, cockpit-mcp
+- **No LICENSE** in hapax-watch, hapax-mcp, distro-work
+- **No GitHub Actions** in hapax-watch, hapax-mcp
 - **No README** in distro-work
 - Research artifacts (proofs/) scattered within agent code, not extracted
 - No OSF project, no DOIs, no pre-registration filed
@@ -51,7 +51,7 @@ Six independent research streams, 140+ sources consulted.
 
 **Keep separate (3):** hapax-watch (Kotlin/Android), tabbyAPI (external fork), distro-work (not software).
 
-**Keep separate but tighten (4):** constitution, council, officium, cockpit-mcp — real dependencies exist but lifecycles differ enough that consolidation adds friction. Tighten via cross-repo tags, shared CI workflows, and a hub README.
+**Keep separate but tighten (4):** constitution, council, officium, hapax-mcp — real dependencies exist but lifecycles differ enough that consolidation adds friction. Tighten via cross-repo tags, shared CI workflows, and a hub README.
 
 The monorepo question was examined against DeepMind (per-project repos), FAIR (per-project repos), and Allen AI (561 separate repos + Tango for experiment orchestration). Consensus: for a single operator, the discoverability advantage of a monorepo is real but offset by the different tech stacks (Python, Kotlin, external forks). The hybrid approach — separate repos with a hub and coordinated tooling — is the right fit.
 
@@ -157,7 +157,7 @@ Research READMEs serve six audiences with different needs:
 | hapax-constitution | Research artifact (spec) | Moderate | Medium |
 | hapax-watch | Research instrument | Moderate (sensor specs) | Medium |
 | hapax-officium | Supporting software | Minimal (pointer) | Medium |
-| cockpit-mcp | Infrastructure | Minimal (pointer) | Short-medium |
+| hapax-mcp | Infrastructure | Minimal (pointer) | Short-medium |
 | tabbyAPI | Infrastructure (external) | Minimal (pointer) | Short |
 | distro-work | Not research | None | Minimal |
 
@@ -178,7 +178,7 @@ Research READMEs serve six audiences with different needs:
 
 ### Current State
 
-Council has 9 workflows including full SDLC pipeline (Triage → Plan → Implement → Adversarial Review → Axiom Gate → Auto-merge). Constitution has 7. Officium has 8. Watch and cockpit-mcp have none.
+Council has 9 workflows including full SDLC pipeline (Triage → Plan → Implement → Adversarial Review → Axiom Gate → Auto-merge). Constitution has 7. Officium has 8. Watch and hapax-mcp have none.
 
 ### Research-Specific Gates to Add
 
@@ -373,7 +373,7 @@ Full reproduction of a 45+ agent system with GPU inference, Qdrant, PostgreSQL, 
 | hapax-constitution (spec docs) | CC-BY 4.0 | Textual/conceptual works |
 | Data deposits (Zenodo) | ODC-By or CC0 | CC licenses not for data (CC's own recommendation) |
 
-Add LICENSE files to hapax-watch, cockpit-mcp, distro-work.
+Add LICENSE files to hapax-watch, hapax-mcp, distro-work.
 
 ### Lab Journal Deployment
 
@@ -393,7 +393,7 @@ Quarto + GitHub Pages:
 These must be done before Cycle 2 data collection can begin:
 
 1. **Add CITATION.cff** to hapax-council and hapax-constitution
-2. **Add LICENSE** (Apache 2.0) to hapax-watch, cockpit-mcp, distro-work
+2. **Add LICENSE** (Apache 2.0) to hapax-watch, hapax-mcp, distro-work
 3. **Create OSF project** with component structure; link GitHub repos
 4. **File pre-registration** on OSF (comprehensive template + SCED addendum)
 5. **Restructure council:** Create `research/` compendium directory; move `proofs/` content to `research/theory/`
@@ -416,7 +416,7 @@ These must be done before Cycle 2 data collection can begin:
 16. **Add Numpydoc theory references** to grounding_ledger.py, grounding_evaluator.py, conversation_pipeline.py
 17. **Set up Zenodo-GitHub integration** for automatic DOI on release
 18. **Extract shared CI** into reusable workflows
-19. **Add GitHub Actions** to hapax-watch and cockpit-mcp
+19. **Add GitHub Actions** to hapax-watch and hapax-mcp
 20. **Create Tier 1 reproducibility package** (Docker Compose for analysis pipeline)
 21. **Add GitHub Organization Project** for cross-repo research tracking
 22. **Tune adversarial review** for research methods checking

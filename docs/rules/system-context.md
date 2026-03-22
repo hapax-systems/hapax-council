@@ -112,7 +112,7 @@ VRAM: RTX 3090 = 24GB. One large Ollama model at a time.
 | ~/llm-stack/ | Docker compose + service configs |
 | ~/projects/hapax-council/ | Agent implementations + cockpit API |
 | ~/projects/hapax-constitution/ | Architecture specs + axioms |
-| ~/projects/hapax-council/council-web/ | Management dashboard (React SPA, in-repo) |
+| ~/projects/hapax-council/hapax-logos/ | Management dashboard (React SPA, in-repo) |
 | ~/projects/distro-work/ | OS/distro scripts, diagnostics, restore script |
 | ~/projects/distro-work/docs/hyprland-migration-capabilities.md | Desktop/hardware capabilities reference (design leverage for agents) |
 | ~/Documents/Work/ | Work vault (git-synced) |

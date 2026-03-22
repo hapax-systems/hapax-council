@@ -681,7 +681,7 @@ def _gather_major_components() -> str:
         # Multi-Channel Access
         if "## Multi-Channel Access" in content:
             components.append(
-                "- **Multi-Channel Access**: Web dashboard (cockpit-web), "
+                "- **Multi-Channel Access**: Web dashboard (hapax-logos), "
                 "VS Code extension (hapax-vscode), Mobile (Telegram+ntfy via Tailscale). "
                 "Web is full command center; VS Code is knowledge interface; Mobile is notification-driven."
             )

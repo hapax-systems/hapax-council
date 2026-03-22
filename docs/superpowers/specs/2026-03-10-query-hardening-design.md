@@ -6,21 +6,21 @@
 
 ## Context
 
-The query system now has 3 agents (dev_story, system_ops, knowledge), keyword dispatch, SSE streaming, and a cockpit-web Insight page. All 76 existing query tests use mocked/synthetic data and assume data always exists. No tests exercise real data patterns, empty-state behavior, or the full dispatch-to-rendering pipeline. cockpit-web has zero test infrastructure.
+The query system now has 3 agents (dev_story, system_ops, knowledge), keyword dispatch, SSE streaming, and a hapax-logos Insight page. All 76 existing query tests use mocked/synthetic data and assume data always exists. No tests exercise real data patterns, empty-state behavior, or the full dispatch-to-rendering pipeline. hapax-logos has zero test infrastructure.
 
 ## Goals
 
 1. Prove the system works end-to-end with real data patterns
 2. Prove the system handles fresh deployment gracefully (empty state surfaced, not hidden)
 3. Harden existing tests where empty-state gaps were found
-4. Establish cockpit-web test foundation for the Insight page
+4. Establish hapax-logos test foundation for the Insight page
 
 ## Non-Goals
 
 - LLM output quality scoring (promptfoo evals — separate effort)
 - Performance benchmarking
 - Voice/perception layer testing
-- Expanding cockpit-web test coverage beyond Insight page
+- Expanding hapax-logos test coverage beyond Insight page
 
 ## Data Partition: Real vs Demo
 
@@ -355,11 +355,11 @@ Do not produce analysis that implies data exists. State what is missing and what
 
 Pre-existing bug discovered during audit: `cockpit/query_dispatch.py:95` looks for `dev_story.db` (snake_case) but the git-extractor writes to `dev-story.db` (kebab-case, matching project naming conventions). Fix: change line 95 to `PROFILES_DIR / "dev-story.db"`. This is a prerequisite for integration tests to work against real data.
 
-## Category 3: cockpit-web Test Foundation
+## Category 3: hapax-logos Test Foundation
 
 ### Setup
 
-Install vitest + testing-library + jsdom in cockpit-web:
+Install vitest + testing-library + jsdom in hapax-logos:
 
 ```bash
 pnpm add -D vitest @testing-library/react @testing-library/jest-dom jsdom @testing-library/user-event
@@ -378,7 +378,7 @@ Add `"test": "vitest"` to package.json scripts.
 ### Test Files
 
 ```
-cockpit-web/src/
+hapax-logos/src/
     test-setup.ts                              # jsdom + testing-library setup
     pages/__tests__/InsightPage.test.tsx        # page-level tests
     components/insight/__tests__/
@@ -464,5 +464,5 @@ Default `pytest` runs everything except `llm`. `pytest -m llm` runs live LLM spo
 3. System prompt empty-state instructions (3 agents) + tool return value enrichment
 4. Existing test backfills (8 files, ~16 new tests)
 5. Integration test suite (7 files, ~95 new tests)
-6. cockpit-web test foundation (setup + 4 files, ~21 tests)
+6. hapax-logos test foundation (setup + 4 files, ~21 tests)
 7. LLM spot checks (last, depends on everything else)

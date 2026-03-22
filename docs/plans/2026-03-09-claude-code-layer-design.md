@@ -43,7 +43,7 @@ Add two injections after existing content:
 Read `profiles/operator.json` with `jq`. Extract active goals count, current focus areas, and one work pattern. Output:
 
 ```
-Profile: 3 active goals | Focus: ai-agents, cockpit-web | Pattern: deep-work mornings
+Profile: 3 active goals | Focus: ai-agents, hapax-logos | Pattern: deep-work mornings
 ```
 
 Falls back silently if file missing (profiler hasn't run yet).
@@ -112,7 +112,7 @@ Every hapax repo's CLAUDE.md includes a `## Project Memory` section with stable 
 - Known gotchas and debugging insights
 - Links to design docs for major features
 
-**Repos:** ai-agents, cockpit-web, hapax-vscode, rag-pipeline, hapaxromana, hapax-system (6 total).
+**Repos:** ai-agents, hapax-logos, hapax-vscode, rag-pipeline, hapaxromana, hapax-system (6 total).
 
 ### Auto-memory seeding
 

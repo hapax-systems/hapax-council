@@ -12,7 +12,7 @@ Generate a demo from a natural language request. Examples:
 Available formats: `slides` (default), `video` (requires Chatterbox TTS), `markdown-only`.
 
 Prerequisites for video format:
-- Cockpit web running: `cd ~/projects/hapax-council/council-web && pnpm dev`
+- Cockpit web running: `cd ~/projects/hapax-council/hapax-logos && pnpm dev`
 - Chatterbox TTS running: `cd ~/llm-stack && docker compose --profile tts up -d chatterbox`
 
 Run the demo agent:

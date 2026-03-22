@@ -15,7 +15,7 @@ from agents.demo_models import ScreenshotSpec
 
 log = logging.getLogger(__name__)
 
-# Known-good selectors for cockpit-web routes. The LLM-generated wait_for
+# Known-good selectors for hapax-logos routes. The LLM-generated wait_for
 # values are unreliable because the LLM guesses element text without DOM
 # inspection. These selectors match text that is always rendered.
 ROUTE_SELECTORS: dict[str, str] = {
@@ -24,7 +24,7 @@ ROUTE_SELECTORS: dict[str, str] = {
     "/demos": "text=Demos",  # Page heading (loading detection handles the rest)
 }
 
-# Additional known services (not cockpit-web, different ports)
+# Additional known services (not hapax-logos, different ports)
 EXTRA_SERVICE_SELECTORS: dict[str, str] = {
     "localhost:3080": "textarea",  # Open WebUI — chat textarea
 }
@@ -40,7 +40,7 @@ LOADING_INDICATORS = [
     "Generating...",
 ]
 
-# Valid cockpit-web routes. LLM sometimes invents URLs (e.g. localhost:8080).
+# Valid hapax-logos routes. LLM sometimes invents URLs (e.g. localhost:8080).
 VALID_ROUTES = list(ROUTE_SELECTORS.keys())
 
 # Default Playwright actions for routes that need seeding to show content.
@@ -69,7 +69,7 @@ ROUTE_DEFAULT_ACTIONS: dict[str, list[str]] = {
 
 
 def fix_localhost_url(url: str) -> str:
-    """Fix localhost URLs to use the correct port and valid cockpit-web routes.
+    """Fix localhost URLs to use the correct port and valid hapax-logos routes.
 
     Reusable by both screenshot and screencast pipelines.
     """
@@ -77,13 +77,13 @@ def fix_localhost_url(url: str) -> str:
     if parsed.hostname not in ("localhost", "127.0.0.1"):
         return url
 
-    # Known valid ports: 5173 (cockpit-web), 8051 (cockpit API), 3080 (Open WebUI)
+    # Known valid ports: 5173 (hapax-logos), 8051 (cockpit API), 3080 (Open WebUI)
     if parsed.port not in (5173, 8051, 3080):
         url = f"http://localhost:5173{parsed.path or '/'}"
         log.warning("Rewrote invalid URL %s -> %s", parsed.geturl(), url)
         parsed = urlparse(url)
 
-    # Fix unknown routes (only for cockpit-web, not other services)
+    # Fix unknown routes (only for hapax-logos, not other services)
     path = parsed.path.rstrip("/") or "/"
     if parsed.port in (5173, 8051) and path not in VALID_ROUTES:
         best = "/"
@@ -102,7 +102,7 @@ def validate_screenshot_specs(
 ) -> list[tuple[str, ScreenshotSpec]]:
     """Validate and fix screenshot URLs.
 
-    - Rewrites invalid localhost URLs to the closest valid cockpit-web route.
+    - Rewrites invalid localhost URLs to the closest valid hapax-logos route.
     - Injects default actions for routes that need seeding (e.g. /chat).
     """
     fixed: list[tuple[str, ScreenshotSpec]] = []
@@ -207,7 +207,7 @@ async def _preflight_check(specs: list[tuple[str, ScreenshotSpec]]) -> None:
             except httpx.HTTPError:
                 hint = ""
                 if "localhost:5173" in origin or "localhost:8051" in origin:
-                    hint = " If this is cockpit-web, start it with: cd ~/projects/cockpit-web && pnpm dev"
+                    hint = " If this is hapax-logos, start it with: cd ~/projects/hapax-logos && pnpm dev"
                 raise ConnectionError(f"Cannot reach {origin}.{hint}") from None
 
 

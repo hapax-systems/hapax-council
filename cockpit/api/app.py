@@ -1,7 +1,7 @@
 """FastAPI application for the cockpit API.
 
 Serves data from cockpit/data/ collectors over HTTP.
-Designed to be consumed by the React SPA at cockpit-web/.
+Designed to be consumed by the React SPA at hapax-logos/.
 """
 
 from __future__ import annotations
