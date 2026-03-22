@@ -4,11 +4,11 @@
 
 **Goal:** Deployable FastAPI backend serving cockpit data + React SPA dashboard accessible from phone via Tailscale.
 
-**Architecture:** FastAPI in `cockpit/api/` imports existing `cockpit/data/` collectors directly. React 19 SPA in `~/projects/cockpit-web/` polls the API. Docker service on :8050.
+**Architecture:** FastAPI in `cockpit/api/` imports existing `cockpit/data/` collectors directly. React 19 SPA in `~/projects/hapax-logos/` polls the API. Docker service on :8050.
 
 **Tech Stack:** FastAPI, uvicorn, httpx (test client), React 19, Vite, TypeScript, pnpm, TanStack Query, Tailwind CSS 4, Lucide React
 
-**Design doc:** `docs/plans/2026-03-02-cockpit-web-migration-design.md`
+**Design doc:** `docs/plans/2026-03-02-hapax-logos-migration-design.md`
 
 ---
 
@@ -129,7 +129,7 @@ Create `cockpit/api/app.py`:
 """FastAPI application for the cockpit API.
 
 Serves data from cockpit/data/ collectors over HTTP.
-Designed to be consumed by the React SPA at cockpit-web/.
+Designed to be consumed by the React SPA at hapax-logos/.
 """
 from __future__ import annotations
 
@@ -718,21 +718,21 @@ git commit -m "feat(api): uvicorn entry point with CLI flags"
 ## Task 7: Scaffold React SPA project
 
 **Files:**
-- Create: `~/projects/cockpit-web/` (new repo)
+- Create: `~/projects/hapax-logos/` (new repo)
 
 **Step 1: Create the project**
 
 ```bash
 cd ~/projects
-pnpm create vite cockpit-web -- --template react-ts
-cd cockpit-web
+pnpm create vite hapax-logos -- --template react-ts
+cd hapax-logos
 pnpm install
 ```
 
 **Step 2: Install dependencies**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 pnpm add @tanstack/react-query lucide-react react-markdown remark-gfm recharts
 pnpm add -D tailwindcss @tailwindcss/vite
 ```
@@ -765,7 +765,7 @@ Replace `src/index.css` with:
 **Step 4: Initialize git**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git init
 echo "node_modules/\ndist/\n.env\n" > .gitignore
 git add .
@@ -774,7 +774,7 @@ git commit -m "init: React 19 + Vite + TypeScript + Tailwind + TanStack Query"
 
 **Step 5: Verify it builds**
 
-Run: `cd ~/projects/cockpit-web && pnpm run build`
+Run: `cd ~/projects/hapax-logos && pnpm run build`
 Expected: Clean build in `dist/`.
 
 ---
@@ -782,8 +782,8 @@ Expected: Clean build in `dist/`.
 ## Task 8: API client module
 
 **Files:**
-- Create: `~/projects/cockpit-web/src/api/client.ts`
-- Create: `~/projects/cockpit-web/src/api/types.ts`
+- Create: `~/projects/hapax-logos/src/api/client.ts`
+- Create: `~/projects/hapax-logos/src/api/types.ts`
 
 **Step 1: Define TypeScript types matching Python dataclasses**
 
@@ -964,7 +964,7 @@ export const api = {
 **Step 3: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/api/
 git commit -m "feat: API client with typed fetch helpers"
 ```
@@ -974,7 +974,7 @@ git commit -m "feat: API client with typed fetch helpers"
 ## Task 9: TanStack Query hooks
 
 **Files:**
-- Create: `~/projects/cockpit-web/src/api/hooks.ts`
+- Create: `~/projects/hapax-logos/src/api/hooks.ts`
 
 **Step 1: Create query hooks with matching poll cadence**
 
@@ -1021,7 +1021,7 @@ export const useCost = () =>
 **Step 2: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/api/hooks.ts
 git commit -m "feat: TanStack Query hooks with 30s/5min polling"
 ```
@@ -1031,11 +1031,11 @@ git commit -m "feat: TanStack Query hooks with 30s/5min polling"
 ## Task 10: App shell layout
 
 **Files:**
-- Modify: `~/projects/cockpit-web/src/App.tsx`
-- Modify: `~/projects/cockpit-web/src/main.tsx`
-- Create: `~/projects/cockpit-web/src/components/Header.tsx`
-- Create: `~/projects/cockpit-web/src/components/Sidebar.tsx`
-- Create: `~/projects/cockpit-web/src/components/MainPanel.tsx`
+- Modify: `~/projects/hapax-logos/src/App.tsx`
+- Modify: `~/projects/hapax-logos/src/main.tsx`
+- Create: `~/projects/hapax-logos/src/components/Header.tsx`
+- Create: `~/projects/hapax-logos/src/components/Sidebar.tsx`
+- Create: `~/projects/hapax-logos/src/components/MainPanel.tsx`
 
 **Step 1: Set up QueryClientProvider in main.tsx**
 
@@ -1323,19 +1323,19 @@ export default function App() {
 **Step 6: Remove boilerplate files**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 rm -f src/App.css src/assets/react.svg public/vite.svg
 ```
 
 **Step 7: Verify build**
 
-Run: `cd ~/projects/cockpit-web && pnpm run build`
+Run: `cd ~/projects/hapax-logos && pnpm run build`
 Expected: Clean build.
 
 **Step 8: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add -A
 git commit -m "feat: dashboard layout with header, sidebar, nudge list, agent list"
 ```
@@ -1443,7 +1443,7 @@ Expected: JSON responses with real data from the running system.
 **Step 3: Start the frontend dev server**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm run dev
+cd ~/projects/hapax-logos && pnpm run dev
 ```
 
 Open `http://localhost:5173` in browser. Expected: Dashboard renders with live data from the API.
@@ -1471,7 +1471,7 @@ After all 12 tasks:
 - [ ] `cockpit/api/__main__.py` — uvicorn entry point
 - [ ] `tests/test_api.py` — endpoint tests
 - [ ] `tests/test_api_cache.py` — cache tests
-- [ ] `~/projects/cockpit-web/` — React SPA with dashboard
+- [ ] `~/projects/hapax-logos/` — React SPA with dashboard
 - [ ] `Dockerfile.api` — container definition
 - [ ] All existing tests still pass (`uv run pytest tests/ -q`)
 - [ ] Dashboard accessible from phone via Tailscale

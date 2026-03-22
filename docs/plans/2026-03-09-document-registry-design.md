@@ -167,8 +167,8 @@ repos:
         archetype: reference
       - path: rules/management-context.md
         archetype: governance
-  cockpit-web:
-    path: ~/projects/cockpit-web
+  hapax-logos:
+    path: ~/projects/hapax-logos
     required_docs:
       - path: CLAUDE.md
         archetype: project-context

@@ -116,7 +116,7 @@ def check_readiness(
         progress("Cockpit web: OK")
     except Exception:
         issues.append(
-            "Cockpit web (:5173) not reachable — start with: cd ~/projects/cockpit-web && pnpm dev"
+            "Cockpit web (:5173) not reachable — start with: cd ~/projects/hapax-logos && pnpm dev"
         )
 
     # 4 & 5. TTS (only if required)

@@ -161,7 +161,7 @@ PUT  /api/cycle-mode  → body: {"mode": "dev"} → runs hapax-mode script, retu
 
 The PUT handler calls `hapax-mode` via subprocess — single source of truth for the switch procedure. `switched_at` is the mtime of the mode file.
 
-**Cockpit-web:** Toggle in the system status area of the dashboard. This is a cockpit-web repo change (React). The design defines the API contract only — frontend implementation follows separately.
+**Cockpit-web:** Toggle in the system status area of the dashboard. This is a hapax-logos repo change (React). The design defines the API contract only — frontend implementation follows separately.
 
 ## Testing Strategy
 

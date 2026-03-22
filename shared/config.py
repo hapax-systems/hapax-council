@@ -84,7 +84,7 @@ OBSIDIAN_HAPAX_DIR: Path = HAPAX_PROJECTS_DIR / "obsidian-hapax"
 # Legacy aliases — migrate callers to new names, then remove
 AI_AGENTS_DIR: Path = HAPAX_COUNCIL_DIR
 HAPAXROMANA_DIR: Path = HAPAX_CONSTITUTION_DIR
-COCKPIT_WEB_DIR: Path = HAPAX_COUNCIL_DIR / "council-web"
+COCKPIT_WEB_DIR: Path = HAPAX_COUNCIL_DIR / "hapax-logos"
 HAPAX_SYSTEM_DIR: Path = HAPAX_COUNCIL_DIR
 HAPAX_VSCODE_DIR: Path = HAPAX_COUNCIL_DIR / "vscode"
 

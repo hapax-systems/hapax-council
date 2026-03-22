@@ -521,7 +521,7 @@ def _check_visual_variety(script: DemoScript) -> QualityDimension | None:
     if missing_routes:
         issues.append(
             f"Missing mandatory screenshot routes: {', '.join(sorted(missing_routes))}. "
-            f"Must have at least one screenshot/screencast of each cockpit-web route."
+            f"Must have at least one screenshot/screencast of each hapax-logos route."
         )
 
     # Note: all-ones charts are caught by LLM critique (visual_substance),

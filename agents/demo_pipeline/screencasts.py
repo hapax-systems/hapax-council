@@ -15,7 +15,7 @@ from agents.demo_pipeline.screenshots import _preflight_check, fix_localhost_url
 
 log = logging.getLogger(__name__)
 
-# Predefined reliable interaction recipes for common cockpit-web interactions.
+# Predefined reliable interaction recipes for common hapax-logos interactions.
 # IMPORTANT: Only recipes are supported — custom steps from LLM are not allowed
 # because LLMs generate bad timing (e.g. 3s wait for LLM streaming).
 # Minimum screencast duration — ensures recordings aren't too short to be useful

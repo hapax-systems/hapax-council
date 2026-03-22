@@ -9,7 +9,7 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 **Filesystem-as-bus**: Agents read/write markdown files with YAML frontmatter on disk. A reactive engine (inotify) watches for changes and cascades downstream work.
 
 **Three tiers**:
-- **Tier 1** — Interactive interfaces (council-web React SPA at :5173, VS Code extension)
+- **Tier 1** — Interactive interfaces (hapax-logos React SPA at :5173, VS Code extension)
 - **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000)
 - **Tier 3** — Deterministic agents (sync, health, maintenance — no LLM calls)
 

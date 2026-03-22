@@ -828,7 +828,7 @@ def _check_gitignore_security() -> tuple[bool, str]:
         "obsidian-hapax": OBSIDIAN_HAPAX_DIR,
         "hapaxromana": HAPAXROMANA_DIR,
         "hapax-vscode": HAPAX_VSCODE_DIR,
-        "cockpit-web": COCKPIT_WEB_DIR,
+        "hapax-logos": COCKPIT_WEB_DIR,
     }
 
     required_patterns = [".env", "*.pem", "*.key", "credentials.json"]

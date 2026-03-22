@@ -21,7 +21,7 @@
 - All 7 sync agents verified end-to-end inside container (4 Google OAuth + 3 local filesystem).
 - Stale refs cleaned: RAG_PIPELINE_DIR, HAPAX_CONTAINERIZATION_DIR removed from shared/config.py and drift_detector.py.
 - Fixed test_vault_writer.py (removed deleted INBOX_DIR import).
-- Documentation updated across ai-agents, cockpit-web, hapax-system, hapaxromana.
+- Documentation updated across ai-agents, hapax-logos, hapax-system, hapaxromana.
 
 ### Phase 3: Systemd Timer Migration
 - Disabled 7 sync-related systemd timers (gdrive-sync, gcalendar-sync, gmail-sync, youtube-sync, claude-code-sync, obsidian-sync, chrome-sync).

@@ -1431,7 +1431,7 @@ class TestDeterministicContext:
 
         mock_clients = [
             WindowInfo("0x1", "foot", "~/projects/hapax-council", 1, 10, 0, 0, 800, 600, False, False),
-            WindowInfo("0x2", "google-chrome", "cockpit-web", 3, 20, 0, 0, 1920, 1080, False, False),
+            WindowInfo("0x2", "google-chrome", "hapax-logos", 3, 20, 0, 0, 1920, 1080, False, False),
         ]
 
         with patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC:

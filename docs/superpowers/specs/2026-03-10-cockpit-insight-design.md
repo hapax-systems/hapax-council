@@ -6,7 +6,7 @@ Add a new "Insight" section to the cockpit web dashboard for natural language sy
 
 ## Architecture
 
-### Frontend (cockpit-web)
+### Frontend (hapax-logos)
 
 New top-level route `/insight` with three zones:
 
@@ -146,7 +146,7 @@ No persistent server-side session state. Context is passed forward in the reques
 
 ## Conventions
 
-- All styling via Tailwind utility classes (matching cockpit-web patterns)
+- All styling via Tailwind utility classes (matching hapax-logos patterns)
 - TypeScript strict mode, no `any`
 - React Query for `/agents` endpoint; SSE via existing `connectSSE()` pattern
 - Lucide icons consistent with existing cockpit

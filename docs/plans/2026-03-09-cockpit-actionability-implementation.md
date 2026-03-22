@@ -13,13 +13,13 @@
 ### Task 1: Command Parsing Utility
 
 **Files:**
-- Create: `~/projects/cockpit-web/src/utils/parseAgentCommand.ts`
+- Create: `~/projects/hapax-logos/src/utils/parseAgentCommand.ts`
 
 This is a pure function with no dependencies — build it first.
 
 **Step 1: Create the utility**
 
-Create `~/projects/cockpit-web/src/utils/parseAgentCommand.ts`:
+Create `~/projects/hapax-logos/src/utils/parseAgentCommand.ts`:
 
 ```typescript
 /**
@@ -63,13 +63,13 @@ export function parseAgentCommand(
 
 **Step 2: Verify it builds**
 
-Run: `cd ~/projects/cockpit-web && pnpm build 2>&1 | tail -5`
+Run: `cd ~/projects/hapax-logos && pnpm build 2>&1 | tail -5`
 Expected: Build succeeds.
 
 **Step 3: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/utils/parseAgentCommand.ts
 git commit -m "feat: add parseAgentCommand utility for command string parsing"
 ```
@@ -79,14 +79,14 @@ git commit -m "feat: add parseAgentCommand utility for command string parsing"
 ### Task 2: AgentRunContext (Pre-fill Mechanism)
 
 **Files:**
-- Create: `~/projects/cockpit-web/src/contexts/AgentRunContext.tsx`
-- Modify: `~/projects/cockpit-web/src/App.tsx`
-- Modify: `~/projects/cockpit-web/src/components/MainPanel.tsx`
-- Modify: `~/projects/cockpit-web/src/components/dashboard/AgentGrid.tsx`
+- Create: `~/projects/hapax-logos/src/contexts/AgentRunContext.tsx`
+- Modify: `~/projects/hapax-logos/src/App.tsx`
+- Modify: `~/projects/hapax-logos/src/components/MainPanel.tsx`
+- Modify: `~/projects/hapax-logos/src/components/dashboard/AgentGrid.tsx`
 
 **Step 1: Create the context**
 
-Create `~/projects/cockpit-web/src/contexts/AgentRunContext.tsx`:
+Create `~/projects/hapax-logos/src/contexts/AgentRunContext.tsx`:
 
 ```typescript
 import { createContext, useContext, useState, useCallback } from "react";
@@ -135,7 +135,7 @@ export function useAgentRun() {
 
 **Step 2: Wrap app in provider**
 
-Modify `~/projects/cockpit-web/src/components/layout/Layout.tsx`. Add import and wrap the content:
+Modify `~/projects/hapax-logos/src/components/layout/Layout.tsx`. Add import and wrap the content:
 
 ```typescript
 import { AgentRunProvider } from "../../contexts/AgentRunContext";
@@ -155,7 +155,7 @@ Wrap the outer `<div>` content inside the `<ToastProvider>`:
 
 **Step 3: Make AgentGrid consume pending runs**
 
-Modify `~/projects/cockpit-web/src/components/dashboard/AgentGrid.tsx`:
+Modify `~/projects/hapax-logos/src/components/dashboard/AgentGrid.tsx`:
 
 Add import:
 ```typescript
@@ -235,7 +235,7 @@ Update JSX:
 
 **Step 4: Make AgentConfigModal accept initialFlags**
 
-Modify `~/projects/cockpit-web/src/components/dashboard/AgentConfigModal.tsx`:
+Modify `~/projects/hapax-logos/src/components/dashboard/AgentConfigModal.tsx`:
 
 Add `initialFlags` to props:
 
@@ -281,13 +281,13 @@ const [flagState, setFlagState] = useState<Record<string, string | boolean>>(() 
 
 **Step 5: Verify it builds**
 
-Run: `cd ~/projects/cockpit-web && pnpm build 2>&1 | tail -5`
+Run: `cd ~/projects/hapax-logos && pnpm build 2>&1 | tail -5`
 Expected: Build succeeds.
 
 **Step 6: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/contexts/AgentRunContext.tsx src/components/layout/Layout.tsx src/components/dashboard/AgentGrid.tsx src/components/dashboard/AgentConfigModal.tsx
 git commit -m "feat: add AgentRunContext for pre-filling agent runs from data panels"
 ```
@@ -297,12 +297,12 @@ git commit -m "feat: add AgentRunContext for pre-filling agent runs from data pa
 ### Task 3: Health + Drift Action Buttons
 
 **Files:**
-- Modify: `~/projects/cockpit-web/src/components/sidebar/HealthPanel.tsx`
-- Modify: `~/projects/cockpit-web/src/components/sidebar/DriftPanel.tsx`
+- Modify: `~/projects/hapax-logos/src/components/sidebar/HealthPanel.tsx`
+- Modify: `~/projects/hapax-logos/src/components/sidebar/DriftPanel.tsx`
 
 **Step 1: Add Auto-fix button to HealthPanel**
 
-Modify `~/projects/cockpit-web/src/components/sidebar/HealthPanel.tsx`:
+Modify `~/projects/hapax-logos/src/components/sidebar/HealthPanel.tsx`:
 
 Add import:
 ```typescript
@@ -342,7 +342,7 @@ Wrap this button in a conditional so it only shows when there are failures:
 
 **Step 2: Add Fix drift button to DriftPanel**
 
-Modify `~/projects/cockpit-web/src/components/sidebar/DriftPanel.tsx`:
+Modify `~/projects/hapax-logos/src/components/sidebar/DriftPanel.tsx`:
 
 Add imports:
 ```typescript
@@ -369,13 +369,13 @@ After the drift items list (after the `.map()` block), add inside the `<SidebarS
 
 **Step 3: Verify it builds**
 
-Run: `cd ~/projects/cockpit-web && pnpm build 2>&1 | tail -5`
+Run: `cd ~/projects/hapax-logos && pnpm build 2>&1 | tail -5`
 Expected: Build succeeds.
 
 **Step 4: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/components/sidebar/HealthPanel.tsx src/components/sidebar/DriftPanel.tsx
 git commit -m "feat: add auto-fix and fix-drift action buttons to sidebar panels"
 ```
@@ -385,12 +385,12 @@ git commit -m "feat: add auto-fix and fix-drift action buttons to sidebar panels
 ### Task 4: Briefing + Nudge Action Buttons
 
 **Files:**
-- Modify: `~/projects/cockpit-web/src/components/sidebar/BriefingPanel.tsx`
-- Modify: `~/projects/cockpit-web/src/components/dashboard/NudgeList.tsx`
+- Modify: `~/projects/hapax-logos/src/components/sidebar/BriefingPanel.tsx`
+- Modify: `~/projects/hapax-logos/src/components/dashboard/NudgeList.tsx`
 
 **Step 1: Add play buttons to briefing action items**
 
-Modify `~/projects/cockpit-web/src/components/sidebar/BriefingPanel.tsx`:
+Modify `~/projects/hapax-logos/src/components/sidebar/BriefingPanel.tsx`:
 
 Add imports:
 ```typescript
@@ -432,7 +432,7 @@ Replace the action items `<li>` in the detail modal (around line 39-42) with:
 
 **Step 2: Connect nudge play button to agent run**
 
-Modify `~/projects/cockpit-web/src/components/dashboard/NudgeList.tsx`:
+Modify `~/projects/hapax-logos/src/components/dashboard/NudgeList.tsx`:
 
 Add imports:
 ```typescript
@@ -471,13 +471,13 @@ function handleAction(nudge: Nudge, action: "act" | "dismiss") {
 
 **Step 3: Verify it builds**
 
-Run: `cd ~/projects/cockpit-web && pnpm build 2>&1 | tail -5`
+Run: `cd ~/projects/hapax-logos && pnpm build 2>&1 | tail -5`
 Expected: Build succeeds.
 
 **Step 4: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/components/sidebar/BriefingPanel.tsx src/components/dashboard/NudgeList.tsx
 git commit -m "feat: connect briefing actions and nudge commands to agent runner"
 ```
@@ -654,14 +654,14 @@ git commit -m "feat: add scout decision API endpoints (record + retrieve)"
 ### Task 6: Scout Decision Frontend
 
 **Files:**
-- Modify: `~/projects/cockpit-web/src/api/types.ts`
-- Modify: `~/projects/cockpit-web/src/api/client.ts`
-- Modify: `~/projects/cockpit-web/src/api/hooks.ts`
-- Modify: `~/projects/cockpit-web/src/components/sidebar/ScoutPanel.tsx`
+- Modify: `~/projects/hapax-logos/src/api/types.ts`
+- Modify: `~/projects/hapax-logos/src/api/client.ts`
+- Modify: `~/projects/hapax-logos/src/api/hooks.ts`
+- Modify: `~/projects/hapax-logos/src/components/sidebar/ScoutPanel.tsx`
 
 **Step 1: Add types**
 
-In `~/projects/cockpit-web/src/api/types.ts`, after the `CycleModeResponse` interface, add:
+In `~/projects/hapax-logos/src/api/types.ts`, after the `CycleModeResponse` interface, add:
 
 ```typescript
 // --- Scout Decisions ---
@@ -680,7 +680,7 @@ export interface ScoutDecisionsResponse {
 
 **Step 2: Add API methods**
 
-In `~/projects/cockpit-web/src/api/client.ts`, add before the `demos` line:
+In `~/projects/hapax-logos/src/api/client.ts`, add before the `demos` line:
 
 ```typescript
   scoutDecisions: () => get<import("./types").ScoutDecisionsResponse>("/scout/decisions"),
@@ -690,7 +690,7 @@ In `~/projects/cockpit-web/src/api/client.ts`, add before the `demos` line:
 
 **Step 3: Add hooks**
 
-In `~/projects/cockpit-web/src/api/hooks.ts`, add before the `// --- Demos ---` section:
+In `~/projects/hapax-logos/src/api/hooks.ts`, add before the `// --- Demos ---` section:
 
 ```typescript
 // --- Scout Decisions ---
@@ -712,7 +712,7 @@ export function useScoutDecide() {
 
 **Step 4: Update ScoutPanel with decision buttons**
 
-Replace the entire content of `~/projects/cockpit-web/src/components/sidebar/ScoutPanel.tsx` with:
+Replace the entire content of `~/projects/hapax-logos/src/components/sidebar/ScoutPanel.tsx` with:
 
 ```tsx
 import { useState } from "react";
@@ -846,13 +846,13 @@ export function ScoutPanel() {
 
 **Step 5: Verify it builds**
 
-Run: `cd ~/projects/cockpit-web && pnpm build 2>&1 | tail -5`
+Run: `cd ~/projects/hapax-logos && pnpm build 2>&1 | tail -5`
 Expected: Build succeeds.
 
 **Step 6: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/api/types.ts src/api/client.ts src/api/hooks.ts src/components/sidebar/ScoutPanel.tsx
 git commit -m "feat: add scout decision workflow with adopt/defer/dismiss buttons"
 ```
@@ -866,9 +866,9 @@ git commit -m "feat: add scout decision workflow with adopt/defer/dismiss button
 Run: `cd ~/projects/hapax-council && uv run pytest tests/test_scout_decisions.py -v`
 Expected: 3 passed
 
-**Step 2: Run cockpit-web build**
+**Step 2: Run hapax-logos build**
 
-Run: `cd ~/projects/cockpit-web && pnpm build 2>&1 | tail -5`
+Run: `cd ~/projects/hapax-logos && pnpm build 2>&1 | tail -5`
 Expected: Build succeeds, no TypeScript errors.
 
 **Step 3: Manual validation checklist**
@@ -876,7 +876,7 @@ Expected: Build succeeds, no TypeScript errors.
 Start the cockpit stack:
 ```bash
 cd ~/projects/hapax-council && uv run python -m cockpit.api &
-cd ~/projects/cockpit-web && pnpm dev &
+cd ~/projects/hapax-logos && pnpm dev &
 ```
 
 Verify in browser at localhost:5173:

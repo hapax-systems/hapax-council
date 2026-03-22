@@ -590,14 +590,14 @@ git commit -m "feat: add mermaid diagram instructions to dev-story query prompt"
 ### Task 4: MermaidBlock Component (Lazy-Loaded)
 
 **Files:**
-- Create: `cockpit-web/src/components/insight/MermaidBlock.tsx`
+- Create: `hapax-logos/src/components/insight/MermaidBlock.tsx`
 
 This is the foundation — the diagram renderer. Build it first so other components can use it.
 
 - [ ] **Step 1: Install mermaid dependency**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm add mermaid dompurify && pnpm add -D @types/dompurify
+cd ~/projects/hapax-logos && pnpm add mermaid dompurify && pnpm add -D @types/dompurify
 ```
 
 - [ ] **Step 2: Create MermaidBlock component**
@@ -710,14 +710,14 @@ export function MermaidBlock({ source }: MermaidBlockProps) {
 - [ ] **Step 3: Verify it builds**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm build
+cd ~/projects/hapax-logos && pnpm build
 ```
 Expected: Build succeeds (component is tree-shaken unless imported)
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/components/insight/MermaidBlock.tsx package.json pnpm-lock.yaml
 git commit -m "feat: MermaidBlock component — lazy-loaded diagram renderer"
 ```
@@ -727,11 +727,11 @@ git commit -m "feat: MermaidBlock component — lazy-loaded diagram renderer"
 ### Task 5: Insight Page Components
 
 **Files:**
-- Create: `cockpit-web/src/pages/InsightPage.tsx`
-- Create: `cockpit-web/src/components/insight/QueryInput.tsx`
-- Create: `cockpit-web/src/components/insight/QueryResult.tsx`
-- Create: `cockpit-web/src/components/insight/QueryResultList.tsx`
-- Create: `cockpit-web/src/components/insight/RefinementInput.tsx`
+- Create: `hapax-logos/src/pages/InsightPage.tsx`
+- Create: `hapax-logos/src/components/insight/QueryInput.tsx`
+- Create: `hapax-logos/src/components/insight/QueryResult.tsx`
+- Create: `hapax-logos/src/components/insight/QueryResultList.tsx`
+- Create: `hapax-logos/src/components/insight/RefinementInput.tsx`
 
 - [ ] **Step 1: Create QueryInput component**
 
@@ -1183,14 +1183,14 @@ export function InsightPage() {
 - [ ] **Step 6: Verify it builds**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm build
+cd ~/projects/hapax-logos && pnpm build
 ```
 Expected: Build succeeds
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/pages/InsightPage.tsx src/components/insight/
 git commit -m "feat: Insight page — query input, result list, refinement, mermaid rendering"
 ```
@@ -1200,9 +1200,9 @@ git commit -m "feat: Insight page — query input, result list, refinement, merm
 ### Task 6: Wire Into App Shell (Routing, Nav, Keyboard)
 
 **Files:**
-- Modify: `cockpit-web/src/App.tsx:1-19`
-- Modify: `cockpit-web/src/components/Header.tsx:39-49`
-- Modify: `cockpit-web/src/hooks/useKeyboardShortcuts.ts:25-41`
+- Modify: `hapax-logos/src/App.tsx:1-19`
+- Modify: `hapax-logos/src/components/Header.tsx:39-49`
+- Modify: `hapax-logos/src/hooks/useKeyboardShortcuts.ts:25-41`
 
 - [ ] **Step 1: Add route to App.tsx**
 
@@ -1238,7 +1238,7 @@ In `src/hooks/useKeyboardShortcuts.ts`, add case after `"d"` (after line 37):
 - [ ] **Step 4: Build and verify**
 
 ```bash
-cd ~/projects/cockpit-web && pnpm build
+cd ~/projects/hapax-logos && pnpm build
 ```
 Expected: Build succeeds
 
@@ -1250,7 +1250,7 @@ Start both services and verify:
 cd ~/projects/hapax-council && docker compose up -d cockpit-api
 
 # Terminal 2: Frontend
-cd ~/projects/cockpit-web && pnpm dev
+cd ~/projects/hapax-logos && pnpm dev
 ```
 
 Open `http://localhost:5173/insight`. Verify:
@@ -1264,7 +1264,7 @@ Open `http://localhost:5173/insight`. Verify:
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~/projects/cockpit-web
+cd ~/projects/hapax-logos
 git add src/App.tsx src/components/Header.tsx src/hooks/useKeyboardShortcuts.ts
 git commit -m "feat: wire Insight page into app shell — routing, nav, keyboard shortcut"
 ```
