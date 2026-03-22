@@ -166,34 +166,38 @@ function ModifierShortcutOverlay() {
 
   return (
     <div
-      className="absolute bottom-3 left-1/2 -translate-x-1/2 flex flex-col gap-1.5 px-4 py-2 rounded"
-      style={{
-        zIndex: 50,
-        background: "rgba(29, 32, 33, 0.92)",
-        backdropFilter: "blur(12px)",
-        border: "1px solid rgba(180, 160, 120, 0.2)",
-        fontFamily: "'JetBrains Mono', monospace",
-        minWidth: 280,
-      }}
+      className="absolute inset-0 flex items-center justify-center pointer-events-none"
+      style={{ zIndex: 50 }}
     >
-      {shortcuts.length > 0 && (
-        <div className="flex flex-col gap-0.5 border-b border-zinc-700/50 pb-1.5 mb-0.5">
-          <span className="text-[9px] uppercase tracking-wider text-zinc-500 mb-0.5">{held}</span>
-          {shortcuts.map((s) => (
-            <div key={s.keys} className="flex justify-between text-[11px]">
-              <span style={{ color: "rgba(184, 187, 38, 0.8)" }}>{s.keys}</span>
-              <span style={{ color: "rgba(180, 160, 120, 0.6)" }}>{s.label}</span>
+      <div
+        className="flex flex-col gap-3 px-8 py-6 rounded-lg pointer-events-auto"
+        style={{
+          background: "rgba(29, 32, 33, 0.75)",
+          backdropFilter: "blur(16px)",
+          border: "1px solid rgba(180, 160, 120, 0.15)",
+          fontFamily: "'JetBrains Mono', monospace",
+          minWidth: 400,
+        }}
+      >
+        {shortcuts.length > 0 && (
+          <div className="flex flex-col gap-1 border-b border-zinc-700/40 pb-3 mb-1">
+            <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 mb-1">{held}</span>
+            {shortcuts.map((s) => (
+              <div key={s.keys} className="flex justify-between text-[14px]">
+                <span style={{ color: "rgba(184, 187, 38, 0.9)" }}>{s.keys}</span>
+                <span style={{ color: "rgba(180, 160, 120, 0.6)" }}>{s.label}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+          {singleKeys.map((s) => (
+            <div key={s.keys} className="flex justify-between text-[12px]">
+              <span style={{ color: "rgba(184, 187, 38, 0.6)" }}>{s.keys}</span>
+              <span style={{ color: "rgba(180, 160, 120, 0.4)" }}>{s.label}</span>
             </div>
           ))}
         </div>
-      )}
-      <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-        {singleKeys.map((s) => (
-          <div key={s.keys} className="flex gap-1.5 text-[10px]">
-            <span style={{ color: "rgba(184, 187, 38, 0.5)" }}>{s.keys}</span>
-            <span style={{ color: "rgba(180, 160, 120, 0.35)" }}>{s.label}</span>
-          </div>
-        ))}
       </div>
     </div>
   );
