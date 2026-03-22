@@ -23,7 +23,7 @@ Tauri 2 desktop application. A wgpu-powered generative surface renders system st
 
 ## System Anatomy (Flow Page)
 
-React Flow visualization of system topology. 9 nodes, 16 edges. Polls every 3s from /dev/shm via Tauri IPC or cockpit HTTP API fallback.
+React Flow visualization of system topology. 9 nodes, 16 edges. Polls every 3s from /dev/shm via Tauri IPC or logos HTTP API fallback.
 
 Enrichments: particle-density edges (throughput), breathing nodes (tick cadence), staleness color shift (green → amber), attention decay (unchanged nodes fade), consent state dots, gate barriers.
 
@@ -40,7 +40,7 @@ open http://localhost:5173/flow
 HAPAX_NO_VISUAL=1 pnpm tauri dev   # Skip wgpu surface for Wayland compat
 ```
 
-Requires cockpit API at :8051 for Flow page data.
+Requires logos API at :8051 for Flow page data.
 
 ## Stack
 

@@ -18,7 +18,7 @@ export function setupStatusBar(
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
-  // Periodic health ping (if cockpit API reachable)
+  // Periodic health ping (if logos API reachable)
   checkHealth();
   const interval = setInterval(checkHealth, 5 * 60 * 1000);
   context.subscriptions.push({ dispose: () => clearInterval(interval) });
@@ -27,7 +27,7 @@ export function setupStatusBar(
 async function checkHealth(): Promise<void> {
   if (!statusBarItem) return;
   try {
-    const resp = await fetch("http://localhost:8095/api/health", {
+    const resp = await fetch("http://localhost:8051/api/health", {
       signal: AbortSignal.timeout(3000),
     });
     if (resp.ok) {
@@ -40,11 +40,11 @@ async function checkHealth(): Promise<void> {
       statusBarItem.tooltip = `Hapax: ${h} of ${t} checks healthy`;
     } else {
       statusBarItem.text = "$(pulse) Hapax";
-      statusBarItem.tooltip = "Hapax: cockpit unreachable";
+      statusBarItem.tooltip = "Hapax: logos unreachable";
     }
   } catch {
     // Degrade silently per corporate_boundary axiom
     statusBarItem.text = "$(pulse) Hapax";
-    statusBarItem.tooltip = "Hapax: cockpit unreachable";
+    statusBarItem.tooltip = "Hapax: logos unreachable";
   }
 }

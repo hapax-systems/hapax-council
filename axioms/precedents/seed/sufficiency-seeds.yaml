@@ -110,7 +110,7 @@ precedents:
 
   - id: SEED-SUF-008
     axiom_id: single_user
-    situation: Cockpit TUI optimizes keybindings and layout for the operator's workflow —
+    situation: Logos optimizes keybindings and layout for the operator's workflow —
       r=refresh, c=chat, ?=manual — rather than providing generic discoverable UI.
     decision: sufficient
     reasoning: Interface optimized for operator's specific workflows (su-ui-001).

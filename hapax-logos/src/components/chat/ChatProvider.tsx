@@ -163,7 +163,7 @@ export function useChatContext() {
 
 // ── Session persistence ────────────────────────────────────────────────
 
-const SESSION_KEY = "cockpit-chat-session";
+const SESSION_KEY = "logos-chat-session";
 
 function saveSession(sessionId: string, model: string) {
   try {

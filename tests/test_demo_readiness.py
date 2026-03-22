@@ -67,7 +67,7 @@ class TestReadiness:
             mock_fixes.assert_not_called()
 
     def test_readiness_logos_api_down(self):
-        """Cockpit API down -> ready=False."""
+        """Logos API down -> ready=False."""
         mock_report = _make_report()
 
         def urlopen_side_effect(url, **kwargs):
@@ -87,7 +87,7 @@ class TestReadiness:
             assert any("8051" in i for i in result.issues)
 
     def test_readiness_logos_web_down(self):
-        """Cockpit web down -> ready=False."""
+        """Logos web down -> ready=False."""
         mock_report = _make_report()
 
         def urlopen_side_effect(url, **kwargs):
@@ -139,23 +139,28 @@ class TestReadiness:
         ):
             result = check_readiness(require_tts=True)
             assert result.ready is False
-            assert any("4123" in i for i in result.issues)
+            assert any("TTS" in i for i in result.issues)
 
     def test_readiness_voice_sample_missing(self):
-        """Voice sample missing -> ready=False."""
+        """Voice sample missing -> ready=False (no TTS backends)."""
         mock_report = _make_report()
+
+        def urlopen_side_effect(url, **kwargs):
+            if "4123" in url:
+                raise ConnectionError("Connection refused")
+            return MagicMock()
 
         with (
             patch(
                 "agents.health_monitor.run_checks", new_callable=AsyncMock, return_value=mock_report
             ),
             patch("agents.health_monitor.run_fixes", new_callable=AsyncMock, return_value=0),
-            patch("urllib.request.urlopen"),
+            patch("urllib.request.urlopen", side_effect=urlopen_side_effect),
             patch("pathlib.Path.exists", return_value=False),
         ):
             result = check_readiness(require_tts=True)
             assert result.ready is False
-            assert any("voice" in i.lower() for i in result.issues)
+            assert any("TTS" in i for i in result.issues)
 
     def test_readiness_health_monitor_unavailable(self):
         """Health monitor import failure -> warning, not issue."""

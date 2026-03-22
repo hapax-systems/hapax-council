@@ -173,7 +173,7 @@ Target scene count: {max_scenes} scenes (minimum {duration_constraints["scenes"]
 
 Available web interfaces for screenshots:
 
-COCKPIT WEB (http://localhost:5173) — the custom dashboard:
+LOGOS WEB (http://localhost:5173) — the custom dashboard:
 - / — Main dashboard with health, agents, timers, briefing, scout, drift, goals panels
 - /chat — Chat interface with streaming LLM responses
 - /demos — Demo listing page

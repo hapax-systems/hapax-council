@@ -26,4 +26,4 @@ curl -s -X POST http://127.0.0.1:8051/api/nudges/<ID>/dismiss | jq .
 ```
 
 If the logos API is not running (connection refused), suggest:
-`cd ~/projects/hapax-council && uv run python -m cockpit.api`
+`cd ~/projects/hapax-council && uv run python -m logos.api`

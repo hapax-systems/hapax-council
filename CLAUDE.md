@@ -15,7 +15,7 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 
 **Reactive engine** (`logos/engine/`): inotify watcher → 12 rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).
 
-**Infrastructure**: Qdrant (4 collections), LiteLLM (:4000), Ollama (RTX 3090), PostgreSQL, Langfuse, ntfy (push notifications).
+**Infrastructure**: Qdrant (8 collections), LiteLLM (:4000), Ollama (RTX 3090), PostgreSQL, Langfuse, ntfy (push notifications).
 
 ## Logos API
 

@@ -821,14 +821,14 @@ def _check_gitignore_security() -> tuple[bool, str]:
     """Check repos have required .gitignore patterns and no tracked secrets (cb-secret-scan-001)."""
     import subprocess
 
-    from shared.config import COCKPIT_WEB_DIR
+    from shared.config import LOGOS_WEB_DIR
 
     repos = {
         "hapax-council": AI_AGENTS_DIR,
         "obsidian-hapax": OBSIDIAN_HAPAX_DIR,
         "hapaxromana": HAPAXROMANA_DIR,
         "hapax-vscode": HAPAX_VSCODE_DIR,
-        "hapax-logos": COCKPIT_WEB_DIR,
+        "hapax-logos": LOGOS_WEB_DIR,
     }
 
     required_patterns = [".env", "*.pem", "*.key", "credentials.json"]

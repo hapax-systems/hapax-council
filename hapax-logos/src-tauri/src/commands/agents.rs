@@ -38,7 +38,7 @@ pub struct AgentInfo {
 #[tauri::command]
 pub fn get_agents() -> Vec<AgentInfo> {
     // The agent registry is computed from Python module introspection.
-    // Read cached snapshot written by the cockpit API.
+    // Read cached snapshot written by the logos API.
     let path = expand_home("~/.hapax/profiles/agent-registry.json");
     read_json::<Vec<AgentInfo>>(&path).unwrap_or_default()
 }

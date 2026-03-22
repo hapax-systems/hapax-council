@@ -488,7 +488,7 @@ pub struct ManagementSnapshot {
 #[tauri::command]
 pub fn get_management() -> ManagementSnapshot {
     // Management data is computed by the Python management agent.
-    // The cockpit API reads from a cached snapshot file.
+    // The logos API reads from a cached snapshot file.
     let path = expand_home("~/.hapax/profiles/management-snapshot.json");
     read_json(&path).unwrap_or(ManagementSnapshot {
         people: vec![],
@@ -522,7 +522,7 @@ pub struct Nudge {
 #[tauri::command]
 pub fn get_nudges() -> Vec<Nudge> {
     // Nudges are computed server-side from multiple sources.
-    // Read the cached result from the cockpit snapshot file.
+    // Read the cached result from the logos snapshot file.
     let path = expand_home("~/.hapax/profiles/nudges.json");
     read_json::<Vec<Nudge>>(&path).unwrap_or_default()
 }

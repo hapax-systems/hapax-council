@@ -1,5 +1,5 @@
 {
-    "include": ["agents", "shared", "cockpit"],
+    "include": ["agents", "shared", "logos"],
     "exclude": ["tests", "**/__pycache__"],
     "pythonVersion": "3.12",
     "typeCheckingMode": "basic",

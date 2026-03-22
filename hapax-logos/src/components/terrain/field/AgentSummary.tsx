@@ -7,7 +7,7 @@ import { useAgents } from "../../../api/hooks";
 export function AgentSummary() {
   const { data: agents } = useAgents();
 
-  const agentList = (agents as any)?.agents ?? [];
+  const agentList = Array.isArray(agents) ? agents : (agents as any)?.agents ?? [];
   const total = agentList.length;
   const byCategory: Record<string, number> = {};
   for (const a of agentList) {

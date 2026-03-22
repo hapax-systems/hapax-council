@@ -116,7 +116,7 @@ from shared.cameras import (
 from shared.cameras import (
     resolution as cam_resolution,
 )
-from shared.config import COCKPIT_API_URL as COCKPIT_BASE
+from shared.config import LOGOS_API_URL as LOGOS_BASE
 
 # ── Experimental camera filters for ambient injection ────────────────────────
 
@@ -765,7 +765,7 @@ class VisualLayerAggregator:
 
     def __init__(self) -> None:
         self._sm = DisplayStateMachine()
-        self._client = httpx.AsyncClient(base_url=COCKPIT_BASE, timeout=5.0)
+        self._client = httpx.AsyncClient(base_url=LOGOS_BASE, timeout=5.0)
         self._fast_signals: list[SignalEntry] = []
         self._slow_signals: list[SignalEntry] = []
         self._perception_signals: list[SignalEntry] = []

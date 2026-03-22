@@ -526,7 +526,7 @@ systems:
       - id: inf-logos-api-001
         tier: V1
         text: >
-          Cockpit API must be reachable at localhost:8051. Without it,
+          Logos API must be reachable at localhost:8051. Without it,
           the visual layer aggregator cannot poll health, GPU, nudges,
           briefing, drift, goals, or copilot data. The Corpora visual
           field loses all signal categories except perception.

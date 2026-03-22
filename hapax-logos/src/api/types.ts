@@ -1,4 +1,4 @@
-// Types matching cockpit/data/ Python dataclasses
+// Types matching logos/data/ Python dataclasses
 
 export interface HealthSnapshot {
   overall_status: "healthy" | "degraded" | "failed";
@@ -9,7 +9,7 @@ export interface HealthSnapshot {
   duration_ms: number;
   failed_checks: string[];
   timestamp: string;
-  // Computed fields from cockpit API
+  // Computed fields from logos API
   score?: number;
   total?: number;
   summary?: { stance: string };
@@ -165,6 +165,7 @@ export interface DriftItem {
 
 export interface DriftSummary {
   drift_count: number;
+  hygiene_count: number;
   docs_analyzed: number;
   summary: string;
   latest_timestamp: string;

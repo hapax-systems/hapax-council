@@ -1,4 +1,4 @@
-"""Cockpit API routes for cycle mode switching."""
+"""Logos API routes for cycle mode switching."""
 
 from __future__ import annotations
 

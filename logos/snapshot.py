@@ -374,4 +374,4 @@ async def generate_snapshot_rich():
     main = Group(*main_parts)
 
     table.add_row(sidebar, main)
-    return Panel(table, title="[bold]System Cockpit[/bold]", border_style="blue")
+    return Panel(table, title="[bold]System Logos[/bold]", border_style="blue")

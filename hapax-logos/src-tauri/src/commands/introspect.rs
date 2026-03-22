@@ -3,7 +3,7 @@
 //! These commands let Hapax agents control the UI programmatically —
 //! navigate, show content, adjust windows, trigger visual feedback.
 //! Exposed both as Tauri IPC commands (from webview) and as an HTTP
-//! API (from agents via cockpit-api proxy).
+//! API (from agents via logos-api proxy).
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};

@@ -29,7 +29,7 @@ if not LITELLM_KEY:
     )
 QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
 OLLAMA_URL: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-COCKPIT_API_URL: str = os.environ.get("COCKPIT_BASE_URL", "http://localhost:8051/api")
+LOGOS_API_URL: str = os.environ.get("COCKPIT_BASE_URL", "http://localhost:8051/api")
 
 # ── Canonical paths ─────────────────────────────────────────────────────────
 
@@ -84,7 +84,7 @@ OBSIDIAN_HAPAX_DIR: Path = HAPAX_PROJECTS_DIR / "obsidian-hapax"
 # Legacy aliases — migrate callers to new names, then remove
 AI_AGENTS_DIR: Path = HAPAX_COUNCIL_DIR
 HAPAXROMANA_DIR: Path = HAPAX_CONSTITUTION_DIR
-COCKPIT_WEB_DIR: Path = HAPAX_COUNCIL_DIR / "hapax-logos"
+LOGOS_WEB_DIR: Path = HAPAX_COUNCIL_DIR / "hapax-logos"
 HAPAX_SYSTEM_DIR: Path = HAPAX_COUNCIL_DIR
 HAPAX_VSCODE_DIR: Path = HAPAX_COUNCIL_DIR / "vscode"
 

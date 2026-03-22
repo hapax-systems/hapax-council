@@ -215,9 +215,9 @@ pub fn get_system_flow() -> SystemFlowState {
     });
 
     // ── Reactive Engine ─────────────────────────────────────────
-    // Engine status from cockpit (try reading cached state)
+    // Engine status from logos (try reading cached state)
     let engine_cache = format!(
-        "{}/.cache/hapax/cockpit/engine-status.json",
+        "{}/.cache/hapax/logos/engine-status.json",
         std::env::var("HOME").unwrap_or_default()
     );
     let engine = read_json(&engine_cache);

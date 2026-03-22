@@ -14,7 +14,7 @@ import uvicorn
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Cockpit API server",
+        description="Logos API server",
         prog="python -m logos.api",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")

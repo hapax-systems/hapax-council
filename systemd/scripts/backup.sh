@@ -118,11 +118,11 @@ else
     log "○ axiom-audit (not found)"
 fi
 
-if [ -d "$HOME/.cache/cockpit" ]; then
-    cp -r "$HOME/.cache/cockpit" "$BACKUP_DIR/cache-state/cockpit"
-    log "✓ cockpit"
+if [ -d "$HOME/.cache/logos" ]; then
+    cp -r "$HOME/.cache/logos" "$BACKUP_DIR/cache-state/logos"
+    log "✓ logos"
 else
-    log "○ cockpit (not found)"
+    log "○ logos (not found)"
 fi
 
 if [ -f "$HOME/.cache/rag-ingest/processed.json" ]; then

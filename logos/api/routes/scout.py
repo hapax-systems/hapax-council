@@ -1,4 +1,4 @@
-"""Cockpit API routes for scout decision tracking."""
+"""Logos API routes for scout decision tracking."""
 
 from __future__ import annotations
 

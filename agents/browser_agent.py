@@ -20,12 +20,12 @@ from pathlib import Path
 import httpx
 
 from shared.browser_services import resolve_url
-from shared.config import COCKPIT_API_URL
+from shared.config import LOGOS_API_URL
 from shared.context_compression import _get_compressor
 
 log = logging.getLogger(__name__)
 
-DIRECTIVE_URL = f"{COCKPIT_API_URL}/api/logos/directive"
+DIRECTIVE_URL = f"{LOGOS_API_URL}/api/logos/directive"
 A11Y_PATH = Path("/dev/shm/hapax-logos/browser-a11y.txt")
 RESPONSE_PATH = Path("/dev/shm/hapax-logos/browser-response.json")
 

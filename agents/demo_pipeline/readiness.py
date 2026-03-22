@@ -48,10 +48,10 @@ def check_readiness(
 
     Checks:
     1. Health monitor (with run_fixes if auto_fix=True)
-    2. Cockpit API (:8051) reachable
-    3. Cockpit web (:5173) reachable
-    4. TTS service (:4123) if require_tts=True
-    5. Voice sample exists if require_tts=True
+    2. Logos API (:8051) reachable
+    3. hapax-logos web (:5173) reachable
+    4. TTS service (Chatterbox :4123 or Kokoro local) if require_tts=True
+    5. Voice sample exists if require_tts=True (Chatterbox only)
     """
 
     def progress(msg: str) -> None:
@@ -94,52 +94,76 @@ def check_readiness(
     except Exception as e:
         warnings.append(f"Health monitor unavailable: {e}")
 
-    # 2. Cockpit API
+    # 2. Logos API
     try:
         import urllib.request
 
-        from shared.config import COCKPIT_API_URL
+        from shared.config import LOGOS_API_URL
 
-        urllib.request.urlopen(f"{COCKPIT_API_URL}/health", timeout=5)
-        progress("Cockpit API: OK")
+        urllib.request.urlopen(f"{LOGOS_API_URL}/health", timeout=5)
+        progress("Logos API: OK")
     except Exception:
         issues.append(
-            "Cockpit API (:8051) not reachable — start with: "
-            "cd ~/projects/ai-agents && uv run logos"
+            "Logos API (:8051) not reachable — start with: "
+            "cd ~/projects/hapax-council && uv run logos-api"
         )
 
-    # 3. Cockpit web
+    # 3. hapax-logos web
     try:
         import urllib.request
 
         urllib.request.urlopen("http://localhost:5173", timeout=5)
-        progress("Cockpit web: OK")
+        progress("hapax-logos web: OK")
     except Exception:
         issues.append(
-            "Cockpit web (:5173) not reachable — start with: cd ~/projects/hapax-logos && pnpm dev"
+            "hapax-logos web (:5173) not reachable — start with: "
+            "cd ~/projects/hapax-council/hapax-logos && npm run dev"
         )
 
     # 4 & 5. TTS (only if required)
     if require_tts:
+        chatterbox_ok = False
+        kokoro_ok = False
+
+        # Try Chatterbox first
         try:
             import urllib.request
 
             urllib.request.urlopen("http://localhost:4123/docs", timeout=5)
-            progress("TTS service: OK")
+            chatterbox_ok = True
+            progress("TTS service (Chatterbox): OK")
         except Exception:
+            pass
+
+        # Try Kokoro as fallback
+        if not chatterbox_ok:
+            try:
+                from agents.demo_pipeline.voice import check_kokoro_available
+
+                kokoro_ok = check_kokoro_available()
+                if kokoro_ok:
+                    progress("TTS service (Kokoro local): OK")
+            except Exception:
+                pass
+
+        if not chatterbox_ok and not kokoro_ok:
             issues.append(
-                "Chatterbox TTS (:4123) not running — start with: "
-                "cd ~/llm-stack && docker compose --profile tts up -d chatterbox"
+                "No TTS backend available — either start Chatterbox "
+                "(cd ~/llm-stack && docker compose --profile tts up -d chatterbox) "
+                "or install kokoro (uv pip install kokoro)"
             )
 
-        # Voice sample
-        from shared.config import PROFILES_DIR
+        # Voice sample (only relevant for Chatterbox cloning)
+        if chatterbox_ok:
+            from shared.config import PROFILES_DIR
 
-        voice_sample = PROFILES_DIR / "voice-sample.wav"
-        if not voice_sample.exists():
-            issues.append(f"Voice sample not found at {voice_sample}")
-        else:
-            progress("Voice sample: OK")
+            voice_sample = PROFILES_DIR / "voice-sample.wav"
+            if not voice_sample.exists():
+                warnings.append(
+                    f"Voice sample not found at {voice_sample} (Chatterbox will use default voice)"
+                )
+            else:
+                progress("Voice sample: OK")
 
     ready = len(issues) == 0
     return ReadinessResult(

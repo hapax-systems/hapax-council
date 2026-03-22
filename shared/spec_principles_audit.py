@@ -83,7 +83,7 @@ class AuditReport:
 
 
 def _find_python_files(root: Path) -> list[Path]:
-    """All .py files in agents/, shared/, cockpit/ (not tests, not __pycache__)."""
+    """All .py files in agents/, shared/, logos/ (not tests, not __pycache__)."""
     dirs = [root / "agents", root / "shared", root / "logos"]
     files = []
     for d in dirs:
@@ -373,7 +373,7 @@ def audit_p8_single_source(root: Path) -> PrincipleReport:
         "6333": "Qdrant port",
         "4000": "LiteLLM port",
         "11434": "Ollama port",
-        "8051": "Cockpit API port",
+        "8051": "Logos API port",
     }
 
     for const_val, const_name in constants_to_check.items():

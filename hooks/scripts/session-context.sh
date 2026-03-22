@@ -169,12 +169,12 @@ fi
 
 # Axiom governance nudge (push-based — surfaces status every session)
 PENDING_PRECEDENTS=0
-if [ -d "$HOME/.cache/cockpit/precedents" ]; then
-  LAST_REVIEWED="$HOME/.cache/cockpit/.last-reviewed"
+if [ -d "$HOME/.cache/logos/precedents" ]; then
+  LAST_REVIEWED="$HOME/.cache/logos/.last-reviewed"
   if [ -f "$LAST_REVIEWED" ]; then
-    PENDING_PRECEDENTS=$(find "$HOME/.cache/cockpit/precedents/" -name "*.json" -newer "$LAST_REVIEWED" 2>/dev/null | wc -l)
+    PENDING_PRECEDENTS=$(find "$HOME/.cache/logos/precedents/" -name "*.json" -newer "$LAST_REVIEWED" 2>/dev/null | wc -l)
   else
-    PENDING_PRECEDENTS=$(find "$HOME/.cache/cockpit/precedents/" -name "*.json" 2>/dev/null | wc -l)
+    PENDING_PRECEDENTS=$(find "$HOME/.cache/logos/precedents/" -name "*.json" 2>/dev/null | wc -l)
   fi
 fi
 if [ "$PENDING_PRECEDENTS" -gt 0 ]; then

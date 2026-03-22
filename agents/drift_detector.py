@@ -30,11 +30,11 @@ from pydantic_ai.usage import UsageLimits
 from shared.config import (
     AI_AGENTS_DIR,
     CLAUDE_CONFIG_DIR,
-    COCKPIT_WEB_DIR,
     HAPAX_HOME,
     HAPAX_SYSTEM_DIR,
     HAPAX_VSCODE_DIR,
     HAPAXROMANA_DIR,
+    LOGOS_WEB_DIR,
     OBSIDIAN_HAPAX_DIR,
     get_model,
 )
@@ -102,7 +102,7 @@ HAPAX_REPO_DIRS = [
     AI_AGENTS_DIR,
     HAPAXROMANA_DIR,
     HAPAX_SYSTEM_DIR,
-    COCKPIT_WEB_DIR,
+    LOGOS_WEB_DIR,
     OBSIDIAN_HAPAX_DIR,
     HAPAX_VSCODE_DIR,
 ]

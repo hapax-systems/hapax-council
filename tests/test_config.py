@@ -106,7 +106,6 @@ def test_path_constants_exist():
         AI_AGENTS_DIR,
         AXIOM_AUDIT_DIR,
         CLAUDE_CONFIG_DIR,
-        COCKPIT_WEB_DIR,
         HAPAX_CACHE_DIR,
         HAPAX_HOME,
         HAPAX_PROJECTS_DIR,
@@ -115,6 +114,7 @@ def test_path_constants_exist():
         HEALTH_STATE_DIR,
         LLM_STACK_DIR,
         LOGOS_STATE_DIR,
+        LOGOS_WEB_DIR,
         OBSIDIAN_HAPAX_DIR,
         PASSWORD_STORE_DIR,
         RAG_INGEST_STATE_DIR,
@@ -138,7 +138,7 @@ def test_path_constants_exist():
         ("AI_AGENTS_DIR", AI_AGENTS_DIR),
         ("HAPAXROMANA_DIR", HAPAXROMANA_DIR),
         ("OBSIDIAN_HAPAX_DIR", OBSIDIAN_HAPAX_DIR),
-        ("COCKPIT_WEB_DIR", COCKPIT_WEB_DIR),
+        ("LOGOS_WEB_DIR", LOGOS_WEB_DIR),
         ("HAPAX_SYSTEM_DIR", HAPAX_SYSTEM_DIR),
     ]:
         assert isinstance(val, Path), f"{name} should be a Path, got {type(val)}"

@@ -357,11 +357,11 @@ class TestStateReader:
 
 
 # ---------------------------------------------------------------------------
-# Cockpit integration tests
+# Logos integration tests
 # ---------------------------------------------------------------------------
 
 
-class TestCompositorCockpitStatus:
+class TestCompositorLogosStatus:
     def test_reads_status_file(self, tmp_path: Path) -> None:
         """CompositorStatus should be populated from status.json."""
         from logos.data.studio import CompositorStatus

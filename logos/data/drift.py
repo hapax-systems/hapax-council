@@ -21,11 +21,21 @@ class DriftItem:
 @dataclass
 class DriftSummary:
     drift_count: int = 0
+    hygiene_count: int = 0
     docs_analyzed: int = 0
     summary: str = ""
     latest_timestamp: str = ""
     items: list[DriftItem] = field(default_factory=list)
     report_age_h: float = 0.0
+
+
+# Categories that represent doc hygiene tasks, not actual system-state drift.
+HYGIENE_CATEGORIES = {
+    "coverage-gap",
+    "missing-section",
+    "missing_project_memory",
+    "spec-reference-gap",
+}
 
 
 def collect_drift() -> DriftSummary | None:
@@ -83,8 +93,12 @@ def collect_drift() -> DriftSummary | None:
         except (ValueError, TypeError):
             pass
 
+    drift_items = [i for i in items if i.category not in HYGIENE_CATEGORIES]
+    hygiene_items = [i for i in items if i.category in HYGIENE_CATEGORIES]
+
     return DriftSummary(
-        drift_count=len(items),
+        drift_count=len(drift_items),
+        hygiene_count=len(hygiene_items),
         docs_analyzed=len(data.get("docs_analyzed", [])),
         summary=data.get("summary", ""),
         latest_timestamp=timestamp,

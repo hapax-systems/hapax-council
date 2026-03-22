@@ -63,7 +63,7 @@ async function saveToFilesystem(
   const decisionsPath = path.join(
     os.homedir(),
     ".cache",
-    "cockpit",
+    "logos",
     "decisions.jsonl"
   );
 

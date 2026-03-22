@@ -9,11 +9,14 @@ export function DriftPanel() {
   const { data: drift, dataUpdatedAt } = useDrift();
   const { requestAgentRun } = useAgentRun();
 
-  if (!drift || drift.drift_count === 0) return null;
+  if (!drift || (drift.drift_count === 0 && drift.hygiene_count === 0)) return null;
 
   return (
     <SidebarSection title="Drift" age={formatAge(dataUpdatedAt)}>
       <p>{drift.drift_count} findings · {drift.report_age_h.toFixed(0)}h ago</p>
+      {drift.hygiene_count > 0 && (
+        <p className="text-zinc-600 text-[10px]">+ {drift.hygiene_count} coverage gaps</p>
+      )}
       {drift.items.slice(0, 3).map((d, i) => (
         <div key={`${d.doc_file}-${i}`} className="flex items-center gap-1.5">
           <StatusBadge status={d.severity} />
