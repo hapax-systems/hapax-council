@@ -1,6 +1,6 @@
 {
-  "phase": "off",
+  "phase": "baseline",
   "updated": "2026-03-21",
-  "notes": "Temporarily off for freeze infrastructure installation. Will be set back to baseline.",
+  "notes": "Cycle 2 Phase A baseline collection. Freeze infrastructure active.",
   "freeze_manifest": "experiment-freeze-manifest.txt"
 }
