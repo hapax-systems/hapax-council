@@ -32,7 +32,7 @@ interface AmbientCanvasProps {
   speed: number;
 }
 
-export function AmbientCanvas({ ambientText, secondaryText, speed }: AmbientCanvasProps) {
+export function AmbientCanvas({ ambientText, secondaryText }: AmbientCanvasProps) {
   const [fragmentIdx, setFragmentIdx] = useState(0);
 
   useEffect(() => {

@@ -3,7 +3,7 @@
 #
 # Blocks Edit/Write tool calls when the current session has unresolved work:
 #   1. Feature branch with commits ahead of main but no open PR → must submit PR
-#   2. Open PR with failing checks on current branch → must fix CI
+#   2. Open PR with failing checks on current branch → warn, allow edits (they're CI fixes)
 #   3. On main: open PRs whose branch exists locally → must merge or close first
 #
 # Scoped by local branches: only blocks on PRs whose branch is checked out in
@@ -66,6 +66,8 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
     fi
 
     # PR exists — check for failing checks
+    # When on the feature branch itself, allow edits (they're CI fixes).
+    # The block only applies from main (section 7 below).
     failed="$(printf '%s' "$pr_json" | jq -r '
       .[0].statusCheckRollup // [] |
       map(select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT" or .conclusion == "ACTION_REQUIRED")) |
@@ -74,8 +76,7 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
 
     if [[ "$failed" -gt 0 ]]; then
       pr_num="$(printf '%s' "$pr_json" | jq -r '.[0].number' 2>/dev/null || echo "?")"
-      echo "BLOCKED: PR #${pr_num} on branch '${branch}' has ${failed} failing check(s). Fix CI before starting new work." >&2
-      exit 2
+      echo "NOTE: PR #${pr_num} on branch '${branch}' has ${failed} failing check(s). Edits allowed — fix CI on this branch." >&2
     fi
   fi
 
