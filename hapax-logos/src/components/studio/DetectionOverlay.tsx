@@ -201,9 +201,6 @@ export function DetectionOverlay({
   activePreset,
   enrichmentVisibility,
 }: DetectionOverlayProps) {
-  // Helper: check if an enrichment is visible (default true if not specified)
-  const isEnrichmentVisible = (key: string): boolean =>
-    enrichmentVisibility?.[key] !== false;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const smoothedRef = useRef<Map<string, SmoothedBox>>(new Map());
   const hoveredIdRef = useRef<string | null>(null);
