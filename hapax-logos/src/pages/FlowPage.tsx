@@ -59,22 +59,37 @@ const POSITIONS: Record<string, { x: number; y: number }> = {
   compositor: { x: 720, y: 610 },
 };
 
-// ── Colors ──────────────────────────────────────────────────────────
+// ── Colors (theme-aware per §3.7 severity ladder) ──────────────────
 
-const COLORS = {
-  active: { bg: "rgba(16, 185, 129, 0.10)", border: "#10b981", glow: "rgba(16, 185, 129, 0.25)" },
-  stale: { bg: "rgba(245, 158, 11, 0.10)", border: "#f59e0b", glow: "rgba(245, 158, 11, 0.15)" },
-  offline: { bg: "rgba(107, 114, 128, 0.06)", border: "#4b5563", glow: "transparent" },
-};
+import { useTheme } from "../theme/ThemeProvider";
+import type { ThemePalette } from "../theme/palettes";
 
-// Staleness → edge color interpolation (green → amber)
-function edgeColor(age_s: number, active: boolean): string {
-  if (!active) return "#2a2f3a";
-  if (age_s < 3) return "#10b981";    // fresh green
-  if (age_s < 8) return "#34d399";    // light green
-  if (age_s < 15) return "#a3e635";   // yellow-green
-  if (age_s < 25) return "#facc15";   // yellow
-  return "#f59e0b";                    // amber (stale)
+function flowColors(p: ThemePalette) {
+  return {
+    active: {
+      bg: `color-mix(in srgb, ${p["green-400"]} 10%, transparent)`,
+      border: p["green-400"],
+      glow: `color-mix(in srgb, ${p["green-400"]} 25%, transparent)`,
+    },
+    stale: {
+      bg: `color-mix(in srgb, ${p["orange-400"]} 10%, transparent)`,
+      border: p["orange-400"],
+      glow: `color-mix(in srgb, ${p["orange-400"]} 15%, transparent)`,
+    },
+    offline: {
+      bg: `color-mix(in srgb, ${p["zinc-600"]} 6%, transparent)`,
+      border: p["zinc-600"],
+      glow: "transparent",
+    },
+  };
+}
+
+// Staleness → edge color (theme-aware: green → yellow → orange)
+function edgeColor(age_s: number, active: boolean, p: ThemePalette): string {
+  if (!active) return p["zinc-700"];
+  if (age_s < 5) return p["green-400"];
+  if (age_s < 15) return p["yellow-400"];
+  return p["orange-400"];
 }
 
 // Breathing speed: active nodes pulse faster based on recency
@@ -106,7 +121,8 @@ function FlowingEdge({
   const age = (data as Record<string, unknown>)?.age_s as number ?? 999;
   const isGated = (data as Record<string, unknown>)?.gated as boolean ?? false;
   const edgeLabel = (data as Record<string, unknown>)?.label as string ?? "";
-  const color = edgeColor(age, active);
+  const { palette: edgePalette } = useTheme();
+  const color = edgeColor(age, active, edgePalette);
 
   // Particle count based on activity (more particles = more throughput)
   const particleCount = active ? (age < 5 ? 3 : age < 15 ? 2 : 1) : 0;
@@ -233,7 +249,9 @@ function Sparkline({ nodeId, color }: { nodeId: string; color: string }) {
 // ── Custom Node (breathing + decay + sparkline) ─────────────────────
 
 function SystemNode({ data }: { data: FlowNode }) {
-  const colors = COLORS[data.status as keyof typeof COLORS] || COLORS.offline;
+  const { palette } = useTheme();
+  const fc = flowColors(palette);
+  const colors = fc[data.status as keyof typeof fc] || fc.offline;
   const metrics = data.metrics || {};
   const breathe = breathDuration(data.age_s, data.status);
   const opacity = nodeOpacity(data.age_s, data.status);
@@ -340,8 +358,10 @@ const nodeTypes = { system: SystemNode };
 // ── Detail Panel ────────────────────────────────────────────────────
 
 function DetailPanel({ node, onClose }: { node: FlowNode | null; onClose: () => void }) {
+  const { palette: detailPalette } = useTheme();
   if (!node) return null;
-  const colors = COLORS[node.status as keyof typeof COLORS] || COLORS.offline;
+  const fc = flowColors(detailPalette);
+  const colors = fc[node.status as keyof typeof fc] || fc.offline;
 
   return (
     <div
@@ -429,6 +449,7 @@ function staticTopology(): SystemFlowState {
 // ── Main Page ───────────────────────────────────────────────────────
 
 export function FlowPage() {
+  const { palette: pagePalette } = useTheme();
   const [flowState, setFlowState] = useState<SystemFlowState | null>(null);
   const [selectedNode, setSelectedNode] = useState<FlowNode | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -494,7 +515,7 @@ export function FlowPage() {
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        color: edgeColor(nodeAgeMap[e.source] || 999, e.active),
+        color: edgeColor(nodeAgeMap[e.source] || 999, e.active, pagePalette),
         width: 12,
         height: 12,
       },
@@ -517,7 +538,7 @@ export function FlowPage() {
   const totalCount = flowState?.nodes.length ?? 0;
 
   return (
-    <div style={{ width: "100%", height: "100%", background: "#0a0f1a", position: "relative" }}>
+    <div style={{ width: "100%", height: "100%", background: "var(--color-zinc-950)", position: "relative" }}>
       <style>{`
         @keyframes breathe {
           0%, 100% { box-shadow: 0 0 12px var(--glow-color, rgba(16,185,129,0.25)); }
@@ -577,7 +598,7 @@ export function FlowPage() {
         const offlineCount = flowState.nodes.filter(n => n.status === "offline").length;
         const activeEdges = flowState.edges.filter(e => e.active).length;
         const totalEdges = flowState.edges.length;
-        const stanceColor = stance === "nominal" ? "#10b981" : stance === "cautious" ? "#f59e0b" : stance === "degraded" ? "#f97316" : stance === "critical" ? "#ef4444" : "#6b7280";
+        const stanceColor = stance === "nominal" ? pagePalette["green-400"] : stance === "cautious" ? pagePalette["yellow-400"] : stance === "degraded" ? pagePalette["orange-400"] : stance === "critical" ? pagePalette["red-400"] : pagePalette["zinc-500"];
 
         return (
           <div

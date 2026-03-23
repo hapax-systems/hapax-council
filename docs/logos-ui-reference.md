@@ -2,6 +2,8 @@
 
 Comprehensive reference for the hapax-logos visual interface. Written for narration generators and demo pipelines — describes what is visible, why it looks the way it does, and what each element means.
 
+> **Color, mode, spatial model, and animation vocabulary** are governed by [`docs/logos-design-language.md`](logos-design-language.md). This document governs **region content** — what appears where at each depth.
+
 ## Design Philosophy
 
 Logos is not a dashboard. It is a spatial representation of system awareness.
@@ -10,7 +12,7 @@ Conventional software organizes by feature — a settings page, a chat page, a s
 
 The metaphor is geological terrain. Layers of awareness stacked vertically, each with depth that can be revealed. Surface is calm. Core is immersive. The operator controls depth by clicking or pressing keyboard shortcuts, choosing how much attention to give each domain.
 
-The visual language is Gruvbox Dark. Warm zinc tones, amber accents, JetBrains Mono typography. Dense information rendered small. Nothing is decorative — every visual element encodes system state.
+The visual language adapts to working mode: Gruvbox Hard Dark (warm, textured) in R&D mode, Solarized Dark (cool, clinical) in Research mode. Dense information rendered small. Nothing is decorative — every visual element encodes system state.
 
 ## The Five Regions
 

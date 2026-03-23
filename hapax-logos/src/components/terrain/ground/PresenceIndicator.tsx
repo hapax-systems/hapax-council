@@ -11,21 +11,21 @@ export function PresenceIndicator({
   interruptibility,
   guestPresent,
 }: PresenceIndicatorProps) {
-  // Presence dot color
+  // Presence dot color (§3.7 severity ladder)
   const presenceColor = operatorPresent
-    ? "#b8bb26"
+    ? "var(--color-green-400)"
     : presenceScore > 0.3
-      ? "#fabd2f"
-      : "#504945";
+      ? "var(--color-yellow-400)"
+      : "var(--color-zinc-700)";
 
   // Interruptibility bar: always at stratum+, but breaks through at surface when < 0.3
   const showInterruptibility = interruptibility < 0.3 || interruptibility > 0;
   const interruptColor =
     interruptibility > 0.6
-      ? "#b8bb26"
+      ? "var(--color-green-400)"
       : interruptibility > 0.3
-        ? "#fabd2f"
-        : "#fb4934";
+        ? "var(--color-yellow-400)"
+        : "var(--color-red-400)";
 
   return (
     <div className="flex items-center gap-1.5">
@@ -54,7 +54,7 @@ export function PresenceIndicator({
         <div className="flex items-center gap-0.5">
           <div
             className="w-1.5 h-1.5 rounded-full"
-            style={{ backgroundColor: "#d3869b" }}
+            style={{ backgroundColor: "var(--color-fuchsia-400)" }}
           />
           <span className="text-[8px] text-fuchsia-400">guest</span>
         </div>

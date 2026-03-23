@@ -19,6 +19,10 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 
 **Key services**: `hapax-secrets` (credentials) → `logos-api` (:8051) → `hapax-voice` (GPU) → `visual-layer-aggregator` → `studio-compositor` (GPU). 41 timers for sync, health, backups.
 
+## Design Language
+
+`docs/logos-design-language.md` is the authority document for all visual surfaces. It governs color (§3), typography (§1.6), spatial model (§4), animation (§6), mode switching (§2), and scope (§11). All component colors must use CSS custom properties (`var(--color-*)`) or Tailwind classes — no hardcoded hex except detection overlays (§3.6). `docs/logos-ui-reference.md` governs region content (what appears at each depth).
+
 ## Logos API
 
 FastAPI on `:8051`. `uv run logos-api` to start. Containers: `docker compose up -d`.

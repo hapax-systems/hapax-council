@@ -1,17 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import type { WatershedEvent } from "../../../api/types";
-
-/** Category → Gruvbox color mapping (matches CATEGORY_HEX in ClassificationOverlayContext). */
-const CATEGORY_COLORS: Record<string, string> = {
-  context_time: "#83a598",
-  governance: "#d3869b",
-  work_tasks: "#fe8019",
-  health_infra: "#fb4934",
-  profile_state: "#b8bb26",
-  ambient_sensor: "#8ec07c",
-  voice_session: "#fabd2f",
-  system_state: "#bdae93",
-};
+import { CATEGORY_HEX, type SignalCategory } from "../../../contexts/ClassificationOverlayContext";
 
 /** A single ephemeral event rendered as a decaying ripple. */
 export const EventRipple = memo(function EventRipple({
@@ -24,7 +13,7 @@ export const EventRipple = memo(function EventRipple({
   const age = now - event.emitted_at;
   const progress = Math.min(1, age / event.ttl_s);
   const opacity = Math.max(0, 1 - progress * progress); // quadratic decay
-  const color = CATEGORY_COLORS[event.category] ?? "#bdae93";
+  const color = CATEGORY_HEX[event.category as SignalCategory] ?? "var(--color-zinc-400)";
 
   if (opacity <= 0.02) return null;
 

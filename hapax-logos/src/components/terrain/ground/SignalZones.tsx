@@ -13,21 +13,23 @@ interface SignalEntry {
   source_id: string;
 }
 
-const ZONE_COLORS: Record<string, string> = {
-  context_time: "rgba(102, 153, 217, VAR)",
-  governance: "rgba(77, 179, 179, VAR)",
-  work_tasks: "rgba(217, 166, 77, VAR)",
-  health_infra: "rgba(77, 204, 77, VAR)",
-  profile_state: "rgba(230, 230, 230, VAR)",
-  ambient_sensor: "rgba(153, 153, 179, VAR)",
-  voice_session: "rgba(77, 217, 153, VAR)",
+// Category → CSS custom property token for color-mix (theme-aware, see §3.3)
+const ZONE_TOKENS: Record<string, string> = {
+  context_time: "--color-blue-400",
+  governance: "--color-fuchsia-400",
+  work_tasks: "--color-orange-400",
+  health_infra: "--color-red-400",
+  profile_state: "--color-green-400",
+  ambient_sensor: "--color-emerald-400",
+  voice_session: "--color-yellow-400",
 };
 
-const SEVERITY_COLORS: Record<string, string> = {
-  critical: "rgba(218, 54, 51, VAR)",
-  high: "rgba(212, 123, 60, VAR)",
-  medium: "rgba(210, 160, 68, VAR)",
-  low: "rgba(102, 153, 217, VAR)",
+// Severity → CSS custom property token (theme-aware)
+const SEVERITY_TOKENS: Record<string, string> = {
+  critical: "--color-red-400",
+  high: "--color-orange-400",
+  medium: "--color-yellow-400",
+  low: "--color-blue-400",
 };
 
 const ZONE_POSITIONS: Record<string, React.CSSProperties> = {
@@ -47,11 +49,13 @@ function sevLabel(sev: number): string {
 }
 
 function zoneColor(cat: string, a: number): string {
-  return (ZONE_COLORS[cat] ?? "rgba(128,128,128,VAR)").replace("VAR", String(a));
+  const token = ZONE_TOKENS[cat] ?? "--color-zinc-400";
+  return `color-mix(in srgb, var(${token}) ${Math.round(a * 100)}%, transparent)`;
 }
 
 function sevColor(sev: number, a: number): string {
-  return (SEVERITY_COLORS[sevLabel(sev)] ?? SEVERITY_COLORS.low).replace("VAR", String(a));
+  const token = SEVERITY_TOKENS[sevLabel(sev)] ?? SEVERITY_TOKENS.low;
+  return `color-mix(in srgb, var(${token}) ${Math.round(a * 100)}%, transparent)`;
 }
 
 interface SignalZonesProps {

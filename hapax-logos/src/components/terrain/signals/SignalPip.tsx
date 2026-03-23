@@ -32,7 +32,7 @@ function pipSize(severity: number): number {
 }
 
 export function SignalPip({ category, severity, title, detail, freshness = 1.0 }: SignalPipProps) {
-  const color = CATEGORY_HEX[category] ?? "#bdae93";
+  const color = CATEGORY_HEX[category] ?? "var(--color-zinc-400)";
   const size = pipSize(severity);
   const anim = breatheClass(severity);
   const dur = breatheDuration(severity);

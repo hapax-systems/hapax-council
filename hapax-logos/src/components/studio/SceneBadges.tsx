@@ -26,15 +26,15 @@ export function SceneBadges({ position = "top-2 right-12", scale = "md" }: Scene
   const badges: { label: string; color: string }[] = [];
 
   if (sceneType && sceneType !== "unknown") {
-    badges.push({ label: sceneType.replace(/_/g, " "), color: "#83a598" });
+    badges.push({ label: sceneType.replace(/_/g, " "), color: "var(--color-blue-400)" });
   }
   if (audioScene && audioScene !== "silence" && audioScene !== "unknown") {
-    badges.push({ label: audioScene, color: "#fabd2f" });
+    badges.push({ label: audioScene, color: "var(--color-yellow-400)" });
   }
   if (colorTemp && colorTemp !== "unknown" && colorTemp !== "neutral") {
     badges.push({
       label: colorTemp,
-      color: colorTemp === "warm" ? "#fe8019" : "#83a598",
+      color: colorTemp === "warm" ? "var(--color-orange-400)" : "var(--color-blue-400)",
     });
   }
 
@@ -51,7 +51,7 @@ export function SceneBadges({ position = "top-2 right-12", scale = "md" }: Scene
           style={{
             color: b.color,
             opacity: 0.15,
-            background: "rgba(29, 32, 33, 0.4)",
+            background: "color-mix(in srgb, var(--color-zinc-950) 40%, transparent)",
           }}
         >
           {b.label}
