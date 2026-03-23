@@ -41,12 +41,12 @@ function BedrockSurface() {
             style={{
               background:
                 score === null
-                  ? "#504945"
+                  ? "var(--color-zinc-700)"
                   : score >= 0.8
-                    ? "#b8bb26"
+                    ? "var(--color-green-400)"
                     : score >= 0.5
-                      ? "#fabd2f"
-                      : "#fb4934",
+                      ? "var(--color-yellow-400)"
+                      : "var(--color-red-400)",
             }}
           />
           );
@@ -64,12 +64,12 @@ function BedrockSurface() {
         style={{
           color:
             stance === "healthy"
-              ? "#b8bb26"
+              ? "var(--color-green-400)"
               : stance === "degraded"
-                ? "#fabd2f"
+                ? "var(--color-yellow-400)"
                 : stance === "critical"
-                  ? "#fb4934"
-                  : "#504945",
+                  ? "var(--color-red-400)"
+                  : "var(--color-zinc-700)",
         }}
       >
         {stance === "unknown" ? "\u2014" : stance}

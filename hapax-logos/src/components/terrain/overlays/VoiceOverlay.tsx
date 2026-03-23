@@ -9,11 +9,12 @@
 import { memo } from "react";
 import type { VisualLayerState } from "../../../api/types";
 
+// Voice state → palette token (theme-aware per §3.6)
 const VOICE_STATE_COLORS: Record<string, string> = {
-  listening: "#4ddb99",
-  transcribing: "#4ddb99",
-  thinking: "#dbb84d",
-  speaking: "#4d99db",
+  listening: "var(--color-green-400)",
+  transcribing: "var(--color-green-400)",
+  thinking: "var(--color-yellow-400)",
+  speaking: "var(--color-blue-400)",
 };
 
 const DEFAULT_VOICE = {
@@ -35,11 +36,12 @@ const DEFAULT_VOICE = {
   word_limit: 35,
 };
 
+// Acceptance → severity ladder (§3.7)
 const ACCEPTANCE_COLORS: Record<string, string> = {
-  ACCEPT: "#4ddb99",
-  CLARIFY: "#dbb84d",
-  REJECT: "#db4d4d",
-  IGNORE: "#666",
+  ACCEPT: "var(--color-green-400)",
+  CLARIFY: "var(--color-yellow-400)",
+  REJECT: "var(--color-red-400)",
+  IGNORE: "var(--color-zinc-500)",
 };
 
 interface VoiceOverlayProps {
@@ -58,7 +60,7 @@ export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps
     CAPABLE: 1.0,
   };
   const voiceIntensity = tierIntensity[voiceSession.routing_tier] ?? 0.5;
-  const stateColor = VOICE_STATE_COLORS[voiceSession.state] ?? "#999";
+  const stateColor = VOICE_STATE_COLORS[voiceSession.state] ?? "var(--color-zinc-500)";
   const activation = voiceSession.routing_activation ?? 0;
   const anchor = voiceSession.context_anchor_success ?? 0;
   const frustration = voiceSession.frustration_score ?? 0;
@@ -81,7 +83,7 @@ export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps
         <div
           className="flex items-center gap-3 backdrop-blur-md rounded-full px-6 py-3"
           style={{
-            background: "rgba(0,0,0,0.6)",
+            background: "color-mix(in srgb, var(--color-zinc-950) 80%, transparent)",
             boxShadow:
               voiceIntensity > 0.5
                 ? `0 0 ${20 + voiceIntensity * 30}px ${stateColor}20`
@@ -172,7 +174,7 @@ export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps
                 style={{
                   width: `${anchor * 100}%`,
                   height: "100%",
-                  background: anchor > 0.5 ? "#4ddb99" : "#dbb84d",
+                  background: anchor > 0.5 ? "var(--color-green-400)" : "var(--color-yellow-400)",
                   transition: "width 0.3s ease",
                 }}
               />
@@ -186,7 +188,7 @@ export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps
           >
             <span
               className="text-[8px] uppercase"
-              style={{ color: frustrationAvg > 0.5 ? "#db4d4d" : "rgba(255,255,255,0.3)" }}
+              style={{ color: frustrationAvg > 0.5 ? "var(--color-red-400)" : "rgba(255,255,255,0.3)" }}
             >
               frs
             </span>
@@ -203,7 +205,7 @@ export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps
                 style={{
                   width: `${Math.min(1, frustrationAvg) * 100}%`,
                   height: "100%",
-                  background: frustrationAvg > 0.5 ? "#db4d4d" : frustrationAvg > 0.3 ? "#dbb84d" : "#4ddb99",
+                  background: frustrationAvg > 0.5 ? "var(--color-red-400)" : frustrationAvg > 0.3 ? "var(--color-yellow-400)" : "var(--color-green-400)",
                   transition: "width 0.3s ease",
                 }}
               />
@@ -214,7 +216,7 @@ export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps
           {acceptance && (
             <span
               className="text-[8px] uppercase"
-              style={{ color: ACCEPTANCE_COLORS[acceptance] ?? "#666" }}
+              style={{ color: ACCEPTANCE_COLORS[acceptance] ?? "var(--color-zinc-500)" }}
             >
               {acceptance}
             </span>
@@ -229,7 +231,7 @@ export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps
               <span
                 className="text-[8px] tabular-nums"
                 style={{
-                  color: wordRatio > 0.8 ? "#db4d4d" : "rgba(255,255,255,0.3)",
+                  color: wordRatio > 0.8 ? "var(--color-red-400)" : "rgba(255,255,255,0.3)",
                 }}
               >
                 {spokenWords}/{wordLimit}w
@@ -259,7 +261,7 @@ export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps
           <div
             className="text-center mt-1 text-xs max-w-md mx-auto"
             style={{
-              color: `${VOICE_STATE_COLORS.speaking}80`,
+              color: "color-mix(in srgb, var(--color-blue-400) 50%, transparent)",
               animation: "fragmentIn 1s ease-out forwards",
             }}
           >
@@ -278,7 +280,7 @@ export const VoiceOverlay = memo(function VoiceOverlay({ vl }: VoiceOverlayProps
               key={`${content.content_type}-${content.timestamp}`}
               className="backdrop-blur-md rounded-xl p-4"
               style={{
-                background: "rgba(0,0,0,0.6)",
+                background: "color-mix(in srgb, var(--color-zinc-950) 80%, transparent)",
                 animation: `contentIn 2s ease-out ${i * 0.3}s both`,
               }}
             >

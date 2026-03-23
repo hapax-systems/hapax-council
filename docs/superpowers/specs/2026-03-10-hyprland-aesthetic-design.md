@@ -1,6 +1,6 @@
 # Hyprland Desktop Aesthetic — Design Spec
 
-> **Status:** Approved
+> **Status:** Historical — design principles (§1) retained; color tables and config blocks superseded by [`docs/logos-design-language.md`](../../logos-design-language.md)
 > **Date:** 2026-03-10
 > **Scope:** Hyprland compositor + waybar + foot + mako + hyprlock + fuzzel + hyprpaper
 

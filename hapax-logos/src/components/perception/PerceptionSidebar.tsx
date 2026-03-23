@@ -159,7 +159,7 @@ export function PerceptionSidebar({ activeZone, onZoneSelect }: PerceptionSideba
                 <span
                   className="inline-block h-1.5 w-1.5 rounded-full"
                   style={{
-                    background: enrichmentVisibility[key] !== false ? "#8ec07c" : "#504945",
+                    background: enrichmentVisibility[key] !== false ? "var(--color-emerald-400)" : "var(--color-zinc-700)",
                   }}
                 />
                 {key}

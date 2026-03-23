@@ -39,16 +39,17 @@ const CATEGORY_REGION: Record<SignalCategory, RegionName> = {
   health_infra: "bedrock",
 };
 
-// Raw hex colors from gruvbox palette for CSS use (not Tailwind classes)
+// Theme-aware signal colors via CSS custom properties (see docs/logos-design-language.md §3.3).
+// These resolve at render time through ThemeProvider, so they adapt to working mode.
 export const CATEGORY_HEX: Record<SignalCategory, string> = {
-  context_time: "#83a598",
-  governance: "#d3869b",
-  work_tasks: "#fe8019",
-  health_infra: "#fb4934",
-  profile_state: "#b8bb26",
-  ambient_sensor: "#8ec07c",
-  voice_session: "#fabd2f",
-  system_state: "#bdae93",
+  context_time: "var(--color-blue-400)",
+  governance: "var(--color-fuchsia-400)",
+  work_tasks: "var(--color-orange-400)",
+  health_infra: "var(--color-red-400)",
+  profile_state: "var(--color-green-400)",
+  ambient_sensor: "var(--color-emerald-400)",
+  voice_session: "var(--color-yellow-400)",
+  system_state: "var(--color-zinc-400)",
 };
 
 // Category text colors — gruvbox palette only

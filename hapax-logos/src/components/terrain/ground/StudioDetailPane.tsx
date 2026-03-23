@@ -113,10 +113,10 @@ export function StudioDetailPane({
                   className="inline-block h-2 w-2 shrink-0 rounded-full"
                   style={{
                     background: det.consent_suppressed
-                      ? "#665c54"
+                      ? "var(--color-zinc-600)"
                       : det.label === "person"
-                        ? "#8ec07c"
-                        : "#83a598",
+                        ? "var(--color-emerald-400)"
+                        : "var(--color-blue-400)",
                   }}
                 />
                 <div className="min-w-0 flex-1">

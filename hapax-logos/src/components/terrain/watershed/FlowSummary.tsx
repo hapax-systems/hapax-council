@@ -10,11 +10,12 @@ interface FlowSummaryProps {
   totalFlows: number;
 }
 
+// Stimmung stance → severity ladder (§3.4, §3.7)
 const STANCE_COLORS: Record<string, string> = {
-  nominal: "#b8bb26",
-  cautious: "#fabd2f",
-  degraded: "#fe8019",
-  critical: "#fb4934",
+  nominal: "var(--color-green-400)",
+  cautious: "var(--color-yellow-400)",
+  degraded: "var(--color-orange-400)",
+  critical: "var(--color-red-400)",
 };
 
 export function FlowSummary({
@@ -24,7 +25,7 @@ export function FlowSummary({
   activeFlows,
   totalFlows,
 }: FlowSummaryProps) {
-  const color = STANCE_COLORS[stance] ?? "#504945";
+  const color = STANCE_COLORS[stance] ?? "var(--color-zinc-700)";
 
   return (
     <div className="flex flex-col gap-1 px-4 py-2">

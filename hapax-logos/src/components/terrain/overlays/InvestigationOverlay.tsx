@@ -21,9 +21,9 @@ export function InvestigationOverlay() {
       <div
         className="w-[60%] h-[90%] rounded-2xl overflow-hidden"
         style={{
-          background: "rgba(29, 32, 33, 0.88)",
+          background: "color-mix(in srgb, var(--color-zinc-950) 88%, transparent)",
           backdropFilter: "blur(16px)",
-          border: "1px solid rgba(80, 73, 69, 0.3)",
+          border: "1px solid color-mix(in srgb, var(--color-zinc-700) 30%, transparent)",
           boxShadow: "0 16px 64px rgba(0,0,0,0.5)",
           animation: "overlaySlideIn 250ms ease-out",
         }}

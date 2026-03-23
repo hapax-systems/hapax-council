@@ -12,14 +12,14 @@ interface RegionProps {
 
 const DEPTH_BORDER: Record<Depth, string> = {
   surface: "transparent",
-  stratum: "rgba(180, 160, 120, 0.08)",
-  core: "rgba(180, 160, 120, 0.15)",
+  stratum: "color-mix(in srgb, var(--color-zinc-500) 8%, transparent)",
+  core: "color-mix(in srgb, var(--color-zinc-500) 15%, transparent)",
 };
 
 const DEPTH_GLOW: Record<Depth, string> = {
   surface: "none",
-  stratum: "inset 0 0 20px rgba(180, 160, 120, 0.03)",
-  core: "inset 0 0 30px rgba(180, 160, 120, 0.06)",
+  stratum: "inset 0 0 20px color-mix(in srgb, var(--color-zinc-500) 3%, transparent)",
+  core: "inset 0 0 30px color-mix(in srgb, var(--color-zinc-500) 6%, transparent)",
 };
 
 function stimmungBorderStyle(
@@ -30,21 +30,20 @@ function stimmungBorderStyle(
     return { borderColor: baseBorder };
   }
   if (stance === "cautious") {
-    // 15% yellow blend
-    return { borderColor: "rgba(250, 189, 47, 0.15)" };
+    return { borderColor: "color-mix(in srgb, var(--color-yellow-400) 15%, transparent)" };
   }
   if (stance === "degraded") {
     return {
-      borderColor: "rgba(254, 128, 25, 0.25)",
+      borderColor: "color-mix(in srgb, var(--color-orange-400) 25%, transparent)",
       animation: "stimmung-breathe-degraded 6s ease-in-out infinite",
-      boxShadow: "inset 0 0 8px rgba(254, 128, 25, 0.06)",
+      boxShadow: "inset 0 0 8px color-mix(in srgb, var(--color-orange-400) 6%, transparent)",
     };
   }
   // critical
   return {
-    borderColor: "rgba(251, 73, 52, 0.35)",
+    borderColor: "color-mix(in srgb, var(--color-red-400) 35%, transparent)",
     animation: "stimmung-breathe-critical 2s ease-in-out infinite",
-    boxShadow: "inset 0 0 12px rgba(251, 73, 52, 0.08)",
+    boxShadow: "inset 0 0 12px color-mix(in srgb, var(--color-red-400) 8%, transparent)",
   };
 }
 
@@ -77,15 +76,15 @@ export function Region({ name, children, className = "", style, stimmungStance }
   );
 
   const baseBorder = isFocused
-    ? "rgba(184, 187, 38, 0.12)"
+    ? "color-mix(in srgb, var(--color-green-400) 12%, transparent)"
     : isHovered && depth === "surface"
-      ? "rgba(180, 160, 120, 0.12)"
+      ? "color-mix(in srgb, var(--color-zinc-500) 12%, transparent)"
       : DEPTH_BORDER[depth];
   const stimmung = stimmungBorderStyle(stimmungStance, baseBorder);
 
   const hoverGlow =
     isHovered && depth === "surface" && !isFocused
-      ? "inset 0 0 16px rgba(180, 160, 120, 0.04)"
+      ? "inset 0 0 16px color-mix(in srgb, var(--color-zinc-500) 4%, transparent)"
       : undefined;
 
   return (
@@ -94,13 +93,13 @@ export function Region({ name, children, className = "", style, stimmungStance }
       data-depth={depth}
       className={`relative overflow-hidden ${className}`}
       style={{
-        borderColor: isHighlighted ? "rgba(250, 189, 47, 0.6)" : stimmung.borderColor,
+        borderColor: isHighlighted ? "color-mix(in srgb, var(--color-yellow-400) 60%, transparent)" : stimmung.borderColor,
         borderWidth: "1px",
         borderStyle: "solid",
         boxShadow: isHighlighted
-          ? "inset 0 0 8px rgba(250, 189, 47, 0.15), 0 0 12px rgba(250, 189, 47, 0.3)"
+          ? "inset 0 0 8px color-mix(in srgb, var(--color-yellow-400) 15%, transparent), 0 0 12px color-mix(in srgb, var(--color-yellow-400) 30%, transparent)"
           : stimmung.boxShadow ?? hoverGlow ?? (isFocused
-            ? "inset 0 0 24px rgba(184, 187, 38, 0.04)"
+            ? "inset 0 0 24px color-mix(in srgb, var(--color-green-400) 4%, transparent)"
             : DEPTH_GLOW[depth]),
         animation: isHighlighted ? "demo-highlight 0.8s ease-in-out infinite" : stimmung.animation,
         transition: "border-color 300ms ease, box-shadow 300ms ease",
@@ -167,8 +166,8 @@ function DepthDots({ name, depth }: { name: RegionName; depth: Depth }) {
             height: 6,
             background:
               i === currentIdx
-                ? "rgba(184, 187, 38, 0.5)"
-                : "rgba(180, 160, 120, 0.2)",
+                ? "color-mix(in srgb, var(--color-green-400) 50%, transparent)"
+                : "color-mix(in srgb, var(--color-zinc-500) 20%, transparent)",
             transition: "background 150ms ease",
             cursor: "pointer",
             border: "none",
