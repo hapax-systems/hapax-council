@@ -262,19 +262,53 @@ def _fetch_traces(
     return all_traces
 
 
-def _fetch_observations(auth_header: str, trace_id: str) -> list[dict]:
-    """Fetch observations (generations) for a specific trace."""
-    url = f"{LANGFUSE_BASE_URL}/api/public/observations?traceId={trace_id}"
-    data = _api_get(url, auth_header)
-    if data is None:
-        return []
-    return data.get("data", [])
+_consecutive_failures = 0
+_CIRCUIT_BREAKER_THRESHOLD = 5
 
 
-def _process_trace(auth_header: str, trace_data: dict) -> TraceSummary:
-    """Process a single trace into a TraceSummary."""
+def _api_get_with_breaker(url: str, auth_header: str, timeout: float = 30.0) -> dict | list | None:
+    """GET with circuit breaker — stops hammering Langfuse after consecutive failures."""
+    global _consecutive_failures
+    if _consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
+        return None
+
+    result = _api_get(url, auth_header, timeout=timeout)
+    if result is None:
+        _consecutive_failures += 1
+        if _consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
+            log.warning(
+                "Circuit breaker tripped after %d consecutive failures",
+                _consecutive_failures,
+            )
+        # Backoff: wait longer after each failure
+        time.sleep(min(2**_consecutive_failures, 30))
+    else:
+        _consecutive_failures = 0
+    return result
+
+
+def _fetch_observations_batch(auth_header: str, trace_ids: list[str]) -> dict[str, list[dict]]:
+    """Fetch observations for a batch of traces, grouped by trace_id.
+
+    Uses per-trace queries with circuit breaker and backoff to avoid
+    overwhelming Langfuse. Returns {trace_id: [observations]}.
+    """
+    result: dict[str, list[dict]] = {}
+    for trace_id in trace_ids:
+        if _consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
+            break
+        url = f"{LANGFUSE_BASE_URL}/api/public/observations?traceId={trace_id}"
+        data = _api_get_with_breaker(url, auth_header)
+        if data is not None:
+            result[trace_id] = data.get("data", [])
+        else:
+            result[trace_id] = []
+    return result
+
+
+def _process_trace(trace_data: dict, observations: list[dict]) -> TraceSummary:
+    """Process a single trace into a TraceSummary (no API calls)."""
     trace_id = trace_data.get("id", "")
-    observations = _fetch_observations(auth_header, trace_id)
 
     model = _extract_model_from_observations(observations)
     cost = _extract_cost_from_observations(observations)
@@ -474,11 +508,21 @@ def _prune_old_files() -> int:
 # ── Sync Operations ──────────────────────────────────────────────────────────
 
 
+OBSERVATION_BATCH_SIZE = 50  # Fetch observations in batches of 50 traces
+
+
 def _sync_traces(
     state: LangfuseSyncState,
     from_timestamp: str | None = None,
 ) -> list[TraceSummary]:
-    """Fetch and process traces from Langfuse. Returns list of summaries."""
+    """Fetch and process traces from Langfuse. Returns list of summaries.
+
+    Fetches observations in batches with circuit breaker to avoid
+    overwhelming Langfuse with thousands of sequential HTTP requests.
+    """
+    global _consecutive_failures
+    _consecutive_failures = 0  # Reset circuit breaker per sync run
+
     auth_header = _langfuse_auth_header()
     raw_traces = _fetch_traces(auth_header, from_timestamp=from_timestamp)
 
@@ -486,16 +530,58 @@ def _sync_traces(
         log.info("No traces returned from Langfuse")
         return []
 
-    log.info("Processing %d traces from Langfuse", len(raw_traces))
+    log.info(
+        "Processing %d traces from Langfuse (batch size %d)",
+        len(raw_traces),
+        OBSERVATION_BATCH_SIZE,
+    )
     summaries: list[TraceSummary] = []
 
-    for trace_data in raw_traces:
-        try:
-            summary = _process_trace(auth_header, trace_data)
-            summaries.append(summary)
-        except Exception as exc:
-            log.warning("Failed to process trace %s: %s", trace_data.get("id", "?"), exc)
-            state.error_count += 1
+    # Process in batches to avoid overwhelming Langfuse
+    for i in range(0, len(raw_traces), OBSERVATION_BATCH_SIZE):
+        batch = raw_traces[i : i + OBSERVATION_BATCH_SIZE]
+        trace_ids = [t.get("id", "") for t in batch if t.get("id")]
+
+        if _consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
+            log.warning(
+                "Circuit breaker open — processing remaining %d traces without observations",
+                len(raw_traces) - i,
+            )
+            for trace_data in raw_traces[i:]:
+                try:
+                    summary = _process_trace(trace_data, [])
+                    summaries.append(summary)
+                except Exception as exc:
+                    log.warning(
+                        "Failed to process trace %s: %s",
+                        trace_data.get("id", "?"),
+                        exc,
+                    )
+                    state.error_count += 1
+            break
+
+        obs_by_trace = _fetch_observations_batch(auth_header, trace_ids)
+
+        for trace_data in batch:
+            try:
+                tid = trace_data.get("id", "")
+                observations = obs_by_trace.get(tid, [])
+                summary = _process_trace(trace_data, observations)
+                summaries.append(summary)
+            except Exception as exc:
+                log.warning(
+                    "Failed to process trace %s: %s",
+                    trace_data.get("id", "?"),
+                    exc,
+                )
+                state.error_count += 1
+
+        log.debug(
+            "Processed batch %d-%d of %d traces",
+            i + 1,
+            min(i + OBSERVATION_BATCH_SIZE, len(raw_traces)),
+            len(raw_traces),
+        )
 
     return summaries
 
