@@ -179,6 +179,26 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 
 **Bug fix:** `enet_b2_8_best` → `enet_b2_8` in vision.py. hsemotion model name was invalid, causing 666 failed download attempts per hour (every 5s per camera inference cycle). The file `enet_b2_8_best.onnx` doesn't exist in the hsemotion model registry; correct name is `enet_b2_8`.
 
+**Data source audit (87 endpoints):** Fixed 7 broken data sources:
+- `/api/consent/coverage`: MatchExcept Pydantic alias bug → IsNullCondition
+- `/api/governance/authority`: AgentRegistry API mismatch (0→33 agents)
+- Temporal bands: cross-process ring inaccessible → local ring in aggregator (`/dev/shm/hapax-temporal/` now populated)
+- Logos API startup: blocking cache refresh (90s+) → non-blocking background load
+- Boot readiness: stuck at "collecting" for 5 min (monotonic time vs init value bug) → immediate fetch
+- profile-facts Qdrant: 0 points after reboot (WAL not flushed before crash) → re-indexed 2098 facts
+
+**Frontend graceful loading:**
+- Boot overlay: semi-transparent backdrop blocks interaction, fades out on ready, invalidates all React Query caches
+- Camera components: placeholder tiles + fade-in on first frame
+- Sidebar panels: 6 panels show loading skeletons instead of vanishing during cold cache
+- Ground surface: ambient text/nudge pills bumped from 8% to 20-25% opacity, redundant CSS gradient blobs removed
+
+**Git workflow consolidation:**
+- Three permanent worktree slots: alpha (`hapax-council/`), beta (`hapax-council--beta/`), one spontaneous
+- Removed `branch-switch-guard` hook (worktree isolation replaces it)
+- Updated relay protocol, onboarding docs, hooks, CLAUDE.md
+- Max 3 worktree enforcement in `no-stale-branches` hook
+
 ## Operator Research Preferences
 
 - Strip system to research essentials only

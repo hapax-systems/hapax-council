@@ -5,6 +5,10 @@
 # git worktree add) if ANY existing local or remote feature branches have
 # unmerged commits relative to main.
 #
+# Also enforces worktree limit: max 3 worktrees (alpha + beta + one spontaneous).
+# The --beta worktree at ../hapax-council--beta is permanent and doesn't count
+# toward the spontaneous limit.
+#
 # Rationale: completed work was lost to abandoned branches. No new work starts
 # until prior work is merged. This is a constitutional-grade enforcement.
 set -euo pipefail
@@ -37,6 +41,17 @@ echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s' && is_create=true
 # We're in a branch-creating command. Check for unmerged branches.
 if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   exit 0
+fi
+
+# Worktree limit: alpha (primary) + beta (permanent) + 1 spontaneous = max 3
+if echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s'; then
+    wt_count=$(git worktree list 2>/dev/null | wc -l)
+    if [ "$wt_count" -ge 3 ]; then
+        echo "BLOCKED: Max 3 worktrees (alpha + beta + 1 spontaneous). Clean up before adding another." >&2
+        echo "  Current worktrees:" >&2
+        git worktree list 2>/dev/null | sed 's/^/    /' >&2
+        exit 2
+    fi
 fi
 
 # Fetch to ensure we have latest remote state (quick, no-tags)
