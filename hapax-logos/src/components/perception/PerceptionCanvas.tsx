@@ -1,13 +1,11 @@
 import { useEffect, useRef } from "react";
 import { acquireImage, releaseImage } from "../../hooks/useImagePool";
 import { ZoneOverlay } from "./ZoneOverlay";
-import { DetectionOverlay } from "../studio/DetectionOverlay";
 import {
   SIGNAL_CATEGORIES,
   type SignalCategory,
   useSignals,
   useOverlayControl,
-  useDetections,
 } from "../../contexts/ClassificationOverlayContext";
 import type { SignalEntry } from "../../api/types";
 
@@ -19,10 +17,8 @@ interface PerceptionCanvasProps {
 export function PerceptionCanvas({ activeZone, onZoneClick }: PerceptionCanvasProps) {
   const { visualLayer, filteredSignals } = useSignals();
   const { zoneOpacityOverrides } = useOverlayControl();
-  const { detectionTier, detectionLayerVisible, enrichmentVisibility } = useDetections();
   const imgRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const classificationDetections = visualLayer?.classification_detections ?? [];
 
   // Poll compositor snapshot
   useEffect(() => {
@@ -62,15 +58,9 @@ export function PerceptionCanvas({ activeZone, onZoneClick }: PerceptionCanvasPr
         alt="Studio composite"
       />
 
-      {/* Detection overlay — tier from global context */}
-      <DetectionOverlay
-        containerRef={containerRef}
-        classificationDetections={classificationDetections}
-        tier={detectionTier}
-        visible={detectionLayerVisible && classificationDetections.length > 0}
-        objectFit="contain"
-        enrichmentVisibility={enrichmentVisibility}
-      />
+      {/* Detection overlay disabled on composite — per-camera boxes can't map
+         to the tiled composite layout. Individual camera feeds in the grid
+         have their own DetectionOverlay instances with correct cameraRole. */}
 
       {/* Zone overlays */}
       {SIGNAL_CATEGORIES.map((cat) => {
