@@ -1,4 +1,5 @@
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useCallback, useState, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { AmbientShader } from "../hapax/AmbientShader";
 import { HorizonRegion } from "./regions/HorizonRegion";
 import { FieldRegion } from "./regions/FieldRegion";
@@ -246,16 +247,24 @@ export function TerrainLayout() {
   // Boot overlay fade-out: stay mounted for 500ms after ready, then unmount
   const [overlayMounted, setOverlayMounted] = useState(true);
   const [overlayVisible, setOverlayVisible] = useState(true);
+  const queryClient = useQueryClient();
+  const hasInvalidated = useRef(false);
   useEffect(() => {
     if (isReady) {
+      // Invalidate all queries so stale cold-cache data is refetched
+      if (!hasInvalidated.current) {
+        hasInvalidated.current = true;
+        queryClient.invalidateQueries();
+      }
       setOverlayVisible(false);
       const timer = setTimeout(() => setOverlayMounted(false), 600);
       return () => clearTimeout(timer);
     } else {
       setOverlayMounted(true);
+      hasInvalidated.current = false;
       requestAnimationFrame(() => setOverlayVisible(true));
     }
-  }, [isReady]);
+  }, [isReady, queryClient]);
 
   // Voice overlay: auto-show when voice active
   useEffect(() => {

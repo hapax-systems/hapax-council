@@ -46,49 +46,14 @@ export function AmbientCanvas({ ambientText, secondaryText, speed }: AmbientCanv
 
   return (
     <>
-      {/* Organic floating shapes */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div
-          className="absolute rounded-full"
-          style={{
-            width: "40vw",
-            height: "40vw",
-            left: "10%",
-            top: "20%",
-            background: "radial-gradient(circle, rgba(120,45,10,0.08) 0%, transparent 70%)",
-            animation: `drift1 ${25 + speed * 30}s ease-in-out infinite alternate`,
-          }}
-        />
-        <div
-          className="absolute rounded-full"
-          style={{
-            width: "30vw",
-            height: "30vw",
-            right: "5%",
-            bottom: "10%",
-            background: "radial-gradient(circle, rgba(160,70,15,0.06) 0%, transparent 70%)",
-            animation: `drift2 ${30 + speed * 25}s ease-in-out infinite alternate`,
-          }}
-        />
-        <div
-          className="absolute rounded-full"
-          style={{
-            width: "50vw",
-            height: "50vw",
-            left: "40%",
-            top: "-10%",
-            background: "radial-gradient(circle, rgba(90,25,8,0.07) 0%, transparent 70%)",
-            animation: `drift3 ${35 + speed * 20}s ease-in-out infinite alternate`,
-          }}
-        />
-      </div>
+      {/* Ambient visual layer handled by AmbientShader (z-0) — no CSS blobs needed */}
 
       {/* Floating text fragment */}
       <div className="absolute inset-0 flex items-end justify-start p-8 pointer-events-none">
         <div className="relative h-12 overflow-hidden">
           <div
             key={fragment}
-            className="text-white/8 text-xl font-light tracking-wider leading-relaxed"
+            className="text-white/20 text-xl font-light tracking-wider leading-relaxed"
             style={{ animation: "fragmentIn 3s ease-out forwards" }}
           >
             {fragment}
@@ -101,7 +66,7 @@ export function AmbientCanvas({ ambientText, secondaryText, speed }: AmbientCanv
         <div className="absolute top-14 left-4 pointer-events-none">
           <div
             key={secondaryText}
-            className="text-white/10 text-[10px] tracking-widest"
+            className="text-white/20 text-[10px] tracking-widest"
             style={{ animation: "fragmentIn 3s ease-out forwards" }}
           >
             {secondaryText}
@@ -110,21 +75,9 @@ export function AmbientCanvas({ ambientText, secondaryText, speed }: AmbientCanv
       )}
 
       <style>{`
-        @keyframes drift1 {
-          from { transform: translate(0, 0) scale(1); }
-          to { transform: translate(5vw, 3vh) scale(1.1); }
-        }
-        @keyframes drift2 {
-          from { transform: translate(0, 0) scale(1); }
-          to { transform: translate(-4vw, -5vh) scale(0.9); }
-        }
-        @keyframes drift3 {
-          from { transform: translate(0, 0) scale(1); }
-          to { transform: translate(3vw, 4vh) scale(1.05); }
-        }
         @keyframes fragmentIn {
           from { opacity: 0; transform: translateY(8px); }
-          to { opacity: 0.08; transform: translateY(0); }
+          to { opacity: 1; transform: translateY(0); }
         }
       `}</style>
     </>

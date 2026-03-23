@@ -797,7 +797,9 @@ class VisualLayerAggregator:
         self._ambient_facts: list[str] = []
         self._nudge_titles: list[str] = []
         self._ambient_moments: list[str] = []
-        self._last_ambient_fetch: float = 0.0
+        self._last_ambient_fetch: float = (
+            -300.0
+        )  # ensure first poll_ambient_content() runs immediately
         self._injected_feeds: list[InjectedFeed] = []
 
         # Staleness tracking (Phase 3)

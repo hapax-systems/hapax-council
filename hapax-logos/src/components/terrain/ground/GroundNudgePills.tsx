@@ -11,7 +11,7 @@ export function GroundNudgePills() {
       {pills.map((n: { source_id?: string; title?: string }, i: number) => (
         <div
           key={n.source_id ?? i}
-          className="text-[8px] px-1.5 py-0.5 rounded-full bg-zinc-800/30 text-white/8 truncate max-w-[160px]"
+          className="text-[8px] px-1.5 py-0.5 rounded-full bg-zinc-800/40 text-white/25 truncate max-w-[160px]"
         >
           {n.title ?? "nudge"}
         </div>
