@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-23 (session 11 — system freeze diagnosis, 24/7 reliability, service lifecycle consolidation)
+**Last updated:** 2026-03-23 (session 13 — boundary contract enforcement)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -137,10 +137,18 @@ This project implements Clark & Brennan's (1991) conversational grounding theory
 | Handoff doc | `~/gdrive-drop/research-infrastructure-handoff.docx` | Operator action items |
 | Freeze manifest | `experiment-freeze-manifest.txt` | Frozen paths during active experiment |
 | Deviation records | `research/protocols/deviations/` | Changes to frozen paths with justification |
-| Working mode | `~/.cache/hapax/working-mode` | RESEARCH or RND operator state |
-| Mode switch | `scripts/hapax-working-mode` | Pre-flight checklist + relay + ntfy + waybar |
+| Working mode | `~/.cache/hapax/working-mode` | Unified mode: research or rnd (single source of truth) |
+| Mode switch | `scripts/hapax-working-mode` | Pre-flight + relay + ntfy + timers + theme + waybar |
+| Theme apply | `~/.local/bin/hapax-theme-apply` | DE-wide theme switch (Solarized/Gruvbox) |
+| Theme palettes | `hapax-logos/src/theme/palettes.ts` | Logos Solarized Dark + Gruvbox Hard Dark definitions |
+| Theme provider | `hapax-logos/src/theme/ThemeProvider.tsx` | Runtime CSS custom property swap from working mode |
 | Freeze hook | `scripts/experiment-freeze-check` | Pre-commit enforcement of frozen paths |
 | CI freeze gate | `.github/workflows/experiment-freeze.yml` | PR-level freeze enforcement |
+| Contract tests | `tests/contract/test_council_api_schema.py` | Schemathesis API fuzzing (97 endpoints, `contract` marker) |
+| Frontmatter schemas | `shared/frontmatter_schemas.py` | Write-time validation for filesystem-as-bus documents |
+| Qdrant assertions | `shared/qdrant_schema.py` | Startup collection config verification (8 collections) |
+| Contract design | `docs/boundary-contract-enforcement.md` | Design doc + smoke test triage + future work |
+| MCP response models | `hapax-mcp/src/hapax_mcp/models/` | Consumer-side Pydantic contracts for logos API |
 
 ## Session 5–7 Infrastructure Changes (2026-03-21)
 
@@ -179,6 +187,20 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 
 **Bug fix:** `enet_b2_8_best` → `enet_b2_8` in vision.py. hsemotion model name was invalid, causing 666 failed download attempts per hour (every 5s per camera inference cycle). The file `enet_b2_8_best.onnx` doesn't exist in the hsemotion model registry; correct name is `enet_b2_8`.
 
+## Session 12 (2026-03-23): Unified Working Mode + Mode-Driven Theming
+
+Infrastructure-only. No changes to experiment code, grounding theory, or research design.
+
+**Unified working mode system (PR #276):** Collapsed two independent mode systems (cycle mode dev/prod + working mode research/rnd) into a single system. Only two modes: Research and R&D. `shared/working_mode.py` is single source of truth; `shared/cycle_mode.py` becomes backward-compat shim. Fixed inverted container cron semantics (dev mode was incorrectly slower than prod). R&D = full speed (accelerated timers, frequent syncs, probes active). Research = experiment-safe (slower timers, suppressed probes, increased engine debounce). `hapax-working-mode` script absorbs timer override logic from `hapax-mode`. API endpoint `/api/working-mode` replaces `/api/cycle-mode`. Frontend, Tauri, MCP, session hook all updated. 37 files changed, 18 new tests.
+
+**Mode-driven theming (PR #280):** Visual theme switches with working mode across entire stack.
+- **Research → Solarized Dark** (cool, clinical, precise — matches scientific register)
+- **R&D → Gruvbox Hard Dark** (warm, textured, energetic — matches development velocity)
+- DE components: Hyprland borders, Hyprpaper wallpaper, Foot terminal (dual-palette via USR1/USR2), Waybar CSS, Mako notifications, Fuzzel launcher, Hyprlock, Fish prompt, GTK theme — all switch via `hapax-theme-apply` script called by `hapax-working-mode`.
+- Logos frontend: ThemeProvider reads working mode via API, swaps CSS custom properties on `<html>`. All Tailwind classes respond automatically. Fixed hardcoded hex in SystemStatus, HealthHistoryChart, MermaidBlock, VisualLayerPanel. Keyframe animations converted to CSS `color-mix()` with custom properties.
+- Non-CLI failsafe: waybar click-to-toggle + Super+M keybind.
+- Solarized GTK theme (`gtk-theme-numix-solarized`) installed from AUR.
+
 **Data source audit (87 endpoints):** Fixed 7 broken data sources:
 - `/api/consent/coverage`: MatchExcept Pydantic alias bug → IsNullCondition
 - `/api/governance/authority`: AgentRegistry API mismatch (0→33 agents)
@@ -198,6 +220,24 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 - Removed `branch-switch-guard` hook (worktree isolation replaces it)
 - Updated relay protocol, onboarding docs, hooks, CLAUDE.md
 - Max 3 worktree enforcement in `no-stale-branches` hook
+
+## Session 13 (2026-03-23): Boundary Contract Enforcement
+
+Infrastructure-only. No changes to experiment code, grounding theory, or research design.
+
+**Boundary contract enforcement across Hapax/Logos systems.** Researched contract testing landscape (Pact/CDC, Schemathesis, Testcontainers, Hypothesis+Pydantic). Rejected Pact/CDC as over-engineering for single-operator system. Implemented four targeted interventions:
+
+1. **Schemathesis API fuzzing** (`tests/contract/`): 97 parametrized tests against council logos API OpenAPI spec via ASGI transport. Property-based fuzzing generates ~50 examples per endpoint. Behind `contract` marker (excluded from default test run). First run: 57/97 pass (all read-only endpoints clean), 32 expected failures (non-JSON content types, fuzzed path params → correct 404s), 8 actionable findings.
+
+2. **MCP response models** (`hapax-mcp/src/hapax_mcp/models/`): 6 Pydantic consumer-side models (health, gpu, infrastructure, profile, working mode) with `extra="allow"`. `get_validated()` typed client function. `status()` compound tool now validates all 4 sub-endpoint responses. 14 tests. All models verified against live API responses.
+
+3. **Frontmatter write-time schemas** (`shared/frontmatter_schemas.py`): 7 Pydantic models for filesystem-as-bus document types (briefing, digest, nudges, goals, decision, bridge-prompt, RAG source). All 6 vault_writer specialized writers now validate before writing. 17 tests including Hypothesis property-based roundtrips.
+
+4. **Qdrant collection schema assertions** (`shared/qdrant_schema.py`): Startup verification of 8 collections (dimensions, distance metric) wired into logos API lifespan. Non-fatal warnings. Fixed case-insensitive distance enum comparison (Qdrant returns `COSINE` not `Cosine`). 9 tests. Verified against live Qdrant.
+
+**Schemathesis actionable findings:** (a) `POST /api/logos/directive` accepts `bool` for `detection_tier` field declared as `int | None` — Pydantic v2 lax mode coerces `bool→int`. (b) Missing error handling in `consent/create` (unhandled filesystem I/O), `consent/overhead` (unhandled ImportError), `engine/audit` (overbroad exception handler). (c) Environment-dependent 500s in `working-mode`/`cycle-mode` PUT (shell script not available in ASGI test) and `studio/moments/search` (Qdrant not reachable in test).
+
+**Design document:** `docs/boundary-contract-enforcement.md` — full problem statement, design rationale, implementation details, smoke test results, failure triage, future work.
 
 ## Operator Research Preferences
 

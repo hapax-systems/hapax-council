@@ -27,6 +27,14 @@ _log = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     await start_refresh_loop()
 
+    # Verify Qdrant collection schemas (non-fatal)
+    try:
+        from shared.qdrant_schema import log_collection_issues
+
+        await log_collection_issues()
+    except Exception:
+        _log.exception("Qdrant schema verification failed (continuing)")
+
     # Start reactive engine
     try:
         from logos.engine import ReactiveEngine

@@ -27,6 +27,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.config import VAULT_PATH
+from shared.frontmatter_schemas import (
+    BridgePromptFrontmatter,
+    BriefingFrontmatter,
+    DecisionFrontmatter,
+    DigestFrontmatter,
+    GoalsFrontmatter,
+    NudgeFrontmatter,
+    validate_frontmatter,
+)
 
 _log = logging.getLogger(__name__)
 SYSTEM_DIR = VAULT_PATH / "30-system"
@@ -104,17 +113,14 @@ def write_briefing_to_vault(briefing_md: str) -> Path | None:
         Path to the written file.
     """
     today = datetime.now(UTC).strftime("%Y-%m-%d")
-    return write_to_vault(
-        "30-system/briefings",
-        f"{today}.md",
-        briefing_md,
-        frontmatter={
-            "type": "briefing",
-            "date": today,
-            "source": "agents.briefing",
-            "tags": ["system", "briefing"],
-        },
-    )
+    fm = {
+        "type": "briefing",
+        "date": today,
+        "source": "agents.briefing",
+        "tags": ["system", "briefing"],
+    }
+    validate_frontmatter(fm, BriefingFrontmatter)
+    return write_to_vault("30-system/briefings", f"{today}.md", briefing_md, frontmatter=fm)
 
 
 def write_digest_to_vault(digest_md: str) -> Path | None:
@@ -127,17 +133,14 @@ def write_digest_to_vault(digest_md: str) -> Path | None:
         Path to the written file.
     """
     today = datetime.now(UTC).strftime("%Y-%m-%d")
-    return write_to_vault(
-        "30-system/digests",
-        f"{today}-digest.md",
-        digest_md,
-        frontmatter={
-            "type": "digest",
-            "date": today,
-            "source": "agents.digest",
-            "tags": ["system", "digest"],
-        },
-    )
+    fm = {
+        "type": "digest",
+        "date": today,
+        "source": "agents.digest",
+        "tags": ["system", "digest"],
+    }
+    validate_frontmatter(fm, DigestFrontmatter)
+    return write_to_vault("30-system/digests", f"{today}-digest.md", digest_md, frontmatter=fm)
 
 
 def write_nudges_to_vault(nudges: list[dict]) -> Path | None:
@@ -170,12 +173,9 @@ def write_nudges_to_vault(nudges: list[dict]) -> Path | None:
             if action:
                 lines.append(f"  - {action}")
 
-    return write_to_vault(
-        "30-system",
-        "nudges.md",
-        "\n".join(lines),
-        frontmatter={"type": "nudges", "updated": now, "source": "logos", "tags": ["system"]},
-    )
+    fm = {"type": "nudges", "updated": now, "source": "logos", "tags": ["system"]}
+    validate_frontmatter(fm, NudgeFrontmatter)
+    return write_to_vault("30-system", "nudges.md", "\n".join(lines), frontmatter=fm)
 
 
 def write_goals_to_vault(goals: list[dict]) -> Path | None:
@@ -200,17 +200,14 @@ def write_goals_to_vault(goals: list[dict]) -> Path | None:
             lines.append(f"\n{desc}")
         lines.append("")
 
-    return write_to_vault(
-        "30-system",
-        "goals.md",
-        "\n".join(lines),
-        frontmatter={
-            "type": "goals",
-            "updated": now,
-            "source": "operator.json",
-            "tags": ["system"],
-        },
-    )
+    fm = {
+        "type": "goals",
+        "updated": now,
+        "source": "operator.json",
+        "tags": ["system"],
+    }
+    validate_frontmatter(fm, GoalsFrontmatter)
+    return write_to_vault("30-system", "goals.md", "\n".join(lines), frontmatter=fm)
 
 
 def create_decision_starter(decision_text: str, meeting_ref: str) -> Path | None:
@@ -236,19 +233,16 @@ def create_decision_starter(decision_text: str, meeting_ref: str) -> Path | None
             "",
         ]
     )
-    return write_to_vault(
-        "10-work/decisions",
-        f"{today}-{slug}.md",
-        content,
-        frontmatter={
-            "type": "decision",
-            "status": "decided",
-            "date": today,
-            "meeting-ref": meeting_ref,
-            "auto-generated": True,
-            "tags": ["decision", "system"],
-        },
-    )
+    fm = {
+        "type": "decision",
+        "status": "decided",
+        "date": today,
+        "meeting-ref": meeting_ref,
+        "auto-generated": True,
+        "tags": ["decision", "system"],
+    }
+    validate_frontmatter(fm, DecisionFrontmatter)
+    return write_to_vault("10-work/decisions", f"{today}-{slug}.md", content, frontmatter=fm)
 
 
 def write_bridge_prompt_to_vault(prompt_name: str, prompt_md: str) -> Path | None:
@@ -261,13 +255,10 @@ def write_bridge_prompt_to_vault(prompt_name: str, prompt_md: str) -> Path | Non
     Returns:
         Path to the written file.
     """
-    return write_to_vault(
-        "32-bridge/prompts",
-        f"{prompt_name}.md",
-        prompt_md,
-        frontmatter={
-            "type": "bridge-prompt",
-            "source": "system",
-            "tags": ["bridge", "prompt"],
-        },
-    )
+    fm = {
+        "type": "bridge-prompt",
+        "source": "system",
+        "tags": ["bridge", "prompt"],
+    }
+    validate_frontmatter(fm, BridgePromptFrontmatter)
+    return write_to_vault("32-bridge/prompts", f"{prompt_name}.md", prompt_md, frontmatter=fm)
