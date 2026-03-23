@@ -20,7 +20,7 @@ class TestGetInfraSnapshot:
             json.dumps(
                 {
                     "timestamp": "2026-03-11T01:33:38Z",
-                    "cycle_mode": "prod",
+                    "working_mode": "rnd",
                     "containers": [
                         {
                             "service": "qdrant",
@@ -44,7 +44,7 @@ class TestGetInfraSnapshot:
         result = get_infra_snapshot(tmp_path)
         assert "qdrant" in result
         assert "running" in result
-        assert "prod" in result
+        assert "rnd" in result
         assert "5842" in result
 
     def test_missing_file_returns_message(self, tmp_path):
