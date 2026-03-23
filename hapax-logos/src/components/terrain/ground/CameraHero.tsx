@@ -117,11 +117,22 @@ export function CameraHero({
     );
   }
 
-  // HLS mode: composited stream already includes all cameras — fill entire container
+  // HLS mode: composited stream (temporally offset smooth playback)
+  // Detection overlay renders on HLS same as live — hero camera detections
   if (smoothMode) {
     return (
       <div ref={containerRef} className="relative h-full w-full overflow-hidden" onDoubleClick={handleDoubleClick}>
         <HlsPlayer />
+        <DetectionOverlay
+          containerRef={containerRef}
+          cameraRole={heroRole}
+          classificationDetections={classificationDetections}
+          tier={heroTier}
+          visible={detectionLayerVisible}
+          objectFit="cover"
+          enrichmentVisibility={enrichmentVisibility}
+        />
+        <SceneBadges />
         <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
           HLS · {_BUILD_TS}
         </div>
@@ -187,7 +198,7 @@ function SecondaryStrip({
 }
 
 function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }) {
-  const { imgRef } = useBatchSnapshot(role, 250);
+  const { imgRef } = useBatchSnapshot(role, 100); // 10fps secondary thumbnails
 
   return (
     <button

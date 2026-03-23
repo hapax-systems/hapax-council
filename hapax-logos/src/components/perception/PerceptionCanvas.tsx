@@ -40,7 +40,7 @@ export function PerceptionCanvas({ activeZone, onZoneClick }: PerceptionCanvasPr
       loader.src = `/api/studio/stream/snapshot?_t=${Date.now()}`;
     };
     pull();
-    const timer = setInterval(pull, 200);
+    const timer = setInterval(pull, 100); // 10fps compositor snapshot
     return () => {
       running = false;
       clearInterval(timer);

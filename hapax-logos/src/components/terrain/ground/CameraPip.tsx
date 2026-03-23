@@ -13,7 +13,7 @@ interface CameraPipProps {
 export function CameraPip({ heroRole, classificationDetections, onClick }: CameraPipProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { detectionTier, detectionLayerVisible, enrichmentVisibility } = useDetections();
-  const { imgRef, isStale } = useBatchSnapshot(heroRole, 200); // 5fps — ambient pip, low priority
+  const { imgRef, isStale } = useBatchSnapshot(heroRole, 100); // 10fps — smooth pip
 
   return (
     <div

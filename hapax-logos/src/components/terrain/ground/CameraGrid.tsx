@@ -16,7 +16,7 @@ interface CameraTileProps {
 function CameraTile({ role, classificationDetections, status, recording, onClick }: CameraTileProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { detectionTier, detectionLayerVisible, enrichmentVisibility } = useDetections();
-  const { imgRef, isStale } = useBatchSnapshot(role, 250); // 4fps — grid tiles don't need 60fps
+  const { imgRef, isStale } = useBatchSnapshot(role, 100); // 10fps — smooth enough for grid tiles
 
   const borderColor = recording
     ? "border-red-500/80 animate-pulse"
