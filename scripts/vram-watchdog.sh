@@ -68,6 +68,19 @@ if [ "$PCT" -ge 90 ]; then
             kill "$pid" 2>/dev/null || true
         done
     fi
+
+    # Kill rogue GPU processes — anything not in the allowlist
+    # Allowlist: hapax_voice, studio_compositor, video_processor, ollama_llama_server
+    ALLOWLIST="hapax_voice|studio_compositor|video_processor|ollama_llama_server"
+    while IFS=, read -r pid name; do
+        pid=$(echo "$pid" | tr -d ' ')
+        name=$(echo "$name" | tr -d ' ')
+        [ -z "$pid" ] && continue
+        if ! echo "$name" | grep -qE "$ALLOWLIST"; then
+            log "Killing rogue GPU process PID $pid ($name) — not in allowlist"
+            kill "$pid" 2>/dev/null || true
+        fi
+    done < <(nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null)
 fi
 
 # ── 95%+ : Emergency — force unload everything and alert ──

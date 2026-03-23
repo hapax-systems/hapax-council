@@ -1,18 +1,48 @@
-"""Root conftest — prevent real notifications from leaking during tests.
+"""Root conftest — prevent real notifications and GPU model loading during tests.
 
-This patches the I/O layer (urlopen, subprocess.run) inside shared.notify
-so that tests which exercise the engine/delivery path without explicit mocks
-cannot send real ntfy or desktop notifications.
+This patches:
+  1. I/O layer (urlopen, subprocess.run) inside shared.notify — prevents real
+     ntfy or desktop notifications.
+  2. GPU/ML modules (torch, model2vec, etc.) — prevents VRAM allocation during
+     test collection. Without this, tests that transitively import voice/ML
+     modules can load models and consume 18+ GiB of VRAM.
 
-Tests that explicitly mock these functions (e.g. test_notify.py) will see
-their own mocks take precedence over this session-scoped patch.
+Tests that explicitly mock these functions will see their own mocks take
+precedence over these session-scoped patches.
 """
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _stub_gpu_modules():
+    """Stub GPU/ML modules at import time to prevent VRAM allocation.
+
+    This runs at collection time (before any test), so transitive imports
+    from agents.hapax_voice.* can't accidentally load real torch/model2vec.
+    The stubs in tests/hapax_voice/conftest.py are more detailed but only
+    apply when that directory is collected — this catches everything else.
+    """
+    for mod_name in [
+        "torch",
+        "torch.cuda",
+        "torch.nn",
+        "torch.nn.functional",
+        "torchaudio",
+        "model2vec",
+        "pyaudio",
+        "openwakeword",
+        "openwakeword.model",
+    ]:
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = MagicMock()
+
+
+_stub_gpu_modules()
 
 
 @pytest.fixture(autouse=True, scope="function")
