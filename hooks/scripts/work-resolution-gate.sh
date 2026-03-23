@@ -4,10 +4,11 @@
 # Blocks Edit/Write tool calls when the current session has unresolved work:
 #   1. Feature branch with commits ahead of main but no open PR → must submit PR
 #   2. Open PR with failing checks on current branch → must fix CI
-#   3. On main: ANY open PR exists for this repo → must merge or close it first
+#   3. On main: open PRs whose branch exists locally → must merge or close first
 #
-# "Resolved" means: PR merged or closed, no open PRs remaining.
-# This enforces the rule: follow every PR through to completion before new work.
+# Scoped by local branches: only blocks on PRs whose branch is checked out in
+# THIS worktree. One session's PR doesn't block the other session.
+# "Resolved" means: PR merged or closed, local branch deleted.
 set -euo pipefail
 
 # --- 1. Read tool invocation from stdin ---
@@ -82,14 +83,22 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
   exit 0
 fi
 
-# --- 7. On main/master: block if ANY open PRs exist for this repo ---
-# A session must merge (or close) its PR before starting new work.
-# Uses a cache to avoid hammering the GitHub API on every Edit/Write.
-# Cache TTL: 60 seconds.
+# --- 7. On main: block if open PRs exist whose branch is a LOCAL branch ---
+# Scoped: only blocks if the PR's branch exists in this worktree as a local branch.
+# This way one session's PR doesn't block the other session's worktree.
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || exit 0)"
 cache_key="$(echo "$repo_root" | md5sum | cut -d' ' -f1)"
 cache_file="/tmp/hapax-wr-gate-${cache_key}.json"
 cache_ttl=60
+
+# Collect local branches (excluding default)
+local_branches="$(git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null | grep -v "^${default_branch}$" || true)"
+
+# No local feature branches → nothing to block on
+if [[ -z "$local_branches" ]]; then
+  echo "[]" > "$cache_file" 2>/dev/null || true
+  exit 0
+fi
 
 # Check cache freshness
 use_cache=false
@@ -100,16 +109,23 @@ if [[ -f "$cache_file" ]]; then
   fi
 fi
 
+filter_my_prs() {
+  local all_cached="$1"
+  printf '%s' "$all_cached" | jq --arg locals "$local_branches" '
+    ($locals | split("\n") | map(select(. != ""))) as $lb |
+    [ .[] | select(.branch as $b | $lb | any(. == $b)) ]
+  ' 2>/dev/null || echo "[]"
+}
+
 if [[ "$use_cache" == true ]]; then
-  cached="$(cat "$cache_file" 2>/dev/null || echo "")"
-  if [[ -n "$cached" && "$cached" != "[]" && "$cached" != "" ]]; then
-    pr_count="$(printf '%s' "$cached" | jq 'length' 2>/dev/null || echo 0)"
-    if [[ "$pr_count" -gt 0 ]]; then
-      block_msg="$(printf '%s' "$cached" | jq -r '.[] | "  PR #\(.number) (\(.branch)) — \(.status)"' 2>/dev/null || true)"
-      echo "BLOCKED: Open PRs must be merged or closed before starting new work:" >&2
-      printf '%s\n' "$block_msg" >&2
-      exit 2
-    fi
+  cached="$(cat "$cache_file" 2>/dev/null || echo "[]")"
+  my_prs="$(filter_my_prs "$cached")"
+  my_count="$(printf '%s' "$my_prs" | jq 'length' 2>/dev/null || echo 0)"
+  if [[ "$my_count" -gt 0 ]]; then
+    block_msg="$(printf '%s' "$my_prs" | jq -r '.[] | "  PR #\(.number) (\(.branch)) — \(.status)"' 2>/dev/null || true)"
+    echo "BLOCKED: You have open PRs — merge or close before starting new work:" >&2
+    printf '%s\n' "$block_msg" >&2
+    exit 2
   fi
   exit 0
 fi
@@ -117,11 +133,11 @@ fi
 # Fetch all open PRs for this repo
 all_prs="$(gh pr list --state open --json number,headRefName,statusCheckRollup --limit 100 2>/dev/null || echo "error")"
 if [[ "$all_prs" == "error" ]]; then
-  echo "[]" > "$cache_file"
+  echo "[]" > "$cache_file" 2>/dev/null || true
   exit 0
 fi
 
-# Exclude dependabot PRs, build the block list
+# Build PR list (exclude dependabot)
 open_prs="$(printf '%s' "$all_prs" | jq '
   [ .[] | select(.headRefName | startswith("dependabot/") | not) |
     {
@@ -139,13 +155,15 @@ open_prs="$(printf '%s' "$all_prs" | jq '
   ]
 ' 2>/dev/null || echo "[]")"
 
-# Write cache
+# Cache all PRs (filter by local branches at check time)
 printf '%s' "$open_prs" > "$cache_file" 2>/dev/null || true
 
-open_count="$(printf '%s' "$open_prs" | jq 'length' 2>/dev/null || echo 0)"
-if [[ "$open_count" -gt 0 ]]; then
-  block_msg="$(printf '%s' "$open_prs" | jq -r '.[] | "  PR #\(.number) (\(.branch)) — \(.status)"' 2>/dev/null || true)"
-  echo "BLOCKED: Open PRs must be merged or closed before starting new work:" >&2
+# Filter to PRs whose branch exists locally in this worktree
+my_prs="$(filter_my_prs "$open_prs")"
+my_count="$(printf '%s' "$my_prs" | jq 'length' 2>/dev/null || echo 0)"
+if [[ "$my_count" -gt 0 ]]; then
+  block_msg="$(printf '%s' "$my_prs" | jq -r '.[] | "  PR #\(.number) (\(.branch)) — \(.status)"' 2>/dev/null || true)"
+  echo "BLOCKED: You have open PRs — merge or close before starting new work:" >&2
   printf '%s\n' "$block_msg" >&2
   exit 2
 fi
