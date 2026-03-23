@@ -14,6 +14,7 @@ ExecStartPre=/usr/bin/mkdir -p /dev/shm/hapax-logos /dev/shm/hapax-visual /dev/s
 ExecStart=/home/hapax/.local/bin/hapax-logos
 Restart=on-failure
 RestartSec=5
+SuccessExitStatus=SIGTERM
 Environment=RUST_LOG=info
 Environment=WAYLAND_DISPLAY=wayland-1
 Environment=XDG_RUNTIME_DIR=/run/user/1000

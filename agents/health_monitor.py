@@ -1451,7 +1451,7 @@ async def check_n8n_health() -> list[CheckResult]:
 async def check_obsidian_sync() -> list[CheckResult]:
     """Check Obsidian desktop app is running (sync runs within the app)."""
     t = time.monotonic()
-    rc, out, err = await run_cmd(["pgrep", "-x", "obsidian"])
+    rc, out, err = await run_cmd(["pgrep", "-f", "obsidian/app.asar"])
     if rc == 0:
         return [
             CheckResult(

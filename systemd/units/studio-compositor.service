@@ -16,6 +16,7 @@ ExecStartPre=/home/hapax/projects/hapax-council/systemd/units/studio-camera-setu
 ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.studio_compositor
 Restart=on-failure
 RestartSec=10
+SuccessExitStatus=SIGTERM
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=XDG_RUNTIME_DIR=/run/user/1000
