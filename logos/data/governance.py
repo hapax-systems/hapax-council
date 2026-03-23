@@ -265,12 +265,11 @@ def collect_authority_utilization() -> list[AuthorityUtilization]:
     agents: list[AuthorityUtilization] = []
 
     try:
-        from shared.agent_registry import AgentRegistry
+        from shared.agent_registry import get_registry
 
-        registry = AgentRegistry()
-        registry.load()
+        registry = get_registry()
 
-        for manifest in registry.all():
+        for manifest in registry.list_agents():
             util = AuthorityUtilization(
                 agent_id=manifest.id,
                 axiom_bindings=len(manifest.axiom_bindings),

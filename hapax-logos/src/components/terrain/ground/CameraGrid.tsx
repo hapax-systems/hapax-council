@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
 import { useStudio } from "../../../api/hooks";
@@ -17,6 +17,7 @@ function CameraTile({ role, classificationDetections, status, recording, onClick
   const containerRef = useRef<HTMLDivElement>(null);
   const { detectionTier, detectionLayerVisible, enrichmentVisibility } = useDetections();
   const { imgRef, isStale } = useBatchSnapshot(role, 100); // 10fps — smooth enough for grid tiles
+  const [loaded, setLoaded] = useState(false);
 
   const borderColor = recording
     ? "border-red-500/80 animate-pulse"
@@ -33,11 +34,18 @@ function CameraTile({ role, classificationDetections, status, recording, onClick
         e.stopPropagation();
         onClick();
       }}
-      className={`relative cursor-pointer overflow-hidden rounded-lg border-2 ${borderColor} transition-colors`}
+      className={`relative cursor-pointer overflow-hidden rounded-lg border-2 ${borderColor} transition-colors bg-zinc-900`}
     >
+      {/* Placeholder behind img — visible until first frame loads */}
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-[10px] text-zinc-700 animate-pulse">connecting...</span>
+        </div>
+      )}
       <img
         ref={imgRef}
-        className="h-full w-full object-cover bg-black"
+        className={`h-full w-full object-cover transition-opacity duration-500 ${loaded ? "opacity-100" : "opacity-0"}`}
+        onLoad={() => setLoaded(true)}
         alt={role}
       />
       <DetectionOverlay
@@ -71,8 +79,22 @@ export function CameraGrid({ classificationDetections, onSelectHero }: CameraGri
 
   if (cameras.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center text-[10px] text-zinc-600">
-        No cameras
+      <div className="flex h-full flex-col gap-2">
+        <div className="grid flex-1 grid-cols-2 gap-2">
+          {[0, 1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="relative overflow-hidden rounded-lg border-2 border-zinc-800 pointer-events-none bg-zinc-900"
+            >
+              <div className="flex h-full w-full items-center justify-center aspect-video">
+                <span className="text-[10px] text-zinc-700 animate-pulse">connecting...</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-3 px-1 text-[10px] text-zinc-600 animate-pulse">
+          waiting for compositor
+        </div>
       </div>
     );
   }

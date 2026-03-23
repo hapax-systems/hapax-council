@@ -172,8 +172,6 @@ def _capture_audio_pipewire(duration_s: float = CAPTURE_DURATION_S) -> np.ndarra
                 str(PANNS_SAMPLE_RATE),
                 "--channels",
                 "1",
-                "--target",
-                "0",  # default source
                 "-",
             ],
             capture_output=True,

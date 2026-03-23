@@ -1,7 +1,7 @@
 """FastAPI application for the logos API.
 
 Serves data from logos/data/ collectors over HTTP.
-Designed to be consumed by the React SPA at hapax-logos/.
+Consumed by the Tauri desktop app and Vite dev server.
 """
 
 from __future__ import annotations
@@ -63,9 +63,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",  # Vite dev server
-        "http://localhost:8051",  # Logos API (self-hosted SPA)
         "http://127.0.0.1:5173",
-        "http://127.0.0.1:8051",
+        "tauri://localhost",  # Tauri desktop app
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -146,22 +145,4 @@ async def root():
         "name": "logos-api",
         "version": "0.2.0",
         "docs": "/docs",
-        "app": "/app/",
     }
-
-
-from pathlib import Path
-
-SPA_DIR = Path(__file__).parent / "static"
-if SPA_DIR.is_dir():
-    from starlette.responses import FileResponse
-    from starlette.staticfiles import StaticFiles
-
-    @app.get("/app/{path:path}")
-    async def spa_catchall(path: str):
-        index = SPA_DIR / "index.html"
-        if index.is_file():
-            return FileResponse(index)
-        return {"error": "SPA not built"}
-
-    app.mount("/static", StaticFiles(directory=SPA_DIR), name="spa")

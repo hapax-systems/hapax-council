@@ -289,7 +289,7 @@ async def consent_coverage() -> dict:
     and what isn't.
     """
     try:
-        from qdrant_client.models import FieldCondition, Filter, MatchExcept
+        from qdrant_client.models import Filter, IsNullCondition
 
         from shared.config import get_qdrant
 
@@ -297,20 +297,16 @@ async def consent_coverage() -> dict:
 
         total = client.count(collection_name="documents").count
 
-        # Count points with consent_label field
+        # Count points where consent_label field exists (is not null)
         labeled = client.count(
             collection_name="documents",
-            count_filter=Filter(
-                must=[FieldCondition(key="consent_label", match=MatchExcept(except_=[]))]
-            ),
+            count_filter=Filter(must_not=[IsNullCondition(is_null={"key": "consent_label"})]),
         ).count
 
-        # Count points with provenance field
+        # Count points where provenance field exists
         with_provenance = client.count(
             collection_name="documents",
-            count_filter=Filter(
-                must=[FieldCondition(key="provenance", match=MatchExcept(except_=[]))]
-            ),
+            count_filter=Filter(must_not=[IsNullCondition(is_null={"key": "provenance"})]),
         ).count
 
         return {

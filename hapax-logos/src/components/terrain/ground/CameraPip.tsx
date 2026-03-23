@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
 import { useDetections } from "../../../contexts/ClassificationOverlayContext";
@@ -14,6 +14,7 @@ export function CameraPip({ heroRole, classificationDetections, onClick }: Camer
   const containerRef = useRef<HTMLDivElement>(null);
   const { detectionTier, detectionLayerVisible, enrichmentVisibility } = useDetections();
   const { imgRef, isStale } = useBatchSnapshot(heroRole, 100); // 10fps — smooth pip
+  const [loaded, setLoaded] = useState(false);
 
   return (
     <div
@@ -22,7 +23,7 @@ export function CameraPip({ heroRole, classificationDetections, onClick }: Camer
         e.stopPropagation();
         onClick?.();
       }}
-      className="relative cursor-pointer overflow-hidden rounded-md transition-opacity duration-500"
+      className="relative cursor-pointer overflow-hidden rounded-md transition-opacity duration-500 bg-zinc-900"
       style={{
         width: 120,
         height: 68,
@@ -30,9 +31,15 @@ export function CameraPip({ heroRole, classificationDetections, onClick }: Camer
         filter: "sepia(0.3) contrast(0.8) brightness(0.7)",
       }}
     >
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-[7px] text-zinc-700">...</span>
+        </div>
+      )}
       <img
         ref={imgRef}
-        className="h-full w-full object-cover"
+        className={`h-full w-full object-cover relative z-[1] transition-opacity duration-500 ${loaded ? "opacity-100" : "opacity-0"}`}
+        onLoad={() => setLoaded(true)}
         alt={heroRole}
       />
       <DetectionOverlay

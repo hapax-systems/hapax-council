@@ -135,10 +135,19 @@ def _sdlc_event_produce(event: ChangeEvent) -> list[Action]:
 
 
 async def _handle_rag_ingest(*, path: str) -> str:
-    """Ingest a new RAG source file. Runs in thread (sync function)."""
+    """Ingest a new RAG source file. Runs in thread (sync function).
+
+    NOTE: docling is installed in a separate venv (.venv-ingest) due to
+    dependency conflicts with pydantic-ai.  The rag-ingest.service handles
+    ingestion independently.  If docling is unavailable here, skip gracefully.
+    """
     from pathlib import Path
 
-    from agents.ingest import ingest_file
+    try:
+        from agents.ingest import ingest_file
+    except (ImportError, ModuleNotFoundError) as exc:
+        _log.debug("Skipping reactive ingest (docling not in this venv): %s", exc)
+        return f"skipped:{Path(path).name}"
 
     file_path = Path(path)
     success, error = await asyncio.to_thread(ingest_file, file_path)

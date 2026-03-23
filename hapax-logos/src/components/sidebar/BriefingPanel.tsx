@@ -18,7 +18,7 @@ export function BriefingPanel() {
     return () => clearInterval(id);
   }, []);
 
-  if (!briefing) return null;
+  if (!briefing) return <SidebarSection title="Briefing" loading>{null}</SidebarSection>;
 
   const ageH = (() => {
     try {

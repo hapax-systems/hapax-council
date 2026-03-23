@@ -143,10 +143,14 @@ export function CameraHero({
   return (
     <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
       {/* Hero fills all available space above the thumbnail strip */}
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex-1 min-h-0 bg-black">
+        {/* Placeholder shown until first frame */}
+        <div className="absolute inset-0 flex items-center justify-center z-0">
+          <span className="text-[11px] text-zinc-700 animate-pulse">connecting...</span>
+        </div>
         <img
           ref={imgRef}
-          className="h-full w-full bg-black object-cover"
+          className="h-full w-full object-cover relative z-[1]"
           alt={heroRole}
         />
         <DetectionOverlay

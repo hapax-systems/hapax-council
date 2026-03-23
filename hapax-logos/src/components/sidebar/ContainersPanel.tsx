@@ -17,7 +17,8 @@ const healthColor: Record<string, string> = {
 export function ContainersPanel() {
   const { data: infra, dataUpdatedAt } = useInfrastructure();
 
-  const containers = infra?.containers ?? [];
+  if (!infra) return <SidebarSection title="Containers" loading>{null}</SidebarSection>;
+  const containers = infra.containers ?? [];
   if (containers.length === 0) return null;
 
   const healthy = containers.filter((c) => c.health === "healthy").length;

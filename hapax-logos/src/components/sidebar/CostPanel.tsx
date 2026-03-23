@@ -5,7 +5,8 @@ import { formatAge } from "../../utils";
 export function CostPanel() {
   const { data: cost, dataUpdatedAt } = useCost();
 
-  if (!cost?.available) return null;
+  if (!cost) return <SidebarSection title="Cost" loading>{null}</SidebarSection>;
+  if (!cost.available) return null;
 
   return (
     <SidebarSection title="Cost" age={formatAge(dataUpdatedAt)}>

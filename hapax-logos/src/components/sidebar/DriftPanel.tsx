@@ -9,7 +9,8 @@ export function DriftPanel() {
   const { data: drift, dataUpdatedAt } = useDrift();
   const { requestAgentRun } = useAgentRun();
 
-  if (!drift || (drift.drift_count === 0 && drift.hygiene_count === 0)) return null;
+  if (!drift) return <SidebarSection title="Drift" loading>{null}</SidebarSection>;
+  if (drift.drift_count === 0 && drift.hygiene_count === 0) return null;
 
   return (
     <SidebarSection title="Drift" age={formatAge(dataUpdatedAt)}>

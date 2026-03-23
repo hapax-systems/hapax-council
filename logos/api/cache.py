@@ -149,17 +149,21 @@ _background_tasks: set[asyncio.Task] = set()
 
 
 async def start_refresh_loop() -> None:
-    """Start background refresh tasks. Called from FastAPI lifespan."""
-    # Initial load
-    await cache.refresh_fast()
-    await cache.refresh_slow()
+    """Start background refresh tasks. Called from FastAPI lifespan.
+
+    Initial cache load runs in the background so the API starts serving
+    immediately — endpoints return empty/stale data until the first
+    refresh completes (typically <10s).
+    """
 
     async def _fast_loop():
+        await cache.refresh_fast()
         while True:
             await asyncio.sleep(_fast_interval())
             await cache.refresh_fast()
 
     async def _slow_loop():
+        await cache.refresh_slow()
         while True:
             await asyncio.sleep(_slow_interval())
             await cache.refresh_slow()

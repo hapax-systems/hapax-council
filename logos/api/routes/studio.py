@@ -533,12 +533,10 @@ async def get_ambient_content():
     # Nudge titles for ambient text display
     nudge_titles: list[str] = []
     try:
-        nudges_data = cache.slow.get("nudges", [])
-        if isinstance(nudges_data, list):
-            for nudge in nudges_data[:5]:
-                title = nudge.get("title", "")
-                if title:
-                    nudge_titles.append(title[:80])
+        for nudge in cache.nudges[:5]:
+            title = getattr(nudge, "title", "")
+            if title:
+                nudge_titles.append(title[:80])
     except Exception:
         pass
 

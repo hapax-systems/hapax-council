@@ -5,7 +5,8 @@ import { formatAge } from "../../utils";
 export function ManagementPanel() {
   const { data: mgmt, dataUpdatedAt } = useManagement();
 
-  if (!mgmt || mgmt.people.length === 0) return null;
+  if (!mgmt) return <SidebarSection title="Management" loading>{null}</SidebarSection>;
+  if (mgmt.people.length === 0) return null;
 
   const stale1on1s = mgmt.people.filter((p) => p.stale_1on1).length;
   const highLoad = mgmt.people.filter(

@@ -830,6 +830,12 @@ class VisualLayerAggregator:
         # WS1: temporal band formatter — retention/impression/protention for LLM prompts
         self._temporal_formatter = TemporalBandFormatter(protention_engine=self._protention)
 
+        # Local perception ring — aggregator maintains its own ring from perception-state.json
+        # reads, since the voice daemon's in-process ring is not accessible cross-process.
+        from agents.hapax_voice.perception_ring import PerceptionRing
+
+        self._local_ring = PerceptionRing(maxlen=20)
+
         # WS3: experiential learning pipeline
         self._episode_builder = EpisodeBuilder()
         self._episode_store: EpisodeStore | None = None
@@ -931,6 +937,7 @@ class VisualLayerAggregator:
             self._production_active = prod
             self._ts_perception = time.monotonic()
             self._last_perception_data = data
+            self._local_ring.push(data)
 
             # Voice session (Batch A)
             voice_signals, voice_state = map_voice_session(data)
@@ -1300,18 +1307,16 @@ class VisualLayerAggregator:
             return []
 
     def _write_temporal_bands(self) -> None:
-        """Compute temporal bands from perception ring and write to shm.
+        """Compute temporal bands from local perception ring and write to shm.
 
         Agents read this via shared.operator._read_temporal_block() for
         Husserlian temporal context in LLM prompts.
-        """
-        try:
-            from agents.hapax_voice._perception_state_writer import get_perception_ring
-        except ImportError:
-            return
 
-        ring = get_perception_ring()
-        if ring is None or len(ring) < 2:
+        Uses the aggregator's own ring buffer (populated from perception-state.json
+        reads in poll_perception), not the voice daemon's in-process ring.
+        """
+        ring = self._local_ring
+        if len(ring) < 2:
             return
 
         try:
@@ -1917,9 +1922,11 @@ class VisualLayerAggregator:
         state.stimmung_stance = stimmung_stance
 
         # Boot readiness: "waiting" → "collecting" → "ready"
+        # "ready" once we have perception data AND have attempted an ambient content fetch
+        # (ambient facts/nudges may legitimately be empty — that's not a boot issue)
         if not self._last_perception_data:
             state.readiness = "waiting"
-        elif not self._ambient_facts and not self._nudge_titles:
+        elif self._last_ambient_fetch == 0.0:
             state.readiness = "collecting"
         else:
             state.readiness = "ready"

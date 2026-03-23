@@ -243,6 +243,20 @@ export function TerrainLayout() {
   const readiness = vl?.readiness ?? "waiting";
   const isReady = readiness === "ready";
 
+  // Boot overlay fade-out: stay mounted for 500ms after ready, then unmount
+  const [overlayMounted, setOverlayMounted] = useState(true);
+  const [overlayVisible, setOverlayVisible] = useState(true);
+  useEffect(() => {
+    if (isReady) {
+      setOverlayVisible(false);
+      const timer = setTimeout(() => setOverlayMounted(false), 600);
+      return () => clearTimeout(timer);
+    } else {
+      setOverlayMounted(true);
+      requestAnimationFrame(() => setOverlayVisible(true));
+    }
+  }, [isReady]);
+
   // Voice overlay: auto-show when voice active
   useEffect(() => {
     if (voiceActive && activeOverlay !== "investigation") {
@@ -339,11 +353,17 @@ export function TerrainLayout() {
           displayState={displayState}
         />
 
-        {/* Boot readiness overlay — shows until system data is flowing */}
-        {!isReady && (
+        {/* Boot readiness overlay — dims content and blocks interaction until system data flows */}
+        {overlayMounted && (
           <div
-            className="absolute inset-0 flex items-center justify-center pointer-events-none"
-            style={{ zIndex: 40 }}
+            className="absolute inset-0 flex items-center justify-center"
+            style={{
+              zIndex: 40,
+              background: "rgba(29, 32, 33, 0.85)",
+              opacity: overlayVisible ? 1 : 0,
+              transition: "opacity 500ms ease",
+              pointerEvents: overlayVisible ? "auto" : "none",
+            }}
           >
             <div className="flex flex-col items-center gap-3">
               <span

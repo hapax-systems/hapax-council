@@ -17,7 +17,7 @@ export function ScoutPanel() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [pendingComponent, setPendingComponent] = useState<string | null>(null);
 
-  if (!scout) return null;
+  if (!scout) return <SidebarSection title="Scout" loading>{null}</SidebarSection>;
 
   const decisions = decisionsData?.decisions ?? [];
   const decisionMap = new Map(decisions.map((d) => [d.component, d]));
