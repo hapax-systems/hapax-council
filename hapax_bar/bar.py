@@ -11,11 +11,10 @@ from typing import TYPE_CHECKING
 from gi.repository import Astal, Gtk
 
 from hapax_bar.modules.audio import MicModule, VolumeModule
-from hapax_bar.modules.cost_whisper import CostWhisper
+from hapax_bar.modules.clock import ClockModule
 from hapax_bar.modules.mpris import MprisModule
 from hapax_bar.modules.stimmung_field import StimmungField
 from hapax_bar.modules.submap import SubmapModule
-from hapax_bar.modules.temporal_ribbon import TemporalRibbon
 from hapax_bar.modules.tray import TrayModule
 from hapax_bar.modules.window_title import WindowTitleModule
 from hapax_bar.modules.working_mode import WorkingModeModule
@@ -39,33 +38,37 @@ def create_bar(
         primary: If True, shows all modules. If False, shows subset.
         seam_window: Seam layer window to toggle on stimmung field click.
     """
-    # Left: workspaces + submap + window title + mpris (spatial anchors)
+    # Left: workspaces + submap + mpris
     left = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
     left.append(WorkspacesModule(workspace_ids))
     left.append(SubmapModule())
-    left.append(WindowTitleModule(max_length=40 if primary else 30))
     if primary:
         left.append(MprisModule())
 
-    # Center: stimmung field only (pure ambient, no text)
+    # Center: stimmung field (replaces text modules)
     stimmung_field = StimmungField()
     if seam_window is not None:
         stimmung_field.set_seam_toggle(seam_window.toggle)
 
-    # Right: minimal interaction points
+    center = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+    # Window title rendered subtly alongside stimmung field
+    title = WindowTitleModule(max_length=40 if primary else 30)
+    center.append(title)
+    center.append(stimmung_field)
+
+    # Right: minimal interaction points only
     right = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
     right.append(WorkingModeModule())
     right.append(VolumeModule())
     if primary:
         right.append(MicModule())
-        right.append(CostWhisper())
-    right.append(TemporalRibbon())
+    right.append(ClockModule())
     if primary:
         right.append(TrayModule())
 
     centerbox = Gtk.CenterBox()
     centerbox.set_start_widget(left)
-    centerbox.set_center_widget(stimmung_field)
+    centerbox.set_center_widget(center)
     centerbox.set_end_widget(right)
 
     window = Astal.Window(

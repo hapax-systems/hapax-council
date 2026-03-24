@@ -45,11 +45,11 @@ class _AudioEndpoint(Gtk.Box):
         if self._endpoint is None:
             return
         if self._endpoint.get_mute():
-            self._label.set_label(f"{self._prefix}:--")
+            self._label.set_label(f"[{self._prefix}:mute]")
             self.set_css_classes(["module", "audio", "muted"])
         else:
             vol = math.floor(self._endpoint.get_volume() * 100)
-            self._label.set_label(f"{self._prefix}:{vol}")
+            self._label.set_label(f"[{self._prefix}:{vol}%]")
             self.set_css_classes(["module", "audio"])
 
     def _on_click(self, *_args: object) -> None:
