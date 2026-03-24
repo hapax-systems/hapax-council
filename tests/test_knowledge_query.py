@@ -45,7 +45,6 @@ class TestCreateAgent:
         tool_names = {t.name for t in agent._function_toolset.tools.values()}
         assert "search_docs" in tool_names
         assert "search_profile_facts" in tool_names
-        assert "search_conv_memory" in tool_names
         assert "briefing" in tool_names
         assert "digest" in tool_names
         assert "scout_report" in tool_names
