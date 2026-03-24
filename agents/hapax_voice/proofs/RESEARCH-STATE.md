@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-23 (session 13 — boundary contract enforcement)
+**Last updated:** 2026-03-23 (session 14 — ingestion pipeline audit + classification inspector)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -238,6 +238,78 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 **Schemathesis actionable findings:** (a) `POST /api/logos/directive` accepts `bool` for `detection_tier` field declared as `int | None` — Pydantic v2 lax mode coerces `bool→int`. (b) Missing error handling in `consent/create` (unhandled filesystem I/O), `consent/overhead` (unhandled ImportError), `engine/audit` (overbroad exception handler). (c) Environment-dependent 500s in `working-mode`/`cycle-mode` PUT (shell script not available in ASGI test) and `studio/moments/search` (Qdrant not reachable in test).
 
 **Design document:** `docs/boundary-contract-enforcement.md` — full problem statement, design rationale, implementation details, smoke test results, failure triage, future work.
+
+## Session 14 (2026-03-23): Ingestion Pipeline Audit + Classification Inspector + Design Language Completion
+
+Infrastructure-only. No changes to experiment code, grounding theory, or research design.
+
+**Three-round ingestion pipeline audit** — systematic multi-agent research of every ingestion path, data sink, consumer surface, and cross-type correlation opportunity across council + officium.
+
+**Round 1 — Infrastructure Correctness (10 fixes):**
+- Atomic dedup tracker in ingest.py (tmp+fsync+rename prevents crash corruption)
+- Dead-letter queue for permanently failed ingest files (`~/.cache/rag-ingest/dead-letter.jsonl`)
+- Removed orphan Qdrant collections (`samples`, `claude-memory`) from health/maintenance/digest lists
+- Qdrant dimension validation in health checks (768-dim expected, studio-moments 768 not 512)
+- Null-safety for Qdrant payloads in council `axiom_precedents.py` and `profile_store.py`
+- Import `EXPECTED_EMBED_DIMENSIONS` in officium (was hardcoded 768)
+- Perception state writer error escalation (debug → warning → error after 4 consecutive failures)
+- Watch receiver input bounds (bpm≤300, rmssd_ms≤500, temp_c∈[20,45], readings≤500)
+- Ported officium's enhanced flag validation to council agents route (blocklist + stricter regex)
+- Pinned hapax-sdlc to same commit (`cbdf204`) across both projects
+
+**Round 2 — Consumer Value Extraction (4 fixes):**
+- Wired 10 sync agent profile-facts JSONL files into profiler's `load_structured_facts()` (bridge was designed in `profiler_sources.BRIDGED_SOURCE_TYPES` but never built)
+- Wired `PatternStore.search()` into perception tick as step 4 (closes WS3 L3 loop — patterns are now retrieved, not just stored)
+- Removed 12 dead perception state fields never read by any consumer
+- Removed stale `llm_confidence`/`llm_activity` reads from workspace_monitor (fields not serialized to JSON)
+
+**Round 3 — Cross-Type Correlation (4 fixes):**
+- Serialized `llm_activity`, `llm_flow_hint`, `llm_confidence` to perception-state.json
+- Re-enabled model disagreement tracking in workspace_monitor (local LLM vs Gemini)
+- Enriched episode `summary_text` with heart rate and audio energy for biometric-aware pattern extraction
+- Extended pattern consolidation LLM prompt to explicitly request biometric-AV correlations
+- Enriched AV correlator with `speaker_count`, `max_people`, `scene_changes` from unused sidecar fields
+
+**Classification Inspector (new feature):**
+- `C` key overlay: dedicated per-camera classification diagnostic tool
+- 12 toggleable channels (detections, gaze, emotion, posture, gesture, scene, action, motion, depth, trajectory, novelty, dwell)
+- Theme-aware colors from `useTheme().palette` — switches with R&D/Research mode
+- Live MJPEG camera feed with canvas-rendered detection boxes, enrichment chips, trajectory arrows, novelty halos, dwell indicators
+- Confidence threshold slider, localStorage persistence
+- Camera name mapping fix (VL `brio-operator` ↔ stream API `operator`)
+- Enrichment chip placement: inside person box near top (not clipped by canvas edge)
+- Exempt from design language §4 density rules and §5 signal caps (§7.2, §3.8)
+
+**Signal Surfacing (7 items wired in visual_layer_aggregator):**
+- Music genre → `secondary_ambient_text` when no scheduler content
+- LLM activity → `secondary_ambient_text` when CLAP classification silent
+- Episode boundary → `profile_state` signal (activity · duration · flow)
+- Pattern match → `context_time` signal (prediction text + confidence)
+- Model disagreement (CLAP vs LLM) → `profile_state` signal
+- Dead-letter queue → `health_infra` signal
+- Flow decomposition → `activity_detail` enrichment (gaze + posture + calm + quiet contributors)
+
+**Overlay Design Language Compliance (11 fixes):**
+- SignalPip sizes: 6/7/8/10 → 6/8/10 per §5.2
+- ZoneCard severity: amber-400 → yellow-400 per §3.7
+- ZoneOverlay: added voice_session + system_state zones, enforced max 3 signals per zone per §5.3
+- OperatorVitals: stress pip 1s → 1.5s per §5.2, 4-step severity ladders (green/yellow/orange/red) for physiological load and phone battery per §3.7
+- Inspector canvas backgrounds from `palette["zinc-950"]` per §8.2, overlay opacity 88% (match investigation)
+
+**Design Language §3.8 Completion:**
+- Complete detection color vocabulary: 5 object categories, 4 gaze directions, 6 emotion tints, 2 state colors, all with hex values
+- Consent gating: suppression, operator preservation (camera role), confidence withholding, refusal removal
+- IR preset palette (NightVision, Silhouette, Thermal IR) with high-saturation variants
+- Breathing/novelty table, halo opacity rules, label/pill background rationale
+- §3.7 cross-reference fix, §5.2 pip thresholds, §5.3 density constraints formalized
+- §7.2 classification inspector exception, §10.4 signal backend resolved
+- Stale "partially implemented" language removed from §5.3
+
+**Hook fix:** work-resolution-gate now resolves git context from file path (cd to dirname), not CWD. Prevents cross-repo blocking when shell CWD drifts.
+
+**Documentation:** Updated `logos-ui-reference.md` (inspector section, keyboard shortcuts, signal sources, detection overlay spec reference, flow decomposition, deep flow gate), `CLAUDE.md` (§3.8 cross-ref fix).
+
+**PR #284** (feat/boundary-contracts branch): 3 commits, ~1400 insertions across 38 files. TypeScript clean, Vite build clean, 373 Python tests pass (2 pre-existing), all lint clean, 105/105 health checks passing, E2E verified via Playwright on dedicated Hyprland workspace.
 
 ## Operator Research Preferences
 
