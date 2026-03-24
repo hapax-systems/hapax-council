@@ -8,6 +8,7 @@
 -- See docs/superpowers/specs/2026-03-23-dfhack-bridge-protocol.md
 
 local json = require("json")
+local gui = require("gui")
 local repeatUtil = require("repeat-util")
 local eventful = require("plugins.eventful")
 
@@ -16,9 +17,10 @@ local STATE_FILE = STATE_DIR .. "/state.json"
 local COMMANDS_FILE = STATE_DIR .. "/commands.json"
 local RESULTS_FILE = STATE_DIR .. "/results.json"
 
-local FAST_INTERVAL = 120   -- ticks (1 in-game day)
-local FULL_INTERVAL = 240   -- ticks (2 in-game days) — chains need unit data frequently
-local CMD_INTERVAL = 10     -- ticks
+-- All intervals in frames (at ~100 FPS): 1s = ~100 frames
+local FAST_INTERVAL = 300   -- frames (~3 seconds)
+local FULL_INTERVAL = 600   -- frames (~6 seconds)
+local CMD_INTERVAL = 30     -- frames (~0.3 seconds)
 
 local event_buffer = {}
 local tick_counter = 0
@@ -280,8 +282,43 @@ local function build_full_state()
     return state
 end
 
--- Export state to /dev/shm (always full — fast/full distinction is premature optimization)
+-- Auto-dismiss blocking dialogs (Okay buttons, announcements)
+local function dismiss_dialogs()
+    local w, h = dfhack.screen.getWindowSize()
+    for y = 0, h - 1 do
+        local row = {}
+        for x = 0, w - 1 do
+            local pen = dfhack.screen.readTile(x, y)
+            if pen then
+                local ch = pen.ch
+                if type(ch) == "number" and ch >= 32 and ch < 127 then
+                    row[#row + 1] = string.char(ch)
+                else
+                    row[#row + 1] = " "
+                end
+            else
+                row[#row + 1] = " "
+            end
+        end
+        local line = table.concat(row)
+        local s = line:find("Okay", 1, true)
+        if s then
+            local click_x = s - 1 + 2
+            df.global.gps.mouse_x = click_x
+            df.global.gps.mouse_y = y
+            df.global.enabler.tracking_on = 1
+            local scr = dfhack.gui.getCurViewscreen()
+            gui.simulateInput(scr, "_MOUSE_L")
+            return true
+        end
+    end
+    return false
+end
+
+-- Export state to /dev/shm (always full)
 local function export_fast()
+    -- Dismiss any blocking dialogs before export
+    dismiss_dialogs()
     tick_counter = tick_counter + 1
     local state = build_full_state()
     local ok = atomic_write(STATE_FILE, json.encode(state))
@@ -370,8 +407,9 @@ local function start()
     ensure_dir()
 
     -- Register periodic tasks
-    repeatUtil.scheduleEvery("hapax-df-fast", FAST_INTERVAL, "ticks", export_fast)
-    repeatUtil.scheduleEvery("hapax-df-full", FULL_INTERVAL, "ticks", export_full)
+    -- All timers on frames so they work while game is paused
+    repeatUtil.scheduleEvery("hapax-df-fast", FAST_INTERVAL, "frames", export_fast)
+    repeatUtil.scheduleEvery("hapax-df-full", FULL_INTERVAL, "frames", export_full)
     -- Commands must poll on frames (not ticks) so unpause works while game is paused
     repeatUtil.scheduleEvery("hapax-df-cmds", CMD_INTERVAL, "frames", poll_commands)
 
