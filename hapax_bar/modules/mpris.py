@@ -73,8 +73,12 @@ class MprisModule(Gtk.Box):
             text = text[: self._max_length - 1] + "\u2026"
 
         paused = status == AstalMpris.PlaybackStatus.PAUSED
-        prefix = "|| " if paused else ""
-        self._label.set_label(f"[{prefix}{text}]")
+        if not text.strip() and not text.strip("-"):
+            self.set_visible(False)
+            return
+        self.set_visible(True)
+        prefix = "⏸ " if paused else ""
+        self._label.set_label(f"{prefix}{text}")
         self.set_css_classes(["module", "mpris", "paused"] if paused else ["module", "mpris"])
 
     def _on_click(self, *_args: object) -> None:
