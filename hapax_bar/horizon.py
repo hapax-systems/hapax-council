@@ -56,5 +56,11 @@ def create_horizon(
         window.set_monitor(monitor_index)
 
     window.set_child(centerbox)
+    # Click on center area opens horizon seam
+    if seam_toggle is not None:
+        center_click = Gtk.GestureClick()
+        center_click.connect("pressed", lambda *_: seam_toggle())
+        center.add_controller(center_click)
+
     window.present()
     return window
