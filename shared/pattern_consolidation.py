@@ -158,9 +158,18 @@ async def extract_patterns(
             trend = ep.get("flow_trend", 0)
             hour = ep.get("hour", 0)
             voice = ep.get("voice_turns", 0)
+            hr_list = ep.get("heart_rates", [])
+            avg_hr = sum(hr_list) / len(hr_list) if hr_list else 0
+            energy_list = ep.get("audio_energy", [])
+            avg_energy = sum(energy_list) / len(energy_list) if energy_list else 0
+            bio = ""
+            if avg_hr > 0:
+                bio += f", hr={avg_hr:.0f}bpm"
+            if avg_energy > 0.01:
+                bio += f", audio={avg_energy:.2f}"
             context_parts.append(
                 f"- {activity} ({duration:.0f}s, flow={flow}, "
-                f"trend={trend:+.4f}, hour={hour}, voice_turns={voice})"
+                f"trend={trend:+.4f}, hour={hour}, voice_turns={voice}{bio})"
             )
 
     if corrections:
@@ -199,13 +208,15 @@ THEN Obsidian usage = writing not coding"
 
 Rules:
 1. Each pattern must have a clear IF condition and THEN prediction
-2. Set dimension to what the pattern predicts (activity, flow, break, etc.)
+2. Set dimension to what the pattern predicts (activity, flow, break, stress, energy, etc.)
 3. Confidence should reflect how strong the evidence is (0.3-0.9)
 4. Do NOT extract trivial patterns (e.g., "IF coding THEN coding")
 5. Do NOT duplicate existing patterns — only extract genuinely new ones
 6. Corrections are especially valuable — they reveal systematic mistakes
 7. Prefer patterns with at least 2 supporting episodes
 8. Keep conditions specific enough to be useful but general enough to apply
+9. Look for biometric-activity correlations: heart rate changes during flow transitions, \
+audio energy patterns before breaks, stress indicators during specific activities
 
 Return a ConsolidationResult with the extracted patterns and a brief summary.
 If no meaningful patterns emerge, return an empty list with a summary explaining why.

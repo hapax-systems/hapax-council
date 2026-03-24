@@ -910,6 +910,27 @@ def apply_corrections(corrections: list[dict]) -> str:
 # ── Ingest ───────────────────────────────────────────────────────────────────
 
 
+_SYNC_CACHE_BASE = Path.home() / ".cache"
+
+_SYNC_FACT_NAMES = [
+    ("chrome-sync", "chrome-profile-facts.jsonl"),
+    ("gmail-sync", "gmail-profile-facts.jsonl"),
+    ("gcalendar-sync", "calendar-profile-facts.jsonl"),
+    ("youtube-sync", "youtube-profile-facts.jsonl"),
+    ("claude-code-sync", "claude-code-profile-facts.jsonl"),
+    ("obsidian-sync", "obsidian-profile-facts.jsonl"),
+    ("gdrive-sync", "drive-profile-facts.jsonl"),
+    ("git-sync", "git-profile-facts.jsonl"),
+    ("langfuse-sync", "langfuse-profile-facts.jsonl"),
+    ("audio-processor", "audio-profile-facts.jsonl"),
+]
+
+
+def _sync_fact_paths() -> list[Path]:
+    """Return paths to sync agent profile-facts JSONL files."""
+    return [_SYNC_CACHE_BASE / subdir / fname for subdir, fname in _SYNC_FACT_NAMES]
+
+
 def load_structured_facts() -> list[ProfileFact]:
     """Load pre-computed structured facts from profiler bridges.
 
@@ -939,6 +960,20 @@ def load_structured_facts() -> list[ProfileFact]:
                 facts.append(ProfileFact.model_validate(item))
             except Exception:
                 pass
+
+    # Sync agent profile-facts JSONL (deterministic bridges)
+    for jsonl_path in _sync_fact_paths():
+        if not jsonl_path.exists():
+            continue
+        try:
+            for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                item = json.loads(line)
+                facts.append(ProfileFact.model_validate(item))
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Failed to load sync facts from %s: %s", jsonl_path.name, e)
 
     # Watch + Health Connect biometric facts (deterministic bridge)
     from agents.profiler_sources import read_watch_facts

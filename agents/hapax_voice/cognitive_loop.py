@@ -477,10 +477,23 @@ class CognitiveLoop:
             and temperature < 0.3
             and self._notification_queue is not None
             and self._notification_queue.pending_count > 0
+            and not self._is_processing
         ):
-            # Let the pipeline handle notification delivery
-            log.info("Active silence: surfacing notification (silence=%.1fs)", silence_s)
-            # TODO: wire notification delivery through pipeline
+            notification = self._notification_queue.next()
+            if notification is not None:
+                log.info(
+                    "Active silence: delivering notification %r (silence=%.1fs)",
+                    notification.title,
+                    silence_s,
+                )
+                delivered = await self._pipeline.deliver_notification(
+                    title=notification.title,
+                    message=notification.message,
+                    source=notification.source,
+                )
+                if not delivered:
+                    self._notification_queue.requeue(notification)
+                    log.debug("Notification requeued (pipeline busy)")
 
         # Wind-down after extended silence
         if (

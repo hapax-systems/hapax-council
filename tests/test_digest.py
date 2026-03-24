@@ -269,8 +269,7 @@ def test_collect_collection_stats_success(mock_qdrant):
 
     stats = collect_collection_stats()
     assert stats["documents"] == 100
-    assert stats["samples"] == 100
-    assert stats["claude-memory"] == 100
+    assert stats["profile-facts"] == 100
 
 
 @patch("agents.digest.get_qdrant")
@@ -280,7 +279,7 @@ def test_collect_collection_stats_partial_failure(mock_qdrant):
     mock_qdrant.return_value = mock_client
 
     def count_side_effect(collection_name):
-        if collection_name == "samples":
+        if collection_name == "profile-facts":
             raise Exception("Not found")
         result = MagicMock()
         result.count = 50
@@ -290,7 +289,7 @@ def test_collect_collection_stats_partial_failure(mock_qdrant):
 
     stats = collect_collection_stats()
     assert stats["documents"] == 50
-    assert stats["samples"] == -1
+    assert stats["profile-facts"] == -1
 
 
 # ── Notification tests ───────────────────────────────────────────────────────

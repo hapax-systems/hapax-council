@@ -12,7 +12,6 @@ from shared.knowledge_search import (
     read_digest,
     read_scout_report,
     search_documents,
-    search_memory,
     search_profile,
 )
 
@@ -84,20 +83,6 @@ class TestSearchProfile:
     def test_unavailable_returns_message(self, mock_store_cls):
         result = search_profile("test")
         assert "error" in result.lower()
-
-
-class TestSearchMemory:
-    @patch("shared.knowledge_search.get_qdrant")
-    @patch("shared.knowledge_search.embed")
-    def test_searches_claude_memory_collection(self, mock_embed, mock_qdrant):
-        mock_embed.return_value = [0.1] * 768
-        mock_qdrant.return_value.query_points.return_value.points = []
-        search_memory("test query")
-        call_args = mock_qdrant.return_value.query_points.call_args
-        assert (
-            call_args[0][0] == "claude-memory"
-            or call_args.kwargs.get("collection_name") == "claude-memory"
-        )
 
 
 class TestReadBriefing:
@@ -256,17 +241,3 @@ class TestSearchProfileNoMatches:
         result = search_profile("nonexistent topic", dimension="work_patterns")
         assert "No profile facts found" in result
         assert "work_patterns" in result
-
-
-class TestSearchMemoryEmpty:
-    @patch("shared.knowledge_search.get_qdrant")
-    @patch("shared.knowledge_search.embed", return_value=[0.1] * 768)
-    def test_empty_memory_returns_no_entries(self, mock_embed, mock_qdrant):
-        mock_client = MagicMock()
-        mock_result = MagicMock()
-        mock_result.points = []
-        mock_client.query_points.return_value = mock_result
-        mock_qdrant.return_value = mock_client
-
-        result = search_memory("test query")
-        assert "No memory entries found" in result

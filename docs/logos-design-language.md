@@ -59,7 +59,7 @@ The system has exactly two working modes. Mode governs the color palette across 
 Mode is set via `hapax-working-mode` script or `PUT /api/working-mode`. Propagation path:
 
 1. State file: `~/.cache/hapax/working-mode`
-2. Desktop: `hapax-theme-apply` → Hyprland borders, wallpaper, waybar CSS, mako config, fuzzel config, hyprlock config, foot terminal signal, GTK theme
+2. Desktop: `hapax-theme-apply` → Hyprland borders, wallpaper, mako config, fuzzel config, hyprlock config, foot terminal signal, GTK theme; hapax-bar receives theme via control socket (`{"cmd":"theme","mode":"..."}` → instant CSS swap, no restart)
 3. Logos app: `ThemeProvider` reads `/api/working-mode`, selects palette, applies CSS custom properties to `<html>`
 
 ---
@@ -174,7 +174,7 @@ Voice state and acceptance colors are **mode-aware UI chrome**, not a fixed perc
 | REJECT | `red-400` | Error |
 | IGNORE | `zinc-500` | Muted |
 
-Frustration, context anchor, and biometric monitoring bars follow the standard severity ladder (§3.8).
+Frustration, context anchor, and biometric monitoring bars follow the standard severity ladder (§3.7).
 
 ### 3.7 Severity ladder
 
@@ -196,7 +196,74 @@ Detection overlays encode perceptual classification. These colors are functional
 
 Rationale: detection overlay colors encode a fixed perceptual vocabulary (cyan = screen gaze, yellow = hardware gaze, etc.). Changing these per mode would break the operator's trained visual recognition. The overlay renders on top of camera feeds where background palette is irrelevant.
 
-Exception: IR-optimized presets (NightVision, Silhouette, Thermal IR) use high-saturation variants for visibility against monochrome feeds. This is preset-driven, not mode-driven.
+**Object category colors** (bounding boxes and labels):
+
+| Category | Hex | Semantic |
+|----------|-----|----------|
+| `person` | `#8ec07c` | Sage green — living entity, highest importance |
+| `furniture` | `#bdae93` | Tan — static room structure |
+| `electronics` | `#83a598` | Teal — active devices, screens |
+| `instrument` | `#fabd2f` | Yellow — creative tools, studio gear |
+| `container` | `#d3869b` | Mauve — storage, boxes, bags |
+
+**Gaze direction colors** (person halo, primary enrichment):
+
+| Direction | Hex | Semantic |
+|-----------|-----|----------|
+| `screen` | `#83a598` | Teal — engaged with digital work |
+| `hardware` | `#fabd2f` | Yellow — hands-on with physical equipment |
+| `person` | `#d3869b` | Mauve — social attention, face-to-face |
+| `away` | `#7c8a74` | Muted sage — disengaged, looking elsewhere |
+
+**Emotion tint colors** (secondary enrichment, applied when gaze not available):
+
+| Emotion | Hex | Semantic |
+|---------|-----|----------|
+| `happy` | `#b8bb26` | Bright green — positive affect |
+| `sad` | `#83a598` | Teal — withdrawn affect |
+| `angry` | `#fb4934` | Red — high-arousal negative |
+| `surprise` | `#fe8019` | Orange — novel stimulus |
+| `fear` | `#d3869b` | Mauve — threat response |
+| `disgust` | `#bdae93` | Tan — aversion |
+
+**Consent and state colors**:
+
+| State | Hex | Semantic |
+|-------|-----|----------|
+| Consent suppressed | `#665c54` | Zinc-600 — fully desaturated, person enrichments withheld |
+| Exiting frame | `#504945` | Zinc-700 — fading toward background |
+
+**Label and pill backgrounds**: Detection label pills use the detection color at 80% opacity (`+ "cc"`) as background, with `bg` token (`#1d2021` Gruvbox / `#002b36` Solarized) as text. Annotation pills use `bg` token at 87% opacity. These background values are mode-invariant because they serve as contrast surfaces against camera feeds, not as themed UI chrome.
+
+**Consent gating behavior**:
+- Persons without an active consent contract render with the suppressed color (`#665c54`). All person enrichments (gaze, emotion, posture, gesture, action, depth) are withheld.
+- The operator's own person is identified via the `operator` camera role and is never suppressed (the operator is the system owner; no self-consent contract required).
+- Confidence percentages are withheld for consent-suppressed persons (label shows category only).
+- When consent phase is `consent_refused`, non-operator person detections are removed entirely from the overlay.
+
+**IR-optimized presets**: The presets `NightVision`, `Silhouette`, and `Thermal IR` activate a high-saturation variant palette for visibility against monochrome camera feeds. This is preset-driven, not mode-driven.
+
+| Category | IR Hex | Gaze | IR Hex |
+|----------|--------|------|--------|
+| `person` | `#00ffaa` | `screen` | `#44eeff` |
+| `furniture` | `#ffcc66` | `hardware` | `#ffee44` |
+| `electronics` | `#66ddff` | `person` | `#ff88dd` |
+| `instrument` | `#ffee44` | `away` | `#99aa88` |
+| `container` | `#ff99cc` | | |
+
+**Breathing animation for detections**: Detection overlays use novelty (0.0–1.0) to drive breathing period, analogous to but independent from the severity-driven signal breathing (§6). The novelty scale maps familiarity: static familiar objects do not breathe; novel or entering entities breathe faster.
+
+| Novelty | Period | Behavior |
+|---------|--------|----------|
+| < 0.1 | none | Static — no animation |
+| 0.1–0.3 | 8s | Slow awareness |
+| 0.3–0.6 | 4s | Moderate attention |
+| 0.6–0.8 | 1.5s | High novelty |
+| ≥ 0.8 | 0.6s | Brand new entity |
+
+**Halo opacity by entity type**: Person detections render at full opacity. Non-person detections scale by novelty and mobility: novel (> 0.5) at 60%, dynamic at 50%, static familiar at 25%.
+
+**Classification Inspector** (`C` key): A separate diagnostic overlay exempt from §4 density rules and §5 signal caps. Uses theme-aware colors from `useTheme().palette` (not the mode-invariant detection palette above). This is an operator diagnostic tool for inspecting all per-camera classifications at full density. See `docs/plans/2026-03-23-classification-inspector-design.md`.
 
 ---
 
@@ -273,7 +340,7 @@ Severity drives visual urgency through breathing animation:
 | 0.7 – 0.85 | `signal-breathe-fast` | 1.5s | 1.0x |
 | > 0.85 | `signal-breathe-crit` | 0.6s | 1.15x pulse |
 
-Signal pip sizes: 6px (low severity), 8px (medium), 10px (high/critical).
+Signal pip sizes: 6px (severity < 0.4), 8px (0.4–0.85), 10px (≥ 0.85).
 
 ### 5.3 Signal routing
 
@@ -284,7 +351,9 @@ Signals route from backend collectors to frontend pips:
 3. **Region mapping**: Each category has a primary region affinity (§3.3)
 4. **Rendering**: `SignalCluster` components at region corners render pips using the current palette's color for that category's token
 
-This pipeline is partially implemented. The frontend rendering layer exists. The backend classification layer does not yet exist as a formal system — signals are currently generated ad-hoc by the visual layer aggregator and classified at the frontend.
+**Density constraints**: At Surface depth, max 3 signals per zone, max 5 total visible (ranked by severity). At Stratum depth, max 5 per zone with sparklines. At Core depth, all signals rendered grouped by category. These limits are enforced by `SignalCluster` (for terrain pips) and `ZoneOverlay` (for perception canvas zones).
+
+The backend classification is performed by the visual layer aggregator's `map_*` functions, which tag events with categories and severity scores. The frontend renders them through `SignalCluster` (terrain pips) and `ZoneOverlay` (perception canvas zones).
 
 ---
 
@@ -343,7 +412,11 @@ Rationale: the overlay sits at z-40 over the terrain. Without backdrop treatment
 
 The backdrop background color must use the `surface` palette token at 88% opacity, not a hardcoded value.
 
-### 7.2 Hyprland border colors
+### 7.2 Classification inspector overlay
+
+The classification inspector overlay (`C` key) uses the same `backdrop-filter: blur(16px)` and box-shadow treatment as the investigation overlay (§7.1). Same rationale: legibility over camera feed content. The inspector is exempt from §4 density rules and §5 signal caps — it is a diagnostic tool that intentionally shows all per-camera classifications at full density. Colors in the inspector are **theme-aware** (derived from `useTheme().palette`), unlike the terrain detection overlay (§3.8) which is mode-invariant.
+
+### 7.3 Hyprland border colors
 
 The live Hyprland config currently uses BBS-era cyan (`#00c8c8`) for active borders. The `hapax-theme-apply` script overrides this at mode switch time to the current palette's `ACCENT_PRIMARY`. The static config should be updated to match the R&D default (`#fabd2f`) so that the system looks correct before the first mode switch after boot.
 
@@ -447,11 +520,9 @@ Current recommendation: mode-aware, but subtly. Shift the shader's base palette 
 
 Current recommendation: same fragments for both modes. The content expresses identity, not activity. The ContentScheduler (when fully wired) should drive ambient text from profile facts and system state, making this question moot.
 
-### 10.4 Signal backend formalization
+### 10.4 Signal backend formalization — RESOLVED
 
-The 8 signal categories are defined in the frontend but have no backend classification system. Signals are currently generated ad-hoc. Should a formal `SignalCollector` be built?
-
-Current recommendation: yes, but as a separate work item. The design language defines the taxonomy (§5). Implementation of the backend pipeline is an engineering task, not a design question.
+The visual layer aggregator's `map_*` functions serve as the backend classification system. Each function tags events with one of 8 categories and a severity score. Signals flow: API poll → `map_*` → `VisualLayerState.signals` → frontend `SignalCluster`/`ZoneOverlay` rendering. No separate `SignalCollector` service needed — the aggregator IS the collector.
 
 ---
 
@@ -466,7 +537,7 @@ These surfaces must comply with §1–§8. All colors must derive from §3, all 
 | Surface | Config location | Mode switching | Current compliance |
 |---------|----------------|----------------|--------------------|
 | **Logos React app** | `hapax-logos/src/` | ThemeProvider + CSS custom properties | High — active development target |
-| **Waybar** | `~/.config/waybar/style-{rnd,research}.css` | CSS swap via `hapax-theme-apply` | High — one color contamination |
+| **hapax-bar** | `hapax_bar/styles/hapax-bar-{rnd,research}.css` | Instant CSS swap via control socket or API poll | Full — GTK4 CSS custom properties, design-language compliant |
 | **Mako notifications** | `~/.config/mako/config-{rnd,research}` | Config swap via `hapax-theme-apply` | High — minor border token issue |
 | **Fuzzel launcher** | `~/.config/fuzzel/fuzzel-{rnd,research}.ini` | Config swap via `hapax-theme-apply` | High — inherits §10.1 question |
 | **Hyprland compositor** | `~/.config/hypr/hyprland.conf` | `hyprctl keyword` via `hapax-theme-apply` | Medium — static defaults stale, group colors unwired |

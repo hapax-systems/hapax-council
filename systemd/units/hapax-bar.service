@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax Status Bar (Astal/GTK4)
+PartOf=graphical-session.target
+After=logos-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+ExecStart=/usr/bin/python3 -m hapax_bar
+Restart=on-failure
+RestartSec=2
+SuccessExitStatus=SIGTERM
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-1
+
+[Install]
+WantedBy=graphical-session.target

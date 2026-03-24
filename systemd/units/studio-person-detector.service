@@ -10,6 +10,7 @@ WorkingDirectory=/home/hapax/projects/hapax-council
 ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.studio_person_detector
 Restart=on-failure
 RestartSec=10
+SuccessExitStatus=SIGTERM
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 MemoryMax=2G

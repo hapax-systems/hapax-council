@@ -78,6 +78,14 @@ class Episode(BaseModel):
             parts.append(f"flow {direction}")
         if self.voice_turns > 0:
             parts.append(f"{self.voice_turns} voice turns")
+        if self.heart_rates:
+            avg_hr = sum(self.heart_rates) / len(self.heart_rates)
+            if avg_hr > 0:
+                parts.append(f"heart_rate ~{avg_hr:.0f}bpm")
+        if self.audio_energy:
+            avg_energy = sum(self.audio_energy) / len(self.audio_energy)
+            if avg_energy > 0.01:
+                parts.append(f"audio_energy {avg_energy:.2f}")
         if self.consent_phase != "no_guest":
             parts.append(f"consent: {self.consent_phase}")
         return ". ".join(parts)

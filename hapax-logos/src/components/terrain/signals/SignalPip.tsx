@@ -26,7 +26,6 @@ function breatheDuration(severity: number): string | undefined {
 
 function pipSize(severity: number): number {
   if (severity < 0.4) return 6;
-  if (severity < 0.7) return 7;
   if (severity < 0.85) return 8;
   return 10;
 }

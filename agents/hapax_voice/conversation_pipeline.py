@@ -388,6 +388,31 @@ class ConversationPipeline:
     def is_active(self) -> bool:
         return self._running and self.state != ConvState.IDLE
 
+    async def deliver_notification(self, title: str, message: str, source: str) -> bool:
+        """Deliver a notification via direct TTS during active silence.
+
+        Uses direct synthesis (no LLM round-trip) to stay within latency budget.
+        Returns True on successful delivery, False if pipeline is busy or delivery fails.
+        """
+        if not self._running or self.state == ConvState.SPEAKING:
+            return False
+
+        try:
+            # Format concise spoken notification
+            spoken = f"{title}. {message}" if message else title
+            # Cap at ~15 words to keep delivery brief
+            words = spoken.split()
+            if len(words) > 15:
+                spoken = " ".join(words[:15])
+
+            log.info("Delivering notification via TTS: %s (source=%s)", title, source)
+            self._emit("notification_delivered", title=title, source=source)
+            await self._speak_sentence(spoken)
+            return True
+        except Exception:
+            log.exception("Notification delivery failed: %s", title)
+            return False
+
     async def start(self) -> None:
         """Start the conversation pipeline."""
         import random

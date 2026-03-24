@@ -10,7 +10,6 @@ from shared.knowledge_search import (
     read_digest,
     read_scout_report,
     search_documents,
-    search_memory,
     search_profile,
 )
 from tests.query_integration._helpers import (
@@ -134,9 +133,3 @@ class TestKnowledgeQdrantErrors:
         result = search_documents("test query")
         assert "error" in result.lower()
         assert "Connection refused" in result
-
-    @patch("shared.knowledge_search.get_qdrant", side_effect=ConnectionError("Connection refused"))
-    @patch("shared.knowledge_search.embed", return_value=[0.1] * 768)
-    def test_memory_search_qdrant_down(self, mock_embed, mock_qdrant):
-        result = search_memory("test query")
-        assert "error" in result.lower()

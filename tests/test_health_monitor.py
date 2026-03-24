@@ -329,25 +329,40 @@ class TestQdrantChecks:
                 "result": {
                     "collections": [
                         {"name": "documents"},
-                        {"name": "samples"},
-                        {"name": "claude-memory"},
                         {"name": "profile-facts"},
                         {"name": "axiom-precedents"},
+                        {"name": "operator-corrections"},
+                        {"name": "operator-episodes"},
+                        {"name": "operator-patterns"},
+                        {"name": "studio-moments"},
                     ]
                 }
             }
         )
+
+        def _coll_detail(name):
+            dim = 768  # All collections use nomic 768-dim
+            return json.dumps(
+                {
+                    "result": {
+                        "points_count": 42,
+                        "config": {"params": {"vectors": {"size": dim}}},
+                    }
+                }
+            )
+
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
                 if "/collections/" in url:
-                    return (200, json.dumps({"result": {"points_count": 42}}))
+                    coll_name = url.rsplit("/", 1)[-1]
+                    return (200, _coll_detail(coll_name))
                 return (200, collections_resp)
 
             mock.side_effect = side_effect
             results = await check_qdrant_collections()
         assert all(r.status == Status.HEALTHY for r in results)
-        assert len(results) == 5
+        assert len(results) == 7
 
     @pytest.mark.asyncio
     async def test_qdrant_collection_missing(self):
@@ -358,7 +373,17 @@ class TestQdrantChecks:
 
             async def side_effect(url, **kwargs):
                 if "/collections/" in url and "documents" in url:
-                    return (200, json.dumps({"result": {"points_count": 10}}))
+                    return (
+                        200,
+                        json.dumps(
+                            {
+                                "result": {
+                                    "points_count": 10,
+                                    "config": {"params": {"vectors": {"size": 768}}},
+                                }
+                            }
+                        ),
+                    )
                 return (200, collections_resp)
 
             mock.side_effect = side_effect
@@ -367,10 +392,10 @@ class TestQdrantChecks:
         docs = next(r for r in results if "documents" in r.name)
         assert docs.status == Status.HEALTHY
 
-        samples = next(r for r in results if "samples" in r.name)
-        assert samples.status == Status.FAILED
-        assert samples.remediation is not None
-        assert "curl" in samples.remediation
+        missing = next(r for r in results if "profile-facts" in r.name)
+        assert missing.status == Status.FAILED
+        assert missing.remediation is not None
+        assert "curl" in missing.remediation
 
 
 class TestProfileChecks:

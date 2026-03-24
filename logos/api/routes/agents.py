@@ -22,6 +22,31 @@ _IN_CONTAINER = os.path.exists("/.dockerenv") or (
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
+# Pattern: valid CLI flags like --flag, -f, --key=value (no shell metacharacters or paths)
+_FLAG_RE = re.compile(r"^--?[a-zA-Z0-9][a-zA-Z0-9_-]*(=\S*)?$")
+
+# Flags that could be used to hijack subprocess behaviour
+_BLOCKED_FLAG_PREFIXES = ("--exec", "--command", "--shell")
+
+
+def _validate_flags(flags: list[str]) -> list[str]:
+    """Validate that all flags are safe CLI arguments."""
+    clean: list[str] = []
+    for flag in flags:
+        if not _FLAG_RE.match(flag):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid flag format: {flag!r}",
+            )
+        lower = flag.lower().split("=")[0]
+        if any(lower.startswith(p) for p in _BLOCKED_FLAG_PREFIXES):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Blocked flag: {flag!r}",
+            )
+        clean.append(flag)
+    return clean
+
 
 class AgentRunRequest(BaseModel):
     flags: list[str] = []
@@ -53,18 +78,11 @@ async def run_agent(name: str, req: AgentRunRequest):
     if agent_run_manager.is_running:
         raise HTTPException(status_code=409, detail="Another agent is already running")
 
-    # Validate flags — reject anything that doesn't look like a CLI flag
-    _FLAG_PATTERN = re.compile(r"^--?[a-zA-Z0-9_-]+(=.*)?$")
-    for flag in req.flags:
-        if not _FLAG_PATTERN.match(flag):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid flag format: {flag!r}. Flags must match --name or --name=value.",
-            )
+    validated_flags = _validate_flags(req.flags)
 
     # Build command args from agent's base command + validated flags
     command = agent.command if hasattr(agent, "command") else agent.get("command", "")
-    args = shlex.split(command) + req.flags
+    args = shlex.split(command) + validated_flags
 
     try:
         queue = await agent_run_manager.run(name, args)

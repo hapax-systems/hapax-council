@@ -127,10 +127,12 @@ PASSWORD_STORE = PASSWORD_STORE_DIR
 CORE_CONTAINERS = {"qdrant", "ollama", "postgres", "litellm"}
 REQUIRED_QDRANT_COLLECTIONS = {
     "documents",
-    "samples",
-    "claude-memory",
     "profile-facts",
     "axiom-precedents",
+    "operator-corrections",
+    "operator-episodes",
+    "operator-patterns",
+    "studio-moments",
 }
 PASS_ENTRIES = [
     "api/anthropic",
@@ -769,25 +771,40 @@ async def check_qdrant_collections() -> list[CheckResult]:
             )
         ]
 
+    # All collections use nomic 768-dim embeddings (studio-moments uses nomic
+    # via embed_safe in av_correlator, not CLAP despite config.py declaration).
+    _EXPECTED_DIM = {c: 768 for c in REQUIRED_QDRANT_COLLECTIONS}
+
     results: list[CheckResult] = []
     for coll in sorted(REQUIRED_QDRANT_COLLECTIONS):
         if coll in existing:
-            # Fetch point count
             detail = None
+            status = Status.HEALTHY
+            message = "exists"
             c2, b2 = await http_get(f"{QDRANT_URL}/collections/{coll}")
             if c2 == 200:
                 try:
                     cdata = json.loads(b2)
-                    points = cdata.get("result", {}).get("points_count", "?")
-                    detail = f"{points} points"
+                    result_data = cdata.get("result", {})
+                    points = result_data.get("points_count", "?")
+                    # Validate vector dimensions
+                    vectors_config = (
+                        result_data.get("config", {}).get("params", {}).get("vectors", {})
+                    )
+                    actual_dim = vectors_config.get("size")
+                    expected_dim = _EXPECTED_DIM.get(coll, 768)
+                    if actual_dim is not None and actual_dim != expected_dim:
+                        status = Status.DEGRADED
+                        message = f"dimension mismatch: {actual_dim} != {expected_dim}"
+                    detail = f"{points} points, {actual_dim or '?'}d"
                 except (json.JSONDecodeError, KeyError):
                     pass
             results.append(
                 CheckResult(
                     name=f"qdrant.{coll}",
                     group="qdrant",
-                    status=Status.HEALTHY,
-                    message="exists",
+                    status=status,
+                    message=message,
                     detail=detail,
                     duration_ms=_timed(t),
                 )
@@ -1434,7 +1451,7 @@ async def check_n8n_health() -> list[CheckResult]:
 async def check_obsidian_sync() -> list[CheckResult]:
     """Check Obsidian desktop app is running (sync runs within the app)."""
     t = time.monotonic()
-    rc, out, err = await run_cmd(["pgrep", "-x", "obsidian"])
+    rc, out, err = await run_cmd(["pgrep", "-f", "obsidian/app.asar"])
     if rc == 0:
         return [
             CheckResult(

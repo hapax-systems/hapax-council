@@ -23,7 +23,11 @@ export const ZONE_LAYOUT: Record<string, ZoneSpec> = {
   health_infra: { x: 0.78, y: 0.76, w: 0.21, h: 0.20 },
   profile_state: { x: 0.30, y: 0.01, w: 0.34, h: 0.10 },
   ambient_sensor: { x: 0.01, y: 0.90, w: 0.76, h: 0.09 },
+  voice_session: { x: 0.25, y: 0.86, w: 0.50, h: 0.12 },
+  system_state: { x: 0.01, y: 0.76, w: 0.21, h: 0.12 },
 };
+
+const MAX_SIGNALS_PER_ZONE = 3;
 
 interface ZoneOverlayProps {
   category: SignalCategory;
@@ -76,10 +80,10 @@ export const ZoneOverlay = memo(function ZoneOverlay({ category, signals, opacit
             </span>
           )}
         </div>
-        {/* Signal cards */}
+        {/* Signal cards — max 3 per zone (§5.3) */}
         {hasSignals && (
           <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-hidden">
-            {signals.map((s, i) => (
+            {signals.slice(0, MAX_SIGNALS_PER_ZONE).map((s, i) => (
               <ZoneCard key={`${s.source_id}-${i}`} signal={s} />
             ))}
           </div>

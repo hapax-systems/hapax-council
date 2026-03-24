@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -86,6 +87,7 @@ CFG = Config()
 # ── Retry configuration ─────────────────────────────────────────────────────
 
 RETRY_QUEUE = RAG_INGEST_STATE_DIR / "retry-queue.jsonl"
+DEAD_LETTER_PATH = RAG_INGEST_STATE_DIR / "dead-letter.jsonl"
 MAX_RETRIES = 5
 BACKOFF_SCHEDULE = [30, 120, 600, 3600, 3600]  # 30s, 2m, 10m, 1h, 1h
 
@@ -188,11 +190,28 @@ def delete_file_points(path: Path):
         pass  # Collection may not have points yet
 
 
+def _dead_letter(path: Path, error: str, attempts: int) -> None:
+    """Record a permanently failed file so it can be resurfaced later."""
+    DEAD_LETTER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "path": str(path.resolve()),
+        "error": error,
+        "attempts": attempts,
+        "failed_at": datetime.now().isoformat(),
+    }
+    with open(DEAD_LETTER_PATH, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    log.error(
+        f"  ✗ Permanent failure after {attempts} retries: {path.name} — {error}"
+        f" (recorded in dead-letter queue)"
+    )
+
+
 def queue_retry(path: Path, error: str, attempts: int = 0):
     """Append a failed file to the retry queue with exponential backoff."""
     attempts += 1
     if attempts > MAX_RETRIES:
-        log.error(f"  ✗ Permanent failure after {MAX_RETRIES} retries: {path.name} — {error}")
+        _dead_letter(path, error, attempts)
         return
 
     delay = BACKOFF_SCHEDULE[min(attempts - 1, len(BACKOFF_SCHEDULE) - 1)]
@@ -310,9 +329,7 @@ def process_retries():
             # Re-queue with incremented attempts
             new_attempts = entry.attempts + 1
             if new_attempts > MAX_RETRIES:
-                log.error(
-                    f"  ✗ Permanent failure after {MAX_RETRIES} retries: {path.name} — {error}"
-                )
+                _dead_letter(path, error, new_attempts)
             else:
                 delay = BACKOFF_SCHEDULE[min(new_attempts - 1, len(BACKOFF_SCHEDULE) - 1)]
                 remaining.append(
@@ -463,9 +480,21 @@ def _load_dedup_tracker() -> dict:
 
 
 def _save_dedup_tracker(tracker: dict) -> None:
-    """Persist the dedup tracker."""
+    """Persist the dedup tracker atomically (tmp file + rename)."""
     DEDUP_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DEDUP_PATH.write_text(json.dumps(tracker, indent=2))
+    fd, tmp_path = tempfile.mkstemp(dir=DEDUP_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(tracker, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp_path, DEDUP_PATH)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _file_hash(path: Path) -> str:

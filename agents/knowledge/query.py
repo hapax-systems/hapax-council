@@ -143,13 +143,6 @@ def create_agent() -> Agent:
         return search_profile(query, dimension=dimension or None, limit=limit)
 
     @agent.tool
-    async def search_conv_memory(ctx, query: str, limit: int = 5) -> str:
-        """Search persistent conversation memory from Claude Code sessions."""
-        from shared.knowledge_search import search_memory
-
-        return search_memory(query, limit=limit)
-
-    @agent.tool
     async def briefing(ctx) -> str:
         """Read the latest daily briefing (headline, action items, stats)."""
         from shared.knowledge_search import read_briefing

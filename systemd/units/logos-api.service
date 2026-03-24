@@ -3,8 +3,7 @@ Description=Logos API — FastAPI backend on :8051
 After=network.target llm-stack.service hapax-secrets.service
 Wants=llm-stack.service
 Requires=hapax-secrets.service
-StartLimitBurst=5
-StartLimitIntervalSec=300
+StartLimitIntervalSec=0
 OnFailure=notify-failure@%n.service
 
 [Service]
@@ -14,6 +13,7 @@ EnvironmentFile=/run/user/1000/hapax-secrets.env
 ExecStart=/home/hapax/.local/bin/uv --directory /home/hapax/projects/hapax-council run python -m logos.api --host 0.0.0.0 --port 8051
 Restart=on-failure
 RestartSec=5
+SuccessExitStatus=SIGTERM
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 MemoryMax=1G

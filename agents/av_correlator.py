@@ -153,6 +153,9 @@ class CorrelationWindow(BaseModel):
     speech_seconds: float = 0.0
     music_seconds: float = 0.0
     transcript_snippet: str = ""
+    speaker_count: int = 0
+    max_people: dict[str, int] = Field(default_factory=dict)  # role → max people
+    scene_changes: dict[str, bool] = Field(default_factory=dict)  # role → scene changed
     correlated_at: float = 0.0
 
 
@@ -613,6 +616,12 @@ def _build_summary_text(window: CorrelationWindow) -> str:
         motion = window.video_motion.get(role, 0.0)
         parts.append(f"Camera {role}: {cat} (people={people}, motion={motion:.2f})")
 
+    if window.speaker_count > 1:
+        parts.append(f"{window.speaker_count} speakers")
+    for role, changed in window.scene_changes.items():
+        if changed:
+            parts.append(f"scene-change:{role}")
+
     parts.append(f"Joint: {window.joint_category} (score={window.joint_score:.2f})")
 
     if window.transcript_snippet:
@@ -751,6 +760,9 @@ def _correlate_window(
         speech_seconds=speech_in_window,
         music_seconds=music_in_window,
         transcript_snippet=transcript,
+        speaker_count=audio.speaker_count,
+        max_people={role: vs.max_people for role, vs in video_sidecars.items()},
+        scene_changes={role: vs.scene_change for role, vs in video_sidecars.items()},
         correlated_at=time.time(),
     )
 

@@ -901,7 +901,10 @@ def test_load_structured_facts_includes_management(tmp_path):
     mgmt_file = tmp_path / "management-structured-facts.json"
     mgmt_file.write_text(json.dumps(facts_data))
 
-    with patch("agents.profiler.PROFILES_DIR", tmp_path):
+    with (
+        patch("agents.profiler.PROFILES_DIR", tmp_path),
+        patch("agents.profiler._SYNC_CACHE_BASE", tmp_path / "empty-cache"),
+    ):
         from agents.profiler import load_structured_facts
 
         facts = load_structured_facts()
@@ -915,7 +918,10 @@ def test_load_structured_facts_empty_when_missing(tmp_path):
     """load_structured_facts returns empty list when no files exist."""
     from unittest.mock import patch
 
-    with patch("agents.profiler.PROFILES_DIR", tmp_path):
+    with (
+        patch("agents.profiler.PROFILES_DIR", tmp_path),
+        patch("agents.profiler._SYNC_CACHE_BASE", tmp_path / "empty-cache"),
+    ):
         from agents.profiler import load_structured_facts
 
         facts = load_structured_facts()

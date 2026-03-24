@@ -150,37 +150,6 @@ def search_profile(
         return "\n".join(lines)
 
 
-def search_memory(query: str, *, limit: int = 5) -> str:
-    """Semantic search over the claude-memory collection."""
-    with _rag_tracer.start_as_current_span("rag.search") as span:
-        span.set_attribute("rag.query", query[:200])
-        span.set_attribute("rag.collection", "claude-memory")
-        span.set_attribute("rag.top_k", limit)
-        try:
-            query_vec = embed(query, prefix="search_query")
-            client = get_qdrant()
-            results = client.query_points("claude-memory", query=query_vec, limit=limit)
-        except Exception as e:
-            span.set_attribute("rag.result_count", 0)
-            return f"Memory search error: {e}"
-
-        span.set_attribute("rag.result_count", len(results.points))
-        if results.points:
-            span.set_attribute("rag.top_score", results.points[0].score)
-
-        if not results.points:
-            return f"No memory entries found matching '{query}'."
-
-        lines = [f"Found {len(results.points)} memory entries:", ""]
-        for i, pt in enumerate(results.points, 1):
-            text = pt.payload.get("text", pt.payload.get("content", ""))[:300]
-            lines.append(f"**Entry {i}** (score: {pt.score:.2f})")
-            lines.append(f"  {text}")
-            lines.append("")
-
-        return "\n".join(lines)
-
-
 # ── Artifact Reads ───────────────────────────────────────────────────────────
 
 

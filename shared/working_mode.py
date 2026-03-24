@@ -7,7 +7,7 @@ This is the single mode system for the entire hapax stack.
 - **RESEARCH**: Degrade only things that might interfere with experiments.
 
 The mode file is written by the hapax-working-mode script and read by
-agents, timers, telemetry, relay protocol, waybar, and fish prompt.
+agents, timers, telemetry, relay protocol, hapax-bar, and fish prompt.
 """
 
 from __future__ import annotations

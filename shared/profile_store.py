@@ -140,8 +140,9 @@ class ProfileStore:
             )
             points, next_offset = results
             for pt in points:
-                dim = pt.payload.get("dimension", "")
-                key = pt.payload.get("key", "")
+                pt_payload = pt.payload or {}
+                dim = pt_payload.get("dimension", "")
+                key = pt_payload.get("key", "")
                 if (dim, key) not in current_keys:
                     stale_ids.append(pt.id)
             if next_offset is None:
@@ -199,10 +200,10 @@ class ProfileStore:
 
             result_list = [
                 {
-                    "dimension": p.payload.get("dimension", ""),
-                    "key": p.payload.get("key", ""),
-                    "value": p.payload.get("value", ""),
-                    "confidence": p.payload.get("confidence", 0.0),
+                    "dimension": (p.payload or {}).get("dimension", ""),
+                    "key": (p.payload or {}).get("key", ""),
+                    "value": (p.payload or {}).get("value", ""),
+                    "confidence": (p.payload or {}).get("confidence", 0.0),
                     "score": p.score,
                 }
                 for p in results.points

@@ -2,7 +2,7 @@ import { createContext, useContext, useCallback, useMemo, useState, type ReactNo
 
 export type RegionName = "horizon" | "field" | "ground" | "watershed" | "bedrock";
 export type Depth = "surface" | "stratum" | "core";
-export type Overlay = "voice" | "investigation" | null;
+export type Overlay = "voice" | "investigation" | "classification" | null;
 export type InvestigationTab = "chat" | "insight" | "demos";
 
 // ── Display Context ─────────────────────────────────────────────────────

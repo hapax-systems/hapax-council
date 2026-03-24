@@ -75,7 +75,7 @@ class Digest(BaseModel):
 
 # ── Data Collectors (zero LLM) ──────────────────────────────────────────────
 
-COLLECTIONS = ["documents", "samples", "claude-memory", "profile-facts"]
+COLLECTIONS = ["documents", "profile-facts"]
 
 
 def collect_recent_documents(hours: int = 24) -> list[dict]:

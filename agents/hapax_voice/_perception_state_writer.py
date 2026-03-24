@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 PERCEPTION_STATE_DIR = Path.home() / ".cache" / "hapax-voice"
 PERCEPTION_STATE_FILE = PERCEPTION_STATE_DIR / "perception-state.json"
+_perception_write_failures: int = 0
 
 # ── Supplementary content ring buffer ─────────────────────────────────────
 
@@ -319,8 +320,6 @@ def write_perception_state(
         # Vision classification
         "detected_objects": str(_bval("detected_objects", "[]")),
         "person_count": int(_bval("person_count", 0) or 0),
-        "pose_summary": str(_bval("pose_summary", "unknown")),
-        "scene_objects": str(_bval("scene_objects", "")),
         "scene_type": str(_bval("scene_type", "unknown")),
         "gaze_direction": str(_bval("gaze_direction", "unknown")),
         "hand_gesture": str(_bval("hand_gesture", "none")),
@@ -331,18 +330,13 @@ def write_perception_state(
         "face_count": int(_bval("face_count", 0) or 0),
         "operator_present": bool(_bval("operator_present", False))
         or int(_bval("person_count", 0) or 0) > 0,
-        "operator_confirmed": bool(_bval("operator_confirmed", False)),
         "activity_mode": str(_bval("activity_mode", "unknown")),
         "interruptibility_score": float(_bval("interruptibility_score", 0.9) or 0.9),
         "vad_confidence": float(_bval("vad_confidence", 0.0) or 0),
         "presence_score": float(_bval("presence_score", 0.0) or 0),
-        "nearest_person_distance": str(_bval("nearest_person_distance", "none")),
-        "detected_action": str(_bval("detected_action", "unknown")),
-        "audio_scene": str(_bval("audio_scene", "silence")),
         "scene_state_clip": str(_bval("scene_state_clip", "")),
         # Multi-camera scene consensus
         "per_camera_scenes": _safe_json_dict(_bval("per_camera_scenes", "{}")),
-        "room_occupancy": int(_bval("room_occupancy", 0) or 0),
         "usb_devices": str(_bval("usb_devices", "")),
         "network_devices": str(_bval("network_devices", "")),
         "active_contracts": active_contracts,
@@ -372,17 +366,16 @@ def write_perception_state(
         # KDE Connect phone awareness
         "phone_battery_pct": int(_bval("phone_battery_pct", 0) or 0),
         "phone_battery_charging": bool(_bval("phone_battery_charging", False)),
-        "phone_network_type": str(_bval("phone_network_type", "")),
         "phone_notification_count": int(_bval("phone_notification_count", 0) or 0),
-        "phone_media_app": str(_bval("phone_media_app", "")),
         "phone_kde_connected": bool(_bval("phone_kde_connected", False)),
         # Scene inventory (persistent object tracking)
         "scene_inventory": _parse_scene_inventory(_bval("scene_inventory", "{}")),
-        # Cognitive loop (turn phase + temperature)
-        "turn_phase": str(_bval("turn_phase", "")),
+        # Cognitive loop
         "cognitive_readiness": float(_bval("cognitive_readiness", 0.0) or 0.0),
-        "conversation_temperature": float(_bval("conversation_temperature", 0.0) or 0.0),
-        "predicted_tier": str(_bval("predicted_tier", "")),
+        # Local LLM classification (WS5)
+        "llm_activity": str(_bval("llm_activity", "")),
+        "llm_flow_hint": str(_bval("llm_flow_hint", "")),
+        "llm_confidence": float(_bval("llm_confidence", 0.0) or 0.0),
         # Voice session (Batch A)
         "voice_session": _snapshot_voice_session(session, pipeline),
         # Supplementary content (Batch B)
@@ -412,13 +405,23 @@ def write_perception_state(
     # Push to ring buffer for temporal depth (WS1)
     _push_to_ring(state)
 
+    global _perception_write_failures
     try:
         PERCEPTION_STATE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = PERCEPTION_STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(state), encoding="utf-8")
         tmp.rename(PERCEPTION_STATE_FILE)
+        _perception_write_failures = 0
     except OSError:
-        log.debug("Failed to write perception state", exc_info=True)
+        _perception_write_failures += 1
+        if _perception_write_failures <= 3:
+            log.warning(
+                "Failed to write perception state (%d consecutive)",
+                _perception_write_failures,
+                exc_info=True,
+            )
+        elif _perception_write_failures == 4:
+            log.error("Perception state write failing persistently — consumers are stale")
 
 
 # ── Perception Ring Buffer (WS1) ────────────────────────────────────────────

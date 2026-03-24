@@ -1254,6 +1254,18 @@ Single contributor: the operator (+ Dependabot).
 - claude-memory Qdrant collection empty (no ingestion pipeline)
 - Watch biometrics offline (Pixel Watch not transmitting)
 
+### Feature Audit Findings (2026-03-24)
+
+Full system feature audit: 110 features inventoried across 11 groups, all DONE. Five discrepancies investigated independently:
+
+| # | Finding | Action | Detail |
+|---|---------|--------|--------|
+| 1 | **Voice notification delivery unwired** | **Plan & implement** | `NotificationQueue`, `NotificationRouter`, `NtfyListener` all built and running — notifications queue but silently expire. Missing: `ConversationPipeline.inject_notification()` method + dequeue call in `cognitive_loop.py:_handle_silence()`. Small scope (~30 lines). |
+| 2 | **Reactive engine rule count: 14, not 17** | Skip | 14 rules in council, 12 in officium. "17" was never accurate (likely conflation). Spec `re-rule-count-001` asserts 10 (stale by 4, missing presence/consent/biometric/phone-health rules). Council CLAUDE.md says "12" (stale by 2). Docs are wrong but code is correct — cosmetic. |
+| 3 | **Hapax-bar: 18 of 20 planned modules** | **Plan & implement** | 15 source files → 18 logical module classes. Design doc planned 20. Missing: `CostModule` (LLM spend, endpoint already polled by `logos_client.py`) and `PrivacyModule` (PipeWire camera/mic-in-use indicator). Also: source files absent from worktree (only `__pycache__` remains at `hapax_bar/modules/`) — investigate. |
+| 4 | **MCP tool count: 34, not 40** | Skip | 34 tools in `server.py`, never was 40. Workspace `CLAUDE.md` claim inaccurate. hapax-mcp's own docs correct. ~50+ API endpoints uncovered (studio, consent, governance, chat, engine, all officium) but these are low-value for CLI interaction. |
+| 5 | **Watch voice relay deferred** | Skip | Gate condition (stable sensor pipeline) now met (Sprints 1–4 done). Keep deferring: voice daemon mid-research (salience routing, grounding), PyAudio/PipeWire virtual source gap unsolved, Sprint 5 (complications/watch face) is current. Pursue after voice research arc stabilizes. |
+
 ### Technical Debt
 
 - 17 Rust compiler warnings in hapax-logos (dead code, unused imports)

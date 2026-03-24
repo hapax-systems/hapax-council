@@ -561,6 +561,7 @@ export interface PerceptionState {
   pose_summary: string;
   scene_objects: string;
   scene_type: string;
+  per_camera_scenes?: Record<string, string>;
   gaze_direction: string;
   hand_gesture: string;
   nearest_person_distance: string;

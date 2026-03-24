@@ -59,13 +59,13 @@ def _get_watch_state_dir() -> Path:
 class SensorReading(BaseModel):
     type: str
     ts: str
-    bpm: float | None = None
+    bpm: float | None = Field(default=None, ge=0, le=300)
     confidence: str | None = None
-    rmssd_ms: float | None = None
-    eda_value: float | None = None
+    rmssd_ms: float | None = Field(default=None, ge=0, le=500)
+    eda_value: float | None = Field(default=None, ge=0)
     eda_event: bool | None = None
-    duration_seconds: float | None = None
-    temp_c: float | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+    temp_c: float | None = Field(default=None, ge=20, le=45)
     state: str | None = None
     value: float | None = None
 
@@ -73,7 +73,7 @@ class SensorReading(BaseModel):
 class SensorPayload(BaseModel):
     ts: int = Field(ge=0)  # epoch ms, must be non-negative
     device_id: str
-    readings: list[SensorReading]
+    readings: list[SensorReading] = Field(max_length=500)
     battery_pct: int | None = Field(default=None, ge=0, le=100)
 
 

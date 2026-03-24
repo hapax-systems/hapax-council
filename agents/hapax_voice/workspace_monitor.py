@@ -223,31 +223,6 @@ class WorkspaceMonitor:
         if self._cycles_since_cloud >= self._force_cloud_every_n:
             return False
 
-        # Read local confidence from perception state
-        try:
-            import json
-            from pathlib import Path
-
-            state_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
-            data = json.loads(state_path.read_text(encoding="utf-8"))
-            confidence = float(data.get("llm_confidence", 0.0))
-            llm_activity = data.get("llm_activity", "")
-
-            if confidence >= self._local_confidence_threshold and llm_activity:
-                self._local_skip_count += 1
-                log.debug(
-                    "WS5: skipping Gemini — local LLM confident (%.2f, activity=%s, "
-                    "skips=%d/%d, cloud in %d)",
-                    confidence,
-                    llm_activity,
-                    self._local_skip_count,
-                    self._local_total_count,
-                    self._force_cloud_every_n - self._cycles_since_cloud,
-                )
-                return True
-        except Exception:
-            pass
-
         return False
 
     async def _capture_and_analyze(self) -> None:
@@ -323,8 +298,7 @@ class WorkspaceMonitor:
         """Compare cloud (Gemini) activity with local LLM activity.
 
         When the local model was confident but Gemini disagrees, log the
-        disagreement as a signal for the correction synthesis pipeline.
-        Writes to /dev/shm so the visual layer aggregator can pick it up.
+        disagreement for the correction synthesis pipeline.
         """
         try:
             import json
@@ -338,7 +312,6 @@ class WorkspaceMonitor:
             if not local_activity or local_confidence < 0.5:
                 return
 
-            # Map cloud app/context to a comparable activity label
             cloud_activity = self._infer_activity_from_analysis(cloud_analysis)
             if not cloud_activity:
                 return
@@ -351,27 +324,10 @@ class WorkspaceMonitor:
                     local_confidence,
                     cloud_activity,
                 )
-                # Write disagreement to shm for downstream consumption
-                disagreement_path = Path("/dev/shm/hapax-logos/model-disagreement.json")
-                disagreement_path.parent.mkdir(parents=True, exist_ok=True)
-                disagreement_path.write_text(
-                    json.dumps(
-                        {
-                            "local_activity": local_activity,
-                            "local_confidence": local_confidence,
-                            "cloud_activity": cloud_activity,
-                            "cloud_app": cloud_analysis.app,
-                            "timestamp": time.time(),
-                        }
-                    )
-                )
             else:
                 self._agreement_count += 1
-
-            # Adaptive threshold: adjust based on disagreement rate
-            self._maybe_adjust_threshold()
         except Exception:
-            pass  # best-effort, don't break the main loop
+            pass
 
     def _maybe_adjust_threshold(self) -> None:
         """Adjust local confidence threshold based on disagreement history.

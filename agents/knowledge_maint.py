@@ -48,7 +48,7 @@ _tracer = trace.get_tracer(__name__)
 
 from shared.config import EXPECTED_EMBED_DIMENSIONS as EXPECTED_DIMENSIONS
 
-COLLECTIONS = ["documents", "samples", "claude-memory", "profile-facts"]
+COLLECTIONS = ["documents", "profile-facts"]
 DEFAULT_SCORE_THRESHOLD = 0.98
 
 

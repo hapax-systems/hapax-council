@@ -70,7 +70,45 @@ class TestCloudGate:
 
         return WorkspaceMonitor(enabled=False)
 
-    def test_cloud_skip_disabled(self):
-        """Cloud-skip feature is currently disabled — method always returns False."""
+    def test_skip_disabled_always_returns_false(self):
+        """After WS5 simplification, _should_skip_cloud() always returns False
+        (local confidence gating was removed; cloud is always called)."""
         monitor = self._make_monitor()
-        assert monitor._should_skip_cloud() is False
+        result = monitor._should_skip_cloud()
+        assert result is False
+
+    def test_no_skip_when_low_confidence(self, tmp_path):
+        monitor = self._make_monitor()
+        cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-voice"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "perception-state.json").write_text(
+            json.dumps({"llm_confidence": 0.3, "llm_activity": "idle"})
+        )
+        with patch("pathlib.Path.home", return_value=tmp_path / "fake_home"):
+            result = monitor._should_skip_cloud()
+        assert result is False
+
+    def test_always_returns_false_tracks_counters(self):
+        """After WS5 simplification, all calls return False; counters still track."""
+        monitor = self._make_monitor()
+        for _i in range(6):
+            assert monitor._should_skip_cloud() is False
+        assert monitor._local_total_count == 6
+        assert monitor._cycles_since_cloud == 6
+
+    def test_no_skip_when_file_missing(self):
+        monitor = self._make_monitor()
+        # No state file → should not skip
+        result = monitor._should_skip_cloud()
+        assert result is False
+
+    def test_no_skip_when_no_activity(self, tmp_path):
+        monitor = self._make_monitor()
+        cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-voice"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "perception-state.json").write_text(
+            json.dumps({"llm_confidence": 0.9, "llm_activity": ""})
+        )
+        with patch("pathlib.Path.home", return_value=tmp_path / "fake_home"):
+            result = monitor._should_skip_cloud()
+        assert result is False

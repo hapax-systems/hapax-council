@@ -101,8 +101,10 @@ class PrecedentStore:
             "superseded_by": precedent.superseded_by or "",
         }
 
-    def _from_payload(self, point_id: str, payload: dict) -> Precedent:
+    def _from_payload(self, point_id: str | object, payload: dict | None) -> Precedent:
         """Convert a Qdrant payload back to a Precedent."""
+        if payload is None:
+            payload = {}
         facts = payload.get("distinguishing_facts", "[]")
         if isinstance(facts, str):
             try:

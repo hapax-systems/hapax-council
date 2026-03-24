@@ -24,7 +24,12 @@ esac
 # --- 2b. Extract the file path being edited ---
 edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // empty' 2>/dev/null || true)"
 
-# --- 3. Determine git context from CWD ---
+# --- 3. Determine git context from file path (not CWD) ---
+# The Edit tool may run with CWD in a different repo than the file being edited.
+# cd to the file's directory so all git/gh commands resolve the correct repo.
+if [[ -n "$edit_path" && -d "$(dirname "$edit_path")" ]]; then
+  cd "$(dirname "$edit_path")" || exit 0
+fi
 if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   exit 0
 fi

@@ -8,6 +8,7 @@ import { WatershedRegion } from "./regions/WatershedRegion";
 import { BedrockRegion } from "./regions/BedrockRegion";
 import { VoiceOverlay } from "./overlays/VoiceOverlay";
 import { InvestigationOverlay } from "./overlays/InvestigationOverlay";
+import { ClassificationInspector } from "./overlays/ClassificationInspector";
 import { AgentOutputDrawer } from "./AgentOutputDrawer";
 import { SplitPane } from "./SplitPane";
 import { DetailPane } from "./DetailPane";
@@ -288,6 +289,12 @@ export function TerrainLayout() {
         return;
       }
 
+      if (e.key.toLowerCase() === "c" && !e.ctrlKey && !e.metaKey && !isInput && activeOverlay !== "investigation") {
+        e.preventDefault();
+        setOverlay(activeOverlay === "classification" ? null : "classification");
+        return;
+      }
+
       if (e.key === "Escape") {
         // Don't navigate when exiting fullscreen — browser handles that Escape
         if (document.fullscreenElement) return;
@@ -457,6 +464,9 @@ export function TerrainLayout() {
 
         {/* z-40: Investigation overlay */}
         <InvestigationOverlay />
+
+        {/* z-40: Classification inspector */}
+        <ClassificationInspector />
 
         {/* z-50: Voice overlay */}
         <VoiceOverlay vl={vl} />

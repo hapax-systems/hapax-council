@@ -29,7 +29,7 @@ export function OperatorVitals({ biometrics, freshness = 1.0 }: OperatorVitalsPr
           className="w-1 h-1 rounded-full"
           style={{
             backgroundColor: "var(--color-red-400)",
-            animation: "signal-breathe-fast 1s ease-in-out infinite",
+            animation: "signal-breathe-fast 1.5s ease-in-out infinite",
           }}
         />
       )}
@@ -46,7 +46,9 @@ export function OperatorVitals({ biometrics, freshness = 1.0 }: OperatorVitalsPr
                   ? "var(--color-green-400)"
                   : physiological_load < 0.7
                     ? "var(--color-yellow-400)"
-                    : "var(--color-red-400)",
+                    : physiological_load < 0.85
+                      ? "var(--color-orange-400)"
+                      : "var(--color-red-400)",
             }}
           />
         </div>
@@ -82,7 +84,9 @@ export function OperatorVitals({ biometrics, freshness = 1.0 }: OperatorVitalsPr
                   ? "var(--color-green-400)"
                   : phone_battery_pct > 15
                     ? "var(--color-yellow-400)"
-                    : "var(--color-red-400)",
+                    : phone_battery_pct > 5
+                      ? "var(--color-orange-400)"
+                      : "var(--color-red-400)",
             }}
           />
         </div>

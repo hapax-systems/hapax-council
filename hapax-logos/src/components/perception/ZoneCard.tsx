@@ -4,8 +4,8 @@ import type { SignalEntry } from "../../api/types";
 function severityStyle(severity: number): { border: string; dot: string; text: string } {
   if (severity >= 0.85) return { border: "border-l-red-400", dot: "bg-red-400", text: "text-red-300" };
   if (severity >= 0.7) return { border: "border-l-orange-400", dot: "bg-orange-400", text: "text-orange-300" };
-  if (severity >= 0.4) return { border: "border-l-amber-400", dot: "bg-amber-400", text: "text-amber-200" };
-  if (severity >= 0.2) return { border: "border-l-zinc-300", dot: "bg-zinc-300", text: "text-zinc-200" };
+  if (severity >= 0.4) return { border: "border-l-yellow-400", dot: "bg-yellow-400", text: "text-yellow-200" };
+  if (severity >= 0.2) return { border: "border-l-zinc-400", dot: "bg-zinc-400", text: "text-zinc-200" };
   return { border: "border-l-zinc-500", dot: "bg-zinc-500", text: "text-zinc-300" };
 }
 

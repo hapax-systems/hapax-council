@@ -9,7 +9,7 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 **Filesystem-as-bus**: Agents read/write markdown files with YAML frontmatter on disk. A reactive engine (inotify) watches for changes and cascades downstream work.
 
 **Three tiers**:
-- **Tier 1** — Interactive interfaces (hapax-logos React SPA at :5173, VS Code extension)
+- **Tier 1** — Interactive interfaces (hapax-logos React SPA at :5173, hapax-bar GTK4 status bar, VS Code extension)
 - **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000)
 - **Tier 3** — Deterministic agents (sync, health, maintenance — no LLM calls)
 
@@ -17,11 +17,11 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 
 **Infrastructure**: Docker Compose for databases/proxies (13 containers), systemd user units for all application services. No process-compose in production. See `systemd/README.md` for boot sequence, resource isolation, and recovery chain.
 
-**Key services**: `hapax-secrets` (credentials) → `logos-api` (:8051) → `hapax-voice` (GPU) → `visual-layer-aggregator` → `studio-compositor` (GPU). 41 timers for sync, health, backups.
+**Key services**: `hapax-secrets` (credentials) → `logos-api` (:8051) → `hapax-bar` (GTK4 status bar) → `hapax-voice` (GPU) → `visual-layer-aggregator` → `studio-compositor` (GPU). 41 timers for sync, health, backups.
 
 ## Design Language
 
-`docs/logos-design-language.md` is the authority document for all visual surfaces. It governs color (§3), typography (§1.6), spatial model (§4), animation (§6), mode switching (§2), and scope (§11). All component colors must use CSS custom properties (`var(--color-*)`) or Tailwind classes — no hardcoded hex except detection overlays (§3.6). `docs/logos-ui-reference.md` governs region content (what appears at each depth).
+`docs/logos-design-language.md` is the authority document for all visual surfaces. It governs color (§3), typography (§1.6), spatial model (§4), animation (§6), mode switching (§2), and scope (§11). All component colors must use CSS custom properties (`var(--color-*)`) or Tailwind classes — no hardcoded hex except detection overlays (§3.8). `docs/logos-ui-reference.md` governs region content (what appears at each depth). Classification inspector (`C` key) is exempt from density rules — diagnostic tool with theme-aware colors.
 
 ## Logos API
 

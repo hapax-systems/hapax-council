@@ -1,0 +1,246 @@
+/* Hapax Bar — Research mode (Solarized Dark) */
+
+:root {
+    --bg-primary: #002b36;
+    --bg-secondary: #073642;
+    --bg-tertiary: #073642;
+    --text-primary: #93a1a1;
+    --text-secondary: #839496;
+    --text-dim: #586e75;
+    --border: #073642;
+
+    --green-400: #859900;
+    --yellow-400: #b58900;
+    --orange-400: #cb4b16;
+    --red-400: #dc322f;
+    --blue-400: #268bd2;
+    --purple-400: #6c71c4;
+    --aqua-400: #2aa198;
+    --zinc-700: #586e75;
+}
+
+* {
+    font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: none;
+    border: none;
+    min-height: 0;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+}
+
+window.bar > centerbox {
+    background-color: var(--bg-primary);
+    padding: 2px 4px;
+    min-height: 24px;
+}
+
+window.bar > centerbox > box {
+    min-height: 24px;
+}
+
+.module {
+    padding: 2px 6px;
+}
+
+.workspaces button {
+    padding: 2px 6px;
+    min-width: 20px;
+    border-bottom: 2px solid transparent;
+}
+
+.workspaces button.focused {
+    border-bottom-color: var(--blue-400);
+    color: var(--blue-400);
+}
+
+.workspaces button.urgent {
+    border-bottom-color: var(--red-400);
+    color: var(--red-400);
+}
+
+.window-title {
+    color: var(--text-dim);
+}
+
+.submap {
+    color: var(--yellow-400);
+    font-weight: bold;
+}
+
+.working-mode {
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+
+.working-mode.rnd {
+    background-color: var(--yellow-400);
+    color: var(--bg-primary);
+}
+
+.working-mode.research {
+    background-color: var(--blue-400);
+    color: var(--bg-primary);
+}
+
+.health.healthy {
+    color: var(--green-400);
+}
+
+.health.degraded {
+    color: var(--orange-400);
+}
+
+.health.failed {
+    color: var(--red-400);
+}
+
+.gpu.normal {
+    color: var(--text-primary);
+}
+
+.gpu.warning {
+    color: var(--yellow-400);
+}
+
+.gpu.critical {
+    color: var(--red-400);
+}
+
+.sysinfo {
+    color: var(--text-primary);
+}
+
+.temperature.critical {
+    color: var(--red-400);
+}
+
+.audio.muted {
+    color: var(--zinc-700);
+}
+
+.network.connected {
+    color: var(--green-400);
+}
+
+.network.disconnected {
+    color: var(--red-400);
+}
+
+.docker.warning {
+    color: var(--orange-400);
+}
+
+.systemd-failed {
+    color: var(--red-400);
+    font-weight: bold;
+}
+
+.clock {
+    color: var(--text-primary);
+}
+
+.idle.active {
+    color: var(--yellow-400);
+}
+
+.privacy {
+    color: var(--red-400);
+}
+
+.mpris {
+    color: var(--text-secondary);
+}
+
+.mpris.paused {
+    color: var(--zinc-700);
+}
+
+.tray > * + * {
+    margin-left: 4px;
+}
+
+.tray image {
+    -gtk-icon-size: 14px;
+}
+
+@keyframes flash {
+    0% { background-color: transparent; }
+    50% { background-color: var(--yellow-400); }
+    100% { background-color: transparent; }
+}
+
+.flash {
+    animation: flash 0.5s ease-in-out 3;
+}
+
+.toast {
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-weight: bold;
+}
+
+.toast.healthy {
+    background-color: var(--green-400);
+    color: var(--bg-primary);
+}
+
+.toast.degraded {
+    background-color: var(--orange-400);
+    color: var(--bg-primary);
+}
+
+.toast.failed {
+    background-color: var(--red-400);
+    color: var(--bg-primary);
+}
+
+/* Stimmung field */
+.stimmung-field {
+    min-width: 200px;
+}
+
+/* Seam layer */
+.seam-overlay {
+    background: transparent;
+}
+
+.seam-dismiss {
+    background: transparent;
+}
+
+.seam-panel {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 16px;
+    min-width: 500px;
+    /* max-width not supported in GTK4 CSS */
+}
+
+.metrics-panel {
+    padding: 4px 0;
+}
+
+.metrics-row {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.stimmung-detail {
+    padding: 4px 0;
+    border-top: 1px solid var(--border);
+}
+
+.stimmung-stance {
+    font-weight: bold;
+    font-size: 11px;
+}
+
+.stimmung-dims {
+    font-size: 10px;
+    color: var(--text-dim);
+}
