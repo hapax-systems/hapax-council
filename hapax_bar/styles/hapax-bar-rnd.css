@@ -1,0 +1,213 @@
+/* Hapax Bar — R&D mode (Gruvbox Hard Dark) */
+
+:root {
+    --bg-primary: #1d2021;
+    --bg-secondary: #282828;
+    --bg-tertiary: #3c3836;
+    --text-primary: #ebdbb2;
+    --text-secondary: #a89984;
+    --text-dim: #665c54;
+    --border: #3c3836;
+
+    --green-400: #b8bb26;
+    --yellow-400: #fabd2f;
+    --orange-400: #fe8019;
+    --red-400: #fb4934;
+    --blue-400: #83a598;
+    --purple-400: #d3869b;
+    --aqua-400: #8ec07c;
+    --zinc-700: #665c54;
+}
+
+* {
+    all: unset;
+    font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+window.bar > centerbox {
+    background-color: var(--bg-primary);
+    padding: 2px 4px;
+    min-height: 24px;
+}
+
+window.bar > centerbox > box {
+    min-height: 24px;
+}
+
+/* Module containers */
+.module {
+    padding: 2px 6px;
+}
+
+/* Workspace buttons */
+.workspaces button {
+    padding: 2px 6px;
+    min-width: 20px;
+    border-bottom: 2px solid transparent;
+}
+
+.workspaces button.focused {
+    border-bottom-color: var(--yellow-400);
+    color: var(--yellow-400);
+}
+
+.workspaces button.urgent {
+    border-bottom-color: var(--red-400);
+    color: var(--red-400);
+}
+
+/* Window title */
+.window-title {
+    color: var(--text-dim);
+}
+
+/* Submap indicator */
+.submap {
+    color: var(--yellow-400);
+    font-weight: bold;
+}
+
+/* Working mode badge */
+.working-mode {
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+
+.working-mode.rnd {
+    background-color: var(--yellow-400);
+    color: var(--bg-primary);
+}
+
+.working-mode.research {
+    background-color: var(--green-400);
+    color: var(--bg-primary);
+}
+
+/* Health status */
+.health.healthy {
+    color: var(--green-400);
+}
+
+.health.degraded {
+    color: var(--orange-400);
+}
+
+.health.failed {
+    color: var(--red-400);
+}
+
+/* GPU */
+.gpu.normal {
+    color: var(--text-primary);
+}
+
+.gpu.warning {
+    color: var(--orange-400);
+}
+
+.gpu.critical {
+    color: var(--red-400);
+}
+
+/* System info */
+.sysinfo {
+    color: var(--text-primary);
+}
+
+.temperature.critical {
+    color: var(--red-400);
+}
+
+/* Audio */
+.audio.muted {
+    color: var(--zinc-700);
+}
+
+/* Network */
+.network.connected {
+    color: var(--green-400);
+}
+
+.network.disconnected {
+    color: var(--red-400);
+}
+
+/* Docker */
+.docker.warning {
+    color: var(--orange-400);
+}
+
+/* Systemd failed */
+.systemd-failed {
+    color: var(--red-400);
+    font-weight: bold;
+}
+
+/* Clock */
+.clock {
+    color: var(--text-primary);
+}
+
+/* Idle inhibitor */
+.idle.active {
+    color: var(--yellow-400);
+}
+
+/* Privacy indicators */
+.privacy {
+    color: var(--red-400);
+}
+
+/* MPRIS */
+.mpris {
+    color: var(--text-secondary);
+}
+
+.mpris.paused {
+    color: var(--zinc-700);
+}
+
+/* Tray */
+.tray > * + * {
+    margin-left: 4px;
+}
+
+.tray image {
+    -gtk-icon-size: 14px;
+}
+
+/* Flash animation */
+@keyframes flash {
+    0% { background-color: transparent; }
+    50% { background-color: var(--yellow-400); }
+    100% { background-color: transparent; }
+}
+
+.flash {
+    animation: flash 0.5s ease-in-out 3;
+}
+
+/* Toast */
+.toast {
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-weight: bold;
+}
+
+.toast.healthy {
+    background-color: var(--green-400);
+    color: var(--bg-primary);
+}
+
+.toast.degraded {
+    background-color: var(--orange-400);
+    color: var(--bg-primary);
+}
+
+.toast.failed {
+    background-color: var(--red-400);
+    color: var(--bg-primary);
+}
