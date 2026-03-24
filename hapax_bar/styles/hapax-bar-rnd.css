@@ -31,14 +31,41 @@
     margin: 0;
 }
 
+/* Single bar fallback */
 window.bar > centerbox {
     background-color: var(--bg-primary);
     padding: 2px 4px;
     min-height: 24px;
 }
 
-window.bar > centerbox > box {
+/* Horizon (top) — ambient, semi-transparent, cool */
+window.horizon > centerbox {
+    background-color: var(--bg-primary);
+    padding: 2px 4px;
     min-height: 24px;
+}
+
+window.horizon label {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+window.horizon .workspaces button {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+/* Bedrock (bottom) — grounded, opaque, interactive */
+window.bedrock > centerbox {
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    padding: 2px 4px;
+    min-height: 32px;
+}
+
+window.bedrock label {
+    font-size: 12px;
+    color: var(--text-secondary);
 }
 
 /* Module containers */

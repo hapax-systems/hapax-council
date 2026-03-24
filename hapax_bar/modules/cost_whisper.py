@@ -24,7 +24,7 @@ class CostWhisper(Gtk.DrawingArea):
         self._spend_today: float = 0.0
         self._daily_budget: float = 50.0  # default assumption
 
-        self.set_draw_func(self._draw)
+        self.set_draw_func(self._draw, None)
         self._poll_id = poll_api(fetch_cost, 300_000, self._update)
 
     def _update(self, data: dict) -> None:

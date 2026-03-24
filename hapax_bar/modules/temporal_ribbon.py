@@ -26,7 +26,7 @@ class TemporalRibbon(Gtk.DrawingArea):
         self._next_event_name: str = ""
         self._use_short_format = True
 
-        self.set_draw_func(self._draw)
+        self.set_draw_func(self._draw, None)
 
         # Redraw every 30s (temporal changes slowly)
         GLib.timeout_add(30_000, self._tick)
