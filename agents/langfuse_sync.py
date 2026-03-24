@@ -55,6 +55,7 @@ LANGFUSE_DIR = RAG_SOURCES / "langfuse"
 MAX_PROMPT_CHARS = 500
 ROLLING_WINDOW_DAYS = 30
 TRACES_PER_PAGE = 100
+MAX_INCREMENTAL_PAGES = 5  # Cap incremental sync at 500 traces; next timer run catches up
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -226,12 +227,13 @@ def _fetch_traces(
     auth_header: str,
     from_timestamp: str | None = None,
     limit: int = TRACES_PER_PAGE,
+    max_pages: int = MAX_PAGES,
 ) -> list[dict]:
     """Fetch traces from Langfuse API, handling pagination."""
     all_traces: list[dict] = []
     page = 1
 
-    while page <= MAX_PAGES:
+    while page <= max_pages:
         params: dict[str, str | int] = {
             "limit": limit,
             "page": page,
@@ -514,17 +516,27 @@ OBSERVATION_BATCH_SIZE = 50  # Fetch observations in batches of 50 traces
 def _sync_traces(
     state: LangfuseSyncState,
     from_timestamp: str | None = None,
+    max_pages: int = MAX_PAGES,
+    save_progress: bool = False,
+    skip_observations: bool = False,
 ) -> list[TraceSummary]:
     """Fetch and process traces from Langfuse. Returns list of summaries.
 
     Fetches observations in batches with circuit breaker to avoid
     overwhelming Langfuse with thousands of sequential HTTP requests.
+
+    When save_progress=True, state and high-water mark are saved after each
+    batch so the process can be killed without losing all progress.
+
+    When skip_observations=True, traces are processed without per-trace
+    observation fetches (avoids N+1 HTTP calls). Model/cost data will be
+    empty but timestamps and names still advance the high-water mark.
     """
     global _consecutive_failures
     _consecutive_failures = 0  # Reset circuit breaker per sync run
 
     auth_header = _langfuse_auth_header()
-    raw_traces = _fetch_traces(auth_header, from_timestamp=from_timestamp)
+    raw_traces = _fetch_traces(auth_header, from_timestamp=from_timestamp, max_pages=max_pages)
 
     if not raw_traces:
         log.info("No traces returned from Langfuse")
@@ -560,14 +572,19 @@ def _sync_traces(
                     state.error_count += 1
             break
 
-        obs_by_trace = _fetch_observations_batch(auth_header, trace_ids)
+        if skip_observations:
+            obs_by_trace: dict[str, list[dict]] = {}
+        else:
+            obs_by_trace = _fetch_observations_batch(auth_header, trace_ids)
 
+        batch_summaries: list[TraceSummary] = []
         for trace_data in batch:
             try:
                 tid = trace_data.get("id", "")
                 observations = obs_by_trace.get(tid, [])
                 summary = _process_trace(trace_data, observations)
                 summaries.append(summary)
+                batch_summaries.append(summary)
             except Exception as exc:
                 log.warning(
                     "Failed to process trace %s: %s",
@@ -582,6 +599,12 @@ def _sync_traces(
             min(i + OBSERVATION_BATCH_SIZE, len(raw_traces)),
             len(raw_traces),
         )
+
+        # Save progress after each batch so timeout doesn't lose all work
+        if save_progress and batch_summaries:
+            _update_state(state, batch_summaries)
+            _save_state(state)
+            log.debug("Checkpoint saved — high-water mark: %s", state.last_trace_timestamp)
 
     return summaries
 
@@ -634,12 +657,23 @@ def _full_sync(state: LangfuseSyncState) -> int:
 
 
 def _incremental_sync(state: LangfuseSyncState) -> int:
-    """Incremental sync: fetch traces since last sync timestamp."""
+    """Incremental sync: fetch traces since last sync timestamp.
+
+    Caps at MAX_INCREMENTAL_PAGES pages per run and saves state progressively
+    so that timeouts don't cause a death spiral of re-fetching the same traces.
+    """
     from_ts = state.last_trace_timestamp or None
-    summaries = _sync_traces(state, from_timestamp=from_ts)
+    summaries = _sync_traces(
+        state,
+        from_timestamp=from_ts,
+        max_pages=MAX_INCREMENTAL_PAGES,
+        save_progress=True,
+        skip_observations=True,
+    )
     litellm_spend = _fetch_litellm_spend()
 
     files_written = _write_daily_files(summaries, litellm_spend)
+    # Final state save (progressive saves already advanced high-water mark)
     _update_state(state, summaries)
     _prune_old_files()
 
