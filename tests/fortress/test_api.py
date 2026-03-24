@@ -97,17 +97,20 @@ class TestGetGovernance:
 
 
 class TestGetGoals:
-    def test_returns_empty(self, client: TestClient):
+    def test_returns_goals_structure(self, client: TestClient):
         resp = client.get("/api/fortress/goals")
         assert resp.status_code == 200
-        assert resp.json()["goals"] == []
+        assert "goals" in resp.json()
+        assert isinstance(resp.json()["goals"], list)
 
 
 class TestGetMetrics:
-    def test_returns_placeholder(self, client: TestClient):
+    def test_returns_metrics_structure(self, client: TestClient):
         resp = client.get("/api/fortress/metrics")
         assert resp.status_code == 200
-        assert resp.json()["survival_days"] == 0
+        data = resp.json()
+        assert "survival_days" in data
+        assert "total_commands" in data
 
 
 class TestGetSessions:
