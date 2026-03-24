@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-23 (session 13 — boundary contract enforcement)
+**Last updated:** 2026-03-24 (session 13 — boundary contracts + test suite repair)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -238,6 +238,8 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 **Schemathesis actionable findings:** (a) `POST /api/logos/directive` accepts `bool` for `detection_tier` field declared as `int | None` — Pydantic v2 lax mode coerces `bool→int`. (b) Missing error handling in `consent/create` (unhandled filesystem I/O), `consent/overhead` (unhandled ImportError), `engine/audit` (overbroad exception handler). (c) Environment-dependent 500s in `working-mode`/`cycle-mode` PUT (shell script not available in ASGI test) and `studio/moments/search` (Qdrant not reachable in test).
 
 **Design document:** `docs/boundary-contract-enforcement.md` — full problem statement, design rationale, implementation details, smoke test results, failure triage, future work.
+
+**Stale test repair (PR #287):** 9 test files updated to match intentional code changes. No code bugs — all failures were tests lagging behind API changes: STT model default (parakeet to distil-large-v3), perception guest_count property, removed search_conv_memory tool, notification path additions, 4 new nudge collectors, disabled cloud-skip feature, conversation buffer constant rename, profiler sync/watch fact sources, voice check process-compose httpx path. 20+ failures resolved.
 
 ## Operator Research Preferences
 
