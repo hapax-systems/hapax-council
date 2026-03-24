@@ -114,6 +114,7 @@ export function CompositeCanvas({
     };
 
     // Helper: draw main frame with warp/slices/simple
+    // skipWarp: true when trails active — animated warp + persistence = illegible smearing
     const drawMainFrame = (
       ctx: CanvasRenderingContext2D,
       main: HTMLImageElement,
@@ -121,9 +122,10 @@ export function CompositeCanvas({
       filter: string,
       alpha: number,
       blendMode: string,
+      skipWarp = false,
     ) => {
       const p = presetRef.current;
-      const warpCfg = p.warp;
+      const warpCfg = skipWarp ? undefined : p.warp;
 
       if (warpCfg && warpCfg.sliceCount > 0) {
         const t = tick * 0.04;
@@ -402,13 +404,13 @@ export function CompositeCanvas({
         ctx.restore();
 
         // 3. DRAW MAIN with trail blend mode + trail filter
-        drawMainFrame(ctx, main, w, h, cachedTrailFilter, effectiveAlpha, trail.blendMode);
+        drawMainFrame(ctx, main, w, h, cachedTrailFilter, effectiveAlpha, trail.blendMode, true);
 
         // 4. OVERLAY + POST-EFFECTS (baked into persistence, only on new frames)
         drawOverlayAndEffects(main, w, h, cachedTrailFilter);
 
       } else {
-        // --- NO TRAILS: clear and redraw every rAF tick ---
+        // --- NO TRAILS: clear and redraw every rAF tick (warp OK here) ---
         ctx.clearRect(0, 0, w, h);
         drawMainFrame(ctx, main, w, h, cachedMainFilter, 1, "source-over");
         drawOverlayAndEffects(main, w, h, cachedMainFilter);
