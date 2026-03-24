@@ -9,7 +9,22 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
 
-from logos.query_dispatch import classify_query, get_agent_list, run_query
+try:
+    from logos.query_dispatch import classify_query, get_agent_list, run_query
+except Exception:
+    import logging as _log
+
+    _log.getLogger(__name__).warning("Failed to import query_dispatch — query endpoints disabled")
+
+    def classify_query(query: str) -> str:  # type: ignore[misc]
+        raise RuntimeError("query_dispatch not available")
+
+    def run_query(*args, **kwargs):  # type: ignore[misc]
+        raise RuntimeError("query_dispatch not available")
+
+    def get_agent_list():  # type: ignore[misc]
+        return []
+
 
 log = logging.getLogger(__name__)
 
