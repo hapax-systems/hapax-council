@@ -351,20 +351,17 @@ end
 
 -- Find embark center
 local function find_embark_center()
-    -- Method 1: Wagon
+    -- Method 1: Wagon (any wagon, not just age==0)
     local wagons_ok, wagons = pcall(function() return df.global.world.buildings.other.WAGON end)
-    if wagons_ok and wagons then
-        for _, wagon in ipairs(wagons) do
-            if wagon.age == 0 then
-                return wagon.centerx, wagon.centery, wagon.z
-            end
-        end
+    if wagons_ok and wagons and #wagons > 0 then
+        local wagon = wagons[0]
+        return wagon.centerx, wagon.centery, wagon.z
     end
     -- Method 2: First citizen position
     local citizens = get_citizens()
     if #citizens > 0 then
-        local pos = dfhack.units.getPosition(citizens[1])
-        if pos then return pos.x, pos.y, pos.z end
+        local unit = citizens[1]
+        return unit.pos.x, unit.pos.y, unit.pos.z
     end
     return nil, nil, nil
 end
@@ -589,17 +586,9 @@ local function start()
     -- Initial full export
     export_full()
 
-    -- Enable labor management
-    -- Enable labor management (autolabor available in 53.x, labormanager may not be)
-    local labor_ok, labor_err = pcall(function()
-        dfhack.run_command("enable", "labormanager")
-    end)
-    if not labor_ok then
-        pcall(function() dfhack.run_command("enable", "autolabor") end)
-        dfhack.println("hapax-df-bridge: autolabor enabled (labormanager unavailable)")
-    else
-        dfhack.println("hapax-df-bridge: labormanager enabled")
-    end
+    -- Enable labor management — autolabor (labormanager not in this build)
+    pcall(function() dfhack.run_command("enable", "autolabor") end)
+    dfhack.println("hapax-df-bridge: autolabor enabled")
 
     dfhack.println("hapax-df-bridge: started")
 end

@@ -72,18 +72,15 @@ def _encode_planner(
             ctx.dig_center_y = cy
             ctx.dig_z = cz - 1  # one level below surface
 
-            # Dig stairs to connect — ONLY dig this cycle, don't build yet
+            # Dig room — send sentinel (0,0,0), Lua auto-detects center + dig layer
             actions.append(
                 {
                     "action": "dig_room",
-                    "x": cx - 5,
-                    "y": cy - 5,
-                    "z": cz - 1,
+                    "x": 0,
+                    "y": 0,
+                    "z": 0,
                     "width": 11,
                     "height": 11,
-                    "stair_x": cx,
-                    "stair_y": cy,
-                    "stair_z_surface": cz,
                 }
             )
             ctx.room_dug = True
