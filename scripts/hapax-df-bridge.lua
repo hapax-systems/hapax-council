@@ -335,6 +335,65 @@ local function export_full()
     end
 end
 
+-- Find embark center
+local function find_embark_center()
+    -- Method 1: Wagon
+    local wagons_ok, wagons = pcall(function() return df.global.world.buildings.other.WAGON end)
+    if wagons_ok and wagons then
+        for _, wagon in ipairs(wagons) do
+            if wagon.age == 0 then
+                return wagon.centerx, wagon.centery, wagon.z
+            end
+        end
+    end
+    -- Method 2: First citizen position
+    local citizens = get_citizens()
+    if #citizens > 0 then
+        local pos = dfhack.units.getPosition(citizens[1])
+        if pos then return pos.x, pos.y, pos.z end
+    end
+    return nil, nil, nil
+end
+
+-- Find diggable layer below surface
+local function find_dig_layer(cx, cy, surface_z)
+    for z = surface_z - 1, surface_z - 20, -1 do
+        local tt = dfhack.maps.getTileType(cx, cy, z)
+        if tt then
+            local attrs = df.tiletype.attrs[tt]
+            if attrs.shape == df.tiletype_shape.WALL
+               and not dfhack.maps.isTileAquifer(xyz2pos(cx, cy, z)) then
+                return z
+            end
+        end
+    end
+    return surface_z - 1  -- fallback
+end
+
+-- Designate rectangular area for digging
+local function designate_rect(x1, y1, z, x2, y2, dig_type)
+    dig_type = dig_type or df.tile_dig_designation.Default
+    local count = 0
+    for x = math.min(x1,x2), math.max(x1,x2) do
+        for y = math.min(y1,y2), math.max(y1,y2) do
+            local flags = dfhack.maps.getTileFlags(x, y, z)
+            if flags then
+                local tt = dfhack.maps.getTileType(x, y, z)
+                if tt then
+                    local attrs = df.tiletype.attrs[tt]
+                    if attrs.shape == df.tiletype_shape.WALL then
+                        flags.dig = dig_type
+                        dfhack.maps.getTileBlock(x, y, z).flags.designated = true
+                        count = count + 1
+                    end
+                end
+            end
+        end
+    end
+    dfhack.job.checkDesignationsNow()
+    return count
+end
+
 -- Poll for commands
 local function poll_commands()
     local f = io.open(COMMANDS_FILE, "r")
@@ -371,6 +430,70 @@ local function poll_commands()
             elseif action == "order" then
                 -- Manager order
                 dfhack.run_command("orders", "import", cmd.file or "")
+            elseif action == "dig_room" then
+                -- Dig a rectangular room with stairs
+                local cx, cy, cz = cmd.x, cmd.y, cmd.z
+                local w, h = cmd.width or 11, cmd.height or 11
+                -- Auto-detect center if sentinel (0,0,0)
+                if cx == 0 and cy == 0 and cz == 0 then
+                    local ecx, ecy, ecz = find_embark_center()
+                    if ecx then
+                        cx = ecx - math.floor(w/2)
+                        cy = ecy - math.floor(h/2)
+                        cz = find_dig_layer(ecx, ecy, ecz)
+                        -- Dig stairs at embark center
+                        local stair_flags = dfhack.maps.getTileFlags(ecx, ecy, ecz)
+                        if stair_flags then
+                            stair_flags.dig = df.tile_dig_designation.DownStair
+                            dfhack.maps.getTileBlock(ecx, ecy, ecz).flags.designated = true
+                        end
+                        local stair_flags2 = dfhack.maps.getTileFlags(ecx, ecy, cz)
+                        if stair_flags2 then
+                            stair_flags2.dig = df.tile_dig_designation.UpStair
+                            dfhack.maps.getTileBlock(ecx, ecy, cz).flags.designated = true
+                        end
+                    end
+                end
+                local count = designate_rect(cx, cy, cz, cx + w - 1, cy + h - 1)
+                dfhack.println(("hapax-df-bridge: designated %d tiles for digging at z=%d"):format(count, cz))
+
+            elseif action == "build_workshop" then
+                -- Place a workshop
+                local ws_type = cmd.workshop_type or "Craftsdwarfs"
+                local ws_enum = df.workshop_type[ws_type]
+                if not ws_enum then
+                    dfhack.printerr("hapax-df-bridge: unknown workshop type: " .. ws_type)
+                else
+                    local wx, wy, wz = cmd.x, cmd.y, cmd.z
+                    -- Auto-detect position if sentinel
+                    if wx == 0 and wy == 0 and wz == 0 then
+                        local ecx, ecy, ecz = find_embark_center()
+                        if ecx then
+                            wz = find_dig_layer(ecx, ecy, ecz)
+                            wx, wy = ecx, ecy
+                        end
+                    end
+                    local bld, err = dfhack.buildings.constructBuilding{
+                        type = df.building_type.Workshop,
+                        subtype = ws_enum,
+                        pos = xyz2pos(wx, wy, wz),
+                        width = 3, height = 3,
+                    }
+                    if bld then
+                        dfhack.println(("hapax-df-bridge: placed %s workshop at (%d,%d,%d)"):format(ws_type, wx, wy, wz))
+                    else
+                        dfhack.printerr(("hapax-df-bridge: workshop placement failed: %s"):format(tostring(err)))
+                    end
+                end
+
+            elseif action == "import_orders" then
+                local lib = cmd.library or "library/basic"
+                dfhack.run_command('orders', 'import', lib)
+                dfhack.println(("hapax-df-bridge: imported orders from %s"):format(lib))
+
+            elseif action == "enable_plugin" then
+                dfhack.run_command('enable', cmd.plugin or "")
+
             else
                 dfhack.printerr("hapax-df-bridge: unknown action: " .. action)
             end
@@ -419,6 +542,10 @@ local function start()
 
     -- Initial full export
     export_full()
+
+    -- Enable labor management
+    dfhack.run_command('enable', 'labormanager')
+    dfhack.println("hapax-df-bridge: labormanager enabled")
 
     dfhack.println("hapax-df-bridge: started")
 end

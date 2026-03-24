@@ -25,6 +25,7 @@ from agents.fortress.goals import GoalPlanner
 from agents.fortress.metrics import FortressSessionTracker
 from agents.fortress.narrative import format_narrative_fallback, write_chronicle_entry
 from agents.fortress.schema import FastFortressState, FortressPosition
+from agents.fortress.tactical import TacticalContext, encode_tactical
 from agents.fortress.wiring import FortressGovernor
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ class FortressDaemon:
         self._tracker = FortressSessionTracker()
         self._goal_planner = GoalPlanner(goals=list(DEFAULT_GOALS))
         self._creativity_metrics = CreativityMetrics()
+        self._tactical_ctx = TacticalContext()
         self._running = True
         self._cmd_cooldowns: dict[str, float] = {}
         self._started = False
@@ -134,9 +136,16 @@ class FortressDaemon:
                     self._tracker.total_commands,
                 )
 
-            # Dispatch commands through bridge
+            # Dispatch commands through bridge — tactical encoding
             for cmd in commands:
-                self._bridge.send_command(cmd.action, **cmd.params)
+                tactical_actions = encode_tactical(cmd, state, self._tactical_ctx)
+                if tactical_actions:
+                    for ta in tactical_actions:
+                        action = ta.pop("action")
+                        self._bridge.send_command(action, **ta)
+                else:
+                    # Passthrough: send symbolic command
+                    self._bridge.send_command(cmd.action, **cmd.params)
                 self._tracker.record_command(cmd.chain)
                 self._creativity_metrics.record_action(
                     cmd.chain, has_semantic_ref=(cmd.chain == "creativity")
