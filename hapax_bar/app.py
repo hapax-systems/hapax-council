@@ -94,25 +94,26 @@ class HapaxBarApp(Gtk.Application):
             self.add_window(horizon_seam)
             self._windows.append(horizon_seam)
 
-            bedrock_seam = SeamWindow(position="bottom")
-            mp = MetricsPanel()
-            sd = StimmungDetailPanel()
-            vp = VoicePanel()
-            bedrock_seam.add_panel(mp)
-            bedrock_seam.add_panel(sd)
-            bedrock_seam.add_panel(EnginePanel())
-            bedrock_seam.add_panel(NudgePanel())
-            bedrock_seam.add_panel(vp)
-            bedrock_seam.add_panel(ControlsPanel())
-            bedrock_seam.add_panel(BluetoothPanel())
-            bedrock_seam.add_panel(WifiPanel())
-            bedrock_seam.add_panel(SessionPanel())
+            bedrock_seam = None
             if primary:
+                bedrock_seam = SeamWindow(position="bottom")
+                mp = MetricsPanel()
+                sd = StimmungDetailPanel()
+                vp = VoicePanel()
+                bedrock_seam.add_panel(mp)
+                bedrock_seam.add_panel(sd)
+                bedrock_seam.add_panel(EnginePanel())
+                bedrock_seam.add_panel(NudgePanel())
+                bedrock_seam.add_panel(vp)
+                bedrock_seam.add_panel(ControlsPanel())
+                bedrock_seam.add_panel(BluetoothPanel())
+                bedrock_seam.add_panel(WifiPanel())
+                bedrock_seam.add_panel(SessionPanel())
                 self._metrics_panels.append(mp)
                 self._stimmung_panels.append(sd)
                 self._voice_panels.append(vp)
-            self.add_window(bedrock_seam)
-            self._windows.append(bedrock_seam)
+                self.add_window(bedrock_seam)
+                self._windows.append(bedrock_seam)
 
             horizon, activity_label, nudge_badge, h_strip = create_horizon(
                 monitor_index=i if n_monitors >= 2 else None,
@@ -127,16 +128,17 @@ class HapaxBarApp(Gtk.Application):
             if nudge_badge:
                 self._nudge_badges.append(nudge_badge)
 
-            bedrock, stimmung_field, b_strip = create_bedrock(
-                monitor_index=i if n_monitors >= 2 else None,
-                primary=primary,
-                seam_window=bedrock_seam,
-            )
-            self.add_window(bedrock)
-            self._windows.append(bedrock)
-            self._stimmung_fields.append(stimmung_field)
             self._strips.append(h_strip)
-            self._strips.append(b_strip)
+            if primary:
+                bedrock, stimmung_field, b_strip = create_bedrock(
+                    monitor_index=i if n_monitors >= 2 else None,
+                    primary=primary,
+                    seam_window=bedrock_seam,
+                )
+                self.add_window(bedrock)
+                self._windows.append(bedrock)
+                self._stimmung_fields.append(stimmung_field)
+                self._strips.append(b_strip)
 
         # API polls
         poll_api(fetch_health, 30_000, self._on_health)

@@ -53,7 +53,7 @@ class TestGoalLibraryValidation(unittest.TestCase):
                 goal.validate()
 
     def test_default_goals_count(self) -> None:
-        self.assertEqual(len(DEFAULT_GOALS), 5)
+        self.assertEqual(len(DEFAULT_GOALS), 8)
 
     def test_unique_goal_ids(self) -> None:
         ids = [g.id for g in DEFAULT_GOALS]

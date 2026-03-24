@@ -237,6 +237,51 @@ RESPOND_TO_SIEGE = CompoundGoal(
     ),
 )
 
+HANDLE_STRANGE_MOOD = CompoundGoal(
+    id="handle_strange_mood",
+    description="Ensure moody dwarf gets materials and workshop access",
+    priority=65,
+    context_selector=lambda s: ("provide_materials",),
+    subgoals=(
+        SubGoal(
+            id="provide_materials",
+            description="Ensure required materials available",
+            chain="resource_manager",
+            check=lambda s: False,  # resolved when mood ends
+        ),
+    ),
+)
+
+MANAGE_TRADE = CompoundGoal(
+    id="manage_trade",
+    description="Trade with visiting caravan",
+    priority=55,
+    context_selector=lambda s: ("prepare_trade_goods",),
+    subgoals=(
+        SubGoal(
+            id="prepare_trade_goods",
+            description="Move goods to trade depot",
+            chain="resource_manager",
+            check=lambda s: False,
+        ),
+    ),
+)
+
+HANDLE_MANDATE = CompoundGoal(
+    id="handle_mandate",
+    description="Fulfill noble mandate to avoid punishment",
+    priority=50,
+    context_selector=lambda s: ("produce_mandated_item",),
+    subgoals=(
+        SubGoal(
+            id="produce_mandated_item",
+            description="Craft mandated items",
+            chain="resource_manager",
+            check=lambda s: False,
+        ),
+    ),
+)
+
 # Default goal set
 DEFAULT_GOALS: list[CompoundGoal] = [
     FOUND_FORTRESS,
@@ -244,4 +289,7 @@ DEFAULT_GOALS: list[CompoundGoal] = [
     PREPARE_FOR_SIEGE,
     PROCESS_MIGRANTS,
     RESPOND_TO_SIEGE,
+    HANDLE_STRANGE_MOOD,
+    MANAGE_TRADE,
+    HANDLE_MANDATE,
 ]
