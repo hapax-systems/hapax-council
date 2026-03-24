@@ -264,7 +264,7 @@ function StudioParamSync() {
 
 /** Keyboard shortcuts for studio controls (must be inside GroundStudioProvider). */
 function StudioKeyboardHandler() {
-  const { focusedRegion } = useTerrain();
+  const { focusedRegion, regionDepths, setRegionDepth } = useTerrain();
   const {
     compositeMode, setCompositeMode,
     smoothMode, setSmoothMode,
@@ -280,11 +280,12 @@ function StudioKeyboardHandler() {
         return;
       if (focusedRegion !== "ground") return;
 
-      // E: cycle mode (Live → FX → HLS)
+      // E: cycle mode (Live → FX → HLS), auto-advance to core for FX/HLS
       if (e.key === "e" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         e.preventDefault();
         if (!compositeMode && !smoothMode) {
           setCompositeMode(true); setSmoothMode(false);
+          if (regionDepths.ground !== "core") setRegionDepth("ground", "core");
         } else if (compositeMode && !smoothMode) {
           setCompositeMode(false); setSmoothMode(true);
         } else {
@@ -332,7 +333,7 @@ function StudioKeyboardHandler() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [focusedRegion, compositeMode, smoothMode, presetIdx, setCompositeMode, setSmoothMode, setPresetIdx, setEffectOverrides, recordingToggle]);
+  }, [focusedRegion, compositeMode, smoothMode, presetIdx, setCompositeMode, setSmoothMode, setPresetIdx, setEffectOverrides, recordingToggle, regionDepths, setRegionDepth]);
 
   return null;
 }
