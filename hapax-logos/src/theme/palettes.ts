@@ -75,6 +75,18 @@ export const GRUVBOX_DARK: ThemePalette = {
 
   // Amber (used in animations)
   "amber-400": "#fabd2f",
+
+  // Semantic aliases (design language §3.1)
+  bg: "#1d2021",
+  surface: "#282828",
+  elevated: "#3c3836",
+  border: "#504945",
+  "border-muted": "#665c54",
+  "text-muted": "#928374",
+  "text-secondary": "#bdae93",
+  "text-primary": "#ebdbb2",
+  "text-emphasis": "#fbf1c7",
+  "text-bright": "#fdf4c9",
 };
 
 export const SOLARIZED_DARK: ThemePalette = {
@@ -141,6 +153,18 @@ export const SOLARIZED_DARK: ThemePalette = {
 
   // Amber → Solarized yellow (used in animations)
   "amber-400": "#b58900",
+
+  // Semantic aliases (design language §3.1)
+  bg: "#002b36",
+  surface: "#073642",
+  elevated: "#0a4050",
+  border: "#2f525b",
+  "border-muted": "#436068",
+  "text-muted": "#586e75",
+  "text-secondary": "#657b83",
+  "text-primary": "#839496",
+  "text-emphasis": "#93a1a1",
+  "text-bright": "#fdf6e3",
 };
 
 /** Semantic color helpers for components that need hex values directly. */

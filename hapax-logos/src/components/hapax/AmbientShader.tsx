@@ -28,7 +28,7 @@ void main() {
 `;
 
 const FRAGMENT_SHADER = `
-precision mediump float;
+precision highp float;
 varying vec2 v_uv;
 uniform float u_time;
 uniform float u_speed;
