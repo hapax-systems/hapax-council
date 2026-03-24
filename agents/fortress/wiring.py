@@ -41,6 +41,9 @@ class FortressGovernor:
         self._crisis = CrisisResponderChain(config=self._config)
         self._creativity = CreativityChain()
 
+        # Cached full state for chains that need it
+        self._last_full_state: FullFortressState | None = None
+
         # Suppression fields
         self._fields = create_fortress_suppression_fields(self._config.suppression)
 

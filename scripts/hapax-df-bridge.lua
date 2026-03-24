@@ -280,10 +280,10 @@ local function build_full_state()
     return state
 end
 
--- Export state to /dev/shm
+-- Export state to /dev/shm (always full — fast/full distinction is premature optimization)
 local function export_fast()
     tick_counter = tick_counter + 1
-    local state = build_fast_state()
+    local state = build_full_state()
     local ok = atomic_write(STATE_FILE, json.encode(state))
     if not ok then
         dfhack.printerr("hapax-df-bridge: failed to write state")
