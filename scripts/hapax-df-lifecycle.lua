@@ -182,10 +182,56 @@ end
 -- Bridge startup
 -- -----------------------------------------------------------------------
 
+local function dismiss_dialogs()
+    -- Dismiss any modal dialogs (embark welcome, tutorial, etc.)
+    local gui_mod = require("gui")
+    local function try_dismiss(text)
+        local results = {}
+        local w, h = dfhack.screen.getWindowSize()
+        for y = 0, h - 1 do
+            local row = {}
+            for x = 0, w - 1 do
+                local pen = dfhack.screen.readTile(x, y)
+                if pen then
+                    local ch = pen.ch
+                    if type(ch) == "number" and ch >= 32 and ch < 127 then
+                        row[#row + 1] = string.char(ch)
+                    elseif #row > 0 and row[#row] ~= " " then
+                        row[#row + 1] = " "
+                    end
+                else
+                    row[#row + 1] = " "
+                end
+            end
+            local line = table.concat(row)
+            local s = line:find(text, 1, true)
+            if s then
+                local click_x = s - 1 + math.floor(#text / 2)
+                df.global.gps.mouse_x = click_x
+                df.global.gps.mouse_y = y
+                df.global.enabler.tracking_on = 1
+                gui_mod.simulateInput(dfhack.gui.getCurViewscreen(), "_MOUSE_L")
+                dfhack.println(("[hapax-lifecycle] Dismissed '%s' at (%d, %d)"):format(text, click_x, y))
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Try dismissing common dialogs
+    try_dismiss("Okay")
+    dfhack.timeout(5, "frames", function()
+        try_dismiss("Okay")  -- second attempt for nested dialogs
+    end)
+end
+
 local function start_bridge()
     if state.fortress_ready then return end
     state.fortress_ready = true
     state.phase = "active"
+
+    -- Dismiss any modal dialogs before starting bridge
+    dismiss_dialogs()
 
     dfhack.println("[hapax-lifecycle] Fortress mode active! Starting bridge in 30 frames...")
     dfhack.timeout(30, "frames", function()
@@ -194,6 +240,11 @@ local function start_bridge()
         end)
         if ok then
             dfhack.println("[hapax-lifecycle] Bridge started successfully")
+                    -- Unpause the game
+                    dfhack.timeout(10, "frames", function()
+                        df.global.pause_state = false
+                        dfhack.println("[hapax-lifecycle] Game unpaused")
+                    end)
         else
             dfhack.printerr("[hapax-lifecycle] Bridge failed: " .. tostring(err))
             state.error = tostring(err)

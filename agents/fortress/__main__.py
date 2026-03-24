@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import signal
+import time
 from pathlib import Path
 from typing import Any
 
@@ -105,8 +106,10 @@ class FortressDaemon:
             commands = self._governor.evaluate(state)
             cycle_count += 1
 
-            # Periodic logging
-            if commands or cycle_count % 10 == 0:
+            # Log when commands are produced or every 30s
+            now_mono = time.monotonic()
+            if commands or (now_mono - getattr(self, "_last_log_time", 0)) > 30:
+                self._last_log_time = now_mono
                 log.info(
                     "Tick %d | Pop %d | Food %d | Drink %d | Threats %d | Cmds %d | Total %d",
                     state.game_tick,

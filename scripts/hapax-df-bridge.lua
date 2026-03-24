@@ -321,7 +321,11 @@ local function poll_commands()
             if action == "raw" then
                 dfhack.run_command(cmd.command or "")
             elseif action == "pause" then
-                df.global.pause_state = cmd.state or true
+                if cmd.state == false then
+                    df.global.pause_state = false
+                else
+                    df.global.pause_state = true
+                end
             elseif action == "save" then
                 dfhack.run_command("quicksave")
             elseif action == "dig" or action == "build" or action == "place" then
