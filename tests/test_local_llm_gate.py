@@ -70,64 +70,7 @@ class TestCloudGate:
 
         return WorkspaceMonitor(enabled=False)
 
-    def test_skip_when_confident(self, tmp_path):
+    def test_cloud_skip_disabled(self):
+        """Cloud-skip feature is currently disabled — method always returns False."""
         monitor = self._make_monitor()
-        state_path = tmp_path / "perception-state.json"
-        state_path.write_text(json.dumps({"llm_confidence": 0.85, "llm_activity": "coding"}))
-        with patch(
-            "pathlib.Path.home",
-            return_value=tmp_path / "fake_home",
-        ):
-            # Create the expected path structure
-            cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-voice"
-            cache_dir.mkdir(parents=True)
-            (cache_dir / "perception-state.json").write_text(
-                json.dumps({"llm_confidence": 0.85, "llm_activity": "coding"})
-            )
-            result = monitor._should_skip_cloud()
-        assert result is True
-        assert monitor._local_skip_count == 1
-
-    def test_no_skip_when_low_confidence(self, tmp_path):
-        monitor = self._make_monitor()
-        cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-voice"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "perception-state.json").write_text(
-            json.dumps({"llm_confidence": 0.3, "llm_activity": "idle"})
-        )
-        with patch("pathlib.Path.home", return_value=tmp_path / "fake_home"):
-            result = monitor._should_skip_cloud()
-        assert result is False
-
-    def test_force_cloud_every_n(self, tmp_path):
-        monitor = self._make_monitor()
-        cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-voice"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "perception-state.json").write_text(
-            json.dumps({"llm_confidence": 0.95, "llm_activity": "coding"})
-        )
-
-        with patch("pathlib.Path.home", return_value=tmp_path / "fake_home"):
-            # First 4 should skip (confident)
-            for _ in range(4):
-                assert monitor._should_skip_cloud() is True
-
-            # 5th should force cloud
-            assert monitor._should_skip_cloud() is False
-
-    def test_no_skip_when_file_missing(self):
-        monitor = self._make_monitor()
-        # No state file → should not skip
-        result = monitor._should_skip_cloud()
-        assert result is False
-
-    def test_no_skip_when_no_activity(self, tmp_path):
-        monitor = self._make_monitor()
-        cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-voice"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "perception-state.json").write_text(
-            json.dumps({"llm_confidence": 0.9, "llm_activity": ""})
-        )
-        with patch("pathlib.Path.home", return_value=tmp_path / "fake_home"):
-            result = monitor._should_skip_cloud()
-        assert result is False
+        assert monitor._should_skip_cloud() is False

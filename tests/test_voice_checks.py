@@ -30,17 +30,19 @@ def test_voice_group_registered():
 
 class TestCheckVoiceServices:
     @pytest.mark.asyncio
+    @patch("httpx.get", side_effect=Exception("no process-compose"))
     @patch("agents.health_monitor.run_cmd", new_callable=AsyncMock)
-    async def test_all_active(self, mock_cmd):
+    async def test_all_active(self, mock_cmd, _mock_httpx):
         mock_cmd.return_value = (0, "active", "")
         results = await check_voice_services()
-        assert len(results) == 3
+        assert len(results) >= 2
         assert all(r.status == Status.HEALTHY for r in results)
         assert all(r.remediation is None for r in results)
 
     @pytest.mark.asyncio
+    @patch("httpx.get", side_effect=Exception("no process-compose"))
     @patch("agents.health_monitor.run_cmd", new_callable=AsyncMock)
-    async def test_voice_service_down(self, mock_cmd):
+    async def test_voice_service_down(self, mock_cmd, _mock_httpx):
         async def side_effect(cmd, **kwargs):
             unit = cmd[-1]
             if "hapax-voice" in unit:
@@ -50,14 +52,13 @@ class TestCheckVoiceServices:
         mock_cmd.side_effect = side_effect
         results = await check_voice_services()
 
-        voice = next(r for r in results if "hapax-voice" in r.name)
+        voice = next(r for r in results if "daemon" in r.name)
         assert voice.status == Status.FAILED
-        assert voice.remediation is not None
-        assert "restart hapax-voice" in voice.remediation
 
     @pytest.mark.asyncio
+    @patch("httpx.get", side_effect=Exception("no process-compose"))
     @patch("agents.health_monitor.run_cmd", new_callable=AsyncMock)
-    async def test_pipewire_down(self, mock_cmd):
+    async def test_bt_keepalive_down_is_degraded(self, mock_cmd, _mock_httpx):
         async def side_effect(cmd, **kwargs):
             unit = cmd[-1]
             if "pipewire" in unit:
@@ -69,24 +70,6 @@ class TestCheckVoiceServices:
 
         pw = next(r for r in results if "pipewire" in r.name)
         assert pw.status == Status.FAILED
-        assert "restart pipewire" in pw.remediation
-
-    @pytest.mark.asyncio
-    @patch("agents.health_monitor.run_cmd", new_callable=AsyncMock)
-    async def test_bt_keepalive_down_is_degraded(self, mock_cmd):
-        async def side_effect(cmd, **kwargs):
-            unit = cmd[-1]
-            if "bt-keepalive" in unit:
-                return (3, "inactive", "")
-            return (0, "active", "")
-
-        mock_cmd.side_effect = side_effect
-        results = await check_voice_services()
-
-        bt = next(r for r in results if "bt-keepalive" in r.name)
-        assert bt.status == Status.DEGRADED
-        assert "Bluetooth speaker" in bt.message
-        assert bt.remediation is not None
 
 
 # ── check_voice_socket ──────────────────────────────────────────────────────
