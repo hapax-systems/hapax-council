@@ -99,9 +99,33 @@ class StimmungField(Gtk.Widget):
         self.queue_draw()
         return GLib.SOURCE_CONTINUE
 
-    def _on_click(self, *_a: object) -> None:
-        if self._seam_toggle_callback:
+    def set_agent_speed(self, running_count: int) -> None:
+        """Set particle speed from agent activity count."""
+        if running_count == 0:
+            self._agent_speed = 0.1
+        elif running_count == 1:
+            self._agent_speed = 0.5
+        elif running_count <= 3:
+            self._agent_speed = 2.0
+        else:
+            self._agent_speed = 4.0
+
+    def _on_click(self, gesture: Gtk.GestureClick, _n: int, x: float, _y: float) -> None:
+        w = self.get_width()
+        # Voice orb is at 15% of width — check if click is near it
+        orb_x = w * 0.15
+        if self._voice_state != "off" and abs(x - orb_x) < 20:
+            self._toggle_voice()
+        elif self._seam_toggle_callback:
             self._seam_toggle_callback()
+
+    def _toggle_voice(self) -> None:
+        import subprocess
+
+        if self._voice_state == "off":
+            subprocess.Popen(["systemctl", "--user", "start", "hapax-voice.service"])
+        else:
+            subprocess.Popen(["systemctl", "--user", "stop", "hapax-voice.service"])
 
     def do_snapshot(self, snapshot: Gtk.Snapshot) -> None:
         w = self.get_width()

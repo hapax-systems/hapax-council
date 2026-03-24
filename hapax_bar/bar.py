@@ -11,10 +11,11 @@ from typing import TYPE_CHECKING
 from gi.repository import Astal, Gtk
 
 from hapax_bar.modules.audio import MicModule, VolumeModule
-from hapax_bar.modules.clock import ClockModule
+from hapax_bar.modules.cost_whisper import CostWhisper
 from hapax_bar.modules.mpris import MprisModule
 from hapax_bar.modules.stimmung_field import StimmungField
 from hapax_bar.modules.submap import SubmapModule
+from hapax_bar.modules.temporal_ribbon import TemporalRibbon
 from hapax_bar.modules.tray import TrayModule
 from hapax_bar.modules.window_title import WindowTitleModule
 from hapax_bar.modules.working_mode import WorkingModeModule
@@ -62,7 +63,8 @@ def create_bar(
     right.append(VolumeModule())
     if primary:
         right.append(MicModule())
-    right.append(ClockModule())
+        right.append(CostWhisper())
+    right.append(TemporalRibbon())
     if primary:
         right.append(TrayModule())
 

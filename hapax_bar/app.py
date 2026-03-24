@@ -95,9 +95,10 @@ class HapaxBarApp(Gtk.Application):
             self._stimmung_fields.append(field)
             self.add_window(win)
 
-        # Poll Logos API for seam layer data
+        # Poll Logos API for seam layer data + agent activity
         poll_api(fetch_health, 30_000, self._on_health)
         poll_api(fetch_gpu, 30_000, self._on_gpu)
+        poll_api(self._fetch_agent_count, 10_000, self._on_agent_activity)
 
         # Control socket
         self._socket = SocketServer()
@@ -122,6 +123,20 @@ class HapaxBarApp(Gtk.Application):
         self._last_gpu = data
         if self._seam and self._stimmung:
             self._seam.update_data(self._last_health, data, self._stimmung)
+
+    @staticmethod
+    def _fetch_agent_count() -> dict:
+        from hapax_bar.logos_client import _fetch_json
+
+        data = _fetch_json("/api/agents/runs/current")
+        if data and isinstance(data, list):
+            return {"running": len(data)}
+        return {"running": 0}
+
+    def _on_agent_activity(self, data: dict) -> None:
+        count = data.get("running", 0)
+        for field in self._stimmung_fields:
+            field.set_agent_speed(count)
 
     def _handle_theme(self, msg: dict) -> bool:
         switch_theme(msg.get("mode", "rnd"))

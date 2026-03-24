@@ -74,9 +74,11 @@ done < <(git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
 while IFS= read -r branch; do
     [ -z "$branch" ] && continue
     short="${branch#origin/}"
+    [ -z "$short" ] && continue
     [ "$short" = "main" ] && continue
     [ "$short" = "master" ] && continue
     [ "$short" = "HEAD" ] && continue
+    [ "$branch" = "origin" ] && continue
     echo "$short" | grep -qE '^dependabot/' && continue
     ahead=$(git rev-list --count "main..$branch" 2>/dev/null || echo 0)
     if [ "$ahead" -gt 0 ]; then

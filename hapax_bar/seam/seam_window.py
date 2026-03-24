@@ -10,8 +10,10 @@ from typing import Any
 
 from gi.repository import Astal, Gdk, Gtk
 
+from hapax_bar.seam.controls_panel import ControlsPanel
 from hapax_bar.seam.metrics_panel import MetricsPanel
 from hapax_bar.seam.stimmung_detail import StimmungDetailPanel
+from hapax_bar.seam.voice_panel import VoicePanel
 
 
 class SeamWindow(Astal.Window):
@@ -55,8 +57,12 @@ class SeamWindow(Astal.Window):
         )
         self._metrics = MetricsPanel()
         self._stimmung_detail = StimmungDetailPanel()
+        self._voice_panel = VoicePanel()
+        self._controls = ControlsPanel()
         panel.append(self._metrics)
         panel.append(self._stimmung_detail)
+        panel.append(self._voice_panel)
+        panel.append(self._controls)
 
         self._revealer.set_child(panel)
         overlay.add_overlay(self._revealer)
@@ -85,6 +91,7 @@ class SeamWindow(Astal.Window):
     def update_data(self, health: dict, gpu: dict, stimmung_state: Any) -> None:
         self._metrics.update(health, gpu)
         self._stimmung_detail.update(stimmung_state)
+        self._voice_panel.update(stimmung_state)
 
     def _dismiss(self, *_args: object) -> None:
         self._revealer.set_reveal_child(False)
