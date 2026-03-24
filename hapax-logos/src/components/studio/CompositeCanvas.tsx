@@ -53,12 +53,12 @@ export function CompositeCanvas({
     let smoothWriteHead = 0;
     let smoothPending = false;
 
-    // Trail accumulation: offscreen canvases for proper blend/filter/drift
-    const accumCanvas = document.createElement("canvas");
-    const accumCtx = accumCanvas.getContext("2d")!;
+    // Drift buffer: offscreen canvas for spatial trail drift (copy-shift)
     const driftCanvas = document.createElement("canvas");
     const driftCtx = driftCanvas.getContext("2d")!;
-    let lastAccumHead = 0;
+
+    // Trail state
+    let lastTrailHead = 0;
 
     // Stutter state
     let tick = 0;
@@ -111,6 +111,190 @@ export function CompositeCanvas({
       loader.src = liveSource ?? `/api/studio/stream/camera/${role}?_t=${Date.now()}`;
     };
 
+    // Helper: draw main frame with warp/slices/simple
+    const drawMainFrame = (
+      ctx: CanvasRenderingContext2D,
+      main: HTMLImageElement,
+      w: number, h: number,
+      filter: string,
+      alpha: number,
+      blendMode: string,
+    ) => {
+      const p = presetRef.current;
+      const warpCfg = p.warp;
+
+      if (warpCfg && warpCfg.sliceCount > 0) {
+        const t = tick * 0.04;
+        const panX = Math.sin(t) * warpCfg.panX;
+        const panY =
+          Math.sin(t * 0.7) * (warpCfg.panY * 0.64) +
+          Math.sin(t * 0.3) * (warpCfg.panY * 0.36);
+        const rot = Math.sin(t * 0.5) * warpCfg.rotate;
+        const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
+        const sliceH = Math.ceil(h / warpCfg.sliceCount);
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.globalCompositeOperation = blendMode as GlobalCompositeOperation;
+        if (filter !== "none") ctx.filter = filter;
+
+        for (let s = 0; s < warpCfg.sliceCount; s++) {
+          const sy = s * sliceH;
+          const slicePhase = t + s * 0.15;
+          const sliceShift =
+            Math.sin(slicePhase) * warpCfg.sliceAmplitude +
+            Math.sin(slicePhase * 2.3) * (warpCfg.sliceAmplitude * 0.5);
+          const sliceStretch = 1 + Math.sin(slicePhase * 0.8) * 0.008;
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, sy, w, sliceH + 1);
+          ctx.clip();
+          ctx.translate(w / 2, h / 2);
+          ctx.rotate(rot);
+          ctx.scale(scale, scale * sliceStretch);
+          ctx.translate(-w / 2 + panX + sliceShift, -h / 2 + panY);
+          ctx.drawImage(main, 0, 0, w, h);
+          ctx.restore();
+        }
+
+        ctx.restore();
+      } else if (warpCfg) {
+        const t = tick * 0.04;
+        const panX = Math.sin(t) * warpCfg.panX;
+        const panY = Math.sin(t * 0.7) * warpCfg.panY;
+        const rot = Math.sin(t * 0.5) * warpCfg.rotate;
+        const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.globalCompositeOperation = blendMode as GlobalCompositeOperation;
+        if (filter !== "none") ctx.filter = filter;
+        ctx.translate(w / 2, h / 2);
+        ctx.rotate(rot);
+        ctx.scale(scale, scale);
+        ctx.translate(-w / 2 + panX, -h / 2 + panY);
+        ctx.drawImage(main, 0, 0, w, h);
+        ctx.restore();
+      } else {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.globalCompositeOperation = blendMode as GlobalCompositeOperation;
+        if (filter !== "none") ctx.filter = filter;
+        ctx.drawImage(main, 0, 0, w, h);
+        ctx.restore();
+      }
+    };
+
+    // Helper: draw overlay + post-effects
+    const drawOverlayAndEffects = (
+      main: HTMLImageElement,
+      w: number, h: number,
+      mainFilter: string,
+    ) => {
+      const p = presetRef.current;
+
+      // --- Delayed overlay (smooth source if available, else delayed from live ring) ---
+      const smoothAvail = Math.min(smoothWriteHead, SMOOTH_RING_SIZE);
+      const useSmoothRing = smoothSource && smoothAvail > 0;
+      const available = Math.min(writeHead, RING_SIZE);
+      const idx = Math.abs(displayIdx) % available;
+      const hasFilterOverrides = liveFilterRef.current || smoothFilterRef.current;
+      if (p.overlay && (useSmoothRing || available > p.overlay.delayFrames)) {
+        const delayed = useSmoothRing
+          ? smoothRing[((smoothWriteHead - 1 - SMOOTH_DELAY_FRAMES) + SMOOTH_RING_SIZE * 100) % Math.min(smoothAvail, SMOOTH_RING_SIZE)]
+          : frameRing[(idx - p.overlay.delayFrames + available * 100) % available];
+        if (delayed) {
+          ctx.save();
+          if (cachedOverlayFilter !== "none") {
+            ctx.filter = cachedOverlayFilter;
+          }
+          ctx.globalAlpha = p.overlay.alpha;
+          ctx.globalCompositeOperation = p.overlay.blendMode as GlobalCompositeOperation;
+          if (hasFilterOverrides) {
+            ctx.drawImage(delayed, 0, 0, w, h);
+          } else {
+            const dt = tick * 0.03;
+            ctx.drawImage(
+              delayed,
+              Math.sin(dt) * 5,
+              p.overlay.driftY + Math.sin(dt * 0.6) * 4,
+              w,
+              h,
+            );
+          }
+          ctx.restore();
+        }
+      }
+
+      // --- VHS head switching noise ---
+      if (p.name === "VHS" && main) {
+        const headSwitchY = h * 0.92;
+        const headSwitchH = h * 0.08;
+        ctx.save();
+        if (mainFilter !== "none") ctx.filter = mainFilter;
+        ctx.beginPath();
+        ctx.rect(0, headSwitchY, w, headSwitchH);
+        ctx.clip();
+        const jitter = Math.sin(tick * 0.3) * 8 + Math.sin(tick * 0.7) * 4;
+        ctx.drawImage(main, jitter, -2, w, h);
+        ctx.restore();
+      }
+
+      // --- Post-effects ---
+      const fx = p.effects;
+
+      if (fx.scanlines) {
+        ctx.save();
+        ctx.globalAlpha = 0.12;
+        ctx.fillStyle = "rgba(0,0,0,1)";
+        for (let y = 0; y < h; y += 4) {
+          ctx.fillRect(0, y + 2, w, 1.5);
+        }
+        ctx.restore();
+      }
+
+      if (fx.bandDisplacement && Math.random() < fx.bandChance && main) {
+        const bandY = Math.floor(Math.random() * h * 0.6) + h * 0.2;
+        const bandH = 4 + Math.floor(Math.random() * 16);
+        const shift =
+          (Math.random() > 0.5 ? 1 : -1) * (5 + Math.random() * fx.bandMaxShift);
+        ctx.save();
+        if (mainFilter !== "none") ctx.filter = mainFilter;
+        ctx.beginPath();
+        ctx.rect(0, bandY, w, bandH);
+        ctx.clip();
+        ctx.drawImage(main, shift, 0, w, h);
+        ctx.restore();
+      }
+
+      if (fx.vignette) {
+        const vig = ctx.createRadialGradient(w / 2, h / 2, w * 0.3, w / 2, h / 2, w * 0.7);
+        vig.addColorStop(0, "rgba(0,0,0,0)");
+        vig.addColorStop(1, `rgba(0,0,0,${fx.vignetteStrength})`);
+        ctx.fillStyle = vig;
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      if (fx.syrupGradient) {
+        ctx.save();
+        ctx.filter = "none";
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        const c = fx.syrupColor;
+        grad.addColorStop(0, `rgba(${c}, 0.0)`);
+        grad.addColorStop(0.5, `rgba(${c}, 0.1)`);
+        grad.addColorStop(1, `rgba(${c}, 0.25)`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+        ctx.restore();
+      }
+
+      if (phase === "freeze") {
+        ctx.fillStyle = "rgba(80, 30, 120, 0.18)";
+        ctx.fillRect(0, 0, w, h);
+      }
+    };
+
     const render = () => {
       if (!running) return;
       const p = presetRef.current;
@@ -121,7 +305,7 @@ export function CompositeCanvas({
       if (available < 3) return;
 
       tick++;
-      hueAccum += 4; // degrees per tick for neon hue rotation
+      hueAccum += 4;
 
       // Update cached filter strings only when quantized hue changes
       const hueQ = Math.round(hueAccum / 10) * 10;
@@ -174,247 +358,51 @@ export function CompositeCanvas({
       }
 
       const idx = Math.abs(displayIdx) % available;
-
-      // --- Always clear — accumulator handles persistence ---
-      ctx.clearRect(0, 0, w, h);
-
-      // --- Main frame ---
       const main = frameRing[idx];
       if (!main) return;
 
-      const mainFilter = cachedMainFilter;
       const trail = p.trail;
       const trailActive = trail.count > 0 && trail.opacity > 0;
-      const mainAlpha = trailActive ? (1 - trail.opacity * 0.65) : 1;
+      const isNewFrame = writeHead !== lastTrailHead;
 
-      const warpCfg = p.warp;
-      if (warpCfg && warpCfg.sliceCount > 0) {
-        // Warp with horizontal slices
-        const t = tick * 0.04;
-        const panX = Math.sin(t) * warpCfg.panX;
-        const panY =
-          Math.sin(t * 0.7) * (warpCfg.panY * 0.64) +
-          Math.sin(t * 0.3) * (warpCfg.panY * 0.36);
-        const rot = Math.sin(t * 0.5) * warpCfg.rotate;
-        const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
-        const sliceH = Math.ceil(h / warpCfg.sliceCount);
-
-        ctx.save();
-        ctx.globalAlpha = mainAlpha;
-        if (mainFilter !== "none") {
-          ctx.filter = mainFilter;
-        }
-
-        for (let s = 0; s < warpCfg.sliceCount; s++) {
-          const sy = s * sliceH;
-          const slicePhase = t + s * 0.15;
-          const sliceShift =
-            Math.sin(slicePhase) * warpCfg.sliceAmplitude +
-            Math.sin(slicePhase * 2.3) * (warpCfg.sliceAmplitude * 0.5);
-          const sliceStretch = 1 + Math.sin(slicePhase * 0.8) * 0.008;
-
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(0, sy, w, sliceH + 1);
-          ctx.clip();
-          ctx.translate(w / 2, h / 2);
-          ctx.rotate(rot);
-          ctx.scale(scale, scale * sliceStretch);
-          ctx.translate(-w / 2 + panX + sliceShift, -h / 2 + panY);
-          ctx.drawImage(main, 0, 0, w, h);
-          ctx.restore();
-        }
-
-        ctx.restore();
-      } else if (warpCfg) {
-        // Global warp transform without slicing
-        const t = tick * 0.04;
-        const panX = Math.sin(t) * warpCfg.panX;
-        const panY = Math.sin(t * 0.7) * warpCfg.panY;
-        const rot = Math.sin(t * 0.5) * warpCfg.rotate;
-        const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
-
-        ctx.save();
-        ctx.globalAlpha = mainAlpha;
-        if (mainFilter !== "none") {
-          ctx.filter = mainFilter;
-        }
-        ctx.translate(w / 2, h / 2);
-        ctx.rotate(rot);
-        ctx.scale(scale, scale);
-        ctx.translate(-w / 2 + panX, -h / 2 + panY);
-        ctx.drawImage(main, 0, 0, w, h);
-        ctx.restore();
-      } else {
-        // No warp — simple draw
-        ctx.save();
-        ctx.globalAlpha = mainAlpha;
-        if (mainFilter !== "none") {
-          ctx.filter = mainFilter;
-        }
-        ctx.drawImage(main, 0, 0, w, h);
-        ctx.restore();
-      }
-
-      // --- Trail accumulator (offscreen canvas with proper blend/filter/drift) ---
       if (trailActive) {
-        // Resize accumulation canvases to match main canvas
-        if (accumCanvas.width !== w || accumCanvas.height !== h) {
-          accumCanvas.width = w;
-          accumCanvas.height = h;
-          driftCanvas.width = w;
-          driftCanvas.height = h;
-          // Initialize to black (opaque)
-          accumCtx.fillStyle = "#000";
-          accumCtx.fillRect(0, 0, w, h);
-          lastAccumHead = 0;
-        }
+        // --- PERSISTENCE MODEL: don't clear, dim + redraw ---
+        if (!isNewFrame) return; // Between fetches: canvas holds persisted content
+        lastTrailHead = writeHead;
 
-        const isNewFrame = writeHead !== lastAccumHead;
-        if (isNewFrame) {
-          lastAccumHead = writeHead;
-
-          // Spatial drift: shift old accumulated content before decay
-          if (trail.driftX !== 0 || trail.driftY !== 0) {
-            driftCtx.clearRect(0, 0, w, h);
-            driftCtx.drawImage(accumCanvas, 0, 0);
-            accumCtx.fillStyle = "#000";
-            accumCtx.fillRect(0, 0, w, h);
-            accumCtx.drawImage(driftCanvas, trail.driftX, trail.driftY);
+        // 1. DRIFT: shift persisted canvas content before fade
+        if (trail.driftX !== 0 || trail.driftY !== 0) {
+          // Size drift buffer to match
+          if (driftCanvas.width !== w || driftCanvas.height !== h) {
+            driftCanvas.width = w;
+            driftCanvas.height = h;
           }
-
-          // Decay: paint semi-transparent black over old content
-          const fadeRate = 0.15 / (trail.count + 1);
-          accumCtx.save();
-          accumCtx.globalAlpha = fadeRate;
-          accumCtx.fillStyle = "#000";
-          accumCtx.fillRect(0, 0, w, h);
-          accumCtx.restore();
-
-          // Accumulate: add current frame at low opacity with trail filter
-          const addRate = Math.min(fadeRate * 1.5, 0.3);
-          accumCtx.save();
-          if (cachedTrailFilter !== "none") {
-            accumCtx.filter = cachedTrailFilter;
-          }
-          accumCtx.globalAlpha = addRate;
-          accumCtx.drawImage(main, 0, 0, w, h);
-          accumCtx.restore();
+          driftCtx.clearRect(0, 0, w, h);
+          driftCtx.drawImage(canvas, 0, 0);
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(driftCanvas, trail.driftX, trail.driftY);
         }
 
-        // Composite accumulator onto main canvas using trail blend mode
+        // 2. FADE: dim old content (previous frames, baked effects, everything)
+        const fadeRate = 0.15 / (trail.count + 1);
         ctx.save();
-        ctx.globalAlpha = trail.opacity;
-        ctx.globalCompositeOperation = trail.blendMode as GlobalCompositeOperation;
-        ctx.drawImage(accumCanvas, 0, 0);
-        ctx.restore();
-      }
-
-      // --- Delayed overlay (smooth source if available, else delayed from live ring) ---
-      const smoothAvail = Math.min(smoothWriteHead, SMOOTH_RING_SIZE);
-      const useSmoothRing = smoothSource && smoothAvail > 0;
-      const hasFilterOverrides = liveFilterRef.current || smoothFilterRef.current;
-      if (p.overlay && (useSmoothRing || available > p.overlay.delayFrames)) {
-        const delayed = useSmoothRing
-          ? smoothRing[((smoothWriteHead - 1 - SMOOTH_DELAY_FRAMES) + SMOOTH_RING_SIZE * 100) % Math.min(smoothAvail, SMOOTH_RING_SIZE)]
-          : frameRing[(idx - p.overlay.delayFrames + available * 100) % available];
-        if (delayed) {
-          ctx.save();
-          if (cachedOverlayFilter !== "none") {
-            ctx.filter = cachedOverlayFilter;
-          }
-          ctx.globalAlpha = p.overlay.alpha;
-          ctx.globalCompositeOperation = p.overlay.blendMode as GlobalCompositeOperation;
-          if (hasFilterOverrides) {
-            // Composite mode: aligned layers, no drift
-            ctx.drawImage(delayed, 0, 0, w, h);
-          } else {
-            // FX mode: deliberate spatial drift for effect
-            const dt = tick * 0.03;
-            ctx.drawImage(
-              delayed,
-              Math.sin(dt) * 5,
-              p.overlay.driftY + Math.sin(dt * 0.6) * 4,
-              w,
-              h,
-            );
-          }
-          ctx.restore();
-        }
-      }
-
-      // --- VHS head switching noise — persistent bottom distortion ---
-      if (p.name === "VHS" && main) {
-        const headSwitchY = h * 0.92;
-        const headSwitchH = h * 0.08;
-        ctx.save();
-        if (mainFilter !== "none") ctx.filter = mainFilter;
-        ctx.beginPath();
-        ctx.rect(0, headSwitchY, w, headSwitchH);
-        ctx.clip();
-        const jitter = Math.sin(tick * 0.3) * 8 + Math.sin(tick * 0.7) * 4;
-        ctx.drawImage(main, jitter, -2, w, h);
-        ctx.restore();
-      }
-
-      // --- Effects ---
-      const fx = p.effects;
-
-      // Scanlines
-      if (fx.scanlines) {
-        ctx.save();
-        ctx.globalAlpha = 0.12;
-        ctx.fillStyle = "rgba(0,0,0,1)";
-        for (let y = 0; y < h; y += 4) {
-          ctx.fillRect(0, y + 2, w, 1.5);
-        }
-        ctx.restore();
-      }
-
-      // Band displacement
-      if (fx.bandDisplacement && Math.random() < fx.bandChance && main) {
-        const bandY = Math.floor(Math.random() * h * 0.6) + h * 0.2;
-        const bandH = 4 + Math.floor(Math.random() * 16);
-        const shift =
-          (Math.random() > 0.5 ? 1 : -1) * (5 + Math.random() * fx.bandMaxShift);
-        ctx.save();
-        if (mainFilter !== "none") {
-          ctx.filter = mainFilter;
-        }
-        ctx.beginPath();
-        ctx.rect(0, bandY, w, bandH);
-        ctx.clip();
-        ctx.drawImage(main, shift, 0, w, h);
-        ctx.restore();
-      }
-
-      // Vignette
-      if (fx.vignette) {
-        const vig = ctx.createRadialGradient(w / 2, h / 2, w * 0.3, w / 2, h / 2, w * 0.7);
-        vig.addColorStop(0, "rgba(0,0,0,0)");
-        vig.addColorStop(1, `rgba(0,0,0,${fx.vignetteStrength})`);
-        ctx.fillStyle = vig;
-        ctx.fillRect(0, 0, w, h);
-      }
-
-      // Syrup gradient
-      if (fx.syrupGradient) {
-        ctx.save();
-        ctx.filter = "none";
-        const grad = ctx.createLinearGradient(0, 0, 0, h);
-        const c = fx.syrupColor;
-        grad.addColorStop(0, `rgba(${c}, 0.0)`);
-        grad.addColorStop(0.5, `rgba(${c}, 0.1)`);
-        grad.addColorStop(1, `rgba(${c}, 0.25)`);
-        ctx.fillStyle = grad;
+        ctx.globalAlpha = fadeRate;
+        ctx.fillStyle = "#000";
         ctx.fillRect(0, 0, w, h);
         ctx.restore();
-      }
 
-      // Freeze indicator
-      if (phase === "freeze") {
-        ctx.fillStyle = "rgba(80, 30, 120, 0.18)";
-        ctx.fillRect(0, 0, w, h);
+        // 3. DRAW MAIN with trail blend mode + trail filter
+        const mainAlpha = 1 - trail.opacity * 0.65;
+        drawMainFrame(ctx, main, w, h, cachedTrailFilter, mainAlpha, trail.blendMode);
+
+        // 4. OVERLAY + POST-EFFECTS (baked into persistence, only on new frames)
+        drawOverlayAndEffects(main, w, h, cachedTrailFilter);
+
+      } else {
+        // --- NO TRAILS: clear and redraw every rAF tick ---
+        ctx.clearRect(0, 0, w, h);
+        drawMainFrame(ctx, main, w, h, cachedMainFilter, 1, "source-over");
+        drawOverlayAndEffects(main, w, h, cachedMainFilter);
       }
     };
 
@@ -435,7 +423,7 @@ export function CompositeCanvas({
       loader.src = `${smoothSource}?_t=${Date.now()}`;
     };
 
-    // Unified rAF loop replaces 3 setInterval timers
+    // Unified rAF loop
     let lastFetch = 0;
     let lastSmooth = 0;
     fetchFrame();
@@ -452,11 +440,10 @@ export function CompositeCanvas({
 
     return () => {
       running = false;
-      // Release all ring buffer images
       for (const img of frameRing) { if (img) releaseImage(img); }
       for (const img of smoothRing) { if (img) releaseImage(img); }
     };
-  }, [role, liveSource, smoothSource]); // Only re-mount when camera role changes
+  }, [role, liveSource, smoothSource]);
 
   return (
     <canvas
