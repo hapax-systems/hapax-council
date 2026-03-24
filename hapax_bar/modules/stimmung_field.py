@@ -66,7 +66,7 @@ class StimmungField(Gtk.Widget):
         self._tick_id: int | None = None
         self._seam_toggle_callback: object = None
 
-        click = Gtk.GestureClick()
+        click = Gtk.GestureClick(button=2)  # middle-click only for seam toggle
         click.connect("pressed", self._on_click)
         self.add_controller(click)
         self.connect("realize", self._on_realize)

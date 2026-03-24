@@ -262,8 +262,8 @@ window.bedrock label {
     background-color: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 4px;
-    padding: 12px 16px;
-    min-width: 500px;
+    padding: 6px 10px;
+    min-width: 400px;
     /* max-width not supported in GTK4 CSS */
 }
 

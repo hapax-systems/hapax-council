@@ -75,7 +75,7 @@ class SeamWindow(Astal.Window):
             # Auto-dismiss after 10 seconds of inactivity
             if self._dismiss_timer is not None:
                 GLib.source_remove(self._dismiss_timer)
-            self._dismiss_timer = GLib.timeout_add(10_000, self._auto_dismiss)
+            self._dismiss_timer = GLib.timeout_add(5_000, self._auto_dismiss)
 
     def _dismiss(self) -> None:
         if self._dismiss_timer is not None:

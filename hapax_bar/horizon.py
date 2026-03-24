@@ -65,7 +65,7 @@ def create_horizon(
 
     window.set_child(centerbox)
     if seam_toggle is not None:
-        center_click = Gtk.GestureClick()
+        center_click = Gtk.GestureClick(button=2)  # middle-click for seam
         center_click.connect("pressed", lambda *_: seam_toggle())
         center.add_controller(center_click)
 
