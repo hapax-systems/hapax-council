@@ -71,18 +71,52 @@ class FortressDaemon:
 
     async def _governance_loop(self) -> None:
         """Main loop: read state -> evaluate -> dispatch -> episodes -> metrics."""
+        last_tick = -1
+        cycle_count = 0
+
         while self._running:
             state = self._bridge.read_state()
             if state is None:
+                if cycle_count % 10 == 0:
+                    log.debug("No state available (DF not running or bridge stopped)")
+                # If we haven't started yet, try unpausing (game may be paused,
+                # causing state to go stale because bridge only exports on ticks)
+                if not self._started and self._bridge._config.state_path.exists():
+                    log.info("State stale but file exists — sending unpause")
+                    self._bridge.send_command("pause", state=False)
                 await asyncio.sleep(IDLE_POLL_INTERVAL)
+                cycle_count += 1
                 continue
 
-            # First state: initialize session
+            # First state: initialize session + unpause game
             if not self._started:
                 self._start_session(state)
+                self._bridge.send_command("pause", state=False)
+                log.info("Game unpaused")
+
+            # Skip if game tick unchanged (paused or same state)
+            if state.game_tick == last_tick:
+                await asyncio.sleep(GOVERNANCE_INTERVAL)
+                cycle_count += 1
+                continue
+            last_tick = state.game_tick
 
             # Governor evaluation
             commands = self._governor.evaluate(state)
+            cycle_count += 1
+
+            # Periodic logging
+            if commands or cycle_count % 10 == 0:
+                log.info(
+                    "Tick %d | Pop %d | Food %d | Drink %d | Threats %d | Cmds %d | Total %d",
+                    state.game_tick,
+                    state.population,
+                    state.food_count,
+                    state.drink_count,
+                    state.active_threats,
+                    len(commands),
+                    self._tracker.total_commands,
+                )
 
             # Dispatch commands through bridge
             for cmd in commands:
@@ -91,6 +125,7 @@ class FortressDaemon:
                 self._creativity_metrics.record_action(
                     cmd.chain, has_semantic_ref=(cmd.chain == "creativity")
                 )
+                log.debug("  -> [%s] %s %s", cmd.chain, cmd.action, cmd.params)
 
             # Episode lifecycle
             episode = self._episode_builder.observe(state)

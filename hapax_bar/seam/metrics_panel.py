@@ -97,8 +97,8 @@ class MetricsPanel(Gtk.Box):
             spacing=2,
             css_classes=["metrics-panel"],
         )
-        self._row1 = Gtk.Label(xalign=0, css_classes=["metrics-row"], use_markup=True, hexpand=True)
-        self._row2 = Gtk.Label(xalign=0, css_classes=["metrics-row"], use_markup=True, hexpand=True)
+        self._row1 = Gtk.Label(xalign=0, css_classes=["metrics-row"], use_markup=True)
+        self._row2 = Gtk.Label(xalign=0, css_classes=["metrics-row"], use_markup=True)
         self.append(self._row1)
         self.append(self._row2)
 

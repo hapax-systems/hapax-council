@@ -49,7 +49,7 @@ class NudgePanel(Gtk.Box):
         lines = []
         for n in sorted_nudges[:5]:
             cat = n.get("category", "?")
-            title = n.get("title", "?")
+            title = n.get("title", "?")[:80]
             cat_colors = {
                 "health": "#fb4934",
                 "drift": "#fe8019",

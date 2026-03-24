@@ -44,6 +44,7 @@ class SeamWindow(Astal.Window):
             ),
             transition_duration=200,
             reveal_child=False,
+            halign=Gtk.Align.CENTER,
             valign=Gtk.Align.START if is_top else Gtk.Align.END,
             child=self._panel,
         )

@@ -368,7 +368,8 @@ local function start()
     -- Register periodic tasks
     repeatUtil.scheduleEvery("hapax-df-fast", FAST_INTERVAL, "ticks", export_fast)
     repeatUtil.scheduleEvery("hapax-df-full", FULL_INTERVAL, "ticks", export_full)
-    repeatUtil.scheduleEvery("hapax-df-cmds", CMD_INTERVAL, "ticks", poll_commands)
+    -- Commands must poll on frames (not ticks) so unpause works while game is paused
+    repeatUtil.scheduleEvery("hapax-df-cmds", CMD_INTERVAL, "frames", poll_commands)
 
     -- Register event hooks
     eventful.onInvasion.hapax = on_invasion

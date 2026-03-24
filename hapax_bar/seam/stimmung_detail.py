@@ -1,4 +1,4 @@
-"""Stimmung detail panel — 10-dimension readout in a grid layout."""
+"""Stimmung detail panel — 10-dimension readout with severity coloring."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def _stance_color(stance: str) -> str:
 
 
 class StimmungDetailPanel(Gtk.Box):
-    """Stimmung dimensions in a multi-column grid to fill width."""
+    """Compact stimmung dimension readout with severity coloring."""
 
     def __init__(self) -> None:
         super().__init__(
@@ -46,27 +46,16 @@ class StimmungDetailPanel(Gtk.Box):
             css_classes=["stimmung-detail"],
         )
         self._stance_label = Gtk.Label(xalign=0, css_classes=["stimmung-stance"], use_markup=True)
+        self._dims_label = Gtk.Label(xalign=0, css_classes=["stimmung-dims"], use_markup=True)
         self.append(self._stance_label)
-
-        # Grid: 2 columns of dimensions
-        self._grid = Gtk.Grid(column_spacing=24, row_spacing=1)
-        self.append(self._grid)
+        self.append(self._dims_label)
 
     def update(self, state: StimmungState) -> None:
         sc = _stance_color(state.stance)
         self._stance_label.set_markup(f'Stance: <span foreground="{sc}">{state.stance}</span>')
 
-        # Clear grid
-        while child := self._grid.get_child_at(0, 0):
-            self._grid.remove(child)
-
-        dims = list(state.dimensions.items())
-        mid = (len(dims) + 1) // 2  # split into 2 columns
-
-        for i, (name, dim) in enumerate(dims):
-            col = 0 if i < mid else 1
-            row = i if i < mid else i - mid
-
+        lines = []
+        for name, dim in state.dimensions.items():
             value = dim.get("value", 0.0)
             trend = dim.get("trend", "stable")
             arrow = _TREND_ARROWS.get(trend, "\u25ac")
@@ -82,11 +71,6 @@ class StimmungDetailPanel(Gtk.Box):
                 minutes = int(freshness / 60)
                 stale = f' <span foreground="#665c54">({minutes}m)</span>'
 
-            label = Gtk.Label(
-                xalign=0,
-                use_markup=True,
-                css_classes=["stimmung-dims"],
-                hexpand=True,
-            )
-            label.set_markup(f"{name}: {val_str} {arrow_str}{stale}")
-            self._grid.attach(label, col, row, 1, 1)
+            lines.append(f"  {name}: {val_str} {arrow_str}{stale}")
+
+        self._dims_label.set_markup("\n".join(lines))
