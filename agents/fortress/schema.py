@@ -224,6 +224,39 @@ FortressEvent = Annotated[
 
 
 # ---------------------------------------------------------------------------
+# Spatial types
+# ---------------------------------------------------------------------------
+
+
+class Building(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    type: str  # building type name
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    z: int
+    is_room: bool = False
+    room_description: str = ""
+    name: str = ""
+
+
+class ActivityZone(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    type: str  # temple, library, tavern, guildhall, etc.
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    z: int
+    name: str = ""
+
+
+# ---------------------------------------------------------------------------
 # State models
 # ---------------------------------------------------------------------------
 
@@ -257,6 +290,8 @@ class FullFortressState(FastFortressState):
     stockpiles: StockpileSummary = StockpileSummary()
     workshops: tuple[Workshop, ...] = ()
     buildings: BuildingSummary = BuildingSummary()
+    buildings_list: tuple[Building, ...] = ()
+    zones: tuple[ActivityZone, ...] = ()
     wealth: WealthSummary = WealthSummary()
     map_summary: MapSummary = MapSummary()
     nobles: tuple[NoblePosition, ...] = ()

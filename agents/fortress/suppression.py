@@ -15,7 +15,7 @@ from agents.hapax_voice.suppression import SuppressionField
 def create_fortress_suppression_fields(
     config: SuppressionConfig | None = None,
 ) -> dict[str, SuppressionField]:
-    """Create the 4 fortress suppression fields with configured timing."""
+    """Create the 5 fortress suppression fields with configured timing."""
     cfg = config or SuppressionConfig()
     return {
         "crisis_suppression": SuppressionField(
@@ -33,5 +33,9 @@ def create_fortress_suppression_fields(
         "planner_activity": SuppressionField(
             attack_s=cfg.planner_attack_s,
             release_s=cfg.planner_release_s,
+        ),
+        "creativity_suppression": SuppressionField(
+            attack_s=cfg.creativity_attack_s,
+            release_s=cfg.creativity_release_s,
         ),
     }

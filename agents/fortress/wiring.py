@@ -10,6 +10,7 @@ import logging
 import time
 
 from agents.fortress.chains.advisor import AdvisorChain
+from agents.fortress.chains.creativity import CreativityChain
 from agents.fortress.chains.crisis import CrisisResponderChain
 from agents.fortress.chains.military import MilitaryCommanderChain
 from agents.fortress.chains.planner import FortressPlannerChain
@@ -25,7 +26,7 @@ log = logging.getLogger(__name__)
 
 
 class FortressGovernor:
-    """Wires 6 chains + 4 suppression fields into a coherent governance loop."""
+    """Wires 7 chains + 5 suppression fields into a coherent governance loop."""
 
     def __init__(self, config: FortressConfig | None = None) -> None:
         self._config = config or FortressConfig()
@@ -37,6 +38,7 @@ class FortressGovernor:
         self._storyteller = StorytellerChain()
         self._advisor = AdvisorChain()
         self._crisis = CrisisResponderChain(config=self._config)
+        self._creativity = CreativityChain()
 
         # Suppression fields
         self._fields = create_fortress_suppression_fields(self._config.suppression)
@@ -152,5 +154,27 @@ class FortressGovernor:
         # --- Storyteller (L3, never suppresses others) ---
         story_veto, story_action = self._storyteller.evaluate(state)
         # Storyteller produces narrative, not game commands — handled separately
+
+        # --- Creativity (L3.5) — gated by safety + suppression ---
+        if isinstance(state, FullFortressState):
+            max_lower = max(
+                levels.get("crisis_suppression", 0.0),
+                levels.get("military_alert", 0.0),
+                levels.get("resource_pressure", 0.0),
+            )
+            self._fields["creativity_suppression"].set_target(max_lower, now)
+
+            creativity_supp = levels.get("creativity_suppression", 0.0)
+            if creativity_supp < self._config.suppression.creativity_ceiling:
+                creat_veto, creat_action = self._creativity.evaluate(state)
+                if creat_action.action != "no_action" and creat_veto.allowed:
+                    commands.append(
+                        FortressCommand(
+                            id="",
+                            action="creativity",
+                            chain="creativity",
+                            params={"operation": creat_action.action},
+                        )
+                    )
 
         return commands

@@ -11,10 +11,16 @@ from agents.fortress.suppression import create_fortress_suppression_fields
 class TestSuppressionFieldCreation(unittest.TestCase):
     """Test that create_fortress_suppression_fields produces 4 fields with correct config."""
 
-    def test_creates_four_fields(self) -> None:
+    def test_creates_five_fields(self) -> None:
         fields = create_fortress_suppression_fields()
-        self.assertEqual(len(fields), 4)
-        expected = {"crisis_suppression", "military_alert", "resource_pressure", "planner_activity"}
+        self.assertEqual(len(fields), 5)
+        expected = {
+            "crisis_suppression",
+            "military_alert",
+            "resource_pressure",
+            "planner_activity",
+            "creativity_suppression",
+        }
         self.assertEqual(set(fields.keys()), expected)
 
     def test_all_fields_start_at_zero(self) -> None:
