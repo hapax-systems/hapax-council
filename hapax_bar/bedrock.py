@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from gi.repository import Astal, Gtk
 
 from hapax_bar.modules.audio import MicModule, VolumeModule
+from hapax_bar.modules.bluetooth import BluetoothIndicator
 from hapax_bar.modules.cost_whisper import CostWhisper
 from hapax_bar.modules.stimmung_field import StimmungField
 from hapax_bar.modules.system_indicators import CpuIndicator, GpuIndicator, NetworkIndicator
@@ -38,6 +39,7 @@ def create_bedrock(
     # Right: volume, mic, cost, tray
     right = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
     right.append(NetworkIndicator())
+    right.append(BluetoothIndicator())
     right.append(CpuIndicator())
     right.append(GpuIndicator())
     right.append(VolumeModule())

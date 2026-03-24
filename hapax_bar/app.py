@@ -31,6 +31,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 from hapax_bar.bedrock import create_bedrock  # noqa: E402
 from hapax_bar.horizon import create_horizon  # noqa: E402
 from hapax_bar.logos_client import _fetch_json, fetch_gpu, fetch_health, poll_api  # noqa: E402
+from hapax_bar.seam.bluetooth_panel import BluetoothPanel  # noqa: E402
 from hapax_bar.seam.controls_panel import ControlsPanel  # noqa: E402
 from hapax_bar.seam.engine_panel import EnginePanel  # noqa: E402
 from hapax_bar.seam.metrics_panel import MetricsPanel  # noqa: E402
@@ -102,6 +103,7 @@ class HapaxBarApp(Gtk.Application):
             bedrock_seam.add_panel(NudgePanel())
             bedrock_seam.add_panel(vp)
             bedrock_seam.add_panel(ControlsPanel())
+            bedrock_seam.add_panel(BluetoothPanel())
             bedrock_seam.add_panel(SessionPanel())
             if primary:
                 self._metrics_panels.append(mp)
