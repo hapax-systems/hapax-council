@@ -136,6 +136,8 @@ class GoalPlanner:
     def activate_goal(self, goal_id: str, tick: int) -> None:
         for goal in self._goals:
             if goal.id == goal_id:
+                if self._tracker.goal_state(goal.id) == GoalState.ACTIVE:
+                    return  # already active, don't reset progress
                 self._tracker.activate(goal, tick)
                 return
 

@@ -163,55 +163,30 @@ export function StudioDetailPane({
         </div>
       </Section>
 
-      {/* MODE — horizontal tab bar */}
+      {/* MODE — independent toggles for FX and HLS */}
       <Section title="Mode">
         <div className="flex gap-1">
           <button
-            onClick={() => { setCompositeMode(false); setSmoothMode(false); }}
-            className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-              !compositeMode && !smoothMode
-                ? "bg-zinc-700 text-zinc-100"
-                : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            Live
-          </button>
-          <button
-            onClick={activateFx}
+            onClick={() => { if (compositeMode) { setCompositeMode(false); } else { activateFx(); } }}
             className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
               compositeMode
-                ? "bg-zinc-700 text-zinc-100"
+                ? "bg-indigo-900/50 text-indigo-300"
                 : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300"
             }`}
           >
             FX
-            {compositeMode && smoothMode && (
-              <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-green-500" />
-            )}
           </button>
           <button
-            onClick={activateHls}
+            onClick={() => { if (smoothMode) { setSmoothMode(false); } else { activateHls(); } }}
             className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-              !compositeMode && smoothMode
-                ? "bg-zinc-700 text-zinc-100"
+              smoothMode
+                ? "bg-green-900/50 text-green-300"
                 : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300"
             }`}
           >
             HLS
           </button>
         </div>
-        {isFx && (
-          <button
-            onClick={() => setSmoothMode(!smoothMode)}
-            className={`mt-1.5 w-full rounded px-2 py-0.5 text-[9px] transition-colors ${
-              smoothMode
-                ? "bg-green-900/30 text-green-400"
-                : "text-zinc-600 hover:text-zinc-400"
-            }`}
-          >
-            {smoothMode ? "HLS layer active" : "+ HLS underlay"}
-          </button>
-        )}
         <div className="mt-1.5 flex items-center gap-1.5">
           <span className={`h-1.5 w-1.5 rounded-full ${streamInfo?.hls_enabled ? "bg-green-500" : "bg-red-500"}`} />
           <span className="text-[10px] text-zinc-400">

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from agents.fortress.attention import AttentionBudget, AttentionTier
 from agents.fortress.chunks import ChunkCompressor
 from agents.fortress.patches import describe_patch, extract_patches
 from agents.fortress.schema import FastFortressState, FullFortressState
 from agents.fortress.spatial_memory import EntityMobility, SpatialMemoryStore
+
+if TYPE_CHECKING:
+    from agents.fortress.trends import TrendEngine
 
 
 def observe_region(
@@ -243,7 +248,8 @@ def get_situation_chunks(
     compressor: ChunkCompressor,
     state: FastFortressState | FullFortressState,
     prev: FastFortressState | FullFortressState | None = None,
+    trends: TrendEngine | None = None,
 ) -> str:
     """Get 4 compressed situation chunks. Free (no budget cost)."""
-    chunks = compressor.compress(state, prev)
+    chunks = compressor.compress(state, prev, trends=trends)
     return "\n".join(f"{i + 1}. {c}" for i, c in enumerate(chunks))

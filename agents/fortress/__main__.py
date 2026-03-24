@@ -22,6 +22,7 @@ from agents.fortress.config import FortressConfig
 from agents.fortress.creativity_metrics import CreativityMetrics
 from agents.fortress.deliberation import run_deliberation
 from agents.fortress.episodes import FortressEpisodeBuilder
+from agents.fortress.events import EventRouter
 from agents.fortress.goal_library import DEFAULT_GOALS
 from agents.fortress.goals import GoalPlanner
 from agents.fortress.metrics import FortressSessionTracker
@@ -29,6 +30,7 @@ from agents.fortress.narrative import format_narrative_fallback, write_chronicle
 from agents.fortress.schema import FastFortressState, FortressPosition
 from agents.fortress.spatial_memory import SpatialMemoryStore
 from agents.fortress.tactical import TacticalContext, encode_tactical
+from agents.fortress.trends import TrendEngine
 from agents.fortress.wiring import FortressGovernor
 
 log = logging.getLogger(__name__)
@@ -64,6 +66,8 @@ class FortressDaemon:
         self._creativity_metrics = CreativityMetrics()
         self._tactical_ctx = TacticalContext()
         self._chunk_compressor = ChunkCompressor()
+        self._event_router = EventRouter(planner=self._goal_planner)
+        self._trend_engine = TrendEngine()
         self._memory_store = SpatialMemoryStore()
         self._prev_state: FastFortressState | None = None
         self._running = True
@@ -112,6 +116,20 @@ class FortressDaemon:
                 continue
             last_tick = state.game_tick
 
+            # Process events through router
+            events = self._bridge.extract_events(state)
+            interrupts = self._event_router.process_events(
+                tuple(events), state, now=state.game_tick
+            )
+
+            # Push state to trend engine
+            self._trend_engine.push(state)
+
+            # Log INTERRUPT events
+            if interrupts:
+                for ie in interrupts:
+                    log.warning("INTERRUPT: %s", ie.event.type)
+
             # Governor evaluation
             commands = self._governor.evaluate(state)
             cycle_count += 1
@@ -127,6 +145,9 @@ class FortressDaemon:
                     new_commands.append(cmd)
                     self._cmd_cooldowns[key] = now_dedup
             commands = new_commands
+
+            # Expire resolved events
+            self._event_router.expire_events(state)
 
             # Log every 30s or when NEW commands are produced
             now_mono = time.monotonic()
@@ -167,8 +188,8 @@ class FortressDaemon:
                 self._creativity_metrics.record_episode()
                 log.info("Episode closed: %s (%s)", episode.trigger, episode.fortress_name)
 
-            # Track events
-            for event in self._bridge.extract_events(state):
+            # Track events (use already-extracted events)
+            for event in events:
                 self._tracker.record_event(event.type)
 
             # Update metrics
@@ -245,9 +266,18 @@ class FortressDaemon:
                     self._memory_store, patch_id, state.game_tick
                 ),
                 "get_situation": lambda: get_situation_chunks(
-                    self._chunk_compressor, state, self._prev_state
+                    self._chunk_compressor, state, self._prev_state, self._trend_engine
                 ),
             }
+
+            # Build recent_events from active events + trend anomalies/projections
+            recent_events: list[str] = []
+            for ae in self._event_router.active_events:
+                recent_events.append(f"[{ae.classification.urgency.value}] {ae.event.type}")
+            for anomaly in self._trend_engine.anomalies():
+                recent_events.append(f"[TREND] {anomaly}")
+            for proj in self._trend_engine.projections():
+                recent_events.append(f"[PROJECTION] {proj}")
 
             try:
                 actions = await run_deliberation(
@@ -256,8 +286,9 @@ class FortressDaemon:
                     prev_state=self._prev_state,
                     config=self._config.deliberation,
                     tool_dispatch=dispatch,
-                    recent_events=[],  # TODO: wire episode events
+                    recent_events=recent_events,
                     recent_decisions=[],  # TODO: wire decision log
+                    trends=self._trend_engine,
                 )
 
                 for action in actions:

@@ -11,12 +11,15 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agents.fortress.chunks import ChunkCompressor
 from agents.fortress.config import DeliberationConfig
 from agents.fortress.schema import FastFortressState, FullFortressState
 from agents.fortress.tools_registry import FORTRESS_TOOLS
+
+if TYPE_CHECKING:
+    from agents.fortress.trends import TrendEngine
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +120,7 @@ async def run_deliberation(
     tool_dispatch: dict[str, Any] | None = None,
     recent_events: list[str] | None = None,
     recent_decisions: list[str] | None = None,
+    trends: TrendEngine | None = None,
 ) -> list[dict[str, Any]]:
     """Run a single ReAct deliberation cycle.
 
@@ -124,7 +128,7 @@ async def run_deliberation(
     """
     import litellm
 
-    chunks = compressor.compress(state, prev_state)
+    chunks = compressor.compress(state, prev_state, trends=trends)
     messages = build_deliberation_prompt(
         fortress_name=state.fortress_name,
         day=state.day,

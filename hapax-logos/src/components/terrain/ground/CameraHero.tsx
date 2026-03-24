@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useSnapshotPoll } from "../../../hooks/useSnapshotPoll";
 import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
@@ -77,27 +77,36 @@ export function CameraHero({
   const liveFilterCss = liveFilterIdx > 0 ? SOURCE_FILTERS[liveFilterIdx]?.css : undefined;
   const smoothFilterCss = smoothFilterIdx > 0 ? SOURCE_FILTERS[smoothFilterIdx]?.css : undefined;
 
-  // Composite mode: dual-ring-buffer canvas with temporal parallax
-  if (compositeMode) {
-    const preset = PRESETS[presetIdx] ?? PRESETS[0];
-    // If a GPU effect source is selected, use it as the smooth (overlay) source
-    const smoothSource = effectUrl ?? "/api/studio/stream/fx";
+  // Unified rendering: HLS overlay available in any mode
+  const preset = compositeMode ? (PRESETS[presetIdx] ?? PRESETS[0]) : null;
+  const smoothSource = compositeMode ? (effectUrl ?? "/api/studio/stream/fx") : undefined;
+  const modeLabel = [
+    heroRole,
+    preset?.name,
+    smoothMode ? "HLS" : null,
+    effectUrl ? effectSourceId : null,
+  ].filter(Boolean).join(" · ");
+
+  if (compositeMode || smoothMode) {
     return (
       <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
         <div className="relative flex-1 min-h-0">
-          {/* HLS always mounted, hidden when inactive — avoids remount blink */}
-          <div className={smoothMode ? "absolute inset-0 z-0 opacity-30" : "hidden"}>
+          {/* HLS layer — behind main content at reduced opacity when overlaying */}
+          <div className={smoothMode ? `absolute inset-0 z-0 ${compositeMode ? "opacity-30" : ""}` : "hidden"}>
             <HlsPlayer enabled={smoothMode} />
           </div>
-          <CompositeCanvas
-            role={heroRole}
-            preset={preset}
-            className={`h-full w-full bg-black object-cover ${smoothMode ? "relative z-10 mix-blend-screen" : ""}`}
-            liveSource={effectUrl}
-            smoothSource={smoothSource}
-            liveFilter={liveFilterCss}
-            smoothFilter={smoothFilterCss}
-          />
+          {/* Composite canvas — on top of HLS when both active */}
+          {compositeMode && preset && (
+            <CompositeCanvas
+              role={heroRole}
+              preset={preset}
+              className={`h-full w-full bg-black object-cover ${smoothMode ? "relative z-10 mix-blend-screen" : ""}`}
+              liveSource={effectUrl}
+              smoothSource={smoothSource}
+              liveFilter={liveFilterCss}
+              smoothFilter={smoothFilterCss}
+            />
+          )}
           <DetectionOverlay
             containerRef={containerRef}
             cameraRole={heroRole}
@@ -105,16 +114,14 @@ export function CameraHero({
             tier={heroTier}
             visible={detectionLayerVisible}
             objectFit="cover"
-            activePreset={preset.name}
+            activePreset={preset?.name}
             enrichmentVisibility={enrichmentVisibility}
           />
-          {/* Camera role label */}
           <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-            {heroRole} · {preset.name}{smoothMode ? " · HLS" : ""}{effectUrl ? ` · ${effectSourceId}` : ""}
+            {modeLabel}
           </div>
           <SceneBadges />
         </div>
-        {/* Secondary strip */}
         {secondaryCameras.length > 0 && (
           <SecondaryStrip cameras={secondaryCameras} onSelect={onHeroChange} />
         )}
@@ -122,31 +129,9 @@ export function CameraHero({
     );
   }
 
-  // HLS mode: composited stream (temporally offset smooth playback)
-  if (smoothMode) {
-    return (
-      <div ref={containerRef} className="relative h-full w-full overflow-hidden" onDoubleClick={handleDoubleClick}>
-        <HlsPlayer enabled />
-        <DetectionOverlay
-          containerRef={containerRef}
-          cameraRole={heroRole}
-          classificationDetections={classificationDetections}
-          tier={heroTier}
-          visible={detectionLayerVisible}
-          objectFit="cover"
-          enrichmentVisibility={enrichmentVisibility}
-        />
-        <SceneBadges />
-        <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-          HLS
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
-      {/* Hero fills all available space above the thumbnail strip */}
+      {/* Live mode: snapshot feed */}
       <div className="relative flex-1 min-h-0 bg-black">
         {/* Placeholder shown until first frame */}
         <div className="absolute inset-0 flex items-center justify-center z-0">
@@ -229,12 +214,13 @@ function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }
 function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<import("hls.js").default | null>(null);
-  const [initialized, setInitialized] = useState(false);
 
   useEffect(() => {
-    if (!enabled || initialized) return;
+    if (!enabled) return;
     const video = videoRef.current;
     if (!video) return;
+    // Already initialized — don't re-create
+    if (hlsRef.current) return;
 
     let destroyed = false;
 
@@ -262,7 +248,6 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
           if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             hls.recoverMediaError();
           } else {
-            // Network error — try to recover by reloading source
             hls.stopLoad();
             setTimeout(() => {
               if (!destroyed) {
@@ -273,7 +258,6 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
           }
         }
       });
-      setInitialized(true);
     })();
 
     return () => {
@@ -281,7 +265,7 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
       hlsRef.current?.destroy();
       hlsRef.current = null;
     };
-  }, [enabled, initialized]);
+  }, [enabled]);
 
   return (
     <video
