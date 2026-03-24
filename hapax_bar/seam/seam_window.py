@@ -14,11 +14,11 @@ class SeamWindow(Astal.Window):
 
     def __init__(self, position: str = "top") -> None:
         is_top = position == "top"
-        # Anchor to edge + LEFT only (not RIGHT) — window takes natural width/height
-        # instead of stretching to fill the entire screen
         anchor = (
-            Astal.WindowAnchor.TOP if is_top else Astal.WindowAnchor.BOTTOM
-        ) | Astal.WindowAnchor.LEFT
+            (Astal.WindowAnchor.TOP if is_top else Astal.WindowAnchor.BOTTOM)
+            | Astal.WindowAnchor.LEFT
+            | Astal.WindowAnchor.RIGHT
+        )
 
         super().__init__(
             namespace=f"hapax-seam-{position}",
@@ -37,8 +37,9 @@ class SeamWindow(Astal.Window):
             ),
             transition_duration=200,
             reveal_child=False,
-            halign=Gtk.Align.CENTER,
+            halign=Gtk.Align.FILL,
             valign=Gtk.Align.START if is_top else Gtk.Align.END,
+            hexpand=True,
         )
 
         if is_top:
@@ -50,8 +51,10 @@ class SeamWindow(Astal.Window):
             orientation=Gtk.Orientation.VERTICAL,
             spacing=8,
             css_classes=["seam-panel"],
+            hexpand=True,
         )
         self._revealer.set_child(self._panel)
+        self._revealer.set_hexpand(True)
         self.set_child(self._revealer)
 
         # Escape or middle-click to dismiss
