@@ -79,10 +79,10 @@ class TestEncodePlanner:
         )
         ctx = TacticalContext()
         actions = encode_tactical(cmd, _fast_state(), ctx)
-        # Should produce dig_room + build_workshop
+        # First cycle: dig only, no workshop (race condition fix)
         action_types = [a["action"] for a in actions]
         assert "dig_room" in action_types
-        assert "build_workshop" in action_types
+        assert "build_workshop" not in action_types
         assert ctx.room_dug
 
     def test_room_dug_only_once(self):
@@ -94,6 +94,8 @@ class TestEncodePlanner:
         )
         ctx = TacticalContext()
         encode_tactical(cmd, _fast_state(), ctx)
+        # Simulate dig delay elapsed
+        ctx.room_dug_time = 0.0
         actions2 = encode_tactical(cmd, _fast_state(), ctx)
         # Second call should only build workshop, not dig again
         action_types = [a["action"] for a in actions2]
@@ -107,12 +109,19 @@ class TestEncodePlanner:
             params={"operation": "expand_workshops"},
         )
         ctx = TacticalContext()
+        # Cycle 1: dig only
         a1 = encode_tactical(cmd, _fast_state(), ctx)
+        assert any(a["action"] == "dig_room" for a in a1)
+
+        # Simulate dig delay elapsed (set room_dug_time far in past)
+        ctx.room_dug_time = 0.0
+
+        # Cycles 2-4: one workshop per cycle
         a2 = encode_tactical(cmd, _fast_state(), ctx)
         a3 = encode_tactical(cmd, _fast_state(), ctx)
-        # Each call should place a different workshop
+        a4 = encode_tactical(cmd, _fast_state(), ctx)
         ws_types = set()
-        for actions in [a1, a2, a3]:
+        for actions in [a2, a3, a4]:
             for a in actions:
                 if a["action"] == "build_workshop":
                     ws_types.add(a["workshop_type"])

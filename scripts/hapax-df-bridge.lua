@@ -59,11 +59,17 @@ end
 
 -- Count items by type — simplified, avoid unavailable API calls
 local function count_food()
-    local ok, items = pcall(function() return df.global.world.items.other.ANY_COOKABLE end)
-    if ok and items then return #items end
-    -- Fallback: count food items from FOOD category
-    local ok2, food = pcall(function() return df.global.world.items.other.FOOD end)
-    if ok2 and food then return #food end
+    local total = 0
+    -- FOOD = prepared meals
+    local ok_food, food = pcall(function() return df.global.world.items.other.FOOD end)
+    if ok_food and food then total = total + #food end
+    -- PLANT = raw plants (edible but not yet cooked)
+    local ok_plant, plant = pcall(function() return df.global.world.items.other.PLANT end)
+    if ok_plant and plant then total = total + #plant end
+    if total > 0 then return total end
+    -- Last resort: ANY_COOKABLE (may not exist in all builds)
+    local ok_any, items = pcall(function() return df.global.world.items.other.ANY_COOKABLE end)
+    if ok_any and items then return #items end
     return 0
 end
 
@@ -312,6 +318,14 @@ local function dismiss_dialogs()
             return true
         end
     end
+    -- Handle ESC-dismissable screens (nobles, announcements, petitions, diplomacy)
+    local focus = dfhack.gui.getCurFocus()
+    local focus_str = focus and focus[1] or ""
+    if focus_str:find("nobles") or focus_str:find("announcement")
+       or focus_str:find("petitions") or focus_str:find("diplomacy") then
+        gui.simulateInput(dfhack.gui.getCurViewscreen(), "LEAVESCREEN")
+        return true
+    end
     return false
 end
 
@@ -367,7 +381,7 @@ local function find_dig_layer(cx, cy, surface_z)
             end
         end
     end
-    return surface_z - 1  -- fallback
+    return nil  -- no suitable dig layer found; callers must handle nil
 end
 
 -- Designate rectangular area for digging
@@ -401,7 +415,9 @@ local function poll_commands()
 
     local raw = f:read("*a")
     f:close()
-    os.remove(COMMANDS_FILE)
+    -- Truncate instead of remove (os.remove not available in DFHack sandbox)
+    local truncate = io.open(COMMANDS_FILE, "w")
+    if truncate then truncate:close() end
 
     local ok, cmds = pcall(json.decode, raw)
     if not ok or type(cmds) ~= "table" then
@@ -437,22 +453,36 @@ local function poll_commands()
                 -- Auto-detect center if sentinel (0,0,0)
                 if cx == 0 and cy == 0 and cz == 0 then
                     local ecx, ecy, ecz = find_embark_center()
-                    if ecx then
-                        cx = ecx - math.floor(w/2)
-                        cy = ecy - math.floor(h/2)
-                        cz = find_dig_layer(ecx, ecy, ecz)
-                        -- Dig stairs at embark center
-                        local stair_flags = dfhack.maps.getTileFlags(ecx, ecy, ecz)
-                        if stair_flags then
-                            stair_flags.dig = df.tile_dig_designation.DownStair
-                            dfhack.maps.getTileBlock(ecx, ecy, ecz).flags.designated = true
-                        end
-                        local stair_flags2 = dfhack.maps.getTileFlags(ecx, ecy, cz)
-                        if stair_flags2 then
-                            stair_flags2.dig = df.tile_dig_designation.UpStair
-                            dfhack.maps.getTileBlock(ecx, ecy, cz).flags.designated = true
-                        end
+                    if not ecx then
+                        dfhack.printerr("hapax-df-bridge: dig_room failed — cannot find embark center")
+                        return
                     end
+                    local dig_z = find_dig_layer(ecx, ecy, ecz)
+                    if not dig_z then
+                        dfhack.printerr("hapax-df-bridge: dig_room failed — no suitable dig layer found")
+                        return
+                    end
+                    cx = ecx - math.floor(w/2)
+                    cy = ecy - math.floor(h/2)
+                    cz = dig_z
+                    -- Dig stairs at embark center
+                    local stair_flags = dfhack.maps.getTileFlags(ecx, ecy, ecz)
+                    if stair_flags then
+                        stair_flags.dig = df.tile_dig_designation.DownStair
+                        dfhack.maps.getTileBlock(ecx, ecy, ecz).flags.designated = true
+                    end
+                    local stair_flags2 = dfhack.maps.getTileFlags(ecx, ecy, cz)
+                    if stair_flags2 then
+                        stair_flags2.dig = df.tile_dig_designation.UpStair
+                        dfhack.maps.getTileBlock(ecx, ecy, cz).flags.designated = true
+                    end
+                end
+                -- Bounds check before designating
+                local map_x, map_y, map_z = dfhack.maps.getTileSize()
+                if cx < 0 or cy < 0 or cz < 0
+                   or cx + w > map_x or cy + h > map_y or cz >= map_z then
+                    dfhack.printerr(("hapax-df-bridge: dig_room out of bounds (%d,%d,%d) %dx%d"):format(cx, cy, cz, w, h))
+                    return
                 end
                 local count = designate_rect(cx, cy, cz, cx + w - 1, cy + h - 1)
                 dfhack.println(("hapax-df-bridge: designated %d tiles for digging at z=%d"):format(count, cz))
@@ -468,10 +498,26 @@ local function poll_commands()
                     -- Auto-detect position if sentinel
                     if wx == 0 and wy == 0 and wz == 0 then
                         local ecx, ecy, ecz = find_embark_center()
-                        if ecx then
-                            wz = find_dig_layer(ecx, ecy, ecz)
-                            wx, wy = ecx, ecy
+                        if not ecx then
+                            dfhack.printerr("hapax-df-bridge: build_workshop failed — cannot find embark center")
+                            return
                         end
+                        local dig_z = find_dig_layer(ecx, ecy, ecz)
+                        if not dig_z then
+                            dfhack.printerr("hapax-df-bridge: build_workshop failed — no suitable dig layer")
+                            return
+                        end
+                        wz = dig_z
+                        -- Apply offset from command params (Python sends relative offsets)
+                        wx = ecx + (cmd.offset_x or 0)
+                        wy = ecy + (cmd.offset_y or 0)
+                    end
+                    -- Bounds check before xyz2pos
+                    local map_x, map_y, map_z = dfhack.maps.getTileSize()
+                    if wx < 0 or wy < 0 or wz < 0
+                       or wx + 3 > map_x or wy + 3 > map_y or wz >= map_z then
+                        dfhack.printerr(("hapax-df-bridge: workshop out of bounds (%d,%d,%d)"):format(wx, wy, wz))
+                        return
                     end
                     local bld, err = dfhack.buildings.constructBuilding{
                         type = df.building_type.Workshop,

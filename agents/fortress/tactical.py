@@ -8,6 +8,7 @@ built to avoid duplicate actions.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,6 +24,7 @@ class TacticalContext:
 
     orders_imported: bool = False
     room_dug: bool = False
+    room_dug_time: float = 0.0  # monotonic time when dig was sent
     workshops_placed: set[str] = field(default_factory=set)
     dig_center_x: int = 0
     dig_center_y: int = 0
@@ -70,7 +72,7 @@ def _encode_planner(
             ctx.dig_center_y = cy
             ctx.dig_z = cz - 1  # one level below surface
 
-            # Dig stairs to connect
+            # Dig stairs to connect — ONLY dig this cycle, don't build yet
             actions.append(
                 {
                     "action": "dig_room",
@@ -85,31 +87,37 @@ def _encode_planner(
                 }
             )
             ctx.room_dug = True
+            ctx.room_dug_time = time.monotonic()
             log.info("Tactical: dig room at (%d,%d,%d) 11x11", cx - 5, cy - 5, cz - 1)
+            return actions  # Return early — wait for digging before placing workshops
 
     if op == "expand_workshops":
-        # Place workshops in the dug room
+        # Only build if room has had time to be dug (wait at least 60s)
+        elapsed = time.monotonic() - ctx.room_dug_time
+        if ctx.room_dug_time > 0 and elapsed < 60:
+            log.debug("Tactical: waiting for dig to complete (%.0fs elapsed, need 60s)", elapsed)
+            return []
+
+        # Place workshops in the dug room — send offsets, Lua resolves position
         workshop_types = ["Still", "Kitchen", "Craftsdwarfs"]
         for ws_type in workshop_types:
             if ws_type not in ctx.workshops_placed:
-                # Offset each workshop within the room
                 offset = ctx.next_workshop_offset
-                wx = ctx.dig_center_x - 3 + (offset * 4)  # 4-tile spacing
-                wy = ctx.dig_center_y
-                wz = ctx.dig_z
-
+                # Send sentinel (0,0,0) with offsets — Lua computes final position
                 actions.append(
                     {
                         "action": "build_workshop",
-                        "x": wx,
-                        "y": wy,
-                        "z": wz,
+                        "x": 0,
+                        "y": 0,
+                        "z": 0,
+                        "offset_x": -3 + (offset * 4),
+                        "offset_y": 0,
                         "workshop_type": ws_type,
                     }
                 )
                 ctx.workshops_placed.add(ws_type)
                 ctx.next_workshop_offset += 1
-                log.info("Tactical: place %s workshop at (%d,%d,%d)", ws_type, wx, wy, wz)
+                log.info("Tactical: place %s workshop (offset_x=%d)", ws_type, -3 + (offset * 4))
                 break  # one workshop per cycle
 
     return actions

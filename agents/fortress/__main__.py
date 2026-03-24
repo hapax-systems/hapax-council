@@ -182,15 +182,19 @@ class FortressDaemon:
             await asyncio.sleep(GOVERNANCE_INTERVAL)
 
     async def _maintenance_loop(self) -> None:
-        """Slow loop: goal timeouts, spatial memory maintenance."""
+        """Slow loop: goal timeouts, spatial memory maintenance, cooldown pruning."""
         while self._running:
             await asyncio.sleep(MAINTENANCE_INTERVAL)
+            # Prune old cooldown entries (older than 5 minutes)
+            now = time.monotonic()
+            self._cmd_cooldowns = {k: v for k, v in self._cmd_cooldowns.items() if (now - v) < 300}
             # Goal timeout checks could go here
             # Spatial memory consolidation/pruning could go here
 
     def _start_session(self, state: FastFortressState) -> None:
         """Initialize session components on first state read."""
         self._tracker.start(state)
+        self._episode_builder = FortressEpisodeBuilder(session_id=self._tracker.session_id)
         self._started = True
 
         # Activate founding goal for new fortresses (small population)
