@@ -69,6 +69,17 @@ class StimmungField(Gtk.Widget):
         self.connect("realize", self._on_realize)
         self.connect("unrealize", self._on_unrealize)
 
+    def set_agent_speed(self, running_count: int) -> None:
+        """Set particle speed from agent activity count."""
+        if running_count == 0:
+            self._agent_speed = 0.1
+        elif running_count == 1:
+            self._agent_speed = 0.5
+        elif running_count <= 3:
+            self._agent_speed = 2.0
+        else:
+            self._agent_speed = 4.0
+
     def set_seam_toggle(self, callback: object) -> None:
         self._seam_toggle_callback = callback
 
