@@ -9,6 +9,7 @@ export const EFFECT_SOURCES: EffectSource[] = [
   { id: "camera", label: "Camera" },
   { id: "fx-clean", label: "Clean" },
   { id: "fx-ghost", label: "Ghost" },
+  { id: "fx-trails", label: "Trails" },
   { id: "fx-datamosh", label: "Datamosh" },
   { id: "fx-vhs", label: "VHS" },
   { id: "fx-neon", label: "Neon" },
@@ -22,6 +23,9 @@ export const EFFECT_SOURCES: EffectSource[] = [
   { id: "fx-halftone", label: "Halftone" },
   { id: "fx-glitchblocks", label: "Glitch" },
   { id: "fx-ascii", label: "ASCII" },
+  { id: "fx-nightvision", label: "Night Vision" },
+  { id: "fx-silhouette", label: "Silhouette" },
+  { id: "fx-ambient", label: "Ambient" },
 ];
 
 /** Convert source ID to fetch URL. "camera" returns undefined (use default). */
@@ -33,12 +37,22 @@ export function sourceUrl(id: string): string | undefined {
   return "/api/studio/stream/fx";
 }
 
+/** Map frontend source IDs to backend preset names.
+ *  Most strip the 'fx-' prefix directly. CSS-only presets (nightvision, silhouette)
+ *  route to 'clean' since their visual character comes from the composite preset's
+ *  colorFilter, not from a GPU shader.
+ */
+const BACKEND_PRESET_MAP: Record<string, string> = {
+  "fx-nightvision": "clean",
+  "fx-silhouette": "clean",
+};
+
 /** Tell the compositor to switch to a different effect preset.
  *  Strip the 'fx-' prefix since the backend uses bare names (e.g. 'vhs' not 'fx-vhs').
  */
 export async function selectEffect(id: string): Promise<void> {
   if (id === "camera") return;
-  const name = id.startsWith("fx-") ? id.slice(3) : id;
+  const name = BACKEND_PRESET_MAP[id] ?? (id.startsWith("fx-") ? id.slice(3) : id);
   await fetch("/api/studio/effect/select", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

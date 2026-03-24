@@ -11,6 +11,10 @@ interface GroundStudioState {
   setCompositeMode: (on: boolean) => void;
   presetIdx: number;
   setPresetIdx: (idx: number) => void;
+  liveFilterIdx: number;
+  setLiveFilterIdx: (idx: number) => void;
+  smoothFilterIdx: number;
+  setSmoothFilterIdx: (idx: number) => void;
 }
 
 const GroundStudioContext = createContext<GroundStudioState | null>(null);
@@ -21,6 +25,8 @@ export function GroundStudioProvider({ children }: { children: ReactNode }) {
   const [smoothMode, setSmoothMode] = useState(false);
   const [compositeMode, setCompositeMode] = useState(false);
   const [presetIdx, setPresetIdx] = useState(0);
+  const [liveFilterIdx, setLiveFilterIdx] = useState(0);
+  const [smoothFilterIdx, setSmoothFilterIdx] = useState(0);
 
   return (
     <GroundStudioContext.Provider
@@ -30,6 +36,8 @@ export function GroundStudioProvider({ children }: { children: ReactNode }) {
         smoothMode, setSmoothMode,
         compositeMode, setCompositeMode,
         presetIdx, setPresetIdx,
+        liveFilterIdx, setLiveFilterIdx,
+        smoothFilterIdx, setSmoothFilterIdx,
       }}
     >
       {children}

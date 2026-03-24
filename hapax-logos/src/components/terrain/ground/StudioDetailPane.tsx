@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Circle, Square } from "lucide-react";
+import { Circle, Square, Eye, Clock } from "lucide-react";
 import { PRESETS } from "../../studio/compositePresets";
 import { EFFECT_SOURCES } from "../../studio/effectSources";
+import { SOURCE_FILTERS } from "../../studio/compositeFilters";
 import VisualLayerPanel from "../../studio/VisualLayerPanel";
 import {
   useStudio,
@@ -26,6 +27,8 @@ export function StudioDetailPane({
     smoothMode, setSmoothMode,
     compositeMode, setCompositeMode,
     presetIdx, setPresetIdx,
+    liveFilterIdx, setLiveFilterIdx,
+    smoothFilterIdx, setSmoothFilterIdx,
   } = useGroundStudio();
   const { data: studio } = useStudio();
   const { data: streamInfo } = useStudioStreamInfo();
@@ -280,6 +283,36 @@ export function StudioDetailPane({
                 {p.name}
               </button>
             ))}
+          </div>
+        )}
+        {compositeMode && (
+          <div className="mb-2 flex flex-col gap-2">
+            <label className="flex items-center gap-1.5">
+              <Eye className="h-3 w-3 shrink-0 text-amber-400" />
+              <span className="shrink-0 text-[10px] text-amber-300">Live</span>
+              <select
+                value={liveFilterIdx}
+                onChange={(e) => setLiveFilterIdx(Number(e.target.value))}
+                className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+              >
+                {SOURCE_FILTERS.map((f, i) => (
+                  <option key={f.name} value={i}>{f.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <Clock className="h-3 w-3 shrink-0 text-cyan-400" />
+              <span className="shrink-0 text-[10px] text-cyan-300">Smooth</span>
+              <select
+                value={smoothFilterIdx}
+                onChange={(e) => setSmoothFilterIdx(Number(e.target.value))}
+                className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+              >
+                {SOURCE_FILTERS.map((f, i) => (
+                  <option key={f.name} value={i}>{f.name}</option>
+                ))}
+              </select>
+            </label>
           </div>
         )}
 

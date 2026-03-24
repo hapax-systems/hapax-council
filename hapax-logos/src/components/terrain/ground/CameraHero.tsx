@@ -1,17 +1,17 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSnapshotPoll } from "../../../hooks/useSnapshotPoll";
 import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
 import { SceneBadges } from "../../studio/SceneBadges";
 import { CompositeCanvas } from "../../studio/CompositeCanvas";
 import { PRESETS } from "../../studio/compositePresets";
+import { SOURCE_FILTERS } from "../../studio/compositeFilters";
 import { sourceUrl, selectEffect } from "../../studio/effectSources";
 import { useStudio } from "../../../api/hooks";
 import { useDetections } from "../../../contexts/ClassificationOverlayContext";
+import { useGroundStudio } from "../../../contexts/GroundStudioContext";
 import type { ClassificationDetection } from "../../../api/types";
 import type { DetectionTier } from "../../studio/DetectionOverlay";
-
-const _BUILD_TS = "build-2026-03-21T01:20";
 
 interface CameraHeroProps {
   heroRole: string;
@@ -35,6 +35,7 @@ export function CameraHero({
   const containerRef = useRef<HTMLDivElement>(null);
   const { detectionTier, detectionLayerVisible, enrichmentVisibility } = useDetections();
   const heroTier = Math.max(detectionTier, 2) as DetectionTier; // hero always ≥ tier 2
+  const { liveFilterIdx, smoothFilterIdx } = useGroundStudio();
   const effectUrl = sourceUrl(effectSourceId);
   // Tell compositor to switch effect when source changes
   useEffect(() => { selectEffect(effectSourceId); }, [effectSourceId]);
@@ -72,6 +73,10 @@ export function CameraHero({
     else el.requestFullscreen();
   }, []);
 
+  // Convert filter indices to CSS strings for CompositeCanvas
+  const liveFilterCss = liveFilterIdx > 0 ? SOURCE_FILTERS[liveFilterIdx]?.css : undefined;
+  const smoothFilterCss = smoothFilterIdx > 0 ? SOURCE_FILTERS[smoothFilterIdx]?.css : undefined;
+
   // Composite mode: dual-ring-buffer canvas with temporal parallax
   if (compositeMode) {
     const preset = PRESETS[presetIdx] ?? PRESETS[0];
@@ -80,18 +85,18 @@ export function CameraHero({
     return (
       <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
         <div className="relative flex-1 min-h-0">
-          {/* When HLS is also active, layer it behind composite at reduced opacity */}
-          {smoothMode && (
-            <div className="absolute inset-0 z-0 opacity-30">
-              <HlsPlayer />
-            </div>
-          )}
+          {/* HLS always mounted, hidden when inactive — avoids remount blink */}
+          <div className={smoothMode ? "absolute inset-0 z-0 opacity-30" : "hidden"}>
+            <HlsPlayer enabled={smoothMode} />
+          </div>
           <CompositeCanvas
             role={heroRole}
             preset={preset}
             className={`h-full w-full bg-black object-cover ${smoothMode ? "relative z-10 mix-blend-screen" : ""}`}
             liveSource={effectUrl}
             smoothSource={smoothSource}
+            liveFilter={liveFilterCss}
+            smoothFilter={smoothFilterCss}
           />
           <DetectionOverlay
             containerRef={containerRef}
@@ -118,11 +123,10 @@ export function CameraHero({
   }
 
   // HLS mode: composited stream (temporally offset smooth playback)
-  // Detection overlay renders on HLS same as live — hero camera detections
   if (smoothMode) {
     return (
       <div ref={containerRef} className="relative h-full w-full overflow-hidden" onDoubleClick={handleDoubleClick}>
-        <HlsPlayer />
+        <HlsPlayer enabled />
         <DetectionOverlay
           containerRef={containerRef}
           cameraRole={heroRole}
@@ -134,7 +138,7 @@ export function CameraHero({
         />
         <SceneBadges />
         <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
-          HLS · {_BUILD_TS}
+          HLS
         </div>
       </div>
     );
@@ -218,58 +222,70 @@ function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }
   );
 }
 
-/** Simple HLS player for smooth mode. */
-function HlsPlayer() {
+/** HLS player that stays alive across mode toggles.
+ *  The `enabled` prop controls when the HLS instance is first created.
+ *  Once created, it persists until the component fully unmounts.
+ */
+function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<import("hls.js").default | null>(null);
+  const [initialized, setInitialized] = useState(false);
 
-  const containerRef = useCallback(async (node: HTMLVideoElement | null) => {
-    if (!node) {
+  useEffect(() => {
+    if (!enabled || initialized) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    let destroyed = false;
+
+    (async () => {
+      const Hls = (await import("hls.js")).default;
+      if (destroyed || !Hls.isSupported()) return;
+      const hls = new Hls({
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 10,
+        maxBufferLength: 10,
+        backBufferLength: 5,
+        enableWorker: true,
+        lowLatencyMode: false,
+        liveDurationInfinity: true,
+      });
+      hlsRef.current = hls;
+      hls.loadSource("/api/studio/hls/stream.m3u8");
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        video.play().catch(() => {});
+      });
+      hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
+        if (data.details === "bufferStalledError") return;
+        if (data.fatal) {
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            hls.recoverMediaError();
+          } else {
+            // Network error — try to recover by reloading source
+            hls.stopLoad();
+            setTimeout(() => {
+              if (!destroyed) {
+                hls.loadSource("/api/studio/hls/stream.m3u8");
+                hls.startLoad();
+              }
+            }, 3000);
+          }
+        }
+      });
+      setInitialized(true);
+    })();
+
+    return () => {
+      destroyed = true;
       hlsRef.current?.destroy();
       hlsRef.current = null;
-      return;
-    }
-    const Hls = (await import("hls.js")).default;
-    if (!Hls.isSupported()) return;
-    const hls = new Hls({
-      liveSyncDurationCount: 5,
-      liveMaxLatencyDurationCount: 30,
-      maxBufferLength: 30,
-      backBufferLength: 10,
-      enableWorker: true,
-      lowLatencyMode: false,
-      liveDurationInfinity: true,  // treat as infinite live stream
-    });
-    hlsRef.current = hls;
-    hls.loadSource("/api/studio/hls/stream.m3u8");
-    hls.attachMedia(node);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      node.play().catch(() => {});
-    });
-    // On buffer gap, skip forward smoothly instead of jumping
-    hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
-      if (data.details === "bufferStalledError") {
-        // Don't seek — just wait for buffer to refill
-        return;
-      }
-      if (data.fatal) {
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          hls.recoverMediaError();
-        } else {
-          // Network error — retry after delay
-          hls.destroy();
-          setTimeout(() => containerRef(node), 3000);
-        }
-      }
-    });
-  }, []);
+    };
+  }, [enabled, initialized]);
 
   return (
     <video
-      ref={(node) => {
-        (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = node;
-        containerRef(node);
-      }}
+      ref={videoRef}
       className="absolute inset-0 h-full w-full bg-black object-cover"
       muted
       playsInline
