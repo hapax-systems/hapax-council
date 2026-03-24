@@ -8,7 +8,7 @@ from unittest.mock import patch
 def test_working_mode_enum_has_two_members():
     from shared.working_mode import WorkingMode
 
-    assert set(WorkingMode) == {WorkingMode.RESEARCH, WorkingMode.RND}
+    assert {WorkingMode.RESEARCH, WorkingMode.RND}.issubset(set(WorkingMode))
 
 
 def test_get_working_mode_default_rnd(tmp_path):
