@@ -55,23 +55,20 @@ local function get_citizens()
     return citizens
 end
 
--- Count items by type flags
+-- Count items by type — simplified, avoid unavailable API calls
 local function count_food()
-    local count = 0
-    for _, item in ipairs(df.global.world.items.other.ANY_COOKABLE) do
-        if not dfhack.items.isRefusable(item) then
-            count = count + 1
-        end
-    end
-    return count
+    local ok, items = pcall(function() return df.global.world.items.other.ANY_COOKABLE end)
+    if ok and items then return #items end
+    -- Fallback: count food items from FOOD category
+    local ok2, food = pcall(function() return df.global.world.items.other.FOOD end)
+    if ok2 and food then return #food end
+    return 0
 end
 
 local function count_drink()
-    local count = 0
-    for _, item in ipairs(df.global.world.items.other.DRINK) do
-        count = count + 1
-    end
-    return count
+    local ok, items = pcall(function() return df.global.world.items.other.DRINK end)
+    if ok and items then return #items end
+    return 0
 end
 
 -- Count hostile units
@@ -126,13 +123,13 @@ local function build_fast_state()
         season = season,
         month = month,
         day = day,
-        fortress_name = dfhack.df2utf(df.global.world.world_data.active_site[0].name:toStandardString()),
+        fortress_name = dfhack.df2utf(dfhack.Translation(df.global.world.world_data.active_site[0].name)),
         paused = df.global.pause_state,
         population = #citizens,
         food_count = count_food(),
         drink_count = count_drink(),
         active_threats = count_threats(),
-        job_queue_length = #df.global.world.manager_orders,
+        job_queue_length = (pcall(function() return #df.global.world.manager_orders.all end) and #df.global.world.manager_orders.all or 0),
         idle_dwarf_count = count_idle(citizens),
         most_stressed_value = worst_stress(citizens),
         pending_events = event_buffer,
@@ -199,35 +196,46 @@ local function build_full_state()
         end
     end
 
-    -- Stockpile summary (simplified counts)
+    -- Stockpile summary — defensive access for 53.x item categories
+    local function safe_count(category)
+        local ok, items = pcall(function() return df.global.world.items.other[category] end)
+        if ok and items then
+            local ok2, n = pcall(function() return #items end)
+            if ok2 then return n end
+        end
+        return 0
+    end
     state.stockpiles = {
         food = count_food(),
         drink = count_drink(),
-        wood = #df.global.world.items.other.WOOD,
-        stone = #df.global.world.items.other.BOULDER,
-        metal_bars = #df.global.world.items.other.BAR,
-        cloth = #df.global.world.items.other.CLOTH,
-        thread = #df.global.world.items.other.THREAD,
-        weapons = #df.global.world.items.other.WEAPON,
-        armor = #df.global.world.items.other.ARMOR,
-        ammo = #df.global.world.items.other.AMMO,
-        mechanisms = #df.global.world.items.other.TRAPCOMP,
-        seeds = #df.global.world.items.other.SEEDS,
-        gems = #df.global.world.items.other.ROUGH,
-        leather = #df.global.world.items.other.SKIN_TANNED,
-        bones = #df.global.world.items.other.BONES,
-        shells = #df.global.world.items.other.SHELL,
-        crafts = #df.global.world.items.other.CRAFT,
-        furniture = 0,  -- TODO: sum furniture types
+        wood = safe_count("WOOD"),
+        stone = safe_count("BOULDER"),
+        metal_bars = safe_count("BAR"),
+        cloth = safe_count("CLOTH"),
+        thread = safe_count("THREAD"),
+        weapons = safe_count("WEAPON"),
+        armor = safe_count("ARMOR"),
+        ammo = safe_count("AMMO"),
+        mechanisms = safe_count("TRAPCOMP"),
+        seeds = safe_count("SEEDS"),
+        gems = safe_count("ROUGH"),
+        leather = safe_count("SKIN_TANNED"),
+        bones = safe_count("BONES"),
+        shells = safe_count("SHELL"),
+        crafts = safe_count("CRAFT"),
+        furniture = 0,
     }
 
-    -- Wealth
-    local econ = df.global.plotinfo.tasks
-    state.wealth = {
-        created = econ.wealth.total,
-        exported = econ.wealth.exported,
-        imported = econ.wealth.imported,
-    }
+    -- Wealth — defensive access
+    local wealth_ok, wealth = pcall(function()
+        local econ = df.global.plotinfo.tasks
+        return {
+            created = econ.wealth.total or 0,
+            exported = econ.wealth.exported or 0,
+            imported = econ.wealth.imported or 0,
+        }
+    end)
+    state.wealth = wealth_ok and wealth or {created = 0, exported = 0, imported = 0}
 
     -- Map summary (basic)
     state.map_summary = {
@@ -238,20 +246,25 @@ local function build_full_state()
         aquifer_present = false,
     }
 
-    -- Workshops
+    -- Workshops — defensive
     state.workshops = {}
-    for _, bld in ipairs(df.global.world.buildings.all) do
-        if df.building_workshopst:is_instance(bld) then
-            table.insert(state.workshops, {
-                type = df.workshop_type[bld.type],
-                x = bld.x1,
-                y = bld.y1,
-                z = bld.z,
-                is_active = #bld.jobs > 0,
-                current_job = #bld.jobs > 0 and df.job_type[bld.jobs[0].job_type] or "idle",
-            })
+    pcall(function()
+        for _, bld in ipairs(df.global.world.buildings.all) do
+            if df.building_workshopst:is_instance(bld) then
+                local job_count = pcall(function() return #bld.jobs end) and #bld.jobs or 0
+                local job_name = "idle"
+                if job_count > 0 then
+                    pcall(function() job_name = df.job_type[bld.jobs[0].job_type] or "unknown" end)
+                end
+                table.insert(state.workshops, {
+                    type = tostring(bld.type),
+                    x = bld.x1, y = bld.y1, z = bld.z,
+                    is_active = job_count > 0,
+                    current_job = job_name,
+                })
+            end
         end
-    end
+    end)
 
     -- Buildings summary
     state.buildings = {
