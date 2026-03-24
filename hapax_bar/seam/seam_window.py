@@ -32,7 +32,7 @@ class SeamWindow(Astal.Window):
 
         self._panel = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
-            spacing=8,
+            spacing=0,
             css_classes=["seam-panel"],
         )
 
