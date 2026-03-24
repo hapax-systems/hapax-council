@@ -29,6 +29,12 @@ class SeamWindow(Astal.Window):
             visible=False,
         )
 
+        self._panel = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=8,
+            css_classes=["seam-panel"],
+        )
+
         self._revealer = Gtk.Revealer(
             transition_type=(
                 Gtk.RevealerTransitionType.SLIDE_DOWN
@@ -37,9 +43,7 @@ class SeamWindow(Astal.Window):
             ),
             transition_duration=200,
             reveal_child=False,
-            halign=Gtk.Align.FILL,
-            valign=Gtk.Align.START if is_top else Gtk.Align.END,
-            hexpand=True,
+            child=self._panel,
         )
 
         if is_top:
@@ -47,14 +51,6 @@ class SeamWindow(Astal.Window):
         else:
             self._revealer.set_margin_bottom(36)
 
-        self._panel = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL,
-            spacing=8,
-            css_classes=["seam-panel"],
-            hexpand=True,
-        )
-        self._revealer.set_child(self._panel)
-        self._revealer.set_hexpand(True)
         self.set_child(self._revealer)
 
         # Escape or middle-click to dismiss
