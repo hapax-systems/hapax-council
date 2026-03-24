@@ -220,7 +220,11 @@ class HapaxBarApp(Gtk.Application):
         self._drift_count = data.get("drift_count", 0)
 
     def _handle_theme(self, msg: dict) -> bool:
-        switch_theme(msg.get("mode", "rnd"))
+        mode = msg.get("mode", "rnd")
+        switch_theme(mode)
+        from hapax_bar.palette import set_mode
+
+        set_mode(mode)
         return False
 
     def _handle_stimmung_push(self, msg: dict) -> bool:
