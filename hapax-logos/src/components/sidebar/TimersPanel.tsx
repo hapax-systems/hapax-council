@@ -5,7 +5,7 @@ import { formatAge } from "../../utils";
 
 const INITIAL_SHOW = 8;
 
-function formatNextFire(next: string): string {
+function formatNextFire(next: string, lastFired: string): string {
   if (!next || next === "-") return "inactive";
   // ISO timestamp → relative time
   if (next.startsWith("20")) {
@@ -13,7 +13,15 @@ function formatNextFire(next: string): string {
       const d = new Date(next);
       const now = Date.now();
       const diff = d.getTime() - now;
-      if (diff < 0) return "overdue";
+      if (diff < 0) {
+        // Compute grace period from timer interval (next_fire - last_fired),
+        // or default to 2 minutes. The API snapshot goes stale between polls,
+        // so short-interval timers always have next_fire in the past.
+        const interval = lastFired ? d.getTime() - new Date(lastFired).getTime() : 0;
+        const grace = interval > 0 ? interval : 120_000;
+        if (-diff > grace) return "overdue";
+        return "< 1m";
+      }
       if (diff < 60_000) return "< 1m";
       if (diff < 3600_000) return `${Math.round(diff / 60_000)}m`;
       if (diff < 86400_000) return `${Math.round(diff / 3600_000)}h`;
@@ -44,7 +52,7 @@ export function TimersPanel() {
       {infra && items.length > 0 ? (
         <>
           {visible.map((t) => {
-            const display = formatNextFire(t.next_fire);
+            const display = formatNextFire(t.next_fire, t.last_fired);
             const color = statusColor[display] ?? "text-zinc-400";
             return (
               <div key={t.unit} className="flex items-center justify-between gap-2">
