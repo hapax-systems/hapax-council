@@ -544,8 +544,16 @@ local function start()
     export_full()
 
     -- Enable labor management
-    dfhack.run_command('enable', 'labormanager')
-    dfhack.println("hapax-df-bridge: labormanager enabled")
+    -- Enable labor management (autolabor available in 53.x, labormanager may not be)
+    local labor_ok, labor_err = pcall(function()
+        dfhack.run_command("enable", "labormanager")
+    end)
+    if not labor_ok then
+        pcall(function() dfhack.run_command("enable", "autolabor") end)
+        dfhack.println("hapax-df-bridge: autolabor enabled (labormanager unavailable)")
+    else
+        dfhack.println("hapax-df-bridge: labormanager enabled")
+    end
 
     dfhack.println("hapax-df-bridge: started")
 end
