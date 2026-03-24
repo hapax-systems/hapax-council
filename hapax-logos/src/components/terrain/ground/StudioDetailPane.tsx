@@ -13,6 +13,7 @@ import {
 } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
 import { useGroundStudio } from "../../../contexts/GroundStudioContext";
+import { useTerrainActions, useTerrainDisplay } from "../../../contexts/TerrainContext";
 
 /** Blend mode family → left border color token for preset chips */
 const BLEND_COLORS: Record<string, string> = {
@@ -59,6 +60,20 @@ export function StudioDetailPane({
   const isFx = compositeMode;
   const [sourceExpanded, setSourceExpanded] = useState(false);
   const [recExpanded, setRecExpanded] = useState(false);
+  const { setRegionDepth } = useTerrainActions();
+  const { regionDepths } = useTerrainDisplay();
+
+  // Auto-advance to core depth when FX or HLS mode activated (composite canvas only renders at core)
+  const activateFx = () => {
+    setCompositeMode(true);
+    setSmoothMode(false);
+    if (regionDepths.ground !== "core") setRegionDepth("ground", "core");
+  };
+  const activateHls = () => {
+    setCompositeMode(false);
+    setSmoothMode(true);
+    if (regionDepths.ground !== "core") setRegionDepth("ground", "core");
+  };
 
   // Current preset + merged effects
   const preset = PRESETS[presetIdx] ?? PRESETS[0];
@@ -162,7 +177,7 @@ export function StudioDetailPane({
             Live
           </button>
           <button
-            onClick={() => { setCompositeMode(true); setSmoothMode(false); }}
+            onClick={activateFx}
             className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
               compositeMode
                 ? "bg-zinc-700 text-zinc-100"
@@ -175,7 +190,7 @@ export function StudioDetailPane({
             )}
           </button>
           <button
-            onClick={() => { setCompositeMode(false); setSmoothMode(true); }}
+            onClick={activateHls}
             className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
               !compositeMode && smoothMode
                 ? "bg-zinc-700 text-zinc-100"
