@@ -58,23 +58,28 @@ Detection overlay coloring encodes rich perceptual information. Colors are **mod
 - **Non-persons:** Objects (furniture `#bdae93`, instruments `#fabd2f`, electronics `#83a598`, containers `#d3869b`) are drawn dimmer, with opacity scaled by novelty and mobility.
 - **IR presets** (NightVision, Silhouette, Thermal IR): High-saturation variant palette for monochrome feed visibility.
 
-The compositor also hosts 12 visual effect presets:
-- **Ghost:** Transparent echoes with fading 4-frame trails. Subtle pan/zoom drift.
-- **Trails:** Bright additive motion trails with hue shifting. Lighter blend mode.
-- **Screwed:** Named after Houston chopped-and-screwed music. Heavy warping, band displacement, syrup gradients, stutter phases. The visual equivalent of slowed, pitched-down production.
-- **Datamosh:** Simulated codec glitch artifacts. Difference blending, high contrast, band displacement with stutter.
-- **VHS:** Lo-fi tape warmth. Soft blur, sepia tone, tracking noise, slice warping, intermittent stutters.
-- **Neon:** Color-cycling glow with 4-degree hue rotation per tick. 8-frame trails, lighter blend, vignette.
-- **Trap:** Dark, oppressive mood. Multiply blend, strong vignette, syrup gradient.
-- **Diff:** Motion detection. Difference blend reveals movement as bright areas against black.
-- **NightVision:** Green phosphor monochrome with scanlines and vignette. Optimized for IR camera feeds.
-- **Silhouette:** High-contrast IR shapes. 3.0 contrast, minimal color.
-- **Thermal IR:** Inverted monochrome with hue rotation for heat-map appearance.
-- **Clean:** Near-invisible processing. Slight contrast and saturation boost, faint vignette.
+The compositor hosts 18 visual effect presets, each with a distinct blend mode family:
 
-The compositor runs a dual ring buffer canvas. One buffer for live frames polled at 100ms intervals, one for delayed overlay frames at 200ms with a three-frame offset. This enables temporal effects like trails and ghosting. The architecture is equivalent to a broadcast video switcher.
+**Additive (lighter blend):** Trails, Neon, Screwed, VHS, Pixsort, Feedback — bright, glowing accumulation.
+**Standard (source-over):** Ghost, NightVision, Silhouette, Thermal IR, Slit-scan, Halftone, ASCII, Clean — fading persistence.
+**Difference:** Datamosh, Diff, Glitch Blocks — motion detection, XOR-like artifacts.
+**Multiply:** Trap — dark, oppressive accumulation.
+
+Each preset configures trail persistence (blend mode, filter, spatial drift, count, opacity), warp transforms (pan, zoom, rotation, horizontal slicing), temporal stutter (freeze/replay), and post-effects (scanlines, band displacement, vignette, syrup gradient).
+
+The compositor runs a persistence-based canvas renderer. When trails are active, the canvas is NOT cleared between frames — old content persists and fades via semi-transparent black overlay. New frames are composited using the preset's trail blend mode, producing additive glow (lighter), motion detection (difference), dark accumulation (multiply), or standard ghosting (source-over). A separate ring buffer for delayed overlay frames at 200ms with a three-frame offset enables temporal parallax. Post-effects bake into the persistence.
 
 These effects are functional, not decorative. The operator produces music and streams live. Effects composite in real time over camera feeds during production sessions.
+
+**Studio instrument (detail pane):** When the ground region is focused and split view is open (`G` then `S`), the detail pane shows a unified studio control surface:
+- **Mode tab bar:** Live | FX | HLS. FX activates the composite canvas; HLS activates smooth streaming; both can be combined.
+- **Preset chip grid** (FX mode): 6×3 grid of 18 presets. Each chip has a colored left border indicating blend mode family. Click to select.
+- **Source selector** (FX mode, collapsible): 20 GPU effect sources. Collapsed by default.
+- **Filters** (FX mode): Live and Smooth layer CSS filters (22 options each).
+- **Effect toggles** (FX mode): Scanlines, Glitch Bands, Vignette, Syrup — 2×2 grid with colored-dot toggle pattern. Reset-to-preset link when overridden.
+- **Recording:** Compact collapsible section with timer, per-camera status, disk usage, consent phase.
+
+**Keyboard shortcuts** (when ground region focused): `E` cycles mode, `[`/`]` cycles presets, `1`-`0` selects presets 1-10, `R` toggles recording. All studio state persists to localStorage and can be deep-linked via URL params (`?preset=trails&source=fx-vhs&hls=1`).
 
 ### Watershed (Middle row, right column)
 
