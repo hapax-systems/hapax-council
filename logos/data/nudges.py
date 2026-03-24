@@ -6,6 +6,7 @@ and returns a ranked list of suggested actions.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -13,6 +14,8 @@ from logos.data.briefing import BriefingData, collect_briefing
 from logos.data.drift import collect_drift
 from logos.data.health import collect_health_history
 from logos.data.scout import collect_scout
+
+_log = logging.getLogger(__name__)
 
 # Staleness thresholds in hours (duplicated from sidebar.py to avoid
 # coupling logos.data → logos.widgets).
@@ -87,7 +90,7 @@ def _collect_goal_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_action_item_nudges(
@@ -188,7 +191,7 @@ def _collect_health_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_briefing_nudges(nudges: list[Nudge]) -> None:
@@ -255,7 +258,7 @@ def _collect_briefing_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_readiness_nudges(nudges: list[Nudge], *, analysis=None) -> None:
@@ -310,7 +313,7 @@ def _collect_readiness_nudges(nudges: list[Nudge], *, analysis=None) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_profile_nudges(nudges: list[Nudge], *, analysis=None) -> None:
@@ -365,7 +368,7 @@ def _collect_profile_nudges(nudges: list[Nudge], *, analysis=None) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_scout_nudges(nudges: list[Nudge]) -> None:
@@ -415,7 +418,7 @@ def _collect_scout_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_sufficiency_nudges(nudges: list[Nudge]) -> None:
@@ -441,7 +444,7 @@ def _collect_sufficiency_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_knowledge_sufficiency_nudges(nudges: list[Nudge]) -> None:
@@ -453,7 +456,7 @@ def _collect_knowledge_sufficiency_nudges(nudges: list[Nudge]) -> None:
         for domain_id, report in reports.items():
             nudges.extend(gaps_to_nudges(report.gaps, domain_id=domain_id))
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_precedent_nudges(nudges: list[Nudge]) -> None:
@@ -489,7 +492,7 @@ def _collect_precedent_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_rag_quality_nudges(nudges: list[Nudge]) -> None:
@@ -524,7 +527,7 @@ def _collect_rag_quality_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_emergence_nudges(nudges: list[Nudge]) -> None:
@@ -550,7 +553,7 @@ def _collect_emergence_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_drift_nudges(nudges: list[Nudge]) -> None:
@@ -593,7 +596,7 @@ def _collect_drift_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 def _collect_contradiction_nudges(nudges: list[Nudge]) -> None:
@@ -616,7 +619,7 @@ def _collect_contradiction_nudges(nudges: list[Nudge]) -> None:
                 )
             )
     except Exception:
-        pass
+        _log.warning("Nudge collector failed", exc_info=True)
 
 
 # ── Main entry point ─────────────────────────────────────────────────────────
@@ -652,6 +655,7 @@ def collect_nudges(
 
         analysis = analyze_profile()
     except Exception:
+        _log.warning("Profile analysis failed", exc_info=True)
         analysis = None
 
     _collect_readiness_nudges(nudges, analysis=analysis)
@@ -753,6 +757,7 @@ def _filter_dismissed(nudges: list[Nudge]) -> list[Nudge]:
             return nudges
         return [n for n in nudges if n.title not in dismissed_titles]
     except Exception:
+        _log.warning("Nudge dismiss filter failed", exc_info=True)
         return nudges
 
 

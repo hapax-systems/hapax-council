@@ -6,9 +6,10 @@ Ships empty in Phase A — rules are registered in Phase B.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from logos.engine.models import Action, ActionPlan, ChangeEvent
 
@@ -26,6 +27,7 @@ class Rule:
     phase: int = 0
     cooldown_s: float = 0
     _last_fired: float = 0.0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
 class RuleRegistry:
@@ -58,31 +60,32 @@ def evaluate_rules(event: ChangeEvent, registry: RuleRegistry) -> ActionPlan:
     seen_names: set[str] = set()
 
     for rule in registry:
-        # Check cooldown
-        if rule.cooldown_s > 0:
-            elapsed = time.monotonic() - rule._last_fired
-            if elapsed < rule.cooldown_s:
-                _log.debug(
-                    "Rule %s skipped (cooldown: %.1fs remaining)",
-                    rule.name,
-                    rule.cooldown_s - elapsed,
-                )
+        # Check cooldown (atomic check-and-set under lock)
+        with rule._lock:
+            if rule.cooldown_s > 0:
+                elapsed = time.monotonic() - rule._last_fired
+                if elapsed < rule.cooldown_s:
+                    _log.debug(
+                        "Rule %s skipped (cooldown: %.1fs remaining)",
+                        rule.name,
+                        rule.cooldown_s - elapsed,
+                    )
+                    continue
+
+            try:
+                if not rule.trigger_filter(event):
+                    continue
+            except (ValueError, KeyError, TypeError, OSError):
+                _log.exception("Exception in trigger_filter for rule %s", rule.name)
                 continue
 
-        try:
-            if not rule.trigger_filter(event):
+            try:
+                actions = rule.produce(event)
+            except (ValueError, KeyError, TypeError, OSError):
+                _log.exception("Exception in produce for rule %s", rule.name)
                 continue
-        except (ValueError, KeyError, TypeError, OSError):
-            _log.exception("Exception in trigger_filter for rule %s", rule.name)
-            continue
 
-        try:
-            actions = rule.produce(event)
-        except (ValueError, KeyError, TypeError, OSError):
-            _log.exception("Exception in produce for rule %s", rule.name)
-            continue
-
-        rule._last_fired = time.monotonic()
+            rule._last_fired = time.monotonic()
 
         for action in actions:
             if action.name not in seen_names:

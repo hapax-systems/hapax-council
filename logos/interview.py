@@ -10,9 +10,12 @@ agent to avoid diluting either role.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+_log = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
@@ -192,7 +195,7 @@ def analyze_profile() -> ProfileAnalysis:
                     }
                 )
     except Exception:
-        pass  # operator.json may not exist
+        _log.debug("Could not read operator goals", exc_info=True)
 
     # Neurocognitive gap — check if dimension is sparse AND operator.json section empty
     neuro_stats = analysis.dimension_stats.get("neurocognitive_profile", {"count": 0})
@@ -205,6 +208,7 @@ def analyze_profile() -> ProfileAnalysis:
             if total_findings < 3:
                 analysis.neurocognitive_gap = True
         except Exception:
+            _log.debug("Could not read neurocognitive profile", exc_info=True)
             analysis.neurocognitive_gap = True
 
     return analysis

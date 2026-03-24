@@ -127,7 +127,7 @@ class _AuditLog:
             f.write(json.dumps(record, default=str) + "\n")
             f.flush()
         except Exception:
-            _log.debug("Failed to write audit log", exc_info=True)
+            _log.warning("Failed to write audit log", exc_info=True)
 
     def cleanup(self) -> None:
         """Remove audit files older than retention_days."""
@@ -394,7 +394,7 @@ class ReactiveEngine:
 
         from shared.telemetry import hapax_score, hapax_span, hapax_trace
 
-        _engine_trace_cm = hapax_trace(
+        with hapax_trace(
             "engine",
             "event",
             metadata={
@@ -402,91 +402,79 @@ class ReactiveEngine:
                 "event_type": event.event_type,
                 "doc_type": event.doc_type or "",
             },
-        )
-        _engine_trace = _engine_trace_cm.__enter__()
+        ) as _engine_trace:
+            # Evaluate rules
+            with hapax_span(
+                "engine", "evaluate_rules", metadata={"rule_count": len(self._registry)}
+            ):
+                plan = evaluate_rules(event, self._registry)
+            self._rules_evaluated += len(self._registry)
 
-        # Evaluate rules
-        with hapax_span("engine", "evaluate_rules", metadata={"rule_count": len(self._registry)}):
-            plan = evaluate_rules(event, self._registry)
-        self._rules_evaluated += len(self._registry)
-
-        if not plan.actions:
-            _log.debug("No rules matched for %s", event.path)
-            try:
-                _engine_trace_cm.__exit__(None, None, None)
-            except Exception:
-                pass
-            return
-
-        # Phase gating: skip expensive phases (1+2) when system is stressed
-        # or operator is away (no reason to burn GPU/cloud when nobody's here)
-        skip_expensive = False
-        skip_reason = ""
-
-        stance = self._read_stimmung_stance()
-        if stance in (Stance.DEGRADED, Stance.CRITICAL):
-            skip_expensive = True
-            skip_reason = f"stimmung:{stance}"
-
-        presence = self._read_presence_state()
-        if presence == "AWAY":
-            skip_expensive = True
-            skip_reason = skip_reason or f"presence:{presence}"
-
-        if skip_expensive:
-            original_count = len(plan.actions)
-            plan.actions = [a for a in plan.actions if a.phase == 0]
-            skipped = original_count - len(plan.actions)
-            if skipped > 0:
-                _log.info(
-                    "Phase gating (%s): skipped %d non-critical action(s)",
-                    skip_reason,
-                    skipped,
-                )
-                hapax_interaction(
-                    "stimmung",
-                    "engine",
-                    "phase_gating",
-                    metadata={
-                        "reason": skip_reason,
-                        "stance": stance,
-                        "presence": presence,
-                        "skipped_actions": skipped,
-                    },
-                )
             if not plan.actions:
-                try:
-                    _engine_trace_cm.__exit__(None, None, None)
-                except Exception:
-                    pass
+                _log.debug("No rules matched for %s", event.path)
                 return
 
-        _log.info(
-            "Matched %d action(s): %s",
-            len(plan.actions),
-            [a.name for a in plan.actions],
-        )
+            # Phase gating: skip expensive phases (1+2) when system is stressed
+            # or operator is away (no reason to burn GPU/cloud when nobody's here)
+            skip_expensive = False
+            skip_reason = ""
 
-        # Execute
-        with hapax_span(
-            "engine",
-            "execute",
-            metadata={
-                "action_count": len(plan.actions),
-                "actions": [a.name for a in plan.actions],
-            },
-        ):
-            await self._executor.execute(plan)
-        self._actions_executed += len(plan.results)
-        self._error_count += len(plan.errors)
+            stance = self._read_stimmung_stance()
+            if stance in (Stance.DEGRADED, Stance.CRITICAL):
+                skip_expensive = True
+                skip_reason = f"stimmung:{stance}"
 
-        # Score and close the engine trace
-        hapax_score(_engine_trace, "actions_completed", float(len(plan.results)))
-        hapax_score(_engine_trace, "actions_errored", float(len(plan.errors)))
-        try:
-            _engine_trace_cm.__exit__(None, None, None)
-        except Exception:
-            pass
+            presence = self._read_presence_state()
+            if presence == "AWAY":
+                skip_expensive = True
+                skip_reason = skip_reason or f"presence:{presence}"
+
+            if skip_expensive:
+                original_count = len(plan.actions)
+                plan.actions = [a for a in plan.actions if a.phase == 0]
+                skipped = original_count - len(plan.actions)
+                if skipped > 0:
+                    _log.info(
+                        "Phase gating (%s): skipped %d non-critical action(s)",
+                        skip_reason,
+                        skipped,
+                    )
+                    hapax_interaction(
+                        "stimmung",
+                        "engine",
+                        "phase_gating",
+                        metadata={
+                            "reason": skip_reason,
+                            "stance": stance,
+                            "presence": presence,
+                            "skipped_actions": skipped,
+                        },
+                    )
+                if not plan.actions:
+                    return
+
+            _log.info(
+                "Matched %d action(s): %s",
+                len(plan.actions),
+                [a.name for a in plan.actions],
+            )
+
+            # Execute
+            with hapax_span(
+                "engine",
+                "execute",
+                metadata={
+                    "action_count": len(plan.actions),
+                    "actions": [a.name for a in plan.actions],
+                },
+            ):
+                await self._executor.execute(plan)
+            self._actions_executed += len(plan.results)
+            self._error_count += len(plan.errors)
+
+            # Score the engine trace
+            hapax_score(_engine_trace, "actions_completed", float(len(plan.results)))
+            hapax_score(_engine_trace, "actions_errored", float(len(plan.errors)))
 
         if plan.errors:
             _log.warning("Action errors: %s", plan.errors)

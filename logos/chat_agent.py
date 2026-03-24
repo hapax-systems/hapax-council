@@ -1032,7 +1032,7 @@ class ChatSession:
                 )
                 old_text = result_compressed.get("compressed_prompt", old_text)
         except Exception:
-            pass  # Use uncompressed text
+            log.warning("Prompt compression failed, using uncompressed text", exc_info=True)
 
         summary_prompt = (
             "Summarize this conversation so far, preserving key facts, decisions, "
@@ -1046,7 +1046,7 @@ class ChatSession:
             self.conversation_summary = result.output
             self.message_history = list(recent)
         except Exception:
-            pass  # Keep full history if summarization fails
+            log.warning("History summarization failed, keeping full history", exc_info=True)
 
     async def _send_interview_message(
         self,

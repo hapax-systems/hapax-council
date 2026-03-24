@@ -97,6 +97,17 @@ async def snapshot():
 _OFFLINE_PLACEHOLDER = Path(__file__).parent.parent / "static" / "camera-offline.jpg"
 
 
+_COMPOSITOR_DIR = Path("/dev/shm/hapax-compositor")
+
+
+def _safe_compositor_path(name: str) -> Path | None:
+    """Resolve a camera/feed name to a compositor path, rejecting traversal."""
+    candidate = (_COMPOSITOR_DIR / f"{name}.jpg").resolve()
+    if not candidate.is_relative_to(_COMPOSITOR_DIR):
+        return None
+    return candidate
+
+
 @router.get("/studio/stream/camera/{role}")
 async def camera_snapshot(role: str):
     """Single JPEG snapshot of an individual camera feed.
@@ -105,7 +116,9 @@ async def camera_snapshot(role: str):
     the camera snapshot file doesn't exist, so the frontend always gets
     a valid image and can display a clear offline state.
     """
-    cam_path = Path(f"/dev/shm/hapax-compositor/{role}.jpg")
+    cam_path = _safe_compositor_path(role)
+    if cam_path is None:
+        return JSONResponse({"error": "invalid role"}, status_code=400)
     if not cam_path.exists():
         if _OFFLINE_PLACEHOLDER.exists():
             from starlette.responses import Response
@@ -147,8 +160,8 @@ async def camera_batch_snapshot(roles: str = ""):
     # Pre-read all camera JPEGs into memory to minimize inter-frame skew
     snapshots: list[tuple[str, bytes]] = []
     for role in role_list:
-        cam_path = Path(f"/dev/shm/hapax-compositor/{role}.jpg")
-        if not cam_path.exists():
+        cam_path = _safe_compositor_path(role)
+        if cam_path is None or not cam_path.exists():
             continue
         try:
             snapshots.append((role, cam_path.read_bytes()))
@@ -258,7 +271,9 @@ async def mjpeg_stream(feed: str, fps: float = 12.0):
     }
     path = feed_paths.get(feed)
     if path is None:
-        path = Path(f"/dev/shm/hapax-compositor/{feed}.jpg")
+        path = _safe_compositor_path(feed)
+        if path is None:
+            return JSONResponse({"error": "invalid feed name"}, status_code=400)
     if not path.exists():
         return JSONResponse({"error": f"feed '{feed}' not available"}, status_code=404)
     fps = min(max(fps, 1.0), 30.0)

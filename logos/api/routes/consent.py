@@ -193,7 +193,7 @@ async def trace_consent(
                     }
                 )
     except Exception:
-        pass
+        _log.warning("Failed to load consent contracts", exc_info=True)
 
     # Information flow analysis
 
@@ -242,7 +242,7 @@ async def trace_consent(
                 "note": f"Revoking these contracts would purge {total} Qdrant points",
             }
         except Exception:
-            pass
+            _log.warning("Qdrant point count failed", exc_info=True)
 
     return {
         "source": str(source_path),

@@ -631,6 +631,10 @@ CORRECTION_SYNTHESIS_RULE = Rule(
 # ── Phase 0: Voice/presence state reactive rules ─────────────────────────────
 
 # Track previous presence state to detect transitions (not every tick)
+# Lock protects all transition state to prevent filter/produce races
+import threading
+
+_transition_lock = threading.Lock()
 _last_presence_state: str = ""
 _last_consent_phase: str = "no_guest"
 
@@ -658,8 +662,6 @@ async def _handle_presence_transition(*, from_state: str, to_state: str) -> str:
 
 def _presence_transition_filter(event: ChangeEvent) -> bool:
     """Detect presence state transitions from perception-state.json updates."""
-    global _last_presence_state
-
     if event.path.name != "perception-state.json":
         return False
 
@@ -671,7 +673,8 @@ def _presence_transition_filter(event: ChangeEvent) -> bool:
         return False
 
     current = data.get("presence_state", "")
-    return bool(current and current != _last_presence_state)
+    with _transition_lock:
+        return bool(current and current != _last_presence_state)
 
 
 def _presence_transition_produce(event: ChangeEvent) -> list[Action]:
@@ -685,8 +688,11 @@ def _presence_transition_produce(event: ChangeEvent) -> list[Action]:
         return []
 
     current = data.get("presence_state", "")
-    from_state = _last_presence_state
-    _last_presence_state = current
+    with _transition_lock:
+        if current == _last_presence_state:
+            return []  # lost race — another event already handled this transition
+        from_state = _last_presence_state
+        _last_presence_state = current
 
     return [
         Action(
@@ -742,8 +748,6 @@ async def _handle_consent_transition(*, from_phase: str, to_phase: str) -> str:
 
 def _consent_transition_filter(event: ChangeEvent) -> bool:
     """Detect consent phase transitions from perception-state.json updates."""
-    global _last_consent_phase
-
     if event.path.name != "perception-state.json":
         return False
 
@@ -755,7 +759,8 @@ def _consent_transition_filter(event: ChangeEvent) -> bool:
         return False
 
     current = data.get("consent_phase", "no_guest")
-    return current != _last_consent_phase
+    with _transition_lock:
+        return current != _last_consent_phase
 
 
 def _consent_transition_produce(event: ChangeEvent) -> list[Action]:
@@ -769,8 +774,11 @@ def _consent_transition_produce(event: ChangeEvent) -> list[Action]:
         return []
 
     current = data.get("consent_phase", "no_guest")
-    from_phase = _last_consent_phase
-    _last_consent_phase = current
+    with _transition_lock:
+        if current == _last_consent_phase:
+            return []  # lost race — another event already handled this transition
+        from_phase = _last_consent_phase
+        _last_consent_phase = current
 
     return [
         Action(

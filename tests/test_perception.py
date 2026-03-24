@@ -34,6 +34,7 @@ def test_environment_state_conversation_detected():
     state = EnvironmentState(
         timestamp=time.monotonic(),
         face_count=2,
+        guest_count=1,
         speech_detected=True,
     )
     assert state.conversation_detected is True
@@ -651,7 +652,7 @@ class TestHyprlandBackendStripped:
         from agents.hapax_voice.backends.hyprland import HyprlandBackend
 
         backend = HyprlandBackend()
-        assert backend.provides == frozenset({"active_window_class"})
+        assert backend.provides == frozenset({"active_window_class", "desktop_active"})
 
     def test_no_removed_behaviors_after_registration(self):
         from agents.hapax_voice.backends.hyprland import HyprlandBackend

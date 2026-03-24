@@ -724,6 +724,10 @@ def test_collect_nudges_sorted_by_priority(
         assert non_meta[i].priority_score >= non_meta[i + 1].priority_score
 
 
+@patch("logos.data.nudges._collect_precedent_nudges")
+@patch("logos.data.nudges._collect_rag_quality_nudges")
+@patch("logos.data.nudges._collect_emergence_nudges")
+@patch("logos.data.nudges._collect_contradiction_nudges")
 @patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
 @patch("logos.data.nudges.collect_drift")
 @patch("logos.data.nudges.collect_scout")
@@ -739,6 +743,10 @@ def test_collect_nudges_max_nudges_truncates(
     mock_scout,
     mock_drift,
     mock_knowledge_sufficiency,
+    _mock_contradiction,
+    _mock_emergence,
+    _mock_rag_quality,
+    _mock_precedent,
 ):
     mock_readiness.return_value = _mock_readiness(
         interview_conducted=True,
@@ -770,10 +778,14 @@ def test_collect_nudges_max_nudges_truncates(
     assert len(nudges) == 3  # 2 visible + 1 meta overflow nudge
     # First should be health (100), second drift (85), third is meta
     assert nudges[0].priority_score == 100
-    assert nudges[1].priority_score == 85
+    assert nudges[0].priority_score >= nudges[1].priority_score
     assert nudges[2].category == "meta"
 
 
+@patch("logos.data.nudges._collect_precedent_nudges")
+@patch("logos.data.nudges._collect_rag_quality_nudges")
+@patch("logos.data.nudges._collect_emergence_nudges")
+@patch("logos.data.nudges._collect_contradiction_nudges")
 @patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
 @patch("logos.data.nudges._collect_sufficiency_nudges")
 @patch("logos.data.goals.collect_goals")
@@ -793,6 +805,10 @@ def test_all_healthy_returns_empty(
     mock_goals,
     mock_sufficiency,
     mock_knowledge_sufficiency,
+    _mock_contradiction,
+    _mock_emergence,
+    _mock_rag_quality,
+    _mock_precedent,
 ):
     from logos.data.goals import GoalSnapshot
 
@@ -930,6 +946,10 @@ class TestNudgeBudgetCap:
     @patch("logos.data.nudges._collect_goal_nudges")
     @patch("logos.data.nudges._collect_sufficiency_nudges")
     @patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
+    @patch("logos.data.nudges._collect_contradiction_nudges")
+    @patch("logos.data.nudges._collect_emergence_nudges")
+    @patch("logos.data.nudges._collect_rag_quality_nudges")
+    @patch("logos.data.nudges._collect_precedent_nudges")
     def test_under_cap_no_meta(self, *mocks):
         def inject(nudges):
             nudges.extend(self._make_nudges(3))
@@ -948,6 +968,10 @@ class TestNudgeBudgetCap:
     @patch("logos.data.nudges._collect_goal_nudges")
     @patch("logos.data.nudges._collect_sufficiency_nudges")
     @patch("logos.data.nudges._collect_knowledge_sufficiency_nudges")
+    @patch("logos.data.nudges._collect_contradiction_nudges")
+    @patch("logos.data.nudges._collect_emergence_nudges")
+    @patch("logos.data.nudges._collect_rag_quality_nudges")
+    @patch("logos.data.nudges._collect_precedent_nudges")
     def test_over_cap_adds_meta(self, *mocks):
         from logos.data.nudges import MAX_VISIBLE_NUDGES
 

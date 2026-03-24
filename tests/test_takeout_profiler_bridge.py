@@ -221,9 +221,15 @@ class TestGenerateFacts:
 
 
 class TestLoadStructuredFacts:
+    @staticmethod
+    def _isolate(monkeypatch, tmp_path):
+        monkeypatch.setattr("agents.profiler.PROFILES_DIR", tmp_path)
+        monkeypatch.setattr("agents.profiler_sources.read_watch_facts", lambda: [])
+
     def test_load_valid_facts(self, tmp_path, monkeypatch):
         from agents.profiler import load_structured_facts
 
+        self._isolate(monkeypatch, tmp_path)
         facts_data = [
             {
                 "dimension": "information_seeking",
@@ -237,7 +243,6 @@ class TestLoadStructuredFacts:
         facts_file = tmp_path / "takeout-structured-facts.json"
         facts_file.write_text(json.dumps(facts_data))
 
-        monkeypatch.setattr("agents.profiler.PROFILES_DIR", tmp_path)
         facts = load_structured_facts()
         assert len(facts) == 1
         assert facts[0].dimension == "information_seeking"
@@ -247,22 +252,23 @@ class TestLoadStructuredFacts:
     def test_load_missing_file(self, tmp_path, monkeypatch):
         from agents.profiler import load_structured_facts
 
-        monkeypatch.setattr("agents.profiler.PROFILES_DIR", tmp_path)
+        self._isolate(monkeypatch, tmp_path)
         facts = load_structured_facts()
         assert facts == []
 
     def test_load_invalid_json(self, tmp_path, monkeypatch):
         from agents.profiler import load_structured_facts
 
+        self._isolate(monkeypatch, tmp_path)
         facts_file = tmp_path / "takeout-structured-facts.json"
         facts_file.write_text("not valid json")
-        monkeypatch.setattr("agents.profiler.PROFILES_DIR", tmp_path)
         facts = load_structured_facts()
         assert facts == []
 
     def test_load_skips_malformed_entries(self, tmp_path, monkeypatch):
         from agents.profiler import load_structured_facts
 
+        self._isolate(monkeypatch, tmp_path)
         facts_data = [
             {
                 "dimension": "identity",
@@ -276,7 +282,6 @@ class TestLoadStructuredFacts:
         ]
         facts_file = tmp_path / "takeout-structured-facts.json"
         facts_file.write_text(json.dumps(facts_data))
-        monkeypatch.setattr("agents.profiler.PROFILES_DIR", tmp_path)
         facts = load_structured_facts()
         assert len(facts) == 1
 

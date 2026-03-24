@@ -8,7 +8,7 @@ from __future__ import annotations
 import unittest
 
 from agents.hapax_voice.conversation_buffer import (
-    SPEECH_END_CONSECUTIVE,
+    SPEECH_END_DEFAULT,
     SPEECH_START_CONSECUTIVE,
     ConversationBuffer,
 )
@@ -45,7 +45,7 @@ class TestConversationBufferBasic(unittest.TestCase):
             buf.feed_audio(_frame())
             buf.update_vad(0.9)
         # Trigger silence
-        for _ in range(SPEECH_END_CONSECUTIVE + 1):
+        for _ in range(SPEECH_END_DEFAULT + 1):
             buf.update_vad(0.1)
         assert buf.get_utterance() is None
 
@@ -72,7 +72,7 @@ class TestSpeechDetection(unittest.TestCase):
             buf.feed_audio(_frame())
             buf.update_vad(0.9)
         # Trigger speech end
-        for _ in range(SPEECH_END_CONSECUTIVE + 1):
+        for _ in range(SPEECH_END_DEFAULT + 1):
             buf.feed_audio(_frame())
             buf.update_vad(0.1)
         utterance = buf.get_utterance()
@@ -85,7 +85,7 @@ class TestSpeechDetection(unittest.TestCase):
         for _ in range(SPEECH_START_CONSECUTIVE + 5):
             buf.feed_audio(_frame())
             buf.update_vad(0.9)
-        for _ in range(SPEECH_END_CONSECUTIVE + 1):
+        for _ in range(SPEECH_END_DEFAULT + 1):
             buf.feed_audio(_frame())
             buf.update_vad(0.1)
         assert buf.get_utterance() is not None
@@ -103,7 +103,7 @@ class TestSpeechDetection(unittest.TestCase):
             buf.feed_audio(_frame())
             buf.update_vad(0.9)
         # End speech
-        for _ in range(SPEECH_END_CONSECUTIVE + 1):
+        for _ in range(SPEECH_END_DEFAULT + 1):
             buf.feed_audio(_frame())
             buf.update_vad(0.1)
         utterance = buf.get_utterance()
