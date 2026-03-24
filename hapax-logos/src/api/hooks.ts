@@ -27,7 +27,7 @@ export const useReadiness = () =>
   useQuery({ queryKey: ["readiness"], queryFn: api.readiness, refetchInterval: SLOW });
 
 export const useAgents = () =>
-  useQuery({ queryKey: ["agents"], queryFn: api.agents, staleTime: Infinity });
+  useQuery({ queryKey: ["agents"], queryFn: api.agents, refetchInterval: SLOW });
 
 export const useScout = () =>
   useQuery({ queryKey: ["scout"], queryFn: api.scout, refetchInterval: SLOW });
