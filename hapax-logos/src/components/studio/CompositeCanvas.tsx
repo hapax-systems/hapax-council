@@ -57,9 +57,7 @@ export function CompositeCanvas({
     const driftCanvas = document.createElement("canvas");
     const driftCtx = driftCanvas.getContext("2d")!;
 
-    // Accumulator canvas: used for additive (lighter) blends where persistence saturates
-    const accumCanvas = document.createElement("canvas");
-    const accumCtx = accumCanvas.getContext("2d")!;
+
 
     // Trail state
     let lastTrailHead = 0;
@@ -370,88 +368,44 @@ export function CompositeCanvas({
       const isNewFrame = writeHead !== lastTrailHead;
 
       if (trailActive) {
-        const isAdditive = trail.blendMode === "lighter";
+        // --- PERSISTENCE MODEL: don't clear, dim + redraw ---
+        if (!isNewFrame) return; // Between fetches: canvas holds persisted content
+        lastTrailHead = writeHead;
+
         const mainAlpha = 1 - trail.opacity * 0.65;
         const fadeRate = 0.15 / (trail.count + 1);
+        // For additive (lighter) blend, reduce alpha to prevent saturation.
+        // At full mainAlpha, lighter accumulates to white within seconds.
+        // Factor 0.04 gives steady-state ~200 brightness for mid-tones,
+        // visible trails at ~2s (40%), rich glow at ~5s (80%).
+        const effectiveAlpha = trail.blendMode === "lighter"
+          ? mainAlpha * 0.04
+          : mainAlpha;
 
-        if (isAdditive) {
-          // --- ACCUMULATOR MODEL for additive blends (lighter) ---
-          // Persistence + lighter saturates to white. Instead:
-          // clear canvas, draw main fresh, composite accumulator on top.
-          if (accumCanvas.width !== w || accumCanvas.height !== h) {
-            accumCanvas.width = w;
-            accumCanvas.height = h;
+        // 1. DRIFT: shift persisted canvas content before fade
+        if (trail.driftX !== 0 || trail.driftY !== 0) {
+          if (driftCanvas.width !== w || driftCanvas.height !== h) {
             driftCanvas.width = w;
             driftCanvas.height = h;
           }
-
-          if (isNewFrame) {
-            lastTrailHead = writeHead;
-
-            // Drift accumulated content
-            if (trail.driftX !== 0 || trail.driftY !== 0) {
-              driftCtx.clearRect(0, 0, w, h);
-              driftCtx.drawImage(accumCanvas, 0, 0);
-              accumCtx.clearRect(0, 0, w, h);
-              accumCtx.drawImage(driftCanvas, trail.driftX, trail.driftY);
-            }
-
-            // Decay accumulated content
-            accumCtx.save();
-            accumCtx.globalCompositeOperation = "destination-out";
-            accumCtx.globalAlpha = fadeRate * 3; // faster decay for additive
-            accumCtx.fillStyle = "#000";
-            accumCtx.fillRect(0, 0, w, h);
-            accumCtx.restore();
-
-            // Add current frame to accumulator at controlled rate
-            accumCtx.save();
-            if (cachedTrailFilter !== "none") accumCtx.filter = cachedTrailFilter;
-            accumCtx.globalAlpha = 0.25; // 25% add rate — visible in a few frames
-            accumCtx.drawImage(main, 0, 0, w, h);
-            accumCtx.restore();
-          }
-
-          // Draw fresh main frame + accumulator glow on top (every rAF)
+          driftCtx.clearRect(0, 0, w, h);
+          driftCtx.drawImage(canvas, 0, 0);
           ctx.clearRect(0, 0, w, h);
-          drawMainFrame(ctx, main, w, h, cachedMainFilter, 1, "source-over");
-          ctx.save();
-          ctx.globalAlpha = trail.opacity;
-          ctx.globalCompositeOperation = "lighter";
-          ctx.drawImage(accumCanvas, 0, 0);
-          ctx.restore();
-          drawOverlayAndEffects(main, w, h, cachedMainFilter);
-
-        } else {
-          // --- PERSISTENCE MODEL for non-additive blends ---
-          if (!isNewFrame) return; // Between fetches: canvas holds persisted content
-          lastTrailHead = writeHead;
-
-          // 1. DRIFT: shift persisted canvas content before fade
-          if (trail.driftX !== 0 || trail.driftY !== 0) {
-            if (driftCanvas.width !== w || driftCanvas.height !== h) {
-              driftCanvas.width = w;
-              driftCanvas.height = h;
-            }
-            driftCtx.clearRect(0, 0, w, h);
-            driftCtx.drawImage(canvas, 0, 0);
-            ctx.clearRect(0, 0, w, h);
-            ctx.drawImage(driftCanvas, trail.driftX, trail.driftY);
-          }
-
-          // 2. FADE
-          ctx.save();
-          ctx.globalAlpha = fadeRate;
-          ctx.fillStyle = "#000";
-          ctx.fillRect(0, 0, w, h);
-          ctx.restore();
-
-          // 3. DRAW MAIN with trail blend mode + trail filter
-          drawMainFrame(ctx, main, w, h, cachedTrailFilter, mainAlpha, trail.blendMode);
-
-          // 4. OVERLAY + POST-EFFECTS (baked into persistence)
-          drawOverlayAndEffects(main, w, h, cachedTrailFilter);
+          ctx.drawImage(driftCanvas, trail.driftX, trail.driftY);
         }
+
+        // 2. FADE: dim old content
+        ctx.save();
+        ctx.globalAlpha = fadeRate;
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, w, h);
+        ctx.restore();
+
+        // 3. DRAW MAIN with trail blend mode + trail filter
+        drawMainFrame(ctx, main, w, h, cachedTrailFilter, effectiveAlpha, trail.blendMode);
+
+        // 4. OVERLAY + POST-EFFECTS (baked into persistence, only on new frames)
+        drawOverlayAndEffects(main, w, h, cachedTrailFilter);
 
       } else {
         // --- NO TRAILS: clear and redraw every rAF tick ---
