@@ -27,6 +27,11 @@ def _population_floor(state: FullFortressState) -> bool:
     return state.population >= 3
 
 
+def _needs_workshops_urgent(state: FullFortressState) -> bool:
+    """Workshops needed urgently when drink is critically low and no still exists."""
+    return len(state.workshops) == 0 and state.drink_count < state.population * 3
+
+
 def _needs_bedrooms(state: FullFortressState) -> bool:
     return state.buildings.beds < state.population
 
@@ -57,6 +62,11 @@ class FortressPlannerChain:
         )
         self._fallback: FallbackChain[FullFortressState, str] = FallbackChain(
             candidates=[
+                Candidate(
+                    "expand_workshops_urgent",
+                    _needs_workshops_urgent,
+                    "expand_workshops",
+                ),
                 Candidate("expand_bedrooms", _needs_bedrooms, "expand_bedrooms"),
                 Candidate("expand_workshops", _needs_workshops, "expand_workshops"),
                 Candidate("expand_stockpiles", _needs_stockpiles, "expand_stockpiles"),
