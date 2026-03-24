@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Circle, Square, Eye, Clock } from "lucide-react";
-import { PRESETS } from "../../studio/compositePresets";
+import { Circle, Square, Eye, Clock, ChevronDown, ChevronRight } from "lucide-react";
+import { PRESETS, type CompositePreset } from "../../studio/compositePresets";
 import { EFFECT_SOURCES } from "../../studio/effectSources";
 import { SOURCE_FILTERS } from "../../studio/compositeFilters";
 import VisualLayerPanel from "../../studio/VisualLayerPanel";
@@ -13,6 +13,21 @@ import {
 } from "../../../api/hooks";
 import type { ClassificationDetection } from "../../../api/types";
 import { useGroundStudio } from "../../../contexts/GroundStudioContext";
+
+/** Blend mode family → left border color token for preset chips */
+const BLEND_COLORS: Record<string, string> = {
+  "source-over": "var(--color-emerald-400)",
+  "lighter": "var(--color-yellow-400)",
+  "difference": "var(--color-orange-400)",
+  "multiply": "var(--color-fuchsia-400)",
+};
+
+const EFFECT_TOGGLES: { key: keyof CompositePreset["effects"]; label: string }[] = [
+  { key: "scanlines", label: "Scanlines" },
+  { key: "bandDisplacement", label: "Glitch Bands" },
+  { key: "vignette", label: "Vignette" },
+  { key: "syrupGradient", label: "Syrup" },
+];
 
 interface StudioDetailPaneProps {
   classificationDetections: ClassificationDetection[];
@@ -29,6 +44,7 @@ export function StudioDetailPane({
     presetIdx, setPresetIdx,
     liveFilterIdx, setLiveFilterIdx,
     smoothFilterIdx, setSmoothFilterIdx,
+    effectOverrides, setEffectOverrides,
   } = useGroundStudio();
   const { data: studio } = useStudio();
   const { data: streamInfo } = useStudioStreamInfo();
@@ -40,6 +56,15 @@ export function StudioDetailPane({
   const isRecording = compositor?.recording_enabled ?? false;
   const cameraRoles = compositor ? Object.keys(compositor.cameras) : [];
   const recordingCams = compositor?.recording_cameras ?? {};
+  const isFx = compositeMode;
+  const [sourceExpanded, setSourceExpanded] = useState(false);
+  const [recExpanded, setRecExpanded] = useState(false);
+
+  // Current preset + merged effects
+  const preset = PRESETS[presetIdx] ?? PRESETS[0];
+  const mergedEffects: CompositePreset["effects"] = effectOverrides
+    ? { ...preset.effects, ...effectOverrides }
+    : preset.effects;
 
   // Recording timer
   const [recElapsed, setRecElapsed] = useState("");
@@ -61,9 +86,38 @@ export function StudioDetailPane({
     return () => clearInterval(timer);
   }, [isRecording]);
 
+  const toggleEffect = (key: keyof CompositePreset["effects"]) => {
+    const current = mergedEffects[key];
+    const base = preset.effects[key];
+    const newVal = typeof current === "boolean" ? !current : current;
+    // Only store override if different from preset default
+    if (newVal === base && effectOverrides) {
+      const next = { ...effectOverrides };
+      delete next[key];
+      setEffectOverrides(Object.keys(next).length === 0 ? null : next);
+    } else {
+      setEffectOverrides({ ...(effectOverrides ?? {}), [key]: newVal });
+    }
+  };
+
+  // Consent summary
+  const consentLabel =
+    compositor?.consent_phase === "consent_refused" ? "Refused"
+    : compositor?.consent_phase === "consent_pending" ? "Pending"
+    : compositor?.consent_phase === "guest_detected" ? "Guest"
+    : "OK";
+  const consentColor =
+    compositor?.consent_phase === "consent_refused" ? "bg-red-500"
+    : compositor?.consent_phase === "consent_pending" ? "bg-orange-500 animate-pulse"
+    : compositor?.consent_phase === "guest_detected" ? "bg-yellow-500 animate-pulse"
+    : "bg-green-500";
+
+  // Recording camera count
+  const recCount = Object.values(recordingCams).filter(s => s === "active").length;
+
   return (
     <div className="flex h-full flex-col overflow-y-auto text-xs">
-      {/* CAMERA SELECT */}
+      {/* CAMERA */}
       <Section title="Camera">
         <label className="flex items-center gap-1.5">
           <span className="shrink-0 text-[10px] text-zinc-400">Hero</span>
@@ -73,27 +127,20 @@ export function StudioDetailPane({
             className="flex-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
           >
             {cameraRoles.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
+              <option key={r} value={r}>{r}</option>
             ))}
           </select>
         </label>
-        {/* Camera status dots */}
         <div className="mt-1.5 flex flex-wrap gap-2">
           {cameraRoles.map((role) => {
             const status = compositor?.cameras[role] ?? "offline";
             return (
               <div key={role} className="flex items-center gap-1">
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${
-                    status === "active"
-                      ? "bg-green-500"
-                      : status === "starting"
-                        ? "bg-yellow-500"
-                        : "bg-red-500"
-                  }`}
-                />
+                <span className={`h-1.5 w-1.5 rounded-full ${
+                  status === "active" ? "bg-green-500"
+                  : status === "starting" ? "bg-yellow-500"
+                  : "bg-red-500"
+                }`} />
                 <span className="text-[10px] text-zinc-400">{role}</span>
               </div>
             );
@@ -101,7 +148,194 @@ export function StudioDetailPane({
         </div>
       </Section>
 
-      {/* DETECTION ENTITIES */}
+      {/* MODE — horizontal tab bar */}
+      <Section title="Mode">
+        <div className="flex gap-1">
+          <button
+            onClick={() => { setCompositeMode(false); setSmoothMode(false); }}
+            className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+              !compositeMode && !smoothMode
+                ? "bg-zinc-700 text-zinc-100"
+                : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            Live
+          </button>
+          <button
+            onClick={() => { setCompositeMode(true); setSmoothMode(false); }}
+            className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+              compositeMode
+                ? "bg-zinc-700 text-zinc-100"
+                : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            FX
+            {compositeMode && smoothMode && (
+              <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-green-500" />
+            )}
+          </button>
+          <button
+            onClick={() => { setCompositeMode(false); setSmoothMode(true); }}
+            className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+              !compositeMode && smoothMode
+                ? "bg-zinc-700 text-zinc-100"
+                : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            HLS
+          </button>
+        </div>
+        {isFx && (
+          <button
+            onClick={() => setSmoothMode(!smoothMode)}
+            className={`mt-1.5 w-full rounded px-2 py-0.5 text-[9px] transition-colors ${
+              smoothMode
+                ? "bg-green-900/30 text-green-400"
+                : "text-zinc-600 hover:text-zinc-400"
+            }`}
+          >
+            {smoothMode ? "HLS layer active" : "+ HLS underlay"}
+          </button>
+        )}
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <span className={`h-1.5 w-1.5 rounded-full ${streamInfo?.hls_enabled ? "bg-green-500" : "bg-red-500"}`} />
+          <span className="text-[10px] text-zinc-400">
+            HLS {streamInfo?.hls_enabled ? "available" : "offline"}
+          </span>
+        </div>
+      </Section>
+
+      {/* PRESET — 6-column chip grid (FX mode only) */}
+      {isFx && (
+        <Section title="Preset">
+          <div className="grid grid-cols-6 gap-0.5">
+            {PRESETS.map((p, i) => (
+              <button
+                key={p.name}
+                onClick={() => { setPresetIdx(i); setEffectOverrides(null); }}
+                title={p.description}
+                className={`rounded px-1 py-1 text-left text-[9px] transition-colors ${
+                  presetIdx === i
+                    ? "bg-zinc-800 text-zinc-200"
+                    : "text-zinc-500 hover:bg-zinc-800/30"
+                }`}
+                style={{
+                  borderLeft: `2px solid ${
+                    presetIdx === i
+                      ? (BLEND_COLORS[p.trail.blendMode] ?? "var(--color-zinc-600)")
+                      : "transparent"
+                  }`,
+                }}
+              >
+                {p.name.length > 6 ? p.name.slice(0, 6) : p.name}
+              </button>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* SOURCE — collapsible chip grid (FX mode only) */}
+      {isFx && (
+        <Section title="Source">
+          <button
+            onClick={() => setSourceExpanded(!sourceExpanded)}
+            className="flex w-full items-center gap-1.5 text-[10px] text-zinc-400 hover:text-zinc-300"
+          >
+            {sourceExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            <span>{EFFECT_SOURCES.find(s => s.id === effectSourceId)?.label ?? "Camera"}</span>
+          </button>
+          {sourceExpanded && (
+            <div className="mt-1.5 grid grid-cols-4 gap-0.5">
+              {EFFECT_SOURCES.map((src) => (
+                <button
+                  key={src.id}
+                  onClick={() => { setEffectSourceId(src.id); setSourceExpanded(false); }}
+                  className={`rounded px-1.5 py-1 text-[9px] transition-colors ${
+                    effectSourceId === src.id
+                      ? "bg-zinc-800 text-zinc-200"
+                      : "text-zinc-500 hover:bg-zinc-800/30"
+                  }`}
+                >
+                  {src.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {/* FILTERS — Live + Smooth (FX mode only) */}
+      {isFx && (
+        <Section title="Filters">
+          <div className="flex flex-col gap-2">
+            <label className="flex items-center gap-1.5">
+              <Eye className="h-3 w-3 shrink-0 text-amber-400" />
+              <span className="shrink-0 text-[10px] text-amber-300">Live</span>
+              <select
+                value={liveFilterIdx}
+                onChange={(e) => setLiveFilterIdx(Number(e.target.value))}
+                className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+              >
+                {SOURCE_FILTERS.map((f, i) => (
+                  <option key={f.name} value={i}>{f.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <Clock className="h-3 w-3 shrink-0 text-cyan-400" />
+              <span className="shrink-0 text-[10px] text-cyan-300">Smooth</span>
+              <select
+                value={smoothFilterIdx}
+                onChange={(e) => setSmoothFilterIdx(Number(e.target.value))}
+                className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+              >
+                {SOURCE_FILTERS.map((f, i) => (
+                  <option key={f.name} value={i}>{f.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </Section>
+      )}
+
+      {/* EFFECTS — 2×2 toggle grid (FX mode only) */}
+      {isFx && (
+        <Section title="Effects">
+          <div className="grid grid-cols-2 gap-1">
+            {EFFECT_TOGGLES.map(({ key, label }) => {
+              const active = !!mergedEffects[key];
+              return (
+                <button
+                  key={key}
+                  onClick={() => toggleEffect(key)}
+                  className="flex items-center gap-2 rounded px-1.5 py-1 transition-colors hover:bg-zinc-800/50"
+                >
+                  <span
+                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{
+                      backgroundColor: active ? "var(--color-fuchsia-400)" : "var(--color-zinc-600)",
+                      opacity: active ? 1.0 : 0.2,
+                    }}
+                  />
+                  <span className={`text-[10px] ${active ? "text-zinc-200" : "text-zinc-600"}`}>
+                    {label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {effectOverrides !== null && (
+            <button
+              onClick={() => setEffectOverrides(null)}
+              className="mt-1.5 text-[10px] text-fuchsia-400 hover:text-fuchsia-300"
+            >
+              Reset to preset
+            </button>
+          )}
+        </Section>
+      )}
+
+      {/* ENTITIES */}
       <Section title={`Entities (${classificationDetections.length})`}>
         {classificationDetections.length === 0 ? (
           <p className="text-[10px] text-zinc-600">No detections</p>
@@ -139,9 +373,9 @@ export function StudioDetailPane({
         )}
       </Section>
 
-      {/* RECORDING */}
+      {/* RECORDING — compact with collapsible detail */}
       <Section title="Recording">
-        <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
             {isRecording && (
               <>
@@ -149,6 +383,12 @@ export function StudioDetailPane({
                 <span className="font-mono text-[10px] text-red-400">{recElapsed}</span>
               </>
             )}
+            <button
+              onClick={() => setRecExpanded(!recExpanded)}
+              className="text-[10px] text-zinc-600 hover:text-zinc-400"
+            >
+              {recCount}/{cameraRoles.length} cams · <span className={`inline-block h-1.5 w-1.5 rounded-full ${consentColor}`} /> {consentLabel}
+            </button>
           </div>
           <button
             onClick={() => recordingToggle.mutate(!isRecording)}
@@ -160,78 +400,47 @@ export function StudioDetailPane({
             }`}
           >
             {isRecording ? (
-              <>
-                <Square className="h-2.5 w-2.5" />
-                Stop
-              </>
+              <><Square className="h-2.5 w-2.5" /> Stop</>
             ) : (
-              <>
-                <Circle className="h-2.5 w-2.5 fill-current" />
-                Record
-              </>
+              <><Circle className="h-2.5 w-2.5 fill-current" /> Record</>
             )}
           </button>
         </div>
-        {/* Per-camera recording status */}
-        {cameraRoles.map((role) => {
-          const recActive = recordingCams[role] === "active";
-          return (
-            <div key={role} className="flex items-center justify-between">
-              <span className="truncate text-[10px] text-zinc-400">{role}</span>
-              {recActive && (
-                <span className="shrink-0 rounded bg-red-900/50 px-1 py-0.5 text-[9px] font-medium text-red-400">
-                  REC
-                </span>
-              )}
-            </div>
-          );
-        })}
-        {/* Disk */}
-        {diskInfo && (
+        {recExpanded && (
           <div className="mt-2">
-            <div className="mb-0.5 flex items-center justify-between text-[10px]">
-              <span className="text-zinc-500">Disk</span>
-              <span
-                className={diskInfo.free_gb < diskInfo.total_gb * 0.1 ? "text-red-400" : "text-zinc-400"}
-              >
-                {diskInfo.free_gb}GB free
-              </span>
-            </div>
-            <div className="h-1 overflow-hidden rounded-full bg-zinc-800">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  diskInfo.free_gb < diskInfo.total_gb * 0.1 ? "bg-red-500" : "bg-zinc-600"
-                }`}
-                style={{ width: `${Math.min((diskInfo.used_gb / diskInfo.total_gb) * 100, 100)}%` }}
-              />
-            </div>
+            {cameraRoles.map((role) => {
+              const recActive = recordingCams[role] === "active";
+              return (
+                <div key={role} className="flex items-center justify-between">
+                  <span className="truncate text-[10px] text-zinc-400">{role}</span>
+                  {recActive && (
+                    <span className="shrink-0 rounded bg-red-900/50 px-1 py-0.5 text-[9px] font-medium text-red-400">
+                      REC
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+            {diskInfo && (
+              <div className="mt-2">
+                <div className="mb-0.5 flex items-center justify-between text-[10px]">
+                  <span className="text-zinc-500">Disk</span>
+                  <span className={diskInfo.free_gb < diskInfo.total_gb * 0.1 ? "text-red-400" : "text-zinc-400"}>
+                    {diskInfo.free_gb}GB free
+                  </span>
+                </div>
+                <div className="h-1 overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      diskInfo.free_gb < diskInfo.total_gb * 0.1 ? "bg-red-500" : "bg-zinc-600"
+                    }`}
+                    style={{ width: `${Math.min((diskInfo.used_gb / diskInfo.total_gb) * 100, 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
-        {/* Consent */}
-        <div className="mt-2 flex items-center gap-2">
-          <span
-            className={`inline-block h-2 w-2 rounded-full ${
-              compositor?.consent_phase === "consent_refused"
-                ? "bg-red-500"
-                : compositor?.consent_phase === "consent_pending"
-                  ? "bg-orange-500 animate-pulse"
-                  : compositor?.consent_phase === "guest_detected"
-                    ? "bg-yellow-500 animate-pulse"
-                    : "bg-green-500"
-            }`}
-          />
-          <span className="text-[10px] text-zinc-400">
-            {compositor?.consent_phase === "consent_refused"
-              ? "Guest refused"
-              : compositor?.consent_phase === "consent_pending"
-                ? "Consent pending"
-                : compositor?.consent_phase === "guest_detected"
-                  ? "Guest detected"
-                  : compositor?.consent_phase === "consent_granted"
-                    ? "Guest consented"
-                    : "Consent OK"}
-          </span>
-        </div>
       </Section>
 
       {/* VISUAL LAYER */}
@@ -239,119 +448,14 @@ export function StudioDetailPane({
         <VisualLayerPanel />
       </Section>
 
-      {/* STUDIO CONTROLS — unified source + composite + streaming */}
-      <Section title="Studio Controls">
-        {/* Effect source selector */}
-        <label className="mb-2 flex items-center gap-1.5">
-          <span className="shrink-0 text-[10px] text-zinc-400">Source</span>
-          <select
-            value={effectSourceId}
-            onChange={(e) => setEffectSourceId(e.target.value)}
-            className="flex-1 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
-          >
-            {EFFECT_SOURCES.map((src) => (
-              <option key={src.id} value={src.id}>
-                {src.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        {/* Composite toggle */}
-        <button
-          onClick={() => setCompositeMode(!compositeMode)}
-          className={`mb-2 w-full rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-            compositeMode
-              ? "bg-indigo-900/50 text-indigo-300"
-              : "bg-zinc-800 text-zinc-500 hover:text-zinc-300"
-          }`}
-        >
-          {compositeMode ? "Composite Active" : "Enable Composite"}
-        </button>
-        {compositeMode && (
-          <div className="mb-2 flex flex-col gap-0.5">
-            {PRESETS.map((p, i) => (
-              <button
-                key={p.name}
-                onClick={() => setPresetIdx(i)}
-                className={`rounded px-2 py-1 text-left text-[10px] transition-colors ${
-                  presetIdx === i
-                    ? "bg-indigo-950/30 text-zinc-200"
-                    : "text-zinc-400 hover:bg-zinc-800/50"
-                }`}
-              >
-                {p.name}
-              </button>
-            ))}
-          </div>
-        )}
-        {compositeMode && (
-          <div className="mb-2 flex flex-col gap-2">
-            <label className="flex items-center gap-1.5">
-              <Eye className="h-3 w-3 shrink-0 text-amber-400" />
-              <span className="shrink-0 text-[10px] text-amber-300">Live</span>
-              <select
-                value={liveFilterIdx}
-                onChange={(e) => setLiveFilterIdx(Number(e.target.value))}
-                className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
-              >
-                {SOURCE_FILTERS.map((f, i) => (
-                  <option key={f.name} value={i}>{f.name}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-1.5">
-              <Clock className="h-3 w-3 shrink-0 text-cyan-400" />
-              <span className="shrink-0 text-[10px] text-cyan-300">Smooth</span>
-              <select
-                value={smoothFilterIdx}
-                onChange={(e) => setSmoothFilterIdx(Number(e.target.value))}
-                className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
-              >
-                {SOURCE_FILTERS.map((f, i) => (
-                  <option key={f.name} value={i}>{f.name}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-        )}
-
-        {/* HLS streaming toggle */}
-        <button
-          onClick={() => setSmoothMode(!smoothMode)}
-          className={`mb-2 w-full rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-            smoothMode
-              ? "bg-green-900/50 text-green-300"
-              : "bg-zinc-800 text-zinc-500 hover:text-zinc-300"
-          }`}
-        >
-          {smoothMode ? "HLS Active" : "Enable HLS"}
-        </button>
-        <div className="flex items-center gap-1.5">
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${
-              streamInfo?.hls_enabled ? "bg-green-500" : "bg-red-500"
-            }`}
-          />
-          <span className="text-[10px] text-zinc-400">
-            HLS {streamInfo?.hls_enabled ? "available" : "offline"}
-          </span>
-        </div>
-      </Section>
-
       {/* AUDIO */}
       <Section title="Audio">
         <div className="flex items-center gap-1.5">
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${
-              capture?.audio_recorder_active ? "bg-green-500" : "bg-red-500"
-            }`}
-          />
+          <span className={`h-1.5 w-1.5 rounded-full ${capture?.audio_recorder_active ? "bg-green-500" : "bg-red-500"}`} />
           <span className="text-[10px] text-zinc-400">
             {capture?.audio_recorder_active ? "Active" : "Inactive"}
           </span>
         </div>
-        {/* VU meter */}
         {(() => {
           const energy = liveStatus?.audio_energy_rms ?? 0;
           const level = Math.min(energy * 4, 1);

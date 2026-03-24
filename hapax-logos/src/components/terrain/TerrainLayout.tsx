@@ -14,7 +14,9 @@ import { SplitPane } from "./SplitPane";
 import { DetailPane } from "./DetailPane";
 import { ClassificationOverlayProvider, useDetections } from "../../contexts/ClassificationOverlayContext";
 import type { DetectionTier } from "../studio/DetectionOverlay";
-import { GroundStudioProvider } from "../../contexts/GroundStudioContext";
+import { GroundStudioProvider, useGroundStudio } from "../../contexts/GroundStudioContext";
+import { PRESETS } from "../studio/compositePresets";
+import { useRecordingToggle } from "../../api/hooks";
 import { useVisualLayer } from "../../api/hooks";
 import { useTerrain, useTerrainDisplay, type RegionName } from "../../contexts/TerrainContext";
 
@@ -232,6 +234,109 @@ function DetectionKeyboardHandler() {
   return null;
 }
 
+/** URL param sync for studio state (must be inside GroundStudioProvider). */
+function StudioParamSync() {
+  const { setCompositeMode, setSmoothMode, setPresetIdx, setEffectSourceId } = useGroundStudio();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const presetName = params.get("preset");
+    const source = params.get("source");
+    const hls = params.get("hls");
+
+    if (presetName) {
+      const idx = PRESETS.findIndex(p => p.name.toLowerCase() === presetName.toLowerCase());
+      if (idx >= 0) {
+        setPresetIdx(idx);
+        setCompositeMode(true);
+      }
+    }
+    if (source) {
+      setEffectSourceId(source);
+    }
+    if (hls === "1") {
+      setSmoothMode(true);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- run once on mount
+
+  return null;
+}
+
+/** Keyboard shortcuts for studio controls (must be inside GroundStudioProvider). */
+function StudioKeyboardHandler() {
+  const { focusedRegion } = useTerrain();
+  const {
+    compositeMode, setCompositeMode,
+    smoothMode, setSmoothMode,
+    presetIdx, setPresetIdx,
+    setEffectOverrides,
+  } = useGroundStudio();
+  const recordingToggle = useRecordingToggle();
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+        return;
+      if (focusedRegion !== "ground") return;
+
+      // E: cycle mode (Live → FX → HLS)
+      if (e.key === "e" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        if (!compositeMode && !smoothMode) {
+          setCompositeMode(true); setSmoothMode(false);
+        } else if (compositeMode && !smoothMode) {
+          setCompositeMode(false); setSmoothMode(true);
+        } else {
+          setCompositeMode(false); setSmoothMode(false);
+        }
+        return;
+      }
+
+      // R: toggle recording
+      if (e.key === "r" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        recordingToggle.mutate(true); // toggle handled server-side
+        return;
+      }
+
+      // [ / ]: previous / next preset (FX mode only)
+      if (compositeMode && (e.key === "[" || e.key === "]") && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        const delta = e.key === "]" ? 1 : -1;
+        const next = (presetIdx + delta + PRESETS.length) % PRESETS.length;
+        setPresetIdx(next);
+        setEffectOverrides(null);
+        return;
+      }
+
+      // 1-9, 0: select preset by number (FX mode only)
+      if (compositeMode && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const num = e.key === "0" ? 10 : parseInt(e.key, 10);
+        if (num >= 1 && num <= 10 && num <= PRESETS.length) {
+          e.preventDefault();
+          setPresetIdx(num - 1);
+          setEffectOverrides(null);
+          return;
+        }
+        // Shift+1-8: presets 11-18
+        if (e.shiftKey) {
+          const shiftNum = "!@#$%^&*".indexOf(e.key);
+          if (shiftNum >= 0 && shiftNum + 11 <= PRESETS.length) {
+            e.preventDefault();
+            setPresetIdx(shiftNum + 10);
+            setEffectOverrides(null);
+          }
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [focusedRegion, compositeMode, smoothMode, presetIdx, setCompositeMode, setSmoothMode, setPresetIdx, setEffectOverrides, recordingToggle]);
+
+  return null;
+}
+
 export function TerrainLayout() {
   const { data: vl } = useVisualLayer();
   const { activeOverlay, setOverlay, focusRegion, cycleDepth, focusedRegion, regionDepths, setRegionDepth, splitRegion, splitFullscreen, setSplitRegion, setSplitFullscreen } = useTerrain();
@@ -356,6 +461,8 @@ export function TerrainLayout() {
     <DetectionKeyboardHandler />
     <ModifierShortcutOverlay />
     <GroundStudioProvider>
+      <StudioParamSync />
+      <StudioKeyboardHandler />
       <div
         className="h-screen w-screen overflow-hidden relative"
         style={{ fontFamily: "'JetBrains Mono', monospace", background: "#1d2021" }}
