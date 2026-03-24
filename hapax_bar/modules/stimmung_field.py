@@ -111,15 +111,17 @@ class StimmungField(Gtk.Widget):
             self._stress_dampen = min(1.0, self._stress_dampen + 0.02)
 
     def _on_realize(self, _w: Gtk.Widget) -> None:
-        self._tick_id = self.add_tick_callback(self._on_tick)
+        self._tick_id = GLib.timeout_add(250, self._on_timer)  # 4fps, not vsync
 
     def _on_unrealize(self, _w: Gtk.Widget) -> None:
         if self._tick_id is not None:
-            self.remove_tick_callback(self._tick_id)
+            GLib.source_remove(self._tick_id)
             self._tick_id = None
 
-    def _on_tick(self, _w: Gtk.Widget, fc: Gdk.FrameClock) -> bool:
-        self._t = fc.get_frame_time() / 1_000_000.0
+    def _on_timer(self) -> bool:
+        import time
+
+        self._t = time.monotonic()
         self.queue_draw()
         return GLib.SOURCE_CONTINUE
 

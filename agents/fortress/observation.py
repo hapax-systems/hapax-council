@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from agents.fortress.attention import AttentionBudget, AttentionTier
+from agents.fortress.chunks import ChunkCompressor
 from agents.fortress.patches import describe_patch, extract_patches
-from agents.fortress.schema import FullFortressState
+from agents.fortress.schema import FastFortressState, FullFortressState
 from agents.fortress.spatial_memory import EntityMobility, SpatialMemoryStore
 
 
@@ -179,3 +180,70 @@ def check_announcements(
         parts.append(f"[{event.type}] {event.model_dump_json()}")
 
     return " | ".join(parts)
+
+
+def check_military(
+    state: FastFortressState | FullFortressState,
+    memory_store: SpatialMemoryStore,
+    budget: AttentionBudget,
+) -> str:
+    """Military readiness summary. Costs 1 T2 budget."""
+    if not budget.spend(AttentionTier.ROUTINE):
+        return "Observation budget exhausted."
+    if isinstance(state, FullFortressState) and state.squads:
+        lines = []
+        for sq in state.squads:
+            lines.append(
+                f"  {sq.name}: {len(sq.member_ids)} members, "
+                f"equip {sq.equipment_quality:.0%}, "
+                f"training {sq.training_level:.0%}"
+            )
+        return "Military:\n" + "\n".join(lines)
+    return "Military: no squads formed."
+
+
+def check_nobles(
+    state: FastFortressState | FullFortressState,
+    memory_store: SpatialMemoryStore,
+    budget: AttentionBudget,
+) -> str:
+    """Noble positions and mandates. Costs 1 T2 budget."""
+    if not budget.spend(AttentionTier.ROUTINE):
+        return "Observation budget exhausted."
+    if isinstance(state, FullFortressState) and state.nobles:
+        lines = [f"  {n.position}: {n.holder_id}" for n in state.nobles]
+        return "Nobles:\n" + "\n".join(lines)
+    return "Nobles: no positions assigned."
+
+
+def check_work_orders(
+    state: FastFortressState | FullFortressState,
+    memory_store: SpatialMemoryStore,
+    budget: AttentionBudget,
+) -> str:
+    """Active work orders summary. Costs 1 T2 budget."""
+    if not budget.spend(AttentionTier.ROUTINE):
+        return "Observation budget exhausted."
+    return f"Work orders: {state.job_queue_length} jobs queued."
+
+
+def recall_memory(
+    memory_store: SpatialMemoryStore,
+    patch_id: str,
+    current_tick: int,
+) -> str:
+    """Recall spatial memory without re-observing. Free (no budget cost)."""
+    mem_state, description = memory_store.recall(patch_id, current_tick)
+    if description:
+        return f"[Memory/{mem_state.value}] {description}"
+    return f"No memory of '{patch_id}'."
+
+
+def get_situation_chunks(
+    compressor: ChunkCompressor,
+    state: FastFortressState | FullFortressState,
+    prev: FastFortressState | FullFortressState | None = None,
+) -> str:
+    """Get 4 compressed situation chunks. Free (no budget cost)."""
+    chunks = compressor.compress(state, prev)
+    return "\n".join(f"{i + 1}. {c}" for i, c in enumerate(chunks))

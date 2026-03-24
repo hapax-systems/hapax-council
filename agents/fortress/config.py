@@ -78,6 +78,24 @@ class CreativityConfig:
 
 
 @dataclass(frozen=True)
+class DeliberationConfig:
+    """ReAct deliberation loop parameters."""
+
+    model_daily: str = "anthropic/claude-sonnet-4-6"
+    model_seasonal: str = "anthropic/claude-opus-4-6"
+    max_iterations: int = 3
+    max_tool_calls: int = 5
+    timeout_s: float = 8.0
+    # Severity thresholds
+    food_warning_per_capita: int = 10
+    food_critical_per_capita: int = 5
+    drink_warning_per_capita: int = 5
+    drink_critical_per_capita: int = 2
+    stress_warning: int = 50_000
+    stress_critical: int = 100_000
+
+
+@dataclass(frozen=True)
 class FortressConfig:
     """Top-level fortress agent configuration."""
 
@@ -85,6 +103,7 @@ class FortressConfig:
     suppression: SuppressionConfig = field(default_factory=SuppressionConfig)
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     creativity: CreativityConfig = field(default_factory=CreativityConfig)
+    deliberation: DeliberationConfig = field(default_factory=DeliberationConfig)
     min_population_for_military: int = 10
     food_critical_threshold: int = 10  # per capita
     drink_critical_threshold: int = 5  # per capita

@@ -357,3 +357,10 @@ window.strip > * {
     min-height: 8px;
     background: transparent;
 }
+
+/* System indicators — compact always-visible stats */
+.sysind {
+    font-size: 10px;
+    color: var(--text-dim);
+    padding: 0 3px;
+}

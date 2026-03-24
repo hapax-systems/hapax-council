@@ -17,14 +17,17 @@ from pathlib import Path
 from typing import Any
 
 from agents.fortress.bridge import DFHackBridge
+from agents.fortress.chunks import ChunkCompressor
 from agents.fortress.config import FortressConfig
 from agents.fortress.creativity_metrics import CreativityMetrics
+from agents.fortress.deliberation import run_deliberation
 from agents.fortress.episodes import FortressEpisodeBuilder
 from agents.fortress.goal_library import DEFAULT_GOALS
 from agents.fortress.goals import GoalPlanner
 from agents.fortress.metrics import FortressSessionTracker
 from agents.fortress.narrative import format_narrative_fallback, write_chronicle_entry
 from agents.fortress.schema import FastFortressState, FortressPosition
+from agents.fortress.spatial_memory import SpatialMemoryStore
 from agents.fortress.tactical import TacticalContext, encode_tactical
 from agents.fortress.wiring import FortressGovernor
 
@@ -60,6 +63,9 @@ class FortressDaemon:
         self._goal_planner = GoalPlanner(goals=list(DEFAULT_GOALS))
         self._creativity_metrics = CreativityMetrics()
         self._tactical_ctx = TacticalContext()
+        self._chunk_compressor = ChunkCompressor()
+        self._memory_store = SpatialMemoryStore()
+        self._prev_state: FastFortressState | None = None
         self._running = True
         self._cmd_cooldowns: dict[str, float] = {}
         self._started = False
@@ -70,6 +76,7 @@ class FortressDaemon:
         log.info("Fortress daemon starting")
         await asyncio.gather(
             self._governance_loop(),
+            self._deliberation_loop(),
             self._maintenance_loop(),
         )
 
@@ -181,6 +188,89 @@ class FortressDaemon:
 
             await asyncio.sleep(GOVERNANCE_INTERVAL)
 
+    async def _deliberation_loop(self) -> None:
+        """Per-game-day LLM deliberation."""
+        last_day = -1
+        while self._running:
+            state = self._bridge.read_state()
+            if state is None:
+                await asyncio.sleep(5.0)
+                continue
+
+            # Fire once per game-day
+            if state.day == last_day:
+                await asyncio.sleep(2.0)
+                continue
+            last_day = state.day
+
+            # Skip until session has started (let fast loop stabilize)
+            if not self._started:
+                await asyncio.sleep(2.0)
+                continue
+
+            log.info("Deliberation cycle starting (Day %d, Year %d)", state.day, state.year)
+
+            # Build tool dispatch table
+            from agents.fortress.attention import AttentionBudget
+            from agents.fortress.observation import (
+                check_announcements,
+                check_military,
+                check_nobles,
+                check_stockpile,
+                check_work_orders,
+                examine_dwarf,
+                get_situation_chunks,
+                recall_memory,
+                scan_threats,
+            )
+
+            budget = AttentionBudget()
+            budget.reset(state.population, state.day)
+
+            dispatch = {
+                "check_stockpile": lambda category="food": check_stockpile(
+                    state, self._memory_store, budget, category
+                ),
+                "check_military": lambda: check_military(state, self._memory_store, budget),
+                "check_nobles": lambda: check_nobles(state, self._memory_store, budget),
+                "check_work_orders": lambda: check_work_orders(state, self._memory_store, budget),
+                "scan_threats": lambda: scan_threats(state, self._memory_store, budget),
+                "check_announcements": lambda since_tick=0: check_announcements(
+                    state, self._memory_store, budget, since_tick
+                ),
+                "examine_dwarf": lambda unit_id=0: examine_dwarf(
+                    state, self._memory_store, budget, unit_id
+                ),
+                "recall_memory": lambda patch_id="": recall_memory(
+                    self._memory_store, patch_id, state.game_tick
+                ),
+                "get_situation": lambda: get_situation_chunks(
+                    self._chunk_compressor, state, self._prev_state
+                ),
+            }
+
+            try:
+                actions = await run_deliberation(
+                    state=state,
+                    compressor=self._chunk_compressor,
+                    prev_state=self._prev_state,
+                    config=self._config.deliberation,
+                    tool_dispatch=dispatch,
+                    recent_events=[],  # TODO: wire episode events
+                    recent_decisions=[],  # TODO: wire decision log
+                )
+
+                for action in actions:
+                    act = action.get("action", "")
+                    params = {k: v for k, v in action.items() if k != "action"}
+                    self._bridge.send_command(act, **params)
+                    log.info("  Deliberation action: %s %s", act, params)
+
+            except Exception as exc:
+                log.error("Deliberation failed: %s", exc)
+
+            self._prev_state = state
+
     async def _maintenance_loop(self) -> None:
         """Slow loop: goal timeouts, spatial memory maintenance, cooldown pruning."""
         while self._running:
@@ -188,8 +278,11 @@ class FortressDaemon:
             # Prune old cooldown entries (older than 5 minutes)
             now = time.monotonic()
             self._cmd_cooldowns = {k: v for k, v in self._cmd_cooldowns.items() if (now - v) < 300}
-            # Goal timeout checks could go here
-            # Spatial memory consolidation/pruning could go here
+            # Spatial memory maintenance
+            state = self._bridge.read_state()
+            tick = state.game_tick if state else 0
+            self._memory_store.consolidate(tick)
+            self._memory_store.prune(tick)
 
     def _start_session(self, state: FastFortressState) -> None:
         """Initialize session components on first state read."""

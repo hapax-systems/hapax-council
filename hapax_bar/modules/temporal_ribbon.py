@@ -138,7 +138,7 @@ class TemporalRibbon(Gtk.DrawingArea):
         if self._use_short_format:
             clock_text = now.strftime("%H:%M")
         else:
-            clock_text = now.strftime("%Y-%m-%d %H:%M")
+            clock_text = now.strftime("%m-%d %H:%M")
         cr.set_source_rgba(0.92, 0.86, 0.70, 0.8)
         cr.select_font_face("JetBrains Mono", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
         cr.set_font_size(11)

@@ -54,7 +54,7 @@ class StimmungStrip(Gtk.DrawingArea):
         self._history: deque[dict] = deque(maxlen=15)  # 30s at 2s intervals
 
         self.set_draw_func(self._draw, None)
-        GLib.timeout_add(16, self._tick)  # ~60fps
+        GLib.timeout_add(100, self._tick)  # ~60fps
 
     def _tick(self) -> bool:
         import time

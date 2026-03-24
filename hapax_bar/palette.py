@@ -2,11 +2,17 @@
 
 Mirrors CSS custom properties as Python RGB tuples (0.0-1.0).
 Colors verified against logos-design-language.md §3.1.
+
+Mode is tracked via _active_mode which is updated by both:
+- File read (startup)
+- Socket push (runtime theme switch)
 """
 
 from __future__ import annotations
 
 from hapax_bar.theme import current_mode
+
+_active_mode: str = ""
 
 _RND = {
     "bg": (0.114, 0.125, 0.129),
@@ -45,8 +51,17 @@ _RESEARCH = {
 _PALETTES = {"rnd": _RND, "research": _RESEARCH}
 
 
+def set_mode(mode: str) -> None:
+    """Called by socket handler on theme switch."""
+    global _active_mode
+    _active_mode = mode
+
+
 def get_palette() -> dict[str, tuple[float, float, float]]:
-    return _PALETTES.get(current_mode(), _RND)
+    global _active_mode
+    if not _active_mode:
+        _active_mode = current_mode()
+    return _PALETTES.get(_active_mode, _RND)
 
 
 def color(name: str) -> tuple[float, float, float]:
