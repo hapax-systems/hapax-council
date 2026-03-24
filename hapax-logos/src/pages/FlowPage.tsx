@@ -279,7 +279,7 @@ function useSystemSummary() {
   useEffect(() => { let m = true;
     const poll = async () => { try { const [h, g, c] = await Promise.allSettled([fetch("/api/health").then(r=>r.json()), fetch("/api/gpu").then(r=>r.json()), fetch("/api/cost").then(r=>r.json())]);
       if (!m) return; const hv = h.status === "fulfilled" ? h.value : {}, gv = g.status === "fulfilled" ? g.value : {}, cv = c.status === "fulfilled" ? c.value : {};
-      setS({ hp: (hv.total_checks ?? 0) - (hv.failed ?? 0), ht: hv.total_checks ?? 0, gp: gv.usage_pct ?? 0, gt: gv.temperature_c ?? 0, ct: cv.today_cost ?? 0 }); } catch {} };
+      setS({ hp: (hv.total_checks ?? 0) - (hv.failed ?? 0), ht: hv.total_checks ?? 0, gp: gv.usage_pct ?? 0, gt: gv.temperature_c ?? 0, ct: cv.today_cost ?? 0 }); } catch { /* polling failure — stale data shown */ } };
     poll(); const iv = setInterval(poll, 30000); return () => { m = false; clearInterval(iv); };
   }, []); return s;
 }
