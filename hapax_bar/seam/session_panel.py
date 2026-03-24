@@ -32,14 +32,15 @@ class SessionPanel(Gtk.Box):
 
             data = yaml.safe_load(peer_file.read_text()) or {}
         except Exception:
-            self._label.set_label(f"{self._other.title()}: relay data unavailable")
+            self.set_visible(False)
             return
 
         sessions = data if isinstance(data, dict) else {}
         peer = sessions.get(self._other, {})
         if not peer:
-            self._label.set_label(f"{self._other.title()}: no session data")
+            self.set_visible(False)
             return
+        self.set_visible(True)
 
         workstream = peer.get("workstream", "?")
         focus = peer.get("focus", "?")

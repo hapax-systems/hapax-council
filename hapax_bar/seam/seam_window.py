@@ -14,11 +14,11 @@ class SeamWindow(Astal.Window):
 
     def __init__(self, position: str = "top") -> None:
         is_top = position == "top"
+        # Anchor to edge + LEFT only (not RIGHT) — window takes natural width/height
+        # instead of stretching to fill the entire screen
         anchor = (
-            (Astal.WindowAnchor.TOP if is_top else Astal.WindowAnchor.BOTTOM)
-            | Astal.WindowAnchor.LEFT
-            | Astal.WindowAnchor.RIGHT
-        )
+            Astal.WindowAnchor.TOP if is_top else Astal.WindowAnchor.BOTTOM
+        ) | Astal.WindowAnchor.LEFT
 
         super().__init__(
             namespace=f"hapax-seam-{position}",
