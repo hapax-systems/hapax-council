@@ -14,6 +14,7 @@ from hapax_bar.modules.audio import MicModule, VolumeModule
 from hapax_bar.modules.cost_whisper import CostWhisper
 from hapax_bar.modules.stimmung_field import StimmungField
 from hapax_bar.modules.tray import TrayModule
+from hapax_bar.stimmung_strip import StimmungStrip
 
 if TYPE_CHECKING:
     from hapax_bar.seam.seam_window import SeamWindow
@@ -51,12 +52,17 @@ def create_bedrock(
         anchor=Astal.WindowAnchor.BOTTOM | Astal.WindowAnchor.LEFT | Astal.WindowAnchor.RIGHT,
         exclusivity=Astal.Exclusivity.EXCLUSIVE,
         css_classes=["bedrock"],
-        default_height=32,
+        default_height=40,
     )
 
     if monitor_index is not None:
         window.set_monitor(monitor_index)
 
-    window.set_child(centerbox)
+    # Vertical stack: functional bar + stimmung strip (4px)
+    strip = StimmungStrip(edge="bottom")
+    vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+    vbox.append(centerbox)
+    vbox.append(strip)
+    window.set_child(vbox)
     window.present()
-    return window, stimmung_field
+    return window, stimmung_field, strip

@@ -347,3 +347,13 @@ window.bedrock label {
     border-radius: 2px;
     transition: background-color 150ms;
 }
+
+/* Stimmung strips — 4px ambient color at screen edges */
+.strip {
+    background: transparent;
+}
+
+window.strip > * {
+    min-height: 8px;
+    background: transparent;
+}

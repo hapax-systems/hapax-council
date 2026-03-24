@@ -15,6 +15,7 @@ from hapax_bar.modules.temporal_ribbon import TemporalRibbon
 from hapax_bar.modules.window_title import WindowTitleModule
 from hapax_bar.modules.working_mode import WorkingModeModule
 from hapax_bar.modules.workspaces import WorkspacesModule
+from hapax_bar.stimmung_strip import StimmungStrip
 
 
 def create_horizon(
@@ -57,17 +58,22 @@ def create_horizon(
         anchor=Astal.WindowAnchor.TOP | Astal.WindowAnchor.LEFT | Astal.WindowAnchor.RIGHT,
         exclusivity=Astal.Exclusivity.EXCLUSIVE,
         css_classes=["horizon"],
-        default_height=24,
+        default_height=32,
     )
 
     if monitor_index is not None:
         window.set_monitor(monitor_index)
 
-    window.set_child(centerbox)
+    # Vertical stack: stimmung strip (4px) + functional bar
+    strip = StimmungStrip(edge="top")
+    vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+    vbox.append(strip)
+    vbox.append(centerbox)
+    window.set_child(vbox)
     if seam_toggle is not None:
         center_click = Gtk.GestureClick(button=2)  # middle-click for seam
         center_click.connect("pressed", lambda *_: seam_toggle())
         center.add_controller(center_click)
 
     window.present()
-    return window, activity, nudge
+    return window, activity, nudge, strip

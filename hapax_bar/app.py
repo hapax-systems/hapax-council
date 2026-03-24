@@ -53,6 +53,7 @@ class HapaxBarApp(Gtk.Application):
         )
         self._windows: list = []
         self._stimmung_fields: list = []
+        self._strips: list = []
         self._activity_labels: list = []
         self._nudge_badges: list = []
         self._socket: SocketServer | None = None
@@ -105,7 +106,7 @@ class HapaxBarApp(Gtk.Application):
             self.add_window(bedrock_seam)
             self._windows.append(bedrock_seam)
 
-            horizon, activity_label, nudge_badge = create_horizon(
+            horizon, activity_label, nudge_badge, h_strip = create_horizon(
                 monitor_index=i if n_monitors >= 2 else None,
                 workspace_ids=ws_ids,
                 primary=primary,
@@ -118,7 +119,7 @@ class HapaxBarApp(Gtk.Application):
             if nudge_badge:
                 self._nudge_badges.append(nudge_badge)
 
-            bedrock, stimmung_field = create_bedrock(
+            bedrock, stimmung_field, b_strip = create_bedrock(
                 monitor_index=i if n_monitors >= 2 else None,
                 primary=primary,
                 seam_window=bedrock_seam,
@@ -126,6 +127,8 @@ class HapaxBarApp(Gtk.Application):
             self.add_window(bedrock)
             self._windows.append(bedrock)
             self._stimmung_fields.append(stimmung_field)
+            self._strips.append(h_strip)
+            self._strips.append(b_strip)
 
         # API polls
         poll_api(fetch_health, 30_000, self._on_health)
@@ -146,6 +149,8 @@ class HapaxBarApp(Gtk.Application):
     def _on_stimmung_update(self, state: StimmungState) -> None:
         for field in self._stimmung_fields:
             field.update_stimmung(state)
+        for strip in self._strips:
+            strip.update_stimmung(state)
             field.set_engine_errors(self._engine_errors)
             field.set_governance_score(self._governance_score)
             field.set_drift_count(self._drift_count)
