@@ -72,7 +72,7 @@ The governing claim: alignment and governance are not costs bolted onto a useful
 | Voice daemon | running, baseline experiment in progress |
 | Visual aggregator | running |
 | Logos API | running on :8051 |
-| Reactive engine | running (12 rules, presence-gated) |
+| Reactive engine | running (14 rules, presence-gated) |
 | Stimmung | cautious (health monitor degraded, watch offline) |
 | Baseline sessions | 7 of 20 collected (code frozen for experiment) |
 | Cameras | 6 (1 Brio + 3 C920 operational, 2 new Brios wired) |
@@ -409,7 +409,7 @@ Output is XML written to `/dev/shm/hapax-temporal/bands.json`. Consumed by `shar
 
 ## 6. The Reactive Loop
 
-**Epistemic status: Working.** Merged in PR #170 (beta), 12 rules.
+**Epistemic status: Working.** Merged in PR #170 (beta), 14 rules.
 
 ### Reactive Engine
 
@@ -1229,7 +1229,7 @@ Single contributor: the operator (+ Dependabot).
 
 | Gap | Severity | Status |
 |-----|----------|--------|
-| Reactive engine has few rules consuming the new infrastructure (apperception, consent formalisms, phenomenal renderer) | High | Beta wired 12 rules in PR #170, but conviction plan features are not reactive-engine-triggered |
+| Reactive engine has few rules consuming the new infrastructure (apperception, consent formalisms, phenomenal renderer) | High | Beta wired 14 rules in PR #170, but conviction plan features are not reactive-engine-triggered |
 | Context restoration agent not wired to presence transitions | Medium | Exists as standalone, should trigger when operator returns |
 | Contradiction detection doesn't use CarrierRegistry or provenance semirings | Medium | Uses ad-hoc comparison, should consume formal carrier facts |
 | Apperception cascade still driven by visual aggregator's tick (even though extracted to standalone) | Low | Architecturally clean, just needs its own systemd service eventually |

@@ -144,7 +144,7 @@ The latency implication: calm technology must never *demand* attention through t
 | **LOCAL ML** | 3-8s per source | Vision backend (YOLO11n ~3s/camera), BlazeFace (<5ms/frame CPU), HSEmotion (~20ms/face GPU), Places365 ResNet18 (~30ms GPU), Silero VAD (~5ms/frame CPU), SenseVoice, gaze/gesture (MediaPipe CPU) | GPU inference via VRAMLock coordination. Results cached in thread-safe structures. `contribute()` reads from cache, never blocks. |
 | **API/COCKPIT** | 60s tick | `VisualLayerAggregator.poll_slow()` -- nudges, briefing, drift, goals, copilot | HTTP calls to logos API. Results are LLM-produced by upstream agents but cached server-side. |
 | **LLM WORKSPACE** | Event-driven (~60s staleness) | `WorkspaceMonitor` -- screen capture + webcam → `WorkspaceAnalyzer` (Gemini Flash) | Full LLM call with multi-image input. 2-5 second latency. Triggered by focus change or staleness timer. |
-| **REACTIVE ENGINE** | File-change events | inotify watcher → 12 rules → phased execution | LLM agents bounded at 2 concurrent. Seconds to minutes per agent. |
+| **REACTIVE ENGINE** | File-change events | inotify watcher → 14 rules → phased execution | LLM agents bounded at 2 concurrent. Seconds to minutes per agent. |
 
 ### 3.2 Data Flow
 

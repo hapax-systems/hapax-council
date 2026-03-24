@@ -13,7 +13,7 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 - **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000)
 - **Tier 3** — Deterministic agents (sync, health, maintenance — no LLM calls)
 
-**Reactive engine** (`logos/engine/`): inotify watcher → 12 rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).
+**Reactive engine** (`logos/engine/`): inotify watcher → 14 rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).
 
 **Infrastructure**: Docker Compose for databases/proxies (13 containers), systemd user units for all application services. No process-compose in production. See `systemd/README.md` for boot sequence, resource isolation, and recovery chain.
 

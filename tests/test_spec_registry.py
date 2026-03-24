@@ -55,5 +55,5 @@ class TestSpecRegistry:
     def test_rule_count_updated(self):
         spec = get_spec("re-rule-count-001")
         assert spec is not None
-        assert "10 rules" in spec.text
-        assert "correction-synthesis" in "\n".join(spec.properties)
+        assert "14 rules" in spec.text
+        assert "phone-health-summary" in "\n".join(spec.properties)

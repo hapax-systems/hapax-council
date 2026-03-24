@@ -308,7 +308,7 @@ The existing Hapax architecture has substantial infrastructure that can be exten
 | **Perception engine** | 30+ behaviors from cameras, mic, biometrics, system state; writes to `perception-state.json` every 2.5s | Extend to also write episodes to Qdrant with full signal context |
 | **Activity mode classifier** | Rule-based: coding, production, research, meeting, away, idle, unknown | Augment with retrieved past episodes for similar signal patterns |
 | **Perception state writer** | Atomic JSON snapshots to disk for external consumers | Dual-write: disk for real-time consumers, Qdrant for episodic memory |
-| **Reactive engine** | inotify watcher, 12 rules, phased execution | Add rules for correction processing, pattern extraction, memory consolidation |
+| **Reactive engine** | inotify watcher, 14 rules, phased execution | Add rules for correction processing, pattern extraction, memory consolidation |
 | **Langfuse** | Full LLM call tracing | Mine traces for perception accuracy feedback (was the interpretation used successfully?) |
 | **Health history** | JSONL audit trail | Cross-reference with perception episodes for system-state-aware interpretation |
 | **Content scheduler** | 10 content sources, relevance matrix, freshness decay | Content relevance improves as operator activity patterns become known |

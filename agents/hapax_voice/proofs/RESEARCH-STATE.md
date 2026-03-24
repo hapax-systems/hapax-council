@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-24 (session 14 — ingestion pipeline audit + classification inspector)
+**Last updated:** 2026-03-24 (session 15 — system feature audit + notification wiring + hapax-bar completion)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -312,6 +312,20 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 **Documentation:** Updated `logos-ui-reference.md` (inspector section, keyboard shortcuts, signal sources, detection overlay spec reference, flow decomposition, deep flow gate), `CLAUDE.md` (§3.8 cross-ref fix).
 
 **PR #284** (feat/boundary-contracts branch): 3 commits, ~1400 insertions across 38 files. TypeScript clean, Vite build clean, 373 Python tests pass (2 pre-existing), all lint clean, 105/105 health checks passing, E2E verified via Playwright on dedicated Hyprland workspace.
+
+## Session 15 (2026-03-24): System Feature Audit + Notification Wiring + Hapax-Bar Completion
+
+Infrastructure-only. No changes to experiment code, grounding theory, or research design.
+
+**Full system feature audit (110 features, 11 groups).** Comprehensive inventory of all Logos features across council API (16 endpoints), chat/interview (4), voice daemon (14), studio/visual (18), governance/consent (14), reactive engine (7), RAG/knowledge (7), profile (4), query dispatch (4), frontend (12), supporting systems (10). Result: 110/110 DONE. Five discrepancies investigated independently; findings added to compendium §21.
+
+**Voice notification delivery wired (DEVIATION-010).** Added `ConversationPipeline.deliver_notification()` — direct TTS delivery during active silence, no LLM round-trip. Cognitive loop's `_handle_silence()` now dequeues from NotificationQueue and requeues on failure. Completes last-mile wiring for notification infrastructure (queue, router, listener all previously built but output path missing). Gated behind `active_silence_enabled` flag (off during experiment). 56/56 cognitive loop tests pass.
+
+**Hapax-bar CostModule + PrivacyModule committed.** CostModule polls `/api/cost` every 5min, shows `[llm:$X.XX]` with severity coloring. PrivacyModule polls PipeWire `pw-dump` every 5s, shows `[cam]`/`[mic]` when capture nodes active. Note: bar v2 redesign (StimmungField + seam layer) happened concurrently — modules exist as standalone code but v2 layout uses stimmung field rather than discrete text indicators.
+
+**PR #284 merged** (feat/boundary-contracts → main): resolved 3 merge conflicts (RESEARCH-STATE, DEVIATION-009, test_local_llm_gate), fixed gitleaks secrets-scan failure (home-directory-path in design doc), all 8 CI checks green.
+
+**Documentation fixes:** Council CLAUDE.md reactive engine "12 rules" → 14. Workspace CLAUDE.md hapax-mcp "40 tools" → 34.
 
 ## Operator Research Preferences
 

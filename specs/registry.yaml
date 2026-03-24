@@ -773,12 +773,12 @@ systems:
       - id: re-rule-count-001
         tier: V2
         text: >
-          ALL_RULES must contain exactly 10 rules. A missing rule means
+          ALL_RULES must contain exactly 14 rules. A missing rule means
           a filesystem event goes unhandled. An extra rule means
           unexpected actions fire.
         properties:
-          - len(ALL_RULES) == 10
-          - 'rule names: collector-refresh, config-changed, sdlc-event-logged, rag-source-landed, audio-archive-sidecar, audio-clap-indexed, carrier-intake, knowledge-maintenance, pattern-consolidation, correction-synthesis'
+          - len(ALL_RULES) == 14
+          - 'rule names: collector-refresh, config-changed, sdlc-event-logged, rag-source-landed, audio-archive-sidecar, audio-clap-indexed, carrier-intake, knowledge-maintenance, pattern-consolidation, correction-synthesis, presence-transition, consent-transition, biometric-state-change, phone-health-summary'
         verification: integration
 
       - id: re-stimmung-gating-001
