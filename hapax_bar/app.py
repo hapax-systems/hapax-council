@@ -41,6 +41,7 @@ from hapax_bar.seam.session_panel import SessionPanel  # noqa: E402
 from hapax_bar.seam.stimmung_detail import StimmungDetailPanel  # noqa: E402
 from hapax_bar.seam.temporal_panel import TemporalPanel  # noqa: E402
 from hapax_bar.seam.voice_panel import VoicePanel  # noqa: E402
+from hapax_bar.seam.wifi_panel import WifiPanel  # noqa: E402
 from hapax_bar.socket_server import SocketServer  # noqa: E402
 from hapax_bar.stimmung import StimmungState  # noqa: E402
 from hapax_bar.theme import load_initial_theme, switch_theme  # noqa: E402
@@ -104,6 +105,7 @@ class HapaxBarApp(Gtk.Application):
             bedrock_seam.add_panel(vp)
             bedrock_seam.add_panel(ControlsPanel())
             bedrock_seam.add_panel(BluetoothPanel())
+            bedrock_seam.add_panel(WifiPanel())
             bedrock_seam.add_panel(SessionPanel())
             if primary:
                 self._metrics_panels.append(mp)
