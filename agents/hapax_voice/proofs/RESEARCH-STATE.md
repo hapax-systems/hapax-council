@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-24 (session 15 — system feature audit + notification wiring + hapax-bar completion)
+**Last updated:** 2026-03-24 (session 16 — langfuse-sync timeout fix + documentation update)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -326,6 +326,18 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 **PR #284 merged** (feat/boundary-contracts → main): resolved 3 merge conflicts (RESEARCH-STATE, DEVIATION-009, test_local_llm_gate), fixed gitleaks secrets-scan failure (home-directory-path in design doc), all 8 CI checks green.
 
 **Documentation fixes:** Council CLAUDE.md reactive engine "12 rules" → 14. Workspace CLAUDE.md hapax-mcp "40 tools" → 34.
+
+## Session 16 (2026-03-24): Langfuse Sync Fix + Documentation Update
+
+Infrastructure-only. No changes to experiment code, grounding theory, or research design.
+
+**Langfuse-sync timeout death spiral (PR #297, merged).** Incremental sync was fetching 5000 traces per run then making N+1 HTTP calls for per-trace observations, exceeding the 20-minute systemd timeout. Since state only saved on completion, the high-water mark never advanced — every subsequent run re-fetched the same 5000 traces. Three fixes: (1) cap incremental sync at 500 traces/run (timer catches up), (2) skip per-trace observation fetches for incremental runs, (3) progressive state checkpointing after each batch. Full sync unchanged.
+
+**Cache-cleanup transient failure.** `cache-cleanup.service` failed overnight (transient — ran clean on re-execution). Cleared failed state.
+
+**Documentation updates:**
+- Added `CONTEXT-AS-COMPUTATION.md` and `dwarf-fortress-ai-game-state-research.md` to RESEARCH-INDEX.md (were on disk but not indexed)
+- Updated RESEARCH-STATE.md with session 16
 
 ## Operator Research Preferences
 

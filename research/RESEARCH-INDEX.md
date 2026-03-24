@@ -32,6 +32,7 @@ SCED experiment: Clark & Brennan (1991) conversational grounding in production v
 | SYSTEM-CLEANUP-DECISION.md | `agents/hapax_voice/proofs/` | Strip to research essentials |
 | REPO-OPTIMIZATION-RESEARCH.md | `agents/hapax_voice/proofs/` | Repository optimization (140+ sources) |
 | WORKSTATION-OPTIMIZATION.md | `agents/hapax_voice/proofs/` | Workstation tuning for experiments |
+| CONTEXT-AS-COMPUTATION.md | `agents/hapax_voice/proofs/` | Mechanistic justification: mesa-optimization, entrainment heads, function vectors |
 | TOOL-CALLS.md | `agents/hapax_voice/proofs/` | Tool selection decisions |
 | THEORY-MAP.md | `research/` | Theory to code/test traceability matrix |
 | README.md | `research/` | TIER/Psych-DS directory structure |
@@ -81,6 +82,7 @@ Applied research informing agent system design and automation.
 | 2026-03-15-privacy-aware-voice-ux-patterns.md | `docs/research/` | Privacy-aware voice UX |
 | 2026-03-16-cuda-gl-interop-investigation.md | `docs/research/` | CUDA-GL interop investigation |
 | 2026-03-16-v4l2loopback-direct-investigation.md | `docs/research/` | V4L2 loopback direct path |
+| dwarf-fortress-ai-game-state-research.md | `docs/research/` | DF AI game state representation |
 | wgpu-open-questions-resolved.md | `docs/research/` | WGPU open questions |
 | ws1-temporal-structure-engineering.md | `docs/research/` | Temporal structure engineering |
 | ws2-self-regulation-and-novelty.md | `docs/research/` | Self-regulation and novelty |
