@@ -43,8 +43,9 @@ def create_bedrock(
     right.append(CpuIndicator())
     right.append(GpuIndicator())
     right.append(VolumeModule())
+    # mic on both monitors
+    right.append(MicModule())
     if primary:
-        right.append(MicModule())
         right.append(CostWhisper())
         right.append(TrayModule())
 
