@@ -59,16 +59,25 @@ class SeamWindow(Astal.Window):
         key_ctrl.connect("key-pressed", self._on_key)
         self.add_controller(key_ctrl)
 
+        self._panels: list[Gtk.Widget] = []
+
         # Auto-dismiss after timeout (seam is transient)
         self._dismiss_timer: int | None = None
 
     def add_panel(self, widget: Gtk.Widget) -> None:
         self._panel.append(widget)
+        self._panels.append(widget)
 
     def toggle(self) -> None:
         if self.get_visible():
             self._dismiss()
         else:
+            # Refresh all panels before revealing
+            for panel in self._panels:
+                if hasattr(panel, "refresh"):
+                    panel.refresh()
+                elif hasattr(panel, "update"):
+                    panel.update()
             self.set_visible(True)
             self.present()
             GLib.idle_add(lambda: self._revealer.set_reveal_child(True) or False)

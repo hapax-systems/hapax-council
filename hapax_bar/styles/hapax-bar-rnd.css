@@ -340,3 +340,15 @@ window.bedrock label {
     min-height: 20px;
     font-size: 10px;
 }
+
+/* Temporal ribbon */
+.temporal-ribbon {
+    background: transparent;
+    min-width: 80px;
+}
+
+/* Cost whisper */
+.cost-whisper {
+    background: transparent;
+    min-width: 12px;
+}

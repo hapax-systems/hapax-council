@@ -13,6 +13,8 @@ class SessionPanel(Gtk.Box):
     """Shows the other session's branch, last activity, and PR state."""
 
     def __init__(self, my_session: str = "alpha") -> None:
+        # Default "alpha" is correct: hapax-bar.service runs from the alpha
+        # worktree (~/projects/hapax-council/). It always shows beta's status.
         super().__init__(
             orientation=Gtk.Orientation.VERTICAL,
             spacing=2,

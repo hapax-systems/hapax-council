@@ -91,23 +91,18 @@ class StimmungState:
         new_consent = "no_guest"
         new_guest = False
 
+        # Single read of perception state (consent + flow + activity)
         try:
             perc = json.loads(PERCEPTION_PATH.read_text())
             new_consent = perc.get("consent_phase", "no_guest")
             new_guest = perc.get("guest_present", False)
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
-
-        self.heart_rate = bio.get("heart_rate_bpm", 0)
-
-        # Extract perception fields
-        try:
-            perc = json.loads(PERCEPTION_PATH.read_text())
             self.flow_score = perc.get("flow_score", 0.0)
             self.interruptibility = perc.get("interruptibility_score", 1.0)
             self.activity_mode = perc.get("activity_mode", "idle")
         except (FileNotFoundError, json.JSONDecodeError):
             pass
+
+        self.heart_rate = bio.get("heart_rate_bpm", 0)
 
         changed = (
             new_voice_state != self.voice_state

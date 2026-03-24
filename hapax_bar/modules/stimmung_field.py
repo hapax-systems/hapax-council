@@ -258,7 +258,7 @@ class StimmungField(Gtk.Widget):
             return
         cx = w * 0.15
         cy = h / 2
-        radius = 6.0
+        radius = max(6.0, h * 0.3)  # Scale with bar height: 6px at 24px, ~10px at 32px
 
         if self._voice_state == "idle":
             r, g, b = 0.4, 0.37, 0.33

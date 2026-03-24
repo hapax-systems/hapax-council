@@ -46,3 +46,6 @@ class TemporalPanel(Gtk.Box):
             pass
 
         self._label.set_label(f"{session_str}{event_str}")
+
+    def refresh(self) -> None:
+        self.update()
