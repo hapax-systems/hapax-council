@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block commits containing merge conflict markers.
+set -euo pipefail
+
+MARKERS=$(git diff --cached --name-only -z \
+  | xargs -0 grep -l '^<<<<<<<\|^=======$\|^>>>>>>>' 2>/dev/null || true)
+
+if [ -n "$MARKERS" ]; then
+    echo "ERROR: Conflict markers found in staged files:" >&2
+    echo "$MARKERS" | sed 's/^/  - /' >&2
+    exit 1
+fi
+exit 0

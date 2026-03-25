@@ -7,6 +7,12 @@ repos:
       - id: ruff-format
   - repo: local
     hooks:
+      - id: conflict-markers
+        name: Check for conflict markers
+        entry: scripts/check-conflict-markers
+        language: script
+        always_run: true
+        pass_filenames: false
       - id: experiment-freeze
         name: Experiment path freeze check
         entry: scripts/experiment-freeze-check
