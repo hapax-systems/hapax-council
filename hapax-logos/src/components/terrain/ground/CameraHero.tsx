@@ -83,7 +83,7 @@ export function CameraHero({
   const preset = basePreset && effectOverrides
     ? { ...basePreset, effects: { ...basePreset.effects, ...effectOverrides } }
     : basePreset;
-  const smoothSource = compositeMode ? (effectUrl ?? "/api/studio/stream/fx") : undefined;
+  const smoothSource = compositeMode && effectUrl ? effectUrl : undefined;
   const modeLabel = [
     heroRole,
     preset?.name,
@@ -104,7 +104,7 @@ export function CameraHero({
                 : "opacity-0 pointer-events-none"
             }`}
           >
-            <HlsPlayer enabled={smoothMode || compositeMode} />
+            <HlsPlayer enabled={smoothMode} />
           </div>
           {/* Composite canvas — on top of HLS when both active */}
           {compositeMode && preset && (

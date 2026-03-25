@@ -292,24 +292,29 @@ export function CompositeCanvas({
         ctx.restore();
       }
 
-      if (fx.bandDisplacement && Math.random() < fx.bandChance && main) {
-        const bandY = Math.floor(Math.random() * h * 0.6) + h * 0.2;
-        const bandH = 4 + Math.floor(Math.random() * 16);
-        const shift =
-          (Math.random() > 0.5 ? 1 : -1) * (5 + Math.random() * fx.bandMaxShift);
-        ctx.save();
-        if (mainFilter !== "none") ctx.filter = mainFilter;
-        ctx.beginPath();
-        ctx.rect(0, bandY, w, bandH);
-        ctx.clip();
-        ctx.drawImage(main, shift, 0, w, h);
-        ctx.restore();
+      if (fx.bandDisplacement && main) {
+        const bandChance = fx.bandChance || 0.25;
+        const bandMaxShift = fx.bandMaxShift || 20;
+        if (Math.random() < bandChance) {
+          const bandY = Math.floor(Math.random() * h * 0.6) + h * 0.2;
+          const bandH = 4 + Math.floor(Math.random() * 16);
+          const shift =
+            (Math.random() > 0.5 ? 1 : -1) * (5 + Math.random() * bandMaxShift);
+          ctx.save();
+          if (mainFilter !== "none") ctx.filter = mainFilter;
+          ctx.beginPath();
+          ctx.rect(0, bandY, w, bandH);
+          ctx.clip();
+          ctx.drawImage(main, shift, 0, w, h);
+          ctx.restore();
+        }
       }
 
       if (fx.vignette) {
+        const vignetteStrength = fx.vignetteStrength || 0.35;
         const vig = ctx.createRadialGradient(w / 2, h / 2, w * 0.3, w / 2, h / 2, w * 0.7);
         vig.addColorStop(0, "rgba(0,0,0,0)");
-        vig.addColorStop(1, `rgba(0,0,0,${fx.vignetteStrength})`);
+        vig.addColorStop(1, `rgba(0,0,0,${vignetteStrength})`);
         ctx.fillStyle = vig;
         ctx.fillRect(0, 0, w, h);
       }
@@ -318,7 +323,7 @@ export function CompositeCanvas({
         ctx.save();
         ctx.filter = "none";
         const grad = ctx.createLinearGradient(0, 0, 0, h);
-        const c = fx.syrupColor;
+        const c = fx.syrupColor === "0, 0, 0" ? "30, 15, 45" : fx.syrupColor;
         grad.addColorStop(0, `rgba(${c}, 0.0)`);
         grad.addColorStop(0.5, `rgba(${c}, 0.1)`);
         grad.addColorStop(1, `rgba(${c}, 0.25)`);
@@ -478,9 +483,24 @@ export function CompositeCanvas({
         }
 
         // 3. COMPOSITE new frame onto back buffer (only on new JPEG arrival)
+        //    When warp is configured, pre-render warped frame to scratch canvas then copy
+        //    flat result to back buffer. Drawing warp directly to back buffer causes
+        //    directional smearing because each tick's warp position accumulates.
         if (isNewFrame) {
           lastTrailHead = writeHead;
-          drawMainFrame(backCtx, main, w, h, cachedTrailFilter, mainAlpha, trail.blendMode, true);
+          if (p.warp && scratchCtx && scratchCanvas) {
+            // Render warped frame to scratch at full opacity with source-over,
+            // then composite the flat result onto back buffer with trail blend/alpha.
+            scratchCtx.clearRect(0, 0, w, h);
+            drawMainFrame(scratchCtx, main, w, h, cachedTrailFilter, 1, "source-over", false);
+            backCtx.save();
+            backCtx.globalAlpha = mainAlpha;
+            backCtx.globalCompositeOperation = trail.blendMode as GlobalCompositeOperation;
+            backCtx.drawImage(scratchCanvas, 0, 0);
+            backCtx.restore();
+          } else {
+            drawMainFrame(backCtx, main, w, h, cachedTrailFilter, mainAlpha, trail.blendMode, true);
+          }
         }
 
         // 4. PRESENT: copy back buffer to display canvas
