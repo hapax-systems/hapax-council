@@ -105,6 +105,28 @@ export function CompositeCanvas({
       scratchCtx = scratchCanvas.getContext("2d");
     };
 
+    // --- Noise overlay (pre-baked grain at 1/8 resolution) ---
+    const noiseW = 240;
+    const noiseH = 135;
+    const noiseCanvas = document.createElement("canvas");
+    noiseCanvas.width = noiseW;
+    noiseCanvas.height = noiseH;
+    const noiseCtx = noiseCanvas.getContext("2d")!;
+    const noiseImageData = noiseCtx.createImageData(noiseW, noiseH);
+    let noiseGenerated = false;
+    let noiseTickCounter = 0;
+
+    const regenerateNoise = () => {
+      const d = noiseImageData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const v = Math.random() * 255;
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255;
+      }
+      noiseCtx.putImageData(noiseImageData, 0, 0);
+      noiseGenerated = true;
+    };
+
     const fetchFrame = () => {
       if (!running || pending) return;
       pending = true;
@@ -338,6 +360,23 @@ export function CompositeCanvas({
       }
     };
 
+    /** Draw noise grain overlay if preset has noise config. */
+    const drawNoise = (w: number, h: number) => {
+      const noise = presetRef.current.noise;
+      if (!noise?.enabled) return;
+
+      if (!noiseGenerated || (noise.animated && ++noiseTickCounter % 3 === 0)) {
+        regenerateNoise();
+      }
+
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      ctx.globalAlpha = noise.intensity;
+      ctx.globalCompositeOperation = "overlay";
+      ctx.drawImage(noiseCanvas, 0, 0, w, h);
+      ctx.restore();
+    };
+
     /**
      * Compute calibrated fade and draw alphas based on blend mode and preset params.
      * The key insight: fade and draw must reach approximate equilibrium to prevent
@@ -516,12 +555,14 @@ export function CompositeCanvas({
           // Post-effects still run every tick for visual consistency
           drawPostEffects(main, w, h, cachedMainFilter);
         }
+        drawNoise(w, h);
 
       } else {
         // --- NO TRAILS: clear and redraw every rAF tick (warp OK here) ---
         ctx.clearRect(0, 0, w, h);
         drawMainFrame(ctx, main, w, h, cachedMainFilter, 1, "source-over");
         drawOverlayAndEffects(main, w, h, cachedMainFilter);
+        drawNoise(w, h);
       }
     };
 
