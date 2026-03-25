@@ -829,6 +829,8 @@ class VisualLayerAggregator:
         # Adaptive cadence state (Phase 5)
         self._prev_display_state: str = "ambient"
         self._last_perception_data: dict[str, Any] = {}
+        self._ambient_fetch_done: bool = False
+        self._epoch: int = 0
 
         # Stimmung (WS2): system self-state
         self._stimmung_collector = StimmungCollector()
@@ -1624,6 +1626,7 @@ class VisualLayerAggregator:
             nudge_titles = data.get("nudge_titles", [])
             if nudge_titles:
                 self._nudge_titles = nudge_titles
+        self._ambient_fetch_done = True
 
     async def poll_hls_segments(self) -> None:
         """Analyze recent HLS segments for temporal action + motion energy.
@@ -1899,11 +1902,7 @@ class VisualLayerAggregator:
             return "talking to hapax", f"turn {self._voice_session.turn_count}"
 
         # Production activity from perception
-        perception_data = {}
-        try:
-            perception_data = json.loads(PERCEPTION_STATE_PATH.read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
+        perception_data = self._last_perception_data or {}
 
         production = perception_data.get("production_activity", "")
         music_genre = perception_data.get("music_genre", "")
@@ -2109,7 +2108,7 @@ class VisualLayerAggregator:
         # (ambient facts/nudges may legitimately be empty — that's not a boot issue)
         if not self._last_perception_data:
             state.readiness = "waiting"
-        elif self._last_ambient_fetch == 0.0:
+        elif not self._ambient_fetch_done:
             state.readiness = "collecting"
         else:
             state.readiness = "ready"
@@ -2159,6 +2158,8 @@ class VisualLayerAggregator:
 
         # Atomic write
         try:
+            self._epoch += 1
+            state.epoch = self._epoch
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             tmp = OUTPUT_FILE.with_suffix(".tmp")
             tmp.write_text(state.model_dump_json(), encoding="utf-8")

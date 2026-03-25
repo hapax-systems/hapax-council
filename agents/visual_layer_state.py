@@ -313,6 +313,7 @@ class VisualLayerState(BaseModel):
     operator_x: float = 0.5
     operator_y: float = 0.5
     timestamp: float = 0.0
+    epoch: int = 0
 
 
 # ── Opacity Targets per State ────────────────────────────────────────────────
@@ -388,6 +389,7 @@ class DisplayStateMachine:
         self.state = DisplayState.AMBIENT
         self._last_escalation_time: float = 0.0
         self._deescalation_timer: float = 0.0
+        self._performative_enter_time: float = 0.0
         self._staleness: SignalStaleness | None = None
 
     def tick(
@@ -457,7 +459,6 @@ class DisplayStateMachine:
 
     def _apply_transition(self, target: DisplayState, now: float) -> DisplayState:
         if target == self.state:
-            self._deescalation_timer = now
             return self.state
 
         escalation_order = {
@@ -471,7 +472,17 @@ class DisplayStateMachine:
         current_level = escalation_order[self.state]
         target_level = escalation_order[target]
 
-        if target == DisplayState.PERFORMATIVE or self.state == DisplayState.PERFORMATIVE:
+        if target == DisplayState.PERFORMATIVE:
+            self._performative_enter_time = now
+            self._deescalation_timer = now
+            return target
+
+        if self.state == DisplayState.PERFORMATIVE:
+            if target == DisplayState.ALERT:
+                # Hold PERFORMATIVE for 3s against ALERT signals
+                if now - self._performative_enter_time < 3.0:
+                    return self.state
+            # Non-ALERT or sustained ALERT (>3s): exit PERFORMATIVE
             self._deescalation_timer = now
             return target
 

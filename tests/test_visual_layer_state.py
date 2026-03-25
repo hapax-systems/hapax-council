@@ -273,3 +273,44 @@ class TestInvariants:
             signals=[_signal(severity=SEVERITY_HIGH - 0.01)], flow_score=flow, now=0
         )
         assert result.display_state == DisplayState.AMBIENT
+
+
+class TestDeescalationTimerFix:
+    def test_same_state_does_not_reset_timer(self):
+        sm = DisplayStateMachine()
+        # Escalate to ALERT at t=0
+        sm.tick(signals=[_signal(severity=SEVERITY_CRITICAL)], now=0.0)
+        assert sm.state == DisplayState.ALERT
+
+        # Same-state ticks for 10 seconds (timer should NOT reset)
+        for t in range(1, 11):
+            sm.tick(signals=[_signal(severity=SEVERITY_CRITICAL)], now=float(t))
+
+        # Signal clears at t=25 — should de-escalate (15s > any cooldown)
+        result = sm.tick(signals=[], now=25.0)
+        assert result.display_state == DisplayState.AMBIENT
+
+
+class TestPerformativeHysteresis:
+    def test_performative_holds_against_brief_alert(self):
+        sm = DisplayStateMachine()
+        sm.tick(signals=[], now=0.0, production_active=True, audio_energy=0.5, flow_score=0.8)
+        assert sm.state == DisplayState.PERFORMATIVE
+
+        result = sm.tick(
+            signals=[_signal(severity=SEVERITY_CRITICAL)],
+            now=1.0,
+            production_active=False,
+        )
+        assert result.display_state == DisplayState.PERFORMATIVE
+
+    def test_performative_exits_after_sustained_alert(self):
+        sm = DisplayStateMachine()
+        sm.tick(signals=[], now=0.0, production_active=True, audio_energy=0.5, flow_score=0.8)
+        assert sm.state == DisplayState.PERFORMATIVE
+
+        # Sustained ALERT signals for >3s
+        for t in [1.0, 2.0, 3.0]:
+            sm.tick(signals=[_signal(severity=SEVERITY_CRITICAL)], now=t)
+        result = sm.tick(signals=[_signal(severity=SEVERITY_CRITICAL)], now=3.1)
+        assert result.display_state == DisplayState.ALERT
