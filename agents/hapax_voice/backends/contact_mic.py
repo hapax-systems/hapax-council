@@ -48,6 +48,12 @@ _TAPPING_MIN_ONSET_RATE = 1.0
 _DRUMMING_MIN_ENERGY = 0.3
 _DRUMMING_MAX_CENTROID = 1500.0  # Hz — low centroid = resonant low-end
 
+_SCRATCH_AUTOCORR_THRESHOLD = 0.4
+_SCRATCH_MIN_ENERGY = 0.02
+_SCRATCH_MIN_LAG = 2  # ~64ms at 32ms frames (~16 Hz)
+_SCRATCH_MAX_LAG = 16  # ~512ms at 32ms frames (~2 Hz)
+_ENERGY_BUFFER_SIZE = 60  # ~1.9s of history at 32ms frames
+
 
 # ── Pure DSP functions ────────────────────────────────────────────────────────
 
@@ -98,10 +104,37 @@ def _detect_onsets(
     return onsets
 
 
-def _classify_activity(energy: float, onset_rate: float, centroid: float) -> str:
+def _compute_envelope_autocorrelation(energy_buffer: deque[float]) -> float:
+    """Compute peak normalized autocorrelation of energy envelope in scratch lag range.
+
+    Returns the maximum normalized autocorrelation value for lags corresponding
+    to 2-16 Hz oscillation (the vinyl scratch gesture rate range).
+    """
+    if len(energy_buffer) < _SCRATCH_MAX_LAG + 1:
+        return 0.0
+
+    arr = np.array(energy_buffer, dtype=np.float32)
+    arr = arr - arr.mean()
+    norm = np.dot(arr, arr)
+    if norm < 1e-10:
+        return 0.0
+
+    peak = 0.0
+    for lag in range(_SCRATCH_MIN_LAG, _SCRATCH_MAX_LAG + 1):
+        corr = np.dot(arr[:-lag], arr[lag:]) / norm
+        if corr > peak:
+            peak = corr
+    return float(peak)
+
+
+def _classify_activity(
+    energy: float, onset_rate: float, centroid: float, autocorr_peak: float = 0.0
+) -> str:
     """Classify desk activity from DSP metrics."""
     if energy < _IDLE_THRESHOLD:
         return "idle"
+    if autocorr_peak >= _SCRATCH_AUTOCORR_THRESHOLD and energy >= _SCRATCH_MIN_ENERGY:
+        return "scratching"
     if energy >= _DRUMMING_MIN_ENERGY and centroid < _DRUMMING_MAX_CENTROID:
         return "drumming"
     if onset_rate >= _TYPING_MIN_ONSET_RATE and energy < _DRUMMING_MIN_ENERGY:
@@ -318,6 +351,8 @@ class ContactMicBackend:
             frame_count = 0
             centroid = 0.0
             current_gesture = "none"
+            energy_buffer: deque[float] = deque(maxlen=_ENERGY_BUFFER_SIZE)
+            autocorr_peak = 0.0
 
             while not self._stop_event.is_set():
                 try:
@@ -330,6 +365,8 @@ class ContactMicBackend:
                     smoothed_energy = (
                         _RMS_SMOOTHING * raw_energy + (1 - _RMS_SMOOTHING) * smoothed_energy
                     )
+
+                    energy_buffer.append(smoothed_energy)
 
                     # Onset detection
                     if (
@@ -356,9 +393,12 @@ class ContactMicBackend:
                     # centroid persists from last computation on non-FFT frames
                     if frame_count % 4 == 0:
                         centroid = _compute_spectral_centroid(data)
+                        autocorr_peak = _compute_envelope_autocorrelation(energy_buffer)
 
                     # Activity classification
-                    activity = _classify_activity(smoothed_energy, onset_rate, centroid)
+                    activity = _classify_activity(
+                        smoothed_energy, onset_rate, centroid, autocorr_peak
+                    )
 
                     # Gesture classification (after timeout)
                     if gesture_onset_burst and (now - last_gesture_check) >= _GESTURE_TIMEOUT_S:

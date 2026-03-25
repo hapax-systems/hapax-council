@@ -75,16 +75,28 @@ class TestOnsetDetection:
 
 class TestClassifyActivity:
     def test_idle_when_silent(self):
-        assert _classify_activity(energy=0.0, onset_rate=0.0, centroid=0.0) == "idle"
+        assert (
+            _classify_activity(energy=0.0, onset_rate=0.0, centroid=0.0, autocorr_peak=0.0)
+            == "idle"
+        )
 
     def test_typing_high_onset_low_energy(self):
-        assert _classify_activity(energy=0.05, onset_rate=5.0, centroid=3000.0) == "typing"
+        assert (
+            _classify_activity(energy=0.05, onset_rate=5.0, centroid=3000.0, autocorr_peak=0.0)
+            == "typing"
+        )
 
     def test_tapping_moderate_onset_higher_energy(self):
-        assert _classify_activity(energy=0.15, onset_rate=2.0, centroid=2000.0) == "tapping"
+        assert (
+            _classify_activity(energy=0.15, onset_rate=2.0, centroid=2000.0, autocorr_peak=0.0)
+            == "tapping"
+        )
 
     def test_drumming_high_energy_low_centroid(self):
-        assert _classify_activity(energy=0.6, onset_rate=4.0, centroid=500.0) == "drumming"
+        assert (
+            _classify_activity(energy=0.6, onset_rate=4.0, centroid=500.0, autocorr_peak=0.0)
+            == "drumming"
+        )
 
 
 class TestContactMicCache:
@@ -209,3 +221,81 @@ class TestContactMicBackendProtocol:
             assert "desk_onset_rate" in behaviors
             assert "desk_tap_gesture" in behaviors
             assert behaviors["desk_activity"].value == "idle"
+
+
+class TestEnvelopeAutocorrelation:
+    def test_oscillating_envelope_high_peak(self):
+        import math
+        from collections import deque
+
+        from agents.hapax_voice.backends.contact_mic import _compute_envelope_autocorrelation
+
+        # Simulate scratching: sinusoidal energy at 5 Hz (200ms period, lag ~6 at 32ms)
+        buf: deque[float] = deque(maxlen=60)
+        for i in range(60):
+            buf.append(0.3 + 0.2 * math.sin(2 * math.pi * 5.0 * i * 0.032))
+        peak = _compute_envelope_autocorrelation(buf)
+        assert peak > 0.4  # strong periodic signal
+
+    def test_flat_envelope_low_peak(self):
+        from collections import deque
+
+        from agents.hapax_voice.backends.contact_mic import _compute_envelope_autocorrelation
+
+        buf: deque[float] = deque(maxlen=60)
+        for _ in range(60):
+            buf.append(0.3)  # constant energy, no oscillation
+        peak = _compute_envelope_autocorrelation(buf)
+        assert peak < 0.2
+
+    def test_impulsive_envelope_low_peak(self):
+        from collections import deque
+
+        from agents.hapax_voice.backends.contact_mic import _compute_envelope_autocorrelation
+
+        # Simulate typing: aperiodic sparse impulses (not evenly spaced)
+        buf: deque[float] = deque(maxlen=60)
+        impulse_indices = {3, 11, 22, 38, 51}  # irregular spacing
+        for i in range(60):
+            buf.append(0.5 if i in impulse_indices else 0.01)
+        peak = _compute_envelope_autocorrelation(buf)
+        # Aperiodic impulses have weak autocorrelation in the scratch range
+        assert peak < 0.4
+
+    def test_short_buffer_returns_zero(self):
+        from collections import deque
+
+        from agents.hapax_voice.backends.contact_mic import _compute_envelope_autocorrelation
+
+        buf: deque[float] = deque(maxlen=60)
+        buf.append(0.5)
+        assert _compute_envelope_autocorrelation(buf) == 0.0
+
+
+class TestScratchClassification:
+    def test_scratching_high_autocorr(self):
+        assert (
+            _classify_activity(energy=0.1, onset_rate=0.0, centroid=200.0, autocorr_peak=0.5)
+            == "scratching"
+        )
+
+    def test_no_scratch_low_autocorr(self):
+        # Same energy but no autocorrelation -> falls through to other categories
+        assert (
+            _classify_activity(energy=0.1, onset_rate=2.0, centroid=200.0, autocorr_peak=0.1)
+            == "tapping"
+        )
+
+    def test_scratch_before_drumming(self):
+        # High energy + low centroid would be drumming, but autocorr makes it scratching
+        assert (
+            _classify_activity(energy=0.5, onset_rate=0.0, centroid=500.0, autocorr_peak=0.5)
+            == "scratching"
+        )
+
+    def test_idle_not_affected(self):
+        # Below idle threshold, autocorr doesn't matter
+        assert (
+            _classify_activity(energy=0.001, onset_rate=0.0, centroid=0.0, autocorr_peak=0.6)
+            == "idle"
+        )
