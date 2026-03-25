@@ -23,8 +23,11 @@ log "uv cache pruned"
 
 # 4. pacman package cache — keep only 1 version
 if command -v paccache &>/dev/null; then
-    sudo paccache -rk1 2>/dev/null || true
-    log "pacman cache pruned (keeping 1 version)"
+    if sudo -n paccache -rk1 2>/dev/null; then
+        log "pacman cache pruned (keeping 1 version)"
+    else
+        log "pacman cache prune skipped (sudo not available non-interactively)"
+    fi
 fi
 
 # 5. Remove worktree .venvs that haven't been touched in 7+ days
@@ -40,11 +43,20 @@ for venv in /home/hapax/projects/*--*/.venv; do
 done
 
 # 6. Leaked audio temp files (pacat captures not cleaned up)
-wav_count=$(find /tmp -name "tmp*.wav" -user hapax -mmin +5 2>/dev/null | wc -l)
-if [ "$wav_count" -gt 0 ]; then
-    wav_size=$(find /tmp -name "tmp*.wav" -user hapax -mmin +5 -printf "%s\n" 2>/dev/null | awk '{t+=$1} END {printf "%.0f", t/1024/1024}')
-    find /tmp -name "tmp*.wav" -user hapax -mmin +5 -delete 2>/dev/null || true
-    log "Removed $wav_count leaked wav files (${wav_size}MB)"
+# Check both /tmp (legacy) and managed tmp-wav directory
+for wav_dir in /tmp "$HOME/.cache/hapax/tmp-wav"; do
+    wav_count=$(find "$wav_dir" -maxdepth 1 -name "tmp*.wav" -user hapax -mmin +5 2>/dev/null | wc -l)
+    if [ "$wav_count" -gt 0 ]; then
+        wav_size=$(find "$wav_dir" -maxdepth 1 -name "tmp*.wav" -user hapax -mmin +5 -printf "%s\n" 2>/dev/null | awk '{t+=$1} END {printf "%.0f", t/1024/1024}')
+        find "$wav_dir" -maxdepth 1 -name "tmp*.wav" -user hapax -mmin +5 -delete 2>/dev/null || true
+        log "Removed $wav_count leaked wav files from $wav_dir (${wav_size}MB)"
+    fi
+done
+# Kill orphan pacat --record processes (more than 2 concurrent is abnormal)
+orphan_pacat=$(pgrep -f "pacat --record" -c 2>/dev/null || echo 0)
+if [ "$orphan_pacat" -gt 2 ]; then
+    pkill -f "pacat --record" 2>/dev/null || true
+    log "Killed $orphan_pacat orphan pacat processes"
 fi
 # Leaked webcam temp dirs
 find /tmp -name "webcam-*" -type d -user hapax -mmin +10 -exec rm -rf {} + 2>/dev/null || true
