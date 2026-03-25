@@ -63,6 +63,37 @@ CAMERAS: tuple[CameraSpec, ...] = (
     ),
 )
 
+
+# ── Instrument zones (overhead camera) ────────────────────────────────
+
+
+@dataclass(frozen=True)
+class InstrumentZone:
+    """Bounding box for an instrument zone in the overhead frame."""
+
+    name: str
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+
+
+OVERHEAD_ZONES: tuple[InstrumentZone, ...] = (
+    InstrumentZone("turntable", 0, 100, 400, 550),
+    InstrumentZone("pads", 400, 150, 800, 500),
+    InstrumentZone("mixer", 300, 0, 550, 200),
+    InstrumentZone("keyboard", 800, 300, 1280, 600),
+)
+
+
+def point_in_zone(x: int, y: int) -> str:
+    """Return the instrument zone name for a pixel coordinate, or 'unknown'."""
+    for z in OVERHEAD_ZONES:
+        if z.x1 <= x <= z.x2 and z.y1 <= y <= z.y2:
+            return z.name
+    return "unknown"
+
+
 # ── Derived lookups ───────────────────────────────────────────────────
 
 # All camera role names (full)
