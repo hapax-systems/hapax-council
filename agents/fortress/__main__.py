@@ -266,7 +266,7 @@ class FortressDaemon:
                     self._memory_store, patch_id, state.game_tick
                 ),
                 "get_situation": lambda: get_situation_chunks(
-                    self._chunk_compressor, state, self._prev_state, self._trend_engine
+                    self._chunk_compressor, state, self._prev_state
                 ),
             }
 
@@ -288,7 +288,6 @@ class FortressDaemon:
                     tool_dispatch=dispatch,
                     recent_events=recent_events,
                     recent_decisions=[],  # TODO: wire decision log
-                    trends=self._trend_engine,
                 )
 
                 for action in actions:

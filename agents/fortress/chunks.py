@@ -9,12 +9,8 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 from agents.fortress.schema import FastFortressState, FullFortressState
-
-if TYPE_CHECKING:
-    from agents.fortress.trends import TrendEngine
 
 log = logging.getLogger(__name__)
 
@@ -32,10 +28,9 @@ class ChunkCompressor:
         self,
         state: FastFortressState | FullFortressState,
         prev: FastFortressState | FullFortressState | None = None,
-        trends: TrendEngine | None = None,
     ) -> list[str]:
         return [
-            self._food_chunk(state, prev, trends),
+            self._food_chunk(state, prev),
             self._population_chunk(state, prev),
             self._industry_chunk(state, prev),
             self._safety_chunk(state, prev),
@@ -79,7 +74,7 @@ class ChunkCompressor:
             return f", {diff}"
         return ", stable"
 
-    def _food_chunk(self, state, prev, trends: TrendEngine | None = None) -> str:
+    def _food_chunk(self, state, prev) -> str:
         pop = max(1, state.population)
         food_per = state.food_count / pop
         drink_per = state.drink_count / pop
@@ -94,14 +89,10 @@ class ChunkCompressor:
         food_d = self._delta(state.food_count, prev.food_count if prev else None)
         drink_d = self._delta(state.drink_count, prev.drink_count if prev else None)
 
-        # Embed trend labels if TrendEngine available
-        food_trend = f" ({trends.trend('food_count')})" if trends else ""
-        drink_trend = f" ({trends.trend('drink_count')})" if trends else ""
-
         prefix = f"[{urgency}] " if urgency else ""
         return (
-            f"{prefix}Food: {state.food_count}{food_d}{food_trend}. "
-            f"Drink: {state.drink_count}{drink_d}{drink_trend}. "
+            f"{prefix}Food: {state.food_count}{food_d}. "
+            f"Drink: {state.drink_count}{drink_d}. "
             f"({food_per:.0f}/{drink_per:.0f} per dwarf)"
         )
 

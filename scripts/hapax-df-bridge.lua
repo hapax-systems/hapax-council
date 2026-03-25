@@ -24,6 +24,8 @@ local CMD_INTERVAL = 30     -- frames (~0.3 seconds)
 
 local event_buffer = {}
 local tick_counter = 0
+local last_season_cache = -1
+local moody_units_cache = {}
 
 -- Ensure output directory exists
 local function ensure_dir()
@@ -188,9 +190,36 @@ local function build_full_state()
     state.squads = {}
     for _, squad in ipairs(df.global.world.squads.all) do
         local members = {}
+        local eq_total, eq_count = 0, 0
+        local tr_total, tr_count = 0, 0
         for _, pos in ipairs(squad.positions) do
             if pos.occupant >= 0 then
                 table.insert(members, pos.occupant)
+                local unit = df.unit.find(pos.occupant)
+                if unit then
+                    -- Equipment: count worn items quality
+                    pcall(function()
+                        for _, inv_item in ipairs(unit.inventory) do
+                            if inv_item.mode == df.unit_inventory_item.T_mode.Worn
+                               or inv_item.mode == df.unit_inventory_item.T_mode.Weapon then
+                                eq_total = eq_total + (inv_item.item.quality or 0)
+                                eq_count = eq_count + 1
+                            end
+                        end
+                    end)
+                    -- Training: check combat skill
+                    pcall(function()
+                        if unit.status.current_soul then
+                            for _, skill in ipairs(unit.status.current_soul.skills) do
+                                if skill.id == df.job_skill.MELEE_COMBAT
+                                   or skill.id == df.job_skill.RANGED_COMBAT then
+                                    tr_total = tr_total + skill.rating
+                                    tr_count = tr_count + 1
+                                end
+                            end
+                        end
+                    end)
+                end
             end
         end
         if #members > 0 then
@@ -198,8 +227,8 @@ local function build_full_state()
                 id = squad.id,
                 name = dfhack.df2utf(squad.alias),
                 member_ids = members,
-                equipment_quality = 0.5,  -- TODO: compute from equipment
-                training_level = 0.5,     -- TODO: compute from skills
+                equipment_quality = eq_count > 0 and eq_total / (eq_count * 5) or 0,
+                training_level = tr_count > 0 and tr_total / (tr_count * 20) or 0,
             })
         end
     end
@@ -280,7 +309,24 @@ local function build_full_state()
         statues = 0, armor_stands = 0, weapon_racks = 0,
         coffins = 0, trade_depot = 0,
     }
-    -- TODO: count building types
+    pcall(function()
+        for _, bld in ipairs(df.global.world.buildings.all) do
+            local ok, t = pcall(function() return bld:getType() end)
+            if not ok then ok, t = pcall(function() return bld.type end) end
+            if ok and t then
+                if t == df.building_type.Door then state.buildings.doors = state.buildings.doors + 1
+                elseif t == df.building_type.Bed then state.buildings.beds = state.buildings.beds + 1
+                elseif t == df.building_type.Table then state.buildings.tables = state.buildings.tables + 1
+                elseif t == df.building_type.Chair then state.buildings.chairs = state.buildings.chairs + 1
+                elseif t == df.building_type.Statue then state.buildings.statues = state.buildings.statues + 1
+                elseif t == df.building_type.Armorstand then state.buildings.armor_stands = state.buildings.armor_stands + 1
+                elseif t == df.building_type.Weaponrack then state.buildings.weapon_racks = state.buildings.weapon_racks + 1
+                elseif t == df.building_type.Coffin then state.buildings.coffins = state.buildings.coffins + 1
+                elseif t == df.building_type.TradeDepot then state.buildings.trade_depot = state.buildings.trade_depot + 1
+                end
+            end
+        end
+    end)
 
     state.nobles = {}
     state.strange_moods = {}
@@ -339,6 +385,35 @@ local function export_fast()
     if not ok then
         dfhack.printerr("hapax-df-bridge: failed to write state")
     end
+
+    -- Polled events: season change
+    if df.global.cur_season ~= last_season_cache then
+        if last_season_cache >= 0 then
+            table.insert(event_buffer, {
+                type = "season_change",
+                new_season = df.global.cur_season,
+                new_year = df.global.cur_year,
+            })
+        end
+        last_season_cache = df.global.cur_season
+    end
+
+    -- Polled events: strange moods
+    pcall(function()
+        for _, unit in ipairs(get_citizens()) do
+            if unit.mood >= 0 then
+                local uid = unit.id
+                if not moody_units_cache[uid] then
+                    moody_units_cache[uid] = true
+                    table.insert(event_buffer, {
+                        type = "mood",
+                        unit_id = uid,
+                        mood_type = df.mood_type[unit.mood] or "unknown",
+                    })
+                end
+            end
+        end
+    end)
 end
 
 local function export_full()
@@ -592,6 +667,52 @@ local function start()
     eventful.onInvasion.hapax = on_invasion
     eventful.onUnitDeath.hapax = on_unit_death
 
+    -- Migrant detection
+    eventful.enableEvent(eventful.eventType.UNIT_NEW_ACTIVE, 1)
+    eventful.onUnitNewActive.hapax = function(unit_id)
+        local unit = df.unit.find(unit_id)
+        if unit and dfhack.units.isCitizen(unit) then
+            table.insert(event_buffer, {
+                type = "migrant",
+                count = 1,
+            })
+        end
+    end
+
+    -- Announcement filtering for moods, caravans, mandates
+    eventful.enableEvent(eventful.eventType.REPORT, 1)
+    eventful.onReport.hapax = function(report_id)
+        local r = df.report.find(report_id)
+        if not r then return end
+        local t = r.type
+        -- Map announcement types to our event types
+        if t == df.announcement_type.STRANGE_MOOD then
+            table.insert(event_buffer, {
+                type = "mood",
+                unit_id = r.speaker_id or -1,
+                mood_type = "unknown",
+            })
+        elseif t == df.announcement_type.CARAVAN_ARRIVAL or t == df.announcement_type.FIRST_CARAVAN_ARRIVAL then
+            table.insert(event_buffer, {
+                type = "caravan",
+                civ = "unknown",
+                goods_value = 0,
+            })
+        end
+    end
+
+    -- Building events
+    eventful.enableEvent(eventful.eventType.BUILDING, 1)
+    eventful.onBuildingCreatedDestroyed.hapax = function(building_id)
+        -- State update only, no event buffer entry needed
+    end
+
+    -- Job completion
+    eventful.enableEvent(eventful.eventType.JOB_COMPLETED, 1)
+    eventful.onJobCompleted.hapax = function(job)
+        -- State update only
+    end
+
     -- Initial full export
     export_full()
 
@@ -609,6 +730,10 @@ local function stop()
 
     eventful.onInvasion.hapax = nil
     eventful.onUnitDeath.hapax = nil
+    eventful.onUnitNewActive.hapax = nil
+    eventful.onReport.hapax = nil
+    eventful.onBuildingCreatedDestroyed.hapax = nil
+    eventful.onJobCompleted.hapax = nil
 
     dfhack.println("hapax-df-bridge: stopped")
 end

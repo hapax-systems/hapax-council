@@ -16,9 +16,9 @@ def creativity_activation(stress: float, center: float = 0.4, width: float = 0.2
     return math.exp(-((stress - center) ** 2) / (2 * width**2))
 
 
-def neuroception_safe(stimmung_worst: float, threshold: float = 0.7) -> bool:
+def neuroception_safe(normalized_stress: float, threshold: float = 0.7) -> bool:
     """Pre-conscious safety gate. If unsafe, creativity is structurally unavailable."""
-    return stimmung_worst < threshold
+    return normalized_stress < threshold
 
 
 def maslow_gate(
