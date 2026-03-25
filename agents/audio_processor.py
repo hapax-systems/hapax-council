@@ -52,6 +52,7 @@ log = logging.getLogger(__name__)
 # ── Constants ────────────────────────────────────────────────────────────────
 
 RAW_DIR = Path.home() / "audio-recording" / "raw"
+CONTACT_MIC_RAW_DIR = Path.home() / "audio-recording" / "contact-mic"
 ARCHIVE_DIR = Path.home() / "audio-recording" / "archive"
 CACHE_DIR = Path.home() / ".cache" / "audio-processor"
 STATE_FILE = CACHE_DIR / "state.json"
@@ -231,6 +232,7 @@ class ProcessedFileInfo(BaseModel):
     conversations: int = 0
     listening_logs: int = 0
     error: str = ""
+    source: str = "yeti"  # "yeti" or "contact_mic"
 
 
 class AudioProcessorState(BaseModel):
@@ -313,11 +315,13 @@ def _check_vram_available(min_mb: int = MIN_VRAM_FREE_MB) -> bool:
     return False
 
 
-def _find_unprocessed_files(raw_dir: Path, state: AudioProcessorState) -> list[Path]:
+def _find_unprocessed_files(
+    raw_dir: Path, state: AudioProcessorState, pattern: str = "rec-*.flac"
+) -> list[Path]:
     """Find raw FLAC files that haven't been processed yet."""
     return sorted(
         f
-        for f in raw_dir.glob("rec-*.flac")
+        for f in raw_dir.glob(pattern)
         if f.name not in state.processed_files and f.stat().st_size > 0
     )
 
@@ -1601,6 +1605,29 @@ def _process_new_files(state: AudioProcessorState) -> dict[str, int]:
             # Archive raw FLAC after successful processing (with sidecar)
             if not info.error:
                 _archive_file(f, info)
+
+    # Process contact mic files (separate directory, different source tag)
+    if CONTACT_MIC_RAW_DIR.exists():
+        contact_files = _find_unprocessed_files(
+            CONTACT_MIC_RAW_DIR, state, pattern="contact-rec-*.flac"
+        )
+        if contact_files:
+            # Same safety: skip most recent file
+            if len(contact_files) > 1:
+                contact_files = contact_files[:-1]
+            elif time.time() - contact_files[0].stat().st_mtime < 60:
+                contact_files = []
+
+            for f in contact_files:
+                info = _process_file(f, state)
+                if info is None:
+                    skipped += 1
+                else:
+                    info = info.model_copy(update={"source": "contact_mic"})
+                    state.processed_files[f.name] = info
+                    processed += 1
+                    if not info.error:
+                        _archive_file(f, info)
 
     state.last_run = time.time()
     _save_state(state)
