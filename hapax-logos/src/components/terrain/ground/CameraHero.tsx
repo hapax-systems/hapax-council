@@ -91,9 +91,16 @@ export function CameraHero({
     return (
       <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
         <div className="relative flex-1 min-h-0">
-          {/* HLS layer — behind main content at reduced opacity when overlaying */}
-          <div className={smoothMode ? `absolute inset-0 z-0 ${compositeMode ? "opacity-30" : ""}` : "hidden"}>
-            <HlsPlayer enabled={smoothMode} />
+          {/* HLS layer — always rendered, visibility controlled via opacity to avoid
+              video element losing playback context from display:none toggling */}
+          <div
+            className={`absolute inset-0 z-0 transition-opacity duration-300 ${
+              smoothMode
+                ? compositeMode ? "opacity-30" : "opacity-100"
+                : "opacity-0 pointer-events-none"
+            }`}
+          >
+            <HlsPlayer enabled={smoothMode || compositeMode} />
           </div>
           {/* Composite canvas — on top of HLS when both active */}
           {compositeMode && preset && (
@@ -271,9 +278,9 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
     <video
       ref={videoRef}
       className="absolute inset-0 h-full w-full bg-black object-cover"
+      autoPlay
       muted
       playsInline
-      poster="/api/studio/stream/fx"
     />
   );
 }

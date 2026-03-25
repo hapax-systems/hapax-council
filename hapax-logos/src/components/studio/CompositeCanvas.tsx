@@ -365,37 +365,50 @@ export function CompositeCanvas({
 
       if (trailActive) {
         // --- PERSISTENCE MODEL: don't clear, dim + redraw ---
-        if (!isNewFrame) return; // Between fetches: canvas holds persisted content
-        lastTrailHead = writeHead;
+        // Fade runs every rAF tick so trails decay smoothly at display refresh rate.
+        // New source frames are composited only when a new JPEG arrives.
+        const fadeRate = trail.opacity * 0.012 / Math.max(trail.count, 1);
 
-        const mainAlpha = 1 - trail.opacity * 0.65;
-        const fadeRate = 0.15 / (trail.count + 1);
-        // For additive (lighter) blend, reduce alpha to prevent saturation.
-        // At full mainAlpha, lighter accumulates to white within seconds.
-        // Factor 0.04 gives steady-state ~200 brightness for mid-tones,
-        // visible trails at ~2s (40%), rich glow at ~5s (80%).
-        const effectiveAlpha = trail.blendMode === "lighter"
-          ? mainAlpha * 0.04
-          : mainAlpha;
-
-        // NOTE: spatial drift (trail.driftX/driftY) disabled in persistence mode.
-        // Shifting the entire persisted canvas each frame produces directional
-        // motion blur that obscures the scene. Drift was designed for the
-        // clearRect-every-frame model. Trail visual interest comes from blend
-        // modes, filters, and fade rate instead.
-
-        // 1. FADE: dim old content
+        // 1. FADE: dim old content every tick for smooth decay
         ctx.save();
+        ctx.globalCompositeOperation = "source-over";
         ctx.globalAlpha = fadeRate;
         ctx.fillStyle = "#000";
         ctx.fillRect(0, 0, w, h);
         ctx.restore();
 
-        // 3. DRAW MAIN with trail blend mode + trail filter
-        drawMainFrame(ctx, main, w, h, cachedTrailFilter, effectiveAlpha, trail.blendMode, true);
+        // 2. DRAW MAIN only on new frames
+        if (isNewFrame) {
+          lastTrailHead = writeHead;
 
-        // 4. OVERLAY + POST-EFFECTS (baked into persistence, only on new frames)
-        drawOverlayAndEffects(main, w, h, cachedTrailFilter);
+          // Alpha tuned per blend mode to balance accumulation vs readability.
+          // lighter: low alpha prevents white-out; others use higher alpha for presence.
+          const mainAlpha = trail.blendMode === "lighter"
+            ? 0.08 + trail.opacity * 0.12   // range 0.08–0.20
+            : 0.3 + trail.opacity * 0.5;     // range 0.30–0.80
+
+          drawMainFrame(ctx, main, w, h, cachedTrailFilter, mainAlpha, trail.blendMode, true);
+
+          // 3. OVERLAY (only on new frames — delayed source compositing)
+          drawOverlayAndEffects(main, w, h, cachedTrailFilter);
+        }
+
+        // 4. POST-EFFECTS run every tick so scanlines/vignette stay visible
+        const fx = p.effects;
+        if (fx.scanlines) {
+          ctx.save();
+          ctx.globalAlpha = 0.12;
+          ctx.fillStyle = "rgba(0,0,0,1)";
+          for (let y = 0; y < h; y += 4) ctx.fillRect(0, y + 2, w, 1.5);
+          ctx.restore();
+        }
+        if (fx.vignette) {
+          const vig = ctx.createRadialGradient(w / 2, h / 2, w * 0.3, w / 2, h / 2, w * 0.7);
+          vig.addColorStop(0, "rgba(0,0,0,0)");
+          vig.addColorStop(1, `rgba(0,0,0,${fx.vignetteStrength})`);
+          ctx.fillStyle = vig;
+          ctx.fillRect(0, 0, w, h);
+        }
 
       } else {
         // --- NO TRAILS: clear and redraw every rAF tick (warp OK here) ---

@@ -551,6 +551,21 @@ export const PRESETS: CompositePreset[] = [
     overlays: [],
   },
   {
+    name: "Ambient",
+    description: "Very dim, minimal trails — atmospheric presence",
+    colorFilter: "saturate(0.4) brightness(0.7) contrast(1.1)",
+    trail: {
+      filter: "saturate(0.3) brightness(0.5)",
+      blendMode: "lighter",
+      opacity: 0.12,
+      count: 3,
+      driftX: 0,
+      driftY: 1,
+    },
+    effects: { ...NO_EFFECTS, vignette: true, vignetteStrength: 0.45 },
+    overlays: [],
+  },
+  {
     name: "Clean",
     description: "Minimal processing — nearly invisible",
     colorFilter: "contrast(1.05) saturate(1.05)",
