@@ -268,8 +268,7 @@ CONTACT_MIC_RAW_DIR: Path = HAPAX_HOME / "audio-recording" / "contact-mic"
 | Edit | `agents/hapax_voice/config.py` | +1 field |
 | Edit | `agents/hapax_voice/__main__.py` | +~35 lines: add `self._loop` attribute in `run()`, register backend, tap governance wiring with `run_coroutine_threadsafe`, update `NoiseReference()` constructor call |
 | Edit | `agents/hapax_voice/multi_mic.py` | +~40 lines (add `structure_sources` parameter, second noise estimate, sequential subtraction) |
-| Edit | `shared/config.py` | +1 line |
-| Edit | `agents/audio_processor.py` | +~15 lines (add `pattern` param to `_find_unprocessed_files`, second directory scan, source tagging) |
+| Edit | `agents/audio_processor.py` | +~15 lines (add `CONTACT_MIC_RAW_DIR` constant, `pattern` param to `_find_unprocessed_files`, `source` field on `ProcessedFileInfo`, second directory scan) |
 
 **Not touched:** `perception.py`, `EnvironmentState`, `primitives.py`, `executor.py`, `commands.py`
 
