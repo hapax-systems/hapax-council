@@ -201,6 +201,8 @@ class TestContactMicBackendProtocol:
                     "desk_energy",
                     "desk_onset_rate",
                     "desk_tap_gesture",
+                    "desk_spectral_centroid",
+                    "desk_autocorr_peak",
                 }
             )
 
@@ -220,6 +222,8 @@ class TestContactMicBackendProtocol:
             assert "desk_energy" in behaviors
             assert "desk_onset_rate" in behaviors
             assert "desk_tap_gesture" in behaviors
+            assert "desk_spectral_centroid" in behaviors
+            assert "desk_autocorr_peak" in behaviors
             assert behaviors["desk_activity"].value == "idle"
 
 

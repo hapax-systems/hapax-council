@@ -189,6 +189,8 @@ class _ContactMicCache:
         self._desk_energy: float = 0.0
         self._desk_onset_rate: float = 0.0
         self._desk_tap_gesture: str = "none"
+        self._desk_spectral_centroid: float = 0.0
+        self._desk_autocorr_peak: float = 0.0
         self._updated_at: float = 0.0
 
     def update(
@@ -198,12 +200,16 @@ class _ContactMicCache:
         desk_energy: float,
         desk_onset_rate: float,
         desk_tap_gesture: str,
+        desk_spectral_centroid: float = 0.0,
+        desk_autocorr_peak: float = 0.0,
     ) -> None:
         with self._lock:
             self._desk_activity = desk_activity
             self._desk_energy = desk_energy
             self._desk_onset_rate = desk_onset_rate
             self._desk_tap_gesture = desk_tap_gesture
+            self._desk_spectral_centroid = desk_spectral_centroid
+            self._desk_autocorr_peak = desk_autocorr_peak
             self._updated_at = time.monotonic()
 
     def read(self) -> dict[str, str | float]:
@@ -213,6 +219,8 @@ class _ContactMicCache:
                 "desk_energy": self._desk_energy,
                 "desk_onset_rate": self._desk_onset_rate,
                 "desk_tap_gesture": self._desk_tap_gesture,
+                "desk_spectral_centroid": self._desk_spectral_centroid,
+                "desk_autocorr_peak": self._desk_autocorr_peak,
                 "updated_at": self._updated_at,
             }
 
@@ -243,6 +251,8 @@ class ContactMicBackend:
         self._b_energy: Behavior[float] = Behavior(0.0)
         self._b_onset_rate: Behavior[float] = Behavior(0.0)
         self._b_gesture: Behavior[str] = Behavior("none")
+        self._b_spectral_centroid: Behavior[float] = Behavior(0.0)
+        self._b_autocorr_peak: Behavior[float] = Behavior(0.0)
 
     @property
     def name(self) -> str:
@@ -250,7 +260,16 @@ class ContactMicBackend:
 
     @property
     def provides(self) -> frozenset[str]:
-        return frozenset({"desk_activity", "desk_energy", "desk_onset_rate", "desk_tap_gesture"})
+        return frozenset(
+            {
+                "desk_activity",
+                "desk_energy",
+                "desk_onset_rate",
+                "desk_tap_gesture",
+                "desk_spectral_centroid",
+                "desk_autocorr_peak",
+            }
+        )
 
     @property
     def tier(self) -> PerceptionTier:
@@ -307,11 +326,15 @@ class ContactMicBackend:
         self._b_energy.update(float(data["desk_energy"]), now)
         self._b_onset_rate.update(float(data["desk_onset_rate"]), now)
         self._b_gesture.update(data["desk_tap_gesture"], now)
+        self._b_spectral_centroid.update(float(data["desk_spectral_centroid"]), now)
+        self._b_autocorr_peak.update(float(data["desk_autocorr_peak"]), now)
 
         behaviors["desk_activity"] = self._b_activity
         behaviors["desk_energy"] = self._b_energy
         behaviors["desk_onset_rate"] = self._b_onset_rate
         behaviors["desk_tap_gesture"] = self._b_gesture
+        behaviors["desk_spectral_centroid"] = self._b_spectral_centroid
+        behaviors["desk_autocorr_peak"] = self._b_autocorr_peak
 
     def _capture_loop(self) -> None:
         """Background thread: capture audio, compute DSP, update cache."""
@@ -417,6 +440,8 @@ class ContactMicBackend:
                         desk_energy=smoothed_energy,
                         desk_onset_rate=onset_rate,
                         desk_tap_gesture=current_gesture,
+                        desk_spectral_centroid=centroid,
+                        desk_autocorr_peak=autocorr_peak,
                     )
 
                 except Exception:
