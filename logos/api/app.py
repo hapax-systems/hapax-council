@@ -163,4 +163,22 @@ async def root():
         "name": "logos-api",
         "version": "0.2.0",
         "docs": "/docs",
+        "app": "/app/",
     }
+
+
+from pathlib import Path
+
+SPA_DIR = Path(__file__).parent / "static"
+if SPA_DIR.is_dir():
+    from starlette.responses import FileResponse
+    from starlette.staticfiles import StaticFiles
+
+    @app.get("/app/{path:path}")
+    async def spa_catchall(path: str):
+        index = SPA_DIR / "index.html"
+        if index.is_file():
+            return FileResponse(index)
+        return {"error": "SPA not built"}
+
+    app.mount("/static", StaticFiles(directory=SPA_DIR), name="spa")

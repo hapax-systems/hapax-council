@@ -301,6 +301,7 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
       autoPlay
       muted
       playsInline
+      poster="/api/studio/stream/fx"
     />
   );
 }

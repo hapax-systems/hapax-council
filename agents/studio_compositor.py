@@ -161,13 +161,14 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "height": 720,
         "input_format": "mjpeg",
     },
-    {
-        "role": "c920-overhead",
-        "device": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_7B88C71F-video-index0",
-        "width": 1280,
-        "height": 720,
-        "input_format": "mjpeg",
-    },
+    # c920-overhead (serial 7B88C71F) — camera not enumerating on USB, disabled
+    # {
+    #     "role": "c920-overhead",
+    #     "device": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_7B88C71F-video-index0",
+    #     "width": 1280,
+    #     "height": 720,
+    #     "input_format": "mjpeg",
+    # },
     {
         "role": "brio-room",
         "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0",
