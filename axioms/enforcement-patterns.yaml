@@ -82,3 +82,25 @@ patterns:
       Briefings should present data, not give advice.
     false_positive_notes: >
       May be appropriate in action items. Review context.
+
+  # ── interpersonal_transparency: it-persist (T0 block) ─────────────
+  - id: out-it-persist-001
+    axiom_id: interpersonal_transparency
+    implication_id: it-persist-001
+    tier: T0
+    regex: '\b(?:(?:noted|recorded|stored|saved|logged|tracking|updating)\s+(?:that\s+)?[A-Z][a-z]+\s+(?:is|was|has|had|tends|prefers|likes|dislikes|always|never|usually))\b'
+    description: Persistent person-state without consent reference
+    false_positive_notes: >
+      May match operator self-references. Check if subject is a third party
+      and whether a consent contract is referenced nearby.
+
+  # ── corporate_boundary: cb-employer (T1 review) ───────────────────
+  - id: out-cb-employer-001
+    axiom_id: corporate_boundary
+    implication_id: cb-employer-001
+    tier: T1
+    regex: '\b(?:https?://(?:[\w-]+\.)?(?:jira|confluence|slack|teams|sharepoint|workday|servicenow|bamboohr|greenhouse|lever|namely|adp|successfactors)\.(?:com|net|io|cloud)/)\b'
+    description: Employer-system URLs in output
+    false_positive_notes: >
+      May match in documentation about corporate boundary axiom itself.
+      Check if URL is being referenced as data vs. as a rule example.
