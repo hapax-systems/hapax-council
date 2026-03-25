@@ -134,6 +134,8 @@ def _full_state(**overrides) -> FullFortressState:
                 type="Craftsdwarfs", x=10, y=10, z=-2, is_active=True, current_job="MakeCrafts"
             ),
             Workshop(type="Metalsmith", x=12, y=10, z=-2, is_active=False, current_job="idle"),
+            Workshop(type="Still", x=14, y=10, z=-2, is_active=True, current_job="idle"),
+            Workshop(type="Kitchen", x=16, y=10, z=-2, is_active=True, current_job="idle"),
         ),
         buildings=BuildingSummary(beds=30, tables=20, chairs=20, doors=40),
         wealth=WealthSummary(created=80000, exported=5000, imported=12000),
