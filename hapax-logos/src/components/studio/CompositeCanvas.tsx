@@ -411,6 +411,34 @@ export function CompositeCanvas({
       ctx.restore();
     };
 
+    let strobeTicks = 0;
+
+    const drawStrobe = (w: number, h: number) => {
+      const strobe = presetRef.current.strobe;
+      if (!strobe) return;
+
+      if (strobeTicks > 0) {
+        strobeTicks--;
+        ctx.save();
+        ctx.fillStyle = strobe.color;
+        ctx.fillRect(0, 0, w, h);
+        ctx.restore();
+      } else if (Math.random() < strobe.chance) {
+        strobeTicks = strobe.duration;
+      }
+    };
+
+    const applyCircularMask = (w: number, h: number) => {
+      if (!presetRef.current.circularMask) return;
+      const radius = Math.min(w, h) * 0.42;
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-in";
+      ctx.beginPath();
+      ctx.arc(w / 2, h / 2, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    };
+
     /**
      * Compute calibrated fade and draw alphas based on blend mode and preset params.
      * The key insight: fade and draw must reach approximate equilibrium to prevent
@@ -591,6 +619,8 @@ export function CompositeCanvas({
         }
         drawNoise(w, h);
         drawBloom(w, h);
+        drawStrobe(w, h);
+        applyCircularMask(w, h);
 
       } else {
         // --- NO TRAILS: clear and redraw every rAF tick (warp OK here) ---
@@ -599,6 +629,8 @@ export function CompositeCanvas({
         drawOverlayAndEffects(main, w, h, cachedMainFilter);
         drawNoise(w, h);
         drawBloom(w, h);
+        drawStrobe(w, h);
+        applyCircularMask(w, h);
       }
     };
 
