@@ -66,6 +66,9 @@ class VoiceConfig(BaseModel):
         "alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
     )
 
+    # Contact microphone (desk vibration sensing via PipeWire)
+    contact_mic_source: str = "Contact Microphone"
+
     # Application-level echo cancellation (speexdsp)
     aec_enabled: bool = True
     aec_tail_ms: int = 500  # 500ms covers typical room reverb (was 200ms)
