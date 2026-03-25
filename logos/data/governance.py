@@ -21,12 +21,11 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+
+from shared.config import PROFILES_DIR
 
 log = logging.getLogger(__name__)
 
-PROFILES_DIR = Path.home() / "projects" / "hapax-council" / "profiles"
-CONTRACTS_DIR = Path.home() / "projects" / "hapax-council" / "axioms" / "contracts"
 CONSENT_AUDIT = PROFILES_DIR / ".consent-audit.jsonl"
 
 

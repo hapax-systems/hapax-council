@@ -22,6 +22,14 @@ _bridge_config = BridgeConfig()
 GOVERNOR_STATE_DIR = Path("/dev/shm/hapax-fortress")
 
 
+def _read_json_or(path: Path, fallback: dict) -> dict:
+    """Read a JSON file, returning fallback on error."""
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return fallback
+
+
 def _read_state_file() -> dict | None:
     """Read raw state JSON from bridge, or None if unavailable."""
     path = _bridge_config.state_path
@@ -85,7 +93,7 @@ async def get_fortress_governance():
                 "creativity_suppression": 0.0,
             },
         }
-    return json.loads(path.read_text())
+    return _read_json_or(path, {"chains": {}, "suppression": {}})
 
 
 @router.get("/goals")
@@ -94,7 +102,7 @@ async def get_fortress_goals():
     path = GOVERNOR_STATE_DIR / "goals.json"
     if not path.exists():
         return {"goals": []}
-    return json.loads(path.read_text())
+    return _read_json_or(path, {"goals": []})
 
 
 @router.get("/metrics")
@@ -108,7 +116,9 @@ async def get_fortress_metrics():
             "total_commands": 0,
             "chain_metrics": {},
         }
-    return json.loads(path.read_text())
+    return _read_json_or(
+        path, {"session_id": None, "survival_days": 0, "total_commands": 0, "chain_metrics": {}}
+    )
 
 
 @router.get("/sessions")

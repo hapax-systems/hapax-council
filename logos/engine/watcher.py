@@ -175,10 +175,11 @@ class DirectoryWatcher:
                 if _should_skip(path):
                     continue
 
-                if path in self._own_writes:
-                    self._own_writes.discard(path)
-                    _log.debug("Ignored own-write: %s", path)
-                    continue
+                with self._lock:
+                    if path in self._own_writes:
+                        self._own_writes.discard(path)
+                        _log.debug("Ignored own-write: %s", path)
+                        continue
 
                 self._debounce(path, event_type)
             except asyncio.CancelledError:
@@ -243,8 +244,9 @@ class DirectoryWatcher:
 
     def _clear_own_write(self, path: Path) -> None:
         """Remove an own-write entry after timeout."""
-        self._own_writes.discard(path)
-        self._own_write_timers.pop(path, None)
+        with self._lock:
+            self._own_writes.discard(path)
+            self._own_write_timers.pop(path, None)
 
     async def stop(self) -> None:
         """Stop watching and clean up all timers."""

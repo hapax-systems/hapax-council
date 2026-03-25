@@ -37,6 +37,7 @@ class AgentRunManager:
         self._process: asyncio.subprocess.Process | None = None
         self._status: AgentRunStatus | None = None
         self._lock = asyncio.Lock()
+        self._task: asyncio.Task | None = None
 
     @property
     def active(self) -> AgentRunStatus | None:
@@ -138,6 +139,12 @@ class AgentRunManager:
     async def shutdown(self) -> None:
         """Cleanup on server shutdown."""
         await self.cancel()
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
 
 
 # Singleton

@@ -27,10 +27,8 @@ from shared.working_mode import WorkingMode, get_working_mode
 
 # ── Persistent Event Counters (WS2) ─────────────────────────────────────────
 
-_COUNTERS_PATH = Path("profiles/engine-counters.json")
 
-
-def _load_counters(path: Path = _COUNTERS_PATH) -> dict[str, int]:
+def _load_counters(path: Path) -> dict[str, int]:
     """Load persistent event pattern counters."""
     import json
 
@@ -40,7 +38,7 @@ def _load_counters(path: Path = _COUNTERS_PATH) -> dict[str, int]:
         return {}
 
 
-def _save_counters(counters: dict[str, int], path: Path = _COUNTERS_PATH) -> None:
+def _save_counters(counters: dict[str, int], path: Path) -> None:
     """Save persistent event pattern counters atomically."""
     import json
 
@@ -228,7 +226,8 @@ class ReactiveEngine:
         self._audit_log.cleanup()  # prune old files on startup
 
         # Persistent event pattern counters (WS2 novelty detection)
-        self._pattern_counters: dict[str, int] = _load_counters()
+        self._counters_path = self._data_dir / "engine-counters.json"
+        self._pattern_counters: dict[str, int] = _load_counters(self._counters_path)
         self._counter_save_interval = 50  # save every N events
         self._events_since_save = 0
 
@@ -331,7 +330,7 @@ class ReactiveEngine:
             self._watcher = None
 
         self._running = False
-        _save_counters(self._pattern_counters)
+        _save_counters(self._pattern_counters, self._counters_path)
         self._audit_log.close()
         _log.info("Reactive engine stopped")
 
@@ -530,5 +529,5 @@ class ReactiveEngine:
         # Periodic save
         self._events_since_save += 1
         if self._events_since_save >= self._counter_save_interval:
-            _save_counters(self._pattern_counters)
+            _save_counters(self._pattern_counters, self._counters_path)
             self._events_since_save = 0

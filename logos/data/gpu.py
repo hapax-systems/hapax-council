@@ -45,5 +45,6 @@ async def collect_vram() -> VramSnapshot | None:
         used_mb=used,
         free_mb=gpu.get("free_mb", total - used),
         usage_pct=round((used / total) * 100, 1) if total > 0 else 0.0,
+        temperature_c=gpu.get("temperature_c", 0),
         loaded_models=gpu.get("loaded_models", []),
     )
