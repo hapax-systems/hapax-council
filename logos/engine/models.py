@@ -6,8 +6,18 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import IntEnum
 from pathlib import Path
 from typing import Any
+
+
+class Phase(IntEnum):
+    """Execution phases with strict barrier semantics."""
+
+    DETERMINISTIC = 0
+    GPU = 1
+    CLOUD = 2
+
 
 # Service path patterns replicated from agents/ingest.py:403-415
 # to avoid importing heavy ingest dependencies.
@@ -66,7 +76,7 @@ class Action:
     handler: Callable[..., Awaitable[Any]]
     args: dict = field(default_factory=dict)
     priority: int = 50
-    phase: int = 0
+    phase: int | Phase = 0
     depends_on: list[str] = field(default_factory=list)
 
 
@@ -99,3 +109,18 @@ class DeliveryItem:
     source_action: str
     timestamp: datetime = field(default_factory=datetime.now)
     artifacts: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RuleSpec:
+    """Formal rule declaration with phase contract."""
+
+    id: str
+    phase: Phase
+    trigger: Callable[[ChangeEvent], bool]
+    produce: Callable[[ChangeEvent], list[Action]]
+    cooldown_s: float = 0
+    quiet_window_s: float = 0
+    doc_types: frozenset[str] = field(default_factory=frozenset)
+    directories: frozenset[str] = field(default_factory=frozenset)
+    axiom_exempt: bool = False

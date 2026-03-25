@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from logos.engine.models import Action, ActionPlan, ChangeEvent
+from logos.engine.models import Action, ActionPlan, ChangeEvent, RuleSpec
 
 _log = logging.getLogger(__name__)
 
@@ -35,10 +35,29 @@ class RuleRegistry:
 
     def __init__(self) -> None:
         self._rules: dict[str, Rule] = {}
+        self._specs: dict[str, RuleSpec] = {}
 
-    def register(self, rule: Rule) -> None:
-        """Register a rule. Overwrites any existing rule with the same name."""
-        self._rules[rule.name] = rule
+    def register(self, spec_or_rule: RuleSpec | Rule) -> None:
+        """Register a rule or RuleSpec.
+
+        RuleSpec: rejects duplicates and bridges to a legacy Rule.
+        Rule: overwrites any existing rule with the same name (legacy behavior).
+        """
+        if isinstance(spec_or_rule, RuleSpec):
+            if spec_or_rule.id in self._specs:
+                raise ValueError(f"duplicate rule ID: {spec_or_rule.id}")
+            self._specs[spec_or_rule.id] = spec_or_rule
+            # Bridge: create a legacy Rule for backward compat
+            self._rules[spec_or_rule.id] = Rule(
+                name=spec_or_rule.id,
+                description=f"[RuleSpec] {spec_or_rule.id}",
+                trigger_filter=spec_or_rule.trigger,
+                produce=spec_or_rule.produce,
+                phase=int(spec_or_rule.phase),
+                cooldown_s=spec_or_rule.cooldown_s,
+            )
+        else:
+            self._rules[spec_or_rule.name] = spec_or_rule
 
     def unregister(self, name: str) -> None:
         """Remove a rule by name. No-op if not found."""

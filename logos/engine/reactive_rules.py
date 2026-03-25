@@ -20,7 +20,7 @@ import asyncio
 import logging
 import time
 
-from logos.engine.models import Action, ChangeEvent
+from logos.engine.models import Action, ChangeEvent, Phase, RuleSpec
 from logos.engine.rules import Rule
 from shared.governance.carrier import CarrierRegistry
 from shared.telemetry import hapax_event
@@ -901,29 +901,39 @@ PHONE_HEALTH_SUMMARY_RULE = Rule(
 
 # ── Registration ────────────────────────────────────────────────────────────
 
+# ── RuleSpec conversions (Phase 0 proof of concept) ──────────────────────────
+
+COLLECTOR_REFRESH_SPEC = RuleSpec(
+    id="collector-refresh",
+    phase=Phase.DETERMINISTIC,
+    trigger=_collector_refresh_filter,
+    produce=_collector_refresh_produce,
+)
+
+CONFIG_CHANGED_SPEC = RuleSpec(
+    id="config-changed",
+    phase=Phase.DETERMINISTIC,
+    trigger=_config_changed_filter,
+    produce=_config_changed_produce,
+)
+
+SDLC_EVENT_SPEC = RuleSpec(
+    id="sdlc-event-logged",
+    phase=Phase.DETERMINISTIC,
+    trigger=_sdlc_event_filter,
+    produce=_sdlc_event_produce,
+    cooldown_s=30,
+)
+
+
+ALL_SPECS: list[RuleSpec] = [
+    COLLECTOR_REFRESH_SPEC,
+    CONFIG_CHANGED_SPEC,
+    SDLC_EVENT_SPEC,
+]
+
+
 ALL_RULES: list[Rule] = [
-    Rule(
-        name="collector-refresh",
-        description="Refresh logos cache tier when profiles/ data changes",
-        trigger_filter=_collector_refresh_filter,
-        produce=_collector_refresh_produce,
-        phase=0,
-    ),
-    Rule(
-        name="config-changed",
-        description="Log axiom registry reload on axioms/registry.yaml change",
-        trigger_filter=_config_changed_filter,
-        produce=_config_changed_produce,
-        phase=0,
-    ),
-    Rule(
-        name="sdlc-event-logged",
-        description="Notify and refresh cache on SDLC pipeline event",
-        trigger_filter=_sdlc_event_filter,
-        produce=_sdlc_event_produce,
-        phase=0,
-        cooldown_s=30,
-    ),
     RAG_SOURCE_RULE,
     AUDIO_ARCHIVE_SIDECAR_RULE,
     AUDIO_CLAP_INDEXED_RULE,
@@ -943,9 +953,16 @@ INFRASTRUCTURE_RULES = ALL_RULES
 
 def register_rules(registry) -> None:
     """Register all reactive rules on a RuleRegistry."""
+    for spec in ALL_SPECS:
+        registry.register(spec)
     for rule in ALL_RULES:
         registry.register(rule)
-    _log.info("Registered %d reactive rules", len(ALL_RULES))
+    _log.info(
+        "Registered %d reactive rules (%d specs + %d legacy)",
+        len(ALL_SPECS) + len(ALL_RULES),
+        len(ALL_SPECS),
+        len(ALL_RULES),
+    )
 
 
 # Backwards compat alias
