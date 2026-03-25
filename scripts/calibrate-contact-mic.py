@@ -117,32 +117,39 @@ class RecordingStats:
         return s[int(len(s) * 0.95)]
 
 
-def record_contact_mic(
-    duration_s: float, source_name: str = "Contact Microphone"
-) -> RecordingStats:
-    """Record from the contact mic and compute DSP stats."""
+def record_contact_mic(duration_s: float) -> RecordingStats:
+    """Record from the contact mic via PipeWire default source.
+
+    Requires: pactl set-default-source contact_mic
+    """
+    import subprocess
+
     import pyaudio
 
+    # Verify contact_mic is the default source
+    try:
+        result = subprocess.run(
+            ["pactl", "get-default-source"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        default_src = result.stdout.strip()
+        if "contact_mic" not in default_src:
+            print(f"  WARNING: Default source is '{default_src}', not contact_mic.")
+            print("  Setting default source to contact_mic...")
+            subprocess.run(["pactl", "set-default-source", "contact_mic"], timeout=5)
+    except Exception as e:
+        print(f"  WARNING: Could not verify default source: {e}")
+
     pa = pyaudio.PyAudio()
-    device_idx = None
-    for i in range(pa.get_device_count()):
-        info = pa.get_device_info_by_index(i)
-        if source_name in str(info.get("name", "")):
-            device_idx = i
-            break
 
-    if device_idx is None:
-        pa.terminate()
-        print(f"  ERROR: Contact mic source '{source_name}' not found in PipeWire.")
-        print("  Is the contact_mic PipeWire node active? Check: pw-cli ls Node | grep contact_mic")
-        sys.exit(1)
-
+    # Use default device (contact_mic set via pactl)
     stream = pa.open(
         format=pyaudio.paInt16,
         channels=1,
         rate=_SAMPLE_RATE,
         input=True,
-        input_device_index=device_idx,
         frames_per_buffer=_FFT_SIZE,
     )
 
