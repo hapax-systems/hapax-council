@@ -41,6 +41,7 @@ class DataCache:
     # Refresh timestamps (monotonic seconds)
     _fast_refreshed_at: float = 0.0
     _slow_refreshed_at: float = 0.0
+    _slow_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     async def refresh_fast(self) -> None:
         """Refresh fast-cadence data (health, GPU, infra)."""
@@ -70,8 +71,12 @@ class DataCache:
 
     async def refresh_slow(self) -> None:
         """Refresh slow-cadence data (briefing, scout, nudges, etc.)."""
-        await asyncio.to_thread(self._refresh_slow_sync)
-        self._slow_refreshed_at = time.monotonic()
+        if self._slow_lock.locked():
+            log.debug("Slow refresh already in progress, skipping")
+            return
+        async with self._slow_lock:
+            await asyncio.to_thread(self._refresh_slow_sync)
+            self._slow_refreshed_at = time.monotonic()
 
     def fast_cache_age(self) -> int:
         """Seconds since last fast refresh."""

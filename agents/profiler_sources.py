@@ -1291,3 +1291,80 @@ def read_flow_facts(
         )
 
     return facts
+
+
+# ── Correction facts bridge ─────────────────────────────────────────────────
+
+
+def read_correction_facts(days_back: int = 30) -> list[dict]:
+    """Extract profile facts from operator corrections in Qdrant.
+
+    Queries the operator-corrections collection for recent entries,
+    aggregates by dimension, and produces structured profile facts when
+    a minimum threshold (n >= 2) is met. Zero LLM cost.
+
+    Returns empty list when Qdrant is unavailable or no corrections exist.
+    """
+    try:
+        from qdrant_client.models import FieldCondition, Filter, Range
+
+        from shared.config import get_qdrant
+    except ImportError:
+        return []
+
+    cutoff = datetime.now(tz=UTC) - timedelta(days=days_back)
+    cutoff_ts = cutoff.timestamp()
+
+    try:
+        client = get_qdrant()
+        results, _ = client.scroll(
+            collection_name="operator-corrections",
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="timestamp",
+                        range=Range(gte=cutoff_ts),
+                    )
+                ]
+            ),
+            limit=200,
+        )
+    except Exception:
+        log.debug("Could not read operator-corrections from Qdrant", exc_info=True)
+        return []
+
+    if not results:
+        return []
+
+    # Aggregate by dimension
+    corrections_by_dim: dict[str, list[dict]] = {}
+    for point in results:
+        payload = point.payload or {}
+        dim = payload.get("dimension", "other")
+        corrections_by_dim.setdefault(dim, []).append(payload)
+
+    facts: list[dict] = []
+    source = f"corrections:{days_back}d"
+
+    for dim, corrections in corrections_by_dim.items():
+        n = len(corrections)
+        if n < 2:
+            continue
+
+        # Summarize the correction pattern
+        originals = [c.get("original_value", "?") for c in corrections[:5]]
+        corrected = [c.get("corrected_value", "?") for c in corrections[:5]]
+        pattern = "; ".join(f"{o}→{c}" for o, c in zip(originals, corrected, strict=True))
+
+        facts.append(
+            {
+                "key": f"correction.{dim}.frequency",
+                "value": f"{n} corrections in {days_back}d for {dim} classification",
+                "dimension": "energy_and_attention",
+                "confidence": min(0.8, n / 20),
+                "source": source,
+                "evidence": f"{n} corrections for {dim}: {pattern}",
+            }
+        )
+
+    return facts

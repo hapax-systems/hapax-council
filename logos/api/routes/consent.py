@@ -180,7 +180,7 @@ async def trace_consent(
 
         registry = load_contracts()
         for contract_id in provenance_data:
-            contract = registry._contracts.get(contract_id)
+            contract = registry.get(contract_id)
             if contract:
                 contracts.append(
                     {
@@ -264,7 +264,7 @@ async def list_contracts() -> dict:
 
         registry = load_contracts()
         contracts = []
-        for _cid, contract in registry._contracts.items():
+        for contract in registry:
             contracts.append(
                 {
                     "id": contract.id,

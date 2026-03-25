@@ -135,7 +135,7 @@ class TestEngineCodeIntegrity:
     def test_engine_saves_on_stop(self):
         source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"
         text = source.read_text()
-        assert "_save_counters(self._pattern_counters)" in text
+        assert "_save_counters(self._pattern_counters" in text
 
     def test_counter_functions_match_engine(self):
         """Verify our test replicas match the engine source."""

@@ -90,14 +90,17 @@ async def run_agent(name: str, req: AgentRunRequest):
         raise HTTPException(status_code=409, detail=str(e)) from None
 
     async def event_generator():
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            yield {
-                "event": event["event"],
-                "data": json.dumps(event["data"]),
-            }
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield {
+                    "event": event["event"],
+                    "data": json.dumps(event["data"]),
+                }
+        finally:
+            await agent_run_manager.cancel()
 
     return EventSourceResponse(event_generator())
 

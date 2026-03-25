@@ -60,7 +60,7 @@ def evaluate_rules(event: ChangeEvent, registry: RuleRegistry) -> ActionPlan:
     seen_names: set[str] = set()
 
     for rule in registry:
-        # Check cooldown (atomic check-and-set under lock)
+        # Check cooldown under lock (pure in-memory check)
         with rule._lock:
             if rule.cooldown_s > 0:
                 elapsed = time.monotonic() - rule._last_fired
@@ -72,19 +72,25 @@ def evaluate_rules(event: ChangeEvent, registry: RuleRegistry) -> ActionPlan:
                     )
                     continue
 
-            try:
-                if not rule.trigger_filter(event):
-                    continue
-            except (ValueError, KeyError, TypeError, OSError):
-                _log.exception("Exception in trigger_filter for rule %s", rule.name)
+        # I/O outside lock — trigger_filter and produce may read filesystem
+        try:
+            if not rule.trigger_filter(event):
                 continue
+        except (ValueError, KeyError, TypeError, OSError):
+            _log.exception("Exception in trigger_filter for rule %s", rule.name)
+            continue
 
-            try:
-                actions = rule.produce(event)
-            except (ValueError, KeyError, TypeError, OSError):
-                _log.exception("Exception in produce for rule %s", rule.name)
-                continue
+        try:
+            actions = rule.produce(event)
+        except (ValueError, KeyError, TypeError, OSError):
+            _log.exception("Exception in produce for rule %s", rule.name)
+            # Update cooldown even on failure to prevent unbounded retry
+            with rule._lock:
+                rule._last_fired = time.monotonic()
+            continue
 
+        # Update cooldown after successful production
+        with rule._lock:
             rule._last_fired = time.monotonic()
 
         for action in actions:

@@ -985,9 +985,16 @@ def load_structured_facts() -> list[ProfileFact]:
             pass
 
     # Flow journal facts (deterministic bridge)
-    from agents.profiler_sources import read_flow_facts
+    from agents.profiler_sources import read_correction_facts, read_flow_facts
 
     for item in read_flow_facts():
+        try:
+            facts.append(ProfileFact.model_validate(item))
+        except Exception:
+            pass
+
+    # Operator correction facts (deterministic bridge — mines Qdrant corrections)
+    for item in read_correction_facts():
         try:
             facts.append(ProfileFact.model_validate(item))
         except Exception:

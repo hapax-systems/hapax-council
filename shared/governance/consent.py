@@ -40,6 +40,8 @@ class ConsentContract:
     visibility_mechanism: str = "on_request"
     created_at: str = ""
     revoked_at: str | None = None
+    principal_class: str = ""  # "child" for minors (guardian-mediated consent)
+    guardian: str | None = None  # guardian principal ID (e.g., "operator")
 
     @property
     def active(self) -> bool:
@@ -87,6 +89,14 @@ class ConsentRegistry:
                 log.exception("Failed to load contract from %s", path)
 
         return count
+
+    def get(self, contract_id: str) -> ConsentContract | None:
+        """Return a contract by ID, or None."""
+        return self._contracts.get(contract_id)
+
+    def __iter__(self):
+        """Iterate over all contracts."""
+        return iter(self._contracts.values())
 
     def contract_check(self, person_id: str, data_category: str) -> bool:
         """Check whether an active contract permits this data flow.
@@ -137,6 +147,8 @@ class ConsentRegistry:
                     visibility_mechanism=contract.visibility_mechanism,
                     created_at=contract.created_at,
                     revoked_at=datetime.now().isoformat(),
+                    principal_class=contract.principal_class,
+                    guardian=contract.guardian,
                 )
                 self._contracts[contract_id] = revoked_contract
                 revoked.append(contract_id)
@@ -179,7 +191,7 @@ class ConsentRegistry:
         directory = contracts_dir or _CONTRACTS_DIR
         directory.mkdir(parents=True, exist_ok=True)
         contract_path = directory / f"{cid}.yaml"
-        contract_data = {
+        contract_data: dict[str, Any] = {
             "id": contract.id,
             "parties": list(contract.parties),
             "scope": sorted(contract.scope),
@@ -187,6 +199,10 @@ class ConsentRegistry:
             "visibility_mechanism": contract.visibility_mechanism,
             "created_at": contract.created_at,
         }
+        if contract.principal_class:
+            contract_data["principal_class"] = contract.principal_class
+        if contract.guardian:
+            contract_data["guardian"] = contract.guardian
         contract_path.write_text(yaml.dump(contract_data, default_flow_style=False))
         log.info("Created consent contract %s for %s at %s", cid, person_id, contract_path)
 
@@ -213,7 +229,24 @@ def _parse_contract(data: dict[str, Any]) -> ConsentContract:
         visibility_mechanism=data.get("visibility_mechanism", "on_request"),
         created_at=data.get("created_at", ""),
         revoked_at=data.get("revoked_at"),
+        principal_class=data.get("principal_class", ""),
+        guardian=data.get("guardian"),
     )
+
+
+def is_child_principal(person_id: str, registry: ConsentRegistry | None = None) -> bool:
+    """Check if a person is a registered child principal.
+
+    Checks both the hardcoded REGISTERED_CHILD_PRINCIPALS set and the
+    principal_class field on active contracts.
+    """
+    if person_id in REGISTERED_CHILD_PRINCIPALS:
+        return True
+    if registry is not None:
+        contract = registry.get_contract_for(person_id)
+        if contract is not None and contract.principal_class == "child":
+            return True
+    return False
 
 
 def load_contracts(contracts_dir: Path | None = None) -> ConsentRegistry:

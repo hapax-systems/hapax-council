@@ -374,13 +374,14 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
 
         # Security: reject shell metacharacters that could bypass the allowlist
         # Allow pipes/redirects for simple composition, but block command chaining
-        for dangerous in ("&&", "||", ";", "`", "$(", "${", "\n"):
+        for dangerous in ("&&", "||", ";", "`", "$(", "${", "\n", "|", ">", "<"):
             if dangerous in cmd:
                 return f"Command rejected: shell operator '{dangerous}' not allowed."
 
         try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
+            parts = shlex.split(cmd)
+            proc = await asyncio.create_subprocess_exec(
+                *parts,
                 cwd=str(ctx.deps.project_dir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,

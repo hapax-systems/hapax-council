@@ -107,7 +107,7 @@ def _engine_status(request: Request) -> dict:
 
 
 @router.get("/state")
-def get_flow_state(request: Request) -> dict:
+async def get_flow_state(request: Request) -> dict:
     """Return unified system flow state for the anatomy visualization."""
     now = time.time()
     nodes = []

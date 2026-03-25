@@ -369,6 +369,9 @@ class ContentScheduler:
         """Derive display density from context + temporal trends + stimmung."""
         if ctx.activity in ("in a meeting", "presenting"):
             return DisplayDensity.PRESENTING
+        # Voice conversation active → minimal ambient injection
+        if ctx.voice_active:
+            return DisplayDensity.PRESENTING
         # WS2: stressed system → quiet down
         if ctx.stimmung_stance in ("degraded", "critical"):
             return DisplayDensity.PRESENTING

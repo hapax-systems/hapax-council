@@ -122,7 +122,7 @@ def collect_cost_trend(days: int = 14) -> CostTrend:
 
     now = datetime.now(UTC)
     from_time = (now - timedelta(days=days)).isoformat()
-    week_boundary = (now - timedelta(days=7)).isoformat()
+    week_boundary = now - timedelta(days=7)
 
     agent_costs: dict[str, float] = {}
     agent_counts: dict[str, int] = {}
@@ -152,7 +152,11 @@ def collect_cost_trend(days: int = 14) -> CostTrend:
                 continue
 
             start_time = obs.get("startTime") or ""
-            if start_time >= week_boundary:
+            try:
+                obs_dt = datetime.fromisoformat(start_time)
+            except (ValueError, TypeError):
+                continue
+            if obs_dt >= week_boundary:
                 this_week += cost
             else:
                 last_week += cost
