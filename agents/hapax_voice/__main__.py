@@ -207,6 +207,7 @@ class VoiceDaemon:
 
         # Register perception backends (availability-gated)
         self._register_perception_backends()
+        self._setup_tap_governance()
 
         # Perception events (Phase 2 extension points)
         self.wake_word_event: Event[None] = Event()
@@ -704,6 +705,28 @@ class VoiceDaemon:
                 log.warning("PresenceEngine not available, skipping", exc_info=True)
         else:
             self._presence_engine = None
+
+    # ------------------------------------------------------------------
+    # Tap gesture dispatch
+    # ------------------------------------------------------------------
+
+    def _setup_tap_governance(self) -> None:
+        """Wire tap gesture dispatch — double-tap toggles session, triple-tap scans."""
+        self._prev_tap_gesture = "none"
+
+    def _check_tap_gesture(self) -> None:
+        """Called from perception tick. Checks for gesture transitions."""
+        gesture_behavior = self.perception.behaviors.get("desk_tap_gesture")
+        if gesture_behavior is None:
+            return
+
+        gesture = gesture_behavior.value
+        if gesture != "none" and gesture != self._prev_tap_gesture:
+            cmd = {"double_tap": "toggle", "triple_tap": "scan"}.get(gesture)
+            if cmd is not None:
+                log.info("Tap gesture detected: %s → hotkey %s", gesture, cmd)
+                asyncio.run_coroutine_threadsafe(self._handle_hotkey(cmd), self._loop)
+        self._prev_tap_gesture = gesture
 
     # ------------------------------------------------------------------
     # Wake word engine selection
@@ -1860,6 +1883,7 @@ class VoiceDaemon:
 
                 # Fast tick: read sensors, produce EnvironmentState
                 state = self.perception.tick()
+                self._check_tap_gesture()
 
                 # Governor: evaluate state → directive
                 directive = self.governor.evaluate(state)
@@ -2048,6 +2072,7 @@ class VoiceDaemon:
     async def _run_inner(self) -> None:
         """Inner run loop — executes within consent_scope context."""
         log.info("Hapax Voice daemon starting (backend=%s)", self.cfg.backend)
+        self._loop = asyncio.get_running_loop()
 
         # Start hotkey server
         await self.hotkey.start()
