@@ -97,6 +97,48 @@ process-compose attach       # attach to running instance
 
 See `process-compose.yaml` (development only, not in boot chain).
 
+## Storage Management
+
+Three automated systems prevent disk exhaustion:
+
+### Video Retention (`video-retention.timer` — every 15min)
+
+Manages `~/video-recording/` (6 cameras, ~6GB/day). Two-phase lifecycle:
+1. **Unprocessed** files: kept for 12h (pipeline should ingest during this window)
+2. **Processed** files (`.processed` sidecar): deleted after 6h
+
+Disk pressure override — tiered response:
+
+| Root Usage | Retention Window | Mode |
+|------------|-----------------|------|
+| < 85% | 12h | Normal |
+| 85-94% | 6h | Pressure |
+| 95-96% | 3h | Critical |
+| 97%+ | 1h | Emergency |
+
+Also sweeps `~/.cache/hapax/tmp-wav/` for leaked audio temp files (>5min old) and kills orphan `pacat --record` processes when >2 concurrent.
+
+### Cache Cleanup (`cache-cleanup.timer` — weekly Sun 03:00)
+
+Prunes reproducible caches: Docker build cache (168h+), dangling images, uv cache, pacman cache, stale worktree `.venv` dirs (7d+), leaked wav files in `/tmp` and `~/.cache/hapax/tmp-wav/`, Chrome crash reports, `__pycache__` (7d+), perception logs (7d), systemd journal (7d).
+
+### Backups (two tiers)
+
+| Tier | Timer | Destination | Tool |
+|------|-------|-------------|------|
+| Local | `hapax-backup-local.timer` daily 03:00 | `/data/backups/restic` | restic |
+| Remote | `hapax-backup-remote.timer` Wed 04:00 | `rclone:b2:hapax-backups/restic` | restic + rclone → Backblaze B2 |
+
+Both tiers back up: PostgreSQL dumps, Qdrant snapshots, n8n workflows, Docker volume metadata, git bundles, systemd configs, user configs, LLM stack, system files.
+
+Secrets: local password in `pass show backups/restic-password`, remote in `pass show backblaze/restic-password`.
+
+### Known Leak Sources
+
+- **pacat --record**: Voice daemon's audio capture backends spawn `pacat` subprocesses that can orphan on crash/OOM. Each writes an unbounded WAV file (~7GB before detection). Mitigated by video-retention sweep (15min) and cache-cleanup.
+- **Studio compositor**: Single-file recording (no segmentation) can occur if GStreamer `splitmuxsink` fails to split. Mitigated by segment_seconds config and retention timer.
+- **Claude Code task output**: Background task output in `/tmp/claude-1000/` can grow unbounded. Not automatically cleaned — monitor `/tmp` usage.
+
 ## Recovery
 
 The system is configured for 24/7 unattended operation:
