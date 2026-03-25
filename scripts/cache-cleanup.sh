@@ -57,7 +57,32 @@ rm -rf /home/hapax/.config/google-chrome/GrShaderCache/ 2>/dev/null || true
 # 7. Python __pycache__ cleanup (stale bytecode from old code)
 find /home/hapax/projects -name "__pycache__" -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
 
-# 8. Systemd journal vacuum (keep 7 days)
+# 8. Perception minutes log — keep 7 days
+PERCEPTION_LOG="$HOME/.cache/hapax-voice/perception-minutes.jsonl"
+if [ -f "$PERCEPTION_LOG" ]; then
+    cutoff=$(date -d "7 days ago" +%s)
+    before_lines=$(wc -l < "$PERCEPTION_LOG")
+    # Keep lines with timestamp >= cutoff (JSON field "timestamp")
+    python3 -c "
+import json, sys
+cutoff = float(sys.argv[1])
+kept = 0
+for line in open(sys.argv[2]):
+    try:
+        if json.loads(line).get('timestamp', 0) >= cutoff:
+            sys.stdout.write(line)
+            kept += 1
+    except (json.JSONDecodeError, ValueError):
+        pass
+" "$cutoff" "$PERCEPTION_LOG" > "${PERCEPTION_LOG}.tmp" && mv "${PERCEPTION_LOG}.tmp" "$PERCEPTION_LOG"
+    after_lines=$(wc -l < "$PERCEPTION_LOG")
+    pruned=$((before_lines - after_lines))
+    if [ "$pruned" -gt 0 ]; then
+        log "Pruned $pruned old perception minute entries (kept $after_lines)"
+    fi
+fi
+
+# 9. Systemd journal vacuum (keep 7 days)
 journalctl --user --vacuum-time=7d >/dev/null 2>&1 || true
 sudo journalctl --vacuum-time=7d >/dev/null 2>&1 || true
 

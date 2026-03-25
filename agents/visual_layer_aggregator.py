@@ -35,7 +35,7 @@ from agents.protention_engine import ProtentionEngine
 from agents.temporal_bands import TemporalBandFormatter
 from agents.temporal_delta import compute_temporal_delta
 from agents.temporal_filter import ClassificationFilter
-from agents.temporal_scales import MultiScaleAggregator
+from agents.temporal_scales import MinuteSummary, MultiScaleAggregator
 from agents.visual_layer_state import (
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
@@ -85,6 +85,8 @@ TEMPORAL_FILE = TEMPORAL_DIR / "bands.json"
 WATERSHED_FILE = OUTPUT_DIR / "watershed-events.json"
 
 # ── Stimmung data source paths ─────────────────────────────────────────────
+
+PERCEPTION_MINUTES_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-minutes.jsonl"
 
 HEALTH_HISTORY_PATH = Path("profiles/health-history.jsonl")
 INFRA_SNAPSHOT_PATH = Path("profiles/infra-snapshot.json")
@@ -439,6 +441,21 @@ def map_stimmung(stimmung: SystemStimmung) -> list[SignalEntry]:
             )
         )
     return signals
+
+
+def _persist_minute(minute: MinuteSummary) -> None:
+    """Append a MinuteSummary to the perception-minutes JSONL log.
+
+    Used by the video processor to make perception-informed archival decisions
+    for video segments recorded during this minute.
+    """
+    try:
+        PERCEPTION_MINUTES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with PERCEPTION_MINUTES_PATH.open("a", encoding="utf-8") as f:
+            f.write(minute.model_dump_json() + "\n")
+            f.flush()
+    except OSError as exc:
+        log.warning("Failed to persist minute summary: %s", exc)
 
 
 def _map_scene_inventory(data: dict) -> list[ClassificationDetection]:
@@ -1053,7 +1070,9 @@ class VisualLayerAggregator:
                 )
 
             # WS1: feed multi-scale aggregator
-            self._multi_scale.tick(data)
+            minute = self._multi_scale.tick(data)
+            if minute is not None:
+                _persist_minute(minute)
 
             # WS1: feed protention engine with best available activity
             # Precedence: workspace monitor > LLM classification > empty

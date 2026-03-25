@@ -63,6 +63,7 @@ VIDEO_DIR = Path.home() / "video-recording"
 CACHE_DIR = Path.home() / ".cache" / "video-processor"
 STATE_FILE = CACHE_DIR / "state.json"
 CHANGES_LOG = CACHE_DIR / "changes.jsonl"
+PERCEPTION_MINUTES_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-minutes.jsonl"
 
 from shared.cameras import CAMERA_ROLES
 
@@ -241,8 +242,7 @@ def _find_unprocessed_segments(state: VideoProcessorState) -> list[Path]:
     segments: list[Path] = []
     now = time.time()
 
-    for role in CAMERA_ROLES:
-        role_dir = VIDEO_DIR / role
+    for role_dir in sorted(VIDEO_DIR.iterdir()):
         if not role_dir.is_dir():
             continue
         for mkv in role_dir.glob("*.mkv"):
@@ -489,7 +489,155 @@ def _compute_ssim(frame_paths: list[Path]) -> float:
     return float(np.clip(ssim, 0.0, 1.0))
 
 
-# ── Classification Pipeline ─────────────────────────────────────────────────
+# ── Perception-Informed Classification ──────────────────────────────────────
+
+
+def _parse_segment_timestamp(filename: str) -> float | None:
+    """Parse Unix timestamp from segment filename.
+
+    Format: {role}_{YYYYMMDD-HHMMSS}_{fragment:04d}.mkv
+    """
+    try:
+        parts = filename.rsplit(".", 1)[0].split("_")
+        if len(parts) >= 2:
+            dt = datetime.strptime(parts[1], "%Y%m%d-%H%M%S").replace(tzinfo=UTC)
+            return dt.timestamp()
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def _read_perception_minutes(start_ts: float, end_ts: float) -> list[dict]:
+    """Read perception minute entries covering [start_ts, end_ts]."""
+    if not PERCEPTION_MINUTES_PATH.exists():
+        return []
+    entries = []
+    for line in PERCEPTION_MINUTES_PATH.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+            ts = entry.get("timestamp", 0)
+            if start_ts <= ts <= end_ts:
+                entries.append(entry)
+        except json.JSONDecodeError:
+            continue
+    return entries
+
+
+def _perception_mode(values: list[str]) -> str:
+    """Return the most common non-empty string value."""
+    counts: dict[str, int] = {}
+    for v in values:
+        if v:
+            counts[v] = counts.get(v, 0) + 1
+    if not counts:
+        return ""
+    return max(counts, key=counts.get)  # type: ignore[arg-type]
+
+
+def _aggregate_perception_minutes(minutes: list[dict]) -> dict:
+    """Aggregate perception minute summaries over a segment window."""
+    n = len(minutes)
+    return {
+        "operator_present": any(m.get("operator_present", False) for m in minutes),
+        "operator_present_ratio": sum(1 for m in minutes if m.get("operator_present")) / n,
+        "person_count_max": max((m.get("person_count_max", 0) for m in minutes), default=0),
+        "flow_score_mean": sum(m.get("flow_mean", 0) for m in minutes) / n,
+        "flow_score_peak": max((m.get("flow_mean", 0) for m in minutes), default=0),
+        "activity_mode": _perception_mode([m.get("activity", "") for m in minutes]),
+        "audio_energy_mean": sum(m.get("audio_mean", 0) for m in minutes) / n,
+        "voice_active": any(m.get("voice_active", False) for m in minutes),
+        "consent_phase": _perception_mode([m.get("consent_phase", "no_guest") for m in minutes])
+        or "no_guest",
+        "stress_elevated": any(m.get("stress_elevated", False) for m in minutes),
+        "hr_mean": sum(m.get("hr_mean", 0) for m in minutes) / n,
+        "activity_changed": len(set(m.get("activity", "") for m in minutes if m.get("activity")))
+        > 1,
+    }
+
+
+def _classify_from_perception(agg: dict) -> SegmentClassification:
+    """Score a segment using aggregated perception minute data."""
+    person_count = agg["person_count_max"]
+    present = agg["operator_present"]
+    present_ratio = agg["operator_present_ratio"]
+    activity = agg["activity_mode"]
+    flow_mean = agg["flow_score_mean"]
+    flow_peak = agg["flow_score_peak"]
+    consent = agg["consent_phase"]
+    activity_changed = agg["activity_changed"]
+
+    if person_count > 1 and consent == "consent_granted":
+        category = "conversation"
+        score = 0.8
+    elif present and activity == "producing" and flow_peak > 0.5:
+        category = "production_session"
+        score = 1.0
+    elif present and activity in ("coding", "meeting", "producing") and flow_mean > 0.3:
+        category = "active_work"
+        score = 0.6
+    elif present and present_ratio > 0.3:
+        category = "idle_occupied"
+        score = 0.3
+    else:
+        category = "empty_room"
+        score = 0.0
+
+    # Activity transition bonus
+    if activity_changed and score > 0:
+        score = min(1.0, score + 0.1)
+
+    # Voice session bonus
+    if agg["voice_active"] and score > 0:
+        score = min(1.0, score + 0.1)
+
+    return SegmentClassification(
+        category=category,
+        value_score=round(score, 2),
+        people_count=person_count,
+        max_people=person_count,
+        motion_score=round(agg.get("audio_energy_mean", 0.0), 4),
+        scene_change=activity_changed,
+        ssim=round(1.0 - agg.get("audio_energy_mean", 0.0), 4),
+    )
+
+
+def _classify_segment_dispatch(segment_path: Path) -> SegmentClassification:
+    """Classify a segment using perception data, falling back to haar cascades.
+
+    Reads the perception-minutes.jsonl log for the segment's 5-minute time
+    window. If perception data covers the window, classification is based on
+    operator presence, activity mode, flow state, and person count from the
+    real-time perception system (YOLO, MediaPipe, Bayesian presence).
+
+    Falls back to the original haar cascade pipeline when perception data is
+    unavailable (e.g., daemon was restarting during the segment's recording).
+    """
+    ts = _parse_segment_timestamp(segment_path.name)
+    if ts is not None:
+        minutes = _read_perception_minutes(ts, ts + 300)
+        if minutes:
+            agg = _aggregate_perception_minutes(minutes)
+            classification = _classify_from_perception(agg)
+            log.info(
+                "Perception-classified %s: %s (score=%.2f, present=%.0f%%, "
+                "activity=%s, flow=%.2f, people=%d)",
+                segment_path.name,
+                classification.category,
+                classification.value_score,
+                agg["operator_present_ratio"] * 100,
+                agg["activity_mode"],
+                agg["flow_score_mean"],
+                agg["person_count_max"],
+            )
+            return classification
+    # Fallback: original haar cascade pipeline
+    log.info("No perception data for %s — falling back to haar cascades", segment_path.name)
+    return _classify_segment(segment_path)
+
+
+# ── Haar Cascade Classification Pipeline (fallback) ───────────────────────
 
 
 def _classify_segment(segment_path: Path) -> SegmentClassification:
@@ -666,9 +814,9 @@ def _process_segment(
 
     log.info("Processing %s (role=%s)", filename, role)
 
-    # Classify
+    # Classify — perception-informed with haar cascade fallback
     try:
-        classification = _classify_segment(segment_path)
+        classification = _classify_segment_dispatch(segment_path)
     except Exception as exc:
         log.error("Classification failed for %s: %s", filename, exc)
         return ProcessedSegmentInfo(

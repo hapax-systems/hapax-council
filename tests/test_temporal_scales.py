@@ -18,6 +18,10 @@ def _snap(
     flow_score: float = 0.5,
     audio: float = 0.01,
     hr: int = 70,
+    presence: str = "PRESENT",
+    person_count: int = 1,
+    consent_phase: str = "no_guest",
+    stress: bool = False,
 ) -> dict:
     return {
         "timestamp": ts,
@@ -27,6 +31,10 @@ def _snap(
         "audio_energy_rms": audio,
         "heart_rate_bpm": hr,
         "voice_session": {"active": False},
+        "presence_state": presence,
+        "person_count": person_count,
+        "consent_phase": consent_phase,
+        "stress_elevated": stress,
     }
 
 
@@ -83,6 +91,46 @@ class TestMinuteBuffer:
         result = buf.tick(_snap(ts=165))
         assert result is not None
         assert result.voice_active is True
+
+    def test_operator_present(self):
+        buf = MinuteBuffer()
+        buf.tick(_snap(ts=100, presence="PRESENT"))
+        buf.tick(_snap(ts=130, presence="AWAY"))
+        result = buf.tick(_snap(ts=165))
+        assert result is not None
+        assert result.operator_present is True  # any PRESENT in minute
+
+    def test_operator_absent(self):
+        buf = MinuteBuffer()
+        buf.tick(_snap(ts=100, presence="AWAY"))
+        buf.tick(_snap(ts=130, presence="AWAY"))
+        result = buf.tick(_snap(ts=165))
+        assert result is not None
+        assert result.operator_present is False
+
+    def test_person_count_max(self):
+        buf = MinuteBuffer()
+        buf.tick(_snap(ts=100, person_count=1))
+        buf.tick(_snap(ts=130, person_count=3))
+        result = buf.tick(_snap(ts=165))
+        assert result is not None
+        assert result.person_count_max == 3
+
+    def test_consent_phase(self):
+        buf = MinuteBuffer()
+        buf.tick(_snap(ts=100, consent_phase="consent_granted"))
+        buf.tick(_snap(ts=130, consent_phase="consent_granted"))
+        result = buf.tick(_snap(ts=165))
+        assert result is not None
+        assert result.consent_phase == "consent_granted"
+
+    def test_stress_elevated(self):
+        buf = MinuteBuffer()
+        buf.tick(_snap(ts=100, stress=False))
+        buf.tick(_snap(ts=130, stress=True))
+        result = buf.tick(_snap(ts=165))
+        assert result is not None
+        assert result.stress_elevated is True
 
 
 # ── SessionBuffer Tests ──────────────────────────────────────────────────────
@@ -193,6 +241,18 @@ class TestMultiScaleAggregator:
         assert "<temporal_scales>" in xml
         assert "</temporal_scales>" in xml
         assert "coding" in xml
+
+    def test_tick_returns_minute_summary(self):
+        agg = MultiScaleAggregator()
+        # First ticks return None
+        assert agg.tick(_snap(ts=100)) is None
+        assert agg.tick(_snap(ts=130)) is None
+        # Tick past 60s returns MinuteSummary
+        result = agg.tick(_snap(ts=165))
+        assert result is not None
+        assert isinstance(result, MinuteSummary)
+        assert result.activity == "coding"
+        assert result.operator_present is True
 
     def test_format_xml_empty(self):
         agg = MultiScaleAggregator()

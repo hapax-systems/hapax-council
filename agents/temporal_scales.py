@@ -39,6 +39,11 @@ class MinuteSummary(BaseModel, frozen=True):
     hr_mean: float = 0.0
     snapshot_count: int = 0
     voice_active: bool = False
+    # Perception-informed classification fields
+    operator_present: bool = False
+    person_count_max: int = 0
+    consent_phase: str = "no_guest"
+    stress_elevated: bool = False
 
 
 class MinuteBuffer:
@@ -111,6 +116,14 @@ class MinuteBuffer:
             if isinstance(s.get("voice_session"), dict)
         )
 
+        # Perception-informed classification fields
+        operator_present = any(s.get("presence_state", "") == "PRESENT" for s in snaps)
+        person_counts = [int(s.get("person_count", 0)) for s in snaps]
+        person_count_max = max(person_counts) if person_counts else 0
+        consent_phases = [s.get("consent_phase", "no_guest") for s in snaps]
+        consent_phase = _mode(consent_phases) or "no_guest"
+        stress_elevated = any(s.get("stress_elevated", False) for s in snaps)
+
         summary = MinuteSummary(
             timestamp=self._minute_start,
             activity=activity,
@@ -120,6 +133,10 @@ class MinuteBuffer:
             hr_mean=round(hr_mean, 1),
             snapshot_count=len(snaps),
             voice_active=voice_active,
+            operator_present=operator_present,
+            person_count_max=person_count_max,
+            consent_phase=consent_phase,
+            stress_elevated=stress_elevated,
         )
         self._summaries.append(summary)
         return summary
@@ -285,11 +302,15 @@ class MultiScaleAggregator:
         self._minute_buffer = MinuteBuffer()
         self._session_buffer = SessionBuffer()
 
-    def tick(self, snapshot: dict[str, Any]) -> None:
-        """Feed a perception snapshot through all scales."""
+    def tick(self, snapshot: dict[str, Any]) -> MinuteSummary | None:
+        """Feed a perception snapshot through all scales.
+
+        Returns the MinuteSummary when a minute boundary is crossed, None otherwise.
+        """
         minute = self._minute_buffer.tick(snapshot)
         if minute is not None:
             self._session_buffer.observe(minute)
+        return minute
 
     def context(self) -> MultiScaleContext:
         """Build the current multi-scale context."""
