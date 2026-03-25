@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-24 (session 16 — langfuse-sync timeout fix + documentation update)
+**Last updated:** 2026-03-25 (session 17 — perceptual system hardening, 20 fixes across 6 subsystems)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -338,6 +338,46 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 **Documentation updates:**
 - Added `CONTEXT-AS-COMPUTATION.md` and `dwarf-fortress-ai-game-state-research.md` to RESEARCH-INDEX.md (were on disk but not indexed)
 - Updated RESEARCH-STATE.md with session 16
+
+## Session 17 (2026-03-25): Perceptual System Hardening
+
+Infrastructure-only. No changes to experiment code, grounding theory, or research design.
+
+**Comprehensive perceptual system review and hardening (PR #322, merged).** Full correctness, consistency, and robustness audit of the perception–stimmung–apperception–visual-layer–GQI stack. 20 verified issues fixed across 6 batches (6 critical, 6 high, 5 moderate, 3 new findings discovered during research). 58 new tests added (239→297 total).
+
+**Critical fixes (silent wrong results):**
+- C1: Per-class stance thresholds — biometric dims can now reach DEGRADED (0.5× weight, threshold 0.40), cognitive reach CAUTIOUS (0.3× weight, threshold 0.15). Previously both structurally capped at CAUTIOUS regardless of raw severity.
+- C2: WS3 stores (episode, correction, pattern) retry up to 5× at 60s intervals on Qdrant failure. Previously permanently disabled after single failure at startup.
+- C3: Centered timestamps in `trend()` regression — fixes catastrophic float64 cancellation with POSIX timestamps (~1.7e9). Slope calculations were returning garbage.
+- C4: Relaxed apperception retention gate — depth-4 events with high relevance (>0.5) AND strong valence (>0.3) now retained. Previously ~95% of events silently discarded.
+- C5: Rumination breaker uses actual computed valence instead of fixed -0.1 sentinel. All sources now participate in rumination tracking.
+- C6: Temporal file read once per apperception tick — prevents contradictory surprise+absence events from atomic file replacement between two reads.
+
+**High fixes (correctness with practical impact):**
+- H1: Safe int/float casts + fallback write in perception state writer (prevents stale state on non-numeric behavior values)
+- H2: `replace_backend` checks availability before stopping old backend (prevents behavior orphaning)
+- H4: Thread-safe deque for supplementary content
+- H5: Event.emit() snapshots subscriber list (prevents callback skip on self-unsubscribe)
+- H6: Fixed dead `readiness="collecting"` state (boolean flag instead of impossible float comparison)
+- H7: Simplified IGNORE grounding branch (removed dead threshold comparison)
+
+**Moderate fixes (design issues, latent risks):**
+- M1: Epoch counter on /dev/shm files for cross-file consistency detection
+- M2: _infer_activity() uses cached perception data instead of re-reading disk
+- M3: Snapshot isolation for phenomenal context render() — all files read once at entry
+- M4: De-escalation timer no longer reset on same-state ticks (enables proper cooldown expiry)
+- M5: Effort hold counter preserved on same-rank turns (enables proper de-escalation)
+- M6: 3s PERFORMATIVE exit hysteresis against ALERT signals
+
+**New findings discovered during research:**
+- N1: circadian_alignment now written to perception-state.json (was always default 0.5)
+- N2: Stimmung serialized timestamp uses wall-clock time (was monotonic — cross-process comparison bomb)
+- N3: Type-safe behavior accessors (_fval/_sval/_boolval/_optval replace untyped _bval)
+
+**Spec:** `docs/superpowers/specs/2026-03-24-perceptual-system-hardening.md`
+**Plan:** `docs/superpowers/plans/2026-03-24-perceptual-system-hardening.md`
+
+**Impact on grounding research:** H7 simplifies IGNORE acceptance path (concern_overlap only). M5 fixes effort de-escalation hysteresis (was never reaching EFFICIENT from ELABORATIVE). C5 fixes rumination tracking for all sources. None affect experiment code directly — all changes are in the perceptual substrate consumed by the voice pipeline.
 
 ## Operator Research Preferences
 
