@@ -104,8 +104,15 @@ void main() {
     if (idxLow < 0) idxLow = 0;
     float frac = idx - float(idxLow);
 
-    // Interpolate between nearest sorted samples for smooth gradient
-    vec3 sorted = mix(samples[idxLow], samples[idxHigh], frac);
+    // Loop-based lookup for GLSL ES 1.0 compliance (no non-constant array indexing)
+    vec3 valLow = samples[0];
+    vec3 valHigh = samples[0];
+    for (int k = 0; k < 12; k++) {
+        if (k == idxLow) valLow = samples[k];
+        if (k == idxHigh) valHigh = samples[k];
+    }
+
+    vec3 sorted = mix(valLow, valHigh, frac);
 
     gl_FragColor = vec4(sorted, 1.0);
 }
