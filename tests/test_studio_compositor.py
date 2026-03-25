@@ -123,7 +123,7 @@ class TestCompositorConfig:
 class TestLoadConfig:
     def test_missing_file_returns_default(self, tmp_path: Path) -> None:
         cfg = load_config(path=tmp_path / "nonexistent.yaml")
-        assert len(cfg.cameras) == 6  # default has 4 cameras
+        assert len(cfg.cameras) == 5  # default has 4 cameras
 
     def test_valid_yaml(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.yaml"
@@ -146,7 +146,7 @@ framerate: 15
         config_path = tmp_path / "config.yaml"
         config_path.write_text("cameras: [[[invalid")
         cfg = load_config(path=config_path)
-        assert len(cfg.cameras) == 6  # fell back to default
+        assert len(cfg.cameras) == 5  # fell back to default
 
 
 # ---------------------------------------------------------------------------
