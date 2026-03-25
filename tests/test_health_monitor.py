@@ -613,7 +613,7 @@ class TestRunner:
 
             mock_http.return_value = (
                 200,
-                '{"result": {"collections": [{"name": "documents"}, {"name": "samples"}, {"name": "claude-memory"}]}}',
+                '{"result": {"collections": [{"name": "documents"}, {"name": "profile-facts"}, {"name": "operator-episodes"}]}}',
             )
 
             report = await run_checks()

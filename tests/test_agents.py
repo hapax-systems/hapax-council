@@ -12,7 +12,6 @@ def test_research_agent_has_tools():
 
     tool_names = [t.name for t in agent._function_toolset.tools.values()]
     assert "search_knowledge_base" in tool_names
-    assert "search_samples" in tool_names
 
 
 def test_code_review_agent_loads():

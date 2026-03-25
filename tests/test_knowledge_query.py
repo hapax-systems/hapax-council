@@ -14,7 +14,7 @@ class TestBuildSystemPrompt:
         prompt = build_system_prompt()
         assert "documents" in prompt
         assert "profile-facts" in prompt
-        assert "claude-memory" in prompt
+        assert "briefing" in prompt
 
     def test_includes_source_service_guide(self):
         prompt = build_system_prompt()

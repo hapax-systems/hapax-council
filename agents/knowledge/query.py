@@ -44,8 +44,6 @@ Filter by `days_back` to restrict to recent documents.
 (trait), work_patterns, energy_and_attention, information_seeking, creative_process,
 tool_usage, communication_patterns (behavioral). Filter by `dimension`.
 
-**claude-memory** — Persistent conversation memory across Claude Code sessions.
-
 ### Structured Artifacts (file reads)
 
 - **Daily briefing** — Morning briefing with headline, action items, stats
@@ -89,7 +87,6 @@ Keep diagrams focused — max 15-20 nodes.
 If searches return no results or files are missing, explain what's missing and what populates it:
 - documents collection: "RAG sync agents populate this (gdrive, gmail, obsidian, etc.). Run sync agents first."
 - profile-facts: "Profile updater runs every 6 hours. No facts until first run."
-- claude-memory: "Populated automatically from Claude Code sessions."
 - briefing.json: "Daily briefing generates at 07:00. Not available until first run."
 - digest.json: "Daily digest generates at 06:45. Not available until first run."
 - scout-report.json: "Scout runs weekly Wednesday 10:00. Not available until first run."

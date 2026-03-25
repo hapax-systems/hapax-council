@@ -41,6 +41,7 @@ BRIDGED_SOURCE_TYPES = {
     "ambient-audio",
     "health-connect",
     "watch",
+    "flow_journal",
 }
 
 # Per-source-type chunk caps. When a source type produces more chunks than
@@ -1170,3 +1171,123 @@ def detect_changed_sources(sources: DiscoveredSources) -> tuple[set[str], set[st
             changed.add(sid)
 
     return changed, new
+
+
+# ── Flow journal bridge ──────────────────────────────────────────────────────
+
+
+def read_flow_facts(
+    flow_dir: Path | None = None,
+    days_back: int = 7,
+) -> list[dict]:
+    """Extract profile facts from flow journal markdown files.
+
+    Scans ~/documents/rag-sources/flow/ for recent flow-YYYY-MM-DD.md files,
+    parses frontmatter and transition lines, and produces deterministic facts
+    for the energy_and_attention dimension.
+
+    Returns empty list when no flow data is available (graceful degradation).
+    """
+    import re
+
+    flow_dir = flow_dir or Path.home() / "documents" / "rag-sources" / "flow"
+    if not flow_dir.is_dir():
+        return []
+
+    cutoff = datetime.now(tz=UTC) - timedelta(days=days_back)
+    facts: list[dict] = []
+
+    # Collect data across recent files
+    total_transitions = 0
+    state_minutes: dict[str, float] = {}
+    transition_hours: list[int] = []
+    files_read = 0
+
+    for md_file in sorted(flow_dir.glob("flow-*.md"), reverse=True):
+        # Parse date from filename
+        match = re.search(r"flow-(\d{4}-\d{2}-\d{2})\.md$", md_file.name)
+        if not match:
+            continue
+        try:
+            file_date = datetime.strptime(match.group(1), "%Y-%m-%d").replace(tzinfo=UTC)
+        except ValueError:
+            continue
+        if file_date < cutoff:
+            break
+
+        try:
+            content = md_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        files_read += 1
+
+        # Parse transition count from frontmatter
+        tc_match = re.search(r"^transition_count:\s*(\d+)", content, re.MULTILINE)
+        if tc_match:
+            total_transitions += int(tc_match.group(1))
+
+        # Parse time-in-state section
+        for state_match in re.finditer(r"^\*\*(\w+):\*\*\s+(\d+)\s+min", content, re.MULTILINE):
+            state_name = state_match.group(1)
+            minutes = float(state_match.group(2))
+            state_minutes[state_name] = state_minutes.get(state_name, 0) + minutes
+
+        # Parse transition times for peak-hours analysis
+        for time_match in re.finditer(r"^- \*\*(\d{2}):\d{2}\*\*", content, re.MULTILINE):
+            transition_hours.append(int(time_match.group(1)))
+
+    if files_read == 0:
+        return []
+
+    source = f"flow-journal:{files_read}-files/{days_back}d"
+
+    # Fact 1: flow frequency (transitions per day)
+    avg_transitions = total_transitions / files_read if files_read else 0
+    facts.append(
+        {
+            "key": "flow.frequency_per_day",
+            "value": str(round(avg_transitions, 1)),
+            "dimension": "energy_and_attention",
+            "confidence": 0.8,
+            "source": source,
+            "evidence": f"{total_transitions} transitions across {files_read} days",
+        }
+    )
+
+    # Fact 2: warming duration (proxy for flow engagement time)
+    warming_min = state_minutes.get("warming", 0)
+    if warming_min > 0 and files_read > 0:
+        avg_warming = warming_min / files_read
+        facts.append(
+            {
+                "key": "flow.avg_warming_minutes_per_day",
+                "value": str(round(avg_warming, 1)),
+                "dimension": "energy_and_attention",
+                "confidence": 0.7,
+                "source": source,
+                "evidence": f"{warming_min:.0f} total warming minutes across {files_read} days",
+            }
+        )
+
+    # Fact 3: most productive hours (peak transition activity)
+    if transition_hours:
+        hour_counts: dict[int, int] = {}
+        for h in transition_hours:
+            hour_counts[h] = hour_counts.get(h, 0) + 1
+        top_hours = sorted(hour_counts, key=lambda h: hour_counts[h], reverse=True)[:3]
+        facts.append(
+            {
+                "key": "flow.peak_activity_hours",
+                "value": ", ".join(f"{h:02d}:00" for h in sorted(top_hours)),
+                "dimension": "energy_and_attention",
+                "confidence": 0.7,
+                "source": source,
+                "evidence": (
+                    f"Top transition hours from {len(transition_hours)} transitions: "
+                    + ", ".join(f"{h:02d}h({hour_counts[h]}x)" for h in top_hours)
+                ),
+            }
+        )
+
+    return facts

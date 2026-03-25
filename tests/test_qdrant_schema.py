@@ -25,8 +25,8 @@ def _make_collection_list(names: list[str]):
 
 
 class TestExpectedCollections:
-    def test_all_eight_collections_defined(self):
-        assert len(EXPECTED_COLLECTIONS) == 8
+    def test_all_six_collections_defined(self):
+        assert len(EXPECTED_COLLECTIONS) == 6
 
     def test_all_use_768_dimensions(self):
         for name, spec in EXPECTED_COLLECTIONS.items():
@@ -68,7 +68,7 @@ class TestVerifyCollections:
         mock_qdrant.get_collection.side_effect = lambda n: _make_collection_info(size=384)
 
         issues = await verify_collections()
-        assert len(issues) == 8
+        assert len(issues) == 6
         assert all("768d" in i for i in issues)
 
     async def test_cosine_case_insensitive(self, mock_qdrant):
@@ -86,7 +86,7 @@ class TestVerifyCollections:
         mock_qdrant.get_collection.side_effect = lambda n: _make_collection_info(distance="EUCLID")
 
         issues = await verify_collections()
-        assert len(issues) == 8
+        assert len(issues) == 6
         assert all("EUCLID" in i for i in issues)
 
     async def test_connection_failure(self, mock_qdrant):

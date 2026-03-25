@@ -1295,9 +1295,15 @@ class VisualLayerAggregator:
                 _gqi_data = _json.loads(_gqi_path.read_text())
                 _gqi_age = time.time() - _gqi_data.get("timestamp", 0)
                 if _gqi_age < 120:  # stale after 2 min (session probably ended)
-                    self._stimmung_collector.update_grounding_quality(_gqi_data.get("gqi", 0.5))
+                    _gqi_val = _gqi_data.get("gqi", 0.5)
+                    self._stimmung_collector.update_grounding_quality(_gqi_val)
+                    log.debug("GQI read: %.3f (age %.1fs)", _gqi_val, _gqi_age)
+                else:
+                    log.debug("GQI stale (age %.1fs > 120s), skipping", _gqi_age)
+            else:
+                log.debug("GQI shm file not found (no active voice session)")
         except Exception:
-            pass
+            log.debug("GQI read failed", exc_info=True)
 
         # 8. Snapshot
         prev_stance = self._stimmung.overall_stance.value if self._stimmung else "nominal"
