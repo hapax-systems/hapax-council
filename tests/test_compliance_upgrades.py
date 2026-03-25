@@ -81,26 +81,15 @@ def test_nudge_staleness_thresholds_consolidated():
     assert STALENESS_THRESHOLDS_H["scout"] == 192
 
 
-def test_slow_tier_cache_returns_cached_on_second_call():
-    """Slow tier returns cached results within TTL."""
+def test_slow_tier_returns_separate_list():
+    """Slow tier returns its own list, independent of fast tier."""
     import logos.data.nudges as nudges_mod
 
-    # Reset cache
-    nudges_mod._slow_cache = []
-    nudges_mod._slow_cache_time = 0.0
-
-    # First call populates cache
     with patch.object(nudges_mod, "_collect_briefing_nudges"):
         with patch.object(nudges_mod, "_collect_scout_nudges"):
             with patch.object(nudges_mod, "_collect_drift_nudges"):
-                nudges_mod._collect_slow_tier(None)
-                # Record the cache time
-                cache_time_1 = nudges_mod._slow_cache_time
-                assert cache_time_1 > 0
-
-                # Second call should use cache (no collectors called again)
-                nudges_mod._collect_slow_tier(None)
-                assert nudges_mod._slow_cache_time == cache_time_1  # unchanged
+                result = nudges_mod._collect_slow_tier(None)
+                assert isinstance(result, list)
 
 
 def test_collect_nudges_includes_fast_collectors():

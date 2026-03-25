@@ -31,11 +31,6 @@ STALE_DRIFT_H = STALENESS_THRESHOLDS_H["drift"]
 MAX_VISIBLE_NUDGES = 7  # attention budget cap — cognitive overload prevention
 DISMISS_COOLDOWN_H = 48  # dismissed nudges suppressed for 48 hours
 
-# Slow-tier cache for expensive collectors (scout, drift, profile, knowledge, etc.)
-_SLOW_CACHE_TTL = 300.0  # 5 minutes
-_slow_cache: list[Nudge] = []
-_slow_cache_time: float = 0.0
-
 
 @dataclass
 class Nudge:
@@ -636,17 +631,12 @@ def _collect_contradiction_nudges(nudges: list[Nudge]) -> None:
 
 
 def _collect_slow_tier(briefing: BriefingData | None) -> list[Nudge]:
-    """Run slow-cadence collectors with 5min cache.
+    """Run slow-cadence collectors.
 
     These collectors read from Qdrant, compute reports, or call analyze_profile().
-    Results are cached and only recomputed when TTL expires.
+    They are separated from fast-tier collectors for documentation and future
+    caching (voice daemon already caches at its own 30s layer via render_nudges).
     """
-    global _slow_cache, _slow_cache_time
-    import time as _time
-
-    now = _time.monotonic()
-    if _slow_cache and (now - _slow_cache_time) < _SLOW_CACHE_TTL:
-        return list(_slow_cache)
 
     nudges: list[Nudge] = []
 
@@ -672,8 +662,6 @@ def _collect_slow_tier(briefing: BriefingData | None) -> list[Nudge]:
     _collect_emergence_nudges(nudges)
     _collect_contradiction_nudges(nudges)
 
-    _slow_cache = list(nudges)
-    _slow_cache_time = now
     return nudges
 
 
@@ -702,7 +690,7 @@ def collect_nudges(
     if briefing is not None:
         _collect_action_item_nudges(nudges, briefing)
 
-    # Slow tier — cached for 5 minutes
+    # Slow tier — separated for documentation; voice daemon caches at its own layer
     nudges.extend(_collect_slow_tier(briefing))
 
     # Filter out recently dismissed nudges

@@ -359,7 +359,7 @@ def _source_freshness(source: str, file_path: Path | None = None) -> SourceFresh
     try:
         age_s = time.time() - file_path.stat().st_mtime
         return SourceFreshness(source=source, age_s=round(age_s, 1), stale=age_s > threshold)
-    except OSError:
+    except (OSError, TypeError):
         return SourceFreshness(source=source, age_s=None, stale=True)
 
 

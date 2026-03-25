@@ -75,9 +75,9 @@ _SLOW_COLLECTORS = [
 ]
 ```
 
-**Cache mechanism.** Module-level `_slow_cache: list[Nudge]` and `_slow_cache_time: float`. Slow collectors re-evaluate when `time.monotonic() - _slow_cache_time > SLOW_CACHE_TTL` (300s = 5min). Fast collectors always run fresh.
+**Separation.** Slow collectors are extracted into `_collect_slow_tier()`. The voice daemon already caches at its own 30s layer via `render_nudges()`, so no additional caching is needed at the nudge tier.
 
-**Staleness threshold centralization.** Move `STALE_BRIEFING_H`, `STALE_SCOUT_H`, `STALE_DRIFT_H` from module-level constants into a `STALENESS_THRESHOLDS` dict alongside the comment that they mirror sidebar.py values. No actual change to the values — just grouping for clarity.
+**Staleness threshold centralization.** Move `STALE_BRIEFING_H`, `STALE_SCOUT_H`, `STALE_DRIFT_H` from module-level constants into a `STALENESS_THRESHOLDS_H` dict alongside the comment that they mirror sidebar.py values. No actual change to the values — just grouping for clarity.
 
 ### Fix 3: Content Scheduler Absolute Staleness Veto
 
