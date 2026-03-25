@@ -58,22 +58,22 @@ Detection overlay coloring encodes rich perceptual information. Colors are **mod
 - **Non-persons:** Objects (furniture `#bdae93`, instruments `#fabd2f`, electronics `#83a598`, containers `#d3869b`) are drawn dimmer, with opacity scaled by novelty and mobility.
 - **IR presets** (NightVision, Silhouette, Thermal IR): High-saturation variant palette for monochrome feed visibility.
 
-The compositor hosts 18 visual effect presets, each with a distinct blend mode family:
+The compositor hosts 19 visual effect presets, each with a distinct blend mode family:
 
-**Additive (lighter blend):** Trails, Neon, Screwed, VHS, Pixsort, Feedback — bright, glowing accumulation.
+**Additive (lighter blend):** Trails, Neon, Screwed, VHS, Pixsort, Feedback, Ambient — bright, glowing accumulation.
 **Standard (source-over):** Ghost, NightVision, Silhouette, Thermal IR, Slit-scan, Halftone, ASCII, Clean — fading persistence.
 **Difference:** Datamosh, Diff, Glitch Blocks — motion detection, XOR-like artifacts.
 **Multiply:** Trap — dark, oppressive accumulation.
 
 Each preset configures trail persistence (blend mode, filter, spatial drift, count, opacity), warp transforms (pan, zoom, rotation, horizontal slicing), temporal stutter (freeze/replay), and post-effects (scanlines, band displacement, vignette, syrup gradient).
 
-The compositor runs a persistence-based canvas renderer. When trails are active, the canvas is NOT cleared between frames — old content persists and fades via semi-transparent black overlay. New frames are composited using the preset's trail blend mode, producing additive glow (lighter), motion detection (difference), dark accumulation (multiply), or standard ghosting (source-over). A separate ring buffer for delayed overlay frames at 200ms with a three-frame offset enables temporal parallax. Post-effects bake into the persistence.
+The compositor runs a persistence-based canvas renderer. When trails are active, the canvas is NOT cleared between frames — old content persists and fades via `destination-out` alpha subtraction (avoids 8-bit ghost residue). New frames are composited using the preset's trail blend mode, producing additive glow (lighter), motion detection (difference), dark accumulation (multiply), or standard ghosting (source-over). Warp transforms (pan, zoom, rotation, slicing) are pre-rendered to a scratch canvas then composited flat onto the trail buffer, avoiding directional smearing from accumulated warp positions. A separate ring buffer for delayed overlay frames at 200ms with a three-frame offset enables temporal parallax. Post-effects (scanlines, glitch bands, vignette, syrup gradient) apply sensible defaults when toggled on for presets that don't natively include them.
 
 These effects are functional, not decorative. The operator produces music and streams live. Effects composite in real time over camera feeds during production sessions.
 
 **Studio instrument (detail pane):** When the ground region is focused and split view is open (`G` then `S`), the detail pane shows a unified studio control surface:
-- **Mode tab bar:** Live | FX | HLS. FX activates the composite canvas; HLS activates smooth streaming; both can be combined.
-- **Preset chip grid** (FX mode): 6×3 grid of 18 presets. Each chip has a colored left border indicating blend mode family. Click to select.
+- **Mode tab bar:** Live | FX | HLS. FX activates the composite canvas; HLS activates smooth streaming. HLS only streams when explicitly enabled (not in FX-only mode).
+- **Preset chip grid** (FX mode): 6-column grid of 19 presets. Each chip has a colored left border indicating blend mode family. Click to select.
 - **Source selector** (FX mode, collapsible): 20 GPU effect sources. Collapsed by default.
 - **Filters** (FX mode): Live and Smooth layer CSS filters (22 options each).
 - **Effect toggles** (FX mode): Scanlines, Glitch Bands, Vignette, Syrup — 2×2 grid with colored-dot toggle pattern. Reset-to-preset link when overridden.
