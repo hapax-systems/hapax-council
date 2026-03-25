@@ -19,12 +19,22 @@ _log = logging.getLogger(__name__)
 
 # Staleness thresholds in hours (duplicated from sidebar.py to avoid
 # coupling logos.data → logos.widgets).
-STALE_BRIEFING_H = 26  # briefing runs daily, stale after ~1 day
-STALE_SCOUT_H = 192  # scout runs weekly, stale after ~8 days
-STALE_DRIFT_H = 192  # drift runs weekly, stale after ~8 days
+STALENESS_THRESHOLDS_H: dict[str, int] = {
+    "briefing": 26,  # briefing runs daily, stale after ~1 day
+    "scout": 192,  # scout runs weekly, stale after ~8 days
+    "drift": 192,  # drift runs weekly, stale after ~8 days
+}
+STALE_BRIEFING_H = STALENESS_THRESHOLDS_H["briefing"]
+STALE_SCOUT_H = STALENESS_THRESHOLDS_H["scout"]
+STALE_DRIFT_H = STALENESS_THRESHOLDS_H["drift"]
 
 MAX_VISIBLE_NUDGES = 7  # attention budget cap — cognitive overload prevention
 DISMISS_COOLDOWN_H = 48  # dismissed nudges suppressed for 48 hours
+
+# Slow-tier cache for expensive collectors (scout, drift, profile, knowledge, etc.)
+_SLOW_CACHE_TTL = 300.0  # 5 minutes
+_slow_cache: list[Nudge] = []
+_slow_cache_time: float = 0.0
 
 
 @dataclass
@@ -625,29 +635,22 @@ def _collect_contradiction_nudges(nudges: list[Nudge]) -> None:
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 
-def collect_nudges(
-    *,
-    max_nudges: int = 5,
-    briefing: BriefingData | None = None,
-    accommodations: object | None = None,
-) -> list[Nudge]:
-    """Collect and rank nudges from all sources.
+def _collect_slow_tier(briefing: BriefingData | None) -> list[Nudge]:
+    """Run slow-cadence collectors with 5min cache.
 
-    Fully synchronous. Returns up to max_nudges sorted by priority (highest first).
-
-    When *briefing* is passed, action items from it are converted to individual
-    nudges (used by the dashboard). Otherwise briefing is fetched internally for
-    staleness/missing checks only.
+    These collectors read from Qdrant, compute reports, or call analyze_profile().
+    Results are cached and only recomputed when TTL expires.
     """
-    nudges: list[Nudge] = []
-    _collect_health_nudges(nudges)
+    global _slow_cache, _slow_cache_time
+    import time as _time
 
-    # When briefing is provided, inject its action items as individual nudges
-    if briefing is not None:
-        _collect_action_item_nudges(nudges, briefing)
-        _collect_briefing_nudges(nudges)
-    else:
-        _collect_briefing_nudges(nudges)
+    now = _time.monotonic()
+    if _slow_cache and (now - _slow_cache_time) < _SLOW_CACHE_TTL:
+        return list(_slow_cache)
+
+    nudges: list[Nudge] = []
+
+    _collect_briefing_nudges(nudges)
 
     # Single analyze_profile() call shared by readiness + profile collectors
     try:
@@ -662,13 +665,45 @@ def collect_nudges(
     _collect_profile_nudges(nudges, analysis=analysis)
     _collect_scout_nudges(nudges)
     _collect_drift_nudges(nudges)
-    _collect_goal_nudges(nudges)
     _collect_sufficiency_nudges(nudges)
     _collect_knowledge_sufficiency_nudges(nudges)
     _collect_precedent_nudges(nudges)
     _collect_rag_quality_nudges(nudges)
     _collect_emergence_nudges(nudges)
     _collect_contradiction_nudges(nudges)
+
+    _slow_cache = list(nudges)
+    _slow_cache_time = now
+    return nudges
+
+
+def collect_nudges(
+    *,
+    max_nudges: int = 5,
+    briefing: BriefingData | None = None,
+    accommodations: object | None = None,
+) -> list[Nudge]:
+    """Collect and rank nudges from all sources.
+
+    Fully synchronous. Returns up to max_nudges sorted by priority (highest first).
+
+    Fast-tier collectors (health, goals, action items) run every evaluation.
+    Slow-tier collectors (scout, drift, profile, knowledge) cache for 5 minutes.
+
+    When *briefing* is passed, action items from it are converted to individual
+    nudges (used by the dashboard). Otherwise briefing is fetched internally for
+    staleness/missing checks only.
+    """
+    nudges: list[Nudge] = []
+
+    # Fast tier — always fresh
+    _collect_health_nudges(nudges)
+    _collect_goal_nudges(nudges)
+    if briefing is not None:
+        _collect_action_item_nudges(nudges, briefing)
+
+    # Slow tier — cached for 5 minutes
+    nudges.extend(_collect_slow_tier(briefing))
 
     # Filter out recently dismissed nudges
     nudges = _filter_dismissed(nudges)

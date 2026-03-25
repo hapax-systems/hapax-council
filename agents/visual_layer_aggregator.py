@@ -1722,6 +1722,7 @@ class VisualLayerAggregator:
             nudge_titles=self._nudge_titles,
             camera_roles=CAMERA_ROLES,
             camera_filters=CAMERA_FILTERS,
+            pool_age_s=now - self._last_ambient_fetch if self._last_ambient_fetch > 0 else 0.0,
         )
 
         decision = self._scheduler.tick(ctx, pools, now=now)

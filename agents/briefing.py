@@ -106,6 +106,25 @@ def should_deliver_briefing(
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
 
+class SourceFreshness(BaseModel):
+    """Tracks age and staleness of a briefing data source."""
+
+    source: str
+    age_s: float | None = None  # seconds since source data was produced
+    stale: bool = False  # True if age exceeds source-specific threshold
+
+
+# Per-source staleness thresholds in seconds
+SOURCE_STALENESS_THRESHOLDS: dict[str, float] = {
+    "profile_digest": 3600.0,  # 1h — digest updates on profiler run
+    "health_snapshot": 300.0,  # 5min — health runs every 5min
+    "deliberation_metrics": 1800.0,  # 30min — metrics from recent queries
+    "axiom_status": 3600.0,  # 1h — axiom state changes rarely
+    "scout_report": 691200.0,  # 8d — scout runs weekly
+    "goals": 600.0,  # 10min — goals change on operator action
+}
+
+
 class BriefingStats(BaseModel):
     """Key numbers for the briefing."""
 
@@ -137,6 +156,7 @@ class Briefing(BaseModel):
     body: str = Field(description="3-5 sentence narrative briefing")
     action_items: list[ActionItem] = Field(default_factory=list)
     stats: BriefingStats = Field(default_factory=BriefingStats)
+    source_freshness: list[SourceFreshness] = Field(default_factory=list)
 
 
 # ── Synthesis ────────────────────────────────────────────────────────────────
@@ -331,14 +351,29 @@ async def generate_briefing(hours: int = 24) -> Briefing:
         return await _generate_briefing_impl(hours)
 
 
+def _source_freshness(source: str, file_path: Path | None = None) -> SourceFreshness:
+    """Compute freshness for a data source based on file mtime."""
+    threshold = SOURCE_STALENESS_THRESHOLDS.get(source, 3600.0)
+    if file_path is None or not file_path.exists():
+        return SourceFreshness(source=source, age_s=None, stale=True)
+    try:
+        age_s = time.time() - file_path.stat().st_mtime
+        return SourceFreshness(source=source, age_s=round(age_s, 1), stale=age_s > threshold)
+    except OSError:
+        return SourceFreshness(source=source, age_s=None, stale=True)
+
+
 async def _generate_briefing_impl(hours: int = 24) -> Briefing:
     """Implementation of generate_briefing, wrapped by OTel span."""
+    freshness: list[SourceFreshness] = []
+
     # Collect activity data (no LLM calls)
     activity = await generate_activity_report(hours)
 
-    # Run live health check
+    # Run live health check (always fresh — runs inline)
     health_report = await run_checks()
     health_summary = format_health(health_report)
+    freshness.append(SourceFreshness(source="health_snapshot", age_s=0.0, stale=False))
 
     # Build stats
     stats = BriefingStats(
@@ -353,7 +388,11 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
     if activity.langfuse.models:
         stats.top_model = max(activity.langfuse.models, key=lambda m: m.call_count).model_group
 
+    # Track profile digest freshness
+    freshness.append(_source_freshness("profile_digest", PROFILES_DIR / "operator-digest.json"))
+
     # Load scout report if recent (< 7 days old)
+    freshness.append(_source_freshness("scout_report", SCOUT_REPORT))
     scout_section = ""
     if SCOUT_REPORT.exists():
         try:
@@ -480,14 +519,15 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
     except Exception:
         pass
 
-    # Deliberation health section
+    # Deliberation health section (computed inline — freshness = 0)
     deliberation_section = ""
     try:
         deliberation_section = _collect_deliberation_health() or ""
+        freshness.append(SourceFreshness(source="deliberation_metrics", age_s=0.0, stale=False))
     except Exception:
-        pass
+        freshness.append(SourceFreshness(source="deliberation_metrics", age_s=None, stale=True))
 
-    # Axiom governance section (push-based delivery)
+    # Axiom governance section (push-based delivery, computed inline)
     axiom_section = ""
     try:
         axiom_status = _collect_axiom_status()
@@ -712,7 +752,11 @@ async def _generate_briefing_impl(hours: int = 24) -> Briefing:
 {health_summary}
 ```
 {scout_section}{digest_section}{calendar_section}{drive_section}{gmail_section}{claude_code_section}{obsidian_section}{audio_section}{sdlc_section}{cost_section}{data_source_section}{goals_section}{predictive_section}{axiom_section}{deliberation_section}{gaps_section}{profile_section}
-Generate a briefing for this system state. The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
+## Source Freshness
+{chr(10).join(f"- {sf.source}: {'STALE' if sf.stale else 'fresh'} ({sf.age_s:.0f}s)" for sf in freshness if sf.age_s is not None)}
+{chr(10).join(f"- {sf.source}: unavailable" for sf in freshness if sf.age_s is None)}
+
+Generate a briefing for this system state. Note any stale sources in your narrative. The timestamp is {datetime.now(UTC).isoformat()[:19]}Z.
 The lookback window is {hours} hours."""
 
     try:
@@ -732,6 +776,7 @@ The lookback window is {hours} hours."""
     briefing.generated_at = datetime.now(UTC).isoformat()[:19] + "Z"
     briefing.hours = hours
     briefing.stats = stats
+    briefing.source_freshness = freshness
 
     return briefing
 

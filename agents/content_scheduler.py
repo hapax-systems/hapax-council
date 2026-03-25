@@ -274,6 +274,10 @@ class ContentPools(BaseModel):
     nudge_titles: list[str] = Field(default_factory=list)
     camera_roles: list[str] = Field(default_factory=list)
     camera_filters: list[str] = Field(default_factory=list)
+    pool_age_s: float = 0.0  # seconds since pools were last refreshed
+
+
+MAX_POOL_AGE_S = 120.0  # refuse content from pools older than 2 minutes
 
 
 class ShaderNudge(BaseModel):
@@ -388,26 +392,33 @@ class ContentScheduler:
         return DisplayDensity.AMBIENT
 
     def _available_sources(self, ctx: SchedulerContext, pools: ContentPools) -> list[ContentSource]:
-        """Filter to sources that actually have content to show."""
+        """Filter to sources that actually have content to show.
+
+        Applies absolute staleness veto: pool-backed sources are rejected
+        when pool_age_s exceeds MAX_POOL_AGE_S (2 minutes).
+        """
         available: list[ContentSource] = []
 
-        if pools.facts:
+        # Absolute staleness veto for pool-backed content
+        pool_fresh = pools.pool_age_s <= MAX_POOL_AGE_S
+
+        if pools.facts and pool_fresh:
             available.append(ContentSource.PROFILE_FACT)
-        if pools.camera_roles:
+        if pools.camera_roles and pool_fresh:
             available.append(ContentSource.CAMERA_FEED)
-        if pools.moments:
+        if pools.moments and pool_fresh:
             available.append(ContentSource.STUDIO_MOMENT)
-        if pools.nudge_titles:
+        if pools.nudge_titles and pool_fresh:
             available.append(ContentSource.SIGNAL_CARD)
         if ctx.voice_active:
             available.append(ContentSource.VOICE_STATE)
 
-        # These are always conceptually available
+        # Non-pool sources are always conceptually available (computed per-tick)
         available.append(ContentSource.SHADER_VARIATION)
         available.append(ContentSource.TIME_OF_DAY)
         available.append(ContentSource.ACTIVITY_LABEL)
         available.append(ContentSource.BIOMETRIC_MOD)
-        if pools.nudge_titles:
+        if pools.nudge_titles and pool_fresh:
             available.append(ContentSource.SUPPLEMENTARY_CARD)
 
         # Filter out meeting-blocked sources
