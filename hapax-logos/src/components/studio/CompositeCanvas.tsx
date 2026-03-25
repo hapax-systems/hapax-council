@@ -85,6 +85,16 @@ export function CompositeCanvas({
     let cachedTrailFilter = "";
     let cachedOverlayFilter = "";
 
+    // --- Filter crossfade ---
+    // When live/smooth filter changes, snapshot the current canvas and blend
+    // the old snapshot with new renders over 300ms for smooth transition.
+    let prevLiveFilter: string | undefined = liveFilter;
+    let prevSmoothFilter: string | undefined = smoothFilter;
+    let crossfadeStart = 0;
+    let crossfadeSnapshot: HTMLCanvasElement | null = null;
+    let crossfadeCtx: CanvasRenderingContext2D | null = null;
+    const CROSSFADE_MS = 300;
+
     /** Ensure back buffer and scratch canvas match display canvas dimensions.
      *  Preserves existing trail content on resize by copying old buffer to new one. */
     const ensureBackBuffer = (w: number, h: number) => {
@@ -476,6 +486,30 @@ export function CompositeCanvas({
       tick++;
       hueAccum += 4;
 
+      // --- Filter crossfade: detect changes and snapshot ---
+      const curLiveFilter = liveFilterRef.current;
+      const curSmoothFilter = smoothFilterRef.current;
+      if (curLiveFilter !== prevLiveFilter || curSmoothFilter !== prevSmoothFilter) {
+        if (prevLiveFilter !== undefined || prevSmoothFilter !== undefined) {
+          // Snapshot current canvas state before the new filter takes effect
+          if (!crossfadeSnapshot || crossfadeSnapshot.width !== w || crossfadeSnapshot.height !== h) {
+            crossfadeSnapshot = document.createElement("canvas");
+            crossfadeSnapshot.width = w;
+            crossfadeSnapshot.height = h;
+            crossfadeCtx = crossfadeSnapshot.getContext("2d");
+          }
+          if (crossfadeCtx) {
+            crossfadeCtx.clearRect(0, 0, w, h);
+            crossfadeCtx.drawImage(canvas, 0, 0);
+          }
+          crossfadeStart = performance.now();
+        }
+        prevLiveFilter = curLiveFilter;
+        prevSmoothFilter = curSmoothFilter;
+        // Force filter cache refresh
+        lastHueQ = -1;
+      }
+
       // Update cached filter strings only when quantized hue changes
       const hueQ = Math.round(hueAccum / 10) * 10;
       if (hueQ !== lastHueQ) {
@@ -610,8 +644,8 @@ export function CompositeCanvas({
           // Post-effects still run every tick for visual consistency
           drawPostEffects(main, w, h, cachedMainFilter);
         }
-        drawNoise(w, h);
         drawBloom(w, h);
+        drawNoise(w, h);
         drawStrobe(w, h);
         applyCircularMask(w, h);
 
@@ -620,10 +654,24 @@ export function CompositeCanvas({
         ctx.clearRect(0, 0, w, h);
         drawMainFrame(ctx, main, w, h, cachedMainFilter, 1, "source-over");
         drawOverlayAndEffects(main, w, h, cachedMainFilter);
-        drawNoise(w, h);
         drawBloom(w, h);
+        drawNoise(w, h);
         drawStrobe(w, h);
         applyCircularMask(w, h);
+      }
+
+      // --- Filter crossfade: blend old snapshot with new render ---
+      if (crossfadeStart > 0 && crossfadeSnapshot && crossfadeCtx) {
+        const elapsed = performance.now() - crossfadeStart;
+        if (elapsed < CROSSFADE_MS) {
+          const oldAlpha = 1 - elapsed / CROSSFADE_MS;
+          ctx.save();
+          ctx.globalAlpha = oldAlpha;
+          ctx.drawImage(crossfadeSnapshot, 0, 0);
+          ctx.restore();
+        } else {
+          crossfadeStart = 0;
+        }
       }
     };
 
