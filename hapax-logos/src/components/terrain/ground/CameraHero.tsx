@@ -35,7 +35,7 @@ export function CameraHero({
   const containerRef = useRef<HTMLDivElement>(null);
   const { detectionTier, detectionLayerVisible, enrichmentVisibility } = useDetections();
   const heroTier = Math.max(detectionTier, 2) as DetectionTier; // hero always ≥ tier 2
-  const { liveFilterIdx, smoothFilterIdx } = useGroundStudio();
+  const { liveFilterIdx, smoothFilterIdx, effectOverrides } = useGroundStudio();
   const effectUrl = sourceUrl(effectSourceId);
   // Tell compositor to switch effect when source changes
   useEffect(() => { selectEffect(effectSourceId); }, [effectSourceId]);
@@ -78,7 +78,11 @@ export function CameraHero({
   const smoothFilterCss = smoothFilterIdx > 0 ? SOURCE_FILTERS[smoothFilterIdx]?.css : undefined;
 
   // Unified rendering: HLS overlay available in any mode
-  const preset = compositeMode ? (PRESETS[presetIdx] ?? PRESETS[0]) : null;
+  // Merge effectOverrides from context so toggle buttons (scanlines, vignette, etc.) work
+  const basePreset = compositeMode ? (PRESETS[presetIdx] ?? PRESETS[0]) : null;
+  const preset = basePreset && effectOverrides
+    ? { ...basePreset, effects: { ...basePreset.effects, ...effectOverrides } }
+    : basePreset;
   const smoothSource = compositeMode ? (effectUrl ?? "/api/studio/stream/fx") : undefined;
   const modeLabel = [
     heroRole,
@@ -231,25 +235,40 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
 
     let destroyed = false;
 
+    // Start hidden until first frame is buffered — prevents initial black flash
+    video.style.opacity = "0";
+    video.style.transition = "opacity 0.3s ease-in";
+
+    const url = "/api/studio/hls/stream.m3u8";
+
     (async () => {
       const Hls = (await import("hls.js")).default;
       if (destroyed || !Hls.isSupported()) return;
       const hls = new Hls({
-        liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 10,
+        liveSyncDurationCount: 2,
+        liveMaxLatencyDurationCount: 6,
         maxBufferLength: 10,
-        backBufferLength: 5,
+        backBufferLength: 10,
         enableWorker: true,
         lowLatencyMode: false,
-        liveDurationInfinity: true,
+        liveDurationInfinity: false,
+        maxBufferHole: 0.5,
       });
       hlsRef.current = hls;
-      hls.loadSource("/api/studio/hls/stream.m3u8");
+      hls.loadSource(url);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         video.play().catch(() => {});
       });
+      // Reveal video once first fragment is buffered and decoded
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        if (video.readyState >= 3 && video.style.opacity === "0") {
+          video.style.opacity = "1";
+        }
+      });
       hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
+        // bufferStalledError is non-fatal — hls.js handles via internal nudge mechanism.
+        // Calling recoverMediaError() here resets MediaSource and causes black-frame blink.
         if (data.details === "bufferStalledError") return;
         if (data.fatal) {
           if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
@@ -258,7 +277,7 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
             hls.stopLoad();
             setTimeout(() => {
               if (!destroyed) {
-                hls.loadSource("/api/studio/hls/stream.m3u8");
+                hls.loadSource(url);
                 hls.startLoad();
               }
             }, 3000);
@@ -278,6 +297,7 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
     <video
       ref={videoRef}
       className="absolute inset-0 h-full w-full bg-black object-cover"
+      style={{ willChange: "transform" }}
       autoPlay
       muted
       playsInline

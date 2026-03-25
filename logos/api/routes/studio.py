@@ -317,6 +317,7 @@ async def get_current_effect():
         "trap",
         "diff",
         "clean",
+        "ambient",
         "thermal",
         "halftone",
         "glitchblocks",

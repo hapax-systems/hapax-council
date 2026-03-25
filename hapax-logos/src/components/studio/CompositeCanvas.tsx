@@ -56,6 +56,17 @@ export function CompositeCanvas({
     // Trail state
     let lastTrailHead = 0;
 
+    // Ping-pong back buffer for trail persistence (avoids 8-bit ghost residue)
+    let backCanvas: HTMLCanvasElement | null = null;
+    let backCtx: CanvasRenderingContext2D | null = null;
+    // Scratch canvas for drift shift (avoids undefined same-canvas read/write behavior)
+    let scratchCanvas: HTMLCanvasElement | null = null;
+    let scratchCtx: CanvasRenderingContext2D | null = null;
+
+    // Drift accumulators (fractional pixel tracking)
+    let driftAccumX = 0;
+    let driftAccumY = 0;
+
     // Stutter state
     let tick = 0;
     let displayIdx = 0;
@@ -73,6 +84,26 @@ export function CompositeCanvas({
     let cachedMainFilter = "";
     let cachedTrailFilter = "";
     let cachedOverlayFilter = "";
+
+    /** Ensure back buffer and scratch canvas match display canvas dimensions.
+     *  Preserves existing trail content on resize by copying old buffer to new one. */
+    const ensureBackBuffer = (w: number, h: number) => {
+      if (backCanvas && backCanvas.width === w && backCanvas.height === h) return;
+      const oldBack = backCanvas;
+      backCanvas = document.createElement("canvas");
+      backCanvas.width = w;
+      backCanvas.height = h;
+      backCtx = backCanvas.getContext("2d");
+      // Preserve accumulated trail content from previous buffer on resize
+      if (oldBack && backCtx) {
+        backCtx.drawImage(oldBack, 0, 0, w, h);
+      }
+      // Scratch canvas for safe drift shift (avoids undefined same-canvas self-draw)
+      scratchCanvas = document.createElement("canvas");
+      scratchCanvas.width = w;
+      scratchCanvas.height = h;
+      scratchCtx = scratchCanvas.getContext("2d");
+    };
 
     const fetchFrame = () => {
       if (!running || pending) return;
@@ -110,7 +141,7 @@ export function CompositeCanvas({
     // Helper: draw main frame with warp/slices/simple
     // skipWarp: true when trails active — animated warp + persistence = illegible smearing
     const drawMainFrame = (
-      ctx: CanvasRenderingContext2D,
+      target: CanvasRenderingContext2D,
       main: HTMLImageElement,
       w: number, h: number,
       filter: string,
@@ -131,10 +162,10 @@ export function CompositeCanvas({
         const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
         const sliceH = Math.ceil(h / warpCfg.sliceCount);
 
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.globalCompositeOperation = blendMode as GlobalCompositeOperation;
-        if (filter !== "none") ctx.filter = filter;
+        target.save();
+        target.globalAlpha = alpha;
+        target.globalCompositeOperation = blendMode as GlobalCompositeOperation;
+        if (filter !== "none") target.filter = filter;
 
         for (let s = 0; s < warpCfg.sliceCount; s++) {
           const sy = s * sliceH;
@@ -144,19 +175,19 @@ export function CompositeCanvas({
             Math.sin(slicePhase * 2.3) * (warpCfg.sliceAmplitude * 0.5);
           const sliceStretch = 1 + Math.sin(slicePhase * 0.8) * 0.008;
 
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(0, sy, w, sliceH + 1);
-          ctx.clip();
-          ctx.translate(w / 2, h / 2);
-          ctx.rotate(rot);
-          ctx.scale(scale, scale * sliceStretch);
-          ctx.translate(-w / 2 + panX + sliceShift, -h / 2 + panY);
-          ctx.drawImage(main, 0, 0, w, h);
-          ctx.restore();
+          target.save();
+          target.beginPath();
+          target.rect(0, sy, w, sliceH + 1);
+          target.clip();
+          target.translate(w / 2, h / 2);
+          target.rotate(rot);
+          target.scale(scale, scale * sliceStretch);
+          target.translate(-w / 2 + panX + sliceShift, -h / 2 + panY);
+          target.drawImage(main, 0, 0, w, h);
+          target.restore();
         }
 
-        ctx.restore();
+        target.restore();
       } else if (warpCfg) {
         const t = tick * 0.04;
         const panX = Math.sin(t) * warpCfg.panX;
@@ -164,27 +195,27 @@ export function CompositeCanvas({
         const rot = Math.sin(t * 0.5) * warpCfg.rotate;
         const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
 
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.globalCompositeOperation = blendMode as GlobalCompositeOperation;
-        if (filter !== "none") ctx.filter = filter;
-        ctx.translate(w / 2, h / 2);
-        ctx.rotate(rot);
-        ctx.scale(scale, scale);
-        ctx.translate(-w / 2 + panX, -h / 2 + panY);
-        ctx.drawImage(main, 0, 0, w, h);
-        ctx.restore();
+        target.save();
+        target.globalAlpha = alpha;
+        target.globalCompositeOperation = blendMode as GlobalCompositeOperation;
+        if (filter !== "none") target.filter = filter;
+        target.translate(w / 2, h / 2);
+        target.rotate(rot);
+        target.scale(scale, scale);
+        target.translate(-w / 2 + panX, -h / 2 + panY);
+        target.drawImage(main, 0, 0, w, h);
+        target.restore();
       } else {
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.globalCompositeOperation = blendMode as GlobalCompositeOperation;
-        if (filter !== "none") ctx.filter = filter;
-        ctx.drawImage(main, 0, 0, w, h);
-        ctx.restore();
+        target.save();
+        target.globalAlpha = alpha;
+        target.globalCompositeOperation = blendMode as GlobalCompositeOperation;
+        if (filter !== "none") target.filter = filter;
+        target.drawImage(main, 0, 0, w, h);
+        target.restore();
       }
     };
 
-    // Helper: draw overlay + post-effects
+    // Helper: draw overlay + post-effects onto display canvas
     const drawOverlayAndEffects = (
       main: HTMLImageElement,
       w: number, h: number,
@@ -196,12 +227,12 @@ export function CompositeCanvas({
       const smoothAvail = Math.min(smoothWriteHead, SMOOTH_RING_SIZE);
       const useSmoothRing = smoothSource && smoothAvail > 0;
       const available = Math.min(writeHead, RING_SIZE);
-      const idx = Math.abs(displayIdx) % available;
+      const frameIdx = Math.abs(displayIdx) % available;
       const hasFilterOverrides = liveFilterRef.current || smoothFilterRef.current;
       if (p.overlay && (useSmoothRing || available > p.overlay.delayFrames)) {
         const delayed = useSmoothRing
           ? smoothRing[((smoothWriteHead - 1 - SMOOTH_DELAY_FRAMES) + SMOOTH_RING_SIZE * 100) % Math.min(smoothAvail, SMOOTH_RING_SIZE)]
-          : frameRing[(idx - p.overlay.delayFrames + available * 100) % available];
+          : frameRing[(frameIdx - p.overlay.delayFrames + available * 100) % available];
         if (delayed) {
           ctx.save();
           if (cachedOverlayFilter !== "none") {
@@ -240,7 +271,16 @@ export function CompositeCanvas({
       }
 
       // --- Post-effects ---
-      const fx = p.effects;
+      drawPostEffects(main, w, h, mainFilter);
+    };
+
+    /** Draw post-effects (scanlines, bands, vignette, syrup, freeze tint) onto display canvas. */
+    const drawPostEffects = (
+      main: HTMLImageElement | null,
+      w: number, h: number,
+      mainFilter: string,
+    ) => {
+      const fx = presetRef.current.effects;
 
       if (fx.scanlines) {
         ctx.save();
@@ -291,6 +331,38 @@ export function CompositeCanvas({
         ctx.fillStyle = "rgba(80, 30, 120, 0.18)";
         ctx.fillRect(0, 0, w, h);
       }
+    };
+
+    /**
+     * Compute calibrated fade and draw alphas based on blend mode and preset params.
+     * The key insight: fade and draw must reach approximate equilibrium to prevent
+     * wash-out (additive) or fade-to-black (multiply). destination-out fade avoids
+     * the 8-bit ghost residue problem inherent in source-over black-rect fading.
+     */
+    const computeTrailAlphas = (trail: CompositePreset["trail"]) => {
+      // Base fade rate per rAF tick, tuned per blend mode
+      const baseFade = trail.blendMode === "lighter" ? 0.05
+        : trail.blendMode === "multiply" ? 0.08
+        : trail.blendMode === "difference" ? 0.03
+        : 0.04;
+      // Scale by opacity (user-facing trail intensity)
+      const opacityScale = 0.5 + trail.opacity * 0.5;
+      // Scale inversely by count (more echoes = slower fade for longer persistence)
+      const countScale = 1.0 / Math.sqrt(Math.max(trail.count, 1));
+      const fadeAlpha = baseFade * opacityScale * countScale;
+
+      // Main draw alpha: enough presence per frame without overwhelming fade
+      // Main draw alpha: enough presence per frame without overwhelming fade.
+      // "difference" needs moderate alpha — too high saturates to a persistent bright ghost.
+      const mainAlpha = trail.blendMode === "lighter"
+        ? 0.08 + (trail.opacity * 0.12) / Math.sqrt(Math.max(trail.count, 1))
+        : trail.blendMode === "difference"
+          ? 0.15 + trail.opacity * 0.25
+          : trail.blendMode === "multiply"
+            ? 0.3 + trail.opacity * 0.3
+            : 0.2 + trail.opacity * 0.4;
+
+      return { fadeAlpha, mainAlpha };
     };
 
     const render = () => {
@@ -364,50 +436,65 @@ export function CompositeCanvas({
       const isNewFrame = writeHead !== lastTrailHead;
 
       if (trailActive) {
-        // --- PERSISTENCE MODEL: don't clear, dim + redraw ---
-        // Fade runs every rAF tick so trails decay smoothly at display refresh rate.
-        // New source frames are composited only when a new JPEG arrives.
-        const fadeRate = trail.opacity * 0.012 / Math.max(trail.count, 1);
+        // --- PING-PONG PERSISTENCE MODEL ---
+        // Back buffer accumulates trail content. Display canvas gets a clean copy
+        // each tick with post-effects on top. destination-out fade avoids 8-bit
+        // ghost residue that plagues source-over black-rect fading.
+        ensureBackBuffer(w, h);
+        if (!backCtx) return;
 
-        // 1. FADE: dim old content every tick for smooth decay
-        ctx.save();
-        ctx.globalCompositeOperation = "source-over";
-        ctx.globalAlpha = fadeRate;
-        ctx.fillStyle = "#000";
-        ctx.fillRect(0, 0, w, h);
-        ctx.restore();
+        const { fadeAlpha, mainAlpha } = computeTrailAlphas(trail);
 
-        // 2. DRAW MAIN only on new frames
+        // 1. FADE: subtract alpha from existing content (destination-out)
+        backCtx.save();
+        backCtx.globalCompositeOperation = "destination-out";
+        backCtx.globalAlpha = fadeAlpha;
+        backCtx.fillStyle = "rgba(0,0,0,1)";
+        backCtx.fillRect(0, 0, w, h);
+        backCtx.restore();
+
+        // 2. DRIFT: shift existing content for spatial trail separation
+        if (trail.driftX > 0 || trail.driftY > 0) {
+          // Organic sinusoidal drift direction
+          const t = tick * 0.015;
+          const dxSign = Math.sin(t);
+          const dySign = Math.cos(t * 0.7);
+          driftAccumX += trail.driftX * dxSign * 0.15;
+          driftAccumY += trail.driftY * dySign * 0.15;
+
+          if (Math.abs(driftAccumX) >= 1 || Math.abs(driftAccumY) >= 1) {
+            const shiftX = Math.trunc(driftAccumX);
+            const shiftY = Math.trunc(driftAccumY);
+            driftAccumX -= shiftX;
+            driftAccumY -= shiftY;
+            // Use scratch canvas to avoid undefined same-canvas read/write behavior
+            if (scratchCtx && scratchCanvas) {
+              scratchCtx.clearRect(0, 0, w, h);
+              scratchCtx.drawImage(backCanvas!, 0, 0);
+              backCtx.clearRect(0, 0, w, h);
+              backCtx.drawImage(scratchCanvas, shiftX, shiftY);
+            }
+          }
+        }
+
+        // 3. COMPOSITE new frame onto back buffer (only on new JPEG arrival)
         if (isNewFrame) {
           lastTrailHead = writeHead;
-
-          // Alpha tuned per blend mode to balance accumulation vs readability.
-          // lighter: low alpha prevents white-out; others use higher alpha for presence.
-          const mainAlpha = trail.blendMode === "lighter"
-            ? 0.08 + trail.opacity * 0.12   // range 0.08–0.20
-            : 0.3 + trail.opacity * 0.5;     // range 0.30–0.80
-
-          drawMainFrame(ctx, main, w, h, cachedTrailFilter, mainAlpha, trail.blendMode, true);
-
-          // 3. OVERLAY (only on new frames — delayed source compositing)
-          drawOverlayAndEffects(main, w, h, cachedTrailFilter);
+          drawMainFrame(backCtx, main, w, h, cachedTrailFilter, mainAlpha, trail.blendMode, true);
         }
 
-        // 4. POST-EFFECTS run every tick so scanlines/vignette stay visible
-        const fx = p.effects;
-        if (fx.scanlines) {
-          ctx.save();
-          ctx.globalAlpha = 0.12;
-          ctx.fillStyle = "rgba(0,0,0,1)";
-          for (let y = 0; y < h; y += 4) ctx.fillRect(0, y + 2, w, 1.5);
-          ctx.restore();
-        }
-        if (fx.vignette) {
-          const vig = ctx.createRadialGradient(w / 2, h / 2, w * 0.3, w / 2, h / 2, w * 0.7);
-          vig.addColorStop(0, "rgba(0,0,0,0)");
-          vig.addColorStop(1, `rgba(0,0,0,${fx.vignetteStrength})`);
-          ctx.fillStyle = vig;
-          ctx.fillRect(0, 0, w, h);
+        // 4. PRESENT: copy back buffer to display canvas
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(backCanvas!, 0, 0);
+
+        // 5. OVERLAY + POST-EFFECTS on display canvas (not accumulated into trail buffer)
+        // Use main filter here, not trail filter — post-effects (VHS head-switch, band
+        // displacement) should match the main frame color, not the trail color treatment.
+        if (isNewFrame) {
+          drawOverlayAndEffects(main, w, h, cachedMainFilter);
+        } else {
+          // Post-effects still run every tick for visual consistency
+          drawPostEffects(main, w, h, cachedMainFilter);
         }
 
       } else {
