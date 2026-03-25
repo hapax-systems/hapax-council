@@ -15,20 +15,35 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
 from qdrant_client import QdrantClient
 
+# ── Feature-gated typed settings ─────────────────────────────────────────────
+
+_USE_SETTINGS = os.environ.get("HAPAX_USE_SETTINGS", "") == "1"
+if _USE_SETTINGS:
+    from shared.settings import CouncilSettings
+
+    _settings = CouncilSettings()
+
 # ── Environment ──────────────────────────────────────────────────────────────
 
-LITELLM_BASE: str = os.environ.get(
-    "LITELLM_API_BASE",
-    os.environ.get("LITELLM_BASE_URL", "http://localhost:4000"),
-)
-LITELLM_KEY: str = os.environ.get("LITELLM_API_KEY", "")
+if _USE_SETTINGS:
+    LITELLM_BASE: str = _settings.litellm.base_url
+    LITELLM_KEY: str = _settings.litellm.api_key.get_secret_value()
+    QDRANT_URL: str = _settings.qdrant.url
+    OLLAMA_URL: str = _settings.ollama.host
+else:
+    LITELLM_BASE = os.environ.get(
+        "LITELLM_API_BASE",
+        os.environ.get("LITELLM_BASE_URL", "http://localhost:4000"),
+    )
+    LITELLM_KEY = os.environ.get("LITELLM_API_KEY", "")
+    QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+    OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
 if not LITELLM_KEY:
     warnings.warn(
         "LITELLM_API_KEY is not set — LLM calls will fail until a valid key is provided",
         stacklevel=1,
     )
-QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
-OLLAMA_URL: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 LOGOS_API_URL: str = os.environ.get("COCKPIT_BASE_URL", "http://localhost:8051/api")
 
 # ── Canonical paths ─────────────────────────────────────────────────────────
