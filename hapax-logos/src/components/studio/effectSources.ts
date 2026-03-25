@@ -38,13 +38,13 @@ export function sourceUrl(id: string): string | undefined {
 }
 
 /** Map frontend source IDs to backend preset names.
- *  Most strip the 'fx-' prefix directly. CSS-only presets (nightvision, silhouette)
+ *  Most strip the 'fx-' prefix directly. CSS-only presets (nightvision)
  *  route to 'clean' since their visual character comes from the composite preset's
- *  colorFilter, not from a GPU shader.
+ *  colorFilter, not from a GPU shader. Silhouette has a dedicated backend preset.
  */
 const BACKEND_PRESET_MAP: Record<string, string> = {
   "fx-nightvision": "clean",
-  "fx-silhouette": "clean",
+  "fx-silhouette": "silhouette",
 };
 
 /** Tell the compositor to switch to a different effect preset.

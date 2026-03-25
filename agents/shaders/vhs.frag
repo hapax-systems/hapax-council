@@ -68,10 +68,10 @@ void main() {
         color.rgb += brightShift;
     }
 
-    // --- Sepia warmth ---
+    // --- Cool blue/cyan VHS color cast ---
     float gray = dot(color.rgb, vec3(0.299, 0.587, 0.114));
-    vec3 sepia = vec3(gray * 1.15, gray * 1.0, gray * 0.85);
-    color.rgb = mix(color.rgb, sepia, 0.35);
+    vec3 cool = vec3(gray * 0.85, gray * 0.95, gray * 1.1);
+    color.rgb = mix(color.rgb, cool, 0.3);
 
     // --- Slight blur (tape degradation) ---
     vec4 blur = texture2D(tex, uv + vec2(px, 0.0)) + texture2D(tex, uv - vec2(px, 0.0));
@@ -82,12 +82,35 @@ void main() {
 
     // --- Scrolling noise band ---
     float bandDist = abs(uv.y - u_noise_band_y);
-    float bandWidth = 0.012;
+    float bandWidth = 0.04;
     if (bandDist < bandWidth) {
         float noise = hash(uv * u_time * 100.0);
         float bandIntensity = 1.0 - (bandDist / bandWidth);
-        color.rgb = mix(color.rgb, vec3(noise), 0.6 * bandIntensity);
+        // Horizontal displacement within band
+        float disp = (hash(vec2(floor(uv.y * u_height), u_time * 5.0)) - 0.5) * 6.0 * px;
+        vec3 displaced = texture2D(tex, vec2(uv.x + disp, uv.y)).rgb;
+        color.rgb = mix(color.rgb, mix(displaced, vec3(noise), 0.5), 0.6 * bandIntensity);
     }
+
+    // --- Second noise band (narrower, offset) ---
+    float band2Y = fract(u_noise_band_y * 0.7 + 0.4);
+    float band2Dist = abs(uv.y - band2Y);
+    float band2Width = bandWidth * 0.6;
+    if (band2Dist < band2Width) {
+        float noise2 = hash(uv * u_time * 77.0);
+        float band2Intensity = 1.0 - (band2Dist / band2Width);
+        color.rgb = mix(color.rgb, vec3(noise2), 0.3 * band2Intensity);
+    }
+
+    // --- Oxide dropout (random white horizontal streaks) ---
+    float dropHash = hash(vec2(floor(uv.y * u_height), floor(u_time * 8.0)));
+    if (dropHash < 0.003) {
+        color.rgb = mix(color.rgb, vec3(1.0), 0.8);
+    }
+
+    // --- Per-line luminance instability ---
+    float lineJitter = (hash(vec2(floor(uv.y * u_height * 0.5), u_time * 3.0)) - 0.5) * 0.03;
+    color.rgb += lineJitter;
 
     // --- Gaussian-profile scanlines ---
     float scanPos = mod(gl_FragCoord.y, 4.0);

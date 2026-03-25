@@ -36,60 +36,83 @@ void main() {
         return;
     }
 
-    // Sort direction from u_direction: 0=right, 0.5=diagonal, 1=down
+    // Sort direction: 0=right, 1=down
     float angle = u_direction * 3.14159 * 0.5;
     vec2 dir = vec2(cos(angle), sin(angle));
     vec2 texel = vec2(1.0 / u_width, 1.0 / u_height);
 
-    vec3 accum = vec3(0.0);
-    float weight = 0.0;
-    float len = min(u_sort_length, 64.0);
-
-    // Sample neighbors along sort direction, accumulate weighted average
-    for (float i = 0.0; i < 64.0; i += 1.0) {
-        if (i >= len) break;
-        vec2 sampleUV = uv + dir * texel * i;
-
-        // Clamp to texture bounds
-        if (sampleUV.x < 0.0 || sampleUV.x > 1.0 ||
-            sampleUV.y < 0.0 || sampleUV.y > 1.0) break;
-
-        vec4 s = texture2D(tex, sampleUV);
-        float sLum = luma(s.rgb);
-
-        // Stop at threshold boundary — dark regions anchor
+    // Walk backward to find interval start
+    int intervalStart = 0;
+    for (int i = 1; i < 64; i++) {
+        vec2 sUV = uv - dir * texel * float(i);
+        if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0) break;
+        float sLum = luma(texture2D(tex, sUV).rgb);
         if (sLum < u_threshold_low || sLum > u_threshold_high) break;
-
-        // Distance falloff — nearer samples weigh more
-        float w = 1.0 - (i / len);
-        w *= w;  // quadratic falloff for sharper streaks
-        accum += s.rgb * w;
-        weight += w;
+        intervalStart = i;
     }
 
-    // Also sample backwards (negative direction) for symmetry
-    for (float i = 1.0; i < 64.0; i += 1.0) {
-        if (i >= len * 0.5) break;
-        vec2 sampleUV = uv - dir * texel * i;
-        if (sampleUV.x < 0.0 || sampleUV.x > 1.0 ||
-            sampleUV.y < 0.0 || sampleUV.y > 1.0) break;
-
-        vec4 s = texture2D(tex, sampleUV);
-        float sLum = luma(s.rgb);
+    // Walk forward to find interval end
+    int intervalEnd = 0;
+    for (int i = 1; i < 64; i++) {
+        vec2 sUV = uv + dir * texel * float(i);
+        if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0) break;
+        float sLum = luma(texture2D(tex, sUV).rgb);
         if (sLum < u_threshold_low || sLum > u_threshold_high) break;
-
-        float w = 1.0 - (i / len);
-        w *= w * 0.5;  // backwards samples weigh less
-        accum += s.rgb * w;
-        weight += w;
+        intervalEnd = i;
     }
 
-    vec3 sorted = (weight > 0.0) ? accum / weight : orig.rgb;
+    int intervalLen = intervalStart + intervalEnd + 1;
+    if (intervalLen < 3) {
+        gl_FragColor = orig;
+        return;
+    }
 
-    // Luminance-biased ordering: brighter pixels push toward sort direction
-    // This mimics the visual gradient of true sorting
-    float bias = smoothstep(u_threshold_low, u_threshold_high, lum);
-    sorted = mix(sorted, sorted * (0.9 + 0.2 * bias), 0.5);
+    // Sample 12 evenly-spaced pixels within the interval
+    vec3 samples[12];
+    float sampleLums[12];
+    float stepSize = float(intervalLen) / 12.0;
+
+    for (int i = 0; i < 12; i++) {
+        float pos = -float(intervalStart) + stepSize * float(i);
+        vec2 sUV = uv + dir * texel * pos;
+        sUV = clamp(sUV, vec2(0.0), vec2(1.0));
+        samples[i] = texture2D(tex, sUV).rgb;
+        sampleLums[i] = luma(samples[i]);
+    }
+
+    // Bubble sort the 12 samples by luminance (ascending)
+    for (int pass = 0; pass < 11; pass++) {
+        for (int j = 0; j < 11; j++) {
+            if (j >= 11 - pass) break;
+            if (sampleLums[j] > sampleLums[j + 1]) {
+                vec3 tmpC = samples[j];
+                samples[j] = samples[j + 1];
+                samples[j + 1] = tmpC;
+                float tmpL = sampleLums[j];
+                sampleLums[j] = sampleLums[j + 1];
+                sampleLums[j + 1] = tmpL;
+            }
+        }
+    }
+
+    // Map current pixel position to sorted array index
+    float posInInterval = float(intervalStart) / float(intervalLen);
+    float idx = posInInterval * 11.0;
+    int idxLow = int(floor(idx));
+    int idxHigh = int(ceil(idx));
+    if (idxHigh > 11) idxHigh = 11;
+    if (idxLow < 0) idxLow = 0;
+    float frac = idx - float(idxLow);
+
+    // Loop-based lookup for GLSL ES 1.0 compliance (no non-constant array indexing)
+    vec3 valLow = samples[0];
+    vec3 valHigh = samples[0];
+    for (int k = 0; k < 12; k++) {
+        if (k == idxLow) valLow = samples[k];
+        if (k == idxHigh) valHigh = samples[k];
+    }
+
+    vec3 sorted = mix(valLow, valHigh, frac);
 
     gl_FragColor = vec4(sorted, 1.0);
 }

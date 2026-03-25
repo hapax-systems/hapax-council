@@ -96,10 +96,22 @@ def _infer_cross_modal_activity(
     overhead = per_camera_behaviors.get("overhead", {})
     hand_zones = overhead.get("hand_zones", "")
 
+    # Camera-primary scratch detection: turntable zone + any non-idle energy.
+    # Autocorrelation-based scratch detection is unreliable at high contact mic
+    # gain (turntable motor vibration dominates), so the camera is primary.
+    # Specific match first: both modalities agree → highest confidence.
     if "turntable" in hand_zones and desk_activity == "scratching":
-        return ("scratching", 0.95)
-    if "pads" in hand_zones and desk_activity in ("drumming", "tapping"):
+        return ("scratching", 0.95)  # both agree — highest confidence
+    if "turntable" in hand_zones and desk_activity not in ("idle", ""):
+        return ("scratching", 0.85)
+
+    # Pad zones: MPC Live II + two SP-404 MKIIs
+    pad_zones = ("mpc", "sp404_left", "sp404_right", "pads")
+    if any(z in hand_zones for z in pad_zones) and desk_activity in ("drumming", "tapping"):
         return ("playing_pads", 0.90)
+    if any(z in hand_zones for z in pad_zones) and desk_activity not in ("idle", ""):
+        return ("playing_pads", 0.80)  # camera sees pads, some desk activity
+
     if "keyboard" in hand_zones and desk_activity == "typing":
         return ("coding", 0.90)
     if "mixer" in hand_zones and desk_activity == "tapping":

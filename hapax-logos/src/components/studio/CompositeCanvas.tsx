@@ -105,6 +105,28 @@ export function CompositeCanvas({
       scratchCtx = scratchCanvas.getContext("2d");
     };
 
+    // --- Noise overlay (pre-baked grain at 1/8 resolution) ---
+    const noiseW = 240;
+    const noiseH = 135;
+    const noiseCanvas = document.createElement("canvas");
+    noiseCanvas.width = noiseW;
+    noiseCanvas.height = noiseH;
+    const noiseCtx = noiseCanvas.getContext("2d")!;
+    const noiseImageData = noiseCtx.createImageData(noiseW, noiseH);
+    let noiseGenerated = false;
+    let noiseTickCounter = 0;
+
+    const regenerateNoise = () => {
+      const d = noiseImageData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const v = Math.random() * 255;
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255;
+      }
+      noiseCtx.putImageData(noiseImageData, 0, 0);
+      noiseGenerated = true;
+    };
+
     const fetchFrame = () => {
       if (!running || pending) return;
       pending = true;
@@ -154,12 +176,10 @@ export function CompositeCanvas({
 
       if (warpCfg && warpCfg.sliceCount > 0) {
         const t = tick * 0.04;
-        const panX = Math.sin(t) * warpCfg.panX;
-        const panY =
-          Math.sin(t * 0.7) * (warpCfg.panY * 0.64) +
-          Math.sin(t * 0.3) * (warpCfg.panY * 0.36);
-        const rot = Math.sin(t * 0.5) * warpCfg.rotate;
-        const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
+        const panX = (Math.sin(t) * 0.5 + Math.sin(t * 0.618) * 0.3 + Math.sin(t * 0.237) * 0.2) * warpCfg.panX;
+        const panY = (Math.sin(t * 0.7) * 0.5 + Math.sin(t * 0.432) * 0.3 + Math.sin(t * 0.166) * 0.2) * warpCfg.panY;
+        const rot = (Math.sin(t * 0.5) * 0.6 + Math.sin(t * 0.309) * 0.4) * warpCfg.rotate;
+        const scale = warpCfg.zoom + (Math.sin(t * 0.2) * 0.6 + Math.sin(t * 0.124) * 0.4) * warpCfg.zoomBreath;
         const sliceH = Math.ceil(h / warpCfg.sliceCount);
 
         target.save();
@@ -190,10 +210,10 @@ export function CompositeCanvas({
         target.restore();
       } else if (warpCfg) {
         const t = tick * 0.04;
-        const panX = Math.sin(t) * warpCfg.panX;
-        const panY = Math.sin(t * 0.7) * warpCfg.panY;
-        const rot = Math.sin(t * 0.5) * warpCfg.rotate;
-        const scale = warpCfg.zoom + Math.sin(t * 0.2) * warpCfg.zoomBreath;
+        const panX = (Math.sin(t) * 0.5 + Math.sin(t * 0.618) * 0.3 + Math.sin(t * 0.237) * 0.2) * warpCfg.panX;
+        const panY = (Math.sin(t * 0.7) * 0.5 + Math.sin(t * 0.432) * 0.3 + Math.sin(t * 0.166) * 0.2) * warpCfg.panY;
+        const rot = (Math.sin(t * 0.5) * 0.6 + Math.sin(t * 0.309) * 0.4) * warpCfg.rotate;
+        const scale = warpCfg.zoom + (Math.sin(t * 0.2) * 0.6 + Math.sin(t * 0.124) * 0.4) * warpCfg.zoomBreath;
 
         target.save();
         target.globalAlpha = alpha;
@@ -228,7 +248,6 @@ export function CompositeCanvas({
       const useSmoothRing = smoothSource && smoothAvail > 0;
       const available = Math.min(writeHead, RING_SIZE);
       const frameIdx = Math.abs(displayIdx) % available;
-      const hasFilterOverrides = liveFilterRef.current || smoothFilterRef.current;
       if (p.overlay && (useSmoothRing || available > p.overlay.delayFrames)) {
         const delayed = useSmoothRing
           ? smoothRing[((smoothWriteHead - 1 - SMOOTH_DELAY_FRAMES) + SMOOTH_RING_SIZE * 100) % Math.min(smoothAvail, SMOOTH_RING_SIZE)]
@@ -240,18 +259,14 @@ export function CompositeCanvas({
           }
           ctx.globalAlpha = p.overlay.alpha;
           ctx.globalCompositeOperation = p.overlay.blendMode as GlobalCompositeOperation;
-          if (hasFilterOverrides) {
-            ctx.drawImage(delayed, 0, 0, w, h);
-          } else {
-            const dt = tick * 0.03;
-            ctx.drawImage(
-              delayed,
-              Math.sin(dt) * 5,
-              p.overlay.driftY + Math.sin(dt * 0.6) * 4,
-              w,
-              h,
-            );
-          }
+          const dt = tick * 0.03;
+          ctx.drawImage(
+            delayed,
+            Math.sin(dt) * 5,
+            p.overlay.driftY + Math.sin(dt * 0.6) * 4,
+            w,
+            h,
+          );
           ctx.restore();
         }
       }
@@ -338,6 +353,85 @@ export function CompositeCanvas({
       }
     };
 
+    // --- Bloom post-effect (1/4 resolution bright-pass + blur) ---
+    let bloomCanvas: HTMLCanvasElement | null = null;
+    let bloomCtx: CanvasRenderingContext2D | null = null;
+
+    const ensureBloomCanvas = (w: number, h: number) => {
+      const bw = Math.ceil(w / 4);
+      const bh = Math.ceil(h / 4);
+      if (bloomCanvas && bloomCanvas.width === bw && bloomCanvas.height === bh) return;
+      bloomCanvas = document.createElement("canvas");
+      bloomCanvas.width = bw;
+      bloomCanvas.height = bh;
+      bloomCtx = bloomCanvas.getContext("2d");
+    };
+
+    /** Draw noise grain overlay if preset has noise config. */
+    const drawNoise = (w: number, h: number) => {
+      const noise = presetRef.current.noise;
+      if (!noise?.enabled) return;
+
+      if (!noiseGenerated || (noise.animated && ++noiseTickCounter % 3 === 0)) {
+        regenerateNoise();
+      }
+
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      ctx.globalAlpha = noise.intensity;
+      ctx.globalCompositeOperation = "overlay";
+      ctx.drawImage(noiseCanvas, 0, 0, w, h);
+      ctx.restore();
+    };
+
+    /** Draw bloom glow: extract bright pixels, blur at 1/4 res, composite with lighter. */
+    const drawBloom = (w: number, h: number) => {
+      const bloom = presetRef.current.bloom;
+      if (!bloom?.enabled || !canvas) return;
+
+      ensureBloomCanvas(w, h);
+      if (!bloomCtx || !bloomCanvas) return;
+
+      const brightPass = 0.5 - bloom.threshold * 0.4;
+      bloomCtx.filter = `brightness(${brightPass}) contrast(100) blur(${bloom.radius / 4}px)`;
+      bloomCtx.drawImage(canvas, 0, 0, bloomCanvas.width, bloomCanvas.height);
+      bloomCtx.filter = "none";
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = bloom.alpha;
+      ctx.drawImage(bloomCanvas, 0, 0, w, h);
+      ctx.restore();
+    };
+
+    let strobeTicks = 0;
+
+    const drawStrobe = (w: number, h: number) => {
+      const strobe = presetRef.current.strobe;
+      if (!strobe) return;
+
+      if (strobeTicks > 0) {
+        strobeTicks--;
+        ctx.save();
+        ctx.fillStyle = strobe.color;
+        ctx.fillRect(0, 0, w, h);
+        ctx.restore();
+      } else if (Math.random() < strobe.chance) {
+        strobeTicks = strobe.duration;
+      }
+    };
+
+    const applyCircularMask = (w: number, h: number) => {
+      if (!presetRef.current.circularMask) return;
+      const radius = Math.min(w, h) * 0.42;
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-in";
+      ctx.beginPath();
+      ctx.arc(w / 2, h / 2, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    };
+
     /**
      * Compute calibrated fade and draw alphas based on blend mode and preset params.
      * The key insight: fade and draw must reach approximate equilibrium to prevent
@@ -346,7 +440,7 @@ export function CompositeCanvas({
      */
     const computeTrailAlphas = (trail: CompositePreset["trail"]) => {
       // Base fade rate per rAF tick, tuned per blend mode
-      const baseFade = trail.blendMode === "lighter" ? 0.05
+      const baseFade = trail.blendMode === "lighter" ? 0.03
         : trail.blendMode === "multiply" ? 0.08
         : trail.blendMode === "difference" ? 0.03
         : 0.04;
@@ -516,12 +610,20 @@ export function CompositeCanvas({
           // Post-effects still run every tick for visual consistency
           drawPostEffects(main, w, h, cachedMainFilter);
         }
+        drawNoise(w, h);
+        drawBloom(w, h);
+        drawStrobe(w, h);
+        applyCircularMask(w, h);
 
       } else {
         // --- NO TRAILS: clear and redraw every rAF tick (warp OK here) ---
         ctx.clearRect(0, 0, w, h);
         drawMainFrame(ctx, main, w, h, cachedMainFilter, 1, "source-over");
         drawOverlayAndEffects(main, w, h, cachedMainFilter);
+        drawNoise(w, h);
+        drawBloom(w, h);
+        drawStrobe(w, h);
+        applyCircularMask(w, h);
       }
     };
 

@@ -21,7 +21,7 @@ float halftone_dot(vec2 pixel, float angle_deg, float ink) {
     vec2 cell = mod(rotated, u_dot_size) / u_dot_size - 0.5;
     float dist = length(cell);
     float radius = ink * 0.7;  // darker = bigger dot
-    return smoothstep(radius + 0.02, radius - 0.02, dist);
+    return step(dist, radius);
 }
 
 void main() {
@@ -62,11 +62,12 @@ void main() {
         float k_dot = halftone_dot(pixel, 45.0, k_ink);
 
         // Subtractive color: start white, subtract ink layers
+        // Cyan absorbs Red, Magenta absorbs Green, Yellow absorbs Blue
         vec3 color = vec3(1.0);
-        color -= vec3(0.0, c_dot * 0.7, c_dot);        // cyan
-        color -= vec3(m_dot, 0.0, m_dot * 0.3);        // magenta
-        color -= vec3(y_dot * 0.1, y_dot * 0.1, y_dot); // yellow
-        color -= vec3(k_dot);                           // black
+        color.r -= c_dot;                                // cyan subtracts red
+        color.g -= m_dot;                                // magenta subtracts green
+        color.b -= y_dot;                                // yellow subtracts blue
+        color -= vec3(k_dot);                            // black subtracts all
 
         gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
     }

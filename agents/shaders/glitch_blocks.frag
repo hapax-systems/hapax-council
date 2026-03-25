@@ -44,7 +44,7 @@ void main() {
         if (effectType < 0.4) {
             // Displacement: shift the block's UV
             float shiftX = (blockHash(blockID, timeSlot + 1.0) - 0.5) * 60.0 / u_width;
-            float shiftY = (blockHash(blockID, timeSlot + 2.0) - 0.5) * 30.0 / u_height;
+            float shiftY = (blockHash(blockID, timeSlot + 2.0) - 0.5) * 6.0 / u_height;
             vec2 displaced = uv + vec2(shiftX, shiftY) * u_intensity;
 
             // RGB channel split
@@ -54,11 +54,12 @@ void main() {
             float b = texture2D(tex, displaced - vec2(split, 0.0)).b;
             gl_FragColor = vec4(r, g, b, 1.0);
 
-        } else if (effectType < 0.7) {
-            // Brightness corruption: wrong exposure
+        } else if (effectType < 0.55) {
+            // Brightness corruption + posterization
             vec4 color = texture2D(tex, uv);
             float bright = blockHash(blockID, timeSlot + 4.0) * 2.0;
             color.rgb *= bright;
+            color.rgb = floor(color.rgb * 4.0) / 4.0;
             gl_FragColor = clamp(color, 0.0, 1.0);
 
         } else if (effectType < 0.85) {
@@ -72,10 +73,16 @@ void main() {
             else
                 gl_FragColor = vec4(color.r, color.b, color.g, 1.0);
 
-        } else {
+        } else if (effectType < 0.9) {
             // Solid block (dead pixel block)
             float v = blockHash(blockID, timeSlot + 6.0);
             gl_FragColor = vec4(vec3(v * 0.3), 1.0);
+        } else {
+            // Data pattern bleed
+            vec2 pixel = gl_FragCoord.xy;
+            float pattern = mod(pixel.x + pixel.y * 3.0, 8.0) / 8.0;
+            float patternR = mod(pixel.x * 2.0 + pixel.y, 6.0) / 6.0;
+            gl_FragColor = vec4(pattern, patternR * 0.7, pattern * 0.5, 1.0);
         }
     } else {
         // --- Clean block ---

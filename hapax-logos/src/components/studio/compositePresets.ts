@@ -63,6 +63,27 @@ export interface CompositePreset {
   overlays: OverlayType[]; // CSS overlays (kept for non-canvas elements if needed)
   cellAnimation?: string;
   livePullIntervalMs?: number;
+
+  noise?: {
+    enabled: boolean;
+    intensity: number; // 0-1, overlay alpha
+    animated: boolean; // regenerate grain every 2-3 frames (scintillation)
+  };
+
+  bloom?: {
+    enabled: boolean;
+    threshold: number; // 0-1, brightness cutoff (maps to CSS brightness() param)
+    radius: number; // blur radius in px (at 1/4 resolution)
+    alpha: number; // composite opacity
+  };
+
+  strobe?: {
+    chance: number; // per-tick probability (0-0.1)
+    color: string; // rgba() string
+    duration: number; // ticks
+  };
+
+  circularMask?: boolean; // hard circular clip (Night Vision tube viewport)
 }
 
 const NO_EFFECTS: CompositePreset["effects"] = {
@@ -82,18 +103,18 @@ export const PRESETS: CompositePreset[] = [
     description: "Transparent echo — fading dim copies",
     colorFilter: "saturate(0.85) brightness(0.9)",
     trail: {
-      filter: "saturate(0.7) brightness(0.6)",
-      blendMode: "source-over",
-      opacity: 0.4,
-      count: 4,
-      driftX: 18,
-      driftY: 24,
+      filter: "saturate(0.7) brightness(0.6) blur(2px) hue-rotate(5deg)",
+      blendMode: "lighter",
+      opacity: 0.45,
+      count: 5,
+      driftX: 3,
+      driftY: 4,
     },
     overlay: {
       delayFrames: 12,
-      filter: "saturate(0.5) brightness(0.5)",
+      filter: "saturate(0.5) brightness(0.5) blur(3px)",
       alpha: 0.15,
-      blendMode: "source-over",
+      blendMode: "lighter",
       driftY: 16,
     },
     warp: {
@@ -111,18 +132,18 @@ export const PRESETS: CompositePreset[] = [
   {
     name: "Trails",
     description: "Bright additive motion trails",
-    colorFilter: "saturate(0.7) sepia(0.1) hue-rotate(20deg) brightness(1.15)",
+    colorFilter: "saturate(1.4) brightness(1.15)",
     trail: {
-      filter: "saturate(0.9) sepia(0.1) hue-rotate(30deg) brightness(1.2)",
+      filter: "saturate(1.8) brightness(1.3)",
       blendMode: "lighter",
-      opacity: 0.7,
-      count: 10,
+      opacity: 0.75,
+      count: 12,
       driftX: 2,
       driftY: 3,
     },
     overlay: {
       delayFrames: 4,
-      filter: "saturate(0.7) sepia(0.2) hue-rotate(60deg) brightness(1.2)",
+      filter: "saturate(1.5) brightness(1.2)",
       alpha: 0.2,
       blendMode: "lighter",
       driftY: 5,
@@ -143,26 +164,25 @@ export const PRESETS: CompositePreset[] = [
     name: "Screwed",
     description: "Houston syrup — dim, heavy, sinking",
     colorFilter:
-      "saturate(0.55) sepia(0.4) hue-rotate(250deg) contrast(1.05) brightness(0.9)",
+      "saturate(0.5) sepia(0.5) hue-rotate(260deg) contrast(1.0) brightness(0.85) blur(2px)",
     trail: {
-      filter: "saturate(0.3) brightness(0.5) sepia(0.6) hue-rotate(250deg)",
+      filter: "saturate(0.25) brightness(0.5) sepia(0.6) hue-rotate(270deg) blur(3px)",
       blendMode: "lighter",
-      opacity: 0.2,
-      count: 3,
+      opacity: 0.55,
+      count: 5,
       driftX: 0,
       driftY: 6,
     },
     overlay: {
       delayFrames: 10,
-      filter:
-        "saturate(0.4) sepia(0.6) hue-rotate(280deg) brightness(1.2)",
+      filter: "saturate(0.4) sepia(0.6) hue-rotate(280deg) brightness(1.2)",
       alpha: 0.45,
       blendMode: "lighter",
       driftY: 8,
     },
     warp: {
       panX: 20,
-      panY: 22, // 14 + 8
+      panY: 22,
       rotate: 0.025,
       zoom: 1.06,
       zoomBreath: 0.04,
@@ -170,12 +190,13 @@ export const PRESETS: CompositePreset[] = [
       sliceAmplitude: 6,
     },
     stutter: {
-      checkInterval: 10,
-      freezeChance: 0.5,
-      freezeMin: 3,
-      freezeMax: 10,
-      replayFrames: 3,
+      checkInterval: 15,
+      freezeChance: 0.2,
+      freezeMin: 8,
+      freezeMax: 20,
+      replayFrames: 2,
     },
+    noise: { enabled: true, intensity: 0.08, animated: false },
     effects: {
       scanlines: true,
       bandDisplacement: true,
@@ -187,30 +208,30 @@ export const PRESETS: CompositePreset[] = [
       syrupColor: "60, 20, 80",
     },
     overlays: [],
-    livePullIntervalMs: 180,
+    livePullIntervalMs: 300,
   },
   {
     name: "Datamosh",
     description: "Glitch — codec prediction artifacts",
-    colorFilter: "saturate(0.6) contrast(1.8) hue-rotate(40deg) brightness(1.15)",
+    colorFilter: "saturate(0.8) contrast(1.4) brightness(1.1)",
     trail: {
-      filter: "saturate(0.8) contrast(2.2) hue-rotate(90deg) brightness(1.4)",
+      filter: "saturate(0.9) contrast(1.3) brightness(1.2)",
       blendMode: "difference",
-      opacity: 0.95,
-      count: 7,
-      driftX: 8,
-      driftY: 6,
+      opacity: 0.9,
+      count: 6,
+      driftX: 12,
+      driftY: 10,
     },
     overlay: {
       delayFrames: 6,
-      filter: "saturate(0.6) hue-rotate(180deg) contrast(2.0) brightness(1.5)",
+      filter: "saturate(0.7) contrast(1.5) brightness(1.3)",
       alpha: 0.6,
       blendMode: "difference",
       driftY: 3,
     },
     stutter: {
       checkInterval: 8,
-      freezeChance: 0.35,
+      freezeChance: 0.4,
       freezeMin: 2,
       freezeMax: 6,
       replayFrames: 3,
@@ -269,14 +290,15 @@ export const PRESETS: CompositePreset[] = [
       vignette: true,
       vignetteStrength: 0.4,
     },
+    noise: { enabled: true, intensity: 0.06, animated: false },
     overlays: [],
   },
   {
     name: "Neon",
     description: "Color-cycling glow bloom",
-    colorFilter: "saturate(3.5) contrast(1.5) brightness(1.45)",
+    colorFilter: "saturate(2.5) contrast(1.8) brightness(1.1)",
     trail: {
-      filter: "saturate(4) contrast(1.3) brightness(1.9)",
+      filter: "saturate(3) contrast(1.3) brightness(1.6)",
       blendMode: "lighter",
       opacity: 0.6,
       count: 8,
@@ -285,7 +307,7 @@ export const PRESETS: CompositePreset[] = [
     },
     overlay: {
       delayFrames: 4,
-      filter: "saturate(4) contrast(1.4) brightness(2.2)",
+      filter: "saturate(3) contrast(1.4) brightness(1.8)",
       alpha: 0.45,
       blendMode: "lighter",
       driftY: 3,
@@ -299,6 +321,7 @@ export const PRESETS: CompositePreset[] = [
       sliceCount: 0,
       sliceAmplitude: 0,
     },
+    bloom: { enabled: true, threshold: 0.6, radius: 12, alpha: 0.5 },
     effects: { ...NO_EFFECTS, vignette: true, vignetteStrength: 0.5 },
     overlays: [],
   },
@@ -331,8 +354,11 @@ export const PRESETS: CompositePreset[] = [
       sliceCount: 0,
       sliceAmplitude: 0,
     },
+    noise: { enabled: true, intensity: 0.12, animated: false },
+    strobe: { chance: 0.03, color: "rgba(255, 40, 40, 0.3)", duration: 2 },
     effects: {
       ...NO_EFFECTS,
+      scanlines: true,
       vignette: true,
       vignetteStrength: 0.55,
       syrupGradient: true,
@@ -360,43 +386,43 @@ export const PRESETS: CompositePreset[] = [
       driftY: 0,
     },
     effects: { ...NO_EFFECTS, vignette: true, vignetteStrength: 0.15 },
+    noise: { enabled: true, intensity: 0.03, animated: true },
     overlays: [],
   },
   {
     name: "NightVision",
     description: "Green phosphor mono — IR-optimized surveillance",
-    colorFilter: "saturate(0) brightness(1.3) contrast(1.4)",
+    colorFilter: "saturate(0) sepia(1) hue-rotate(70deg) saturate(3) brightness(1.3) contrast(1.4)",
     trail: {
-      filter: "saturate(0) brightness(0.8)",
-      blendMode: "source-over",
-      opacity: 0.15,
-      count: 2,
+      filter: "saturate(0) brightness(0.7)",
+      blendMode: "lighter",
+      opacity: 0.2,
+      count: 3,
       driftX: 0,
       driftY: 0,
     },
+    noise: { enabled: true, intensity: 0.15, animated: true },
+    bloom: { enabled: true, threshold: 0.7, radius: 16, alpha: 0.4 },
+    circularMask: true,
     effects: {
       ...NO_EFFECTS,
       scanlines: true,
-      vignette: true,
-      vignetteStrength: 0.35,
-      syrupGradient: true,
-      syrupColor: "0, 60, 0",
     },
     overlays: [],
   },
   {
     name: "Silhouette",
     description: "High-contrast IR-only look — shapes over detail",
-    colorFilter: "saturate(0) contrast(3.0) brightness(0.6)",
+    colorFilter: "saturate(0) contrast(5) brightness(0.8) invert(1)",
     trail: {
-      filter: "saturate(0) contrast(2.0) brightness(0.4)",
+      filter: "saturate(0) contrast(3) brightness(0.5) invert(1)",
       blendMode: "source-over",
-      opacity: 0.1,
+      opacity: 0.15,
       count: 2,
       driftX: 0,
       driftY: 0,
     },
-    effects: { ...NO_EFFECTS, vignette: true, vignetteStrength: 0.4 },
+    effects: { ...NO_EFFECTS, vignette: true, vignetteStrength: 0.3 },
     overlays: [],
   },
   {
@@ -447,16 +473,16 @@ export const PRESETS: CompositePreset[] = [
       filter: "saturate(0.7) brightness(0.9)",
       blendMode: "source-over",
       opacity: 0.5,
-      count: 6,
+      count: 8,
       driftX: 0,
-      driftY: 8,
+      driftY: 10,
     },
     overlay: {
       delayFrames: 8,
       filter: "saturate(0.6) brightness(0.8)",
       alpha: 0.3,
       blendMode: "source-over",
-      driftY: 12,
+      driftY: 14,
     },
     effects: { ...NO_EFFECTS, vignette: true, vignetteStrength: 0.25 },
     overlays: [],
@@ -466,12 +492,12 @@ export const PRESETS: CompositePreset[] = [
     description: "Deep recursion — rainbow cycling glow",
     colorFilter: "saturate(3.0) contrast(1.4) brightness(1.3)",
     trail: {
-      filter: "saturate(3.5) contrast(1.2) brightness(1.6)",
+      filter: "saturate(3.0) contrast(1.1) brightness(1.4)",
       blendMode: "lighter",
-      opacity: 0.7,
+      opacity: 0.85,
       count: 12,
-      driftX: 3,
-      driftY: 4,
+      driftX: 2,
+      driftY: 3,
     },
     overlay: {
       delayFrames: 6,
@@ -481,11 +507,11 @@ export const PRESETS: CompositePreset[] = [
       driftY: 4,
     },
     warp: {
-      panX: 3,
-      panY: 2,
-      rotate: 0.006,
-      zoom: 1.015,
-      zoomBreath: 0.01,
+      panX: 4,
+      panY: 3,
+      rotate: 0.012,
+      zoom: 1.04,
+      zoomBreath: 0.02,
       sliceCount: 0,
       sliceAmplitude: 0,
     },
@@ -553,17 +579,18 @@ export const PRESETS: CompositePreset[] = [
   {
     name: "Ambient",
     description: "Very dim, minimal trails — atmospheric presence",
-    colorFilter: "saturate(0.4) brightness(0.7) contrast(1.1)",
+    colorFilter: "saturate(0.3) brightness(0.4) contrast(0.8) blur(8px)",
     trail: {
-      filter: "saturate(0.3) brightness(0.5)",
+      filter: "saturate(0.2) brightness(0.3) blur(12px)",
       blendMode: "lighter",
-      opacity: 0.12,
+      opacity: 0.15,
       count: 3,
       driftX: 0,
       driftY: 1,
     },
-    effects: { ...NO_EFFECTS, vignette: true, vignetteStrength: 0.45 },
+    effects: { ...NO_EFFECTS, vignette: true, vignetteStrength: 0.6 },
     overlays: [],
+    livePullIntervalMs: 500,
   },
   {
     name: "Clean",

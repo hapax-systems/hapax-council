@@ -36,36 +36,32 @@ void main() {
         return;
     }
 
+    // Reduce effective resolution to ~480x270 (thermal sensor simulation)
+    vec2 quantRes = vec2(u_width, u_height) * 0.25;
+    uv = floor(uv * quantRes) / quantRes;
+
     vec2 texel = vec2(1.0 / u_width, 1.0 / u_height);
 
-    // --- Luminance with slight temporal smoothing (sensor lag) ---
-    float lum = dot(texture2D(tex, uv).rgb, vec3(0.299, 0.587, 0.114));
-
-    // Slight blur to simulate lower thermal sensor resolution
-    float lumL = dot(texture2D(tex, uv + vec2(-texel.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
-    float lumR = dot(texture2D(tex, uv + vec2( texel.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
-    float lumU = dot(texture2D(tex, uv + vec2(0.0,  texel.y)).rgb, vec3(0.299, 0.587, 0.114));
-    float lumD = dot(texture2D(tex, uv + vec2(0.0, -texel.y)).rgb, vec3(0.299, 0.587, 0.114));
-    lum = (lum * 0.4 + (lumL + lumR + lumU + lumD) * 0.15);
-
-    // --- Sobel edge detection ---
-    float tl = dot(texture2D(tex, uv + vec2(-texel.x,  texel.y)).rgb, vec3(0.299, 0.587, 0.114));
-    float tr = dot(texture2D(tex, uv + vec2( texel.x,  texel.y)).rgb, vec3(0.299, 0.587, 0.114));
-    float ml = lumL;
-    float mr = lumR;
-    float bl = dot(texture2D(tex, uv + vec2(-texel.x, -texel.y)).rgb, vec3(0.299, 0.587, 0.114));
-    float br = dot(texture2D(tex, uv + vec2( texel.x, -texel.y)).rgb, vec3(0.299, 0.587, 0.114));
-
-    float gx = -tl - 2.0 * ml - bl + tr + 2.0 * mr + br;
-    float gy = -tl - 2.0 * lumU - tr + bl + 2.0 * lumD + br;
-    float edge = sqrt(gx * gx + gy * gy);
+    // --- 5x5 Gaussian blur (thermal sensor resolution simulation) ---
+    float lum = 0.0;
+    float totalWeight = 0.0;
+    for (float dy = -2.0; dy <= 2.0; dy += 1.0) {
+        for (float dx = -2.0; dx <= 2.0; dx += 1.0) {
+            float w = exp(-(dx*dx + dy*dy) / 4.5);
+            vec2 sampleUV = uv + vec2(dx, dy) * texel * 2.0;
+            lum += dot(texture2D(tex, sampleUV).rgb, vec3(0.299, 0.587, 0.114)) * w;
+            totalWeight += w;
+        }
+    }
+    lum = lum / totalWeight;
 
     // --- Palette mapping with shift ---
     float palIdx = fract(lum + u_palette_shift);
     vec3 color = thermal_palette(palIdx);
 
-    // --- Edge glow (warm white/yellow at edges like heat radiation) ---
-    color += edge * u_edge_glow * 2.0 * vec3(1.0, 0.85, 0.3);
+    // --- Hot-source bloom (bright regions glow outward) ---
+    float bloom = smoothstep(0.7, 1.0, lum) * u_edge_glow * 0.4;
+    color += bloom * vec3(1.0, 0.9, 0.7);
 
     // --- Low-frequency thermal noise ---
     float noise = hash(uv * 40.0 + vec2(u_time * 0.3, u_time * 0.2));
