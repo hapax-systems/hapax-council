@@ -341,7 +341,7 @@ class StimmungCollector:
         return SystemStimmung(
             **dimensions,
             overall_stance=stance,
-            timestamp=now,
+            timestamp=time.time(),
         )
 
     def _record(self, dimension: str, value: float) -> None:

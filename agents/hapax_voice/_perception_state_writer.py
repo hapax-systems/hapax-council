@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,15 +22,31 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+
+def _safe_int(val: object, default: int = 0) -> int:
+    """Safely cast to int, returning default on any failure."""
+    try:
+        return int(float(val)) if val is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_float(val: object, default: float = 0.0) -> float:
+    """Safely cast to float, returning default on any failure."""
+    try:
+        return float(val) if val is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
 PERCEPTION_STATE_DIR = Path.home() / ".cache" / "hapax-voice"
 PERCEPTION_STATE_FILE = PERCEPTION_STATE_DIR / "perception-state.json"
 _perception_write_failures: int = 0
 
 # ── Supplementary content ring buffer ─────────────────────────────────────
 
-_MAX_CONTENT_ITEMS = 5
 _CONTENT_TTL_S = 60.0
-_supplementary_content: list[dict[str, Any]] = []
+_supplementary_content: deque[dict[str, Any]] = deque(maxlen=5)
 
 
 def push_supplementary_content(
@@ -48,21 +65,17 @@ def push_supplementary_content(
         "title": title,
         "body": body[:200],
         "image_path": image_path,
+        "ts": time.time(),
+        "ttl": 300,
         "timestamp": time.time(),
     }
     _supplementary_content.append(item)
-    # Trim to max
-    while len(_supplementary_content) > _MAX_CONTENT_ITEMS:
-        _supplementary_content.pop(0)
 
 
 def _get_live_content() -> list[dict[str, Any]]:
     """Return non-expired supplementary content items."""
     now = time.time()
-    live = [c for c in _supplementary_content if now - c["timestamp"] < _CONTENT_TTL_S]
-    # Prune expired from the source list too
-    _supplementary_content[:] = live
-    return live
+    return [c for c in _supplementary_content if now - c.get("ts", 0) < c.get("ttl", 300)]
 
 
 # ── Voice session snapshot ────────────────────────────────────────────────
@@ -299,91 +312,98 @@ def write_perception_state(
         pass  # consent registry may not be loaded yet
 
     # Biometric data from watch backend
-    heart_rate = int(_bval("heart_rate_bpm", 0))
+    heart_rate = _safe_int(_bval("heart_rate_bpm", 0))
     stress_elevated = bool(_bval("stress_elevated", False))
-    physiological_load = float(_bval("physiological_load", 0.0))
-    sleep_quality = float(_bval("sleep_quality", 1.0))
+    physiological_load = _safe_float(_bval("physiological_load", 0.0))
+    sleep_quality = _safe_float(_bval("sleep_quality", 1.0), 1.0)
     watch_activity = str(_bval("watch_activity_state", "unknown"))
 
-    state: dict[str, Any] = {
-        "production_activity": str(_bval("production_activity", "")),
-        "music_genre": str(_bval("music_genre", "")),
-        "flow_state": flow_state,
-        "flow_score": flow_score,
-        "flow_modifier": round(flow_modifier, 3),
-        # Classification consumption: derived signals
-        "gesture_intent": gesture_intent,
-        "frustration_score": round(frustration_score, 3),
-        "emotion_valence": float(_bval("emotion_valence", 0.0)),
-        "emotion_arousal": float(_bval("emotion_arousal", 0.0)),
-        "audio_energy_rms": float(_bval("audio_energy_rms", 0.0)),
-        # Vision classification
-        "detected_objects": str(_bval("detected_objects", "[]")),
-        "person_count": int(_bval("person_count", 0) or 0),
-        "scene_type": str(_bval("scene_type", "unknown")),
-        "gaze_direction": str(_bval("gaze_direction", "unknown")),
-        "hand_gesture": str(_bval("hand_gesture", "none")),
-        "posture": str(_bval("posture", "unknown")),
-        "ambient_brightness": float(_bval("ambient_brightness", 0.0) or 0),
-        "color_temperature": str(_bval("color_temperature", "unknown")),
-        "top_emotion": str(_bval("top_emotion", "neutral")),
-        "face_count": int(_bval("face_count", 0) or 0),
-        "operator_present": bool(_bval("operator_present", False))
-        or int(_bval("person_count", 0) or 0) > 0,
-        "activity_mode": str(_bval("activity_mode", "unknown")),
-        "interruptibility_score": float(_bval("interruptibility_score", 0.9) or 0.9),
-        "vad_confidence": float(_bval("vad_confidence", 0.0) or 0),
-        "presence_score": float(_bval("presence_score", 0.0) or 0),
-        "scene_state_clip": str(_bval("scene_state_clip", "")),
-        # Multi-camera scene consensus
-        "per_camera_scenes": _safe_json_dict(_bval("per_camera_scenes", "{}")),
-        "usb_devices": str(_bval("usb_devices", "")),
-        "network_devices": str(_bval("network_devices", "")),
-        "active_contracts": active_contracts,
-        "persistence_allowed": consent_tracker.persistence_allowed if consent_tracker else True,
-        "guest_present": consent_tracker.phase.value != "no_guest" if consent_tracker else False,
-        "consent_phase": consent_tracker.phase.value if consent_tracker else "no_guest",
-        # Bayesian presence
-        "presence_state": str(_bval("presence_state", "")),
-        "presence_probability": float(_bval("presence_probability", 0.0) or 0.0),
-        "guest_count": int(_bval("guest_count", 0) or 0),
-        # Biometrics (Batch E)
-        "heart_rate_bpm": heart_rate,
-        "stress_elevated": stress_elevated,
-        "physiological_load": physiological_load,
-        "sleep_quality": sleep_quality,
-        "watch_activity_state": watch_activity,
-        # Phone media (AVRCP via Bluetooth)
-        "phone_media_playing": bool(_bval("phone_media_playing", False)),
-        "phone_media_title": str(_bval("phone_media_title", "")),
-        "phone_media_artist": str(_bval("phone_media_artist", "")),
-        "phone_sms_unread": int(_bval("phone_sms_unread", 0) or 0),
-        "phone_sms_latest_sender": str(_bval("phone_sms_latest_sender", "")),
-        "phone_sms_latest_text": str(_bval("phone_sms_latest_text", "")),
-        "phone_call_active": bool(_bval("phone_call_active", False)),
-        "phone_call_incoming": bool(_bval("phone_call_incoming", False)),
-        "phone_call_number": str(_bval("phone_call_number", "")),
-        # KDE Connect phone awareness
-        "phone_battery_pct": int(_bval("phone_battery_pct", 0) or 0),
-        "phone_battery_charging": bool(_bval("phone_battery_charging", False)),
-        "phone_notification_count": int(_bval("phone_notification_count", 0) or 0),
-        "phone_kde_connected": bool(_bval("phone_kde_connected", False)),
-        # Scene inventory (persistent object tracking)
-        "scene_inventory": _parse_scene_inventory(_bval("scene_inventory", "{}")),
-        # Cognitive loop
-        "cognitive_readiness": float(_bval("cognitive_readiness", 0.0) or 0.0),
-        # Local LLM classification (WS5)
-        "llm_activity": str(_bval("llm_activity", "")),
-        "llm_flow_hint": str(_bval("llm_flow_hint", "")),
-        "llm_confidence": float(_bval("llm_confidence", 0.0) or 0.0),
-        # Voice session (Batch A)
-        "voice_session": _snapshot_voice_session(session, pipeline),
-        # Supplementary content (Batch B)
-        "voice_content": _get_live_content(),
-        # WS2: aggregate perception confidence
-        "aggregate_confidence": _compute_aggregate_confidence(perception),
-        "timestamp": time.time(),
-    }
+    try:
+        state: dict[str, Any] = {
+            "production_activity": str(_bval("production_activity", "")),
+            "music_genre": str(_bval("music_genre", "")),
+            "flow_state": flow_state,
+            "flow_score": flow_score,
+            "flow_modifier": round(flow_modifier, 3),
+            # Classification consumption: derived signals
+            "gesture_intent": gesture_intent,
+            "frustration_score": round(frustration_score, 3),
+            "emotion_valence": _safe_float(_bval("emotion_valence", 0.0)),
+            "emotion_arousal": _safe_float(_bval("emotion_arousal", 0.0)),
+            "audio_energy_rms": _safe_float(_bval("audio_energy_rms", 0.0)),
+            # Vision classification
+            "detected_objects": str(_bval("detected_objects", "[]")),
+            "person_count": _safe_int(_bval("person_count", 0)),
+            "scene_type": str(_bval("scene_type", "unknown")),
+            "gaze_direction": str(_bval("gaze_direction", "unknown")),
+            "hand_gesture": str(_bval("hand_gesture", "none")),
+            "posture": str(_bval("posture", "unknown")),
+            "ambient_brightness": _safe_float(_bval("ambient_brightness", 0.0)),
+            "color_temperature": str(_bval("color_temperature", "unknown")),
+            "top_emotion": str(_bval("top_emotion", "neutral")),
+            "face_count": _safe_int(_bval("face_count", 0)),
+            "operator_present": bool(_bval("operator_present", False))
+            or _safe_int(_bval("person_count", 0)) > 0,
+            "activity_mode": str(_bval("activity_mode", "unknown")),
+            "interruptibility_score": _safe_float(_bval("interruptibility_score", 0.9), 0.9),
+            "vad_confidence": _safe_float(_bval("vad_confidence", 0.0)),
+            "presence_score": _safe_float(_bval("presence_score", 0.0)),
+            "scene_state_clip": str(_bval("scene_state_clip", "")),
+            # Multi-camera scene consensus
+            "per_camera_scenes": _safe_json_dict(_bval("per_camera_scenes", "{}")),
+            "usb_devices": str(_bval("usb_devices", "")),
+            "network_devices": str(_bval("network_devices", "")),
+            "active_contracts": active_contracts,
+            "persistence_allowed": consent_tracker.persistence_allowed if consent_tracker else True,
+            "guest_present": consent_tracker.phase.value != "no_guest"
+            if consent_tracker
+            else False,
+            "consent_phase": consent_tracker.phase.value if consent_tracker else "no_guest",
+            # Bayesian presence
+            "presence_state": str(_bval("presence_state", "")),
+            "presence_probability": _safe_float(_bval("presence_probability", 0.0)),
+            "guest_count": _safe_int(_bval("guest_count", 0)),
+            # Biometrics (Batch E)
+            "heart_rate_bpm": heart_rate,
+            "stress_elevated": stress_elevated,
+            "physiological_load": physiological_load,
+            "sleep_quality": sleep_quality,
+            "watch_activity_state": watch_activity,
+            "circadian_alignment": _safe_float(_bval("circadian_alignment", 0.5), 0.5),
+            # Phone media (AVRCP via Bluetooth)
+            "phone_media_playing": bool(_bval("phone_media_playing", False)),
+            "phone_media_title": str(_bval("phone_media_title", "")),
+            "phone_media_artist": str(_bval("phone_media_artist", "")),
+            "phone_sms_unread": _safe_int(_bval("phone_sms_unread", 0)),
+            "phone_sms_latest_sender": str(_bval("phone_sms_latest_sender", "")),
+            "phone_sms_latest_text": str(_bval("phone_sms_latest_text", "")),
+            "phone_call_active": bool(_bval("phone_call_active", False)),
+            "phone_call_incoming": bool(_bval("phone_call_incoming", False)),
+            "phone_call_number": str(_bval("phone_call_number", "")),
+            # KDE Connect phone awareness
+            "phone_battery_pct": _safe_int(_bval("phone_battery_pct", 0)),
+            "phone_battery_charging": bool(_bval("phone_battery_charging", False)),
+            "phone_notification_count": _safe_int(_bval("phone_notification_count", 0)),
+            "phone_kde_connected": bool(_bval("phone_kde_connected", False)),
+            # Scene inventory (persistent object tracking)
+            "scene_inventory": _parse_scene_inventory(_bval("scene_inventory", "{}")),
+            # Cognitive loop
+            "cognitive_readiness": _safe_float(_bval("cognitive_readiness", 0.0)),
+            # Local LLM classification (WS5)
+            "llm_activity": str(_bval("llm_activity", "")),
+            "llm_flow_hint": str(_bval("llm_flow_hint", "")),
+            "llm_confidence": _safe_float(_bval("llm_confidence", 0.0)),
+            # Voice session (Batch A)
+            "voice_session": _snapshot_voice_session(session, pipeline),
+            # Supplementary content (Batch B)
+            "voice_content": _get_live_content(),
+            # WS2: aggregate perception confidence
+            "aggregate_confidence": _compute_aggregate_confidence(perception),
+            "timestamp": time.time(),
+        }
+    except Exception:
+        log.warning("Perception state construction failed", exc_info=True)
+        state = {"timestamp": time.time(), "error": True, "operator_present": False}
 
     # Consent curtailment: when guest is present without consent,
     # redact person-adjacent fields from the persisted snapshot.

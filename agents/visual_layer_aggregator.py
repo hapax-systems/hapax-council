@@ -865,6 +865,8 @@ class VisualLayerAggregator:
         self._last_pattern_query_ts: float = 0.0
         self._last_pattern_activity: str = ""
         self._ws3_initialized = False
+        self._ws3_retries: int = 0
+        self._ws3_last_attempt: float = 0.0
 
         # Self-band: apperception tick (standalone, reads from shm)
         self._apperception = ApperceptionTick()
@@ -1093,20 +1095,35 @@ class VisualLayerAggregator:
         except (FileNotFoundError, json.JSONDecodeError):
             pass  # perception daemon may not be running
 
+    _WS3_RETRY_INTERVAL_S = 60.0
+    _WS3_MAX_RETRIES = 5
+
     def _init_ws3(self) -> None:
-        """Lazy-init WS3 stores (avoids Qdrant connection at import time)."""
+        """Lazy-init WS3 stores with bounded retry on failure."""
         if self._ws3_initialized:
             return
-        self._ws3_initialized = True
+        if self._ws3_retries >= self._WS3_MAX_RETRIES:
+            return
+        now = time.monotonic()
+        if now - self._ws3_last_attempt < self._WS3_RETRY_INTERVAL_S:
+            return
+        self._ws3_last_attempt = now
+        self._ws3_retries += 1
         try:
             self._correction_store = CorrectionStore()
             self._correction_store.ensure_collection()
             self._episode_store = EpisodeStore()
             self._episode_store.ensure_collection()
         except Exception:
-            log.debug("WS3 stores unavailable (Qdrant down?)", exc_info=True)
+            log.warning(
+                "WS3 stores unavailable (attempt %d/%d)",
+                self._ws3_retries,
+                self._WS3_MAX_RETRIES,
+                exc_info=True,
+            )
             self._correction_store = None
             self._episode_store = None
+            return  # don't try pattern store if base stores failed
         try:
             from shared.pattern_consolidation import PatternStore
 
@@ -1115,6 +1132,7 @@ class VisualLayerAggregator:
         except Exception:
             log.debug("PatternStore unavailable", exc_info=True)
             self._pattern_store = None
+        self._ws3_initialized = True  # only on full success
 
     def _tick_experiential(self, data: dict) -> None:
         """Feed perception data to the WS3 experiential pipeline.

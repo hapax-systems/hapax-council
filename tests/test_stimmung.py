@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import time as time_mod
 
 from shared.stimmung import (
     _STALE_THRESHOLD_S,
@@ -291,3 +292,13 @@ class TestBiometricDimensions:
         )
         nn = s.non_nominal_dimensions
         assert "operator_stress" in nn
+
+
+class TestStimmungTimestamp:
+    def test_snapshot_timestamp_is_wall_clock(self):
+        """N2: serialized timestamp must be wall-clock, not monotonic."""
+        c = StimmungCollector()
+        c.update_health(healthy=5, total=5)
+        s = c.snapshot()
+        assert s.timestamp > 1_000_000_000, f"Timestamp {s.timestamp} looks monotonic"
+        assert abs(s.timestamp - time_mod.time()) < 2.0
