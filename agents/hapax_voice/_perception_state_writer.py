@@ -409,6 +409,7 @@ def write_perception_state(
             "desk_autocorr_peak": _safe_float(_bval("desk_autocorr_peak", 0.0)),
             # Overhead hand tracking (zone-based)
             "overhead_hand_zones": str(_bval("overhead_hand_zones", "")),
+            "detected_action": str(_bval("detected_action", "")),
             # Voice session (Batch A)
             "voice_session": _snapshot_voice_session(session, pipeline),
             # Supplementary content (Batch B)

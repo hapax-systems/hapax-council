@@ -306,6 +306,7 @@ class OverlayData(BaseModel):
     production_activity: str = ""
     desk_activity: str = ""
     overhead_hand_zones: str = ""
+    detected_action: str = ""
     music_genre: str = ""
     flow_state: str = ""
     flow_score: float = 0.0

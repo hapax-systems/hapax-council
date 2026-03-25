@@ -30,7 +30,7 @@ except ImportError:
 # ── DSP constants ─────────────────────────────────────────────────────────────
 
 _FFT_SIZE = 512
-_SAMPLE_RATE = 16000
+_SAMPLE_RATE = 16000  # Perception DSP rate. Recorder service uses 48kHz for archival quality.
 _FRAME_SAMPLES = _FFT_SIZE
 _FRAME_BYTES = _FRAME_SAMPLES * 2  # int16
 
@@ -163,10 +163,11 @@ def _classify_gesture(onset_times: list[float]) -> str:
             return "double_tap"
         return "none"
 
-    if n == 3:
-        span = onset_times[-1] - onset_times[0]
-        ioi_01 = onset_times[1] - onset_times[0]
-        ioi_12 = onset_times[2] - onset_times[1]
+    if n >= 3:
+        first_three = onset_times[:3]
+        span = first_three[-1] - first_three[0]
+        ioi_01 = first_three[1] - first_three[0]
+        ioi_12 = first_three[2] - first_three[1]
         if (
             span <= _GESTURE_WINDOW_S
             and ioi_01 >= _DOUBLE_TAP_MIN_IOI
@@ -427,6 +428,7 @@ class ContactMicBackend:
                     if gesture_onset_burst and (now - last_gesture_check) >= _GESTURE_TIMEOUT_S:
                         current_gesture = _classify_gesture(gesture_onset_burst)
                         gesture_onset_burst.clear()
+                        last_gesture_check = time.monotonic()
 
                     # Auto-expire gesture if no new onset within 3× timeout
                     if (

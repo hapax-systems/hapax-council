@@ -6,6 +6,7 @@ Requires=pipewire-pulse.service
 [Service]
 Type=simple
 ExecStartPre=/usr/bin/mkdir -p %h/audio-recording/contact-mic
+# Records at 48kHz for archival quality. ContactMicBackend DSP uses 16kHz independently.
 ExecStart=/bin/bash -c 'exec /usr/bin/pw-record \
     --target contact_mic --format s16 --rate 48000 --channels 1 - | \
     /usr/bin/ffmpeg -nostdin -f s16le -ar 48000 -ac 1 -i pipe: \

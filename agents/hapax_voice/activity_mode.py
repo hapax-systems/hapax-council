@@ -16,6 +16,7 @@ def classify_activity_mode(
     analysis: WorkspaceAnalysis | None,
     audio_music: bool = False,
     audio_speech: bool = False,
+    desk_activity: str = "",
 ) -> str:
     """Classify operator activity mode from workspace analysis + audio signals.
 
@@ -46,4 +47,10 @@ def classify_activity_mode(
     if analysis.app in _BROWSER_APPS:
         return "research"
 
-    return "idle" if analysis.operator_present else "unknown"
+    base = "idle" if analysis.operator_present else "unknown"
+
+    # Desk activity override: scratching/drumming implies production even without gear
+    if base in ("idle", "unknown") and desk_activity in ("scratching", "drumming"):
+        return "production"
+
+    return base

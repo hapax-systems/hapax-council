@@ -319,7 +319,7 @@ class VoiceDaemon:
                 "HD Pro Webcam C920",  # any C920 mic — airborne noise reference
             ],
             structure_sources=[
-                "Contact Microphone",  # Cortado contact mic — structure-borne reference
+                self.cfg.contact_mic_source,  # Cortado contact mic — structure-borne reference
             ],
         )
         self._noise_reference.start()
@@ -2228,7 +2228,9 @@ class VoiceDaemon:
                 # Update activity mode from latest workspace analysis
                 analysis = self.workspace_monitor.latest_analysis
                 if analysis is not None:
-                    mode = classify_activity_mode(analysis)
+                    _desk_b = self.perception.behaviors.get("desk_activity")
+                    _desk_act = str(_desk_b.value) if _desk_b is not None else ""
+                    mode = classify_activity_mode(analysis, desk_activity=_desk_act)
                     self.gate.set_activity_mode(mode)
                     self.perception.update_slow_fields(
                         activity_mode=mode,
