@@ -250,7 +250,6 @@ export function CompositeCanvas({
       const useSmoothRing = smoothSource && smoothAvail > 0;
       const available = Math.min(writeHead, RING_SIZE);
       const frameIdx = Math.abs(displayIdx) % available;
-      const hasFilterOverrides = liveFilterRef.current || smoothFilterRef.current;
       if (p.overlay && (useSmoothRing || available > p.overlay.delayFrames)) {
         const delayed = useSmoothRing
           ? smoothRing[((smoothWriteHead - 1 - SMOOTH_DELAY_FRAMES) + SMOOTH_RING_SIZE * 100) % Math.min(smoothAvail, SMOOTH_RING_SIZE)]
@@ -262,18 +261,14 @@ export function CompositeCanvas({
           }
           ctx.globalAlpha = p.overlay.alpha;
           ctx.globalCompositeOperation = p.overlay.blendMode as GlobalCompositeOperation;
-          if (hasFilterOverrides) {
-            ctx.drawImage(delayed, 0, 0, w, h);
-          } else {
-            const dt = tick * 0.03;
-            ctx.drawImage(
-              delayed,
-              Math.sin(dt) * 5,
-              p.overlay.driftY + Math.sin(dt * 0.6) * 4,
-              w,
-              h,
-            );
-          }
+          const dt = tick * 0.03;
+          ctx.drawImage(
+            delayed,
+            Math.sin(dt) * 5,
+            p.overlay.driftY + Math.sin(dt * 0.6) * 4,
+            w,
+            h,
+          );
           ctx.restore();
         }
       }
