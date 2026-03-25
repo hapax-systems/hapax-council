@@ -53,12 +53,6 @@ export function CompositeCanvas({
     let smoothWriteHead = 0;
     let smoothPending = false;
 
-    // Drift buffer: offscreen canvas for spatial trail drift (copy-shift)
-    const driftCanvas = document.createElement("canvas");
-    const driftCtx = driftCanvas.getContext("2d")!;
-
-
-
     // Trail state
     let lastTrailHead = 0;
 
@@ -384,19 +378,13 @@ export function CompositeCanvas({
           ? mainAlpha * 0.04
           : mainAlpha;
 
-        // 1. DRIFT: shift persisted canvas content before fade
-        if (trail.driftX !== 0 || trail.driftY !== 0) {
-          if (driftCanvas.width !== w || driftCanvas.height !== h) {
-            driftCanvas.width = w;
-            driftCanvas.height = h;
-          }
-          driftCtx.clearRect(0, 0, w, h);
-          driftCtx.drawImage(canvas, 0, 0);
-          ctx.clearRect(0, 0, w, h);
-          ctx.drawImage(driftCanvas, trail.driftX, trail.driftY);
-        }
+        // NOTE: spatial drift (trail.driftX/driftY) disabled in persistence mode.
+        // Shifting the entire persisted canvas each frame produces directional
+        // motion blur that obscures the scene. Drift was designed for the
+        // clearRect-every-frame model. Trail visual interest comes from blend
+        // modes, filters, and fade rate instead.
 
-        // 2. FADE: dim old content
+        // 1. FADE: dim old content
         ctx.save();
         ctx.globalAlpha = fadeRate;
         ctx.fillStyle = "#000";
