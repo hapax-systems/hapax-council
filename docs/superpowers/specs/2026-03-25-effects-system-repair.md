@@ -64,38 +64,52 @@ These fixes affect multiple effects and should be implemented first.
 
 **Problem**: Multiple effects need noise (Night Vision scintillation, VHS tape grain, Trap degradation, Diff noise floor) but the frontend has no noise capability.
 
-**Design**: Embed an inline SVG `<feTurbulence>` filter in the CompositeCanvas component tree. Apply via `ctx.filter = "url(#hapax-noise)"` as an overlay pass.
+**Design**: Use a small offscreen canvas (240x135, 1/8 of 1080p) filled with random grayscale pixels via `ImageData` + `Math.random()`. Scale up to full resolution with `imageSmoothingEnabled = false` for crunchy grain. This avoids SVG feTurbulence performance problems (CPU-bound, too slow at full resolution even with GPU acceleration).
 
-```html
-<svg width="0" height="0" style="position:absolute">
-  <defs>
-    <filter id="hapax-noise" x="0%" y="0%" width="100%" height="100%">
-      <feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="3"
-                    stitchTiles="stitch" result="noise" />
-      <feColorMatrix type="saturate" values="0" in="noise" result="monoNoise" />
-      <feBlend in="SourceGraphic" in2="monoNoise" mode="overlay" />
-    </filter>
-  </defs>
-</svg>
+**Implementation**:
+```typescript
+// Setup (once, in useEffect)
+const noiseCanvas = document.createElement("canvas");
+noiseCanvas.width = 240;
+noiseCanvas.height = 135;
+const noiseCtx = noiseCanvas.getContext("2d")!;
+const noiseData = noiseCtx.createImageData(240, 135);
+
+// Per-frame (when noise.animated) or once (when static)
+function regenerateNoise() {
+  const d = noiseData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = Math.random() * 255;
+    d[i] = d[i+1] = d[i+2] = v;
+    d[i+3] = 255;
+  }
+  noiseCtx.putImageData(noiseData, 0, 0);
+}
 ```
+
+**Application**: After main composite, draw noise overlay:
+```typescript
+ctx.save();
+ctx.imageSmoothingEnabled = false;  // nearest-neighbor = crunchy grain
+ctx.globalAlpha = noise.intensity;
+ctx.globalCompositeOperation = "overlay";
+ctx.drawImage(noiseCanvas, 0, 0, w, h);
+ctx.restore();
+```
+
+**Performance**: 240x135 ImageData fill with Math.random() takes <0.1ms. drawImage upscale is GPU-accelerated. For animated noise, regenerate every 2-3 frames (20-30fps grain) to save CPU. For static noise, generate once at mount.
 
 **Configuration**: Add optional `noise` field to `CompositePreset`:
 
 ```typescript
 noise?: {
   enabled: boolean;
-  intensity: number;    // 0-1, maps to feTurbulence opacity
-  baseFrequency: number; // 0.1-2.0, grain size (higher = finer)
-  animated: boolean;     // if true, seed changes per tick (scintillation)
+  intensity: number;    // 0-1, overlay alpha
+  animated: boolean;     // if true, regenerate grain every 2-3 frames (scintillation)
 };
 ```
 
-**Application**: After main composite, draw a noise overlay pass:
-1. Draw noise rectangle with SVG filter applied
-2. Composite with `source-over` at `noise.intensity` alpha
-3. For animated noise (Night Vision scintillation), update SVG seed attribute per tick
-
-**Presets using noise**: Night Vision (animated, high), VHS (static, low), Trap (static, medium), Diff (animated, very low).
+**Presets using noise**: Night Vision (animated, 0.15), VHS (static, 0.06), Trap (static, 0.12), Diff (animated, 0.03).
 
 ### 3.2 Frontend/Backend Preset Alignment
 
@@ -168,7 +182,7 @@ Ordered by severity (worst first). Each effect lists its source characteristics 
 |---|---|---|
 | 1 | Green phosphor | Replace CSS `saturate(0)` + green syrup gradient with `saturate(0) sepia(1) hue-rotate(70deg) saturate(3) brightness(1.3)`. This maps grayscale → sepia → green, making the ENTIRE image green, not just the bottom gradient |
 | 2 | Scintillation | Enable animated noise overlay (systemic §3.1). High baseFrequency (1.5), animated seed, moderate intensity (0.15) |
-| 3 | Bloom | Add a second canvas pass: draw the frame with high brightness threshold (only bright pixels survive via `contrast(8) brightness(2)`), apply `blur(12px)`, composite with `lighter` blend at 0.4 alpha. This creates bloom around bright sources only |
+| 3 | Bloom | Bloom post-effect via 1/4-resolution temp canvas: `bloomCtx.filter = "brightness(0.3) contrast(100) blur(4px)"`, drawImage from main at 1/4 size (bright-pass + blur in one GPU call), then composite back at full size with `lighter` blend at 0.4 alpha. The 4px blur at 1/4 res looks like 16px at full res. See §3.1a for bloom engine details |
 | 4 | Circular FOV | Replace radial gradient vignette with hard circular clip. `ctx.arc(w/2, h/2, radius, 0, TAU)` + `ctx.clip()`. Outside the circle: black. Inside: content. Radius = ~42% of canvas width (simulating NVG tube) |
 | 5 | Fixed-pattern | Draw 3-5 small circles at fixed positions (seeded by canvas dimensions) with slight brightness variation. These persist across frames as tube blemishes |
 
@@ -745,8 +759,8 @@ No automated tests for visual effects. Verification is manual:
 
 | Risk | Mitigation |
 |------|------------|
-| SVG feTurbulence performance at 60fps | Test early in Batch 1. Fallback: pre-rendered noise texture atlas |
-| Pixsort shader rewrite complexity | Use proven haxademic approach. Test with Shadertoy first |
-| Bloom post-effect performance | Threshold-based extraction reduces work. Only draw bright pixels to blur canvas |
+| Noise overlay performance | Pre-baked Math.random() ImageData at 240x135 is <0.1ms. Verified viable |
+| Pixsort shader rewrite complexity | GLSL ES 2.0 supports vec3[12] arrays, nested constant-bound loops, variable-indexed swaps. 12 texture fetches + 132 comparisons verified within budget on RTX 3090. Use bubble sort approach |
+| Bloom post-effect performance | 1/4 resolution temp canvas (480x270). brightness(0.3)+contrast(100)+blur(4px) in single drawImage. Verified viable at 60fps |
 | Chromatic aberration performance (Neon) | Two extra drawImage calls per frame. Measure before/after FPS |
 | Filter crossfade double-render cost | Only during 300ms transitions. Negligible overall |
