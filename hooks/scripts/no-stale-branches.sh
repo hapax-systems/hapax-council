@@ -47,9 +47,11 @@ echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s' && is_create=true
 # feature branch with commits ahead of main. Prevents subagents from
 # accidentally resetting branches and losing prior work.
 #
-# Strip quoted strings and heredoc content first to avoid false positives
-# from commit messages or echo'd text that MENTION destructive commands.
-CMD_STRIPPED="$(printf '%s' "$CMD" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")"
+# Strip quoted strings first to avoid false positives from commit messages
+# or echo'd text that MENTION destructive commands.
+# Uses sed -z (GNU, null-delimited) so patterns span newlines — this
+# correctly strips multi-line strings like "$(cat <<'EOF'...EOF)".
+CMD_STRIPPED="$(printf '%s' "$CMD" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g")"
 is_destructive=false
 
 # git reset --hard (with or without target)
