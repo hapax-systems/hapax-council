@@ -139,7 +139,7 @@ PRESETS: dict[str, EffectPreset] = {
         # Heavy temporal smear — slow, syrupy trails (not choppy stutter)
         trail=TrailConfig(
             count=5,
-            opacity=0.7,
+            opacity=0.55,
             blend_mode="add",
             drift_x=1,
             drift_y=3,
@@ -171,7 +171,9 @@ PRESETS: dict[str, EffectPreset] = {
     ),
     "datamosh": EffectPreset(
         name="datamosh",
-        color_grade=ColorGradeConfig(saturation=0.6, brightness=1.15, contrast=1.8, hue_rotate=40),
+        color_grade=ColorGradeConfig(saturation=0.8, brightness=1.1, contrast=1.4),
+        use_glitch_blocks_shader=True,
+        glitch_blocks_params={"u_block_size": 32.0, "u_intensity": 0.4, "u_rgb_split": 0.3},
         trail=TrailConfig(
             count=5,
             opacity=0.95,
@@ -268,11 +270,18 @@ PRESETS: dict[str, EffectPreset] = {
         trail=TrailConfig(count=2, opacity=0.15, blend_mode="source-over"),
         post_process=PostProcessConfig(vignette_strength=0.12),
     ),
+    "silhouette": EffectPreset(
+        name="silhouette",
+        color_grade=ColorGradeConfig(saturation=0.0, contrast=2.5, brightness=0.8),
+        trail=TrailConfig(count=2, opacity=0.1, blend_mode="source-over"),
+        post_process=PostProcessConfig(vignette_strength=0.3),
+        use_sobel=True,
+    ),
     "ambient": EffectPreset(
         name="ambient",
-        color_grade=ColorGradeConfig(saturation=0.15, brightness=0.3, contrast=0.95),
-        trail=TrailConfig(count=2, opacity=0.1, blend_mode="add"),
-        post_process=PostProcessConfig(vignette_strength=0.3),
+        color_grade=ColorGradeConfig(saturation=0.15, brightness=0.3, contrast=0.85),
+        trail=TrailConfig(count=2, opacity=0.08, blend_mode="add"),
+        post_process=PostProcessConfig(vignette_strength=0.4),
     ),
     "thermal": EffectPreset(
         name="thermal",
@@ -312,7 +321,7 @@ PRESETS: dict[str, EffectPreset] = {
             "u_threshold_low": 0.08,
             "u_threshold_high": 0.92,
             "u_sort_length": 56.0,
-            "u_direction": 0.15,  # slight diagonal for organic look
+            "u_direction": 0.0,  # horizontal
         },
     ),
     "ascii": EffectPreset(
@@ -321,7 +330,7 @@ PRESETS: dict[str, EffectPreset] = {
         trail=TrailConfig(count=1, opacity=0.05, blend_mode="source-over"),
         post_process=PostProcessConfig(vignette_strength=0.15),
         use_ascii_shader=True,
-        ascii_params={"u_cell_size": 8.0, "u_color_mode": 0.0},
+        ascii_params={"u_cell_size": 10.0, "u_color_mode": 0.0},
     ),
     "feedback": EffectPreset(
         name="feedback",
@@ -330,7 +339,7 @@ PRESETS: dict[str, EffectPreset] = {
         color_grade=ColorGradeConfig(saturation=1.6, brightness=1.1, contrast=1.4, hue_rotate=15.0),
         trail=TrailConfig(
             count=8,
-            opacity=0.92,  # very high — deep recursive accumulation
+            opacity=0.85,  # very high — deep recursive accumulation
             blend_mode="add",
             filter_params={
                 "brightness": 0.88,
