@@ -15,6 +15,8 @@ import pytest as _pytest
 
 from agents.hapax_voice.phenomenal_context import (
     _clear_cache,
+    _parse_temporal_snapshot,
+    _read_json,
     _render_impression,
     _render_self_state,
     _render_situation,
@@ -27,7 +29,7 @@ from agents.hapax_voice.phenomenal_context import (
 
 @_pytest.fixture(autouse=True)
 def _clear_phenomenal_cache():
-    """Clear the temporal cache before each test."""
+    """No-op cache clear fixture (cache globals removed in snapshot-isolation refactor)."""
     _clear_cache()
     yield
     _clear_cache()
@@ -200,10 +202,10 @@ class TestOrientation:
     def test_situation_is_coupled(self, tmp_path):
         """Situation line couples activity + time, not lists them separately."""
         bands = _make_temporal_shm(tmp_path, activity="coding", flow_state="active")
-        with patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands):
-            result = _render_situation()
-            # Should be something like "Evening, deep coding" not "Activity: coding. Time: evening."
-            assert ":" not in result or result.count(":") <= 1  # no key:value pairs
+        temporal_data = _parse_temporal_snapshot(_read_json(bands))
+        result = _render_situation(temporal_data)
+        # Should be something like "Evening, deep coding" not "Activity: coding. Time: evening."
+        assert ":" not in result or result.count(":") <= 1  # no key:value pairs
 
     def test_no_xml_in_output(self, tmp_path):
         """Output is natural language, never XML."""
@@ -237,15 +239,15 @@ class TestOrientation:
 class TestSelfCompression:
     def test_nominal_stimmung_empty(self, tmp_path):
         stimmung = _make_stimmung_shm(tmp_path, stance="nominal")
-        with patch("agents.hapax_voice.phenomenal_context._STIMMUNG_PATH", stimmung):
-            result = _render_stimmung()
-            assert result == ""
+        data = _read_json(stimmung)
+        result = _render_stimmung(data)
+        assert result == ""
 
     def test_degraded_stimmung_present(self, tmp_path):
         stimmung = _make_stimmung_shm(tmp_path, stance="degraded")
-        with patch("agents.hapax_voice.phenomenal_context._STIMMUNG_PATH", stimmung):
-            result = _render_stimmung()
-            assert "degraded" in result.lower()
+        data = _read_json(stimmung)
+        result = _render_stimmung(data)
+        assert "degraded" in result.lower()
 
     def test_missing_temporal_returns_empty(self):
         with patch(
@@ -280,10 +282,10 @@ class TestDirectionPreservation:
                 {"state": "entering_deep_work", "confidence": 0.72, "basis": "flow rising"}
             ],
         )
-        with patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands):
-            result = _render_impression()
-            assert "→" in result
-            assert "entering deep work" in result
+        temporal_data = _parse_temporal_snapshot(_read_json(bands))
+        result = _render_impression(temporal_data)
+        assert "→" in result
+        assert "entering deep work" in result
 
     def test_operator_away_rendered(self, tmp_path):
         """Operator absence changes the situation line."""
@@ -294,9 +296,9 @@ class TestDirectionPreservation:
             presence="away",
             presence_probability=0.1,
         )
-        with patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands):
-            result = _render_situation()
-            assert "away" in result.lower()
+        temporal_data = _parse_temporal_snapshot(_read_json(bands))
+        result = _render_situation(temporal_data)
+        assert "away" in result.lower()
 
     def test_surprise_renders_deviation(self, tmp_path):
         """Surprise renders as prediction error, not just observation."""
@@ -311,10 +313,10 @@ class TestDirectionPreservation:
                 }
             ],
         )
-        with patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands):
-            result = _render_surprise()
-            assert "unexpected" in result.lower()
-            assert "predicted" in result.lower()
+        temporal_data = _parse_temporal_snapshot(_read_json(bands))
+        result = _render_surprise(temporal_data)
+        assert "unexpected" in result.lower()
+        assert "predicted" in result.lower()
 
     def test_retention_shows_temporal_arrow(self, tmp_path):
         """Retention uses → to show temporal progression."""
@@ -325,10 +327,10 @@ class TestDirectionPreservation:
                 {"age_s": 5, "activity": "coding", "summary": "coding, 78bpm"},
             ],
         )
-        with patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands):
-            result = _render_temporal_depth()
-            assert "→" in result
-            assert "Was:" in result
+        temporal_data = _parse_temporal_snapshot(_read_json(bands))
+        result = _render_temporal_depth(temporal_data)
+        assert "→" in result
+        assert "Was:" in result
 
 
 # ── Self-State Tests ─────────────────────────────────────────────────────────
@@ -337,24 +339,24 @@ class TestDirectionPreservation:
 class TestSelfState:
     def test_low_coherence_hedging_instruction(self, tmp_path):
         apperception = _make_apperception_shm(tmp_path, coherence=0.3)
-        with patch("agents.hapax_voice.phenomenal_context._APPERCEPTION_PATH", apperception):
-            result = _render_self_state()
-            assert "hedge" in result.lower()
+        data = _read_json(apperception)
+        result = _render_self_state(data)
+        assert "hedge" in result.lower()
 
     def test_high_coherence_no_output(self, tmp_path):
         apperception = _make_apperception_shm(tmp_path, coherence=0.8)
-        with patch("agents.hapax_voice.phenomenal_context._APPERCEPTION_PATH", apperception):
-            result = _render_self_state()
-            assert result == ""
+        data = _read_json(apperception)
+        result = _render_self_state(data)
+        assert result == ""
 
     def test_low_confidence_dimension_named(self, tmp_path):
         apperception = _make_apperception_shm(
             tmp_path,
             dimensions={"activity_recognition": {"confidence": 0.2}},
         )
-        with patch("agents.hapax_voice.phenomenal_context._APPERCEPTION_PATH", apperception):
-            result = _render_self_state()
-            assert "activity recognition" in result
+        data = _read_json(apperception)
+        result = _render_self_state(data)
+        assert "activity recognition" in result
 
     def test_reflection_included(self, tmp_path):
         apperception = _make_apperception_shm(
@@ -363,6 +365,6 @@ class TestSelfState:
                 "I notice a tension: accuracy trend positive but last event problematized"
             ],
         )
-        with patch("agents.hapax_voice.phenomenal_context._APPERCEPTION_PATH", apperception):
-            result = _render_self_state()
-            assert "tension" in result
+        data = _read_json(apperception)
+        result = _render_self_state(data)
+        assert "tension" in result

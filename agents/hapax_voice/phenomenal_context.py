@@ -47,6 +47,14 @@ _APPERCEPTION_STALE_S = 30.0
 _STIMMUNG_STALE_S = 300.0
 
 
+def _read_json(path: Path) -> dict | None:
+    """Read a JSON file, returning None on any error."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def render(tier: str = "CAPABLE") -> str:
     """Render phenomenal context for voice LLM injection.
 
@@ -58,45 +66,47 @@ def render(tier: str = "CAPABLE") -> str:
     sparse output, eventful ones produce rich output. This function
     renders faithfully — it does not add compression logic.
     """
+    # Snapshot all sources once for cross-layer consistency
+    stimmung_data = _read_json(_STIMMUNG_PATH)
+    _raw_temporal = _read_json(_TEMPORAL_PATH)
+    apperception_data = _read_json(_APPERCEPTION_PATH)
+
+    # Parse temporal once: staleness check + XML parse
+    temporal_data = _parse_temporal_snapshot(_raw_temporal)
+
     lines: list[str] = []
 
     # ── Layer 1: Stimmung (non-nominal only) ─────────────────────
-    stimmung_line = _render_stimmung()
-    if stimmung_line:
-        lines.append(stimmung_line)
+    if s := _render_stimmung(stimmung_data):
+        lines.append(s)
 
     # ── Layer 2: Situation coupling ──────────────────────────────
-    situation = _render_situation()
-    if situation:
-        lines.append(situation)
+    if s := _render_situation(temporal_data):
+        lines.append(s)
 
     # ── Layer 3: Temporal impression + horizon ───────────────────
-    impression = _render_impression()
-    if impression:
-        lines.append(impression)
+    if s := _render_impression(temporal_data):
+        lines.append(s)
 
     # LOCAL tier: return layers 1-3 (minimum viable orientation)
     if tier == "LOCAL":
         return "\n".join(lines) if lines else ""
 
     # ── Layer 4: Surprise / deviation ────────────────────────────
-    surprise = _render_surprise()
-    if surprise:
-        lines.append(surprise)
+    if s := _render_surprise(temporal_data):
+        lines.append(s)
 
     # ── Layer 5: Temporal depth (retention + protention) ─────────
-    depth = _render_temporal_depth()
-    if depth:
-        lines.append(depth)
+    if s := _render_temporal_depth(temporal_data):
+        lines.append(s)
 
     # FAST tier: return layers 1-5
     if tier == "FAST":
         return "\n".join(lines) if lines else ""
 
     # ── Layer 6: Self-state (apperception) ───────────────────────
-    self_state = _render_self_state()
-    if self_state:
-        lines.append(self_state)
+    if s := _render_self_state(apperception_data):
+        lines.append(s)
 
     # STRONG / CAPABLE: full progressive output
     return "\n".join(lines) if lines else ""
@@ -105,13 +115,14 @@ def render(tier: str = "CAPABLE") -> str:
 # ── Layer renderers ──────────────────────────────────────────────────────────
 
 
-def _render_stimmung() -> str:
+def _render_stimmung(data: dict | None) -> str:
     """Layer 1: System attunement. Empty when nominal (the common case)."""
+    if data is None:
+        return ""
     try:
-        raw = json.loads(_STIMMUNG_PATH.read_text(encoding="utf-8"))
-        if (time.time() - raw.get("timestamp", 0)) > _STIMMUNG_STALE_S:
+        if (time.time() - data.get("timestamp", 0)) > _STIMMUNG_STALE_S:
             return ""
-        stance = raw.get("overall_stance", "nominal")
+        stance = data.get("overall_stance", "nominal")
         if stance == "nominal":
             return ""
         if stance == "cautious":
@@ -125,9 +136,8 @@ def _render_stimmung() -> str:
         return ""
 
 
-def _render_situation() -> str:
+def _render_situation(temporal: dict | None) -> str:
     """Layer 2: Coupled situation — operator + environment in one breath."""
-    temporal = _read_temporal()
     if temporal is None:
         return ""
 
@@ -165,13 +175,12 @@ def _render_situation() -> str:
     return ", ".join(parts) + "." if parts else ""
 
 
-def _render_impression() -> str:
+def _render_impression(temporal: dict | None) -> str:
     """Layer 3: Present moment + nearest horizon.
 
     Couples impression with the highest-confidence protention to give
     a sense of direction, not just position.
     """
-    temporal = _read_temporal()
     if temporal is None:
         return ""
 
@@ -217,13 +226,12 @@ def _render_impression() -> str:
     return " ".join(parts) + "."
 
 
-def _render_surprise() -> str:
+def _render_surprise(temporal: dict | None) -> str:
     """Layer 4: Prediction errors. The most phenomenologically interesting signal.
 
     Only present when something was predicted and turned out wrong. Its mere
     presence in the rendering reorients the LLM.
     """
-    temporal = _read_temporal()
     if temporal is None:
         return ""
 
@@ -251,13 +259,12 @@ def _render_surprise() -> str:
     return "Surprise: " + "; ".join(parts) + "."
 
 
-def _render_temporal_depth() -> str:
+def _render_temporal_depth(temporal: dict | None) -> str:
     """Layer 5: Retention (fading past) + protention details.
 
     This adds temporal thickness — where things were and where they're going.
     Only for FAST+ tiers that can absorb it.
     """
-    temporal = _read_temporal()
     if temporal is None:
         return ""
 
@@ -294,7 +301,7 @@ def _render_temporal_depth() -> str:
     return " ".join(parts) if parts else ""
 
 
-def _render_self_state() -> str:
+def _render_self_state(data: dict | None) -> str:
     """Layer 6: Apperceptive self-awareness.
 
     Renders what the system knows about its own processing reliability.
@@ -303,18 +310,19 @@ def _render_self_state() -> str:
 
     Format follows ACT cognitive defusion: "I notice..." not "I am...".
     """
+    if data is None:
+        return ""
     try:
-        raw = json.loads(_APPERCEPTION_PATH.read_text(encoding="utf-8"))
-        if (time.time() - raw.get("timestamp", 0)) > _APPERCEPTION_STALE_S:
+        if (time.time() - data.get("timestamp", 0)) > _APPERCEPTION_STALE_S:
             return ""
     except Exception:
         return ""
 
-    model = raw.get("self_model", {})
+    model = data.get("self_model", {})
     dimensions = model.get("dimensions", {})
     coherence = model.get("coherence", 0.7)
     reflections = model.get("recent_reflections", [])
-    pending = raw.get("pending_actions", [])
+    pending = data.get("pending_actions", [])
 
     parts: list[str] = []
 
@@ -343,57 +351,29 @@ def _render_self_state() -> str:
     return " ".join(parts)
 
 
-# ── Data readers (cached per tick) ───────────────────────────────────────────
-
-_temporal_cache: dict | None = None
-_temporal_cache_time: float = 0.0
-_temporal_cache_path: str = ""
+# ── Data readers ──────────────────────────────────────────────────────────────
 
 
 def _clear_cache() -> None:
-    """Clear all caches. Used by tests."""
-    global _temporal_cache, _temporal_cache_time, _temporal_cache_path
-    _temporal_cache = None
-    _temporal_cache_time = 0.0
-    _temporal_cache_path = ""
+    """No-op. Previously cleared module-level cache globals (now removed).
+
+    Retained for backward compatibility with existing tests.
+    """
 
 
-def _read_temporal() -> dict | None:
-    """Read temporal bands from shm, cached for the duration of one render call."""
-    global _temporal_cache, _temporal_cache_time, _temporal_cache_path
-    now = time.time()
-    current_path = str(_TEMPORAL_PATH)
+def _parse_temporal_snapshot(raw: dict | None) -> dict | None:
+    """Apply staleness check and XML parse to a raw temporal dict.
 
-    # Cache for 1s to avoid re-reading during a single render
-    # Invalidate if path changed (test patching)
-    if (
-        _temporal_cache is not None
-        and (now - _temporal_cache_time) < 1.0
-        and _temporal_cache_path == current_path
-    ):
-        return _temporal_cache
-
-    try:
-        raw = json.loads(_TEMPORAL_PATH.read_text(encoding="utf-8"))
-        if (now - raw.get("timestamp", 0)) > _TEMPORAL_STALE_S:
-            _temporal_cache = None
-            return None
-
-        # Parse the XML into structured data for rendering
-        xml = raw.get("xml", "")
-        if not xml:
-            _temporal_cache = None
-            return None
-
-        result = _parse_temporal_xml(xml, raw)
-        _temporal_cache = result
-        _temporal_cache_time = now
-        _temporal_cache_path = current_path
-        return result
-    except Exception:
-        _temporal_cache = None
-        _temporal_cache_path = ""
+    Returns None if raw is None, stale, or missing XML.
+    """
+    if raw is None:
         return None
+    if (time.time() - raw.get("timestamp", 0)) > _TEMPORAL_STALE_S:
+        return None
+    xml = raw.get("xml", "")
+    if not xml:
+        return None
+    return _parse_temporal_xml(xml, raw)
 
 
 def _parse_temporal_xml(xml: str, raw: dict) -> dict:
