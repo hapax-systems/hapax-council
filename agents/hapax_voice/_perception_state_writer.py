@@ -405,6 +405,8 @@ def write_perception_state(
             "desk_energy": _safe_float(_bval("desk_energy", 0.0)),
             "desk_onset_rate": _safe_float(_bval("desk_onset_rate", 0.0)),
             "desk_tap_gesture": str(_bval("desk_tap_gesture", "none")),
+            # Overhead hand tracking (zone-based)
+            "overhead_hand_zones": str(_bval("overhead_hand_zones", "")),
             # Voice session (Batch A)
             "voice_session": _snapshot_voice_session(session, pipeline),
             # Supplementary content (Batch B)
