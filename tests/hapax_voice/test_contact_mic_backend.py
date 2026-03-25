@@ -82,19 +82,20 @@ class TestClassifyActivity:
 
     def test_typing_high_onset_low_energy(self):
         assert (
-            _classify_activity(energy=0.05, onset_rate=5.0, centroid=3000.0, autocorr_peak=0.0)
+            _classify_activity(energy=0.2, onset_rate=2.0, centroid=300.0, autocorr_peak=0.0)
             == "typing"
         )
 
     def test_tapping_moderate_onset_higher_energy(self):
+        # energy >= 0.4 so typing branch (energy < 0.4) is skipped, falls to tapping (onset >= 1.6)
         assert (
-            _classify_activity(energy=0.15, onset_rate=2.0, centroid=2000.0, autocorr_peak=0.0)
+            _classify_activity(energy=0.45, onset_rate=2.0, centroid=300.0, autocorr_peak=0.0)
             == "tapping"
         )
 
     def test_drumming_high_energy_low_centroid(self):
         assert (
-            _classify_activity(energy=0.6, onset_rate=4.0, centroid=500.0, autocorr_peak=0.0)
+            _classify_activity(energy=0.5, onset_rate=2.0, centroid=150.0, autocorr_peak=0.0)
             == "drumming"
         )
 
@@ -279,21 +280,22 @@ class TestEnvelopeAutocorrelation:
 class TestScratchClassification:
     def test_scratching_high_autocorr(self):
         assert (
-            _classify_activity(energy=0.1, onset_rate=0.0, centroid=200.0, autocorr_peak=0.5)
+            _classify_activity(energy=0.12, onset_rate=0.0, centroid=200.0, autocorr_peak=0.95)
             == "scratching"
         )
 
     def test_no_scratch_low_autocorr(self):
         # Same energy but no autocorrelation -> falls through to other categories
+        # energy >= 0.4 skips typing branch, onset_rate >= 1.6 hits tapping
         assert (
-            _classify_activity(energy=0.1, onset_rate=2.0, centroid=200.0, autocorr_peak=0.1)
+            _classify_activity(energy=0.45, onset_rate=2.0, centroid=300.0, autocorr_peak=0.1)
             == "tapping"
         )
 
     def test_scratch_before_drumming(self):
         # High energy + low centroid would be drumming, but autocorr makes it scratching
         assert (
-            _classify_activity(energy=0.5, onset_rate=0.0, centroid=500.0, autocorr_peak=0.5)
+            _classify_activity(energy=0.5, onset_rate=0.0, centroid=150.0, autocorr_peak=0.95)
             == "scratching"
         )
 
