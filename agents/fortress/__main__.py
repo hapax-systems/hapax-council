@@ -184,9 +184,9 @@ class FortressDaemon:
                 )
                 log.info("  -> [%s] %s %s", cmd.chain, cmd.action, cmd.params)
 
-            # Feed storyteller narrative to episode builder
+            # Log storyteller narrative
             if self._governor._last_story_action is not None:
-                self._episode_builder.observe(self._governor._last_story_action)
+                log.info("Storyteller: %s", self._governor._last_story_action.action)
                 self._governor._last_story_action = None
 
             # Episode lifecycle
