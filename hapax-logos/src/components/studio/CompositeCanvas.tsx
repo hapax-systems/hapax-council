@@ -360,6 +360,20 @@ export function CompositeCanvas({
       }
     };
 
+    // --- Bloom post-effect (1/4 resolution bright-pass + blur) ---
+    let bloomCanvas: HTMLCanvasElement | null = null;
+    let bloomCtx: CanvasRenderingContext2D | null = null;
+
+    const ensureBloomCanvas = (w: number, h: number) => {
+      const bw = Math.ceil(w / 4);
+      const bh = Math.ceil(h / 4);
+      if (bloomCanvas && bloomCanvas.width === bw && bloomCanvas.height === bh) return;
+      bloomCanvas = document.createElement("canvas");
+      bloomCanvas.width = bw;
+      bloomCanvas.height = bh;
+      bloomCtx = bloomCanvas.getContext("2d");
+    };
+
     /** Draw noise grain overlay if preset has noise config. */
     const drawNoise = (w: number, h: number) => {
       const noise = presetRef.current.noise;
@@ -374,6 +388,26 @@ export function CompositeCanvas({
       ctx.globalAlpha = noise.intensity;
       ctx.globalCompositeOperation = "overlay";
       ctx.drawImage(noiseCanvas, 0, 0, w, h);
+      ctx.restore();
+    };
+
+    /** Draw bloom glow: extract bright pixels, blur at 1/4 res, composite with lighter. */
+    const drawBloom = (w: number, h: number) => {
+      const bloom = presetRef.current.bloom;
+      if (!bloom?.enabled || !canvas) return;
+
+      ensureBloomCanvas(w, h);
+      if (!bloomCtx || !bloomCanvas) return;
+
+      const brightPass = 0.5 - bloom.threshold * 0.4;
+      bloomCtx.filter = `brightness(${brightPass}) contrast(100) blur(${bloom.radius / 4}px)`;
+      bloomCtx.drawImage(canvas, 0, 0, bloomCanvas.width, bloomCanvas.height);
+      bloomCtx.filter = "none";
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = bloom.alpha;
+      ctx.drawImage(bloomCanvas, 0, 0, w, h);
       ctx.restore();
     };
 
@@ -556,6 +590,7 @@ export function CompositeCanvas({
           drawPostEffects(main, w, h, cachedMainFilter);
         }
         drawNoise(w, h);
+        drawBloom(w, h);
 
       } else {
         // --- NO TRAILS: clear and redraw every rAF tick (warp OK here) ---
@@ -563,6 +598,7 @@ export function CompositeCanvas({
         drawMainFrame(ctx, main, w, h, cachedMainFilter, 1, "source-over");
         drawOverlayAndEffects(main, w, h, cachedMainFilter);
         drawNoise(w, h);
+        drawBloom(w, h);
       }
     };
 
