@@ -274,6 +274,13 @@ def write_perception_state(
         if audio_rms < 0.05 and vad < 0.3:
             flow_modifier += 0.1
 
+        # Desk activity bonus (structure-borne instrument engagement)
+        desk_act = str(_bval("desk_activity", ""))
+        if desk_act in ("scratching", "drumming"):
+            flow_modifier += 0.15
+        elif desk_act == "tapping":
+            flow_modifier += 0.05
+
     flow_score = min(1.0, base_flow + flow_modifier)
     if flow_score >= 0.6:
         flow_state = "active"
@@ -393,6 +400,11 @@ def write_perception_state(
             "llm_activity": str(_bval("llm_activity", "")),
             "llm_flow_hint": str(_bval("llm_flow_hint", "")),
             "llm_confidence": _safe_float(_bval("llm_confidence", 0.0)),
+            # Contact mic (desk vibration sensing)
+            "desk_activity": str(_bval("desk_activity", "")),
+            "desk_energy": _safe_float(_bval("desk_energy", 0.0)),
+            "desk_onset_rate": _safe_float(_bval("desk_onset_rate", 0.0)),
+            "desk_tap_gesture": str(_bval("desk_tap_gesture", "none")),
             # Voice session (Batch A)
             "voice_session": _snapshot_voice_session(session, pipeline),
             # Supplementary content (Batch B)
