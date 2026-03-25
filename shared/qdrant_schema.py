@@ -13,11 +13,9 @@ from shared.config import EXPECTED_EMBED_DIMENSIONS
 _log = logging.getLogger(__name__)
 
 EXPECTED_COLLECTIONS: dict[str, dict[str, object]] = {
-    "claude-memory": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "profile-facts": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "documents": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "axiom-precedents": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
-    "samples": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "operator-episodes": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "studio-moments": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "operator-corrections": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},

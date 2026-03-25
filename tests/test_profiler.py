@@ -904,6 +904,7 @@ def test_load_structured_facts_includes_management(tmp_path):
     with (
         patch("agents.profiler.PROFILES_DIR", tmp_path),
         patch("agents.profiler._SYNC_CACHE_BASE", tmp_path / "empty-cache"),
+        patch("agents.profiler_sources.read_flow_facts", return_value=[]),
     ):
         from agents.profiler import load_structured_facts
 
@@ -921,6 +922,7 @@ def test_load_structured_facts_empty_when_missing(tmp_path):
     with (
         patch("agents.profiler.PROFILES_DIR", tmp_path),
         patch("agents.profiler._SYNC_CACHE_BASE", tmp_path / "empty-cache"),
+        patch("agents.profiler_sources.read_flow_facts", return_value=[]),
     ):
         from agents.profiler import load_structured_facts
 

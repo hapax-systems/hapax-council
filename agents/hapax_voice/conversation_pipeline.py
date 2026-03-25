@@ -599,9 +599,12 @@ class ConversationPipeline:
                 _gqi_dir = Path("/dev/shm/hapax-voice")
                 _gqi_dir.mkdir(parents=True, exist_ok=True)
                 _gqi_path = _gqi_dir / "grounding-quality.json"
-                _gqi_path.write_text(json.dumps({"gqi": round(_gqi, 3), "timestamp": time.time()}))
+                _tmp_path = _gqi_path.with_suffix(".tmp")
+                _tmp_path.write_text(json.dumps({"gqi": round(_gqi, 3), "timestamp": time.time()}))
+                _tmp_path.rename(_gqi_path)
+                log.debug("GQI written to shm: %.3f", _gqi)
             except Exception:
-                pass
+                log.debug("GQI shm write failed", exc_info=True)
 
         content_hash = hash(updated)
         if content_hash == self._last_env_hash:

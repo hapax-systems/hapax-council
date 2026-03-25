@@ -129,38 +129,7 @@ async def search_knowledge_base(ctx, query: str) -> str:
         return "\n\n---\n\n".join(chunks)
 
 
-@agent.tool
-async def search_samples(ctx, query: str) -> str:
-    """Search the audio sample library for samples matching a description.
-
-    Args:
-        query: Description of desired audio characteristics (e.g., "dusty vinyl kick drum").
-    """
-    with _tracer.start_as_current_span(
-        "research.search_samples",
-        attributes={"query.text": query[:100]},
-    ):
-        query_vec = embed(query, model=ctx.deps.embedding_model, prefix="search_query")
-
-        results = ctx.deps.qdrant.query_points(
-            "samples",
-            query=query_vec,
-            limit=5,
-            score_threshold=0.3,
-        )
-
-        if not results.points:
-            return "No matching samples found."
-
-        items = []
-        for p in results.points:
-            payload = p.payload
-            items.append(
-                f"- {payload.get('filename', '?')} "
-                f"(BPM={payload.get('bpm', '?')}, key={payload.get('key', '?')}, "
-                f"score={p.score:.3f})"
-            )
-        return "\n".join(items)
+# search_samples removed — 'samples' Qdrant collection was never populated
 
 
 # ── Entry points ─────────────────────────────────────────────────────────────

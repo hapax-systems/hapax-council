@@ -61,7 +61,7 @@ def test_digest_with_stats():
         summary="Lots of new content.",
         stats=DigestStats(
             new_documents=15,
-            collection_sizes={"documents": 1200, "samples": 50},
+            collection_sizes={"documents": 1200, "profile-facts": 50},
         ),
     )
     assert d.stats.new_documents == 15
@@ -105,7 +105,7 @@ def _sample_digest() -> Digest:
         ],
         stats=DigestStats(
             new_documents=5,
-            collection_sizes={"documents": 1500, "samples": 80, "claude-memory": 200},
+            collection_sizes={"documents": 1500, "profile-facts": 80},
         ),
     )
 
@@ -372,7 +372,7 @@ async def test_generate_digest_pipeline(
             "text_preview": "...",
         },
     ]
-    mock_stats.return_value = {"documents": 1500, "samples": 80}
+    mock_stats.return_value = {"documents": 1500, "profile-facts": 80}
     mock_agent.run = AsyncMock(return_value=_FakeDigestResult())
 
     digest = await generate_digest(hours=24)

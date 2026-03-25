@@ -85,7 +85,9 @@ class TestQdrantCollection:
         assert c.distance == "Cosine"
 
     def test_with_data(self):
-        c = QdrantCollection(name="samples", points_count=1500, vectors_size=768, distance="Cosine")
+        c = QdrantCollection(
+            name="profile-facts", points_count=1500, vectors_size=768, distance="Cosine"
+        )
         assert c.points_count == 1500
 
 
@@ -279,7 +281,7 @@ class TestCollectQdrant:
     @pytest.mark.asyncio
     async def test_success(self):
         collections_resp = json.dumps(
-            {"result": {"collections": [{"name": "documents"}, {"name": "samples"}]}}
+            {"result": {"collections": [{"name": "documents"}, {"name": "profile-facts"}]}}
         )
         doc_detail = json.dumps(
             {
@@ -303,7 +305,7 @@ class TestCollectQdrant:
                 return (200, collections_resp)
             if "documents" in url:
                 return (200, doc_detail)
-            if "samples" in url:
+            if "profile-facts" in url:
                 return (200, samples_detail)
             return (404, "")
 
@@ -313,7 +315,7 @@ class TestCollectQdrant:
         assert len(collections) == 2
         assert collections[0].name == "documents"
         assert collections[0].points_count == 150
-        assert collections[1].name == "samples"
+        assert collections[1].name == "profile-facts"
         assert collections[1].points_count == 42
 
     @pytest.mark.asyncio
@@ -683,7 +685,7 @@ class TestFormatSummary:
         m = self._make_manifest(
             qdrant_collections=[
                 QdrantCollection(name="documents", points_count=150),
-                QdrantCollection(name="samples", points_count=42),
+                QdrantCollection(name="profile-facts", points_count=42),
             ],
         )
         output = format_summary(m)

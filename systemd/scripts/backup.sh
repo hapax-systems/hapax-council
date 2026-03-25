@@ -46,7 +46,7 @@ fi
 QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
 mkdir -p "$BACKUP_DIR/qdrant"
 
-for collection in documents samples claude-memory profile-facts; do
+for collection in documents profile-facts axiom-precedents operator-episodes studio-moments operator-corrections; do
     if curl -sf "$QDRANT_URL/collections/$collection" -o /dev/null --max-time 3 2>/dev/null; then
         SNAP=$(curl -sf -X POST "$QDRANT_URL/collections/$collection/snapshots" \
             --max-time 30 2>/dev/null || echo "")

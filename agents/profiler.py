@@ -984,6 +984,15 @@ def load_structured_facts() -> list[ProfileFact]:
         except Exception:
             pass
 
+    # Flow journal facts (deterministic bridge)
+    from agents.profiler_sources import read_flow_facts
+
+    for item in read_flow_facts():
+        try:
+            facts.append(ProfileFact.model_validate(item))
+        except Exception:
+            pass
+
     return facts
 
 

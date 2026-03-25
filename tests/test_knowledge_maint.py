@@ -302,12 +302,6 @@ def _sample_report() -> MaintenanceReport:
                 duplicates_merged=5,
                 warnings=["3 stale source(s) would be pruned"],
             ),
-            CollectionStats(
-                name="samples",
-                points_before=50,
-                points_after=50,
-                dimensions=768,
-            ),
         ],
         total_pruned=3,
         total_merged=5,
