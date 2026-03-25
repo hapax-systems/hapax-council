@@ -634,6 +634,16 @@ class VoiceDaemon:
         except Exception:
             log.info("InputActivityBackend not available, skipping")
 
+        # Contact microphone backend (desk vibration via Cortado)
+        try:
+            from agents.hapax_voice.backends.contact_mic import ContactMicBackend
+
+            self.perception.register_backend(
+                ContactMicBackend(source_name=self.cfg.contact_mic_source)
+            )
+        except Exception:
+            log.info("ContactMicBackend not available, skipping")
+
         # Bluetooth phone presence (paired Pixel 10)
         try:
             from agents.hapax_voice.backends.bt_presence import BTPresenceBackend
