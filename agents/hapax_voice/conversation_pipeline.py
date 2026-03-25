@@ -81,6 +81,7 @@ class ThreadEntry:
     grounding_state: str = "pending"  # grounded/in-repair/ungrounded/pending
     is_repair: bool = False
     is_seeded: bool = False
+    principal_id: str = "operator"  # who made this utterance (Says monad, AD-7)
 
     @staticmethod
     def acceptance_to_grounding(acceptance: str) -> str:
@@ -334,6 +335,9 @@ class ConversationPipeline:
         self._env_context_fn = env_context_fn
         self._ambient_fn = ambient_fn
         self._policy_fn = policy_fn
+        self._goals_fn: Callable[[], str] | None = None
+        self._health_fn: Callable[[], str] | None = None
+        self._nudges_fn: Callable[[], str] | None = None
         self._screen_capturer = screen_capturer
         self._echo_canceller = echo_canceller
         self._bridge_engine = bridge_engine
@@ -550,6 +554,20 @@ class ConversationPipeline:
         elif hasattr(self, "_frozen_env") and self._frozen_env:
             updated += "\n\n## Current Environment\n" + self._frozen_env
 
+        # Voice context enrichment: goals, health, nudges
+        for label, fn in [
+            ("goals", self._goals_fn),
+            ("health", self._health_fn),
+            ("nudges", self._nudges_fn),
+        ]:
+            if fn is not None and not _lockdown:
+                try:
+                    section = fn()
+                    if section:
+                        updated += "\n\n" + section
+                except Exception:
+                    log.debug("%s context fn failed (non-fatal)", label, exc_info=True)
+
         # Phenomenal context: stimmung-only in experiment mode, disabled in lockdown
         _stimmung_only = self._experiment_flags.get("phenomenal_stimmung_only", False)
         if not _lockdown:
@@ -730,7 +748,13 @@ class ConversationPipeline:
         except Exception:
             self._last_says = None
 
-        self._emit("user_utterance", text=transcript)
+        _pid = "operator"
+        if self._last_says is not None:
+            try:
+                _pid = self._last_says.principal.id
+            except Exception:
+                pass
+        self._emit("user_utterance", text=transcript, principal_id=_pid)
 
         # ── Observation signals (Batch 4: revealed preferences) ──────
         # Emit events for future preference learning. No profile mutation.
@@ -954,6 +978,13 @@ class ConversationPipeline:
                     if self._conversation_thread
                     else "IGNORE"
                 )
+                # Resolve principal from last Says (AD-7)
+                _principal_id = "operator"
+                if self._last_says is not None:
+                    try:
+                        _principal_id = self._last_says.principal.id
+                    except Exception:
+                        pass
                 _entry = ThreadEntry(
                     turn=self.turn_count,
                     user_text=_user_text,
@@ -961,6 +992,7 @@ class ConversationPipeline:
                     acceptance=_acceptance,
                     grounding_state=ThreadEntry.acceptance_to_grounding(_acceptance),
                     is_repair=_prev_acceptance in ("CLARIFY", "REJECT"),
+                    principal_id=_principal_id,
                 )
                 self._conversation_thread.append(_entry)
 

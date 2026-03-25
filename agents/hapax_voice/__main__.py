@@ -893,6 +893,16 @@ class VoiceDaemon:
             experiment_mode=getattr(self, "_experiment_flags", {}).get("experiment_mode", False),
         )
 
+        from agents.hapax_voice.context_enrichment import (
+            render_goals,
+            render_health,
+            render_nudges,
+        )
+
+        self._goals_fn = render_goals
+        self._health_fn = render_health
+        self._nudges_fn = render_nudges
+
         log.info("Pipeline dependencies precomputed")
 
     def _pause_vision_for_conversation(self) -> None:
@@ -1056,6 +1066,11 @@ class VoiceDaemon:
             echo_canceller=self._echo_canceller,
             bridge_engine=self._bridge_engine,
         )
+
+        # Wire context enrichment callbacks into pipeline
+        self._conversation_pipeline._goals_fn = self._goals_fn
+        self._conversation_pipeline._health_fn = self._health_fn
+        self._conversation_pipeline._nudges_fn = self._nudges_fn
 
         # Wire salience router and context distillation into pipeline
         if self._salience_router is not None:
