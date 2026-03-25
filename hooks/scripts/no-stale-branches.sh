@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# no-stale-branches.sh — PreToolUse hook
+# no-stale-branches.sh — PreToolUse hook (Bash commands)
 #
-# Blocks creation of new branches (git branch, git checkout -b, git switch -c,
-# git worktree add) if ANY existing local or remote feature branches have
-# unmerged commits relative to main.
+# Two categories of protection:
 #
-# Also enforces worktree limit: max 3 worktrees (alpha + beta + one spontaneous).
-# The --beta worktree at ../hapax-council--beta is permanent and doesn't count
-# toward the spontaneous limit.
+# 1. BRANCH CREATION GATE
+#    Blocks: git branch, git checkout -b, git switch -c, git worktree add
+#    When: ANY local or remote feature branches have unmerged commits vs main
+#    Also: enforces worktree limit (max 3: alpha + beta + one spontaneous)
 #
-# Rationale: completed work was lost to abandoned branches. No new work starts
-# until prior work is merged. This is a constitutional-grade enforcement.
+# 2. DESTRUCTIVE COMMAND GATE
+#    Blocks: git reset --hard, git checkout ., git branch -f, git worktree remove
+#    When: on a feature branch with commits ahead of main
+#    Strips quoted strings before matching to avoid false positives from
+#    commit messages or echo'd text that mention destructive commands.
+#
+# Rationale: completed work was lost to abandoned branches AND to subagents
+# that ran destructive git commands on feature branches. No new work starts
+# until prior work is merged; no work is silently discarded.
 set -euo pipefail
 
 INPUT="$(cat)"
@@ -35,6 +41,45 @@ echo "$CMD" | grep -qE '^\s*git\s+branch\s+[^-]' && is_create=true
 
 # git worktree add
 echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s' && is_create=true
+
+# --- Detect branch-destructive commands ---
+# These silently discard commits on feature branches. Block when on a
+# feature branch with commits ahead of main. Prevents subagents from
+# accidentally resetting branches and losing prior work.
+#
+# Strip quoted strings and heredoc content first to avoid false positives
+# from commit messages or echo'd text that MENTION destructive commands.
+CMD_STRIPPED="$(printf '%s' "$CMD" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")"
+is_destructive=false
+
+# git reset --hard (with or without target)
+echo "$CMD_STRIPPED" | grep -qE 'git\s+reset\s+--hard' && is_destructive=true
+
+# git checkout . / git checkout -- . (discard all changes)
+echo "$CMD_STRIPPED" | grep -qE 'git\s+checkout\s+(--\s+)?\.(\s|$)' && is_destructive=true
+
+# git branch -f <name> (force-move a branch ref)
+echo "$CMD_STRIPPED" | grep -qE 'git\s+branch\s+-f\s' && is_destructive=true
+
+# git worktree remove (could remove a worktree with uncommitted work)
+echo "$CMD_STRIPPED" | grep -qE 'git\s+worktree\s+remove\s' && is_destructive=true
+
+if [ "$is_destructive" = true ]; then
+  if git rev-parse --is-inside-work-tree &>/dev/null; then
+    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [[ -n "$branch" && "$branch" != "main" && "$branch" != "master" && "$branch" != "HEAD" ]]; then
+      default_branch="main"
+      git show-ref --verify --quiet refs/heads/main || default_branch="master"
+      ahead=$(git rev-list --count "${default_branch}..HEAD" 2>/dev/null || echo 0)
+      if [ "$ahead" -gt 0 ]; then
+        echo "BLOCKED: Destructive git command on branch '${branch}' with ${ahead} commit(s) ahead of ${default_branch}." >&2
+        echo "  Command: $(echo "$CMD" | head -c 120)" >&2
+        echo "  This would discard work. Use 'git stash' or submit a PR first." >&2
+        exit 2
+      fi
+    fi
+  fi
+fi
 
 [ "$is_create" = true ] || exit 0
 

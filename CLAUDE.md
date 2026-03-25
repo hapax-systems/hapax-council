@@ -51,6 +51,21 @@ T0 violations blocked by SDLC hooks. Definitions in `axioms/registry.yaml`, impl
 
 LLM-driven lifecycle via GitHub Actions: Triage → Plan → Implement → Adversarial Review (3 rounds max) → Axiom Gate → Auto-merge. Scripts in `scripts/`, workflows in `.github/workflows/`. All scripts support `--dry-run`. Observability via `profiles/sdlc-events.jsonl` + Langfuse traces. Agent PRs only on `agent/*` branches with `agent-authored` label.
 
+## Claude Code Hooks (`hooks/scripts/`)
+
+PreToolUse hooks enforce branch discipline and safety at the tool-call level:
+
+| Hook | Gates | Blocks when |
+|------|-------|-------------|
+| `work-resolution-gate.sh` | Edit, Write | Feature branch with commits but no PR; on main with open PRs whose branch is local |
+| `no-stale-branches.sh` | Bash | **Branch creation:** any unmerged branches exist. **Destructive commands** (`git reset --hard`, `git checkout .`, `git branch -f`, `git worktree remove`): on a feature branch with commits ahead of main |
+| `push-gate.sh` | Bash | Push without passing tests |
+| `pii-guard.sh` | Edit, Write | PII patterns in file content |
+| `axiom-commit-scan.sh` | Bash | Commit messages violating axiom patterns |
+| `session-context.sh` | Bash | Advisory: detects vite dev server worktree mismatch |
+
+Destructive command detection strips quoted strings before matching to prevent false positives from commit messages that discuss git commands.
+
 ## Key Modules
 
 - **`shared/config.py`** — Model aliases, LiteLLM/Qdrant clients, embedding, `DATA_DIR`
