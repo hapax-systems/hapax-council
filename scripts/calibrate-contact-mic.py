@@ -155,10 +155,14 @@ def record_contact_mic(duration_s: float) -> RecordingStats:
 
     stats = RecordingStats()
     energy_buffer: deque[float] = deque(maxlen=60)
-    prev_energy = 0.0
+    smoothed_energy = 0.0
     last_onset = 0.0
     frame_count = 0
-    onset_threshold = 0.01  # very low threshold to capture everything
+    # Adaptive onset detection: track a slow-moving baseline and detect
+    # transients that exceed it by a ratio. This works at any gain level.
+    baseline = 0.0
+    _BASELINE_ALPHA = 0.02  # slow follower
+    _ONSET_RATIO = 1.5  # transient must be 1.5x baseline
     start = time.monotonic()
 
     print(f"  Recording for {duration_s:.0f}s...", end="", flush=True)
@@ -172,11 +176,15 @@ def record_contact_mic(duration_s: float) -> RecordingStats:
         stats.rms_values.append(rms)
         energy_buffer.append(rms)
 
-        # Onset detection (very sensitive)
-        if rms > onset_threshold and prev_energy <= onset_threshold and (now - last_onset) > 0.05:
+        # Update slow baseline
+        baseline = _BASELINE_ALPHA * rms + (1 - _BASELINE_ALPHA) * baseline
+
+        # Adaptive onset detection: transient exceeds baseline by ratio
+        onset_floor = max(baseline * _ONSET_RATIO, 0.001)
+        if rms > onset_floor and smoothed_energy <= onset_floor and (now - last_onset) > 0.05:
             stats.onset_times.append(now)
             last_onset = now
-        prev_energy = rms
+        smoothed_energy = 0.3 * rms + 0.7 * smoothed_energy
 
         # Spectral centroid every 4th frame
         if frame_count % 4 == 0:
@@ -209,6 +217,18 @@ def show_stats(label: str, stats: RecordingStats) -> None:
 def midpoint(a: float, b: float) -> float:
     """Midpoint between two values (for threshold setting)."""
     return (a + b) / 2.0
+
+
+def safe_float(val: str, fallback: float) -> float:
+    """Parse a float from user input, returning fallback on empty/invalid."""
+    val = val.strip()
+    if not val:
+        return fallback
+    try:
+        return float(val)
+    except ValueError:
+        print(f"  Invalid number '{val}', keeping {fallback}")
+        return fallback
 
 
 # ── Calibration steps ─────────────────────────────────────────────────────────
@@ -262,7 +282,7 @@ def step_1_silence():
 
     if not confirm("Accept this value?"):
         val = prompt("Enter custom _IDLE_THRESHOLD:")
-        TUNED["_IDLE_THRESHOLD"] = float(val)
+        TUNED["_IDLE_THRESHOLD"] = safe_float(val, TUNED["_IDLE_THRESHOLD"])
 
 
 def step_2_typing():
@@ -303,10 +323,10 @@ def step_2_typing():
     print("  (60% of observed, so normal variation still classifies)")
 
     if not confirm("Accept these values?"):
-        val = prompt("Enter custom _ONSET_THRESHOLD:")
-        TUNED["_ONSET_THRESHOLD"] = float(val)
-        val = prompt("Enter custom _TYPING_MIN_ONSET_RATE:")
-        TUNED["_TYPING_MIN_ONSET_RATE"] = float(val)
+        val = prompt("Enter custom _ONSET_THRESHOLD (or Enter to keep recommended):")
+        TUNED["_ONSET_THRESHOLD"] = safe_float(val, TUNED["_ONSET_THRESHOLD"])
+        val = prompt("Enter custom _TYPING_MIN_ONSET_RATE (or Enter to keep recommended):")
+        TUNED["_TYPING_MIN_ONSET_RATE"] = safe_float(val, TUNED["_TYPING_MIN_ONSET_RATE"])
 
 
 def step_3_tapping():
@@ -337,7 +357,7 @@ def step_3_tapping():
 
     if not confirm("Accept this value?"):
         val = prompt("Enter custom _TAPPING_MIN_ONSET_RATE:")
-        TUNED["_TAPPING_MIN_ONSET_RATE"] = float(val)
+        TUNED["_TAPPING_MIN_ONSET_RATE"] = safe_float(val, TUNED["_TAPPING_MIN_ONSET_RATE"])
 
 
 def step_4_drumming():
@@ -376,9 +396,9 @@ def step_4_drumming():
 
     if not confirm("Accept these values?"):
         val = prompt("Enter custom _DRUMMING_MIN_ENERGY:")
-        TUNED["_DRUMMING_MIN_ENERGY"] = float(val)
+        TUNED["_DRUMMING_MIN_ENERGY"] = safe_float(val, TUNED["_DRUMMING_MIN_ENERGY"])
         val = prompt("Enter custom _DRUMMING_MAX_CENTROID:")
-        TUNED["_DRUMMING_MAX_CENTROID"] = float(val)
+        TUNED["_DRUMMING_MAX_CENTROID"] = safe_float(val, TUNED["_DRUMMING_MAX_CENTROID"])
 
 
 def step_5_scratching():
@@ -444,9 +464,9 @@ def step_5_scratching():
 
     if not confirm("Accept these values?"):
         val = prompt("Enter custom _SCRATCH_AUTOCORR_THRESHOLD:")
-        TUNED["_SCRATCH_AUTOCORR_THRESHOLD"] = float(val)
+        TUNED["_SCRATCH_AUTOCORR_THRESHOLD"] = safe_float(val, TUNED["_SCRATCH_AUTOCORR_THRESHOLD"])
         val = prompt("Enter custom _SCRATCH_MIN_ENERGY:")
-        TUNED["_SCRATCH_MIN_ENERGY"] = float(val)
+        TUNED["_SCRATCH_MIN_ENERGY"] = safe_float(val, TUNED["_SCRATCH_MIN_ENERGY"])
 
 
 def step_6_gestures():
@@ -503,9 +523,9 @@ def step_6_gestures():
 
     if not confirm("Gesture timing looks good?"):
         val = prompt("Enter custom _DOUBLE_TAP_MAX_IOI (seconds):")
-        TUNED["_DOUBLE_TAP_MAX_IOI"] = float(val)
+        TUNED["_DOUBLE_TAP_MAX_IOI"] = safe_float(val, TUNED["_DOUBLE_TAP_MAX_IOI"])
         val = prompt("Enter custom _GESTURE_TIMEOUT_S (seconds):")
-        TUNED["_GESTURE_TIMEOUT_S"] = float(val)
+        TUNED["_GESTURE_TIMEOUT_S"] = safe_float(val, TUNED["_GESTURE_TIMEOUT_S"])
 
 
 def step_7_zones():
