@@ -585,12 +585,43 @@ class StudioCompositor:
 
                         raw = json.loads(preset_path.read_text())
                         graph = EffectGraph(**raw)
+                        graph = self._merge_default_modulations(graph)
                         self._graph_runtime.load_graph(graph)
                         log.info("Activated graph preset: %s (file: %s)", name, candidate)
                         return True
                     except Exception:
                         log.warning("Failed to load graph preset %s", candidate, exc_info=True)
         return False
+
+    def _merge_default_modulations(self, graph: Any) -> Any:
+        """Merge default modulation template into a graph's modulations.
+
+        Only adds bindings for nodes that exist in the graph. The graph's
+        own bindings for the same (node, param) take precedence.
+        """
+        from pathlib import Path
+
+        template_path = Path(__file__).parent.parent / "presets" / "_default_modulations.json"
+        if not template_path.is_file():
+            return graph
+
+        try:
+            defaults = json.loads(template_path.read_text()).get("default_modulations", [])
+        except Exception:
+            return graph
+
+        existing = {(m.node, m.param) for m in graph.modulations}
+        graph_nodes = set(graph.nodes.keys())
+
+        from agents.effect_graph.types import ModulationBinding
+
+        merged = list(graph.modulations)
+        for d in defaults:
+            key = (d["node"], d["param"])
+            if key not in existing and d["node"] in graph_nodes:
+                merged.append(ModulationBinding(**d))
+
+        return graph.model_copy(update={"modulations": merged})
 
     def _on_graph_params_changed(self, node_id: str, params: dict) -> None:
         """Update GStreamer shader uniforms for a node via the slot pipeline."""
