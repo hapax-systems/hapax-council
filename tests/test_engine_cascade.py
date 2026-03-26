@@ -2,46 +2,14 @@
 
 from __future__ import annotations
 
-import importlib
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-# The logos.engine __init__.py triggers a circular import via
-# shared.frontmatter ↔ shared.governance. Work around by importing
-# submodules directly without triggering __init__.
-# This is a pre-existing bug, not caused by the cascade work.
-
-
-def _import_without_init(module_name: str):
-    """Import a submodule without triggering the parent __init__."""
-    parts = module_name.rsplit(".", 1)
-    if len(parts) == 2:
-        parent, child = parts
-        if parent not in sys.modules:
-            # Create a dummy parent module to avoid __init__
-            import types
-
-            sys.modules[parent] = types.ModuleType(parent)
-            sys.modules[parent].__path__ = [
-                str(Path(__file__).parent.parent / parent.replace(".", "/"))
-            ]
-    return importlib.import_module(module_name)
-
-
-# Import the modules we need without circular import
-_models = _import_without_init("logos.engine.models")
-_rules = _import_without_init("logos.engine.rules")
-_converter = _import_without_init("logos.engine.converter")
-_rule_cap = _import_without_init("logos.engine.rule_capability")
-
-ChangeEvent = _models.ChangeEvent
-Action = _models.Action
-Rule = _rules.Rule
-convert = _converter.convert
-RuleCapability = _rule_cap.RuleCapability
-
+from logos.engine.converter import convert
+from logos.engine.models import Action, ChangeEvent
+from logos.engine.rule_capability import RuleCapability
+from logos.engine.rules import Rule
 from shared.impingement import ImpingementType
 
 # ── Converter Tests ──────────────────────────────────────────────────────────
@@ -60,7 +28,7 @@ def test_convert_basic_event():
     assert imp.content["path"] == str(event.path)
     assert imp.content["event_type"] == "modified"
     assert imp.content["doc_type"] == "profile"
-    assert imp.strength == 0.70  # profile strength from map
+    assert imp.strength == 0.70
 
 
 def test_convert_axiom_event_gets_interrupt_token():
@@ -99,7 +67,7 @@ def test_convert_unknown_event_gets_default_strength():
         timestamp=datetime.now(),
     )
     imp = convert(event)
-    assert imp.strength == 0.45  # default
+    assert imp.strength == 0.45
     assert imp.interrupt_token is None
     assert imp.type == ImpingementType.STATISTICAL_DEVIATION
 
@@ -151,7 +119,6 @@ def test_rule_capability_cost_from_phase():
 def test_rule_capability_can_resolve_matching():
     rule = _make_rule()
     cap = RuleCapability(rule)
-
     event = ChangeEvent(
         path=Path("/data/test.md"),
         event_type="modified",
@@ -166,7 +133,6 @@ def test_rule_capability_can_resolve_matching():
 def test_rule_capability_can_resolve_non_matching():
     rule = _make_rule()
     cap = RuleCapability(rule)
-
     event = ChangeEvent(
         path=Path("/data/other.md"),
         event_type="modified",
@@ -181,7 +147,6 @@ def test_rule_capability_can_resolve_non_matching():
 def test_rule_capability_activate_produces_actions():
     rule = _make_rule()
     cap = RuleCapability(rule)
-
     event = ChangeEvent(
         path=Path("/data/test.md"),
         event_type="modified",
@@ -196,17 +161,15 @@ def test_rule_capability_activate_produces_actions():
 
 
 def test_rule_capability_rejects_non_engine_impingement():
-    """Impingements from DMN/perception (no path) should return 0.0."""
     from shared.impingement import Impingement
 
     rule = _make_rule()
     cap = RuleCapability(rule)
-
     imp = Impingement(
         timestamp=time.time(),
         source="dmn.evaluative",
         type=ImpingementType.SALIENCE_INTEGRATION,
         strength=0.8,
-        content={"metric": "operator_stress"},  # no "path" key
+        content={"metric": "operator_stress"},
     )
     assert cap.can_resolve(imp) == 0.0

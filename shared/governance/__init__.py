@@ -22,9 +22,23 @@ Algebraic properties proven via hypothesis:
 
 from shared.governance.agent_governor import create_agent_governor
 from shared.governance.carrier import CarrierFact, CarrierRegistry, DisplacementResult
-from shared.governance.carrier_intake import CarrierIntakeResult, intake_carrier_fact
 from shared.governance.consent import ConsentContract, ConsentRegistry, load_contracts
 from shared.governance.consent_label import ConsentLabel
+
+
+def __getattr__(name: str):
+    """Lazy imports to break circular dependency with shared.frontmatter."""
+    if name == "CarrierIntakeResult":
+        from shared.governance.carrier_intake import CarrierIntakeResult
+
+        return CarrierIntakeResult
+    if name == "intake_carrier_fact":
+        from shared.governance.carrier_intake import intake_carrier_fact
+
+        return intake_carrier_fact
+    raise AttributeError(f"module 'shared.governance' has no attribute {name}")
+
+
 from shared.governance.governor import (
     GovernorDenial,
     GovernorPolicy,

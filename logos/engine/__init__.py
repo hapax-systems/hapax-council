@@ -211,6 +211,16 @@ class ReactiveEngine:
         self._running = False
         self._start_time: float | None = None
 
+        # Impingement cascade integration
+        from logos.engine.converter import convert as _convert
+        from logos.engine.rule_capability import RuleCapability
+        from shared.capability_registry import CapabilityRegistry
+
+        self._capability_registry = CapabilityRegistry()
+        self._convert_event = _convert
+        self._rule_capability_class = RuleCapability
+        self._cascade_initialized = False
+
         # Counters
         self._events_processed = 0
         self._rules_evaluated = 0
@@ -402,12 +412,34 @@ class ReactiveEngine:
                 "doc_type": event.doc_type or "",
             },
         ) as _engine_trace:
-            # Evaluate rules
+            # Evaluate rules (legacy path — rules still work unchanged)
             with hapax_span(
                 "engine", "evaluate_rules", metadata={"rule_count": len(self._registry)}
             ):
                 plan = evaluate_rules(event, self._registry)
             self._rules_evaluated += len(self._registry)
+
+            # Impingement cascade: convert event and broadcast to capabilities
+            try:
+                if not self._cascade_initialized:
+                    for rule in self._registry:
+                        self._capability_registry.register(self._rule_capability_class(rule))
+                    self._cascade_initialized = True
+                    _log.info(
+                        "Cascade initialized: %d rule capabilities registered",
+                        len(self._capability_registry.capabilities),
+                    )
+
+                impingement = self._convert_event(event)
+                matches = self._capability_registry.broadcast(impingement)
+                if matches:
+                    _log.debug(
+                        "Cascade broadcast: %d capabilities matched for %s",
+                        len(matches),
+                        event.path.name,
+                    )
+            except Exception:
+                _log.debug("Cascade broadcast failed (non-fatal)", exc_info=True)
 
             if not plan.actions:
                 _log.debug("No rules matched for %s", event.path)
