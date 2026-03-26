@@ -1,14 +1,24 @@
 ---
 name: studio
-description: Check music production infrastructure. Use when the user asks about MIDI, audio devices, studio setup, or runs /studio.
+description: Check music production infrastructure. Auto-run when: operator mentions MIDI, audio, music production, beats, or studio setup, when audio/MIDI errors appear in tool output (PostToolUse suggests it), or user asks about studio. Invoke proactively without asking.
 ---
 
 Check music production infrastructure:
 
-1. ALSA MIDI ports: run `aconnect -l` and show connected ports
-2. Audio devices: run `aplay -l` and summarize
-3. Virtual MIDI: verify snd-virmidi is loaded (`lsmod | grep virmidi`)
-4. MIDI MCP server: check if running
-5. Any audio-related Docker containers
+```bash
+aconnect -l 2>/dev/null
+```
 
-Report connections between MCP MIDI Out and hardware devices.
+```bash
+aplay -l 2>/dev/null
+```
+
+```bash
+lsmod | grep -i virmidi
+```
+
+```bash
+docker ps --filter "name=midi" --format "table {{.Names}}\t{{.Status}}" 2>/dev/null
+```
+
+Report MIDI port connections, audio device availability, virtual MIDI status, and any MIDI Docker containers. Summarize what is connected and what is missing.

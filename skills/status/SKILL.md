@@ -1,6 +1,6 @@
 ---
 name: status
-description: Run the health monitor and report results. Use when the user asks about system health, infrastructure status, or runs /status.
+description: Run the health monitor. Auto-run when: session-context shows health is degraded or failed, after infrastructure changes (docker, systemd), when a service appears unreachable, or user asks about system health. Invoke proactively without asking.
 ---
 
 Run the health monitor and report results:

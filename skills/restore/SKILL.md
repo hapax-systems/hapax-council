@@ -1,6 +1,6 @@
 ---
 name: restore
-description: Restore cognitive context after an interruption. Use when the user returns to work, asks what they were doing, needs to re-orient, or runs /restore.
+description: Restore cognitive context after an interruption. Auto-run when: operator returns after >2 hours of inactivity, says "what was I doing" or "where was I", or session-context detects stale uncommitted work. Invoke proactively without asking.
 ---
 
 Collect and display context restoration data — what the operator was doing, what's next, and what accumulated while they were away:

@@ -1,6 +1,6 @@
 ---
 name: axiom-review
-description: Review pending axiom precedents that agents have created. Use when the user asks to review precedents, axiom decisions, or runs /axiom-review.
+description: Review pending axiom precedents. Auto-run when: session-context reports pending precedents, after an agent run that may have created new precedents (PostToolUse suggests it), or user asks to review axiom decisions. Invoke proactively without asking.
 ---
 
 Review pending axiom precedents that agents have created.
