@@ -98,7 +98,7 @@ class SlotPipeline:
             elif isinstance(value, str):
                 defn = self._registry.get(self._slot_assignments[slot_idx] or "")
                 if defn and key in defn.params and defn.params[key].enum_values:
-                    vals = defn.params[key].enum_values
+                    vals = defn.params[key].enum_values or []
                     idx = vals.index(value) if value in vals else 0
                     parts.append(f"u_{key}=(float){float(idx)}")
         if not parts:
