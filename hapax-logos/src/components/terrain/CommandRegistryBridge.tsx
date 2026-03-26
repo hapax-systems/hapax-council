@@ -1,6 +1,9 @@
 /**
  * Bridges GroundStudio and Detection contexts into the command registry.
  * Must be rendered inside GroundStudioProvider and ClassificationOverlayProvider.
+ *
+ * Uses synchronous state mirrors so query() returns post-execution state
+ * without waiting for React re-render.
  */
 import { useEffect, useRef } from "react";
 import { useCommandRegistry } from "../../contexts/CommandRegistryContext";
@@ -8,8 +11,17 @@ import { useGroundStudio } from "../../contexts/GroundStudioContext";
 import { useDetections } from "../../contexts/ClassificationOverlayContext";
 import { useTerrain } from "../../contexts/TerrainContext";
 import { useRecordingToggle } from "../../api/hooks";
-import { registerStudioCommands } from "../../lib/commands/studio";
-import { registerDetectionCommands } from "../../lib/commands/detection";
+import { registerStudioCommands, type StudioState } from "../../lib/commands/studio";
+import { registerDetectionCommands, type DetectionState } from "../../lib/commands/detection";
+
+function createMirror<T extends Record<string, unknown>>(initial: T) {
+  let state = { ...initial };
+  return {
+    get: () => state,
+    set: (patch: Partial<T>) => { state = { ...state, ...patch }; },
+    sync: (fresh: T) => { state = { ...fresh }; },
+  };
+}
 
 export function CommandRegistryBridge() {
   const registry = useCommandRegistry();
@@ -19,32 +31,38 @@ export function CommandRegistryBridge() {
   const { regionDepths, setRegionDepth } = useTerrain();
   const recordingToggle = useRecordingToggle();
 
-  // Refs for values that change frequently
-  const smoothRef = useRef(smoothMode);
-  smoothRef.current = smoothMode;
-  const tierRef = useRef(detectionTier);
-  tierRef.current = detectionTier;
-  const visibleRef = useRef(detectionLayerVisible);
-  visibleRef.current = detectionLayerVisible;
+  const studioMirror = useRef(createMirror<StudioState>({
+    smoothMode,
+    activePreset: "",
+    recording: false,
+  })).current;
+
+  const detectionMirror = useRef(createMirror<DetectionState>({
+    tier: detectionTier as 1 | 2 | 3,
+    visible: detectionLayerVisible,
+  })).current;
+
+  // Sync mirrors on every render
+  studioMirror.sync({ smoothMode, activePreset: "", recording: false });
+  detectionMirror.sync({ tier: detectionTier as 1 | 2 | 3, visible: detectionLayerVisible });
+
   const depthsRef = useRef(regionDepths);
   depthsRef.current = regionDepths;
 
   useEffect(() => {
     registerStudioCommands(
       registry,
-      () => ({
-        smoothMode: smoothRef.current,
-        activePreset: "",
-        recording: false,
-      }),
+      () => studioMirror.get(),
       {
         setSmoothMode: (on: boolean) => {
+          studioMirror.set({ smoothMode: on });
           setSmoothMode(on);
           if (on && depthsRef.current.ground !== "core") {
             setRegionDepth("ground", "core");
           }
         },
         setActivePreset: (name: string) => {
+          studioMirror.set({ activePreset: name });
           fetch(`/api/studio/presets/${name}/activate`, { method: "POST" }).catch(() => {});
         },
         cyclePreset: (direction: "next" | "prev") => {
@@ -60,13 +78,16 @@ export function CommandRegistryBridge() {
 
     registerDetectionCommands(
       registry,
-      () => ({
-        tier: tierRef.current as 1 | 2 | 3,
-        visible: visibleRef.current,
-      }),
+      () => detectionMirror.get(),
       {
-        setTier: setDetectionTier,
-        setVisible: setDetectionLayerVisible,
+        setTier: (tier: number) => {
+          detectionMirror.set({ tier: tier as 1 | 2 | 3 });
+          setDetectionTier(tier as 1 | 2 | 3);
+        },
+        setVisible: (v: boolean) => {
+          detectionMirror.set({ visible: v });
+          setDetectionLayerVisible(v);
+        },
       },
     );
 

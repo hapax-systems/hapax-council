@@ -10,14 +10,14 @@ import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { CommandRegistry } from "../lib/commandRegistry";
 import { evaluateKeyMap, LOGOS_KEY_MAP } from "../lib/keyboardAdapter";
-import { registerTerrainCommands } from "../lib/commands/terrain";
-import { registerOverlayCommands } from "../lib/commands/overlay";
+import { registerTerrainCommands, type TerrainState } from "../lib/commands/terrain";
+import { registerOverlayCommands, type OverlayState } from "../lib/commands/overlay";
 import { registerNavCommands } from "../lib/commands/nav";
-import { registerSplitCommands } from "../lib/commands/split";
+import { registerSplitCommands, type SplitState } from "../lib/commands/split";
 import { registerDataCommands } from "../lib/commands/data";
 import { registerBuiltinSequences } from "../lib/commands/sequences";
 import { connectCommandRelay } from "../lib/commandRelay";
-import { useTerrainDisplay, useTerrainActions } from "./TerrainContext";
+import { useTerrainDisplay, useTerrainActions, type RegionName, type Depth } from "./TerrainContext";
 
 const CommandRegistryCtx = createContext<CommandRegistry | null>(null);
 
@@ -33,6 +33,20 @@ interface Props {
   onPaletteToggle: () => void;
 }
 
+/**
+ * Synchronous state mirror that updates immediately when actions fire,
+ * before React re-renders. This ensures query() returns post-execution
+ * state without waiting for a render cycle.
+ */
+function createStateMirror<T extends Record<string, unknown>>(initial: T) {
+  let state = { ...initial };
+  return {
+    get: () => state,
+    set: (patch: Partial<T>) => { state = { ...state, ...patch }; },
+    sync: (fresh: T) => { state = { ...fresh }; },
+  };
+}
+
 export function CommandRegistryProvider({
   children,
   onManualToggle,
@@ -44,45 +58,78 @@ export function CommandRegistryProvider({
   const terrainDisplay = useTerrainDisplay();
   const terrainActions = useTerrainActions();
 
-  // Refs for frequently-changing values so registration closures stay current
-  const terrainRef = useRef(terrainDisplay);
-  terrainRef.current = terrainDisplay;
+  // Synchronous mirrors — updated eagerly on action, synced on React render
+  const terrainMirror = useRef(createStateMirror<TerrainState>({
+    focusedRegion: terrainDisplay.focusedRegion,
+    depths: terrainDisplay.regionDepths,
+  })).current;
+
+  const overlayMirror = useRef(createStateMirror<OverlayState>({
+    active: terrainDisplay.activeOverlay,
+  })).current;
+
+  const splitMirror = useRef(createStateMirror<SplitState>({
+    region: terrainDisplay.splitRegion,
+    fullscreen: terrainDisplay.splitFullscreen,
+  })).current;
+
+  // Sync mirrors from React state on every render
+  terrainMirror.sync({
+    focusedRegion: terrainDisplay.focusedRegion,
+    depths: terrainDisplay.regionDepths,
+  });
+  overlayMirror.sync({ active: terrainDisplay.activeOverlay });
+  splitMirror.sync({
+    region: terrainDisplay.splitRegion,
+    fullscreen: terrainDisplay.splitFullscreen,
+  });
 
   const onManualRef = useRef(onManualToggle);
   onManualRef.current = onManualToggle;
-
   const onPaletteRef = useRef(onPaletteToggle);
   onPaletteRef.current = onPaletteToggle;
 
-  // Register core domains once (terrain, overlay, split, nav, data, sequences)
+  // Register core domains once
   useEffect(() => {
     registerTerrainCommands(
       registry,
-      () => ({
-        focusedRegion: terrainRef.current.focusedRegion,
-        depths: terrainRef.current.regionDepths,
-      }),
+      () => terrainMirror.get(),
       {
-        setFocusedRegion: terrainActions.focusRegion,
-        setDepth: terrainActions.setRegionDepth,
+        setFocusedRegion: (region: RegionName | null) => {
+          terrainMirror.set({ focusedRegion: region });
+          terrainActions.focusRegion(region);
+        },
+        setDepth: (region: string, depth: string) => {
+          const depths = { ...terrainMirror.get().depths, [region]: depth };
+          terrainMirror.set({ depths });
+          terrainActions.setRegionDepth(region as RegionName, depth as Depth);
+        },
       },
     );
 
     registerOverlayCommands(
       registry,
-      () => ({ active: terrainRef.current.activeOverlay }),
-      { setActive: terrainActions.setOverlay },
+      () => overlayMirror.get(),
+      {
+        setActive: (name: string | null) => {
+          overlayMirror.set({ active: name });
+          terrainActions.setOverlay(name as Parameters<typeof terrainActions.setOverlay>[0]);
+        },
+      },
     );
 
     registerSplitCommands(
       registry,
-      () => ({
-        region: terrainRef.current.splitRegion,
-        fullscreen: terrainRef.current.splitFullscreen,
-      }),
+      () => splitMirror.get(),
       {
-        setRegion: terrainActions.setSplitRegion,
-        setFullscreen: terrainActions.setSplitFullscreen,
+        setRegion: (region: string | null) => {
+          splitMirror.set({ region });
+          terrainActions.setSplitRegion(region as RegionName | null);
+        },
+        setFullscreen: (v: boolean) => {
+          splitMirror.set({ fullscreen: v });
+          terrainActions.setSplitFullscreen(v);
+        },
       },
     );
 
