@@ -1,0 +1,1 @@
+{"name":"Ghost","description":"Transparent echo","transition_ms":500,"nodes":{"trail":{"type":"trail","params":{"fade":0.015,"blend_mode":"lighter","opacity":0.3}},"bloom":{"type":"bloom","params":{"threshold":0.4,"radius":10.0,"alpha":0.25}},"out":{"type":"output","params":{}}},"edges":[["@live","trail"],["trail","bloom"],["bloom","out"]],"modulations":[],"layer_palettes":{}}

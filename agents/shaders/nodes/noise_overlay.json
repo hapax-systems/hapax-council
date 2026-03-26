@@ -1,0 +1,1 @@
+{"node_type":"noise_overlay","glsl_fragment":"noise_overlay.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"intensity":{"type":"float","default":0.06},"animated":{"type":"bool","default":false}},"temporal":false,"temporal_buffers":0}

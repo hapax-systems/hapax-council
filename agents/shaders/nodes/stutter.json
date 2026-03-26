@@ -1,0 +1,1 @@
+{"node_type":"stutter","glsl_fragment":"","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"check_interval":{"type":"int","default":20},"freeze_chance":{"type":"float","default":0.15},"freeze_min":{"type":"int","default":2},"freeze_max":{"type":"int","default":5},"replay_frames":{"type":"int","default":2}},"temporal":true,"temporal_buffers":8}

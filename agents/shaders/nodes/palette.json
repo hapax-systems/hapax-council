@@ -1,0 +1,1 @@
+{"node_type":"palette","glsl_fragment":"colorgrade.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"saturation":{"type":"float","default":1.0},"brightness":{"type":"float","default":1.0},"contrast":{"type":"float","default":1.0},"sepia":{"type":"float","default":0.0},"hue_rotate":{"type":"float","default":0.0}},"temporal":false,"temporal_buffers":0}

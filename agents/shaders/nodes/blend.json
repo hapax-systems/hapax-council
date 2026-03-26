@@ -1,0 +1,1 @@
+{"node_type":"blend","glsl_fragment":"blend.frag","inputs":{"a":"frame","b":"frame"},"outputs":{"out":"frame"},"params":{"mode":{"type":"enum","default":"screen","enum_values":["screen","lighter","multiply","difference","overlay"]},"alpha":{"type":"float","default":0.5}},"temporal":false,"temporal_buffers":0}

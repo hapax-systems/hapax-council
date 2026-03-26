@@ -1,0 +1,1 @@
+{"node_type":"scanlines","glsl_fragment":"scanlines.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"opacity":{"type":"float","default":0.12},"spacing":{"type":"float","default":4.0},"thickness":{"type":"float","default":1.5}},"temporal":false,"temporal_buffers":0}

@@ -503,6 +503,105 @@ class StudioCompositor:
         self._vl_cache_surface: Any = None
         self._vl_cache_timestamp: float = 0.0
 
+        # Effect node graph system
+        self._graph_runtime = self._init_graph_runtime()
+
+    def _init_graph_runtime(self) -> Any:
+        """Initialize the effect node graph system."""
+        try:
+            from pathlib import Path
+
+            from agents.effect_graph.compiler import GraphCompiler
+            from agents.effect_graph.modulator import UniformModulator
+            from agents.effect_graph.registry import ShaderRegistry
+            from agents.effect_graph.runtime import GraphRuntime
+
+            shader_nodes_dir = Path(__file__).parent / "shaders" / "nodes"
+            registry = ShaderRegistry(shader_nodes_dir)
+            compiler = GraphCompiler(registry)
+            modulator = UniformModulator()
+            runtime = GraphRuntime(registry=registry, compiler=compiler, modulator=modulator)
+
+            # Wire runtime callbacks for GStreamer integration
+            runtime._on_params_changed = self._on_graph_params_changed
+
+            # Expose to API routes
+            try:
+                from logos.api.routes.studio import set_graph_runtime, set_shader_registry
+
+                set_graph_runtime(runtime)
+                set_shader_registry(registry)
+            except ImportError:
+                log.debug("API routes not available — graph runtime not exposed")
+
+            log.info("Effect node graph: %d node types loaded", len(registry.node_types))
+            return runtime
+        except Exception:
+            log.warning("Effect node graph system not available", exc_info=True)
+            return None
+
+    def _try_graph_preset(self, name: str) -> bool:
+        """Try to load a graph-based preset. Returns True if found and loaded."""
+        from pathlib import Path
+
+        for dir_ in (
+            Path.home() / ".config" / "hapax" / "effect-presets",
+            Path(__file__).parent.parent / "presets",
+        ):
+            preset_path = dir_ / f"{name}.json"
+            if preset_path.is_file():
+                try:
+                    from agents.effect_graph.types import EffectGraph
+
+                    raw = json.loads(preset_path.read_text())
+                    graph = EffectGraph(**raw)
+                    self._graph_runtime.load_graph(graph)
+                    log.info("Activated graph preset: %s", name)
+                    return True
+                except Exception:
+                    log.warning("Failed to load graph preset %s", name, exc_info=True)
+        return False
+
+    def _on_graph_params_changed(self, node_id: str, params: dict) -> None:
+        """Update GStreamer shader uniforms for a node (Level 1 graph mutation).
+
+        Maps graph node IDs to stored GStreamer element references and builds
+        GstStructure uniform strings from the param dict.
+        """
+        # Map node types to existing GStreamer element refs
+        element_map = {
+            "color": getattr(self, "_fx_color_grade", None),
+            "colorgrade": getattr(self, "_fx_color_grade", None),
+            "vhs": getattr(self, "_fx_vhs_shader", None),
+            "thermal": getattr(self, "_fx_thermal_shader", None),
+            "halftone": getattr(self, "_fx_halftone_shader", None),
+            "glitch_block": getattr(self, "_fx_glitch_shader", None),
+            "pixsort": getattr(self, "_fx_pixsort_shader", None),
+            "ascii": getattr(self, "_fx_ascii_shader", None),
+            "slitscan": getattr(self, "_fx_slitscan_shader", None),
+            "warp": getattr(self, "_fx_warp_shader", None),
+        }
+        element = element_map.get(node_id)
+        if element is None:
+            return
+
+        Gst = self._Gst
+        if Gst is None:
+            return
+
+        parts = []
+        for key, value in params.items():
+            if isinstance(value, bool):
+                parts.append(f"u_{key}=(float){1.0 if value else 0.0}")
+            elif isinstance(value, (int, float)):
+                parts.append(f"u_{key}=(float){float(value)}")
+
+        if parts:
+            uniforms_str = "uniforms, " + ", ".join(parts)
+            result = Gst.Structure.from_string(uniforms_str)
+            if result and result[0]:
+                element.set_property("uniforms", result[0])
+
     def _build_pipeline(self) -> Any:
         """Build the full GStreamer pipeline."""
         Gst = self._Gst
@@ -1979,6 +2078,26 @@ class StudioCompositor:
         )
         self._fx_post_proc.set_property("uniforms", pp_u[0])
 
+        # --- Node graph modulator: drive graph-bound params from signals ---
+        if self._graph_runtime is not None:
+            modulator = self._graph_runtime.modulator
+            if modulator.bindings:
+                signals = {
+                    "audio_rms": energy,
+                    "audio_beat": b,
+                    "time": t,
+                }
+                data = self._overlay_state._data
+                if data.flow_score > 0:
+                    signals["flow_score"] = data.flow_score
+                if data.emotion_valence != 0:
+                    signals["stimmung_valence"] = data.emotion_valence
+                if data.emotion_arousal != 0:
+                    signals["stimmung_arousal"] = data.emotion_arousal
+                updates = modulator.tick(signals)
+                for (node_id, param), value in updates.items():
+                    self._on_graph_params_changed(node_id, {param: value})
+
         return True  # keep timer running
 
     def _status_tick(self) -> bool:
@@ -2410,9 +2529,16 @@ class StudioCompositor:
                 try:
                     preset_name = fx_request_path.read_text().strip()
                     fx_request_path.unlink(missing_ok=True)
-                    if preset_name and hasattr(self, "_fx_color_grade"):
-                        self._switch_fx_preset(preset_name)
-                        # Write current preset for API trace context
+                    if preset_name:
+                        # Try graph-based preset first
+                        graph_activated = False
+                        if self._graph_runtime is not None:
+                            graph_activated = self._try_graph_preset(preset_name)
+
+                        # Fall back to legacy preset system
+                        if not graph_activated and hasattr(self, "_fx_color_grade"):
+                            self._switch_fx_preset(preset_name)
+
                         try:
                             (SNAPSHOT_DIR / "fx-current.txt").write_text(preset_name)
                         except OSError:

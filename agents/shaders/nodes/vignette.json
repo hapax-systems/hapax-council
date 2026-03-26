@@ -1,0 +1,1 @@
+{"node_type":"vignette","glsl_fragment":"vignette.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"strength":{"type":"float","default":0.35},"radius":{"type":"float","default":0.7},"softness":{"type":"float","default":0.3}},"temporal":false,"temporal_buffers":0}
