@@ -102,7 +102,7 @@ def convert(event: ChangeEvent) -> Impingement:
         ImpingementType.PATTERN_MATCH if interrupt_token else ImpingementType.STATISTICAL_DEVIATION
     )
 
-    return Impingement(
+    imp = Impingement(
         timestamp=time.time(),
         source=f"engine.{event.subdirectory}",
         type=imp_type,
@@ -119,3 +119,17 @@ def convert(event: ChangeEvent) -> Impingement:
         },
         interrupt_token=interrupt_token,
     )
+
+    # Compute embedding for affordance retrieval (non-blocking, best-effort)
+    try:
+        from shared.config import embed_safe
+        from shared.impingement import render_impingement_text
+
+        text = render_impingement_text(imp)
+        vec = embed_safe(text, prefix="search_query")
+        if vec is not None:
+            imp = imp.model_copy(update={"embedding": vec})
+    except Exception:
+        pass  # embedding is optional enrichment
+
+    return imp

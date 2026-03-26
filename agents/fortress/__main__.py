@@ -77,13 +77,26 @@ class FortressDaemon:
         self._last_game_day = -1
 
         # Impingement cascade integration
-        from agents.fortress.capability import FortressGovernanceCapability
-        from shared.capability_registry import CapabilityRegistry
+        from agents.fortress.capability import FORTRESS_DESCRIPTION, FortressGovernanceCapability
 
-        self._cascade_registry = CapabilityRegistry()
         self._fortress_capability = FortressGovernanceCapability()
-        self._cascade_registry.register(self._fortress_capability)
-        self._dmn_impingement_cursor = 0  # line-based cursor for JSONL reading
+        self._dmn_impingement_cursor = 0
+
+        # Affordance pipeline: index fortress capability and register interrupt tokens
+        from shared.affordance import CapabilityRecord
+        from shared.affordance_pipeline import AffordancePipeline
+
+        self._affordance_pipeline = AffordancePipeline()
+        self._affordance_pipeline.index_capability(
+            CapabilityRecord(
+                name="fortress_governance",
+                description=FORTRESS_DESCRIPTION,
+                daemon="fortress",
+            )
+        )
+        self._affordance_pipeline.register_interrupt(
+            "population_critical", "fortress_governance", "fortress"
+        )
 
     async def run(self) -> None:
         """Run governance + maintenance loops concurrently."""
@@ -231,12 +244,7 @@ class FortressDaemon:
             await asyncio.sleep(GOVERNANCE_INTERVAL)
 
     async def _impingement_consumer_loop(self) -> None:
-        """Poll DMN impingements and broadcast to fortress cascade.
-
-        Reads /dev/shm/hapax-dmn/impingements.jsonl with cursor tracking,
-        broadcasts each impingement through the CapabilityRegistry so the
-        FortressGovernanceCapability can self-select relevant signals.
-        """
+        """Poll DMN impingements and route through affordance pipeline."""
         from shared.impingement import Impingement
 
         imp_path = Path("/dev/shm/hapax-dmn/impingements.jsonl")
@@ -256,13 +264,14 @@ class FortressDaemon:
                                 continue
                             try:
                                 imp = Impingement.model_validate_json(line)
-                                matches = self._cascade_registry.broadcast(imp)
-                                for match in matches:
-                                    match.capability.activate(imp, match.effective_score)
-                                if matches:
-                                    self._cascade_registry.add_inhibition(imp, duration_s=60.0)
+                                candidates = self._affordance_pipeline.select(imp)
+                                for c in candidates:
+                                    if c.capability_name == "fortress_governance":
+                                        self._fortress_capability.activate(imp, c.combined)
+                                if candidates:
+                                    self._affordance_pipeline.add_inhibition(imp, duration_s=60.0)
                             except Exception:
-                                pass  # skip malformed lines
+                                pass
             except Exception:
                 log.debug("Impingement consumer error (non-fatal)", exc_info=True)
 

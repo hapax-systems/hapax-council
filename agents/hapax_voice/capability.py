@@ -23,6 +23,13 @@ SPEECH_AFFORDANCES = {
     "operator_stress",
 }
 
+# Function-free description for affordance retrieval (McCaffrey 2012)
+SPEECH_DESCRIPTION = (
+    "Produces audible natural language that reaches the operator's ears within 1 second. "
+    "Requires GPU and speakers. Output is ephemeral (not persisted). "
+    "Can convey urgency through prosody and tone. Interrupts silence but not active speech."
+)
+
 
 class SpeechProductionCapability:
     """Speech production as a Capability — recruited when verbal output is needed."""
