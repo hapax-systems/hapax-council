@@ -15,6 +15,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agents.hapax_voice.primitives import Behavior
+from shared.impingement import Impingement, ImpingementType
 
 if TYPE_CHECKING:
     from shared.hyprland import WindowInfo
@@ -254,6 +255,10 @@ class PerceptionEngine:
             "guest_count": self._b_guest_count,
         }
 
+        # Impingement drain (R3) — accumulates impingements for daemon consumption
+        self._prev_behavior_values: dict[str, float] = {}
+        self._pending_impingements: list[Impingement] = []
+
         # Voice session flag (set by daemon each tick)
         self._in_voice_session: bool = False
 
@@ -294,6 +299,37 @@ class PerceptionEngine:
     def set_voice_session_active(self, active: bool) -> None:
         """Update voice session flag. Called by daemon before each tick."""
         self._in_voice_session = active
+
+    def drain_impingements(self) -> list[Impingement]:
+        """Drain pending impingements (called by daemon to write to JSONL)."""
+        result = self._pending_impingements
+        self._pending_impingements = []
+        return result
+
+    def _check_behavior_changes(self, behaviors: dict[str, Behavior]) -> None:
+        """Check for significant behavior changes and emit impingements."""
+        for name, behavior in behaviors.items():
+            val = behavior.value
+            if not isinstance(val, (int, float)):
+                continue
+            prev = self._prev_behavior_values.get(name, 0.0)
+            delta = abs(float(val) - float(prev))
+            if delta > 0.15:
+                self._prev_behavior_values[name] = float(val)
+                self._pending_impingements.append(
+                    Impingement(
+                        timestamp=time.time(),
+                        source=f"perception.{name}",
+                        type=ImpingementType.STATISTICAL_DEVIATION,
+                        strength=min(1.0, delta),
+                        content={
+                            "metric": name,
+                            "value": float(val),
+                            "previous": float(prev),
+                            "delta": round(delta, 3),
+                        },
+                    )
+                )
 
     def register_backend(self, backend: PerceptionBackend) -> None:
         """Register a perception backend. Raises ValueError on name or provides conflicts."""
@@ -429,6 +465,9 @@ class PerceptionEngine:
             in_voice_session=self._in_voice_session,
             interruptibility_score=interruptibility,
         )
+
+        # Emit impingements for significant behavior changes
+        self._check_behavior_changes(self.behaviors)
 
         self.latest = state
 
