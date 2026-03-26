@@ -259,8 +259,100 @@ Extend GPU semaphore to guard all GPU operations only when VRAM watchdog hits 85
 4. **Reactive engine migration** (Design Space 3) — converter + wrapper, non-breaking
 5. **Sensor Tier 1 migration** (Design Space 4) — stimmung, gcalendar, chrome
 
-### Phase 3 (Completeness)
-6. Sensor Tier 2+3 migration
-7. GPU semaphore extension (if needed)
-8. Thompson Sampling feedback loop
-9. Affordance landscape pre-computation
+### Phase 3 (Expression + Perception)
+6. **Perception backends as impingement sources** (Design Space 6)
+7. **Shader graph as expression capability** (Design Space 7)
+
+### Phase 4 (Completeness)
+8. Sensor Tier 2+3 migration
+9. GPU semaphore extension (if needed)
+10. Thompson Sampling feedback loop
+11. Affordance landscape pre-computation
+
+---
+
+## Design Space 6: Perception Backends as Impingement Sources
+
+### Problem
+23 perception backends produce EnvironmentState snapshots but no typed Impingements. BOCPD already detects statistical deviations. Presence transitions are already tracked. But none emit Impingement objects for the cascade.
+
+### Solution
+Each backend tracks previous state and emits Impingements at its `contribute()` call site on deviation, threshold breach, or state transition.
+
+### Backend Classification
+
+**PATTERN_MATCH emitters (state transitions) — 5 backends, trivial migration:**
+- presence_engine: PRESENT↔AWAY → `operator_arrival`, `operator_departure`
+- phone_calls: active flag flip → `phone_call_incoming`
+- midi_clock: transport start/stop → `music_production_started/stopped`
+- input_activity: idle timeout → `user_idle_state`
+- watch: stress_elevated flip → `physiological_stress_spike`
+
+**ABSOLUTE_THRESHOLD emitters (out-of-bounds) — 3 backends, moderate:**
+- phone_awareness: battery < 10% → `phone_battery_critical`
+- stream_health: dropped_frames > 2% → `stream_quality_degraded`
+- health: health_ratio < 0.9 → `system_health_degraded`
+
+**STATISTICAL_DEVIATION emitters (change from running mean) — 5 backends, moderate:**
+- speech_emotion: emotion change → `emotion_state_change`
+- studio_ingestion: activity mode shift → `activity_mode_change`
+- attention: engagement drop → `attention_disengagement`
+- watch: HR spike > 20bpm → `heart_rate_spike`
+- local_llm: confidence drop → `activity_uncertain`
+
+### Implementation
+Add `_pending_impingements` list to PerceptionEngine. Each backend's `contribute()` appends impingements when state changes. After each tick, drain and write to `/dev/shm/hapax-dmn/impingements.jsonl` (same transport as cross-daemon routing).
+
+### Files Changed
+- `agents/hapax_voice/perception.py` — add impingement drain (~20 lines)
+- 5 trivial backends — ~10-20 lines each
+- 6 moderate backends — ~30-60 lines each
+
+---
+
+## Design Space 7: Shader Graph as Expression Capability
+
+### Problem
+The compositor's effects system is disconnected from the impingement cascade. Stimmung dimensions don't drive shader parameters. The effect node graph (40 shaders, uniform modulation, crossfade engine) has no impingement input.
+
+### Solution
+Register `ShaderGraphCapability` with dual affordances: parameter modulation (continuous) and topology mutation (discrete transitions). The uniform modulation system maps impingement strength directly to shader parameters.
+
+### Capability Profile
+```
+name: "shader_graph"
+affordances: visual_expression, visual_calm, visual_alert,
+             visual_fatigue_response, visual_energy_alignment,
+             visual_resource_shedding, preset_switch
+activation_cost: 0.3
+consent_required: False
+```
+
+### Stimmung → Shader Parameter Matrix
+
+| Dimension | Parameters | Effect |
+|-----------|-----------|--------|
+| operator_stress | warmth +0.1, speed ×0.7, brightness -0.05 | Warm, slow, dim (restorative) |
+| operator_energy | speed ×(1-e×0.2), hue +e×10 | Low energy = slow + warm |
+| health (failing) | saturation +0.2, breathing 1.5s | Oversaturate + alert |
+| resource_pressure | shed bloom/pixsort, reduce resolution | GPU constraint = simplify |
+| grounding_quality (poor) | reduce modulation range ×0.7 | Conservative, smooth |
+
+### Stimmung Stance → Layer Palette
+NOMINAL → CAUTIOUS → DEGRADED → CRITICAL mapped to saturation (1.0→0.5), brightness (1.0→0.85), sepia (0→0.2). Lerped over 300ms via crossfade engine.
+
+### Graduated Activation
+`level` (0.0-1.0) scales all modulation ranges: `actual = baseline + (target - baseline) × level`. Ensures smooth graduation, not binary switching.
+
+### Integration with Effect Node Graph Phase 1
+UniformModulator's binding registry maps impingement signals to shader uniforms directly. Crossfade engine handles topology transitions. Three persistent layers provide state continuity. ShaderGraphCapability registers bindings at initialization — no per-frame impingement processing needed.
+
+### Files Changed
+- `agents/effect_graph/capability.py` — NEW: ShaderGraphCapability (~150 lines)
+- UniformModulator — add impingement-sourced bindings (~30 lines)
+- Compositor init — register capability (~10 lines)
+
+### Design Language Compliance
+- §6 breathing periods match severity ladder ✓
+- §3.4 palette values match stance definitions ✓
+- §2.2 shaders driven by stimmung, not mode ✓
