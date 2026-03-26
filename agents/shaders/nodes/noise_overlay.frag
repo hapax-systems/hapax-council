@@ -1,0 +1,34 @@
+#version 100
+#ifdef GL_ES
+precision mediump float;
+#endif
+
+varying vec2 v_texcoord;
+uniform sampler2D tex;
+uniform float u_intensity;
+uniform float u_animated;
+uniform float u_time;
+uniform float u_width;
+uniform float u_height;
+
+float hash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+    vec4 color = texture2D(tex, v_texcoord);
+    vec2 grain_uv = floor(v_texcoord * vec2(u_width, u_height) / 8.0);
+    float seed = u_animated > 0.5 ? floor(u_time * 10.0) : 0.0;
+    float noise = hash(grain_uv + seed);
+
+    vec3 grain = vec3(noise);
+    vec3 result = mix(
+        2.0 * color.rgb * grain,
+        1.0 - 2.0 * (1.0 - color.rgb) * (1.0 - grain),
+        step(0.5, color.rgb)
+    );
+    color.rgb = mix(color.rgb, result, u_intensity);
+    gl_FragColor = color;
+}

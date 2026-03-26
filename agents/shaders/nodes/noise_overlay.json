@@ -1,0 +1,12 @@
+{
+  "node_type": "noise_overlay",
+  "glsl_fragment": "noise_overlay.frag",
+  "inputs": {"in": "frame"},
+  "outputs": {"out": "frame"},
+  "params": {
+    "intensity": {"type": "float", "default": 0.06, "min": 0.0, "max": 0.3, "description": "Grain strength"},
+    "animated": {"type": "bool", "default": false, "description": "Regenerate grain each frame"},
+    "blend_mode": {"type": "enum", "default": "overlay", "enum_values": ["overlay", "additive", "multiply"], "description": "How grain blends"}
+  },
+  "temporal": false
+}

@@ -1,0 +1,8 @@
+{
+  "node_type": "output",
+  "glsl_fragment": "",
+  "inputs": {"in": "frame"},
+  "outputs": {},
+  "params": {},
+  "temporal": false
+}

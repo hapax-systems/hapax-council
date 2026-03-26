@@ -1,0 +1,14 @@
+{
+  "node_type": "colorgrade",
+  "glsl_fragment": "colorgrade.frag",
+  "inputs": {"in": "frame"},
+  "outputs": {"out": "frame"},
+  "params": {
+    "saturation": {"type": "float", "default": 1.0, "min": 0.0, "max": 2.0, "description": "Color saturation"},
+    "brightness": {"type": "float", "default": 1.0, "min": 0.0, "max": 2.0, "description": "Brightness multiplier"},
+    "contrast": {"type": "float", "default": 1.0, "min": 0.0, "max": 2.0, "description": "Contrast multiplier"},
+    "sepia": {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0, "description": "Sepia tone strength"},
+    "hue_rotate": {"type": "float", "default": 0.0, "min": -180.0, "max": 180.0, "description": "Hue rotation in degrees"}
+  },
+  "temporal": false
+}

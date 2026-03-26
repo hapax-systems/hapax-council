@@ -1,0 +1,15 @@
+{
+  "node_type": "stutter",
+  "glsl_fragment": "",
+  "inputs": {"in": "frame"},
+  "outputs": {"out": "frame"},
+  "params": {
+    "check_interval": {"type": "int", "default": 20, "min": 5, "max": 60, "description": "Frames between freeze checks"},
+    "freeze_chance": {"type": "float", "default": 0.15, "min": 0.0, "max": 0.5, "description": "Probability of freeze per check"},
+    "freeze_min": {"type": "int", "default": 2, "min": 1, "max": 10, "description": "Minimum freeze duration (frames)"},
+    "freeze_max": {"type": "int", "default": 5, "min": 2, "max": 20, "description": "Maximum freeze duration (frames)"},
+    "replay_frames": {"type": "int", "default": 2, "min": 1, "max": 8, "description": "Frames to replay after freeze"}
+  },
+  "temporal": true,
+  "temporal_buffers": 8
+}

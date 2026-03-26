@@ -1,0 +1,15 @@
+{
+  "node_type": "trail",
+  "glsl_fragment": "trail.frag",
+  "inputs": {"in": "frame"},
+  "outputs": {"out": "frame"},
+  "params": {
+    "fade": {"type": "float", "default": 0.04, "min": 0.001, "max": 0.2, "description": "Trail fade per frame"},
+    "blend_mode": {"type": "enum", "default": "lighter", "enum_values": ["lighter", "screen", "multiply", "difference", "overlay"], "description": "How new frames blend onto trail"},
+    "opacity": {"type": "float", "default": 0.5, "min": 0.0, "max": 1.0, "description": "New frame composite strength"},
+    "drift_x": {"type": "float", "default": 0.0, "min": 0.0, "max": 10.0, "description": "Horizontal drift per frame"},
+    "drift_y": {"type": "float", "default": 0.0, "min": 0.0, "max": 10.0, "description": "Vertical drift per frame"}
+  },
+  "temporal": true,
+  "temporal_buffers": 1
+}
