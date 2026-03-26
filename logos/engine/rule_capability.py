@@ -27,6 +27,23 @@ _PHASE_COST: dict[int, float] = {
     2: 1.0,  # cloud LLM
 }
 
+_PHASE_LABEL: dict[int, str] = {
+    0: "Deterministic, sub-second, no LLM",
+    1: "GPU-bounded, may use local LLM",
+    2: "Cloud LLM required, higher latency",
+}
+
+
+def generate_rule_description(rule: Rule) -> str:
+    """Auto-generate a function-free description for a rule capability."""
+    subdirs = ", ".join(rule.subdirectories) if rule.subdirectories else "any directory"
+    phase_label = _PHASE_LABEL.get(rule.phase, "Unknown phase")
+    return (
+        f"Reactive rule that triggers on filesystem changes in {subdirs}. "
+        f"{phase_label}. "
+        f"Produces downstream actions when trigger conditions are met."
+    )
+
 
 class RuleCapability:
     """Adapts a Rule to the Capability protocol.

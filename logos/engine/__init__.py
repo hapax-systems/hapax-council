@@ -213,13 +213,16 @@ class ReactiveEngine:
 
         # Impingement cascade integration
         from logos.engine.converter import convert as _convert
-        from logos.engine.rule_capability import RuleCapability
-        from shared.capability_registry import CapabilityRegistry
+        from logos.engine.rule_capability import RuleCapability, generate_rule_description
+        from shared.affordance import CapabilityRecord
+        from shared.affordance_pipeline import AffordancePipeline
 
-        self._capability_registry = CapabilityRegistry()
         self._convert_event = _convert
         self._rule_capability_class = RuleCapability
+        self._generate_rule_description = generate_rule_description
+        self._affordance_pipeline = AffordancePipeline()
         self._cascade_initialized = False
+        self._rule_capability_record_class = CapabilityRecord
 
         # Counters
         self._events_processed = 0
@@ -419,27 +422,33 @@ class ReactiveEngine:
                 plan = evaluate_rules(event, self._registry)
             self._rules_evaluated += len(self._registry)
 
-            # Impingement cascade: convert event and broadcast to capabilities
+            # Affordance pipeline: convert event and select capabilities
             try:
                 if not self._cascade_initialized:
                     for rule in self._registry:
-                        self._capability_registry.register(self._rule_capability_class(rule))
+                        desc = self._generate_rule_description(rule)
+                        self._affordance_pipeline.index_capability(
+                            self._rule_capability_record_class(
+                                name=rule.name,
+                                description=desc,
+                                daemon="logos_engine",
+                            )
+                        )
                     self._cascade_initialized = True
                     _log.info(
-                        "Cascade initialized: %d rule capabilities registered",
-                        len(self._capability_registry.capabilities),
+                        "Affordance pipeline: %d rule capabilities indexed", len(self._registry)
                     )
 
                 impingement = self._convert_event(event)
-                matches = self._capability_registry.broadcast(impingement)
-                if matches:
+                candidates = self._affordance_pipeline.select(impingement)
+                if candidates:
                     _log.debug(
-                        "Cascade broadcast: %d capabilities matched for %s",
-                        len(matches),
+                        "Affordance selection: %d candidates for %s",
+                        len(candidates),
                         event.path.name,
                     )
             except Exception:
-                _log.debug("Cascade broadcast failed (non-fatal)", exc_info=True)
+                _log.debug("Affordance selection failed (non-fatal)", exc_info=True)
 
             if not plan.actions:
                 _log.debug("No rules matched for %s", event.path)

@@ -28,6 +28,14 @@ FORTRESS_AFFORDANCES = {
     "extinction_risk",
 }
 
+# Function-free description for affordance retrieval (McCaffrey 2012)
+FORTRESS_DESCRIPTION = (
+    "Evaluates resource adequacy and threat levels in a managed simulation. "
+    "Produces strategic recommendations and dispatches management commands. "
+    "Monitors drink, food, population, military readiness, and infrastructure gaps. "
+    "Operates on 2-second governance tick cycle. No GPU required."
+)
+
 
 class FortressGovernanceCapability:
     """Fortress governance as a Capability in the activation cascade."""

@@ -944,15 +944,32 @@ class VoiceDaemon:
         self._dmn_fn = render_dmn
 
         # Impingement cascade: speech as a recruited capability
-        from agents.hapax_voice.capability import SpeechProductionCapability
-        from shared.capability_registry import CapabilityRegistry
+        from agents.hapax_voice.capability import SPEECH_DESCRIPTION, SpeechProductionCapability
 
-        self._cascade_registry = CapabilityRegistry()
         self._speech_capability = SpeechProductionCapability()
-        self._cascade_registry.register(self._speech_capability)
-        self._dmn_impingement_cursor = 0  # byte offset in impingements.jsonl
+        self._dmn_impingement_cursor = 0
 
-        log.info("Pipeline dependencies precomputed (cascade: speech capability registered)")
+        # Affordance pipeline: index speech capability and register interrupt tokens
+        from shared.affordance import CapabilityRecord, OperationalProperties
+        from shared.affordance_pipeline import AffordancePipeline
+
+        self._affordance_pipeline = AffordancePipeline()
+        self._affordance_pipeline.index_capability(
+            CapabilityRecord(
+                name="speech_production",
+                description=SPEECH_DESCRIPTION,
+                daemon="hapax_voice",
+                operational=OperationalProperties(requires_gpu=True),
+            )
+        )
+        self._affordance_pipeline.register_interrupt(
+            "population_critical", "speech_production", "hapax_voice"
+        )
+        self._affordance_pipeline.register_interrupt(
+            "operator_distress", "speech_production", "hapax_voice"
+        )
+
+        log.info("Pipeline dependencies precomputed (affordance pipeline: speech indexed)")
 
     def _pause_vision_for_conversation(self) -> None:
         """Pause vision inference to free ~2-3GB VRAM for voice models."""
@@ -1775,12 +1792,7 @@ class VoiceDaemon:
         )
 
     async def _impingement_consumer_loop(self) -> None:
-        """Poll DMN impingements and route to speech capability.
-
-        Reads /dev/shm/hapax-dmn/impingements.jsonl, filters for
-        voice-relevant signals, activates SpeechProductionCapability
-        when verbal output is warranted.
-        """
+        """Poll DMN impingements and route through affordance pipeline."""
         from pathlib import Path
 
         from shared.impingement import Impingement
@@ -1793,7 +1805,6 @@ class VoiceDaemon:
                     text = imp_path.read_text(encoding="utf-8")
                     lines = text.strip().split("\n") if text.strip() else []
 
-                    # Process only lines we haven't seen
                     new_lines = lines[self._dmn_impingement_cursor :]
                     if new_lines:
                         self._dmn_impingement_cursor = len(lines)
@@ -1803,20 +1814,21 @@ class VoiceDaemon:
                                 continue
                             try:
                                 imp = Impingement.model_validate_json(line)
-                                score = self._speech_capability.can_resolve(imp)
-                                if score > 0.0:
-                                    self._speech_capability.activate(imp, score)
-                                    log.info(
-                                        "Speech recruited by impingement: %s (score=%.2f)",
-                                        imp.content.get("metric", imp.source),
-                                        score,
-                                    )
+                                candidates = self._affordance_pipeline.select(imp)
+                                for c in candidates:
+                                    if c.capability_name == "speech_production":
+                                        self._speech_capability.activate(imp, c.combined)
+                                        log.info(
+                                            "Speech recruited via affordance pipeline: %s (score=%.2f)",
+                                            imp.content.get("metric", imp.source),
+                                            c.combined,
+                                        )
                             except Exception:
-                                pass  # skip malformed lines
+                                pass
             except Exception:
                 log.debug("Impingement consumer error (non-fatal)", exc_info=True)
 
-            await asyncio.sleep(0.5)  # 500ms poll cadence
+            await asyncio.sleep(0.5)
 
     def _signal_tpn_active(self, active: bool) -> None:
         """Signal DMN that TPN (voice) is actively processing."""

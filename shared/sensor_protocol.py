@@ -103,6 +103,18 @@ def emit_sensor_impingement(
         interrupt_token="profile_dimension_updated",
     )
 
+    # Compute embedding for affordance retrieval (best-effort)
+    try:
+        from shared.config import embed_safe
+        from shared.impingement import render_impingement_text
+
+        text = render_impingement_text(imp)
+        vec = embed_safe(text, prefix="search_query")
+        if vec is not None:
+            imp = imp.model_copy(update={"embedding": vec})
+    except Exception:
+        pass
+
     try:
         IMPINGEMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
         with IMPINGEMENTS_FILE.open("a", encoding="utf-8") as f:
