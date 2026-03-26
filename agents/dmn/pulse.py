@@ -25,6 +25,7 @@ import httpx
 
 from agents.dmn.buffer import DMNBuffer
 from agents.dmn.sensor import read_all
+from shared.impingement import Impingement, ImpingementType
 
 log = logging.getLogger("dmn.pulse")
 
@@ -118,6 +119,7 @@ class DMNPulse:
         self._last_consolidation = 0.0
         self._prior_snapshot: dict | None = None
         self._tpn_active = False  # set True during deliberation to slow ticks
+        self._pending_impingements: list[Impingement] = []
 
     def set_tpn_active(self, active: bool) -> None:
         """Signal that TPN is actively processing (anti-correlation)."""
@@ -171,11 +173,73 @@ class DMNPulse:
             # Fallback: use raw sensor summary if Ollama fails
             self._buffer.add_observation(prompt[:100], deltas, raw_sensor=prompt)
 
+    def _check_absolute_thresholds(self, snapshot: dict) -> None:
+        """Anti-habituation: check absolute thresholds regardless of deltas.
+
+        Prevents vigilance decrement during extended stable-but-bad periods.
+        Emits Impingement objects when thresholds are violated.
+        """
+        fortress = snapshot.get("fortress")
+        if fortress:
+            pop = fortress.get("population", 0)
+            drink = fortress.get("drink", 0)
+            # food threshold reserved for future use
+
+            if pop > 0 and drink < pop * 2:
+                self._pending_impingements.append(
+                    Impingement(
+                        timestamp=time.time(),
+                        source="dmn.absolute_threshold",
+                        type=ImpingementType.ABSOLUTE_THRESHOLD,
+                        strength=min(1.0, 1.0 - (drink / max(1, pop * 2))),
+                        content={
+                            "metric": "drink_per_capita",
+                            "value": drink,
+                            "threshold": pop * 2,
+                        },
+                        context={"fortress": fortress.get("fortress_name", ""), "population": pop},
+                    )
+                )
+            if pop > 0 and pop < 3:
+                self._pending_impingements.append(
+                    Impingement(
+                        timestamp=time.time(),
+                        source="dmn.absolute_threshold",
+                        type=ImpingementType.ABSOLUTE_THRESHOLD,
+                        strength=1.0,
+                        content={"metric": "extinction_risk", "value": pop, "threshold": 3},
+                        context={"fortress": fortress.get("fortress_name", "")},
+                        interrupt_token="population_critical",
+                    )
+                )
+
+        stimmung = snapshot.get("stimmung", {})
+        if stimmung.get("stance") == "critical":
+            self._pending_impingements.append(
+                Impingement(
+                    timestamp=time.time(),
+                    source="dmn.absolute_threshold",
+                    type=ImpingementType.ABSOLUTE_THRESHOLD,
+                    strength=0.9,
+                    content={"metric": "stimmung_critical", "stance": "critical"},
+                    context={"operator_stress": stimmung.get("operator_stress", 0)},
+                )
+            )
+
+    def drain_impingements(self) -> list[Impingement]:
+        """Return and clear pending impingements. Called by the cascade broadcaster."""
+        pending = self._pending_impingements[:]
+        self._pending_impingements.clear()
+        return pending
+
     async def _evaluative_tick(self, snapshot: dict) -> None:
-        """Assess value trajectory: improving, degrading, or stable."""
+        """Assess value trajectory + check absolute thresholds."""
+        # Anti-habituation: always check absolute thresholds regardless of deltas
+        self._check_absolute_thresholds(snapshot)
+
         deltas = self._buffer.format_delta_context(self._prior_snapshot, snapshot)
 
-        # Stopping criterion: no deltas + stable stimmung → skip
+        # Stopping criterion: no deltas + stable stimmung → skip LLM eval
         stimmung = snapshot.get("stimmung", {})
         if not deltas and stimmung.get("stance") == "nominal":
             return
@@ -201,6 +265,19 @@ class DMNPulse:
 
             self._buffer.add_evaluation(trajectory, concerns)
             log.debug("Evaluative: %s %s", trajectory, concerns)
+
+            # Emit impingement for degrading trajectory
+            if trajectory == "degrading":
+                self._pending_impingements.append(
+                    Impingement(
+                        timestamp=time.time(),
+                        source="dmn.evaluative",
+                        type=ImpingementType.SALIENCE_INTEGRATION,
+                        strength=0.6,
+                        content={"trajectory": trajectory, "concerns": concerns},
+                        context={"stimmung_stance": stimmung.get("stance", "unknown")},
+                    )
+                )
 
     async def _consolidation_tick(self) -> None:
         """Compress older observations into a retentional summary, then prune."""
