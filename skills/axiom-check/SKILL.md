@@ -1,6 +1,6 @@
 ---
 name: axiom-check
-description: Check axiom compliance of the current project. Use when the user asks about axiom status, compliance, governance, or runs /axiom-check.
+description: Check axiom compliance. Auto-run when: session touches axiom files (axioms/, shared/axiom_*.py), a governance discussion arises, after structural refactors that could introduce multi-user patterns, or user asks about compliance. Invoke proactively without asking.
 ---
 
 Check axiom compliance of the current project.

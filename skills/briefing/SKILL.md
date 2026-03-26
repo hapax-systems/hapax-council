@@ -1,6 +1,6 @@
 ---
 name: briefing
-description: Generate a system briefing covering the last 24 hours. Use when the user asks for a briefing, daily summary, or runs /briefing.
+description: Generate a system briefing. Auto-run when: this is the first session of the day (session-context shows briefing >20h old), operator says good morning or start of day, or user asks for a briefing. Invoke proactively without asking.
 ---
 
 Generate a system briefing covering the last 24 hours:

@@ -215,6 +215,92 @@ if [ -n "$LAST_SWEEP" ]; then
   fi
 fi
 
+# ── Skill auto-trigger suggestions ──
+
+# /briefing — first session of the day
+BRIEFING_FILE="$HOME/projects/hapax-council/profiles/briefing.md"
+if [ -f "$BRIEFING_FILE" ]; then
+  BRIEFING_AGE=$(( ($(date +%s) - $(stat -c %Y "$BRIEFING_FILE")) / 3600 ))
+  if [ "$BRIEFING_AGE" -gt 20 ]; then
+    echo "Briefing: last generated ${BRIEFING_AGE}h ago (run /briefing)"
+  fi
+else
+  echo "Briefing: none found (run /briefing)"
+fi
+
+# /refresh-research — research mode active
+if [ "$MODE" = "research" ]; then
+  RESEARCH_STATE="$HOME/projects/hapax-council/agents/hapax_voice/proofs/RESEARCH-STATE.md"
+  if [ -f "$RESEARCH_STATE" ]; then
+    RS_AGE=$(( ($(date +%s) - $(stat -c %Y "$RESEARCH_STATE")) / 3600 ))
+    if [ "$RS_AGE" -gt 48 ]; then
+      echo "Research: state file is ${RS_AGE}h old — consider updating (run /refresh-research)"
+    fi
+  fi
+  echo "Mode: RESEARCH — research context available (run /refresh-research)"
+fi
+
+# /disk-triage — low disk space
+ROOT_USE=$(df / 2>/dev/null | awk 'NR==2{gsub(/%/,""); print $5}')
+if [ -n "$ROOT_USE" ] && [ "$ROOT_USE" -gt 85 ]; then
+  echo "DISK WARNING: root filesystem at ${ROOT_USE}% (run /disk-triage)"
+fi
+
+# /distro-health — stale package updates
+LAST_UPDATE_EPOCH=$(stat -c %Y /var/lib/pacman/local 2>/dev/null || echo 0)
+if [ "$LAST_UPDATE_EPOCH" -gt 0 ]; then
+  UPDATE_AGE=$(( ($(date +%s) - LAST_UPDATE_EPOCH) / 86400 ))
+  if [ "$UPDATE_AGE" -gt 3 ]; then
+    echo "Updates: last package update was ${UPDATE_AGE} days ago (run /distro-health)"
+  fi
+fi
+
+# /diagnose — failed systemd units
+FAILED_USER=$(systemctl --user --failed --no-legend 2>/dev/null | wc -l)
+FAILED_SYS=$(systemctl --failed --no-legend 2>/dev/null | wc -l)
+TOTAL_FAILED=$((FAILED_USER + FAILED_SYS))
+if [ "$TOTAL_FAILED" -gt 0 ]; then
+  echo "Systemd: $TOTAL_FAILED failed unit(s) (run /diagnose or /distro-health)"
+fi
+
+# /branch-audit — stale branches across repos
+STALE_TOTAL=0
+for repo in "$HOME/projects/hapax-council" "$HOME/projects/hapax-officium" "$HOME/projects/hapax-constitution" "$HOME/projects/hapax-mcp" "$HOME/projects/hapax-watch"; do
+  if [ -d "$repo/.git" ] || [ -f "$repo/.git" ]; then
+    STALE=$(cd "$repo" && git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null | grep -vcE '^(main|master)$' || true)
+    STALE_TOTAL=$((STALE_TOTAL + STALE))
+  fi
+done
+if [ "$STALE_TOTAL" -gt 3 ]; then
+  echo "Branches: $STALE_TOTAL non-main branches across repos (run /branch-audit)"
+fi
+
+# /sys-forensics — recent boot (possible crash)
+BOOT_AGE=$(( $(date +%s) - $(date -d "$(uptime -s)" +%s 2>/dev/null || echo "$(date +%s)") ))
+if [ "$BOOT_AGE" -gt 0 ] && [ "$BOOT_AGE" -lt 3600 ]; then
+  echo "System: booted $((BOOT_AGE / 60))min ago — recent reboot (run /sys-forensics)"
+fi
+
+# /storage-audit — docker disk usage
+DOCKER_IMG_SIZE=$(docker system df 2>/dev/null | awk '/Images/{print $NF}' | grep -oP '[\d.]+(?=GB)' || true)
+if [ -n "$DOCKER_IMG_SIZE" ] && [ "$(echo "$DOCKER_IMG_SIZE > 20" | bc 2>/dev/null)" = "1" ]; then
+  echo "Docker: images using ${DOCKER_IMG_SIZE}GB (run /storage-audit)"
+fi
+
+# /weekly-review — Sunday/Monday without recent review
+DOW=$(date +%u)
+if [ "$DOW" -eq 7 ] || [ "$DOW" -eq 1 ]; then
+  REVIEW_FILE="$HOME/projects/hapax-council/profiles/weekly-review.md"
+  if [ -f "$REVIEW_FILE" ]; then
+    REVIEW_AGE=$(( ($(date +%s) - $(stat -c %Y "$REVIEW_FILE")) / 86400 ))
+    if [ "$REVIEW_AGE" -gt 6 ]; then
+      echo "Weekly review: last was ${REVIEW_AGE} days ago (run /weekly-review)"
+    fi
+  else
+    echo "Weekly review: none found (run /weekly-review)"
+  fi
+fi
+
 # Scout recommendations (actionable items from latest horizon scan)
 SCOUT_REPORT="$HOME/projects/hapax-council/profiles/scout-report.json"
 if [ -f "$SCOUT_REPORT" ]; then
