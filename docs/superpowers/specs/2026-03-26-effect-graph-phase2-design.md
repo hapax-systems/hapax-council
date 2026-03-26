@@ -80,78 +80,76 @@ Research confirmed all architectural decisions:
 
 ## Architecture
 
-### Pre-instantiated Shader Chain
+### Slot-Based Shader Chain
 
-At pipeline startup, `_add_effects_branch()` builds a fixed chain of ALL shader nodes:
+**Problem**: A fixed alphabetical chain breaks 89% of presets because signal flow order matters (e.g., Ghost needs trail→bloom, Diff needs threshold→colorgrade). GStreamer can't relink elements on a PLAYING pipeline.
+
+**Solution**: A chain of **N numbered processing slots** (e.g., 8 slots), each a `glshader` element. On graph load, the compiler assigns each node in topological order to a slot and loads that slot's shader source + uniforms. Unused slots get a passthrough shader.
 
 ```
 tee → queue → stutter_element →
   videoconvert(RGBA) → glupload → glcolorconvert →
 
   [LAYER SECTION]
-  palette_live →                    # @live layer palette
-  palette_smooth →                  # @smooth palette (fed from delayed branch)
+  palette_live →
+  palette_smooth →
 
-  [PROCESSING SECTION — alphabetical, all bypassed by default]
-  ascii → bloom → breathing → chromatic_aberration →
-  circular_mask → color_map → colorgrade →
-  dither → drift → droste →
-  edge_detect → emboss →
-  fisheye →
-  glitch_block →
-  halftone →
-  invert →
-  kaleidoscope →
-  mirror →
-  noise_overlay →
-  pixsort → posterize →
-  rutt_etra →
-  scanlines → sharpen → strobe → syrup →
-  thermal → threshold → tile → transform → tunnel →
-  vhs → vignette → voronoi_overlay → warp →
-
-  [TEMPORAL SECTION]
-  trail(temporalfx) → feedback(temporalfx) →
-  diff → echo → slitscan →
-
-  [COMPOSITING SECTION]
-  blend → crossfade → luma_key → chroma_key →
+  [PROCESSING SLOTS — dynamically assigned per preset]
+  slot_0 →    # e.g., colorgrade
+  slot_1 →    # e.g., trail (via temporalfx)
+  slot_2 →    # e.g., bloom
+  slot_3 →    # e.g., scanlines
+  slot_4 →    # e.g., vignette
+  slot_5 →    # unused (passthrough)
+  slot_6 →    # unused (passthrough)
+  slot_7 →    # unused (passthrough)
 
   [POST SECTION]
-  crossfade_output →                # Preset transition blend
+  crossfade_output →
 
   glcolorconvert → gldownload → jpegenc → appsink
 ```
 
-Each shader has `u_bypass` uniform. The graph compiler maps the execution plan to bypass flags:
-- Nodes in the active graph: `u_bypass = 0.0` + set their params
-- Nodes not in the active graph: `u_bypass = 1.0` (passthrough)
+**Slot count**: The longest preset has 6 processing nodes (screwed, trap, nightvision, vhs_preset). 8 slots provides headroom.
+
+**Shader hot-swap on glshader**: GStreamer's `glshader` element supports setting the `fragment` property at runtime to change the shader source. This is a string property update, not an element swap. The GL context recompiles the shader — takes ~1ms on RTX 3090. Combined with the crossfade engine, this is invisible.
 
 ### Graph-to-Pipeline Mapping
 
 When `_on_plan_changed(old_plan, new_plan)` fires:
 
-1. **Disable all shaders**: Set `u_bypass = 1.0` on every element.
-2. **Enable active shaders**: For each step in `new_plan.steps`, find the corresponding GStreamer element and set `u_bypass = 0.0` + apply params as uniforms.
-3. **Trigger crossfade**: If `old_plan` was not None, capture output to snapshot FBO and blend over `transition_ms`.
+1. **Trigger crossfade**: Capture current output to snapshot FBO.
+2. **Assign slots**: For each step in `new_plan.steps` (topologically sorted):
+   - Find the next available slot
+   - Set slot's `fragment` property to the node's GLSL source
+   - Set slot's uniforms to the node's params
+3. **Clear unused slots**: Set remaining slots to passthrough shader.
+4. **Blend**: Crossfade from snapshot to new output over `transition_ms`.
 
-### Bypass Shader Pattern
+### Bypass for Unused Slots
 
-Every `.frag` shader gets a uniform `u_bypass`:
+Unused slots get a minimal passthrough shader:
 
 ```glsl
-uniform float u_bypass;
-
-void main() {
-    if (u_bypass > 0.5) {
-        gl_FragColor = texture2D(tex, v_texcoord);
-        return;
-    }
-    // ... actual effect code ...
-}
+#version 100
+#ifdef GL_ES
+precision mediump float;
+#endif
+varying vec2 v_texcoord;
+uniform sampler2D tex;
+void main() { gl_FragColor = texture2D(tex, v_texcoord); }
 ```
 
-This is added to every shader during registry loading — the registry prepends the bypass check to the GLSL source before passing it to GStreamer.
+### Generative Node Handling
+
+Generative nodes (noise_gen, solid, waveform_render) have NO `tex` input. They can't be a processing slot (which reads from the previous slot's output). Instead, they feed into a compositing slot via a dedicated generative branch:
+
+```
+[GENERATIVE BRANCH — optional, only when graph uses generative nodes]
+generative_slot → [feeds into blend slot as tex_b]
+```
+
+This is wired on demand when the active graph includes a generative node.
 
 ### Smooth Layer Implementation
 
