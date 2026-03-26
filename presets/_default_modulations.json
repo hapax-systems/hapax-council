@@ -1,0 +1,12 @@
+{
+  "default_modulations": [
+    {"node": "bloom", "param": "alpha", "source": "mixer_bass", "scale": 0.3, "offset": 0.0, "smoothing": 0.85},
+    {"node": "bloom", "param": "alpha", "source": "beat_pulse", "scale": 0.15, "offset": 0.0, "smoothing": 0.3},
+    {"node": "trail", "param": "opacity", "source": "mixer_energy", "scale": 0.2, "offset": 0.0, "smoothing": 0.85},
+    {"node": "colorgrade", "param": "hue_rotate", "source": "desk_centroid", "scale": 30.0, "offset": -15.0, "smoothing": 0.92},
+    {"node": "drift", "param": "speed", "source": "desk_onset_rate", "scale": 0.1, "offset": 0.0, "smoothing": 0.8},
+    {"node": "breathing", "param": "rate", "source": "heart_rate", "scale": 1.5, "offset": 0.3, "smoothing": 0.95},
+    {"node": "noise_overlay", "param": "intensity", "source": "stress", "scale": 0.05, "offset": 0.0, "smoothing": 0.95},
+    {"node": "vignette", "param": "strength", "source": "perlin_drift", "scale": 1.0, "offset": 0.0, "smoothing": 0.0}
+  ]
+}

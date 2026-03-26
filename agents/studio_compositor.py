@@ -318,6 +318,19 @@ class OverlayData(BaseModel):
     guest_present: bool = False
     consent_phase: str = "no_guest"
     timestamp: float = 0.0
+    mixer_energy: float = 0.0
+    mixer_beat: float = 0.0
+    mixer_bass: float = 0.0
+    mixer_mid: float = 0.0
+    mixer_high: float = 0.0
+    mixer_active: bool = False
+    beat_position: float = 0.0
+    bar_position: float = 0.0
+    desk_energy: float = 0.0
+    desk_onset_rate: float = 0.0
+    desk_spectral_centroid: float = 0.0
+    heart_rate_bpm: float = 0.0
+    stress_elevated: bool = False
 
 
 class OverlayState:
@@ -506,6 +519,13 @@ class StudioCompositor:
         # Effect node graph system
         self._graph_runtime = self._init_graph_runtime()
 
+        # Perception-visual governance
+        from agents.effect_graph.visual_governance import AtmosphericSelector
+
+        self._atmospheric_selector = AtmosphericSelector()
+        self._idle_start: float | None = None
+        self._current_preset_name: str | None = None
+
     def _init_graph_runtime(self) -> Any:
         """Initialize the effect node graph system."""
         try:
@@ -577,12 +597,58 @@ class StudioCompositor:
 
                         raw = json.loads(preset_path.read_text())
                         graph = EffectGraph(**raw)
+                        graph = self._merge_default_modulations(graph)
                         self._graph_runtime.load_graph(graph)
                         log.info("Activated graph preset: %s (file: %s)", name, candidate)
                         return True
                     except Exception:
                         log.warning("Failed to load graph preset %s", candidate, exc_info=True)
         return False
+
+    def _merge_default_modulations(self, graph: Any) -> Any:
+        """Merge default modulation template into a graph's modulations.
+
+        Only adds bindings for nodes that exist in the graph. The graph's
+        own bindings for the same (node, param) take precedence.
+        """
+        from pathlib import Path
+
+        template_path = Path(__file__).parent.parent / "presets" / "_default_modulations.json"
+        if not template_path.is_file():
+            return graph
+
+        try:
+            defaults = json.loads(template_path.read_text()).get("default_modulations", [])
+        except Exception:
+            return graph
+
+        existing = {(m.node, m.param) for m in graph.modulations}
+        graph_nodes = set(graph.nodes.keys())
+
+        from agents.effect_graph.types import ModulationBinding
+
+        merged = list(graph.modulations)
+        for d in defaults:
+            key = (d["node"], d["param"])
+            if key not in existing and d["node"] in graph_nodes:
+                merged.append(ModulationBinding(**d))
+
+        return graph.model_copy(update={"modulations": merged})
+
+    def _get_available_preset_names(self) -> set[str]:
+        """Return set of preset names that exist on disk."""
+        from pathlib import Path
+
+        names: set[str] = set()
+        for dir_ in (
+            Path.home() / ".config" / "hapax" / "effect-presets",
+            Path(__file__).parent.parent / "presets",
+        ):
+            if dir_.is_dir():
+                for f in dir_.glob("*.json"):
+                    if not f.name.startswith("_"):
+                        names.add(f.stem)
+        return names
 
     def _on_graph_params_changed(self, node_id: str, params: dict) -> None:
         """Update GStreamer shader uniforms for a node via the slot pipeline."""
@@ -1694,6 +1760,45 @@ class StudioCompositor:
         )
         self._fx_post_proc.set_property("uniforms", pp_u[0])
 
+        # --- Perception-visual governance ---
+        if self._graph_runtime is not None and hasattr(self, "_atmospheric_selector"):
+            from agents.effect_graph.visual_governance import (
+                compute_gestural_offsets,
+                energy_level_from_activity,
+            )
+
+            gov_data = self._overlay_state._data
+            energy_level = energy_level_from_activity(gov_data.desk_activity)
+            stance = "nominal"  # stimmung stance wiring pending compositor session
+            available = self._get_available_preset_names()
+            target = self._atmospheric_selector.evaluate(
+                stance=stance,
+                energy_level=energy_level,
+                available_presets=available,
+                genre=gov_data.music_genre,
+            )
+            if target and target != getattr(self, "_current_preset_name", None):
+                if self._try_graph_preset(target):
+                    self._current_preset_name = target
+
+            # Gestural offsets
+            offsets = compute_gestural_offsets(
+                desk_activity=gov_data.desk_activity,
+                gaze_direction="",
+                person_count=0,
+            )
+            for (node_id, param), offset in offsets.items():
+                if offset != 0 and self._graph_runtime.current_graph:
+                    if node_id in self._graph_runtime.current_graph.nodes:
+                        self._on_graph_params_changed(node_id, {param: offset})
+
+            # Idle tracking
+            if gov_data.desk_activity in ("idle", ""):
+                if self._idle_start is None:
+                    self._idle_start = time.monotonic()
+            else:
+                self._idle_start = None
+
         # --- Node graph modulator: drive graph-bound params from signals ---
         if self._graph_runtime is not None:
             modulator = self._graph_runtime.modulator
@@ -1710,6 +1815,50 @@ class StudioCompositor:
                     signals["stimmung_valence"] = data.emotion_valence
                 if data.emotion_arousal != 0:
                     signals["stimmung_arousal"] = data.emotion_arousal
+                # Mixer master (clean audio analysis)
+                signals["mixer_energy"] = data.mixer_energy
+                signals["mixer_beat"] = data.mixer_beat
+                signals["mixer_bass"] = data.mixer_bass
+                signals["mixer_mid"] = data.mixer_mid
+                signals["mixer_high"] = data.mixer_high
+
+                # Contact mic signals
+                signals["desk_energy"] = data.desk_energy
+                signals["desk_onset_rate"] = data.desk_onset_rate
+                signals["desk_centroid"] = (
+                    min(1.0, data.desk_spectral_centroid / 4000.0)
+                    if hasattr(data, "desk_spectral_centroid")
+                    else 0.0
+                )
+
+                # MIDI clock phases
+                if data.beat_position > 0:
+                    signals["beat_phase"] = data.beat_position % 1.0
+                    signals["bar_phase"] = (data.beat_position % 4) / 4.0
+
+                # Beat pulse (spike on downbeat, exponential decay)
+                if not hasattr(self, "_beat_pulse"):
+                    self._beat_pulse = 0.0
+                    self._prev_beat_phase = 0.0
+                cur_phase = data.beat_position % 1.0
+                if cur_phase < self._prev_beat_phase and data.beat_position > 0:
+                    self._beat_pulse = 1.0
+                self._beat_pulse *= 0.85
+                self._prev_beat_phase = cur_phase
+                signals["beat_pulse"] = self._beat_pulse
+
+                # Biometrics
+                if data.heart_rate_bpm > 0:
+                    signals["heart_rate"] = min(1.0, max(0.0, (data.heart_rate_bpm - 40) / 140.0))
+                signals["stress"] = 1.0 if data.stress_elevated else 0.0
+
+                # Breathing substrate
+                from agents.effect_graph.visual_governance import (
+                    compute_perlin_drift,
+                )
+
+                signals["perlin_drift"] = compute_perlin_drift(t, data.desk_energy)
+
                 updates = modulator.tick(signals)
                 for (node_id, param), value in updates.items():
                     self._on_graph_params_changed(node_id, {param: value})

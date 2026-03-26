@@ -104,3 +104,16 @@ class GraphPatch(BaseModel):
     remove_nodes: list[str] = Field(default_factory=list)
     add_edges: list[list[str]] = Field(default_factory=list)
     remove_edges: list[list[str]] = Field(default_factory=list)
+
+
+class PresetFamily(BaseModel, frozen=True):
+    """Ranked list of preset names for an atmospheric state cell."""
+
+    presets: tuple[str, ...]
+
+    def first_available(self, loaded_presets: set[str]) -> str | None:
+        """Return the first preset in the family that exists in the loaded set."""
+        for p in self.presets:
+            if p in loaded_presets:
+                return p
+        return None

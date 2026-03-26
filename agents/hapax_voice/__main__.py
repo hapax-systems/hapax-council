@@ -648,6 +648,14 @@ class VoiceDaemon:
         except Exception:
             log.info("ContactMicBackend not available, skipping")
 
+        # Mixer master audio input (clean line-level from mixer)
+        try:
+            from agents.hapax_voice.backends.mixer_input import MixerInputBackend
+
+            self.perception.register_backend(MixerInputBackend())
+        except Exception:
+            log.info("MixerInputBackend not available, skipping")
+
         # Bluetooth phone presence (paired Pixel 10)
         try:
             from agents.hapax_voice.backends.bt_presence import BTPresenceBackend
