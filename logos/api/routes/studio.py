@@ -7,19 +7,38 @@ search over the studio_moments Qdrant collection.
 from __future__ import annotations
 
 import asyncio
+import json as _json_mod
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
+from agents.effect_graph.registry import ShaderRegistry
+from agents.effect_graph.runtime import GraphRuntime
+from agents.effect_graph.types import EffectGraph, GraphPatch, LayerPalette, ModulationBinding
 from logos.api.cache import cache
 
 router = APIRouter(prefix="/api", tags=["studio"])
+
+# --- Effect graph runtime references (set by compositor at startup) ---
+
+_graph_runtime: GraphRuntime | None = None
+_shader_registry: ShaderRegistry | None = None
+
+
+def set_graph_runtime(runtime: GraphRuntime) -> None:
+    global _graph_runtime
+    _graph_runtime = runtime
+
+
+def set_shader_registry(registry: ShaderRegistry) -> None:
+    global _shader_registry
+    _shader_registry = registry
 
 
 def _dict_factory(fields: list[tuple]) -> dict:
@@ -608,3 +627,243 @@ async def correct_activity(req: ActivityCorrectionRequest):
         return {"status": "corrected", "label": req.label}
     except OSError:
         return JSONResponse({"error": "write failed"}, status_code=503)
+
+
+# ---------------------------------------------------------------------------
+# Effect graph management
+# ---------------------------------------------------------------------------
+
+_VALID_LAYERS = {"live", "smooth", "hls"}
+_USER_PRESET_DIR = Path.home() / ".config" / "hapax" / "effect-presets"
+_BUILTIN_PRESET_DIR = Path(__file__).parent.parent.parent.parent / "presets"
+
+
+def _require_runtime() -> GraphRuntime:
+    if _graph_runtime is None:
+        raise HTTPException(status_code=503, detail="graph runtime not available")
+    return _graph_runtime
+
+
+def _require_registry() -> ShaderRegistry:
+    if _shader_registry is None:
+        raise HTTPException(status_code=503, detail="shader registry not available")
+    return _shader_registry
+
+
+# --- Graph Management ---
+
+
+@router.get("/studio/effect/graph")
+async def get_effect_graph():
+    """Return the current effect graph state."""
+    if _graph_runtime is None:
+        return {"graph": None}
+    return _graph_runtime.get_graph_state()
+
+
+@router.put("/studio/effect/graph")
+async def load_effect_graph(graph: EffectGraph):
+    """Load a complete effect graph."""
+    runtime = _require_runtime()
+    try:
+        runtime.load_graph(graph)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "loaded"}
+
+
+@router.patch("/studio/effect/graph")
+async def patch_effect_graph(patch: GraphPatch):
+    """Apply an incremental patch to the effect graph."""
+    runtime = _require_runtime()
+    try:
+        runtime.apply_patch(patch)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "patched"}
+
+
+@router.patch("/studio/effect/graph/node/{node_id}/params")
+async def patch_node_params(node_id: str, params: dict[str, Any]):
+    """Update parameters on a single graph node."""
+    runtime = _require_runtime()
+    try:
+        runtime.patch_node_params(node_id, params)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "updated", "node_id": node_id}
+
+
+@router.delete("/studio/effect/graph/node/{node_id}")
+async def remove_graph_node(node_id: str):
+    """Remove a node from the effect graph."""
+    runtime = _require_runtime()
+    try:
+        runtime.remove_node(node_id)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "removed", "node_id": node_id}
+
+
+# --- Layer Control ---
+
+
+@router.patch("/studio/layer/{layer}/palette")
+async def set_layer_palette(layer: str, palette: LayerPalette):
+    """Set the color palette for a compositor layer."""
+    if layer not in _VALID_LAYERS:
+        raise HTTPException(
+            status_code=400, detail=f"invalid layer '{layer}', must be one of {_VALID_LAYERS}"
+        )
+    runtime = _require_runtime()
+    try:
+        runtime.set_layer_palette(layer, palette)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "updated", "layer": layer}
+
+
+@router.get("/studio/layer/status")
+async def get_layer_status():
+    """Return palette state for all compositor layers."""
+    runtime = _require_runtime()
+    return {layer: runtime.get_layer_palette(layer) for layer in _VALID_LAYERS}
+
+
+# --- Modulation ---
+
+
+@router.put("/studio/effect/graph/modulations")
+async def replace_modulations(bindings: list[ModulationBinding]):
+    """Replace all modulation bindings."""
+    runtime = _require_runtime()
+    runtime.set_modulations(bindings)
+    return {"status": "replaced", "count": len(bindings)}
+
+
+@router.patch("/studio/effect/graph/modulations")
+async def patch_modulations(
+    add: list[ModulationBinding] | None = None,
+    remove: list[dict[str, str]] | None = None,
+):
+    """Add or remove individual modulation bindings."""
+    runtime = _require_runtime()
+    if add:
+        for binding in add:
+            runtime.add_modulation(binding)
+    if remove:
+        for spec in remove:
+            runtime.remove_modulation(spec.get("node", ""), spec.get("param", ""))
+    return {"status": "patched"}
+
+
+@router.get("/studio/effect/graph/modulations")
+async def get_modulations():
+    """Return current modulation bindings."""
+    runtime = _require_runtime()
+    return runtime.get_modulations()
+
+
+# --- Presets ---
+
+
+def _find_preset(name: str) -> Path | None:
+    """Find a preset file by name, user dir first, then built-in."""
+    for directory in (_USER_PRESET_DIR, _BUILTIN_PRESET_DIR):
+        candidate = (directory / f"{name}.json").resolve()
+        if candidate.is_relative_to(directory) and candidate.exists():
+            return candidate
+    return None
+
+
+@router.get("/studio/presets")
+async def list_presets():
+    """List available effect presets (user + built-in)."""
+    presets: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for directory, source in ((_USER_PRESET_DIR, "user"), (_BUILTIN_PRESET_DIR, "builtin")):
+        if not directory.exists():
+            continue
+        for f in sorted(directory.glob("*.json")):
+            stem = f.stem
+            if stem not in seen:
+                seen.add(stem)
+                presets.append({"name": stem, "source": source})
+    return presets
+
+
+@router.get("/studio/presets/{name}")
+async def get_preset(name: str):
+    """Load a preset graph definition."""
+    path = _find_preset(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail=f"preset '{name}' not found")
+    try:
+        return _json_mod.loads(path.read_text())
+    except (_json_mod.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=500, detail=f"failed to read preset: {exc}") from exc
+
+
+@router.put("/studio/presets/{name}")
+async def save_preset(name: str, graph: EffectGraph):
+    """Save the current graph as a named preset (user dir)."""
+    _USER_PRESET_DIR.mkdir(parents=True, exist_ok=True)
+    target = (_USER_PRESET_DIR / f"{name}.json").resolve()
+    if not target.is_relative_to(_USER_PRESET_DIR):
+        raise HTTPException(status_code=400, detail="invalid preset name")
+    try:
+        target.write_text(graph.model_dump_json(indent=2))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to save preset: {exc}") from exc
+    return {"status": "saved", "name": name}
+
+
+@router.delete("/studio/presets/{name}")
+async def delete_preset(name: str):
+    """Delete a user preset."""
+    target = (_USER_PRESET_DIR / f"{name}.json").resolve()
+    if not target.is_relative_to(_USER_PRESET_DIR):
+        raise HTTPException(status_code=400, detail="invalid preset name")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"preset '{name}' not found in user presets")
+    try:
+        target.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to delete preset: {exc}") from exc
+    return {"status": "deleted", "name": name}
+
+
+@router.post("/studio/presets/{name}/activate")
+async def activate_preset(name: str):
+    """Load a preset into the running graph runtime."""
+    runtime = _require_runtime()
+    path = _find_preset(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail=f"preset '{name}' not found")
+    try:
+        data = _json_mod.loads(path.read_text())
+        graph = EffectGraph.model_validate(data)
+        runtime.load_graph(graph)
+    except (_json_mod.JSONDecodeError, OSError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"failed to activate preset: {exc}") from exc
+    return {"status": "activated", "name": name}
+
+
+# --- Node Registry ---
+
+
+@router.get("/studio/effect/nodes")
+async def list_effect_nodes():
+    """Return schemas for all registered effect node types."""
+    registry = _require_registry()
+    return registry.all_schemas()
+
+
+@router.get("/studio/effect/nodes/{node_type}")
+async def get_effect_node_schema(node_type: str):
+    """Return schema for a single effect node type."""
+    registry = _require_registry()
+    schema = registry.get_schema(node_type)
+    if schema is None:
+        raise HTTPException(status_code=404, detail=f"node type '{node_type}' not found")
+    return schema
