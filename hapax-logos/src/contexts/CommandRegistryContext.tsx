@@ -16,6 +16,7 @@ import { registerNavCommands } from "../lib/commands/nav";
 import { registerSplitCommands } from "../lib/commands/split";
 import { registerDataCommands } from "../lib/commands/data";
 import { registerBuiltinSequences } from "../lib/commands/sequences";
+import { connectCommandRelay } from "../lib/commandRelay";
 import { useTerrainDisplay, useTerrainActions } from "./TerrainContext";
 
 const CommandRegistryCtx = createContext<CommandRegistry | null>(null);
@@ -125,7 +126,11 @@ export function CommandRegistryProvider({
     };
     (window as unknown as Record<string, unknown>).__logos = api;
 
+    // Connect to backend WS relay for external consumers (MCP, voice)
+    const disconnectRelay = connectCommandRelay(registry);
+
     return () => {
+      disconnectRelay();
       delete (window as unknown as Record<string, unknown>).__logos;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stable refs, register once
