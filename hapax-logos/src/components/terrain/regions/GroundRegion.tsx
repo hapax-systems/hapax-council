@@ -26,8 +26,7 @@ export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps
   const groundSignals = signalsByRegion.ground;
   const {
     heroRole, setHeroRole,
-    effectSourceId, smoothMode, compositeMode,
-    presetIdx,
+    effectSourceId, smoothMode,
   } = useGroundStudio();
   const { data: workingMode } = useWorkingMode();
   const isFortress = workingMode?.mode === "fortress";
@@ -104,8 +103,6 @@ export const GroundRegion = memo(function GroundRegion({ vl }: GroundRegionProps
                 onHeroChange={setHeroRole}
                 effectSourceId={effectSourceId}
                 smoothMode={smoothMode}
-                compositeMode={compositeMode}
-                presetIdx={presetIdx}
               />
             </div>
           )}

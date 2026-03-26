@@ -15,7 +15,6 @@ import { DetailPane } from "./DetailPane";
 import { ClassificationOverlayProvider, useDetections } from "../../contexts/ClassificationOverlayContext";
 import type { DetectionTier } from "../studio/DetectionOverlay";
 import { GroundStudioProvider, useGroundStudio } from "../../contexts/GroundStudioContext";
-import { PRESETS } from "../studio/compositePresets";
 import { useRecordingToggle } from "../../api/hooks";
 import { useVisualLayer } from "../../api/hooks";
 import { useTerrain, useTerrainDisplay, type RegionName } from "../../contexts/TerrainContext";
@@ -236,7 +235,7 @@ function DetectionKeyboardHandler() {
 
 /** URL param sync for studio state (must be inside GroundStudioProvider). */
 function StudioParamSync() {
-  const { setCompositeMode, setSmoothMode, setPresetIdx, setEffectSourceId } = useGroundStudio();
+  const { setSmoothMode, setEffectSourceId } = useGroundStudio();
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -244,12 +243,9 @@ function StudioParamSync() {
     const source = params.get("source");
     const hls = params.get("hls");
 
+    // Activate backend preset via API if specified in URL
     if (presetName) {
-      const idx = PRESETS.findIndex(p => p.name.toLowerCase() === presetName.toLowerCase());
-      if (idx >= 0) {
-        setPresetIdx(idx);
-        setCompositeMode(true);
-      }
+      fetch(`/api/studio/presets/${encodeURIComponent(presetName)}/activate`, { method: "POST" }).catch(() => {});
     }
     if (source) {
       setEffectSourceId(source);
@@ -265,12 +261,7 @@ function StudioParamSync() {
 /** Keyboard shortcuts for studio controls (must be inside GroundStudioProvider). */
 function StudioKeyboardHandler() {
   const { focusedRegion, regionDepths, setRegionDepth } = useTerrain();
-  const {
-    compositeMode, setCompositeMode,
-    smoothMode, setSmoothMode,
-    presetIdx, setPresetIdx,
-    setEffectOverrides,
-  } = useGroundStudio();
+  const { smoothMode, setSmoothMode } = useGroundStudio();
   const recordingToggle = useRecordingToggle();
 
   useEffect(() => {
@@ -280,16 +271,14 @@ function StudioKeyboardHandler() {
         return;
       if (focusedRegion !== "ground") return;
 
-      // E: cycle mode (Live → FX → HLS), auto-advance to core for FX/HLS
+      // E: toggle HLS mode, auto-advance to core
       if (e.key === "e" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         e.preventDefault();
-        if (!compositeMode && !smoothMode) {
-          setCompositeMode(true); setSmoothMode(false);
+        if (!smoothMode) {
+          setSmoothMode(true);
           if (regionDepths.ground !== "core") setRegionDepth("ground", "core");
-        } else if (compositeMode && !smoothMode) {
-          setCompositeMode(false); setSmoothMode(true);
         } else {
-          setCompositeMode(false); setSmoothMode(false);
+          setSmoothMode(false);
         }
         return;
       }
@@ -300,40 +289,10 @@ function StudioKeyboardHandler() {
         recordingToggle.mutate(true); // toggle handled server-side
         return;
       }
-
-      // [ / ]: previous / next preset (FX mode only)
-      if (compositeMode && (e.key === "[" || e.key === "]") && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault();
-        const delta = e.key === "]" ? 1 : -1;
-        const next = (presetIdx + delta + PRESETS.length) % PRESETS.length;
-        setPresetIdx(next);
-        setEffectOverrides(null);
-        return;
-      }
-
-      // 1-9, 0: select preset by number (FX mode only)
-      if (compositeMode && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const num = e.key === "0" ? 10 : parseInt(e.key, 10);
-        if (num >= 1 && num <= 10 && num <= PRESETS.length) {
-          e.preventDefault();
-          setPresetIdx(num - 1);
-          setEffectOverrides(null);
-          return;
-        }
-        // Shift+1-8: presets 11-18
-        if (e.shiftKey) {
-          const shiftNum = "!@#$%^&*".indexOf(e.key);
-          if (shiftNum >= 0 && shiftNum + 11 <= PRESETS.length) {
-            e.preventDefault();
-            setPresetIdx(shiftNum + 10);
-            setEffectOverrides(null);
-          }
-        }
-      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [focusedRegion, compositeMode, smoothMode, presetIdx, setCompositeMode, setSmoothMode, setPresetIdx, setEffectOverrides, recordingToggle, regionDepths, setRegionDepth]);
+  }, [focusedRegion, smoothMode, setSmoothMode, recordingToggle, regionDepths, setRegionDepth]);
 
   return null;
 }

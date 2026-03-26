@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Circle, Square, Eye, Clock, ChevronDown, ChevronRight } from "lucide-react";
-import { PRESETS, type CompositePreset } from "../../studio/compositePresets";
+import { Circle, Square, ChevronDown, ChevronRight } from "lucide-react";
 import { EFFECT_SOURCES } from "../../studio/effectSources";
-import { SOURCE_FILTERS } from "../../studio/compositeFilters";
 import VisualLayerPanel from "../../studio/VisualLayerPanel";
 import {
   useStudio,
@@ -15,20 +13,19 @@ import type { ClassificationDetection } from "../../../api/types";
 import { useGroundStudio } from "../../../contexts/GroundStudioContext";
 import { useTerrainActions, useTerrainDisplay } from "../../../contexts/TerrainContext";
 
-/** Blend mode family → left border color token for preset chips */
-const BLEND_COLORS: Record<string, string> = {
-  "source-over": "var(--color-emerald-400)",
-  "lighter": "var(--color-yellow-400)",
-  "difference": "var(--color-orange-400)",
-  "multiply": "var(--color-fuchsia-400)",
-};
+/** Preset names fetched from backend effect graph. */
+const BACKEND_PRESETS = [
+  "Ghost", "Trails", "Screwed", "Datamosh", "VHS", "Neon", "Trap", "Diff",
+  "NightVision", "Silhouette", "Thermal IR", "Pixsort", "Slit-scan", "Feedback",
+  "Halftone", "Glitch Blocks", "ASCII", "Ambient", "Clean",
+];
 
-const EFFECT_TOGGLES: { key: keyof CompositePreset["effects"]; label: string }[] = [
+const EFFECT_TOGGLES = [
   { key: "scanlines", label: "Scanlines" },
   { key: "bandDisplacement", label: "Glitch Bands" },
   { key: "vignette", label: "Vignette" },
   { key: "syrupGradient", label: "Syrup" },
-];
+] as const;
 
 interface StudioDetailPaneProps {
   classificationDetections: ClassificationDetection[];
@@ -41,11 +38,6 @@ export function StudioDetailPane({
     heroRole, setHeroRole,
     effectSourceId, setEffectSourceId,
     smoothMode, setSmoothMode,
-    compositeMode, setCompositeMode,
-    presetIdx, setPresetIdx,
-    liveFilterIdx, setLiveFilterIdx,
-    smoothFilterIdx, setSmoothFilterIdx,
-    effectOverrides, setEffectOverrides,
   } = useGroundStudio();
   const { data: studio } = useStudio();
   const { data: streamInfo } = useStudioStreamInfo();
@@ -57,29 +49,44 @@ export function StudioDetailPane({
   const isRecording = compositor?.recording_enabled ?? false;
   const cameraRoles = compositor ? Object.keys(compositor.cameras) : [];
   const recordingCams = compositor?.recording_cameras ?? {};
-  const isFx = compositeMode;
   const [sourceExpanded, setSourceExpanded] = useState(false);
   const [recExpanded, setRecExpanded] = useState(false);
   const { setRegionDepth } = useTerrainActions();
   const { regionDepths } = useTerrainDisplay();
 
-  // Auto-advance to core depth when FX or HLS mode activated (composite canvas only renders at core)
-  const activateFx = () => {
-    setCompositeMode(true);
-    setSmoothMode(false);
-    if (regionDepths.ground !== "core") setRegionDepth("ground", "core");
-  };
+  // Track active preset name (from backend)
+  const [activePreset, setActivePreset] = useState<string | null>(null);
+  // Track active effect states (from backend)
+  const [effectStates, setEffectStates] = useState<Record<string, boolean>>({
+    scanlines: false,
+    bandDisplacement: false,
+    vignette: false,
+    syrupGradient: false,
+  });
+
   const activateHls = () => {
-    setCompositeMode(false);
     setSmoothMode(true);
     if (regionDepths.ground !== "core") setRegionDepth("ground", "core");
   };
 
-  // Current preset + merged effects
-  const preset = PRESETS[presetIdx] ?? PRESETS[0];
-  const mergedEffects: CompositePreset["effects"] = effectOverrides
-    ? { ...preset.effects, ...effectOverrides }
-    : preset.effects;
+  const activatePreset = async (name: string) => {
+    try {
+      await fetch(`/api/studio/presets/${encodeURIComponent(name)}/activate`, { method: "POST" });
+      setActivePreset(name);
+    } catch { /* ignore */ }
+  };
+
+  const toggleEffect = async (key: string) => {
+    const enabled = !effectStates[key];
+    try {
+      await fetch("/api/studio/effect/graph", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node: key, enabled }),
+      });
+      setEffectStates((prev) => ({ ...prev, [key]: enabled }));
+    } catch { /* ignore */ }
+  };
 
   // Recording timer
   const [recElapsed, setRecElapsed] = useState("");
@@ -100,20 +107,6 @@ export function StudioDetailPane({
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
   }, [isRecording]);
-
-  const toggleEffect = (key: keyof CompositePreset["effects"]) => {
-    const current = mergedEffects[key];
-    const base = preset.effects[key];
-    const newVal = typeof current === "boolean" ? !current : current;
-    // Only store override if different from preset default
-    if (newVal === base && effectOverrides) {
-      const next = { ...effectOverrides };
-      delete next[key];
-      setEffectOverrides(Object.keys(next).length === 0 ? null : next);
-    } else {
-      setEffectOverrides({ ...(effectOverrides ?? {}), [key]: newVal });
-    }
-  };
 
   // Consent summary
   const consentLabel =
@@ -163,19 +156,9 @@ export function StudioDetailPane({
         </div>
       </Section>
 
-      {/* MODE — independent toggles for FX and HLS */}
+      {/* MODE */}
       <Section title="Mode">
         <div className="flex gap-1">
-          <button
-            onClick={() => { if (compositeMode) { setCompositeMode(false); } else { activateFx(); } }}
-            className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
-              compositeMode
-                ? "bg-indigo-900/50 text-indigo-300"
-                : "bg-zinc-800/50 text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            FX
-          </button>
           <button
             onClick={() => { if (smoothMode) { setSmoothMode(false); } else { activateHls(); } }}
             className={`flex-1 rounded px-2 py-1 text-[10px] font-medium transition-colors ${
@@ -195,135 +178,84 @@ export function StudioDetailPane({
         </div>
       </Section>
 
-      {/* PRESET — 6-column chip grid (FX mode only) */}
-      {isFx && (
-        <Section title="Preset">
-          <div className="grid grid-cols-6 gap-0.5">
-            {PRESETS.map((p, i) => (
+      {/* PRESET — backend-driven presets */}
+      <Section title="Preset">
+        <div className="grid grid-cols-6 gap-0.5">
+          {BACKEND_PRESETS.map((name) => (
+            <button
+              key={name}
+              onClick={() => activatePreset(name)}
+              className={`rounded px-1 py-1 text-left text-[9px] transition-colors ${
+                activePreset === name
+                  ? "bg-zinc-800 text-zinc-200"
+                  : "text-zinc-500 hover:bg-zinc-800/30"
+              }`}
+              style={{
+                borderLeft: `2px solid ${
+                  activePreset === name ? "var(--color-zinc-400)" : "transparent"
+                }`,
+              }}
+            >
+              {name.length > 6 ? name.slice(0, 6) : name}
+            </button>
+          ))}
+        </div>
+      </Section>
+
+      {/* SOURCE — collapsible chip grid */}
+      <Section title="Source">
+        <button
+          onClick={() => setSourceExpanded(!sourceExpanded)}
+          className="flex w-full items-center gap-1.5 text-[10px] text-zinc-400 hover:text-zinc-300"
+        >
+          {sourceExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          <span>{EFFECT_SOURCES.find(s => s.id === effectSourceId)?.label ?? "Camera"}</span>
+        </button>
+        {sourceExpanded && (
+          <div className="mt-1.5 grid grid-cols-4 gap-0.5">
+            {EFFECT_SOURCES.map((src) => (
               <button
-                key={p.name}
-                onClick={() => { setPresetIdx(i); setEffectOverrides(null); }}
-                title={p.description}
-                className={`rounded px-1 py-1 text-left text-[9px] transition-colors ${
-                  presetIdx === i
+                key={src.id}
+                onClick={() => { setEffectSourceId(src.id); setSourceExpanded(false); }}
+                className={`rounded px-1.5 py-1 text-[9px] transition-colors ${
+                  effectSourceId === src.id
                     ? "bg-zinc-800 text-zinc-200"
                     : "text-zinc-500 hover:bg-zinc-800/30"
                 }`}
-                style={{
-                  borderLeft: `2px solid ${
-                    presetIdx === i
-                      ? (BLEND_COLORS[p.trail.blendMode] ?? "var(--color-zinc-600)")
-                      : "transparent"
-                  }`,
-                }}
               >
-                {p.name.length > 6 ? p.name.slice(0, 6) : p.name}
+                {src.label}
               </button>
             ))}
           </div>
-        </Section>
-      )}
+        )}
+      </Section>
 
-      {/* SOURCE — collapsible chip grid (FX mode only) */}
-      {isFx && (
-        <Section title="Source">
-          <button
-            onClick={() => setSourceExpanded(!sourceExpanded)}
-            className="flex w-full items-center gap-1.5 text-[10px] text-zinc-400 hover:text-zinc-300"
-          >
-            {sourceExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            <span>{EFFECT_SOURCES.find(s => s.id === effectSourceId)?.label ?? "Camera"}</span>
-          </button>
-          {sourceExpanded && (
-            <div className="mt-1.5 grid grid-cols-4 gap-0.5">
-              {EFFECT_SOURCES.map((src) => (
-                <button
-                  key={src.id}
-                  onClick={() => { setEffectSourceId(src.id); setSourceExpanded(false); }}
-                  className={`rounded px-1.5 py-1 text-[9px] transition-colors ${
-                    effectSourceId === src.id
-                      ? "bg-zinc-800 text-zinc-200"
-                      : "text-zinc-500 hover:bg-zinc-800/30"
-                  }`}
-                >
-                  {src.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </Section>
-      )}
-
-      {/* FILTERS — Live + Smooth (FX mode only) */}
-      {isFx && (
-        <Section title="Filters">
-          <div className="flex flex-col gap-2">
-            <label className="flex items-center gap-1.5">
-              <Eye className="h-3 w-3 shrink-0 text-amber-400" />
-              <span className="shrink-0 text-[10px] text-amber-300">Live</span>
-              <select
-                value={liveFilterIdx}
-                onChange={(e) => setLiveFilterIdx(Number(e.target.value))}
-                className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
+      {/* EFFECTS — 2x2 toggle grid, backend-driven */}
+      <Section title="Effects">
+        <div className="grid grid-cols-2 gap-1">
+          {EFFECT_TOGGLES.map(({ key, label }) => {
+            const active = !!effectStates[key];
+            return (
+              <button
+                key={key}
+                onClick={() => toggleEffect(key)}
+                className="flex items-center gap-2 rounded px-1.5 py-1 transition-colors hover:bg-zinc-800/50"
               >
-                {SOURCE_FILTERS.map((f, i) => (
-                  <option key={f.name} value={i}>{f.name}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-1.5">
-              <Clock className="h-3 w-3 shrink-0 text-cyan-400" />
-              <span className="shrink-0 text-[10px] text-cyan-300">Smooth</span>
-              <select
-                value={smoothFilterIdx}
-                onChange={(e) => setSmoothFilterIdx(Number(e.target.value))}
-                className="ml-auto w-24 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
-              >
-                {SOURCE_FILTERS.map((f, i) => (
-                  <option key={f.name} value={i}>{f.name}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-        </Section>
-      )}
-
-      {/* EFFECTS — 2×2 toggle grid (FX mode only) */}
-      {isFx && (
-        <Section title="Effects">
-          <div className="grid grid-cols-2 gap-1">
-            {EFFECT_TOGGLES.map(({ key, label }) => {
-              const active = !!mergedEffects[key];
-              return (
-                <button
-                  key={key}
-                  onClick={() => toggleEffect(key)}
-                  className="flex items-center gap-2 rounded px-1.5 py-1 transition-colors hover:bg-zinc-800/50"
-                >
-                  <span
-                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                    style={{
-                      backgroundColor: active ? "var(--color-fuchsia-400)" : "var(--color-zinc-600)",
-                      opacity: active ? 1.0 : 0.2,
-                    }}
-                  />
-                  <span className={`text-[10px] ${active ? "text-zinc-200" : "text-zinc-600"}`}>
-                    {label}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          {effectOverrides !== null && (
-            <button
-              onClick={() => setEffectOverrides(null)}
-              className="mt-1.5 text-[10px] text-fuchsia-400 hover:text-fuchsia-300"
-            >
-              Reset to preset
-            </button>
-          )}
-        </Section>
-      )}
+                <span
+                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{
+                    backgroundColor: active ? "var(--color-fuchsia-400)" : "var(--color-zinc-600)",
+                    opacity: active ? 1.0 : 0.2,
+                  }}
+                />
+                <span className={`text-[10px] ${active ? "text-zinc-200" : "text-zinc-600"}`}>
+                  {label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </Section>
 
       {/* ENTITIES */}
       <Section title={`Entities (${classificationDetections.length})`}>
