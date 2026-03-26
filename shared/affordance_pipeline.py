@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from shared.affordance import ActivationState, CapabilityRecord, SelectionCandidate
@@ -14,6 +16,7 @@ from shared.impingement import Impingement, render_impingement_text
 
 log = logging.getLogger("affordance_pipeline")
 
+ACTIVATION_STATE_PATH = Path("/home/hapax/.cache/hapax/affordance-activation-state.json")
 COLLECTION_NAME = "affordances"
 DEFAULT_TOP_K = 10
 SUPPRESSION_FACTOR = 0.3
@@ -69,6 +72,7 @@ class AffordancePipeline:
         self._inhibitions: list[InhibitionEntry] = []
         self._cascade_log: list[dict[str, Any]] = []
         self._context_associations: dict[tuple[str, str], float] = {}
+        self._dismissal_log: list[dict[str, Any]] = []
 
     def index_capability(self, record: CapabilityRecord) -> bool:
         from shared.config import embed_safe, get_qdrant
@@ -180,6 +184,107 @@ class AffordancePipeline:
     def record_failure(self, capability_name: str) -> None:
         state = self._activation.setdefault(capability_name, ActivationState())
         state.record_failure()
+
+    def record_outcome(
+        self, capability_name: str, success: bool, context: dict[str, Any] | None = None
+    ) -> None:
+        """Record outcome and update learned associations."""
+        if success:
+            self.record_success(capability_name)
+        else:
+            self.record_failure(capability_name)
+
+        # Hebbian: strengthen/weaken context associations
+        if context:
+            delta = 0.1 if success else -0.05
+            for _key, value in context.items():
+                self.update_context_association(str(value), capability_name, delta=delta)
+
+    def decay_associations(self, factor: float = 0.995) -> None:
+        """Decay all context associations toward zero (passive forgetting)."""
+        to_remove = []
+        for key, strength in self._context_associations.items():
+            new_val = strength * factor
+            if abs(new_val) < 0.001:
+                to_remove.append(key)
+            else:
+                self._context_associations[key] = new_val
+        for key in to_remove:
+            del self._context_associations[key]
+
+    def record_dismissal(
+        self,
+        capability_name: str,
+        impingement_id: str,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        """Record that the operator dismissed a capability's output.
+
+        Bridges to record_outcome(success=False) and logs for audit.
+        """
+        self.record_outcome(capability_name, success=False, context=context)
+        self._dismissal_log.append(
+            {
+                "timestamp": time.time(),
+                "capability": capability_name,
+                "impingement_id": impingement_id,
+            }
+        )
+        if len(self._dismissal_log) > 100:
+            self._dismissal_log = self._dismissal_log[-50:]
+
+    def save_activation_state(self) -> None:
+        """Persist activation states and context associations to disk."""
+        data = {
+            "activations": {name: state.model_dump() for name, state in self._activation.items()},
+            "associations": {f"{k[0]}|{k[1]}": v for k, v in self._context_associations.items()},
+        }
+        path = ACTIVATION_STATE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.rename(path)
+
+    def load_activation_state(self) -> None:
+        """Load persisted activation states and context associations."""
+        path = ACTIVATION_STATE_PATH
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+            for name, state_dict in data.get("activations", {}).items():
+                self._activation[name] = ActivationState(**state_dict)
+            for key_str, strength in data.get("associations", {}).items():
+                parts = key_str.split("|", 1)
+                if len(parts) == 2:
+                    self._context_associations[(parts[0], parts[1])] = strength
+        except Exception:
+            log.warning("Failed to load activation state", exc_info=True)
+
+    def get_audit_snapshot(self) -> dict[str, Any]:
+        """Return structured audit data for observability."""
+        return {
+            "capabilities_tracked": len(self._activation),
+            "associations_learned": len(self._context_associations),
+            "recent_cascades": len(self._cascade_log),
+            "inhibitions_active": len(
+                [i for i in self._inhibitions if i.inhibited_until > time.monotonic()]
+            ),
+            "dismissals_total": len(self._dismissal_log),
+            "activation_states": {
+                name: {
+                    "use_count": s.use_count,
+                    "ts_alpha": round(s.ts_alpha, 2),
+                    "ts_beta": round(s.ts_beta, 2),
+                    "last_use": s.last_use_ts,
+                }
+                for name, s in self._activation.items()
+            },
+            "top_associations": sorted(
+                [(f"{k[0]}→{k[1]}", round(v, 3)) for k, v in self._context_associations.items()],
+                key=lambda x: -abs(x[1]),
+            )[:20],
+        }
 
     def add_inhibition(self, impingement: Impingement, duration_s: float = 30.0) -> None:
         content_hash = self._content_hash(impingement)
@@ -304,7 +409,7 @@ class AffordancePipeline:
     ) -> None:
         key = (cue_value, capability_name)
         current = self._context_associations.get(key, 0.0)
-        self._context_associations[key] = min(4.0, current + delta)
+        self._context_associations[key] = max(-1.0, min(4.0, current + delta))
 
     def _log_cascade(self, impingement: Impingement, winners: list[SelectionCandidate]) -> None:
         if not winners:
