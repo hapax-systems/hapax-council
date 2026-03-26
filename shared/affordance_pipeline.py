@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.affordance import ActivationState, CapabilityRecord, SelectionCandidate
+from shared.affordance_metrics import AffordanceMetrics
 from shared.impingement import Impingement, render_impingement_text
 
 log = logging.getLogger("affordance_pipeline")
@@ -73,6 +74,7 @@ class AffordancePipeline:
         self._cascade_log: list[dict[str, Any]] = []
         self._context_associations: dict[tuple[str, str], float] = {}
         self._dismissal_log: list[dict[str, Any]] = []
+        self._metrics = AffordanceMetrics()
 
     def index_capability(self, record: CapabilityRecord) -> bool:
         from shared.config import embed_safe, get_qdrant
@@ -127,7 +129,7 @@ class AffordancePipeline:
         if impingement.interrupt_token:
             handlers = self._interrupt_handlers.get(impingement.interrupt_token, [])
             if handlers:
-                return [
+                result = [
                     SelectionCandidate(
                         capability_name=h.capability_name,
                         similarity=1.0,
@@ -136,6 +138,17 @@ class AffordancePipeline:
                     )
                     for h in handlers
                 ]
+                winner = result[0] if result else None
+                self._metrics.record_selection(
+                    impingement_source=impingement.source,
+                    impingement_metric=impingement.content.get("metric", ""),
+                    candidates_count=len(result),
+                    winner=winner.capability_name if winner else None,
+                    winner_similarity=1.0,
+                    winner_combined=1.0,
+                    was_interrupt=True,
+                )
+                return result
         if self._is_inhibited(impingement):
             return []
         embedding = self._get_embedding(impingement)
@@ -175,6 +188,17 @@ class AffordancePipeline:
         survivors = [c for c in normal if c.combined > THRESHOLD]
         survivors.sort(key=lambda c: -c.combined)
         self._log_cascade(impingement, survivors)
+        winner = survivors[0] if survivors else None
+        self._metrics.record_selection(
+            impingement_source=impingement.source,
+            impingement_metric=impingement.content.get("metric", ""),
+            candidates_count=len(candidates),
+            winner=winner.capability_name if winner else None,
+            winner_similarity=winner.similarity if winner else 0.0,
+            winner_combined=winner.combined if winner else 0.0,
+            was_interrupt=False,
+            was_fallback=embedding is None,
+        )
         return survivors
 
     def record_success(self, capability_name: str) -> None:
@@ -193,6 +217,12 @@ class AffordancePipeline:
             self.record_success(capability_name)
         else:
             self.record_failure(capability_name)
+
+        self._metrics.record_outcome(
+            capability_name,
+            success,
+            {k: str(v) for k, v in context.items()} if context else None,
+        )
 
         # Hebbian: strengthen/weaken context associations
         if context:
@@ -261,6 +291,10 @@ class AffordancePipeline:
         except Exception:
             log.warning("Failed to load activation state", exc_info=True)
 
+    @property
+    def metrics(self) -> AffordanceMetrics:
+        return self._metrics
+
     def get_audit_snapshot(self) -> dict[str, Any]:
         """Return structured audit data for observability."""
         return {
@@ -284,6 +318,7 @@ class AffordancePipeline:
                 [(f"{k[0]}→{k[1]}", round(v, 3)) for k, v in self._context_associations.items()],
                 key=lambda x: -abs(x[1]),
             )[:20],
+            "metrics_summary": self._metrics.compute_summary(),
         }
 
     def add_inhibition(self, impingement: Impingement, duration_s: float = 30.0) -> None:
