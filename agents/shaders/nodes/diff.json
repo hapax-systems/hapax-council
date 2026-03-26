@@ -1,0 +1,1 @@
+{"node_type":"diff","glsl_fragment":"diff.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"threshold":{"type":"float","default":0.05,"min":0.0,"max":0.3},"color_mode":{"type":"float","default":0.0},"frame_delay":{"type":"float","default":1.0}},"temporal":true,"temporal_buffers":1}

@@ -1,0 +1,1 @@
+{"node_type":"solid","glsl_fragment":"solid.frag","inputs":{},"outputs":{"out":"frame"},"params":{"color_r":{"type":"float","default":0.0,"min":0.0,"max":1.0},"color_g":{"type":"float","default":0.0,"min":0.0,"max":1.0},"color_b":{"type":"float","default":0.0,"min":0.0,"max":1.0},"color_a":{"type":"float","default":1.0,"min":0.0,"max":1.0}},"temporal":false,"temporal_buffers":0}

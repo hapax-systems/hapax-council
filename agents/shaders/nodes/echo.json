@@ -1,0 +1,1 @@
+{"node_type":"echo","glsl_fragment":"echo.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"frame_count":{"type":"float","default":8.0,"min":2.0,"max":32.0},"decay_curve":{"type":"float","default":1.0},"blend_mode":{"type":"float","default":0.0}},"temporal":true,"temporal_buffers":1}
