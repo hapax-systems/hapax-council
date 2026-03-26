@@ -83,7 +83,7 @@ Each domain is a hook that registers commands with the registry on mount. Domain
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `terrain.focus` | `{ region: RegionName \| null }` | Focus a region or unfocus |
+| `terrain.focus` | `{ region: RegionName \| null }` | Focus a region (cycles depth if already focused) or unfocus |
 | `terrain.depth.set` | `{ region: RegionName, depth: "surface" \| "stratum" \| "core" }` | Set specific depth |
 | `terrain.depth.cycle` | `{ region: RegionName }` | Cycle surface → stratum → core |
 | `terrain.collapse` | none | Reset all regions to surface, unfocus |
@@ -213,7 +213,7 @@ const KEY_MAP: KeyBinding[] = [
 ];
 ```
 
-The `when` clause uses the query system — `when: "terrain.focusedRegion=ground"` means the binding only fires if `query("terrain.focusedRegion") === "ground"`. Bindings earlier in the list take priority when multiple match the same key.
+The `when` clause uses the query system — `when: "terrain.focusedRegion=ground"` means the binding only fires if `query("terrain.focusedRegion") === "ground"`. Bindings earlier in the list take priority when multiple match the same key. This enables context-dependent overrides: e.g., `r` maps to `studio.recording.toggle` (when ground focused) and falls through to `data.refresh` otherwise.
 
 The adapter respects input focus (INPUT, TEXTAREA, contentEditable) as the current handlers do, but in one place.
 
