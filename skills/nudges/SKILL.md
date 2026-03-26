@@ -1,6 +1,6 @@
 ---
 name: nudges
-description: Review and act on active nudges from logos. Use when the user asks about nudges, suggestions, or runs /nudges.
+description: Review and act on active nudges. Auto-run when: session-context or health check surfaces unacted nudges, after completing a major task (nudges may have cascaded), or user asks about nudges. Invoke proactively without asking.
 ---
 
 Show active nudges from the logos API.

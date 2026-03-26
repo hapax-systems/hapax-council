@@ -1,6 +1,6 @@
 ---
 name: demo
-description: Generate an audience-tailored system demo. Use when the user asks to produce a demo, create a presentation, or runs /demo.
+description: Generate an audience-tailored system demo. Auto-run when: operator mentions showing the system to someone, preparing a presentation, or demonstrating capabilities. Suggest when a significant new feature is completed. Invoke proactively without asking.
 ---
 
 Generate a demo from a natural language request. Examples:

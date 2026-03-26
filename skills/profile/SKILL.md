@@ -1,6 +1,6 @@
 ---
 name: profile
-description: Inspect the operator profile. Use when the user asks about their profile, dimensions, facts, or runs /profile.
+description: Inspect the operator profile. Auto-run when: conversation reveals a behavioral pattern or preference not yet in the profile, after extended interaction generating new observations, or user asks about their profile or dimensions. Invoke proactively without asking.
 ---
 
 Show the operator profile summary and dimension breakdown.

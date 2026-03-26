@@ -1,6 +1,6 @@
 ---
 name: calendar
-description: Check calendar, upcoming meetings, and prep status. Use when the user asks about meetings, schedule, or runs /calendar.
+description: Check calendar and meeting prep. Auto-run when: session-context shows a meeting within 60 minutes, operator mentions a meeting or person by name, or user asks about schedule. Invoke proactively without asking.
 ---
 
 Show calendar context and meeting prep status.

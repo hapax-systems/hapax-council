@@ -1,6 +1,6 @@
 ---
 name: axiom-sweep
-description: Run retroactive axiom compliance sweep across all code repos. Use when the user wants to scan existing code for T0 violations or generate a baseline audit, or runs /axiom-sweep.
+description: Run retroactive axiom compliance sweep. Auto-run when: session-context reports the last sweep was >7 days ago, after merging a large PR, after refactors touching auth/user/role patterns, or user asks for a T0 scan. Invoke proactively without asking.
 ---
 
 Run a retroactive T0 violation sweep across all code repositories.

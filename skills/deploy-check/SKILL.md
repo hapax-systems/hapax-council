@@ -1,6 +1,6 @@
 ---
 name: deploy-check
-description: Pre-push readiness verification. Use before pushing code, when the user asks to verify deployment readiness, or runs /deploy-check.
+description: Pre-push readiness verification. Auto-run when: operator says push/deploy/ship, before a PR is about to be created for main, or a git push command is about to run (PostToolUse suggests it). Invoke proactively without asking.
 ---
 
 # Pre-Push Readiness Check
