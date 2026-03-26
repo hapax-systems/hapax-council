@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useSnapshotPoll } from "../../../hooks/useSnapshotPoll";
 import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
@@ -15,21 +15,6 @@ interface CameraHeroProps {
   onHeroChange: (role: string) => void;
   effectSourceId?: string;
   smoothMode?: boolean;
-}
-
-function SnapshotFallback({ role }: { role: string }) {
-  const [src, setSrc] = useState("");
-  useEffect(() => {
-    let running = true;
-    const poll = () => {
-      if (!running) return;
-      setSrc(`/api/studio/stream/snapshot?_t=${Date.now()}`);
-      setTimeout(poll, 100);
-    };
-    poll();
-    return () => { running = false; };
-  }, [role]);
-  return <img src={src} className="h-full w-full object-contain bg-black" alt="" />;
 }
 
 export function CameraHero({
