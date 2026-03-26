@@ -46,3 +46,16 @@ class Impingement(BaseModel, frozen=True):
     context: dict[str, Any] = Field(default_factory=dict)  # system state at detection
     interrupt_token: str | None = None  # if pattern-matched, which token
     parent_id: str | None = None  # for cascade tracing
+    embedding: list[float] | None = None  # 768-dim vector for affordance retrieval
+
+
+def render_impingement_text(imp: Impingement) -> str:
+    """Render impingement content as embeddable text for affordance retrieval."""
+    parts = [f"source: {imp.source}"]
+    if imp.content.get("metric"):
+        parts.append(f"signal: {imp.content['metric']}")
+    if imp.content.get("value") is not None:
+        parts.append(f"value: {imp.content['value']}")
+    if imp.interrupt_token:
+        parts.append(f"critical: {imp.interrupt_token}")
+    return "; ".join(parts)

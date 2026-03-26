@@ -19,6 +19,7 @@ EXPECTED_COLLECTIONS: dict[str, dict[str, object]] = {
     "operator-episodes": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "studio-moments": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "operator-corrections": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
+    "affordances": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
 }
 
 
