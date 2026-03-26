@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
 import { useAgents } from "../../api/hooks";
-import { useTerrain, type RegionName } from "../../contexts/TerrainContext";
+import { useCommandRegistry } from "../../contexts/CommandRegistryContext";
 
 interface Command {
   id: string;
@@ -18,33 +17,24 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({ open, onClose, onManualToggle }: CommandPaletteProps) {
+  const registry = useCommandRegistry();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const { data: agents } = useAgents();
-  const { splitRegion, setSplitRegion, setSplitFullscreen } = useTerrain();
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const staticCommands: Command[] = [
-    { id: "dashboard", label: "Go to Dashboard", shortcut: "d", action: () => { navigate("/"); onClose(); } },
-    { id: "chat", label: "Go to Chat", shortcut: "c", action: () => { navigate("/chat"); onClose(); } },
-    { id: "manual", label: "Toggle Operations Manual", shortcut: "?", action: () => { onManualToggle(); onClose(); } },
-    { id: "refresh", label: "Refresh All Data", shortcut: "r", action: () => { queryClient.invalidateQueries(); onClose(); } },
-    { id: "new-chat", label: "New Chat Session", action: () => { navigate("/chat"); onClose(); } },
-    { id: "health", label: "View Health Detail", action: () => { navigate("/"); onClose(); } },
-    ...(splitRegion
-      ? [
-          { id: "split-close", label: "Close Split Pane", shortcut: "S", action: () => { setSplitRegion(null); onClose(); } },
-          { id: "split-fullscreen", label: "Toggle Split Fullscreen", shortcut: "F11", action: () => { setSplitFullscreen(true); onClose(); } },
-        ]
-      : (["horizon", "field", "ground", "watershed", "bedrock"] as RegionName[]).map((r) => ({
-          id: `split-${r}`,
-          label: `Split View: ${r.charAt(0).toUpperCase() + r.slice(1)}`,
-          action: () => { setSplitRegion(r); onClose(); },
-        }))
-    ),
-  ];
+  // Build command list from registry
+  const registryCommands: Command[] = useMemo(() => {
+    return registry.list().map((cmd) => ({
+      id: cmd.path,
+      label: cmd.description,
+      action: () => {
+        registry.execute(cmd.path, {}, "palette");
+        onClose();
+      },
+    }));
+  }, [registry, onClose]);
 
   const agentCommands: Command[] = (agents ?? []).map((a) => ({
     id: `agent-${a.name}`,
@@ -52,18 +42,18 @@ export function CommandPalette({ open, onClose, onManualToggle }: CommandPalette
     action: () => { navigate("/"); onClose(); },
   }));
 
-  const commands = [...staticCommands, ...agentCommands];
+  void onManualToggle; // handled via registry nav.manual.toggle
+
+  const commands = [...registryCommands, ...agentCommands];
 
   const filtered = query
     ? commands.filter((c) => {
         const q = query.toLowerCase();
         const text = `${c.label} ${c.id}`.toLowerCase();
-        // Match all words in query (fuzzy multi-word search)
         return q.split(/\s+/).every((word) => text.includes(word));
       })
     : commands;
 
-   
   useEffect(() => {
     if (open) {
       setQuery("");
@@ -75,7 +65,6 @@ export function CommandPalette({ open, onClose, onManualToggle }: CommandPalette
   useEffect(() => {
     setSelected(0);
   }, [query]);
-   
 
   if (!open) return null;
 

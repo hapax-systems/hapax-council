@@ -59,7 +59,7 @@ export class CommandRegistry {
   private queries = new Map<string, () => unknown>();
   private subscribers: Subscriber[] = [];
   private nextSubId = 0;
-  readonly debug: boolean;
+  debug: boolean;
 
   constructor(options: CommandRegistryOptions = {}) {
     this.debug = options.debug ?? false;

@@ -12,20 +12,12 @@ import { ClassificationInspector } from "./overlays/ClassificationInspector";
 import { AgentOutputDrawer } from "./AgentOutputDrawer";
 import { SplitPane } from "./SplitPane";
 import { DetailPane } from "./DetailPane";
-import { ClassificationOverlayProvider, useDetections } from "../../contexts/ClassificationOverlayContext";
-import type { DetectionTier } from "../studio/DetectionOverlay";
+import { ClassificationOverlayProvider } from "../../contexts/ClassificationOverlayContext";
 import { GroundStudioProvider, useGroundStudio } from "../../contexts/GroundStudioContext";
-import { useRecordingToggle } from "../../api/hooks";
 import { useVisualLayer } from "../../api/hooks";
 import { useTerrain, useTerrainDisplay, type RegionName } from "../../contexts/TerrainContext";
-
-const REGION_KEYS: Record<string, RegionName> = {
-  h: "horizon",
-  f: "field",
-  g: "ground",
-  w: "watershed",
-  b: "bedrock",
-};
+import { CommandRegistryBridge } from "./CommandRegistryBridge";
+import { CommandFeedback } from "./CommandFeedback";
 
 function useGridRows(): string {
   const { regionDepths } = useTerrainDisplay();
@@ -116,33 +108,6 @@ function KeyboardHintBar() {
   );
 }
 
-/** Keyboard handler for detection tier/visibility (must be inside ClassificationOverlayProvider). */
-function DetectionKeyboardHandler() {
-  const { detectionTier, setDetectionTier, detectionLayerVisible, setDetectionLayerVisible } =
-    useDetections();
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
-        return;
-
-      if (e.key === "d" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        e.preventDefault();
-        const next = ((detectionTier % 3) + 1) as DetectionTier;
-        setDetectionTier(next);
-      } else if (e.key === "D" && e.shiftKey && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault();
-        setDetectionLayerVisible(!detectionLayerVisible);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [detectionTier, setDetectionTier, detectionLayerVisible, setDetectionLayerVisible]);
-
-  return null;
-}
-
 /** URL param sync for studio state (must be inside GroundStudioProvider). */
 function StudioParamSync() {
   const { setSmoothMode, setEffectSourceId } = useGroundStudio();
@@ -168,58 +133,9 @@ function StudioParamSync() {
   return null;
 }
 
-/** Keyboard shortcuts for studio controls (must be inside GroundStudioProvider). */
-function StudioKeyboardHandler() {
-  const { focusedRegion, regionDepths, setRegionDepth } = useTerrain();
-  const {
-    smoothMode, setSmoothMode,
-  } = useGroundStudio();
-  const recordingToggle = useRecordingToggle();
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
-        return;
-      if (focusedRegion !== "ground") return;
-
-      // E: toggle HLS on/off
-      if (e.key === "e" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        e.preventDefault();
-        if (!smoothMode) {
-          setSmoothMode(true);
-          if (regionDepths.ground !== "core") setRegionDepth("ground", "core");
-        } else {
-          setSmoothMode(false);
-        }
-        return;
-      }
-
-      // R: toggle recording
-      if (e.key === "r" && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        e.preventDefault();
-        recordingToggle.mutate(true); // toggle handled server-side
-        return;
-      }
-
-      // [ / ]: previous / next preset via backend API
-      if ((e.key === "[" || e.key === "]") && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault();
-        const direction = e.key === "]" ? "next" : "prev";
-        fetch(`/api/studio/presets/cycle?direction=${direction}`, { method: "POST" }).catch(() => {});
-        return;
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [focusedRegion, smoothMode, setSmoothMode, recordingToggle, regionDepths, setRegionDepth]);
-
-  return null;
-}
-
 export function TerrainLayout() {
   const { data: vl } = useVisualLayer();
-  const { activeOverlay, setOverlay, focusRegion, cycleDepth, focusedRegion, regionDepths, setRegionDepth, splitRegion, splitFullscreen, setSplitRegion, setSplitFullscreen } = useTerrain();
+  const { activeOverlay, setOverlay, splitRegion, splitFullscreen, setSplitRegion, setSplitFullscreen } = useTerrain();
   const gridRows = useGridRows();
   const coreMiddle = useCoreMiddleRegion();
 
@@ -261,82 +177,12 @@ export function TerrainLayout() {
     }
   }, [voiceActive, activeOverlay, setOverlay]);
 
-  // Keyboard: `/` toggles investigation, H/F/G/W/B focus regions, Escape dismisses
-  const handleKey = useCallback(
-    (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      const isInput =
-        target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
-
-      if (e.key === "/" && !e.ctrlKey && !e.metaKey && !isInput) {
-        e.preventDefault();
-        setOverlay(activeOverlay === "investigation" ? null : "investigation");
-        return;
-      }
-
-      if (e.key === "Escape") {
-        // Don't navigate when exiting fullscreen — browser handles that Escape
-        if (document.fullscreenElement) return;
-        if (activeOverlay) {
-          setOverlay(null);
-          return;
-        }
-        // Close split pane before collapsing regions
-        if (splitRegion) {
-          setSplitRegion(null);
-          return;
-        }
-        // Collapse focused region back to surface
-        if (focusedRegion && regionDepths[focusedRegion] !== "surface") {
-          setRegionDepth(focusedRegion, "surface");
-          focusRegion(null);
-          return;
-        }
-        // Unfocus if at surface
-        if (focusedRegion) {
-          focusRegion(null);
-          return;
-        }
-        return;
-      }
-
-      // S key: toggle split for focused region
-      if (e.key.toLowerCase() === "s" && !isInput && !e.ctrlKey && !e.metaKey && !e.altKey && activeOverlay !== "investigation") {
-        if (splitRegion) {
-          setSplitRegion(null);
-        } else if (focusedRegion) {
-          setSplitRegion(focusedRegion);
-        }
-        return;
-      }
-
-      // Region shortcuts — blocked only during investigation overlay, not voice
-      if (activeOverlay !== "investigation" && !isInput && !e.ctrlKey && !e.metaKey) {
-        const region = REGION_KEYS[e.key.toLowerCase()];
-        if (region) {
-          if (focusedRegion === region) {
-            cycleDepth(region);
-          } else {
-            focusRegion(region);
-          }
-        }
-      }
-    },
-    [activeOverlay, setOverlay, focusRegion, cycleDepth, focusedRegion, regionDepths, setRegionDepth, splitRegion, setSplitRegion],
-  );
-
-  useEffect(() => {
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [handleKey]);
-
   return (
     <ClassificationOverlayProvider>
-    <DetectionKeyboardHandler />
-    {/* <ModifierShortcutOverlay /> */}
     <GroundStudioProvider>
       <StudioParamSync />
-      <StudioKeyboardHandler />
+      <CommandRegistryBridge />
+      <CommandFeedback />
       <div
         className="h-screen w-screen overflow-hidden relative"
         style={{ fontFamily: "'JetBrains Mono', monospace", background: "#1d2021" }}

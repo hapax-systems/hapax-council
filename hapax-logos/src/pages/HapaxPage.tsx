@@ -159,9 +159,9 @@ function sevColor(sev: number, a: number): string {
 
 export function HapaxPage() {
   const [vlState, setVlState] = useState<VisualLayerState | null>(null);
-  const [showCameras, setShowCameras] = useState(false);
-  const [showVideo, setShowVideo] = useState(false);
-  const [showSignals, setShowSignals] = useState(true);
+  const [showCameras] = useState(false);
+  const [showVideo] = useState(false);
+  const [showSignals] = useState(true);
   const [time, setTime] = useState(new Date());
   const [fragmentIdx, setFragmentIdx] = useState(0);
   const [showCorrection, setShowCorrection] = useState(false);
@@ -229,22 +229,6 @@ export function HapaxPage() {
     requestAnimationFrame(tick);
     return () => { running = false; };
   }, [isVisible]);
-
-  // Keyboard
-  const handleKey = useCallback((e: KeyboardEvent) => {
-    if (e.key === "c") setShowCameras(prev => !prev);
-    if (e.key === "v") setShowVideo(prev => !prev);
-    if (e.key === "s") setShowSignals(prev => !prev);
-    if (e.key === "f") {
-      if (document.fullscreenElement) document.exitFullscreen();
-      else document.documentElement.requestFullscreen();
-    }
-  }, []);
-
-  useEffect(() => {
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [handleKey]);
 
   const submitCorrection = useCallback(async () => {
     if (!correctionInput.trim()) return;

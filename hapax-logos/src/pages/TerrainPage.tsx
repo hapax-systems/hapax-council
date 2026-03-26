@@ -1,6 +1,7 @@
 import { lazy, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { TerrainProvider, useTerrainActions, type RegionName, type Depth, type InvestigationTab } from "../contexts/TerrainContext";
+import { CommandRegistryProvider } from "../contexts/CommandRegistryContext";
 
 const DemoRunner = lazy(() => import("../demo/DemoRunner").then((m) => ({ default: m.DemoRunner })));
 import { TerrainLayout } from "../components/terrain/TerrainLayout";
@@ -45,52 +46,6 @@ function TerrainParamSync() {
   return null;
 }
 
-function TerrainChrome() {
-  const [manualOpen, setManualOpen] = useState(false);
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const { modal, dismissModal } = useHapaxIntrospection();
-
-  useEffect(() => {
-    function handleKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement;
-      const isInput =
-        target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
-
-      if ((e.ctrlKey || e.metaKey) && e.key === "p") {
-        e.preventDefault();
-        setPaletteOpen((prev) => !prev);
-        return;
-      }
-
-      if (e.key === "?" && !e.ctrlKey && !e.metaKey && !isInput) {
-        e.preventDefault();
-        setManualOpen((prev) => !prev);
-      }
-    }
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, []);
-
-  return (
-    <>
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        onManualToggle={() => setManualOpen((prev) => !prev)}
-      />
-      <ManualDrawer open={manualOpen} onClose={() => setManualOpen(false)} />
-      <HapaxModal
-        visible={modal.visible}
-        title={modal.title}
-        content={modal.content}
-        dismissable={modal.dismissable}
-        onDismiss={dismissModal}
-      />
-      <HealthToastWatcher />
-    </>
-  );
-}
-
 function DemoGate() {
   const [params] = useSearchParams();
   const demoName = params.get("demo");
@@ -99,16 +54,38 @@ function DemoGate() {
 }
 
 export function TerrainPage() {
+  const [manualOpen, setManualOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const { modal, dismissModal } = useHapaxIntrospection();
+
   return (
     <ToastProvider>
       <AgentRunProvider>
         <TerrainProvider>
-          <ErrorBoundary>
-            <TerrainParamSync />
-            <TerrainLayout />
-            <TerrainChrome />
-            <DemoGate />
-          </ErrorBoundary>
+          <CommandRegistryProvider
+            onManualToggle={() => setManualOpen((p) => !p)}
+            onPaletteToggle={() => setPaletteOpen((p) => !p)}
+          >
+            <ErrorBoundary>
+              <TerrainParamSync />
+              <TerrainLayout />
+              <CommandPalette
+                open={paletteOpen}
+                onClose={() => setPaletteOpen(false)}
+                onManualToggle={() => setManualOpen((p) => !p)}
+              />
+              <ManualDrawer open={manualOpen} onClose={() => setManualOpen(false)} />
+              <HapaxModal
+                visible={modal.visible}
+                title={modal.title}
+                content={modal.content}
+                dismissable={modal.dismissable}
+                onDismiss={dismissModal}
+              />
+              <HealthToastWatcher />
+              <DemoGate />
+            </ErrorBoundary>
+          </CommandRegistryProvider>
         </TerrainProvider>
       </AgentRunProvider>
     </ToastProvider>
