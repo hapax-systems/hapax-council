@@ -330,10 +330,10 @@ export const PRESETS: CompositePreset[] = [
     colorFilter:
       "saturate(0.2) sepia(0.4) hue-rotate(160deg) contrast(1.3) brightness(0.75)",
     trail: {
-      filter: "saturate(0.15) sepia(0.5) hue-rotate(180deg) brightness(0.4)",
+      filter: "saturate(0.15) sepia(0.5) hue-rotate(180deg) brightness(0.6)",
       blendMode: "multiply",
       opacity: 0.55,
-      count: 4,
+      count: 2,
       driftX: 0,
       driftY: 0,
     },
@@ -441,7 +441,7 @@ export const PRESETS: CompositePreset[] = [
   {
     name: "Pixsort",
     description: "Luminance-gated pixel sorting streaks",
-    colorFilter: "saturate(1.2) contrast(1.3) brightness(1.05) sepia(0.15)",
+    colorFilter: "saturate(1.2) contrast(1.3) brightness(1.05)",
     trail: {
       filter: "saturate(1.4) contrast(1.1) brightness(1.2) sepia(0.2)",
       blendMode: "lighter",
@@ -465,7 +465,7 @@ export const PRESETS: CompositePreset[] = [
   {
     name: "Slit-scan",
     description: "Temporal vertical displacement smear",
-    colorFilter: "saturate(0.8) contrast(1.2) brightness(1.0)",
+    colorFilter: "saturate(1.2) contrast(1.2) brightness(1.0)",
     trail: {
       filter: "saturate(0.7) brightness(0.9)",
       blendMode: "source-over",

@@ -318,8 +318,8 @@ PRESETS: dict[str, EffectPreset] = {
         post_process=PostProcessConfig(vignette_strength=0.2),
         use_pixsort_shader=True,
         pixsort_params={
-            "u_threshold_low": 0.08,
-            "u_threshold_high": 0.92,
+            "u_threshold_low": 0.25,
+            "u_threshold_high": 0.75,
             "u_sort_length": 56.0,
             "u_direction": 0.0,  # horizontal
         },
@@ -361,7 +361,7 @@ PRESETS: dict[str, EffectPreset] = {
         slitscan_params={
             "u_scan_speed": 1.2,
             "u_scan_axis": 0.0,  # horizontal scan
-            "u_warp_amount": 0.6,
+            "u_warp_amount": 1.5,
         },
     ),
 }
