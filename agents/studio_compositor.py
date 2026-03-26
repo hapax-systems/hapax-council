@@ -656,7 +656,15 @@ class StudioCompositor:
             self._slot_pipeline.update_node_uniforms(node_id, params)
 
     def _on_graph_plan_changed(self, old_plan: Any, new_plan: Any) -> None:
-        """Apply a new execution plan to the slot pipeline."""
+        """Apply a new execution plan to the slot pipeline with crossfade."""
+        # Trigger crossfade snapshot before switching shaders
+        if (
+            old_plan is not None
+            and hasattr(self, "_fx_crossfade")
+            and self._fx_crossfade is not None
+        ):
+            self._fx_crossfade.set_property("trigger", True)
+
         if hasattr(self, "_slot_pipeline") and self._slot_pipeline is not None:
             self._slot_pipeline.activate_plan(new_plan)
             self._fx_graph_mode = True
@@ -994,16 +1002,27 @@ class StudioCompositor:
         # Maintains a persistent accumulation texture — each frame blends
         # with the decayed previous output, creating true compounding trails.
         temporal_fx = Gst.ElementFactory.make("temporalfx", "fx-temporal")
-        if temporal_fx is None:
-            log.error("temporalfx plugin not found! Install libgsttemporalfx.so")
-            # Fallback: direct passthrough
-            glow_effect.link(post_proc)
-        else:
+        crossfade_fx = Gst.ElementFactory.make("crossfade", "fx-crossfade")
+
+        # Chain: glow_effect → temporalfx → crossfade → post_proc
+        prev = glow_effect
+        if temporal_fx is not None:
             pipeline.add(temporal_fx)
-            # Default: no feedback (clean preset)
             temporal_fx.set_property("feedback-amount", 0.0)
-            glow_effect.link(temporal_fx)
-            temporal_fx.link(post_proc)
+            prev.link(temporal_fx)
+            prev = temporal_fx
+        else:
+            log.error("temporalfx plugin not found! Install libgsttemporalfx.so")
+
+        if crossfade_fx is not None:
+            pipeline.add(crossfade_fx)
+            crossfade_fx.set_property("transition-ms", 500)
+            prev.link(crossfade_fx)
+            prev = crossfade_fx
+        else:
+            log.warning("crossfade plugin not found — preset transitions will be instant")
+
+        prev.link(post_proc)
         post_proc.link(glcolorconvert_out)
         glcolorconvert_out.link(gldownload)
         gldownload.link(fx_convert)
@@ -1025,6 +1044,7 @@ class StudioCompositor:
 
         # Store references for runtime preset switching
         self._fx_temporal = temporal_fx
+        self._fx_crossfade = crossfade_fx
         self._fx_stutter = stutter_el
         self._fx_glow_effect = glow_effect
         self._fx_post_proc = post_proc
