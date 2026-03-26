@@ -1,0 +1,1 @@
+{"name":"Slit-scan","description":"Slit-scan placeholder","transition_ms":500,"nodes":{"warp":{"type":"warp","params":{"pan_x":3,"slice_count":20,"slice_amplitude":5}},"colorgrade":{"type":"colorgrade","params":{"saturation":1.2}},"out":{"type":"output","params":{}}},"edges":[["@live","warp"],["warp","colorgrade"],["colorgrade","out"]],"modulations":[],"layer_palettes":{}}

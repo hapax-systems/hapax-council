@@ -1,0 +1,1 @@
+{"name":"Pixel Sorting","description":"Pixel sorting","transition_ms":500,"nodes":{"pixsort":{"type":"pixsort","params":{"threshold":0.3,"segment_length":100}},"scanlines":{"type":"scanlines","params":{"opacity":0.08}},"out":{"type":"output","params":{}}},"edges":[["@live","pixsort"],["pixsort","scanlines"],["scanlines","out"]],"modulations":[],"layer_palettes":{}}
