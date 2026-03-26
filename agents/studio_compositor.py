@@ -768,6 +768,9 @@ class StudioCompositor:
         # GPU effects branch
         self._add_effects_branch(pipeline, output_tee)
 
+        # Smooth delay branch (@smooth layer source)
+        self._add_smooth_delay_branch(pipeline, output_tee)
+
         return pipeline
 
     def _add_snapshot_branch(self, pipeline: Any, tee: Any) -> None:

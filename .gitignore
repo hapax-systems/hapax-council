@@ -64,3 +64,4 @@ agents/hapax_voice/proofs/**/data/
 *.png
 .claude/settings.json
 /plugins/gst-crossfade/target/
+/plugins/gst-smooth-delay/target/
