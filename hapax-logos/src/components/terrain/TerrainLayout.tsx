@@ -117,8 +117,12 @@ function KeyboardHintBar() {
   );
 }
 
-/** Shows available shortcuts while any modifier key is held. */
-function _ModifierShortcutOverlay() {
+/** Shows available shortcuts while any modifier key is held.
+ * NOTE: Temporarily disabled — commented out in JSX below. Remove underscore and
+ * re-enable {<ModifierShortcutOverlay />} when ready.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function ModifierShortcutOverlay() {
   const [held, setHeld] = useState<string | null>(null);
 
   useEffect(() => {
