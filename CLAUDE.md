@@ -27,6 +27,29 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 
 FastAPI on `:8051`. `uv run logos-api` to start. Containers: `docker compose up -d`.
 
+## Command Registry
+
+Centralized automation layer for all Logos UI actions. Every action (focus region, activate preset, toggle overlay) is a registered command with typed args and observable events.
+
+**Access points:**
+- **Playwright / browser console**: `window.__logos.execute("terrain.focus", { region: "ground" })`
+- **Keyboard**: Single adapter in `CommandRegistryProvider`, key map in `lib/keyboardAdapter.ts`
+- **External (MCP, voice)**: WebSocket relay at `ws://localhost:8051/ws/commands`
+- **CommandPalette**: Reads from `registry.list()` dynamically
+
+**Key files:**
+- `hapax-logos/src/lib/commandRegistry.ts` — Core registry (framework-agnostic)
+- `hapax-logos/src/lib/commands/*.ts` — Domain registrations (terrain, studio, overlay, detection, nav, split, data)
+- `hapax-logos/src/lib/commands/sequences.ts` — Built-in sequences (studio.enter, studio.exit, escape)
+- `hapax-logos/src/lib/keyboardAdapter.ts` — Key map with `when`-clause conditional bindings
+- `hapax-logos/src/contexts/CommandRegistryContext.tsx` — React provider, `window.__logos`, keyboard handler
+- `hapax-logos/src/components/terrain/CommandRegistryBridge.tsx` — Bridges studio/detection contexts
+- `logos/api/routes/commands.py` — WebSocket relay endpoint
+
+**State mirrors:** The provider maintains synchronous state mirrors updated eagerly by action wrappers. This ensures `query()` returns post-execution state without waiting for React re-render. Mirrors sync from React state on each render.
+
+**Spec:** `docs/superpowers/specs/2026-03-26-logos-command-registry-design.md`
+
 ## Council-Specific Conventions
 
 - Hypothesis for property-based algebraic proofs.

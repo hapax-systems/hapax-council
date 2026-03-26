@@ -169,15 +169,23 @@ Colors use `useTheme().palette` tokens — they switch with R&D/Research mode. T
 
 ## Keyboard Shortcuts
 
-- `H/F/G/W/B` — Focus and cycle depth on Horizon/Field/Ground/Watershed/Bedrock
-- `/` — Toggle investigation overlay (Chat/Insight/Demos)
-- `C` — Toggle classification inspector (per-camera detection diagnostic)
-- `S` — Toggle split pane for focused region
-- `D` — Cycle detection tier (1: persons, 2: objects, 3: enrichments)
-- `Shift+D` — Toggle detection overlay visibility
-- `?` — Toggle system manual drawer
-- `Ctrl+P` — Command palette
-- `Escape` — Hierarchical dismiss (overlay → split → region collapse → unfocus)
+All keyboard shortcuts route through the centralized command registry (`lib/keyboardAdapter.ts`). The key map supports `when`-clause conditional bindings — bindings earlier in the list take priority.
+
+- `H/F/G/W/B` — Focus and cycle depth on Horizon/Field/Ground/Watershed/Bedrock (`terrain.focus`)
+- `/` — Toggle investigation overlay (`overlay.toggle`)
+- `S` — Toggle split pane for focused region (`split.toggle`)
+- `D` — Cycle detection tier (`detection.tier.cycle`)
+- `Shift+D` — Toggle detection overlay visibility (`detection.visibility.toggle`)
+- `E` — Toggle smooth/HLS mode (when ground focused) (`studio.smooth.toggle`)
+- `R` — Toggle recording (when ground focused) / Refresh data (otherwise) (`studio.recording.toggle` / `data.refresh`)
+- `[`/`]` — Cycle presets prev/next (when ground focused) (`studio.preset.cycle`)
+- `?` — Toggle system manual drawer (`nav.manual.toggle`)
+- `C` — Navigate to chat (`nav.go`)
+- `I` — Navigate to insight (`nav.go`)
+- `Ctrl+P` — Command palette (`nav.palette.toggle`)
+- `Escape` — Hierarchical dismiss sequence (`escape`: overlay → split → terrain collapse)
+
+**Programmatic access:** `window.__logos.execute("command.path", { args })` — see CLAUDE.md § Command Registry.
 
 ## Visual Layer State Machine
 
