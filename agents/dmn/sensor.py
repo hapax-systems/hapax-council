@@ -112,6 +112,23 @@ def read_watch() -> dict:
     }
 
 
+def read_sensors() -> dict[str, dict]:
+    """Read all /dev/shm/hapax-sensors/ state files.
+
+    Returns dict of {sensor_name: state_dict} for sensors that have
+    written state snapshots. Empty dict if no sensors have reported.
+    """
+    sensor_dir = Path("/dev/shm/hapax-sensors")
+    if not sensor_dir.exists():
+        return {}
+    result = {}
+    for f in sensor_dir.glob("*.json"):
+        data = _read_json(f)
+        if data:
+            result[f.stem] = data
+    return result
+
+
 def read_all() -> dict:
     """Read all sensor sources. Returns a unified snapshot."""
     return {
@@ -120,4 +137,5 @@ def read_all() -> dict:
         "stimmung": read_stimmung(),
         "fortress": read_fortress(),
         "watch": read_watch(),
+        "sensors": read_sensors(),
     }
