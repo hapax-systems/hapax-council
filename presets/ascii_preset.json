@@ -1,0 +1,1 @@
+{"name":"ASCII Art","description":"ASCII art","transition_ms":500,"nodes":{"ascii":{"type":"ascii","params":{"cell_size":8,"color_mode":1}},"scanlines":{"type":"scanlines","params":{"opacity":0.08}},"out":{"type":"output","params":{}}},"edges":[["@live","ascii"],["ascii","scanlines"],["scanlines","out"]],"modulations":[],"layer_palettes":{}}

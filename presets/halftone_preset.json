@@ -1,0 +1,1 @@
+{"name":"Halftone","description":"Print dots","transition_ms":500,"nodes":{"halftone":{"type":"halftone","params":{"dot_size":6,"color_mode":0}},"colorgrade":{"type":"colorgrade","params":{"contrast":1.1}},"out":{"type":"output","params":{}}},"edges":[["@live","halftone"],["halftone","colorgrade"],["colorgrade","out"]],"modulations":[],"layer_palettes":{}}
