@@ -92,3 +92,80 @@ def test_dmn_read_all_includes_sensors():
     result = read_all()
     assert "sensors" in result
     assert isinstance(result["sensors"], dict)
+
+
+# ── Stimmung sync integration ───────────────────────────────────────────
+
+
+def test_stimmung_sync_writes_sensor_state(tmp_path: Path, monkeypatch):
+    """stimmung_sync.sync() writes sensor state to /dev/shm."""
+    import agents.stimmung_sync as mod
+
+    stimmung_file = tmp_path / "stimmung-state.json"
+    stimmung_file.write_text(
+        json.dumps(
+            {
+                "overall_stance": "nominal",
+                "health": {"value": 0.2},
+                "error_rate": {"value": 0.1},
+            }
+        )
+    )
+    monkeypatch.setattr(mod, "STIMMUNG_STATE", stimmung_file)
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(mod, "CACHE_DIR", cache_dir)
+    monkeypatch.setattr(mod, "STATE_FILE", cache_dir / "state.json")
+    monkeypatch.setattr(mod, "RAG_DIR", tmp_path / "rag")
+
+    sensor_writes: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "shared.sensor_protocol.write_sensor_state",
+        lambda name, data: sensor_writes.append((name, data)),
+    )
+    impingement_emits: list[tuple] = []
+    monkeypatch.setattr(
+        "shared.sensor_protocol.emit_sensor_impingement",
+        lambda *args, **kwargs: impingement_emits.append(args),
+    )
+
+    result = mod.sync()
+    assert result is True
+    assert len(sensor_writes) == 1
+    assert sensor_writes[0][0] == "stimmung"
+    assert sensor_writes[0][1]["stance"] == "nominal"
+    # Stance changed from "unknown" to "nominal"
+    assert len(impingement_emits) == 1
+    assert impingement_emits[0][0] == "stimmung"
+
+
+def test_stimmung_sync_no_impingement_on_same_stance(tmp_path: Path, monkeypatch):
+    """No impingement when stance hasn't changed."""
+    import agents.stimmung_sync as mod
+
+    stimmung_file = tmp_path / "stimmung-state.json"
+    stimmung_file.write_text(json.dumps({"overall_stance": "nominal"}))
+    monkeypatch.setattr(mod, "STIMMUNG_STATE", stimmung_file)
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "state.json").write_text(json.dumps({"last_stance": "nominal", "readings": []}))
+    monkeypatch.setattr(mod, "CACHE_DIR", cache_dir)
+    monkeypatch.setattr(mod, "STATE_FILE", cache_dir / "state.json")
+    monkeypatch.setattr(mod, "RAG_DIR", tmp_path / "rag")
+
+    sensor_writes: list = []
+    monkeypatch.setattr(
+        "shared.sensor_protocol.write_sensor_state",
+        lambda name, data: sensor_writes.append((name, data)),
+    )
+    impingement_emits: list = []
+    monkeypatch.setattr(
+        "shared.sensor_protocol.emit_sensor_impingement",
+        lambda *args, **kwargs: impingement_emits.append(args),
+    )
+
+    mod.sync()
+    assert len(sensor_writes) == 1  # always writes sensor state
+    assert len(impingement_emits) == 0  # no impingement — stance unchanged
