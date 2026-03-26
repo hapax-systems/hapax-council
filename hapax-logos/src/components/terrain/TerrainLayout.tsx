@@ -122,7 +122,7 @@ function KeyboardHintBar() {
  * re-enable {<ModifierShortcutOverlay />} when ready.
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function ModifierShortcutOverlay() {
+function _ModifierShortcutOverlay() {
   const [held, setHeld] = useState<string | null>(null);
 
   useEffect(() => {

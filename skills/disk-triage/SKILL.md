@@ -10,11 +10,11 @@ df -h / /home /tmp 2>/dev/null
 ```
 
 ```bash
-du -hx --max-depth=1 /home/hapax 2>/dev/null | sort -rh | head -15
+du -hx --max-depth=1 ~ 2>/dev/null | sort -rh | head -15
 ```
 
 ```bash
-du -sh /home/hapax/.cache/*/ 2>/dev/null | sort -rh | head -10
+du -sh ~/.cache/*/ 2>/dev/null | sort -rh | head -10
 ```
 
 ```bash
@@ -30,7 +30,7 @@ du -sh /var/cache/pacman/pkg/ 2>/dev/null
 ```
 
 ```bash
-find /home/hapax -name "*.mp4" -o -name "*.mkv" -o -name "*.avi" -o -name "*.wav" 2>/dev/null | xargs du -sh 2>/dev/null | sort -rh | head -10
+find ~ -name "*.mp4" -o -name "*.mkv" -o -name "*.avi" -o -name "*.wav" 2>/dev/null | xargs du -sh 2>/dev/null | sort -rh | head -10
 ```
 
 Present findings ranked by recoverable space. Suggest cleanup commands but **confirm with operator before executing**:
