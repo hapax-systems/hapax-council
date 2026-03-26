@@ -118,7 +118,7 @@ function KeyboardHintBar() {
 }
 
 /** Shows available shortcuts while any modifier key is held. */
-function ModifierShortcutOverlay() {
+function _ModifierShortcutOverlay() {
   const [held, setHeld] = useState<string | null>(null);
 
   useEffect(() => {
