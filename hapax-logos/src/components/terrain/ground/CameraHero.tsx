@@ -1,15 +1,11 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSnapshotPoll } from "../../../hooks/useSnapshotPoll";
 import { useBatchSnapshot } from "../../../hooks/useBatchSnapshotPoll";
 import { DetectionOverlay } from "../../studio/DetectionOverlay";
 import { SceneBadges } from "../../studio/SceneBadges";
-import { CompositeCanvas } from "../../studio/CompositeCanvas";
-import { PRESETS } from "../../studio/compositePresets";
-import { SOURCE_FILTERS } from "../../studio/compositeFilters";
 import { sourceUrl, selectEffect } from "../../studio/effectSources";
 import { useStudio } from "../../../api/hooks";
 import { useDetections } from "../../../contexts/ClassificationOverlayContext";
-import { useGroundStudio } from "../../../contexts/GroundStudioContext";
 import type { ClassificationDetection } from "../../../api/types";
 import type { DetectionTier } from "../../studio/DetectionOverlay";
 
@@ -19,8 +15,21 @@ interface CameraHeroProps {
   onHeroChange: (role: string) => void;
   effectSourceId?: string;
   smoothMode?: boolean;
-  compositeMode?: boolean;
-  presetIdx?: number;
+}
+
+function SnapshotFallback({ role }: { role: string }) {
+  const [src, setSrc] = useState("");
+  useEffect(() => {
+    let running = true;
+    const poll = () => {
+      if (!running) return;
+      setSrc(`/api/studio/stream/snapshot?_t=${Date.now()}`);
+      setTimeout(poll, 100);
+    };
+    poll();
+    return () => { running = false; };
+  }, [role]);
+  return <img src={src} className="h-full w-full object-contain bg-black" alt="" />;
 }
 
 export function CameraHero({
@@ -29,13 +38,10 @@ export function CameraHero({
   onHeroChange,
   effectSourceId = "camera",
   smoothMode,
-  compositeMode,
-  presetIdx = 0,
 }: CameraHeroProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { detectionTier, detectionLayerVisible, enrichmentVisibility } = useDetections();
-  const heroTier = Math.max(detectionTier, 2) as DetectionTier; // hero always ≥ tier 2
-  const { liveFilterIdx, smoothFilterIdx, effectOverrides } = useGroundStudio();
+  const heroTier = Math.max(detectionTier, 2) as DetectionTier; // hero always >= tier 2
   const effectUrl = sourceUrl(effectSourceId);
   // Tell compositor to switch effect when source changes
   useEffect(() => { selectEffect(effectSourceId); }, [effectSourceId]);
@@ -73,51 +79,20 @@ export function CameraHero({
     else el.requestFullscreen();
   }, []);
 
-  // Convert filter indices to CSS strings for CompositeCanvas
-  const liveFilterCss = liveFilterIdx > 0 ? SOURCE_FILTERS[liveFilterIdx]?.css : undefined;
-  const smoothFilterCss = smoothFilterIdx > 0 ? SOURCE_FILTERS[smoothFilterIdx]?.css : undefined;
-
-  // Unified rendering: HLS overlay available in any mode
-  // Merge effectOverrides from context so toggle buttons (scanlines, vignette, etc.) work
-  const basePreset = compositeMode ? (PRESETS[presetIdx] ?? PRESETS[0]) : null;
-  const preset = basePreset && effectOverrides
-    ? { ...basePreset, effects: { ...basePreset.effects, ...effectOverrides } }
-    : basePreset;
-  const smoothSource = compositeMode && effectUrl ? effectUrl : undefined;
   const modeLabel = [
     heroRole,
-    preset?.name,
     smoothMode ? "HLS" : null,
     effectUrl ? effectSourceId : null,
   ].filter(Boolean).join(" · ");
 
-  if (compositeMode || smoothMode) {
+  if (smoothMode) {
     return (
       <div ref={containerRef} className="flex flex-col h-full w-full" onDoubleClick={handleDoubleClick}>
         <div className="relative flex-1 min-h-0">
-          {/* HLS layer — always rendered, visibility controlled via opacity to avoid
-              video element losing playback context from display:none toggling */}
-          <div
-            className={`absolute inset-0 z-0 transition-opacity duration-300 ${
-              smoothMode
-                ? compositeMode ? "opacity-30" : "opacity-100"
-                : "opacity-0 pointer-events-none"
-            }`}
-          >
-            <HlsPlayer enabled={smoothMode} />
+          {/* HLS layer — primary display */}
+          <div className="absolute inset-0 z-0">
+            <HlsPlayer enabled />
           </div>
-          {/* Composite canvas — on top of HLS when both active */}
-          {compositeMode && preset && (
-            <CompositeCanvas
-              role={heroRole}
-              preset={preset}
-              className={`h-full w-full bg-black object-cover ${smoothMode ? "relative z-10 mix-blend-screen" : ""}`}
-              liveSource={effectUrl}
-              smoothSource={smoothSource}
-              liveFilter={liveFilterCss}
-              smoothFilter={smoothFilterCss}
-            />
-          )}
           <DetectionOverlay
             containerRef={containerRef}
             cameraRole={heroRole}
@@ -125,7 +100,6 @@ export function CameraHero({
             tier={heroTier}
             visible={detectionLayerVisible}
             objectFit="cover"
-            activePreset={preset?.name}
             enrichmentVisibility={enrichmentVisibility}
           />
           <div className="absolute left-2 top-2 z-20 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-zinc-300">
@@ -176,7 +150,7 @@ export function CameraHero({
         </div>
         <SceneBadges />
       </div>
-      {/* Secondary camera strip — edge-to-edge at the bottom */}
+      {/* Secondary camera strip -- edge-to-edge at the bottom */}
       {secondaryCameras.length > 0 && (
         <SecondaryStrip cameras={secondaryCameras} onSelect={onHeroChange} />
       )}
@@ -230,12 +204,12 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
     if (!enabled) return;
     const video = videoRef.current;
     if (!video) return;
-    // Already initialized — don't re-create
+    // Already initialized -- don't re-create
     if (hlsRef.current) return;
 
     let destroyed = false;
 
-    // Start hidden until first frame is buffered — prevents initial black flash
+    // Start hidden until first frame is buffered -- prevents initial black flash
     video.style.opacity = "0";
     video.style.transition = "opacity 0.3s ease-in";
 
@@ -267,7 +241,7 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
         }
       });
       hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
-        // bufferStalledError is non-fatal — hls.js handles via internal nudge mechanism.
+        // bufferStalledError is non-fatal -- hls.js handles via internal nudge mechanism.
         // Calling recoverMediaError() here resets MediaSource and causes black-frame blink.
         if (data.details === "bufferStalledError") return;
         if (data.fatal) {
