@@ -1,0 +1,1 @@
+{"node_type":"dither","glsl_fragment":"dither.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"matrix_size":{"type":"float","default":1.0,"min":1.0,"max":8.0},"color_levels":{"type":"float","default":4.0,"min":2.0,"max":32.0},"monochrome":{"type":"float","default":0.0,"min":0.0,"max":1.0}},"temporal":false,"temporal_buffers":0}

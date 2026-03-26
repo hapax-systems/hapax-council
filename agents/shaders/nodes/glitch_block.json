@@ -1,0 +1,1 @@
+{"node_type":"glitch_block","glsl_fragment":"glitch_block.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"block_size":{"type":"float","default":16.0,"min":4.0,"max":64.0},"intensity":{"type":"float","default":0.4,"min":0.0,"max":1.0},"rgb_split":{"type":"float","default":0.6,"min":0.0,"max":1.0}},"temporal":false,"temporal_buffers":0}

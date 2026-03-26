@@ -1,0 +1,1 @@
+{"node_type":"edge_detect","glsl_fragment":"edge_detect.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"threshold":{"type":"float","default":0.1,"min":0.0,"max":1.0},"color_mode":{"type":"float","default":0.0,"min":0.0,"max":1.0},"width":{"type":"float","default":1920.0},"height":{"type":"float","default":1080.0}},"temporal":false,"temporal_buffers":0}

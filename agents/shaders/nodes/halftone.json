@@ -1,0 +1,1 @@
+{"node_type":"halftone","glsl_fragment":"halftone.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"dot_size":{"type":"float","default":6.0,"min":1.0,"max":20.0},"angle":{"type":"float","default":45.0,"min":0.0,"max":90.0},"color_mode":{"type":"float","default":0.0}},"temporal":false,"temporal_buffers":0}

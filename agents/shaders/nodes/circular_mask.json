@@ -1,0 +1,1 @@
+{"node_type":"circular_mask","glsl_fragment":"circular_mask.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"radius":{"type":"float","default":0.4,"min":0.0,"max":1.0},"softness":{"type":"float","default":0.05,"min":0.0,"max":0.5}},"temporal":false,"temporal_buffers":0}

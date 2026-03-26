@@ -1,0 +1,1 @@
+{"node_type":"thermal","glsl_fragment":"thermal.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"edge_glow":{"type":"float","default":0.3,"min":0.0,"max":1.0},"palette_shift":{"type":"float","default":0.0,"min":0.0,"max":1.0}},"temporal":false,"temporal_buffers":0}

@@ -1,0 +1,1 @@
+{"node_type":"invert","glsl_fragment":"invert.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"strength":{"type":"float","default":1.0,"min":0.0,"max":1.0}},"temporal":false,"temporal_buffers":0}

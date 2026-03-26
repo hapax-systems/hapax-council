@@ -1,0 +1,1 @@
+{"node_type":"sharpen","glsl_fragment":"sharpen.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"amount":{"type":"float","default":0.5,"min":0.0,"max":3.0},"radius":{"type":"float","default":1.0,"min":0.5,"max":5.0},"width":{"type":"float","default":1920.0},"height":{"type":"float","default":1080.0}},"temporal":false,"temporal_buffers":0}

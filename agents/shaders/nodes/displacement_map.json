@@ -1,0 +1,1 @@
+{"node_type":"displacement_map","glsl_fragment":"displacement_map.frag","inputs":{"a":"frame","b":"frame"},"outputs":{"out":"frame"},"params":{"strength_x":{"type":"float","default":0.5,"min":0.0,"max":5.0},"strength_y":{"type":"float","default":0.5,"min":0.0,"max":5.0}},"temporal":false,"temporal_buffers":0}

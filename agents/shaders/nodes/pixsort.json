@@ -1,0 +1,1 @@
+{"node_type":"pixsort","glsl_fragment":"pixsort.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"threshold":{"type":"float","default":0.3,"min":0.0,"max":1.0},"direction":{"type":"float","default":0.0},"segment_length":{"type":"float","default":100.0,"min":10.0,"max":500.0}},"temporal":false,"temporal_buffers":0}

@@ -1,0 +1,1 @@
+{"node_type":"chromatic_aberration","glsl_fragment":"chromatic_aberration.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"offset_x":{"type":"float","default":2.0,"min":-20.0,"max":20.0},"offset_y":{"type":"float","default":0.0,"min":-20.0,"max":20.0},"intensity":{"type":"float","default":1.0,"min":0.0,"max":5.0}},"temporal":false,"temporal_buffers":0}
