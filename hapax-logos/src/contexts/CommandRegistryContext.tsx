@@ -17,7 +17,7 @@ import { registerSplitCommands, type SplitState } from "../lib/commands/split";
 import { registerDataCommands } from "../lib/commands/data";
 import { registerBuiltinSequences } from "../lib/commands/sequences";
 import { connectCommandRelay } from "../lib/commandRelay";
-import { useTerrainDisplay, useTerrainActions, type RegionName, type Depth } from "./TerrainContext";
+import { useTerrainDisplay, useTerrainActions, type RegionName, type Depth, type InvestigationTab } from "./TerrainContext";
 
 const CommandRegistryCtx = createContext<CommandRegistry | null>(null);
 
@@ -144,6 +144,11 @@ export function CommandRegistryProvider({
         setCurrentPath: navigate,
         setManualOpen: () => onManualRef.current(),
         setPaletteOpen: () => onPaletteRef.current(),
+        openInvestigationTab: (tab: string) => {
+          overlayMirror.set({ active: "investigation" });
+          terrainActions.setOverlay("investigation");
+          terrainActions.setInvestigationTab(tab as InvestigationTab);
+        },
       },
     );
 

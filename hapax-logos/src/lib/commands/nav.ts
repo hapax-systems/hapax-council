@@ -12,7 +12,16 @@ export interface NavActions {
   setCurrentPath(path: string): void;
   setManualOpen(value: boolean): void;
   setPaletteOpen(value: boolean): void;
+  /** Open the investigation overlay with a specific tab. */
+  openInvestigationTab?(tab: string): void;
 }
+
+/** Paths that map to investigation overlay tabs rather than router navigation. */
+const INVESTIGATION_TAB_PATHS: Record<string, string> = {
+  "/chat": "chat",
+  "/insight": "insight",
+  "/demos": "demos",
+};
 
 // ─── Register ────────────────────────────────────────────────────────────────
 
@@ -23,7 +32,7 @@ export function registerNavCommands(
 ): void {
   registry.register({
     path: "nav.go",
-    description: "Navigate to a path",
+    description: "Navigate to a path (or open investigation tab for /chat, /insight)",
     args: {
       path: { type: "string", required: true },
     },
@@ -31,7 +40,12 @@ export function registerNavCommands(
       if (typeof args.path !== "string" || args.path.trim() === "") {
         return { ok: false, error: "Missing required arg: path" };
       }
-      actions.setCurrentPath(args.path);
+      const tab = INVESTIGATION_TAB_PATHS[args.path];
+      if (tab && actions.openInvestigationTab) {
+        actions.openInvestigationTab(tab);
+      } else {
+        actions.setCurrentPath(args.path);
+      }
       return { ok: true };
     },
   });

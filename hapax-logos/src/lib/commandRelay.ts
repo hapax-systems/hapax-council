@@ -12,12 +12,21 @@ export function connectCommandRelay(
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
+  let consecutiveFailures = 0;
 
   function connect() {
     if (disposed) return;
-    ws = new WebSocket(url);
+
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      // WebSocket constructor can throw if URL is invalid
+      scheduleReconnect();
+      return;
+    }
 
     ws.onopen = () => {
+      consecutiveFailures = 0;
       console.log("[logos relay] connected to backend");
     };
 
@@ -61,14 +70,28 @@ export function connectCommandRelay(
 
     ws.onclose = () => {
       if (!disposed) {
-        console.log("[logos relay] disconnected, reconnecting in 3s...");
-        reconnectTimer = setTimeout(connect, 3000);
+        scheduleReconnect();
       }
     };
 
     ws.onerror = () => {
+      // onclose will fire after onerror — let it handle reconnect
       ws?.close();
     };
+  }
+
+  function scheduleReconnect() {
+    consecutiveFailures++;
+    // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
+    const delay = Math.min(1000 * Math.pow(2, consecutiveFailures - 1), 30000);
+    // Only log on first failure and then every 5th to avoid console spam
+    if (consecutiveFailures === 1 || consecutiveFailures % 5 === 0) {
+      console.log(
+        `[logos relay] disconnected, reconnecting in ${(delay / 1000).toFixed(0)}s` +
+          (consecutiveFailures > 1 ? ` (attempt ${consecutiveFailures})` : ""),
+      );
+    }
+    reconnectTimer = setTimeout(connect, delay);
   }
 
   // Forward all events to backend for external subscribers
@@ -92,6 +115,11 @@ export function connectCommandRelay(
     disposed = true;
     unsub();
     if (reconnectTimer) clearTimeout(reconnectTimer);
-    ws?.close();
+    if (ws) {
+      // Clean close — no reconnect attempt
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.close();
+    }
   };
 }

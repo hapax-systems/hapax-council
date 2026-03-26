@@ -295,6 +295,31 @@ describe("nav domain commands", () => {
     state.currentPath = "/studio";
     expect(registry.query("nav.currentPath")).toBe("/studio");
   });
+
+  it("nav.go routes /chat to investigation tab when handler provided", async () => {
+    const tabOpened = { tab: "" };
+    actions.openInvestigationTab = (tab) => { tabOpened.tab = tab; };
+    const result = await registry.execute("nav.go", { path: "/chat" });
+    expect(result.ok).toBe(true);
+    expect(tabOpened.tab).toBe("chat");
+    // Should NOT have changed currentPath via navigate
+    expect(state.currentPath).toBe("/");
+  });
+
+  it("nav.go routes /insight to investigation tab when handler provided", async () => {
+    const tabOpened = { tab: "" };
+    actions.openInvestigationTab = (tab) => { tabOpened.tab = tab; };
+    const result = await registry.execute("nav.go", { path: "/insight" });
+    expect(result.ok).toBe(true);
+    expect(tabOpened.tab).toBe("insight");
+  });
+
+  it("nav.go falls through to navigate for unknown paths", async () => {
+    actions.openInvestigationTab = () => { throw new Error("should not be called"); };
+    const result = await registry.execute("nav.go", { path: "/settings" });
+    expect(result.ok).toBe(true);
+    expect(state.currentPath).toBe("/settings");
+  });
 });
 
 // ─── Split ───────────────────────────────────────────────────────────────────
