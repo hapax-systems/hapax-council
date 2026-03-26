@@ -338,6 +338,7 @@ class ConversationPipeline:
         self._goals_fn: Callable[[], str] | None = None
         self._health_fn: Callable[[], str] | None = None
         self._nudges_fn: Callable[[], str] | None = None
+        self._dmn_fn: Callable[[], str] | None = None
         self._screen_capturer = screen_capturer
         self._echo_canceller = echo_canceller
         self._bridge_engine = bridge_engine
@@ -554,11 +555,12 @@ class ConversationPipeline:
         elif hasattr(self, "_frozen_env") and self._frozen_env:
             updated += "\n\n## Current Environment\n" + self._frozen_env
 
-        # Voice context enrichment: goals, health, nudges
+        # Voice context enrichment: goals, health, nudges, DMN
         for label, fn in [
             ("goals", self._goals_fn),
             ("health", self._health_fn),
             ("nudges", self._nudges_fn),
+            ("dmn", self._dmn_fn),
         ]:
             if fn is not None and not _lockdown:
                 try:

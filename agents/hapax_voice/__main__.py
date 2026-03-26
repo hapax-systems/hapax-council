@@ -932,6 +932,7 @@ class VoiceDaemon:
         )
 
         from agents.hapax_voice.context_enrichment import (
+            render_dmn,
             render_goals,
             render_health,
             render_nudges,
@@ -940,6 +941,7 @@ class VoiceDaemon:
         self._goals_fn = render_goals
         self._health_fn = render_health
         self._nudges_fn = render_nudges
+        self._dmn_fn = render_dmn
 
         log.info("Pipeline dependencies precomputed")
 
@@ -1109,6 +1111,7 @@ class VoiceDaemon:
         self._conversation_pipeline._goals_fn = self._goals_fn
         self._conversation_pipeline._health_fn = self._health_fn
         self._conversation_pipeline._nudges_fn = self._nudges_fn
+        self._conversation_pipeline._dmn_fn = self._dmn_fn
 
         # Wire salience router and context distillation into pipeline
         if self._salience_router is not None:

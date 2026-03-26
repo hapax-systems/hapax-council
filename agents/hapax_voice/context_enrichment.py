@@ -1,6 +1,6 @@
-"""Voice context enrichment — goals, health, and nudges for the VOLATILE band.
+"""Voice context enrichment — goals, health, nudges, and DMN for the VOLATILE band.
 
-Provides three render functions that return natural-language sections
+Provides render functions that return natural-language sections
 for injection into the voice daemon's per-turn system context.
 Each returns empty string when there's nothing to surface.
 """
@@ -93,4 +93,26 @@ def render_nudges() -> str:
         return "\n".join(lines)
     except Exception:
         log.debug("render_nudges failed (non-fatal)", exc_info=True)
+        return ""
+
+
+def render_dmn() -> str:
+    """DMN buffer — continuous background situational awareness.
+
+    Reads the DMN daemon's accumulated observations from /dev/shm.
+    Returns the U-curve-formatted buffer for injection into the VOLATILE band.
+    Empty string when DMN daemon is not running.
+    """
+    try:
+        from pathlib import Path
+
+        path = Path("/dev/shm/hapax-dmn/buffer.txt")
+        if not path.exists():
+            return ""
+        text = path.read_text(encoding="utf-8").strip()
+        if not text or text == "":
+            return ""
+        return f"## Background Awareness (DMN)\n{text}"
+    except Exception:
+        log.debug("render_dmn failed (non-fatal)", exc_info=True)
         return ""
