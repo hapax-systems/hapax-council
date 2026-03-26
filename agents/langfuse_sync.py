@@ -813,6 +813,19 @@ def run_full_sync() -> None:
     _save_state(state)
     _write_profile_facts(state)
 
+    # Sensor protocol — write state + impingement
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state(
+        "langfuse",
+        {
+            "total_traces": state.total_traces_synced,
+            "models_seen": len(state.models_seen),
+            "last_sync": time.time(),
+        },
+    )
+    emit_sensor_impingement("langfuse", "work_patterns", ["trace_sync"])
+
     total_cost = sum(state.daily_costs.values())
     msg = (
         f"Langfuse sync: {state.stats.get('traces_fetched', 0)} traces, "
@@ -838,7 +851,21 @@ def run_auto() -> None:
     _save_state(state)
     _write_profile_facts(state)
 
+    # Sensor protocol — write state + impingement on changes
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state(
+        "langfuse",
+        {
+            "total_traces": state.total_traces_synced,
+            "models_seen": len(state.models_seen),
+            "last_sync": time.time(),
+        },
+    )
     traces_fetched = state.stats.get("traces_fetched", 0)
+    if traces_fetched > 0:
+        emit_sensor_impingement("langfuse", "work_patterns", ["trace_sync"])
+
     if traces_fetched > 0:
         total_cost = sum(state.daily_costs.values())
         msg = (

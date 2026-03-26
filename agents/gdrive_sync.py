@@ -824,6 +824,12 @@ def run_full_scan() -> None:
     _save_state(state)
     _write_profile_facts(state)
 
+    # Sensor protocol — write state + impingement
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state("gdrive", {"file_count": len(state.files), "last_sync": time.time()})
+    emit_sensor_impingement("gdrive", "information_seeking", ["full_scan"])
+
     msg = f"Full scan: {count} files found, {synced} synced, {errors} errors"
     log.info(msg)
     send_notification("GDrive Sync", msg, tags=["cloud"])
@@ -858,6 +864,13 @@ def run_auto() -> None:
 
     _save_state(state)
     _write_profile_facts(state)
+
+    # Sensor protocol — write state + impingement on changes
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state("gdrive", {"file_count": len(state.files), "last_sync": time.time()})
+    if synced:
+        emit_sensor_impingement("gdrive", "information_seeking", ["incremental_sync"])
 
     if synced or errors:
         msg = f"Sync: {synced} updated, {errors} errors (of {len(changed_ids)} changes)"

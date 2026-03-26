@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax DMN — always-on cognitive substrate
+After=hapax-secrets.service ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.dmn
+WorkingDirectory=/home/hapax/projects/hapax-council
+Restart=on-failure
+RestartSec=10
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin
+MemoryMax=2G
+
+[Install]
+WantedBy=default.target

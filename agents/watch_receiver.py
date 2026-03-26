@@ -308,6 +308,21 @@ def create_app() -> FastAPI:
                 log.warning(
                     "Unknown sensor type: %s from device %s", reading.type, payload.device_id
                 )
+        # Sensor protocol — write state + impingement for biometrics
+        from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+        sensor_types = [r.type for r in payload.readings]
+        write_sensor_state(
+            "watch",
+            {
+                "device": payload.device_id,
+                "reading_count": len(payload.readings),
+                "sensor_types": list(set(sensor_types)),
+                "last_sync": time.time(),
+            },
+        )
+        if payload.readings:
+            emit_sensor_impingement("watch", "energy_and_attention", list(set(sensor_types)))
         return {"status": "ok", "readings_processed": str(len(payload.readings))}
 
     @_app.get("/watch/status")

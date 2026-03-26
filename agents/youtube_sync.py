@@ -558,6 +558,20 @@ def run_full_sync() -> None:
     _write_youtube_files(state)
     _write_profile_facts(state)
 
+    # Sensor protocol — write state + impingement
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state(
+        "youtube",
+        {
+            "liked_videos": len(state.liked_videos),
+            "subscriptions": len(state.subscriptions),
+            "last_sync": time.time(),
+        },
+    )
+    if summary["new_likes"] or summary["sub_changes"]:
+        emit_sensor_impingement("youtube", "information_seeking", ["youtube_sync"])
+
     msg = (
         f"YouTube sync: {len(state.liked_videos)} likes "
         f"({summary['new_likes']} new), "

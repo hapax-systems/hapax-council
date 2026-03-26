@@ -533,6 +533,19 @@ def run_full_sync() -> None:
     _save_state(state)
     _write_profile_facts(state)
 
+    # Sensor protocol — write state + impingement
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state(
+        "claude_code",
+        {
+            "sessions": len(state.sessions),
+            "projects": summary["projects"],
+            "last_sync": time.time(),
+        },
+    )
+    emit_sensor_impingement("claude_code", "work_patterns", ["transcript_sync"])
+
     msg = (
         f"Claude Code sync: {summary['projects']} projects, "
         f"{summary['processed']}/{summary['files']} files, "
@@ -550,6 +563,20 @@ def run_auto() -> None:
     summary = _incremental_sync(state)
     _save_state(state)
     _write_profile_facts(state)
+
+    # Sensor protocol — write state + impingement on changes
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state(
+        "claude_code",
+        {
+            "sessions": len(state.sessions),
+            "projects": summary["projects"],
+            "last_sync": time.time(),
+        },
+    )
+    if summary["processed"] > 0:
+        emit_sensor_impingement("claude_code", "work_patterns", ["transcript_sync"])
 
     if summary["processed"] > 0:
         msg = (

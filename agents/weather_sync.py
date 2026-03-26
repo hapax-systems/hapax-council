@@ -151,6 +151,23 @@ def sync() -> bool:
     if data is None:
         return False
     path = write_weather_doc(data)
+    if path is not None:
+        # Sensor protocol — write state + impingement
+        import time
+
+        from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+        current = data.get("current", {})
+        write_sensor_state(
+            "weather",
+            {
+                "temperature_f": current.get("temperature_2m"),
+                "humidity_pct": current.get("relative_humidity_2m"),
+                "pressure_hpa": current.get("surface_pressure"),
+                "last_sync": time.time(),
+            },
+        )
+        emit_sensor_impingement("weather", "temporal", ["weather_sync"])
     return path is not None
 
 

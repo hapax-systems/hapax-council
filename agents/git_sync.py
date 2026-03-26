@@ -593,6 +593,15 @@ def run_full_sync() -> None:
     _save_state(state)
     _write_profile_facts(state)
 
+    # Sensor protocol — write state + impingement
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state(
+        "git", {"total_commits": total, "repos_synced": len(results), "last_sync": time.time()}
+    )
+    if total > 0:
+        emit_sensor_impingement("git", "work_patterns", ["commit_sync"])
+
     per_repo = ", ".join(f"{name}={count}" for name, count in sorted(results.items()) if count > 0)
     msg = f"Git sync (full): {total} commits across {len(results)} repos. {per_repo}"
     log.info(msg)
@@ -621,6 +630,15 @@ def run_auto() -> None:
 
     _save_state(state)
     _write_profile_facts(state)
+
+    # Sensor protocol — write state + impingement on changes
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state(
+        "git", {"total_commits": total, "repos_synced": len(results), "last_sync": time.time()}
+    )
+    if total > 0:
+        emit_sensor_impingement("git", "work_patterns", ["commit_sync"])
 
     if total > 0:
         per_repo = ", ".join(

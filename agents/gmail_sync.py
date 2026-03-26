@@ -572,6 +572,13 @@ def run_full_sync() -> None:
     _save_state(state)
     _write_profile_facts(state)
 
+    # Sensor protocol — write state + impingement
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    unread = sum(1 for e in state.messages.values() if e.is_unread)
+    write_sensor_state("gmail", {"unread_count": unread, "last_sync": time.time()})
+    emit_sensor_impingement("gmail", "communication_patterns", ["email_sync"])
+
     msg = f"Gmail sync: {count} messages, {written} written to RAG"
     log.info(msg)
     send_notification("Gmail Sync", msg, tags=["gmail"])
@@ -599,6 +606,14 @@ def run_auto() -> None:
     written = _write_recent_emails(state)
     _save_state(state)
     _write_profile_facts(state)
+
+    # Sensor protocol — write state + impingement on changes
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    unread = sum(1 for e in state.messages.values() if e.is_unread)
+    write_sensor_state("gmail", {"unread_count": unread, "last_sync": time.time()})
+    if changed_ids:
+        emit_sensor_impingement("gmail", "communication_patterns", ["email_sync"])
 
     if changed_ids:
         msg = f"Gmail: {len(changed_ids)} changes, {written} emails in RAG"

@@ -586,6 +586,13 @@ def run_full_sync() -> None:
     _save_state(state)
     _write_profile_facts(state)
 
+    # Sensor protocol — write state + impingement
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state("obsidian", {"note_count": len(state.notes), "last_sync": time.time()})
+    if written or deleted:
+        emit_sensor_impingement("obsidian", "information_seeking", ["vault_sync"])
+
     msg = f"Obsidian sync: {len(state.notes)} notes, {written} written, {deleted} deleted"
     log.info(msg)
     send_notification("Obsidian Sync", msg, tags=["obsidian"])
@@ -605,6 +612,13 @@ def run_auto() -> None:
     written, deleted = _incremental_sync(state=state)
     _save_state(state)
     _write_profile_facts(state)
+
+    # Sensor protocol — write state + impingement on changes
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state("obsidian", {"note_count": len(state.notes), "last_sync": time.time()})
+    if written or deleted:
+        emit_sensor_impingement("obsidian", "information_seeking", ["vault_sync"])
 
     if written or deleted:
         msg = f"Obsidian sync: {written} written, {deleted} deleted ({len(state.notes)} total)"
