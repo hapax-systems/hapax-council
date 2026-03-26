@@ -464,7 +464,7 @@ export function CompositeCanvas({
       // Main draw alpha: enough presence per frame without overwhelming fade.
       // "difference" needs moderate alpha — too high saturates to a persistent bright ghost.
       const mainAlpha = trail.blendMode === "lighter"
-        ? 0.08 + (trail.opacity * 0.12) / Math.sqrt(Math.max(trail.count, 1))
+        ? 0.02 + (trail.opacity * 0.04) / Math.sqrt(Math.max(trail.count, 1))
         : trail.blendMode === "difference"
           ? 0.15 + trail.opacity * 0.25
           : trail.blendMode === "multiply"
