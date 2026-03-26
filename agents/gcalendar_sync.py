@@ -478,6 +478,60 @@ def _write_profile_facts(state: CalendarSyncState) -> None:
     log.info("Wrote %d profile facts to %s", len(facts), PROFILE_FACTS_FILE)
 
 
+# ── Sensor Protocol ──────────────────────────────────────────────────────────
+
+
+def _parse_event_dt(e: CalendarEvent) -> datetime | None:
+    """Parse event start to datetime."""
+    try:
+        if e.all_day:
+            return datetime.fromisoformat(e.start + "T00:00:00+00:00")
+        return datetime.fromisoformat(e.start.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _find_next_event(state: CalendarSyncState, now: datetime) -> dict | None:
+    """Find the next upcoming event."""
+    best: tuple[datetime, CalendarEvent] | None = None
+    for e in state.events.values():
+        if e.status == "cancelled":
+            continue
+        dt = _parse_event_dt(e)
+        if dt is None or dt <= now:
+            continue
+        if best is None or dt < best[0]:
+            best = (dt, e)
+    if best is None:
+        return None
+    return {
+        "summary": best[1].summary,
+        "start": best[1].start,
+        "minutes_until": int((best[0] - now).total_seconds() / 60),
+    }
+
+
+def _write_sensor_snapshot(state: CalendarSyncState) -> None:
+    """Write calendar summary to /dev/shm for DMN consumption."""
+    from shared.sensor_protocol import write_sensor_state
+
+    now = datetime.now(UTC)
+    upcoming = sum(
+        1
+        for e in state.events.values()
+        if e.status != "cancelled" and (dt := _parse_event_dt(e)) is not None and dt > now
+    )
+    write_sensor_state(
+        "gcalendar",
+        {
+            "total_events": len(state.events),
+            "upcoming": upcoming,
+            "next_event": _find_next_event(state, now),
+            "last_sync": state.last_sync,
+        },
+    )
+
+
 # ── Stats ────────────────────────────────────────────────────────────────────
 
 
@@ -535,6 +589,11 @@ def run_full_sync() -> None:
     written = _write_upcoming_events(state)
     _save_state(state)
     _write_profile_facts(state)
+    _write_sensor_snapshot(state)
+
+    from shared.sensor_protocol import emit_sensor_impingement
+
+    emit_sensor_impingement("gcalendar", "work_patterns", ["full_sync"], strength=0.3)
 
     msg = f"Calendar sync: {count} events, {written} written to RAG"
     log.info(msg)
@@ -557,8 +616,12 @@ def run_auto() -> None:
     written = _write_upcoming_events(state)
     _save_state(state)
     _write_profile_facts(state)
+    _write_sensor_snapshot(state)
 
     if changed_ids:
+        from shared.sensor_protocol import emit_sensor_impingement
+
+        emit_sensor_impingement("gcalendar", "work_patterns", ["event_changes"], strength=0.3)
         msg = f"Calendar: {len(changed_ids)} changes, {written} events in RAG"
         log.info(msg)
         send_notification("GCalendar Sync", msg, tags=["calendar"])

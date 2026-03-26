@@ -99,6 +99,17 @@ def sync() -> bool:
         state["last_stance"] = current_stance
         log.info("Stimmung transition: %s → %s", last_stance, current_stance)
 
+    # Write atomic state to /dev/shm for DMN consumption
+    from shared.sensor_protocol import emit_sensor_impingement, write_sensor_state
+
+    write_sensor_state("stimmung", reading)
+
+    # Emit impingement on stance change
+    if current_stance != last_stance:
+        changed = ["overall_stance"]
+        changed.extend(dim for dim in DIMENSION_NAMES if reading.get(dim, 0.0) > 0.5)
+        emit_sensor_impingement("stimmung", "energy_and_attention", changed)
+
     # Write daily summary
     day_readings = [r for r in state["readings"] if r["timestamp"].startswith(today)]
     day_transitions = [t for t in state.get("transitions", []) if t["timestamp"].startswith(today)]

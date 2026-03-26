@@ -483,6 +483,25 @@ def _write_profile_facts(state: ChromeSyncState) -> None:
     log.info("Wrote %d profile facts to %s", len(facts), PROFILE_FACTS_FILE)
 
 
+# ── Sensor Protocol ──────────────────────────────────────────────────────
+
+
+def _write_sensor_snapshot(state: ChromeSyncState) -> None:
+    """Write browsing summary to /dev/shm for DMN consumption."""
+    from shared.sensor_protocol import write_sensor_state
+
+    sorted_domains = sorted(state.domains.items(), key=lambda x: x[1], reverse=True)
+    write_sensor_state(
+        "chrome",
+        {
+            "tracked_domains": len(state.domains),
+            "total_visits": sum(state.domains.values()),
+            "top_domains": [d for d, _ in sorted_domains[:5]],
+            "last_sync": state.last_sync,
+        },
+    )
+
+
 # ── Stats ────────────────────────────────────────────────────────────────────
 
 
@@ -516,6 +535,11 @@ def run_full_sync() -> None:
     domains_written, bookmarks_updated = _full_sync(state)
     _save_state(state)
     _write_profile_facts(state)
+    _write_sensor_snapshot(state)
+
+    from shared.sensor_protocol import emit_sensor_impingement
+
+    emit_sensor_impingement("chrome", "information_seeking", ["full_sync"], strength=0.3)
 
     msg = (
         f"Chrome sync: {len(state.domains)} domains tracked, "
@@ -540,8 +564,12 @@ def run_auto() -> None:
     domains_written, bookmarks_updated = _incremental_sync(state)
     _save_state(state)
     _write_profile_facts(state)
+    _write_sensor_snapshot(state)
 
     if domains_written or bookmarks_updated:
+        from shared.sensor_protocol import emit_sensor_impingement
+
+        emit_sensor_impingement("chrome", "information_seeking", ["browsing_update"], strength=0.3)
         msg = (
             f"Chrome: {domains_written} domains updated, "
             f"bookmarks {'updated' if bookmarks_updated else 'unchanged'}"
