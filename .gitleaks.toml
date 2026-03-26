@@ -37,6 +37,7 @@ paths = [
   '''tests/''',
   '''agents/''',
   '''docs/superpowers/''',
+  '''skills/''',
 ]
 
 [[rules]]
