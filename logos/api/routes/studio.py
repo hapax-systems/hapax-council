@@ -12,12 +12,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
 from logos.api.cache import cache
+
+# --- Effect Node Graph: module-level references (set by compositor) ---
+_graph_runtime: Any = None
+_shader_registry: Any = None
+
+
+def set_graph_runtime(runtime: Any) -> None:
+    global _graph_runtime
+    _graph_runtime = runtime
+
+
+def set_shader_registry(registry: Any) -> None:
+    global _shader_registry
+    _shader_registry = registry
+
 
 router = APIRouter(prefix="/api", tags=["studio"])
 
@@ -608,3 +623,198 @@ async def correct_activity(req: ActivityCorrectionRequest):
         return {"status": "corrected", "label": req.label}
     except OSError:
         return JSONResponse({"error": "write failed"}, status_code=503)
+
+
+# ---------------------------------------------------------------------------
+# Effect Node Graph API
+# ---------------------------------------------------------------------------
+
+import json as _json_mod
+
+_BUILTIN_PRESETS_DIR = Path(__file__).parent.parent.parent.parent / "presets"
+_USER_PRESETS_DIR = Path.home() / ".config" / "hapax" / "effect-presets"
+
+
+def _load_preset(name: str) -> Any:
+    from agents.effect_graph.types import EffectGraph
+
+    for dir_ in (_USER_PRESETS_DIR, _BUILTIN_PRESETS_DIR):
+        path = dir_ / f"{name}.json"
+        if path.is_file():
+            raw = _json_mod.loads(path.read_text())
+            return EffectGraph(**raw)
+    return None
+
+
+@router.get("/studio/effect/graph")
+async def get_effect_graph():
+    if _graph_runtime is None:
+        return {"graph": None}
+    return _graph_runtime.get_graph_state()
+
+
+@router.put("/studio/effect/graph")
+async def replace_effect_graph(request: dict[str, Any]):
+    from agents.effect_graph.types import EffectGraph
+
+    if _graph_runtime is None:
+        raise HTTPException(503, "Compositor not available")
+    try:
+        graph = EffectGraph(**request)
+        _graph_runtime.load_graph(graph)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "ok", "name": graph.name}
+
+
+@router.patch("/studio/effect/graph")
+async def patch_effect_graph(request: dict[str, Any]):
+    from agents.effect_graph.types import GraphPatch
+
+    if _graph_runtime is None:
+        raise HTTPException(503, "Compositor not available")
+    try:
+        patch = GraphPatch(**request)
+        _graph_runtime.apply_patch(patch)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "ok"}
+
+
+@router.patch("/studio/effect/graph/node/{node_id}/params")
+async def patch_node_params(node_id: str, params: dict[str, Any]):
+    if _graph_runtime is None:
+        raise HTTPException(503, "Compositor not available")
+    _graph_runtime.patch_node_params(node_id, params)
+    return {"status": "ok"}
+
+
+@router.delete("/studio/effect/graph/node/{node_id}")
+async def remove_graph_node(node_id: str):
+    if _graph_runtime is None:
+        raise HTTPException(503, "Compositor not available")
+    _graph_runtime.remove_node(node_id)
+    return {"status": "ok"}
+
+
+@router.patch("/studio/layer/{layer}/palette")
+async def set_layer_palette(layer: str, palette: dict[str, Any]):
+    from agents.effect_graph.types import LayerPalette
+
+    if layer not in ("live", "smooth", "hls"):
+        raise HTTPException(400, f"Invalid layer: {layer}")
+    if _graph_runtime is None:
+        raise HTTPException(503, "Compositor not available")
+    _graph_runtime.set_layer_palette(layer, LayerPalette(**palette))
+    return {"status": "ok"}
+
+
+@router.get("/studio/layer/status")
+async def get_layer_status():
+    palettes = {}
+    if _graph_runtime:
+        for layer in ("live", "smooth", "hls"):
+            palettes[layer] = _graph_runtime.get_layer_palette(layer).model_dump()
+    return {"layers": palettes}
+
+
+@router.put("/studio/effect/graph/modulations")
+async def replace_modulations(bindings: list[dict[str, Any]]):
+    from agents.effect_graph.types import ModulationBinding
+
+    if _graph_runtime is None:
+        raise HTTPException(503, "Compositor not available")
+    _graph_runtime.modulator.replace_all([ModulationBinding(**b) for b in bindings])
+    return {"status": "ok"}
+
+
+@router.get("/studio/effect/graph/modulations")
+async def get_modulations():
+    if _graph_runtime is None:
+        return {"bindings": []}
+    return {"bindings": [b.model_dump() for b in _graph_runtime.modulator.bindings]}
+
+
+@router.get("/studio/presets")
+async def list_presets():
+    seen: set[str] = set()
+    result = []
+    for dir_ in (_USER_PRESETS_DIR, _BUILTIN_PRESETS_DIR):
+        if not dir_.is_dir():
+            continue
+        for path in sorted(dir_.glob("*.json")):
+            name = path.stem
+            if name in seen:
+                continue
+            seen.add(name)
+            try:
+                raw = _json_mod.loads(path.read_text())
+                result.append(
+                    {
+                        "name": name,
+                        "display_name": raw.get("name", name),
+                        "description": raw.get("description", ""),
+                    }
+                )
+            except Exception:
+                pass
+    return {"presets": result}
+
+
+@router.get("/studio/presets/{name}")
+async def get_preset(name: str):
+    preset = _load_preset(name)
+    if preset is None:
+        raise HTTPException(404, f"Preset not found: {name}")
+    return preset.model_dump()
+
+
+@router.put("/studio/presets/{name}")
+async def save_preset(name: str, graph: dict[str, Any]):
+    from agents.effect_graph.types import EffectGraph
+
+    _USER_PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _USER_PRESETS_DIR / f"{name}.json"
+    g = EffectGraph(**graph)
+    path.write_text(_json_mod.dumps(g.model_dump(), indent=2))
+    return {"status": "ok"}
+
+
+@router.delete("/studio/presets/{name}")
+async def delete_preset(name: str):
+    path = _USER_PRESETS_DIR / f"{name}.json"
+    if path.is_file():
+        path.unlink()
+        return {"status": "ok"}
+    raise HTTPException(404, f"Preset not found: {name}")
+
+
+@router.post("/studio/presets/{name}/activate")
+async def activate_preset(name: str):
+    preset = _load_preset(name)
+    if preset is None:
+        raise HTTPException(404, f"Preset not found: {name}")
+    if _graph_runtime is None:
+        raise HTTPException(503, "Compositor not available")
+    try:
+        _graph_runtime.load_graph(preset)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "ok", "name": preset.name}
+
+
+@router.get("/studio/effect/nodes")
+async def list_node_types():
+    if _shader_registry is None:
+        return {"nodes": {}}
+    return {"nodes": _shader_registry.all_schemas()}
+
+
+@router.get("/studio/effect/nodes/{node_type}")
+async def get_node_type(node_type: str):
+    if _shader_registry is None:
+        raise HTTPException(503, "Registry not available")
+    schema = _shader_registry.schema(node_type)
+    if schema is None:
+        raise HTTPException(404, f"Unknown node type: {node_type}")
+    return schema
