@@ -324,6 +324,8 @@ class OverlayData(BaseModel):
     mixer_mid: float = 0.0
     mixer_high: float = 0.0
     mixer_active: bool = False
+    beat_position: float = 0.0
+    bar_position: float = 0.0
 
 
 class OverlayState:

@@ -414,6 +414,9 @@ def write_perception_state(
             "mixer_mid": _safe_float(_bval("mixer_mid", 0.0)),
             "mixer_high": _safe_float(_bval("mixer_high", 0.0)),
             "mixer_active": bool(_bval("mixer_active", False)),
+            # MIDI clock (beat/bar position for visual sync)
+            "beat_position": _safe_float(_bval("beat_position", 0.0)),
+            "bar_position": _safe_float(_bval("bar_position", 0.0)),
             # Overhead hand tracking (zone-based)
             "overhead_hand_zones": str(_bval("overhead_hand_zones", "")),
             "detected_action": str(_bval("detected_action", "")),
