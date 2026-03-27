@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pipecat.frames.frames import TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame
 
-from agents.hapax_voice.pipecat_tts import KokoroTTSService
-from agents.hapax_voice.tts import KOKORO_SAMPLE_RATE
+from agents.hapax_voice.pipecat_tts import VoxtralTTSService
+from agents.hapax_voice.tts import VOXTRAL_SAMPLE_RATE
 
 
 @pytest.fixture
@@ -18,26 +18,26 @@ def mock_tts_manager() -> MagicMock:
     return mgr
 
 
-class TestKokoroTTSServiceInit:
+class TestVoxtralTTSServiceInit:
     def test_default_sample_rate(self) -> None:
         with patch("agents.hapax_voice.pipecat_tts.TTSManager"):
-            svc = KokoroTTSService()
-        assert svc._init_sample_rate == KOKORO_SAMPLE_RATE
+            svc = VoxtralTTSService()
+        assert svc._init_sample_rate == VOXTRAL_SAMPLE_RATE
 
     def test_custom_voice(self) -> None:
         mgr = MagicMock()
-        svc = KokoroTTSService(kokoro_voice="bf_emma", tts_manager=mgr)
+        svc = VoxtralTTSService(voice_id="bf_emma", tts_manager=mgr)
         assert svc._tts_manager is mgr
 
     def test_uses_provided_tts_manager(self, mock_tts_manager: MagicMock) -> None:
-        svc = KokoroTTSService(tts_manager=mock_tts_manager)
+        svc = VoxtralTTSService(tts_manager=mock_tts_manager)
         assert svc._tts_manager is mock_tts_manager
 
 
-class TestKokoroTTSServiceRunTTS:
+class TestVoxtralTTSServiceRunTTS:
     @pytest.mark.asyncio
     async def test_yields_started_audio_stopped(self, mock_tts_manager: MagicMock) -> None:
-        svc = KokoroTTSService(tts_manager=mock_tts_manager)
+        svc = VoxtralTTSService(tts_manager=mock_tts_manager)
 
         frames = []
         async for frame in svc.run_tts("hello world", "ctx-1"):
@@ -49,7 +49,7 @@ class TestKokoroTTSServiceRunTTS:
 
         audio_frames = [f for f in frames if isinstance(f, TTSAudioRawFrame)]
         assert len(audio_frames) >= 1
-        assert audio_frames[0].sample_rate == KOKORO_SAMPLE_RATE
+        assert audio_frames[0].sample_rate == VOXTRAL_SAMPLE_RATE
         assert audio_frames[0].num_channels == 1
 
     @pytest.mark.asyncio
@@ -57,7 +57,7 @@ class TestKokoroTTSServiceRunTTS:
         mgr = MagicMock()
         mgr.synthesize.return_value = b""
 
-        svc = KokoroTTSService(tts_manager=mgr)
+        svc = VoxtralTTSService(tts_manager=mgr)
 
         frames = []
         async for frame in svc.run_tts("", "ctx-2"):
@@ -74,7 +74,7 @@ class TestKokoroTTSServiceRunTTS:
         mgr = MagicMock()
         mgr.synthesize.side_effect = RuntimeError("GPU OOM")
 
-        svc = KokoroTTSService(tts_manager=mgr)
+        svc = VoxtralTTSService(tts_manager=mgr)
 
         frames = []
         async for frame in svc.run_tts("fail", "ctx-3"):
@@ -90,9 +90,9 @@ class TestKokoroTTSServiceRunTTS:
         """Audio larger than 1 second should be split into chunks."""
         mgr = MagicMock()
         # 3 seconds of audio at 24kHz, 16-bit mono = 3 * 24000 * 2 = 144000 bytes
-        mgr.synthesize.return_value = b"\x00" * (KOKORO_SAMPLE_RATE * 2 * 3)
+        mgr.synthesize.return_value = b"\x00" * (VOXTRAL_SAMPLE_RATE * 2 * 3)
 
-        svc = KokoroTTSService(tts_manager=mgr)
+        svc = VoxtralTTSService(tts_manager=mgr)
 
         frames = []
         async for frame in svc.run_tts("long text", "ctx-4"):
@@ -103,5 +103,5 @@ class TestKokoroTTSServiceRunTTS:
 
     @pytest.mark.asyncio
     async def test_can_generate_metrics(self) -> None:
-        svc = KokoroTTSService(tts_manager=MagicMock())
+        svc = VoxtralTTSService(tts_manager=MagicMock())
         assert svc.can_generate_metrics() is True
