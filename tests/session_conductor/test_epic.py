@@ -68,8 +68,10 @@ def test_activates_on_pattern():
     state = _make_state(phase=None)
     rule = EpicRule(topology, state)
     event = _make_agent_event("research any loose ends before designing")
-    rule.on_post_tool_use(event)
+    resp = rule.on_post_tool_use(event)
     assert state.epic_phase == EpicPhase.RESEARCH
+    assert resp is not None
+    assert "EPIC PIPELINE ACTIVATED" in (resp.message or "")
 
 
 def test_transitions_to_design_on_convergence():
@@ -86,8 +88,10 @@ def test_transitions_to_design_on_convergence():
     )
     state.active_topics[slug] = topic
     rule = EpicRule(topology, state)
-    rule.check_phase_transition(state)
+    resp = rule._check_phase_transition(state)
     assert state.epic_phase == EpicPhase.DESIGN
+    assert resp is not None
+    assert "RESEARCH → DESIGN" in (resp.message or "")
 
 
 def test_transitions_to_design_gaps_on_write():
@@ -95,8 +99,11 @@ def test_transitions_to_design_gaps_on_write():
     state = _make_state(phase=EpicPhase.DESIGN)
     rule = EpicRule(topology, state)
     event = _make_write_event("/tmp/DESIGN.md", "# Design Document\n## Overview\n...")
-    rule.on_post_tool_use(event)
+    resp = rule.on_post_tool_use(event)
     assert state.epic_phase == EpicPhase.DESIGN_GAPS
+    assert resp is not None
+    assert "DESIGN → DESIGN_GAPS" in (resp.message or "")
+    assert state.design_doc_path == "/tmp/DESIGN.md"
 
 
 def test_gap_phases_capped():
@@ -105,8 +112,10 @@ def test_gap_phases_capped():
     state.gap_rounds = 2
     rule = EpicRule(topology, state)
     # After cap, should advance past gap phase
-    rule.check_phase_transition(state)
+    resp = rule._check_phase_transition(state)
     assert state.epic_phase == EpicPhase.PLANNING
+    assert resp is not None
+    assert "DESIGN_GAPS → PLANNING" in (resp.message or "")
 
 
 def test_transitions_to_implementation():

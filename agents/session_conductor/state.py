@@ -81,6 +81,8 @@ class SessionState:
     smoke_test_active: bool = False
     smoke_test_activated_at: datetime | None = None
     gap_rounds: int = 0
+    design_doc_path: str | None = None
+    plan_doc_path: str | None = None
 
     def save(self, path: Path) -> None:
         """Serialize state to JSON file."""
@@ -118,6 +120,8 @@ class SessionState:
                 self.smoke_test_activated_at.isoformat() if self.smoke_test_activated_at else None
             ),
             "gap_rounds": self.gap_rounds,
+            "design_doc_path": self.design_doc_path,
+            "plan_doc_path": self.plan_doc_path,
         }
         path.write_text(json.dumps(data, indent=2))
 
@@ -133,6 +137,8 @@ class SessionState:
             workstream_summary=data.get("workstream_summary", ""),
             smoke_test_active=data.get("smoke_test_active", False),
             gap_rounds=data.get("gap_rounds", 0),
+            design_doc_path=data.get("design_doc_path"),
+            plan_doc_path=data.get("plan_doc_path"),
         )
         smoke_ts = data.get("smoke_test_activated_at")
         state.smoke_test_activated_at = datetime.fromisoformat(smoke_ts) if smoke_ts else None

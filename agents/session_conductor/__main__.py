@@ -102,10 +102,12 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     def _handle_sigterm(signum: int, frame: object) -> None:
         log.info("Received signal %d — shutting down", signum)
-        # Write final relay status if relay rule exists
         for rule in registry._rules:
             if hasattr(rule, "write_final_status"):
                 rule.write_final_status()  # type: ignore[attr-defined]
+            if hasattr(rule, "write_completion"):
+                summary = state.workstream_summary or "Session ended"
+                rule.write_completion(summary)  # type: ignore[attr-defined]
         server.shutdown()
 
     signal.signal(signal.SIGTERM, _handle_sigterm)

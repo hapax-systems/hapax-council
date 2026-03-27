@@ -52,6 +52,8 @@ class SpawnRule(RuleBase):
         self._state = state
         self.spawns_dir = spawns_dir or DEFAULT_SPAWNS_DIR
         self.spawns_dir.mkdir(parents=True, exist_ok=True)
+        # Track which children we've already injected reunion for
+        self._reunited_children: set[str] = set()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -87,7 +89,7 @@ class SpawnRule(RuleBase):
         return manifest_path
 
     # ------------------------------------------------------------------
-    # Public API for child sessions
+    # Public API
     # ------------------------------------------------------------------
 
     def claim_pending_manifest(self, state: SessionState) -> dict[str, Any] | None:
@@ -124,6 +126,11 @@ class SpawnRule(RuleBase):
             data["claimed_at"] = now.isoformat()
             manifest_path.write_text(yaml.dump(data, default_flow_style=False))
             state.parent_session = data.get("parent_session")
+
+            # Load blocked patterns from parent
+            blocked = data.get("blocked_patterns", [])
+            state.in_flight_files.update(blocked)
+
             log.info("SpawnRule: claimed manifest %s", manifest_path.name)
             return data
 
@@ -133,6 +140,8 @@ class SpawnRule(RuleBase):
         """Scan for completed spawn manifests and return their result data."""
         completed = []
         for child in state.children:
+            if child.session_id in self._reunited_children:
+                continue
             try:
                 data: dict[str, Any] = yaml.safe_load(child.spawn_manifest.read_text()) or {}
             except (OSError, yaml.YAMLError):
@@ -141,6 +150,28 @@ class SpawnRule(RuleBase):
                 completed.append(data)
                 child.status = "completed"
         return completed
+
+    def write_completion(self, result: str) -> None:
+        """Write completion status to this child's claimed manifest.
+
+        Called by the conductor on SIGTERM when this session is a child.
+        """
+        if not self._state.parent_session:
+            return  # Not a child session
+
+        for manifest_path in self.spawns_dir.glob("*.yaml"):
+            try:
+                data: dict[str, Any] = yaml.safe_load(manifest_path.read_text()) or {}
+            except (OSError, yaml.YAMLError):
+                continue
+            if data.get("claimed_by") == self._state.session_id:
+                data["status"] = "completed"
+                data["result"] = result
+                data["completed_at"] = datetime.now().isoformat()
+                data["files_changed"] = sorted(self._state.in_flight_files)
+                manifest_path.write_text(yaml.dump(data, default_flow_style=False))
+                log.info("SpawnRule: wrote completion to manifest %s", manifest_path.name)
+                return
 
     # ------------------------------------------------------------------
     # RuleBase interface
@@ -163,18 +194,26 @@ class SpawnRule(RuleBase):
     def on_post_tool_use(self, event: HookEvent) -> HookResponse | None:
         # Detect spawn intent in user message and write manifest
         if event.user_message and detect_spawn_intent(event.user_message):
-            # Extract a minimal topic from the user message (first ~50 chars)
             topic = event.user_message[:50].strip().rstrip(".")
             log.info("SpawnRule: spawn intent detected — writing manifest")
             self._write_manifest(topic=topic, context=event.user_message)
 
-        # Check for completed children and inject their results
+        # Check for completed children and inject reunion results
         if self._state.children:
             completed = self.check_completed_children(self._state)
-            for result in completed:
-                log.info(
-                    "SpawnRule: child session %s completed, injecting results",
-                    result.get("child_id"),
-                )
+            if completed:
+                lines = ["=== CHILD SESSION COMPLETED ==="]
+                for result in completed:
+                    child_id = result.get("child_id", "unknown")
+                    self._reunited_children.add(child_id)
+                    topic = result.get("topic", "unknown")
+                    result_text = result.get("result", "(no result written)")
+                    files = result.get("files_changed", [])
+                    lines.append(f"\nChild: {child_id}")
+                    lines.append(f"Topic: {topic}")
+                    lines.append(f"Result: {result_text}")
+                    if files:
+                        lines.append(f"Files changed: {', '.join(files)}")
+                return HookResponse(action="allow", message="\n".join(lines))
 
         return None
