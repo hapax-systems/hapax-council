@@ -29,8 +29,8 @@ from pipecat.transports.local.audio import (
 )
 
 from agents.hapax_voice.persona import system_prompt
-from agents.hapax_voice.pipecat_tts import KokoroTTSService
-from agents.hapax_voice.tts import KOKORO_SAMPLE_RATE
+from agents.hapax_voice.pipecat_tts import VoxtralTTSService
+from agents.hapax_voice.tts import VOXTRAL_SAMPLE_RATE
 
 log = logging.getLogger(__name__)
 
@@ -40,13 +40,13 @@ INPUT_SAMPLE_RATE = 16000
 
 def _build_transport(
     input_rate: int = INPUT_SAMPLE_RATE,
-    output_rate: int = KOKORO_SAMPLE_RATE,
+    output_rate: int = VOXTRAL_SAMPLE_RATE,
 ) -> LocalAudioTransport:
     """Create a LocalAudioTransport configured for voice I/O.
 
     Args:
         input_rate: Mic capture sample rate in Hz. Default 16000.
-        output_rate: Speaker playback sample rate in Hz. Default 24000 (Kokoro).
+        output_rate: Speaker playback sample rate in Hz. Default 24000 (Voxtral).
 
     Returns:
         Configured LocalAudioTransport.
@@ -113,16 +113,16 @@ def _build_llm(model: str, prompt: str) -> OpenAILLMService:
     )
 
 
-def _build_tts(voice: str) -> KokoroTTSService:
-    """Create the custom Kokoro TTS service for Pipecat.
+def _build_tts(voice: str) -> VoxtralTTSService:
+    """Create the Voxtral TTS service for Pipecat.
 
     Args:
-        voice: Kokoro voice ID.
+        voice: Voxtral voice ID.
 
     Returns:
-        Configured KokoroTTSService.
+        Configured VoxtralTTSService.
     """
-    return KokoroTTSService(kokoro_voice=voice)
+    return VoxtralTTSService(voice_id=voice)
 
 
 def _build_context(prompt: str) -> LLMContext:
@@ -143,7 +143,7 @@ def build_pipeline_task(
     *,
     stt_model: str = "large-v3",
     llm_model: str = "claude-sonnet",
-    kokoro_voice: str = "af_heart",
+    voxtral_voice: str = "jessica",
     guest_mode: bool = False,
     config=None,
     webcam_capturer=None,
@@ -157,7 +157,7 @@ def build_pipeline_task(
     Args:
         stt_model: STT model name for WhisperSTTService.
         llm_model: LLM model alias for LiteLLM routing.
-        kokoro_voice: Kokoro voice ID for TTS.
+        voxtral_voice: Voxtral voice ID for TTS.
         guest_mode: Whether the session is in guest mode (limited access).
         config: Optional VoiceConfig for tool registration.
         webcam_capturer: Optional WebcamCapturer for analyze_scene tool.
@@ -172,7 +172,7 @@ def build_pipeline_task(
     transport = _build_transport()
     stt = _build_stt(stt_model)
     llm = _build_llm(llm_model, prompt)
-    tts = _build_tts(kokoro_voice)
+    tts = _build_tts(voxtral_voice)
 
     # Register tool handlers and get schemas for the LLM context
     from agents.hapax_voice.tools import get_tool_schemas, register_tool_handlers

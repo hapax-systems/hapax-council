@@ -78,7 +78,8 @@ class VoiceConfig(BaseModel):
     llm_model: str = "gemini-flash"
     gemini_model: str = "gemini-2.5-flash-preview-native-audio"
     local_stt_model: str = "distil-large-v3"
-    kokoro_voice: str = "af_heart"
+    voxtral_voice_id: str = "jessica"
+    voxtral_ref_audio: str = ""  # path to reference audio for voice cloning
 
     # Consent
     consent_debounce_s: float = 5.0  # sustained presence before triggering
