@@ -31,7 +31,7 @@ dependencies = [
     "hapax-sdlc @ git+https://github.com/ryanklee/hapax-constitution.git@cbdf204756fc6f0583d3056669e2c8643ca15d21",
     "openwakeword>=0.4.0",
     "litellm>=1.82.2",
-    "kokoro>=0.9.4",
+    "mistralai>=2.1.0",
     "python-toon>=0.1.3",
     "llmlingua>=0.2.2",
     "model2vec>=0.7.0",
@@ -56,12 +56,10 @@ sync-pipeline = [
 ]
 audio = [
     "faster-whisper>=1.1.0",
-    "kokoro>=0.9.0",
     "mediapipe>=0.10.0",
     "opencv-python-headless>=4.10.0",
     "panns-inference>=0.1.1",
     "pipecat-ai[silero,openai]>=0.0.50",
-    "piper-tts>=1.2.0",
     "pyannote-audio>=3.3.0",
     "pvporcupine>=4.0.0",
     "pyaudio>=0.2.14",
