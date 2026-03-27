@@ -3,8 +3,15 @@
 //! Spawns the visual surface on a dedicated thread with its own winit event loop.
 //! Communicates back to Tauri via events (frame stats, stance changes).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+
+static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(true);
+
+pub fn set_window_visible(visible: bool) {
+    WINDOW_VISIBLE.store(visible, Ordering::Relaxed);
+}
 use tauri::{AppHandle, Emitter, Runtime};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -87,6 +94,9 @@ impl<R: Runtime> VisualApp<R> {
         let Some(compositor) = &self.compositor else { return };
         let Some(postprocess) = &self.postprocess else { return };
         let Some(window) = &self.window else { return };
+
+        let should_be_visible = WINDOW_VISIBLE.load(Ordering::Relaxed);
+        window.set_visible(should_be_visible);
 
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();

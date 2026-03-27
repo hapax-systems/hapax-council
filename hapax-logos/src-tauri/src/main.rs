@@ -50,6 +50,7 @@ fn main() {
             visual::control::get_visual_surface_state,
             visual::control::set_visual_layer_param,
             visual::control::get_visual_surface_snapshot,
+            visual::control::toggle_visual_window,
             // Introspection: Hapax self-manipulation
             commands::introspect::navigate,
             commands::introspect::toggle_panel,
@@ -129,6 +130,8 @@ fn main() {
             } else {
                 log::info!("Visual surface disabled (HAPAX_NO_VISUAL=1)");
             }
+            // Spawn the HTTP frame server (GET /frame, GET /stats on :8053)
+            visual::http_server::start_frame_server();
             // Spawn the directive watcher (reads agent directives from shm)
             commands::directive_watcher::spawn_directive_watcher(app.handle().clone());
             // Spawn headless browser engine for agent web access

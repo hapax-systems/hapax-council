@@ -40,6 +40,9 @@ urlencoding = "2"
 # JPEG encoding for visual surface frames
 turbojpeg = "1"
 
+# HTTP frame server (visual surface)
+axum = "0.8"
+
 # Command relay (WebSocket server for external clients)
 tokio-tungstenite = "0.26"
 regex = "1"

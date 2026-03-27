@@ -134,3 +134,9 @@ pub fn get_visual_surface_snapshot() -> Result<Vec<u8>, String> {
     let path = "/dev/shm/hapax-visual/snapshot.jpg";
     std::fs::read(path).map_err(|e| format!("No visual snapshot: {}", e))
 }
+
+#[tauri::command]
+pub fn toggle_visual_window(visible: bool) -> bool {
+    super::bridge::set_window_visible(visible);
+    visible
+}
