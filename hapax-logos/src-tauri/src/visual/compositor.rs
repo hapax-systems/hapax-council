@@ -23,7 +23,7 @@ impl Default for CompositeUniforms {
             opacity_voronoi: 0.25,
             opacity_rd: 0.40,
             opacity_wave: 0.3,
-            opacity_physarum: 0.60,
+            opacity_physarum: 0.15,
             opacity_feedback: 0.20,
             _pad0: 0.0,
             _pad1: 0.0,

@@ -71,8 +71,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let wave_mod = 1.0 + wave_val * u.opacity_wave;
     color = color * clamp(wave_mod, 0.5, 1.5);
 
-    // L4: Physarum (additive blend)
-    let physarum_val = textureSample(tex_physarum, samp, uv).x;
+    // L4: Physarum (additive blend, clamped — trail values are unbounded R32Float)
+    let physarum_val = clamp(textureSample(tex_physarum, samp, uv).x, 0.0, 1.0);
     let physarum_color = vec3<f32>(physarum_val * 0.6, physarum_val * 0.8, physarum_val * 1.0);
     color = color + physarum_color * u.opacity_physarum;
 
@@ -80,5 +80,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let feedback = textureSample(tex_feedback, samp, uv).rgb;
     color = mix(color, blend_soft_light(color, feedback), u.opacity_feedback);
 
+    // DEBUG: gradient only — disable all other layers
     return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
