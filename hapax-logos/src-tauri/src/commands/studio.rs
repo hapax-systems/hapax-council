@@ -32,6 +32,8 @@ pub struct CompositorStatus {
     pub guest_present: bool,
     #[serde(default)]
     pub consent_phase: String,
+    #[serde(default)]
+    pub audio_energy_rms: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,6 +66,7 @@ pub fn get_studio() -> StudioSnapshot {
             consent_recording_allowed: false,
             guest_present: false,
             consent_phase: "solo".into(),
+            audio_energy_rms: 0.0,
         });
 
     StudioSnapshot {
@@ -168,6 +171,8 @@ pub struct PerceptionState {
     #[serde(default)]
     pub scene_type: String,
     #[serde(default)]
+    pub per_camera_scenes: HashMap<String, String>,
+    #[serde(default)]
     pub gaze_direction: String,
     #[serde(default)]
     pub hand_gesture: String,
@@ -184,9 +189,27 @@ pub struct PerceptionState {
     #[serde(default)]
     pub color_temperature: String,
     #[serde(default)]
+    pub audio_scene: String,
+    #[serde(default)]
     pub posture: String,
     #[serde(default)]
     pub detected_action: String,
+    // Contact mic (desk vibration sensing)
+    #[serde(default)]
+    pub desk_activity: String,
+    #[serde(default)]
+    pub desk_energy: f64,
+    #[serde(default)]
+    pub desk_onset_rate: f64,
+    #[serde(default)]
+    pub desk_tap_gesture: String,
+    #[serde(default)]
+    pub desk_spectral_centroid: f64,
+    #[serde(default)]
+    pub desk_autocorr_peak: f64,
+    // Overhead hand tracking
+    #[serde(default)]
+    pub overhead_hand_zones: String,
     #[serde(default)]
     pub usb_devices: String,
     #[serde(default)]
@@ -222,6 +245,7 @@ pub fn get_perception() -> PerceptionState {
         pose_summary: String::new(),
         scene_objects: String::new(),
         scene_type: String::new(),
+        per_camera_scenes: HashMap::new(),
         gaze_direction: String::new(),
         hand_gesture: String::new(),
         nearest_person_distance: String::new(),
@@ -230,8 +254,16 @@ pub fn get_perception() -> PerceptionState {
         speech_language: String::new(),
         ambient_brightness: 0.0,
         color_temperature: String::new(),
+        audio_scene: String::new(),
         posture: String::new(),
         detected_action: String::new(),
+        desk_activity: String::new(),
+        desk_energy: 0.0,
+        desk_onset_rate: 0.0,
+        desk_tap_gesture: String::new(),
+        desk_spectral_centroid: 0.0,
+        desk_autocorr_peak: 0.0,
+        overhead_hand_zones: String::new(),
         usb_devices: String::new(),
         bluetooth_nearby: String::new(),
         network_devices: String::new(),
@@ -292,10 +324,101 @@ pub struct VisualLayerState {
     pub readiness: String,
     #[serde(default)]
     pub timestamp: f64,
+    // Voice session state
+    #[serde(default)]
+    pub voice_session: serde_json::Value,
+    #[serde(default)]
+    pub voice_content: serde_json::Value,
+    // Biometrics and temporal
+    #[serde(default)]
+    pub biometrics: serde_json::Value,
+    #[serde(default)]
+    pub temporal_context: serde_json::Value,
+    #[serde(default)]
+    pub signal_staleness: serde_json::Value,
+    // Stimmung and classification
+    #[serde(default)]
+    pub stimmung_stance: String,
+    #[serde(default)]
+    pub classification_detections: serde_json::Value,
+    #[serde(default)]
+    pub classification_directives: HashMap<String, String>,
+    // Content fields
+    #[serde(default)]
+    pub ambient_text: String,
+    #[serde(default)]
+    pub secondary_ambient_text: String,
+    #[serde(default)]
+    pub activity_label: String,
+    #[serde(default)]
+    pub activity_detail: String,
+    #[serde(default)]
+    pub display_density: String,
+    #[serde(default)]
+    pub watershed_events: serde_json::Value,
+    // Operator tracking
+    #[serde(default)]
+    pub operator_x: f64,
+    #[serde(default)]
+    pub operator_y: f64,
+    // Environmental color
+    #[serde(default)]
+    pub environmental_color: serde_json::Value,
+    // Transition state
+    #[serde(default)]
+    pub transition: serde_json::Value,
+    // Scheduler
+    #[serde(default)]
+    pub scheduler_source: String,
+    #[serde(default)]
+    pub epoch: u64,
+    #[serde(default)]
+    pub recent_change_points: serde_json::Value,
+    #[serde(default)]
+    pub injected_feeds: serde_json::Value,
+    #[serde(default)]
+    pub aggregator: String,
 }
 
 fn default_ambient() -> String {
     "ambient".into()
+}
+
+impl Default for VisualLayerState {
+    fn default() -> Self {
+        Self {
+            available: false,
+            display_state: "ambient".into(),
+            zone_opacities: HashMap::new(),
+            signals: HashMap::new(),
+            ambient_params: AmbientParams::default(),
+            readiness: String::new(),
+            timestamp: 0.0,
+            voice_session: serde_json::Value::Null,
+            voice_content: serde_json::Value::Null,
+            biometrics: serde_json::Value::Null,
+            temporal_context: serde_json::Value::Null,
+            signal_staleness: serde_json::Value::Null,
+            stimmung_stance: String::new(),
+            classification_detections: serde_json::Value::Null,
+            classification_directives: HashMap::new(),
+            ambient_text: String::new(),
+            secondary_ambient_text: String::new(),
+            activity_label: String::new(),
+            activity_detail: String::new(),
+            display_density: String::new(),
+            watershed_events: serde_json::Value::Null,
+            operator_x: 0.0,
+            operator_y: 0.0,
+            environmental_color: serde_json::Value::Null,
+            transition: serde_json::Value::Null,
+            scheduler_source: String::new(),
+            epoch: 0,
+            recent_change_points: serde_json::Value::Null,
+            injected_feeds: serde_json::Value::Null,
+            aggregator: String::new(),
+        }
+    }
 }
 
 impl Default for AmbientParams {
@@ -312,15 +435,7 @@ impl Default for AmbientParams {
 #[tauri::command]
 pub fn get_visual_layer() -> VisualLayerState {
     let path = "/dev/shm/hapax-compositor/visual-layer-state.json";
-    let mut state: VisualLayerState = read_json(path).unwrap_or(VisualLayerState {
-        available: false,
-        display_state: "ambient".into(),
-        zone_opacities: HashMap::new(),
-        signals: HashMap::new(),
-        ambient_params: AmbientParams::default(),
-        readiness: String::new(),
-        timestamp: 0.0,
-    });
+    let mut state: VisualLayerState = read_json(path).unwrap_or_default();
     state.available = state.timestamp > 0.0;
     state
 }
