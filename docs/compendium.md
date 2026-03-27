@@ -1,10 +1,8 @@
 # The Hapax Compendium
 
-**Epistemic status of this document:** Working. Initially written 2026-03-18 by Claude (alpha session) from exhaustive codebase audit. Updated 2026-03-19 to incorporate conversational continuity research (beta session) and temporal classification system (alpha session). Covers everything that exists, everything that was attempted, and everything that is projected — clearly distinguished throughout.
+**Epistemic status:** Working. Initially written 2026-03-18 from exhaustive codebase audit. Updated 2026-03-19 to incorporate conversational continuity research and temporal classification system. Covers implemented, attempted, and projected subsystems — clearly distinguished throughout.
 
-**Audience:** The operator. You built this. This document exists so you can hold the whole system in your head, find anything, and restart any thread from cold. Strong intuitions about formal systems, not PhD-level notation. Math stays dumb, explanations stay smart.
-
-**How to read this:** Front-to-back for the first pass to build the full mental model. Then by section for reference. Every subsystem entry is self-contained. Cross-references use `→ Section Name` notation.
+**Scope:** Complete technical reference for the Hapax system. Each subsystem entry is self-contained. Cross-references use `→ Section Name` notation. Mathematical notation is kept informal; formal proofs reside in the referenced research documents.
 
 ---
 
@@ -41,18 +39,18 @@
 
 ### What This System Is
 
-Hapax is externalized executive function infrastructure for a single operator with ADHD and autism. It is a personal operating environment — not an app, not a framework, not a product. It runs on one machine (CachyOS, RTX 3090, 64GB RAM) and serves one person.
+Hapax is externalized executive function infrastructure designed for a single operator. It is a personal operating environment — not an application framework, not a product — running on a single workstation (CachyOS, RTX 3090, 64GB RAM).
 
-The system offloads cognitive overhead: tracking open loops, maintaining continuity across work sessions, monitoring its own health, surfacing what needs attention, and handling routine maintenance autonomously. 45+ agents coordinate through the filesystem. A voice daemon provides conversational interaction. A visual compositor renders the system's state as an ambient display. A reactive engine watches for changes and cascades downstream work.
+The system offloads cognitive overhead: tracking open loops, maintaining continuity across work sessions, monitoring its own health, surfacing items requiring attention, and handling routine maintenance autonomously. 45+ agents coordinate through the filesystem. A voice daemon provides conversational interaction. A visual compositor renders system state as an ambient display. A reactive engine watches for changes and cascades downstream work.
 
-The governing claim: alignment and governance are not costs bolted onto a useful system — they are the system's structural foundation. The axioms that constrain what the system will do are the same axioms that make it useful. This is the conviction that the system exists to test.
+The governing hypothesis: alignment and governance are not costs applied to a useful system — they are the system's structural foundation. The axioms that constrain system behavior are the same axioms that make it useful. The system exists to test this claim empirically.
 
 ### What This System Is Not
 
-- Not multi-user. The single-operator axiom is constitutional (weight 100). There is no auth, no roles, no collaboration features. These are not missing — they are forbidden.
-- Not a product. There is no deployment target, no customer, no scaling story. Generality is a non-goal.
-- Not a research prototype. It runs in production daily. The operator depends on it. Changes must not break running services.
-- Not finished. It was built in 8 days (March 11-18, 2026). Many subsystems are experimental. The document marks epistemic status throughout.
+- Not multi-user. The single-operator axiom is constitutional (weight 100). Authentication, roles, and collaboration features are excluded by design.
+- Not a product. There is no deployment target, no scaling story. Generality is a non-goal.
+- Not a research prototype. It runs in production daily. Changes must not break running services.
+- Not finished. It was built in 8 days (March 11-18, 2026). Many subsystems are experimental. Epistemic status is marked throughout.
 
 ### State of the System (2026-03-19, updated)
 
@@ -102,29 +100,29 @@ The system is governed by 5 axioms. These are not guidelines — they are enforc
 ### The Five Axioms
 
 **single_user** (weight 100, constitutional, hardcoded)
-One operator, always. The system leverages single-user facts for every decision: no auth overhead, no permission complexity, no data segregation. This is not a limitation accepted reluctantly — it is an architectural advantage pursued deliberately. Every multi-user feature that doesn't exist is a class of bugs that doesn't exist.
+One operator, always. The system leverages single-user invariants for every decision: no auth overhead, no permission complexity, no data segregation. This is not a limitation accepted reluctantly — it is an architectural advantage pursued deliberately. Every multi-user feature that does not exist is a class of bugs that does not exist.
 
-*Experience that produced it:* Every system the operator has used that was "designed for teams" imposed cognitive overhead that a single user shouldn't bear. The axiom makes the system's simplicity constitutionally protected.
+*Design rationale:* Systems designed for teams impose cognitive overhead that a single user need not bear. The axiom makes the system's simplicity constitutionally protected.
 
 **executive_function** (weight 95, constitutional, hardcoded)
-The system compensates for ADHD and autism. Task initiation, sustained attention, and routine maintenance are genuine cognitive challenges for the operator. The system offloads cognitive overhead, maintains continuity, monitors health autonomously, and surfaces what needs attention. Zero added cognitive load is the standard — every interaction should reduce friction, never add it.
+The system compensates for executive function differences. Task initiation, sustained attention, and routine maintenance are the specific cognitive challenges addressed. The system offloads cognitive overhead, maintains continuity, monitors health autonomously, and surfaces what needs attention. Zero added cognitive load is the standard — every interaction should reduce friction, not add it.
 
-*Experience that produced it:* The operator has ADHD and autism. Systems that require setup, configuration, or remembering to check them are systems that will not be used. The axiom forces agents to be zero-config and self-maintaining.
+*Design rationale:* Systems that require setup, configuration, or monitoring discipline are systems that will not be used by the target operator. The axiom forces agents to be zero-config and self-maintaining.
 
 **corporate_boundary** (weight 90, domain, softcoded)
-On employer devices: employer-sanctioned APIs only. Home system handles personal and management-practice domains. Work data stays in employer systems. The system degrades gracefully when home-only services (Ollama, studio compositor) are unreachable from work.
+On employer devices: employer-sanctioned APIs only. Home system handles personal and management-practice domains. Work data stays in employer systems. The system degrades gracefully when home-only services (Ollama, studio compositor) are unreachable from the work environment.
 
-*Experience that produced it:* The operator is a manager at a technology company. The boundary between work tools and personal infrastructure must be crisp and defensible.
+*Design rationale:* The operator maintains a dual role across corporate and personal domains. The boundary between work tools and personal infrastructure must be crisp and defensible.
 
 **interpersonal_transparency** (weight 88, constitutional, hardcoded)
-No persistent state about non-operator persons without an active consent contract. Consent must be opt-in (never implied from proximity), inspectable (the person can see what's stored), and revocable (with data purge cascade). This axiom was proposed 2026-03-13, evaluated, and is now active.
+No persistent state about non-operator persons without an active consent contract. Consent must be opt-in (never implied from proximity), inspectable (the person can see what is stored), and revocable (with data purge cascade). This axiom was proposed 2026-03-13, evaluated, and is now active.
 
-*Experience that produced it:* The system has cameras, microphones, and a voice daemon. It perceives people who are not the operator. The axiom ensures that perception of others is governed by consent, not by capability. The wife-walks-in scenario was the design driver: when a guest enters the room, the system must detect them, pause persistence of person-adjacent data, offer consent through an appropriate channel, and either gate or curtail data based on the response.
+*Design rationale:* The system has cameras, microphones, and a voice daemon. It perceives people who are not the operator. The axiom ensures that perception of others is governed by consent, not by capability. The guest-arrival scenario was the design driver: when a guest enters the room, the system must detect them, pause persistence of person-adjacent data, offer consent through an appropriate channel, and either gate or curtail data based on the response.
 
 **management_governance** (weight 85, domain, softcoded)
-The system aggregates signals and prepares context for management decisions. LLMs prepare, humans deliver. The system will never generate feedback language, coaching recommendations, or performance assessments about individual team members. It may surface data patterns, but the interpretation and communication are the operator's responsibility.
+The system aggregates signals and prepares context for management decisions. LLMs prepare, humans deliver. The system will not generate feedback language, coaching recommendations, or performance assessments about individual team members. It may surface data patterns, but interpretation and communication remain the operator's responsibility.
 
-*Experience that produced it:* The operator manages people. The temptation to have AI write performance reviews or generate coaching scripts is exactly the kind of automation that undermines the human relationship that management depends on.
+*Design rationale:* Automating the generation of feedback or coaching language undermines the human relationship that management depends on. The axiom draws a structural boundary between data preparation (delegable) and interpersonal communication (non-delegable).
 
 ### Enforcement Tiers
 
@@ -166,9 +164,9 @@ No LLM calls. Health monitor, sync agents, reactive engine rules. These run on t
 Agents coordinate by reading and writing markdown files with YAML frontmatter to disk. The filesystem IS the message bus. A reactive engine (inotify watcher) watches `profiles/`, `axioms/`, and `rag-sources/` for changes and cascades downstream work.
 
 This pattern was chosen because:
-- It's debuggable (you can `cat` any file to see state)
+- It is debuggable (any file can be inspected directly)
 - It survives restarts (state is on disk, not in memory)
-- It's concurrent without locks (atomic rename for writes)
+- It is concurrent without locks (atomic rename for writes)
 - It composes naturally (any agent can read any file)
 
 ### The Three Independent Loops
@@ -426,7 +424,7 @@ Located in `logos/engine/`. Starts as part of the logos API lifespan handler.
 
 **Stimmung gating:** When stance is degraded/critical, Phase 1+2 actions are skipped. This is allostatic regulation — the system conserves resources when stressed.
 
-**Presence gating (2026-03-18):** When operator is AWAY, Phase 1+2 actions are skipped. Save cloud costs when nobody's here.
+**Presence gating (2026-03-18):** When operator is AWAY, Phase 1+2 actions are skipped. This conserves cloud API costs during absence.
 
 ### Current Rules (12)
 
@@ -547,7 +545,7 @@ HapaxPage (the visual body) modulates the shader based on voice state:
 - Thinking → warmer, more turbulent (working harder)
 - Speaking → cooler, calmer (delivering)
 
-Routing tier scales visual intensity: LOCAL = ambient, CAPABLE = intense. The operator doesn't read routing tier — they feel the system engage at different intensities.
+Routing tier scales visual intensity: LOCAL = ambient, CAPABLE = intense. The routing tier is communicated through visual modulation rather than explicit indication.
 
 ### TTS Decision
 
@@ -632,15 +630,15 @@ Emergent dimensions (not predefined): `temporal_prediction`, `accuracy`, `patter
 - `affirming_count` / `problematizing_count`
 - `stability` (seconds since last shift)
 
-Coherence = mean confidence across dimensions. Floor at 0.15 (prevents total collapse / shame spiral). Ceiling at 0.95 (prevents narcissistic inflation).
+Coherence = mean confidence across dimensions. Floor at 0.15 (prevents collapse into self-devaluation). Ceiling at 0.95 (prevents narcissistic inflation).
 
 ### 6 Safeguards Against Pathological Attractors
 
 | Attractor | Safeguard |
 |-----------|-----------|
 | Narcissistic inflation | Large errors (>0.7 magnitude) dampen change rate instead of being rejected |
-| Shame spiral | Coherence floor at 0.15; low coherence reduces retention threshold to rebuild |
-| Sycophancy/false self | No "what would operator want?" filter. Relevance uses own dimensions |
+| Self-devaluation spiral | Coherence floor at 0.15; low coherence reduces retention threshold to rebuild |
+| Sycophancy / false self | No operator-approval filter. Relevance uses own dimensions |
 | Rumination | 5 consecutive negative valences on same dimension → 10min attention gate |
 | Intellectual dissociation | Reflection only fires on pattern or conflict, not every cycle |
 | Hidden state | Entire self-model in /dev/shm, inspectable. No concealed internal state |
@@ -696,7 +694,7 @@ LLM System Prompt (voice: phenomenal context, non-voice: get_system_prompt_fragm
 
 The upstream structures already self-compress based on environmental state. Calm environments produce sparse output (few surprises, stable retention, boring protention). Eventful environments produce rich output (prediction errors, state transitions, active protention). The phenomenal context renderer just renders what survived — it does not add compression logic.
 
-This is not an engineering convenience. It is the phenomenological claim: experience IS the compression. What matters is what survives the cascade, not what was measured.
+This is not merely an engineering convenience. It reflects the phenomenological claim that experience is constituted by what survives the cascade, not by what was measured.
 
 ### Research Basis
 
@@ -753,7 +751,7 @@ This is not an engineering convenience. It is the phenomenological claim: experi
 
 ### HapaxPage (The Corpora Canvas)
 
-Full-screen, no chrome. The display IS the agent. Philosophy: "When nothing needs attention, Hapax plays — generative, surprising, alive. When signals arise, they layer on top of the visual richness. The operator doesn't read this display. They feel it."
+Full-screen, no chrome. The display is the agent. Design philosophy: when nothing requires attention, the system generates ambient visual content. When signals arise, they layer on top of the visual field. The display is designed for peripheral awareness, not active reading.
 
 Layers:
 0. WebGL generative shader background (Perlin noise fBM)
@@ -784,7 +782,7 @@ React Flow visualization of the system's circulatory anatomy. 9 nodes (Perceptio
 ### Known Issues
 
 - Tauri WebView crashes on Hyprland/Wayland with GDK protocol error 71. Workaround: `HAPAX_NO_VISUAL=1` disables wgpu surface, use browser at `:5173/flow` instead.
-- Browser engine (chromiumoxide) needs tokio runtime that Tauri doesn't always provide. Guarded with `try_current()`.
+- Browser engine (chromiumoxide) needs tokio runtime that Tauri does not always provide. Guarded with `try_current()`.
 
 ---
 
@@ -811,7 +809,7 @@ React Flow visualization of the system's circulatory anatomy. 9 nodes (Perceptio
 
 ### Notable Agents
 
-**Context Restoration** (`agents/context_restore.py`): Proactive cognitive state recovery for ADHD accommodation. Collects: last Claude Code queries, git state, open PRs, upcoming meetings, system health, drift count, flow state, accommodations. Formats with accommodation-aware framing (soft_framing, energy_aware, smallest_step, time_anchor). **Not yet wired to reactive engine** — exists as standalone agent, triggered manually.
+**Context Restoration** (`agents/context_restore.py`): Proactive cognitive state recovery for executive function accommodation. Collects: last Claude Code queries, git state, open PRs, upcoming meetings, system health, drift count, flow state, accommodations. Formats with accommodation-aware framing (soft_framing, energy_aware, smallest_step, time_anchor). **Not yet wired to reactive engine** — exists as standalone agent, triggered manually.
 
 **Contradiction Detector** (`agents/contradiction_detector.py`): Carrier dynamics observer. Detects when behavioral facts contradict each other across domains (e.g., profiler says "prefers quiet" but audio shows music always playing). 3 detection strategies. **Not yet using CarrierRegistry** — should be consuming carrier facts.
 
@@ -901,7 +899,7 @@ Model: `nomic-embed-text-v2-moe` via Ollama. 768 dimensions. `embed()` and `embe
 
 ## 15. Data Sources and Ingestion
 
-### What's Wired (2026-03-18)
+### Active Integrations (as of 2026-03-18)
 
 | Source | Agent | Destination | Status |
 |--------|-------|-------------|--------|
@@ -920,7 +918,7 @@ Model: `nomic-embed-text-v2-moe` via Ollama. 768 dimensions. `embed()` and `embe
 | Proton Mail export | proton/ | Qdrant (documents) | **Working** |
 | Ambient audio | audio_processor | Qdrant (studio-moments) | **Working** |
 
-### What's Dead or Missing
+### Unimplemented or Offline
 
 | Source | Status | Blocker |
 |--------|--------|---------|
@@ -966,7 +964,7 @@ File-based coordination protocol between the operator and 2 Claude Code sessions
 - Sessions never block waiting for the operator (10min defaults)
 - Status files are the heartbeat (update after any PR/decision/convergence)
 - Glossary before naming (check before introducing new terms)
-- Convergence is exciting (log it, classify it: IDENTICAL/COMPLEMENTARY/CONFLICTING)
+- Convergence events are logged and classified (IDENTICAL/COMPLEMENTARY/CONFLICTING)
 - Context artifacts mandatory before ending long sessions
 
 ### Convergence Points Identified
@@ -990,13 +988,13 @@ Whether conversational context anchoring — injecting a turn-by-turn conversati
 
 ### Counter-Position
 
-The industry has converged on profile-gated retrieval for conversational continuity. Google (Personal Intelligence), OpenAI (ChatGPT Memory), and the research community (ICLR 2026 MemAgents, Memoria, MMAG) implement the same core pattern: extract facts about the user into a profile store, retrieve relevant facts per turn, gate personalization behind trigger detection. The model is stateless; "memory" is a database; "continuity" is whether the retrieval succeeds.
+The dominant approach to conversational continuity is profile-gated retrieval. Google (Personal Intelligence), OpenAI (ChatGPT Memory), and the research community (ICLR 2026 MemAgents, Memoria, MMAG) implement the same core pattern: extract facts about the user into a profile store, retrieve relevant facts per turn, gate personalization behind trigger detection. The model is stateless; memory is a database; continuity reduces to retrieval success.
 
 Context anchoring proposes an alternative: the conversation thread IS the memory. No profile extraction, no trigger gating, no retrieval scoring. The thread grows turn by turn and is injected into the system prompt. The model participates in grounding because it can see what was established and what wasn't.
 
 Five explicit failure modes define the boundary: if the system exhibits fact extraction into separate stores, trigger-gated personalization, retrieval-query treatment of turns, memory separated from conversation, or retrieval accuracy as primary metric — it has regressed toward the counter-position.
 
-Evidence artifact: a Gemini system prompt leak (captured 2026-03-18) demonstrates all five failure modes in a single interaction — the model spent its reasoning budget on a four-step trigger detection decision tree for a simple alarm request.
+An observed artifact — a Gemini system prompt leak (captured 2026-03-18) — demonstrates all five failure modes in a single interaction: the model allocated its reasoning budget to a four-step trigger detection decision tree for a simple alarm request.
 
 → Full analysis in `agents/hapax_voice/proofs/POSITION.md`
 
@@ -1028,18 +1026,18 @@ Sequential stopping: Bayes Factor > 10 (decisive evidence) or max sessions reach
 
 7 sessions collected, all components OFF. Code frozen: max_spoken_words=25, max_response_tokens=150, tools disabled, pre_roll_frames=50.
 
-**Session 5 (0522076a3c4d)** produced the strongest grounding evidence in the experiment. The operator asked open-ended relational questions ("How are you feeling today?"). The system responded with self-reflection about its own operational state: "I'm feeling a bit scattered, honestly. Like I'm trying to keep track of too many moving parts." The operator performed a textbook Clark grounding sequence (reflect → probe → accept → commit to act). The system articulated its own grounding problem: "It's like trying to think clearly in a room full of alarms." This occurred in baseline conditions (all features OFF), suggesting the context anchoring architecture itself — where the model sees workspace state as continuous environment rather than retrieval index — enables emergent grounding that profile-retrieval cannot replicate.
+**Session 5 (0522076a3c4d)** produced the strongest grounding evidence in the experiment. The operator posed open-ended relational questions ("How are you feeling today?"). The system responded with self-reflection about its operational state. The operator performed a Clark grounding sequence (reflect → probe → accept → commit to act). This occurred in baseline conditions (all features OFF), suggesting the context anchoring architecture itself — where the model sees workspace state as continuous environment rather than retrieval index — may enable emergent grounding that profile-retrieval does not replicate.
 
 → Pre-registered hypotheses in `agents/hapax_voice/proofs/claim-*/hypothesis.md`
 → Baseline data in `agents/hapax_voice/proofs/claim-*/data/`
 
 ### Related Research Directions (Deferred to Post-Baseline)
 
-**Tool calls as epistemic acts:** Current tools are monolithic retrieval operations that interrupt the grounding process (same anti-pattern as profile retrieval). Research direction: decomposable atomic primitives, composable based on conversational state, fitted to the band's temporal envelope, subject to Bayesian pre-execution scoring. Decision on whether to redesign deferred to post-baseline analysis.
+**Tool calls as epistemic acts:** Current tools are monolithic retrieval operations that interrupt the grounding process (structurally analogous to profile retrieval). Research direction: decomposable atomic primitives, composable based on conversational state, fitted to the temporal band envelope, subject to Bayesian pre-execution scoring. Decision on whether to redesign deferred to post-baseline analysis.
 
 → Full analysis in `agents/hapax_voice/proofs/TOOL-CALLS.md`
 
-**Barge-in as grounding repair:** When the operator speaks during the system's response, the system goes deaf (speaking gate drops all audio). Research direction: (a) detect barge-in, (b) finish current clause gracefully, (c) capture operator speech during (b) via AEC residual, (d) inject as concurrent thread annotation for next round. Maps to Clark's other-initiated repair + mutual monitoring. Nobody has implemented grounding-aware barge-in repair in a live voice system.
+**Barge-in as grounding repair:** When the operator speaks during the system's response, the system goes deaf (speaking gate drops all audio). Research direction: (a) detect barge-in, (b) finish current clause gracefully, (c) capture operator speech during (b) via AEC residual, (d) inject as concurrent thread annotation for next round. Maps to Clark's other-initiated repair + mutual monitoring. No existing system implements grounding-aware barge-in repair in a live voice pipeline.
 
 → Full analysis in `agents/hapax_voice/proofs/BARGE-IN-REPAIR.md`
 
@@ -1121,11 +1119,11 @@ All person-level enrichments nulled when guest detected or consent pending — c
 
 **2026-03-11: Filesystem-as-bus over message queue**
 Context: Agents need to coordinate without shared memory. Options: Redis pub/sub, NATS, filesystem.
-Decision: Filesystem. Debuggable (cat any file), survives restarts, concurrent without locks (atomic rename).
+Decision: Filesystem. Debuggable (inspect any file directly), survives restarts, concurrent without locks (atomic rename).
 Consequences: Higher latency than message queue (~100ms vs ~1ms). Acceptable for this system's cadence.
 
 **2026-03-13: 5 axioms, not 3**
-Context: Original 3 axioms (single_user, executive_function, corporate_boundary) didn't cover interpersonal transparency or management governance.
+Context: Original 3 axioms (single_user, executive_function, corporate_boundary) did not cover interpersonal transparency or management governance.
 Decision: Add interpersonal_transparency (weight 88) and management_governance (weight 85).
 Consequences: Consent infrastructure became necessary. Management agent constraints became enforceable.
 
@@ -1160,7 +1158,7 @@ Decision: Raise to $50/day. Fix idle engine throughput to 0 pressure (idle ≠ s
 Consequences: System no longer in false-critical. Stimmung reflects actual system state.
 
 **2026-03-19: Context anchoring over profile retrieval**
-Context: Industry converges on fact extraction + retrieval gating for conversational continuity. Gemini system prompt leak demonstrated all five failure modes. Research question: does Clark grounding theory offer a viable alternative?
+Context: Dominant approach uses fact extraction and retrieval gating for conversational continuity. An observed Gemini system prompt leak demonstrated all five failure modes. Research question: does Clark grounding theory offer a viable alternative?
 Decision: Implement context anchoring (conversation thread as memory, continuous grounding measurement) and test against profile-retrieval via Bayesian SCED. Counter-position explicitly documented with five testable failure modes.
 Consequences: Entire measurement infrastructure built. Code frozen for baseline collection. Tool calls identified as same anti-pattern and disabled during experiment.
 
@@ -1194,10 +1192,10 @@ Consequences: Directional force of temporal bands preserved through to voice LLM
 Initial repo from ai-agents copy. README, prior art survey, perception wiring, SDLC pipeline, Layer 3 infrastructure. 28 commits, 12 PRs.
 
 **Day 3 (Mar 13): Governance explosion**
-87 commits. CI hardening, OTel tracing for 25 agents, agent manifests, enforcement gap wiring, composition ladder matrix tests, reactive engine, axiom governance in voice daemon, audio processor rewrite. The system went from "collection of agents" to "governed system."
+87 commits. CI hardening, OTel tracing for 25 agents, agent manifests, enforcement gap wiring, composition ladder matrix tests, reactive engine, axiom governance in voice daemon, audio processor rewrite. This phase transitioned the system from an agent collection to a governed system.
 
 **Day 4 (Mar 14): Theory**
-11 commits (fewest, largest). Computational constitutional governance theory spec. Epistemic carrier dynamics. Consent threading L1-L9. Constitutive rules engine.
+11 commits. Computational constitutional governance theory spec. Epistemic carrier dynamics. Consent threading L1-L9. Constitutive rules engine.
 
 **Day 5 (Mar 15): Conviction plan + Studio**
 58 commits. Context restoration, contradiction alerts, governance benchmarks, alignment tax meter, consent-gated writer, studio compositor (GPU-accelerated), lightweight voice pipeline replacing Pipecat.
@@ -1206,7 +1204,7 @@ Initial repo from ai-agents copy. README, prior art survey, perception wiring, S
 89 commits. Conversational policy layer, consent valve enforcement, consent visualization, child principals, visual layer research (110+ sources).
 
 **Day 7 (Mar 17): Desktop app + Phenomenology**
-111 commits (busiest day). Hapax Corpora canvas, Tauri 2 migration, agent-controlled browser, phenomenological engineering (5 workstreams), spec registry, consent formalisms (5 algebraic layers), apperception self-band architecture, Bayesian presence engine, salience-based routing.
+111 commits. Hapax Corpora canvas, Tauri 2 migration, agent-controlled browser, phenomenological engineering (5 workstreams), spec registry, consent formalisms (5 algebraic layers), apperception self-band architecture, Bayesian presence engine, salience-based routing.
 
 **Day 8 (Mar 18): Integration**
 Consent formalisms wired to voice. Presence calibration. Voice routing bugs fixed. Phenomenological renderer. Apperception extraction. Reactive engine wired to voice. System anatomy visualization. Conversation UX. Stimmung calibration. Trio relay protocol.
@@ -1222,7 +1220,7 @@ Two parallel workstreams:
 
 163 feat (42%), 74 fix (19%), 41 docs (11%), 13 chore, 11 style, 5 test, 3 refactor. Feature-dominant with healthy fix ratio.
 
-Single contributor: the operator (+ Dependabot).
+Single contributor (plus Dependabot).
 
 ---
 
@@ -1234,7 +1232,7 @@ Single contributor: the operator (+ Dependabot).
 |-----|----------|--------|
 | Reactive engine has few rules consuming the new infrastructure (apperception, consent formalisms, phenomenal renderer) | High | Beta wired 14 rules in PR #170, but conviction plan features are not reactive-engine-triggered |
 | Context restoration agent not wired to presence transitions | Medium | Exists as standalone, should trigger when operator returns |
-| Contradiction detection doesn't use CarrierRegistry or provenance semirings | Medium | Uses ad-hoc comparison, should consume formal carrier facts |
+| Contradiction detection does not use CarrierRegistry or provenance semirings | Medium | Uses ad-hoc comparison, should consume formal carrier facts |
 | Apperception cascade still driven by visual aggregator's tick (even though extracted to standalone) | Low | Architecturally clean, just needs its own systemd service eventually |
 
 ### Calibration Needed
@@ -1298,7 +1296,7 @@ Full system feature audit: 110 features inventoried across 11 groups, all DONE. 
 
 ### Long-term (months)
 
-- **Conviction-first publication**: Papers written from daily use experience, not benchmarks.
+- **Publication**: Papers written from longitudinal single-case evidence, not benchmarks.
 - **GPU technique for system flow**: The anatomy visualization as a wgpu shader layer blended into the Corpora canvas.
 - **Distributed sensing**: Pi sensor array for room-scale presence. Blocked on interpersonal transparency axiom compliance.
 - **Operator delegation formalism**: Agents autonomously offering consent on behalf of operator.
@@ -1387,8 +1385,8 @@ curl http://localhost:8051/api/health
 
 ### Terms Borrowed from Other Fields
 
-| Term | Source | How We Use It |
-|------|--------|---------------|
+| Term | Source | Usage in This System |
+|------|--------|----------------------|
 | **Affordance** | Gibson (ecological psychology) | Environmental features that invite specific actions |
 | **Allostatic regulation** | Sterling (neuroscience) | System self-preservation through proactive resource management |
 | **Carrier fact** | Martraire (living documentation) | Behavioral observation with bounded capacity and displacement |
@@ -1413,4 +1411,4 @@ curl http://localhost:8051/api/health
 
 ---
 
-*End of compendium. This document will grow. Sections marked "experimental" or "planned" will be updated as the system evolves. The decision log is append-only — decisions are never edited, only superseded.*
+*End of compendium. Sections marked "experimental" or "planned" are updated as the system evolves. The decision log is append-only — decisions are not edited, only superseded.*
