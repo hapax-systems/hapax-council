@@ -84,13 +84,13 @@ The sequence in the trace:
 4. Hyprland rejects: syncobj surface requires an acquire timeline on commit, but none was provided
 5. GDK catches the protocol error → abort
 
-**Fix:** `WEBKIT_DISABLE_DMABUF_RENDERER=1` forces webkit2gtk to skip the DMA-BUF/syncobj path entirely, falling back to SHM buffers. App runs stably on native Wayland with this set.
+**Fix:** `__NV_DISABLE_EXPLICIT_SYNC=1` disables NVIDIA's explicit sync, preventing the protocol error while retaining GPU hardware acceleration (~21ms frame times vs ~27ms with DMABUF disabled). `WEBKIT_DISABLE_DMABUF_RENDERER=1` also works but forces software rendering.
 
 **Applied:**
-- `systemd/units/hapax-logos.service` — added `Environment=WEBKIT_DISABLE_DMABUF_RENDERER=1`
-- `.envrc` — added `export WEBKIT_DISABLE_DMABUF_RENDERER=1` for dev workflow
+- `systemd/units/hapax-logos.service` — `Environment=__NV_DISABLE_EXPLICIT_SYNC=1`
+- `.envrc` — `export __NV_DISABLE_EXPLICIT_SYNC=1` for dev workflow
 
-**Upstream:** This is a webkit2gtk bug (2.50.6) — it shouldn't bind syncobj without implementing the acquire timeline requirement. May be fixed in a future webkit2gtk release. Monitor webkit2gtk changelogs for "syncobj" or "drm_syncobj" fixes.
+**Upstream:** Known bugs: [gtk#8056](https://gitlab.gnome.org/GNOME/gtk/-/issues/8056), [tauri#10702](https://github.com/tauri-apps/tauri/issues/10702), [WebKit#280210](https://bugs.webkit.org/show_bug.cgi?id=280210). GTK3 attaches buffer to the same EGL surface without setting acquire point. No fix in any webkit2gtk release through 2.50.x. Tauri labels this `status: upstream`.
 
 ### Additional wgpu fixes (discovered during investigation)
 

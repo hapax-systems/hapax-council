@@ -24,9 +24,10 @@ Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 # Vulkan for wgpu visual surface
 Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
-# webkit2gtk 2.50.6 + NVIDIA 590.x + Hyprland: syncobj protocol error on DMA-BUF commit
+# NVIDIA explicit sync triggers webkit2gtk protocol error on Wayland (gtk#8056, tauri#10702)
+# __NV_DISABLE_EXPLICIT_SYNC keeps GPU accel; WEBKIT_DISABLE_DMABUF_RENDERER is software fallback
 # See docs/issues/tauri-wayland-protocol-error.md
-Environment=WEBKIT_DISABLE_DMABUF_RENDERER=1
+Environment=__NV_DISABLE_EXPLICIT_SYNC=1
 MemoryMax=4G
 SyslogIdentifier=hapax-logos
 
