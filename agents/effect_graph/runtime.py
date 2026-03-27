@@ -88,10 +88,18 @@ class GraphRuntime:
     def remove_node(self, node_id: str) -> None:
         if not self._current_graph:
             return
+
+        def _edge_touches(edge: list[str], nid: str) -> bool:
+            for endpoint in edge:
+                name = endpoint.split(":", 1)[0] if ":" in endpoint else endpoint
+                if name == nid:
+                    return True
+            return False
+
         self.apply_patch(
             GraphPatch(
                 remove_nodes=[node_id],
-                remove_edges=[e for e in self._current_graph.edges if node_id in e],
+                remove_edges=[e for e in self._current_graph.edges if _edge_touches(e, node_id)],
             )
         )
 

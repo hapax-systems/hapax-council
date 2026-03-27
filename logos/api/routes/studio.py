@@ -691,9 +691,14 @@ async def patch_node_params(node_id: str, params: dict[str, Any]):
 
 @router.delete("/studio/effect/graph/node/{node_id}")
 async def remove_graph_node(node_id: str):
+    from agents.effect_graph.compiler import GraphValidationError
+
     if not _graph_runtime:
         raise HTTPException(503, "Compositor not available")
-    _graph_runtime.remove_node(node_id)
+    try:
+        _graph_runtime.remove_node(node_id)
+    except GraphValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"status": "ok"}
 
 
