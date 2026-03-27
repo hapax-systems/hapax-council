@@ -68,13 +68,17 @@ export function registerSplitCommands(
         return { ok: true };
       }
 
-      // no region provided — use current if open, else fail
+      // no region provided — toggle off if open, else infer from context
       if (state.region !== null) {
         actions.setRegion(null);
         return { ok: true };
       }
 
-      return { ok: false, error: "No region specified and no split panel is open" };
+      // Infer region: ground when in studio/cam view, else focused region
+      const focused = registry.query("terrain.focusedRegion") as string | null;
+      const defaultRegion = focused === "ground" ? "ground" : (focused ?? "ground");
+      actions.setRegion(defaultRegion);
+      return { ok: true };
     },
   });
 
