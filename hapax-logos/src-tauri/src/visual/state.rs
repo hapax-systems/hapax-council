@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
@@ -216,6 +216,8 @@ pub struct SmoothedParams {
     // Corpora next: transition progress (computed, not lerped)
     pub transition_progress: f32,
     pub transition_type: u32, // 0=none, 1=breathe, 2=expand, 3=contract, 4=drift
+    // Layer opacity overrides from control.json
+    pub layer_opacities: HashMap<String, f32>,
 }
 
 impl Default for SmoothedParams {
@@ -234,6 +236,7 @@ impl Default for SmoothedParams {
             parallax_y: 0.0,
             transition_progress: 1.0,
             transition_type: 0,
+            layer_opacities: HashMap::new(),
         }
     }
 }
@@ -305,6 +308,13 @@ impl SmoothedParams {
 
 const VISUAL_STATE_PATH: &str = "/dev/shm/hapax-compositor/visual-layer-state.json";
 const STIMMUNG_PATH: &str = "/dev/shm/hapax-stimmung/state.json";
+const CONTROL_PATH: &str = "/dev/shm/hapax-visual/control.json";
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct ControlFile {
+    #[serde(default)]
+    layer_opacities: HashMap<String, f64>,
+}
 
 pub struct StateReader {
     pub visual: VisualLayerState,
@@ -345,6 +355,14 @@ impl StateReader {
         }
         if let Some(s) = Self::read_json::<SystemStimmung>(STIMMUNG_PATH) {
             self.stimmung = s;
+        }
+        // Read control.json for layer opacity overrides
+        if let Some(ctrl) = Self::read_json::<ControlFile>(CONTROL_PATH) {
+            self.smoothed.layer_opacities = ctrl
+                .layer_opacities
+                .into_iter()
+                .map(|(k, v)| (k, v as f32))
+                .collect();
         }
     }
 

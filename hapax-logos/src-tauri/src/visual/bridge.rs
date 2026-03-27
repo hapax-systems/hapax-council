@@ -112,6 +112,7 @@ impl<R: Runtime> VisualApp<R> {
         rd.update_params(&gpu.queue, &self.state_reader.smoothed, dt);
         physarum.update_params(&gpu.queue, &self.state_reader.smoothed, time);
         postprocess.update_uniforms(&gpu.queue, time);
+        compositor.update_opacities(&gpu.queue, &self.state_reader.smoothed.layer_opacities);
 
         wave.flush_events(&gpu.queue);
 

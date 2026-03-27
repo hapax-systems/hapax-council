@@ -237,6 +237,25 @@ impl Compositor {
         pass.draw(0..3, 0..1);
     }
 
+    /// Update layer opacities from control overrides.
+    pub fn update_opacities(&self, queue: &wgpu::Queue, opacities: &std::collections::HashMap<String, f32>) {
+        if opacities.is_empty() {
+            return;
+        }
+        let defaults = CompositeUniforms::default();
+        let uniforms = CompositeUniforms {
+            opacity_gradient: *opacities.get("gradient").unwrap_or(&defaults.opacity_gradient),
+            opacity_voronoi: *opacities.get("voronoi").unwrap_or(&defaults.opacity_voronoi),
+            opacity_rd: *opacities.get("rd").unwrap_or(&defaults.opacity_rd),
+            opacity_wave: *opacities.get("wave").unwrap_or(&defaults.opacity_wave),
+            opacity_physarum: *opacities.get("physarum").unwrap_or(&defaults.opacity_physarum),
+            opacity_feedback: *opacities.get("feedback").unwrap_or(&defaults.opacity_feedback),
+            _pad0: 0.0,
+            _pad1: 0.0,
+        };
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
+    }
+
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         let (texture, view) = Self::create_composite_texture(device, width, height);
         self.composite_texture = texture;
