@@ -7,7 +7,7 @@ const JPEG_FILE: &str = "/dev/shm/hapax-visual/frame.jpg";
 const JPEG_TMP_FILE: &str = "/dev/shm/hapax-visual/frame.jpg.tmp";
 const JPEG_QUALITY: i32 = 80;
 
-/// Reads back frames from GPU to a staging buffer, then writes BGRA data to /dev/shm.
+/// Reads back frames from GPU to a staging buffer, then writes RGBA data to /dev/shm.
 pub struct ShmOutput {
     staging_buffer: wgpu::Buffer,
     width: u32,
@@ -84,27 +84,20 @@ impl ShmOutput {
         );
     }
 
-    /// Convert BGRA pixels to RGB and encode as JPEG, writing atomically to /dev/shm.
-    fn write_jpeg(&mut self, bgra_data: &[u8]) {
+    /// Convert RGBA pixels to JPEG, writing atomically to /dev/shm.
+    /// The composite texture is Rgba8Unorm — bytes are in R,G,B,A order.
+    fn write_jpeg(&mut self, rgba_data: &[u8]) {
         let compressor = match self.jpeg_compressor.as_mut() {
             Some(c) => c,
             None => return,
         };
 
-        let pixel_count = (self.width * self.height) as usize;
-        let mut rgb = Vec::with_capacity(pixel_count * 3);
-        for chunk in bgra_data.chunks_exact(4) {
-            rgb.push(chunk[2]); // R (from BGRA[2])
-            rgb.push(chunk[1]); // G (from BGRA[1])
-            rgb.push(chunk[0]); // B (from BGRA[0])
-        }
-
         let image = turbojpeg::Image {
-            pixels: rgb.as_slice(),
+            pixels: rgba_data,
             width: self.width as usize,
-            pitch: self.width as usize * 3,
+            pitch: self.width as usize * 4,
             height: self.height as usize,
-            format: turbojpeg::PixelFormat::RGB,
+            format: turbojpeg::PixelFormat::RGBX,
         };
 
         match compressor.compress_to_vec(image) {

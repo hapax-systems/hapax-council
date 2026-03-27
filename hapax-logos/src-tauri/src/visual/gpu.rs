@@ -42,12 +42,14 @@ impl GpuContext {
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
+        log::info!("Available surface formats: {:?}", caps.formats);
         let format = caps
             .formats
             .iter()
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(caps.formats[0]);
+        log::info!("Selected surface format: {:?}", format);
 
         let config = SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

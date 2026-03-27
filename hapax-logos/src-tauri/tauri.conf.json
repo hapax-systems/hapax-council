@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.hapax.logos",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "bash scripts/dev-server.sh",
     "beforeBuildCommand": "pnpm build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"

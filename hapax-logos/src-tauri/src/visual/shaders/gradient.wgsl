@@ -123,11 +123,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Noise luminance
     let lum = (flow * 0.6 + flow2 * 0.4) * u.brightness;
 
-    // Oklch color mapping:
-    // warmth 0.0 → teal (h=180, C=0.04, L=0.20)
-    // warmth 1.0 → warm red (h=25, C=0.08, L=0.30)
-    let base_L = mix(0.20, 0.30, u.color_warmth) + lum * 0.15;
-    let base_C = mix(0.04, 0.08, u.color_warmth) + lum * 0.02;
+    // Oklch color mapping (calibrated for linear→sRGB pipeline):
+    // warmth 0.0 → teal (h=180, C=0.06, L=0.35)
+    // warmth 1.0 → warm red (h=25, C=0.12, L=0.50)
+    let base_L = mix(0.35, 0.50, u.color_warmth) + lum * 0.25;
+    let base_C = mix(0.06, 0.12, u.color_warmth) + lum * 0.04;
     let base_h = mix(180.0, 25.0, u.color_warmth);
 
     // Spatial variation in hue
