@@ -6,11 +6,11 @@ const MIN_FRAME_MS = 33; // ~30fps
 
 /**
  * Displays the wgpu visual surface as a fullscreen background image.
- * Fetches JPEG frames from the Rust HTTP server at 30fps.
+ * Sets img.src directly to the frame server URL (cache-busted with timestamp).
+ * Uses img-src CSP — no fetch/connect-src needed.
  */
 export function VisualSurface() {
   const imgRef = useRef<HTMLImageElement>(null);
-  const prevUrlRef = useRef<string | null>(null);
   const visible = usePageVisible();
 
   useEffect(() => {
@@ -18,28 +18,15 @@ export function VisualSurface() {
 
     let active = true;
     let lastFrame = 0;
+    let loading = false;
 
-    const tick = async (now: number) => {
+    const tick = (now: number) => {
       if (!active) return;
 
-      if (now - lastFrame >= MIN_FRAME_MS) {
+      if (now - lastFrame >= MIN_FRAME_MS && !loading && imgRef.current) {
         lastFrame = now;
-        try {
-          const res = await fetch(FRAME_URL);
-          if (res.ok) {
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            if (prevUrlRef.current) {
-              URL.revokeObjectURL(prevUrlRef.current);
-            }
-            prevUrlRef.current = url;
-            if (imgRef.current) {
-              imgRef.current.src = url;
-            }
-          }
-        } catch {
-          // Frame server not available yet — skip
-        }
+        loading = true;
+        imgRef.current.src = `${FRAME_URL}?_t=${Date.now()}`;
       }
 
       if (active) {
@@ -47,15 +34,24 @@ export function VisualSurface() {
       }
     };
 
-    requestAnimationFrame(tick);
+    // Reset loading flag when image loads or errors
+    const img = imgRef.current;
+    if (img) {
+      const onLoad = () => { loading = false; };
+      const onError = () => { loading = false; };
+      img.addEventListener("load", onLoad);
+      img.addEventListener("error", onError);
 
-    return () => {
-      active = false;
-      if (prevUrlRef.current) {
-        URL.revokeObjectURL(prevUrlRef.current);
-        prevUrlRef.current = null;
-      }
-    };
+      requestAnimationFrame(tick);
+
+      return () => {
+        active = false;
+        img.removeEventListener("load", onLoad);
+        img.removeEventListener("error", onError);
+      };
+    }
+
+    return () => { active = false; };
   }, [visible]);
 
   return (
