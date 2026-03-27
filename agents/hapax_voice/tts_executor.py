@@ -4,7 +4,7 @@ Implements the Executor protocol. Expects command.params["pcm_data"]
 (pre-synthesized) and command.params["sample_rate"]. Synthesis happens
 BEFORE enqueue into ScheduleQueue — execute() is pure playback.
 
-This keeps synthesis latency (~300ms Kokoro) out of the critical path.
+This keeps synthesis latency out of the critical path.
 The governance layer synthesizes first, packs PCM into Command.params,
 creates Schedule targeting next bar boundary, enqueues. TTSExecutor just plays.
 """

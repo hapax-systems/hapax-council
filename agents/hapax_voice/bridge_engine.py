@@ -178,8 +178,8 @@ class BridgeEngine:
     def presynthesize_all(self, tts_manager: object) -> None:
         """Pre-synthesize all bridge phrases at startup.
 
-        Sequential — Kokoro's GPU pipeline is not thread-safe.
-        ~25 phrases × ~300ms ≈ 8s. Runs during startup alongside other init.
+        Sequential — avoids API request contention.
+        ~25 phrases. Runs during startup alongside other init.
         """
         synthesize = getattr(tts_manager, "synthesize", None)
         if synthesize is None:

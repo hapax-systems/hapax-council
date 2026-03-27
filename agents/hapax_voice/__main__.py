@@ -118,7 +118,10 @@ class VoiceDaemon:
         self.wake_word = self._create_wake_word_detector()
         self.wake_word.on_wake_word = self._on_wake_word
         self._audio_input = AudioInputStream(source_name=self.cfg.audio_input_source)
-        self.tts = TTSManager(kokoro_voice=self.cfg.kokoro_voice)
+        self.tts = TTSManager(
+            voice_id=self.cfg.voxtral_voice_id,
+            ref_audio_path=self.cfg.voxtral_ref_audio or None,
+        )
         self.chime_player = ChimePlayer(
             chime_dir=Path(self.cfg.chime_dir).expanduser(),
             auto_generate=True,
@@ -1669,7 +1672,7 @@ class VoiceDaemon:
             # Build minimal pipeline components
             stt = _build_stt(self.cfg.local_stt_model)
             llm = _build_llm(self.cfg.llm_model, CONSENT_SYSTEM_PROMPT)
-            tts = _build_tts(self.cfg.kokoro_voice)
+            tts = _build_tts(self.cfg.voxtral_voice_id)
 
             # Register consent tools (only 2: record_decision, request_clarification)
             consent_state = build_consent_tools_for_llm(
