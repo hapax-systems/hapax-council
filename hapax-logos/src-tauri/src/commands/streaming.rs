@@ -99,7 +99,8 @@ pub async fn cancel_stream_and_server(app: AppHandle, stream_id: u64) -> Result<
 
     // Tell FastAPI to cancel the server-side run
     let url = format!("{}/api/agents/runs/current", LOGOS_BASE);
-    let _ = reqwest::Client::new().delete(&url).send().await;
+    let client = app.state::<super::proxy::HttpClient>();
+    let _ = client.0.delete(&url).send().await;
 
     Ok(())
 }
@@ -115,7 +116,7 @@ async fn run_sse_stream(
     cancel_rx: oneshot::Receiver<()>,
 ) -> Result<(), String> {
     let url = format!("{}{}", LOGOS_BASE, path);
-    let client = reqwest::Client::new();
+    let client = app.state::<super::proxy::HttpClient>().0.clone();
 
     let method_str = method.as_deref().unwrap_or("POST");
     let req_builder = match method_str {
@@ -147,6 +148,7 @@ async fn run_sse_stream(
     let mut byte_stream = resp.bytes_stream();
     let mut buffer = String::new();
     let mut current_event = String::from("message");
+    let mut data_lines: Vec<String> = Vec::new();
 
     // Use tokio::select! to allow cancellation
     let mut cancel_rx = cancel_rx;
@@ -176,25 +178,36 @@ async fn run_sse_stream(
                         let text = String::from_utf8_lossy(&bytes);
                         buffer.push_str(&text);
 
-                        // Parse SSE format: lines separated by \n
+                        // Parse SSE format per spec: accumulate data lines,
+                        // dispatch on empty line (event boundary)
                         while let Some(newline_pos) = buffer.find('\n') {
                             let line = buffer[..newline_pos].to_string();
                             buffer = buffer[newline_pos + 1..].to_string();
 
-                            if line.starts_with("event: ") {
-                                current_event = line[7..].trim().to_string();
-                            } else if line.starts_with("data: ") {
-                                let data = line[6..].to_string();
-                                let _ = app.emit(
-                                    event_name,
-                                    StreamPayload::Event {
-                                        event: current_event.clone(),
-                                        data,
-                                    },
-                                );
-                                current_event = String::from("message");
+                            let line = line.trim_end_matches('\r');
+
+                            if line.is_empty() {
+                                // Empty line = event boundary, dispatch accumulated data
+                                if !data_lines.is_empty() {
+                                    let data = data_lines.join("\n");
+                                    let _ = app.emit(
+                                        event_name,
+                                        StreamPayload::Event {
+                                            event: current_event.clone(),
+                                            data,
+                                        },
+                                    );
+                                    data_lines.clear();
+                                    current_event = String::from("message");
+                                }
+                            } else if let Some(rest) = line.strip_prefix("event: ") {
+                                current_event = rest.trim().to_string();
+                            } else if let Some(rest) = line.strip_prefix("data: ") {
+                                data_lines.push(rest.to_string());
+                            } else if let Some(rest) = line.strip_prefix("data:") {
+                                data_lines.push(rest.to_string());
                             }
-                            // Empty lines and other lines (comments, etc.) are ignored
+                            // Other lines (comments starting with :, id:, retry:) ignored
                         }
                     }
                 }

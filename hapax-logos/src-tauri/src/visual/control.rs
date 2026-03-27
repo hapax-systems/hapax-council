@@ -131,7 +131,7 @@ pub fn set_visual_layer_param(layer: String, opacity: f64) -> bool {
 /// Get a JPEG snapshot of the visual surface.
 #[tauri::command]
 pub fn get_visual_surface_snapshot() -> Result<Vec<u8>, String> {
-    let path = "/dev/shm/hapax-visual/snapshot.jpg";
+    let path = "/dev/shm/hapax-visual/frame.jpg";
     std::fs::read(path).map_err(|e| format!("No visual snapshot: {}", e))
 }
 
