@@ -63,6 +63,8 @@ Logos is a Tauri 2 native app. The frontend speaks **only IPC** — zero browser
 
 **Visual surface in webview:** The wgpu render pipeline (6 techniques, compositor, postprocess) runs on a winit thread and writes JPEG frames to `/dev/shm/hapax-visual/frame.jpg` via turbojpeg. The `VisualSurface` React component fetches frames at 30fps from `:8053` and displays them as a fullscreen background behind terrain regions. The winit window is toggleable (`toggle_visual_window` command) for dual-monitor effects display.
 
+**NVIDIA + Wayland:** webkit2gtk 2.50.6 has a syncobj protocol bug that crashes the app on native Wayland with NVIDIA ([gtk#8056](https://gitlab.gnome.org/GNOME/gtk/-/issues/8056), [tauri#10702](https://github.com/tauri-apps/tauri/issues/10702)). Workaround: `__NV_DISABLE_EXPLICIT_SYNC=1` (set in systemd unit and `.envrc`). See `docs/issues/tauri-wayland-protocol-error.md`.
+
 **Dev workflow:** `pnpm tauri dev` is the only dev path. Vite serves assets to the Tauri webview only — no proxy, no exposed API.
 
 ## Council-Specific Conventions
