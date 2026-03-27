@@ -214,29 +214,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True
 
-    start_p = sub.add_parser("start", help="Start the conductor daemon")
-    start_p.add_argument(
-        "--role",
-        default="alpha",
-        choices=["alpha", "beta"],
-        help="Session role (default: alpha)",
-    )
-
-    stop_p = sub.add_parser("stop", help="Stop the conductor daemon (send SIGTERM)")
-    stop_p.add_argument(
-        "--role",
-        default="alpha",
-        choices=["alpha", "beta"],
-        help="Session role (default: alpha)",
-    )
-
-    status_p = sub.add_parser("status", help="Print JSON status summary from /dev/shm")
-    status_p.add_argument(
-        "--role",
-        default="alpha",
-        choices=["alpha", "beta"],
-        help="Session role (default: alpha)",
-    )
+    sub.add_parser("start", help="Start the conductor daemon")
+    sub.add_parser("stop", help="Stop the conductor daemon (send SIGTERM)")
+    sub.add_parser("status", help="Print JSON status summary from /dev/shm")
 
     return parser
 

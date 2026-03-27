@@ -71,23 +71,45 @@ def load_topology(path: Path | None = None) -> TopologyConfig:
         log.exception("Failed to parse topology config at %s; using defaults", config_path)
         return TopologyConfig()
 
-    monitors = [
-        MonitorConfig(
-            name=m["name"],
-            width=m.get("width", 0),
-            height=m.get("height", 0),
-        )
-        for m in raw.get("monitors", [])
-    ]
+    raw_monitors = raw.get("monitors", {})
+    if isinstance(raw_monitors, dict):
+        monitors = [
+            MonitorConfig(
+                name=v.get("name", k),
+                width=v.get("width", 0) if isinstance(v, dict) else 0,
+                height=v.get("height", 0) if isinstance(v, dict) else 0,
+            )
+            for k, v in raw_monitors.items()
+        ]
+    else:
+        monitors = [
+            MonitorConfig(
+                name=m["name"],
+                width=m.get("width", 0),
+                height=m.get("height", 0),
+            )
+            for m in raw_monitors
+        ]
 
-    workspaces = [
-        WorkspaceConfig(
-            id=w["id"],
-            name=w.get("name", ""),
-            monitor=w.get("monitor", ""),
-        )
-        for w in raw.get("workspaces", [])
-    ]
+    raw_workspaces = raw.get("workspaces", {})
+    if isinstance(raw_workspaces, dict):
+        workspaces = [
+            WorkspaceConfig(
+                id=int(k),
+                name=v.get("purpose", "") if isinstance(v, dict) else "",
+                monitor=v.get("monitor", "") if isinstance(v, dict) else "",
+            )
+            for k, v in raw_workspaces.items()
+        ]
+    else:
+        workspaces = [
+            WorkspaceConfig(
+                id=w["id"],
+                name=w.get("name", ""),
+                monitor=w.get("monitor", ""),
+            )
+            for w in raw_workspaces
+        ]
 
     pw_raw = raw.get("playwright", {})
     playwright = PlaywrightConfig(

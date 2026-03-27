@@ -6,7 +6,14 @@ INPUT="$(cat)"
 SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 [ -z "$SESSION_ID" ] && exit 0
 
-SOCK="/run/user/$(id -u)/conductor-${SESSION_ID}.sock"
+# Detect role from worktree
+ROLE="alpha"
+CWD="$(pwd)"
+if echo "$CWD" | grep -q "\-\-beta"; then
+    ROLE="beta"
+fi
+
+SOCK="/run/user/$(id -u)/conductor-${ROLE}.sock"
 [ -S "$SOCK" ] || exit 0
 
 TOOL_NAME="$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)"
