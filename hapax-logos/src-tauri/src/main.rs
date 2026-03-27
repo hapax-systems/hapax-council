@@ -133,6 +133,8 @@ fn main() {
             commands::directive_watcher::spawn_directive_watcher(app.handle().clone());
             // Spawn headless browser engine for agent web access
             browser::commands::spawn_browser_engine(app.handle().clone());
+            // Spawn command relay WebSocket server for external clients (MCP, voice)
+            commands::relay::spawn_relay_server(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -5,6 +5,7 @@ pub mod governance;
 pub mod health;
 pub mod introspect;
 pub mod proxy;
+pub mod relay;
 pub mod state;
 pub mod streaming;
 pub mod studio;

@@ -16,7 +16,7 @@ import { registerNavCommands } from "../lib/commands/nav";
 import { registerSplitCommands, type SplitState } from "../lib/commands/split";
 import { registerDataCommands } from "../lib/commands/data";
 import { registerBuiltinSequences } from "../lib/commands/sequences";
-import { connectCommandRelay } from "../lib/commandRelay";
+import { connectCommandBridge } from "../lib/commandBridge";
 import { useTerrainDisplay, useTerrainActions, type RegionName, type Depth, type InvestigationTab } from "./TerrainContext";
 
 const CommandRegistryCtx = createContext<CommandRegistry | null>(null);
@@ -180,8 +180,8 @@ export function CommandRegistryProvider({
     };
     (window as unknown as Record<string, unknown>).__logos = api;
 
-    // Connect to backend WS relay for external consumers (MCP, voice)
-    const disconnectRelay = connectCommandRelay(registry);
+    // Connect to Rust command relay via Tauri events (external consumers: MCP, voice)
+    const disconnectRelay = connectCommandBridge(registry);
 
     return () => {
       disconnectRelay();
