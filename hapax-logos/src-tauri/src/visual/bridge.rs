@@ -158,7 +158,7 @@ impl<R: Runtime> VisualApp<R> {
         gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        if let Some(shm) = &self.shm_output {
+        if let Some(shm) = &mut self.shm_output {
             if self.frame_count % 2 == 0 {
                 gpu.device.poll(wgpu::Maintain::Wait);
                 shm.write_frame();

@@ -3,6 +3,9 @@ use std::io::Write;
 
 const OUTPUT_DIR: &str = "/dev/shm/hapax-visual";
 const OUTPUT_FILE: &str = "/dev/shm/hapax-visual/frame.bgra";
+const JPEG_FILE: &str = "/dev/shm/hapax-visual/frame.jpg";
+const JPEG_TMP_FILE: &str = "/dev/shm/hapax-visual/frame.jpg.tmp";
+const JPEG_QUALITY: i32 = 80;
 
 /// Reads back frames from GPU to a staging buffer, then writes BGRA data to /dev/shm.
 pub struct ShmOutput {
@@ -13,6 +16,7 @@ pub struct ShmOutput {
     /// Padded bytes per row (wgpu requires alignment to 256)
     padded_bytes_per_row: u32,
     enabled: bool,
+    jpeg_compressor: Option<turbojpeg::Compressor>,
 }
 
 impl ShmOutput {
@@ -29,6 +33,12 @@ impl ShmOutput {
             mapped_at_creation: false,
         });
 
+        let jpeg_compressor = turbojpeg::Compressor::new().ok().map(|mut c| {
+            c.set_quality(JPEG_QUALITY).ok();
+            c.set_subsamp(turbojpeg::Subsamp::Sub2x2).ok();
+            c
+        });
+
         Self {
             staging_buffer,
             width,
@@ -36,6 +46,7 @@ impl ShmOutput {
             bytes_per_row,
             padded_bytes_per_row,
             enabled: true,
+            jpeg_compressor,
         }
     }
 
@@ -73,9 +84,44 @@ impl ShmOutput {
         );
     }
 
+    /// Convert BGRA pixels to RGB and encode as JPEG, writing atomically to /dev/shm.
+    fn write_jpeg(&mut self, bgra_data: &[u8]) {
+        let compressor = match self.jpeg_compressor.as_mut() {
+            Some(c) => c,
+            None => return,
+        };
+
+        let pixel_count = (self.width * self.height) as usize;
+        let mut rgb = Vec::with_capacity(pixel_count * 3);
+        for chunk in bgra_data.chunks_exact(4) {
+            rgb.push(chunk[2]); // R (from BGRA[2])
+            rgb.push(chunk[1]); // G (from BGRA[1])
+            rgb.push(chunk[0]); // B (from BGRA[0])
+        }
+
+        let image = turbojpeg::Image {
+            pixels: rgb.as_slice(),
+            width: self.width as usize,
+            pitch: self.width as usize * 3,
+            height: self.height as usize,
+            format: turbojpeg::PixelFormat::RGB,
+        };
+
+        match compressor.compress_to_vec(image) {
+            Ok(jpeg_data) => {
+                if let Ok(mut file) = fs::File::create(JPEG_TMP_FILE) {
+                    if file.write_all(&jpeg_data).is_ok() {
+                        fs::rename(JPEG_TMP_FILE, JPEG_FILE).ok();
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
     /// Map the staging buffer and write to /dev/shm. Call after queue submit.
     /// This is async — uses buffer mapping callback.
-    pub fn write_frame(&self) {
+    pub fn write_frame(&mut self) {
         if !self.enabled {
             return;
         }
@@ -103,27 +149,32 @@ impl ShmOutput {
 
         let data = slice.get_mapped_range();
 
-        // Write BGRA data, stripping row padding if needed
-        if padded_bytes_per_row == bytes_per_row {
-            // No padding — write directly
-            if let Ok(mut file) = fs::File::create(OUTPUT_FILE) {
-                file.write_all(&data).ok();
-            }
+        // Build clean pixel data (strip row padding if needed).
+        // Always produce an owned Vec so we can drop the mapped range before
+        // calling write_jpeg (which needs &mut self).
+        let clean_data: Vec<u8> = if padded_bytes_per_row == bytes_per_row {
+            data.to_vec()
         } else {
-            // Strip padding
             let mut buf = Vec::with_capacity((bytes_per_row * height) as usize);
             for row in 0..height {
                 let start = (row * padded_bytes_per_row) as usize;
                 let end = start + bytes_per_row as usize;
                 buf.extend_from_slice(&data[start..end]);
             }
-            if let Ok(mut file) = fs::File::create(OUTPUT_FILE) {
-                file.write_all(&buf).ok();
-            }
-        }
+            buf
+        };
 
+        // Release GPU mapping before further work
         drop(data);
         self.staging_buffer.unmap();
+
+        // Write raw BGRA
+        if let Ok(mut file) = fs::File::create(OUTPUT_FILE) {
+            file.write_all(&clean_data).ok();
+        }
+
+        // Write JPEG
+        self.write_jpeg(&clean_data);
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
