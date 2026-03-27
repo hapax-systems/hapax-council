@@ -38,7 +38,7 @@ interface Props {
  * before React re-renders. This ensures query() returns post-execution
  * state without waiting for a render cycle.
  */
-function createStateMirror<T extends Record<string, unknown>>(initial: T) {
+function createStateMirror<T extends object>(initial: T) {
   let state = { ...initial };
   return {
     get: () => state,

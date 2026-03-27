@@ -14,7 +14,7 @@ import { useRecordingToggle } from "../../api/hooks";
 import { registerStudioCommands, type StudioState } from "../../lib/commands/studio";
 import { registerDetectionCommands, type DetectionState } from "../../lib/commands/detection";
 
-function createMirror<T extends Record<string, unknown>>(initial: T) {
+function createMirror<T extends object>(initial: T) {
   let state = { ...initial };
   return {
     get: () => state,
