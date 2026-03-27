@@ -129,11 +129,15 @@ class SlotPipeline:
             gi.require_version("Gst", "1.0")
             from gi.repository import Gst
 
-            result = Gst.Structure.from_string("uniforms, " + ", ".join(parts))
+            uniform_str = "uniforms, " + ", ".join(parts)
+            result = Gst.Structure.from_string(uniform_str)
             if result and result[0]:
                 slot.set_property("uniforms", result[0])
+                log.debug("Set uniforms on slot %d: %s", slot_idx, uniform_str)
+            else:
+                log.warning("Failed to parse uniform string: %s", uniform_str)
         except (ImportError, ValueError):
-            pass
+            log.exception("Failed to set uniforms on slot %d", slot_idx)
 
     @property
     def num_slots(self) -> int:
