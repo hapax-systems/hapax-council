@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-27 (session 18 — TTS engine swap: Kokoro+Piper → Voxtral API)
+**Last updated:** 2026-03-27 (session 18 — TTS swap + vocal chain capability + formant reference voice)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -393,6 +393,12 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 **Tests:** 17 Piper/Kokoro tests removed, 11 Voxtral tests added. 44 TTS-related tests passing. Conversation pipeline comment change required DEVIATION-021 (comment-only, no functional impact).
 
 **Impact on grounding research:** None. TTS is downstream of all grounding evaluation. Sample rate unchanged (24kHz). Audio output format unchanged (PCM int16 mono). The `.synthesize(text, use_case)` interface is preserved. Latency profile shifts from ~100ms local to ~0.7s API streaming — this affects conversational cadence timing but not grounding mechanics. If API latency proves problematic for experiment conditions, local inference via vLLM-Omni is available as fallback.
+
+**Formant reference voice.** eSpeak-NG Reed (Klatt mode 6, 26s, 24kHz) selected as Voxtral voice cloning reference. Chosen for lowest spectral flatness (0.30) among tested voices — cleanest isolated formant peaks for downstream hardware processing. Stored at `~/.local/share/hapax-voice/formant-refs/reed-24k.wav`, wired as default `voxtral_ref_audio`.
+
+**Vocal chain capability (9 semantic MIDI dimensions).** Created `VocalChainCapability` implementing the `Capability` protocol. Nine expressive dimensions (intensity, tension, diffusion, degradation, depth, pitch displacement, temporal distortion, spectral color, coherence) indexed as independent `CapabilityRecord`s in Qdrant `affordances` collection. Each maps to 2-6 MIDI CC parameters on Evil Pet (ch1) and Torso S-4 (ch2) via piecewise linear curves. Hold-and-decay activation model (0.02/s decay, 500ms interpolation). `MidiOutput` thin mido wrapper with graceful degradation. 37 new tests (9 MidiOutput + 28 VocalChainCapability). Control granularity: sentence/clause level — API streaming latency makes sub-sentence synchronization infeasible.
+
+**Impact on grounding research:** None. Vocal chain processes audio downstream of PyAudio output, external to the software pipeline. No experiment code touched. MIDI CC output is additive — if hardware is disconnected, MidiOutput becomes a no-op. Voice character modulation operates at conversation-speed (stimmung shifts, DMN evaluations), not turn-level, so it does not interfere with grounding mechanics or response timing.
 
 ## Operator Research Preferences
 

@@ -557,6 +557,20 @@ Voxtral TTS (Mistral API, `voxtral-mini-tts-2603`). 4B params, ~70ms TTFA (H200)
 
 Previous: Kokoro 0.9.4 (af_heart, 82M, ~100ms, local GPU). Replaced because Voxtral offers frontier quality with voice cloning, and the API latency (~0.7s TTFA with PCM streaming) is acceptable for conversational use. Local inference via vLLM-Omni available if API latency becomes problematic or for offline use — waiting on community quantizations.
 
+### Vocal Chain — Hardware Speech Modulation
+
+**Epistemic status: Infrastructure built, not yet exercised live.**
+
+TTS audio routes through two external hardware processors: Endorphin.es Evil Pet (granular synth + filter + saturator + reverb) and Torso S-4 (granular sampler + 48-band resonator + distortion + delay/reverb). Both controlled via MIDI CC.
+
+Nine semantic dimensions indexed independently in Qdrant `affordances` collection: intensity, tension, diffusion, degradation, depth, pitch displacement, temporal distortion, spectral color, coherence. Each maps to 2-6 CC parameters across both devices via piecewise linear curves (transparent → coloring → expressive → transformative → noise).
+
+`VocalChainCapability` implements the `Capability` protocol with hold-and-decay activation. Recruited through the impingement cascade like speech production or fortress governance — stimmung shifts, DMN evaluations, and conversational state changes modulate voice character at sentence/clause granularity without explicit mapping.
+
+Reference voice: eSpeak-NG Reed (Klatt mode 6) — formant-synthesized carrier optimized for hardware processing chain. Lowest spectral flatness (0.30) of tested voices. 26s reference at 24kHz cloned by Voxtral.
+
+Control granularity: sentence/clause level (not phoneme/word). API streaming latency (~0.7s) makes sub-sentence synchronization infeasible.
+
 ---
 
 ## 8. Governance Infrastructure
@@ -1140,6 +1154,11 @@ Consequences: Slightly less natural, but conversational cadence preserved. Super
 Context: Voxtral TTS released (Mistral, 4B params, open weights CC BY-NC). Frontier quality with voice cloning from 3s reference audio. API streaming PCM at 24kHz — same rate as Kokoro, zero downstream changes.
 Decision: Replace Kokoro (local GPU) + Piper (local CPU) with Voxtral via Mistral API. Both local engines fully excised.
 Consequences: Depends on external API (Mistral). Latency ~0.7s TTFA via streaming PCM (vs ~100ms Kokoro local). Gained voice cloning and quality. Local fallback via vLLM-Omni possible when community quantizations appear.
+
+**2026-03-27: Vocal chain — semantic MIDI affordances**
+Context: TTS audio processed through Evil Pet + Torso S-4 hardware chain. Need system state to modulate voice character without explicit parameter mapping.
+Decision: Index 9 expressive dimensions as independent affordances in Qdrant. Recruit through impingement cascade. Hold-and-decay activation at sentence/clause granularity. eSpeak-NG Reed (Klatt formant synthesis) as reference voice for Voxtral cloning — optimized for hardware filter interaction.
+Consequences: Voice character becomes a first-class capability alongside speech production. System can express state through timbre, not just words. Requires Evil Pet + S-4 hardware connected via MIDI.
 
 **2026-03-16: Lightweight pipeline over Pipecat**
 Context: Pipecat framework was 600+ lines of integration code with framework-imposed constraints.
