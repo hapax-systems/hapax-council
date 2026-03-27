@@ -150,7 +150,8 @@ export function ChatInput() {
 
       const dim = args[0] || "";
       const url = dim ? `/api/profile/${dim}` : "/api/profile";
-      const data = await api.get<Record<string, unknown>>(url);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data: any = await api.get(url);
 
       if (data.dimensions) {
         const lines = data.dimensions.map(
