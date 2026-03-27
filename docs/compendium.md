@@ -1,8 +1,10 @@
 # The Hapax Compendium
 
-**Epistemic status of this document:** Working. Initially written 2026-03-18 from exhaustive codebase audit. Updated 2026-03-19 to incorporate conversational continuity research and temporal classification system. Covers implemented, attempted, and projected subsystems — clearly distinguished throughout.
+**Epistemic status of this document:** Working. Initially written 2026-03-18 by Claude (alpha session) from exhaustive codebase audit. Updated 2026-03-19 to incorporate conversational continuity research (beta session) and temporal classification system (alpha session). Covers everything that exists, everything that was attempted, and everything that is projected — clearly distinguished throughout.
 
-**Scope:** Complete technical reference for the Hapax system. Each subsystem entry is self-contained. Cross-references use `→ Section Name` notation. Mathematical notation is kept informal; formal proofs reside in the referenced research documents.
+**Audience:** The operator. You built this. This document exists so you can hold the whole system in your head, find anything, and restart any thread from cold. Strong intuitions about formal systems, not PhD-level notation. Math stays dumb, explanations stay smart.
+
+**How to read this:** Front-to-back for the first pass to build the full mental model. Then by section for reference. Every subsystem entry is self-contained. Cross-references use `→ Section Name` notation.
 
 ---
 
@@ -39,11 +41,11 @@
 
 ### What This System Is
 
-Hapax is externalized executive function infrastructure designed for a single operator. It is a personal operating environment — not an application framework, not a product — running on a single workstation (CachyOS, RTX 3090, 64GB RAM).
+Hapax is externalized executive function infrastructure for a single operator with ADHD and autism. It is a personal operating environment — not an app, not a framework, not a product. It runs on one machine (CachyOS, RTX 3090, 64GB RAM) and serves one person.
 
-The system offloads cognitive overhead: tracking open loops, maintaining continuity across work sessions, monitoring its own health, surfacing items requiring attention, and handling routine maintenance autonomously. 45+ agents coordinate through the filesystem. A voice daemon provides conversational interaction. A visual compositor renders system state as an ambient display. A reactive engine watches for changes and cascades downstream work.
+The system offloads cognitive overhead: tracking open loops, maintaining continuity across work sessions, monitoring its own health, surfacing what needs attention, and handling routine maintenance autonomously. 45+ agents coordinate through the filesystem. A voice daemon provides conversational interaction. A visual compositor renders the system's state as an ambient display. A reactive engine watches for changes and cascades downstream work.
 
-The governing hypothesis: alignment and governance are not costs applied to a useful system — they are the system's structural foundation. The axioms that constrain system behavior are the same axioms that make it useful. This is the claim the system exists to test.
+The governing claim: alignment and governance are not costs bolted onto a useful system — they are the system's structural foundation. The axioms that constrain what the system will do are the same axioms that make it useful. This is the conviction that the system exists to test.
 
 ### What This System Is Not
 
