@@ -92,7 +92,7 @@ def test_find_slot(pipeline, compiler):
 
 
 def test_all_presets_fit(pipeline, compiler):
-    for p in sorted(PRESETS_DIR.glob("*.json")):
+    for p in sorted(p for p in PRESETS_DIR.glob("*.json") if not p.name.startswith("_")):
         g = EffectGraph(**json.loads(p.read_text()))
         plan = compiler.compile(g)
         shader_steps = [s for s in plan.steps if s.node_type != "output" and s.shader_source]

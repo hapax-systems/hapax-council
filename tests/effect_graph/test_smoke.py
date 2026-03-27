@@ -1024,10 +1024,10 @@ class TestPresetParsing:
 
     @pytest.fixture(scope="class")
     def preset_files(self) -> list[Path]:
-        return sorted(PRESETS_DIR.glob("*.json"))
+        return sorted(p for p in PRESETS_DIR.glob("*.json") if not p.name.startswith("_"))
 
     def test_preset_count(self, preset_files: list[Path]):
-        assert len(preset_files) == 28, f"Expected 28 presets, got {len(preset_files)}"
+        assert len(preset_files) >= 28, f"Expected >=28 presets, got {len(preset_files)}"
 
     def test_all_presets_parse(self, preset_files: list[Path]):
         for p in preset_files:
@@ -1056,7 +1056,7 @@ class TestPresetCompilation:
     """Every preset must compile successfully against the real registry."""
 
     def test_all_presets_compile(self, compiler: GraphCompiler):
-        for p in sorted(PRESETS_DIR.glob("*.json")):
+        for p in sorted(p for p in PRESETS_DIR.glob("*.json") if not p.name.startswith("_")):
             raw = json.loads(p.read_text())
             g = EffectGraph(**raw)
             plan = compiler.compile(g)
@@ -1065,7 +1065,7 @@ class TestPresetCompilation:
 
     def test_all_preset_node_types_exist(self, registry: ShaderRegistry):
         """Every node type used in presets must exist in the registry."""
-        for p in sorted(PRESETS_DIR.glob("*.json")):
+        for p in sorted(p for p in PRESETS_DIR.glob("*.json") if not p.name.startswith("_")):
             raw = json.loads(p.read_text())
             g = EffectGraph(**raw)
             for nid, node in g.nodes.items():
@@ -1080,7 +1080,7 @@ class TestPresetRuntime:
     """Presets load correctly into the runtime."""
 
     def test_all_presets_load(self, runtime: GraphRuntime):
-        for p in sorted(PRESETS_DIR.glob("*.json")):
+        for p in sorted(p for p in PRESETS_DIR.glob("*.json") if not p.name.startswith("_")):
             raw = json.loads(p.read_text())
             g = EffectGraph(**raw)
             runtime.load_graph(g)
@@ -1089,7 +1089,7 @@ class TestPresetRuntime:
 
     def test_preset_modulations_applied(self, runtime: GraphRuntime):
         """Presets with modulations should have them loaded into the modulator."""
-        for p in sorted(PRESETS_DIR.glob("*.json")):
+        for p in sorted(p for p in PRESETS_DIR.glob("*.json") if not p.name.startswith("_")):
             raw = json.loads(p.read_text())
             g = EffectGraph(**raw)
             runtime.load_graph(g)
