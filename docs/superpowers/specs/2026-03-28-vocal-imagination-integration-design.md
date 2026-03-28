@@ -92,10 +92,42 @@ This goes through the normal conversation LLM → TTS pipeline. The MIDI vocal c
 | `tests/test_imagination_context.py` | Context formatting, salience grading, empty stream, malformed lines |
 | `tests/test_proactive_gate.py` | Each gate condition independently, combined pass/fail, cooldown behavior |
 
+## Reflective Feedback — Audio Field Perception
+
+### General Principle (shared with visual surface)
+
+A surface is not the system's output — it is the complete perceptual field in a modality. The audio surface is the full audio environment: the system's TTS reflected through the room, the MIDI effects chain applied to it, the operator's voice, ambient room sound, music, desk activity — everything the microphone captures. The system hears its own expression IN the environment, not in isolation.
+
+### Audio Field
+
+The microphone input IS the audio field. It captures exactly what the audio environment sounds like from the system's position — the system's voice reflected back through the room, mixed with the operator, mixed with everything else. This is already captured by the voice pipeline (Blue Yeti → PyAudio → 16kHz frames).
+
+The audio field feeds back to the DMN via the existing perception state. The key insight: the system's own TTS output passes through the MIDI effects chain (Evil Pet + S-4), exits the speakers, reflects through the room, and re-enters through the microphone — along with the operator's voice and ambient sound. The DMN already reads perception state (activity, audio_energy, flow_score). The audio field is already being perceived — the system just doesn't currently know which parts of what it hears are its own expression.
+
+### What's Needed
+
+A marker in the perception state indicating when the system is hearing its own output reflected back. The voice daemon already knows when TTS is playing (it sent the audio). A `self_hearing` flag or `tts_active` state in the perception snapshot tells the DMN evaluative tick: "the audio I'm perceiving right now includes my own voice." This lets the DMN evaluate not just what it said (the text), but what it sounded like (the audio field with MIDI effects applied).
+
+### Sensor Integration
+
+```python
+"surfaces": {
+    "audio": {
+        "tts_active": True,          # system is currently hearing its own output
+        "audio_energy": 0.42,        # RMS of the full audio field
+        "activity": "speech",        # what's happening in the audio field
+        "imagination_fragment_id": "abc123",  # which imagination drove this utterance
+    },
+}
+```
+
+This uses existing perception data — no new audio capture needed. The `tts_active` flag is the only new signal, set by the voice daemon when TTS playback begins and cleared when it ends.
+
 ## Integration Points (modifications, not new files)
 
 - Voice daemon conversation pipeline: inject `format_imagination_context()` into system prompt assembly
 - Imagination loop escalation path: call `ProactiveGate.should_speak()` on high-salience fragments
+- Voice daemon TTS path: set `tts_active` flag in perception state during playback
 
 These integration modifications are deferred to a separate voice daemon wiring task after all 3 sub-projects are complete.
 

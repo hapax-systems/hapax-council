@@ -186,40 +186,33 @@ Base behavior (all dimensions at 0.0): content appears centered at moderate scal
 
 The result is that content appears as a field phenomenon, not a UI element. A camera frame doesn't pop up in a rectangle — it materializes through the procedural texture, its edges dissolving into the RD patterns, its position drifting with the wave modulation, its scale breathing with the ambient speed. Text doesn't render in a box — it emerges from the gradient field, its letterforms blending with voronoi cell boundaries at low coherence.
 
-## Reflective Feedback — DMN Perceives Its Own Imagination
+## Reflective Feedback — Surface Field Perception
 
-The visual surface produces a rendered frame that combines procedural techniques, content textures, and dimensional coloring. This rendered output is itself perceptible — and the DMN should perceive it.
+### General Principle
 
-### Why
+A surface is not the system's output — it is the complete perceptual field in a modality. The visual surface is the full rendered frame (procedural + content + postprocess). The audio surface is the full audio environment (system TTS + MIDI effects reflected through the room + operator voice + ambient sound + music). Every expressive surface produces a field artifact that feeds back to the DMN as a sensor source.
 
-The imagination loop assesses its own salience before rendering. But the rendered combination of content + procedural + dimensions can produce visual results the imagination loop didn't predict. The system should be able to be surprised by what its imagination looks like — the "oh wait, that's interesting" response to seeing one's own thought rendered.
+This principle applies uniformly across modalities. The DMN sensor module provides a generic `read_surface_output(surface_name)` pattern. Each surface writes its field capture to its shm directory. The DMN perceives the field, not the system's contribution to it.
 
-Without reflective feedback, escalation can only happen based on the LLM's pre-render text assessment. With it, the DMN's evaluative tick can observe the visual output and detect patterns, juxtapositions, or emergent qualities that weren't in the fragment's narrative.
+### Visual Field
 
-### Implementation
+The visual surface already writes the complete rendered frame to `/dev/shm/hapax-visual/frame.jpg` via ShmOutput. This IS the visual field — all procedural techniques + content textures + dimensional coloring + postprocess composited together.
 
-The visual surface already writes JPEG frames to `/dev/shm/hapax-visual/frame.jpg` via the ShmOutput module. This is the aggregate rendered output — all procedural techniques + content + postprocess.
-
-A new DMN sensor source reads this frame periodically (not every frame — every evaluative tick, ~30s). The frame is either:
-
-**A.** Described by a multimodal LLM (image → text) and added to the observation buffer as a visual observation alongside sensor data.
-
-**B.** Stored as an embedding (CLIP or similar) and compared to previous frames for change detection.
-
-For the initial implementation, use **A** — pass the JPEG frame as multimodal input to a vision-capable model (gemini-flash via LiteLLM, which supports image input) during the evaluative tick. This runs alongside the existing trajectory assessment, not replacing it.
+The DMN's evaluative tick reads this frame periodically (~30s) and passes it as multimodal input to a vision-capable model (gemini-flash via LiteLLM). The model describes what it sees, and that description enters the observation buffer alongside sensor data. The DMN can be surprised by what the rendered combination looks like — juxtapositions, emergent patterns, aesthetic qualities not predicted by the fragment's narrative.
 
 ### Sensor Integration
 
-New field in the DMN sensor snapshot:
 ```python
-"visual_surface": {
-    "frame_path": "/dev/shm/hapax-visual/frame.jpg",
-    "frame_age_s": 0.5,
-    "imagination_fragment_id": "abc123",
+"surfaces": {
+    "visual": {
+        "frame_path": "/dev/shm/hapax-visual/frame.jpg",
+        "frame_age_s": 0.5,
+        "imagination_fragment_id": "abc123",
+    },
 }
 ```
 
-The evaluative tick includes the frame in its LLM context when the imagination loop is active (fragment_id is non-null). This is not every tick — only when imagination content is being rendered.
+The evaluative tick includes surface field data when imagination is active (fragment_id is non-null).
 
 ## Testing
 
