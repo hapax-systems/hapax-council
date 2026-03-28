@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agents.imagination import (
     ESCALATION_THRESHOLD,
+    CadenceController,
     ContentReference,
     ImaginationFragment,
     maybe_escalate,
@@ -196,3 +197,51 @@ class TestMaybeEscalate:
         imp = maybe_escalate(frag)
         assert imp is not None
         assert imp.context["dimensions"] == dims
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Cadence controller tests
+# ---------------------------------------------------------------------------
+
+
+class TestCadenceController:
+    def test_starts_at_base(self) -> None:
+        cc = CadenceController(base_s=12.0, accelerated_s=4.0)
+        assert cc.current_interval() == 12.0
+
+    def test_accelerates_on_continuation_and_salience(self) -> None:
+        cc = CadenceController(base_s=12.0, accelerated_s=4.0, salience_threshold=0.3)
+        frag = _make_fragment(continuation=True, salience=0.5)
+        cc.update(frag)
+        assert cc.current_interval() == 4.0
+
+    def test_no_accelerate_on_low_salience(self) -> None:
+        cc = CadenceController(base_s=12.0, accelerated_s=4.0, salience_threshold=0.3)
+        frag = _make_fragment(continuation=True, salience=0.2)
+        cc.update(frag)
+        assert cc.current_interval() == 12.0
+
+    def test_no_accelerate_without_continuation(self) -> None:
+        cc = CadenceController(base_s=12.0, accelerated_s=4.0, salience_threshold=0.3)
+        frag = _make_fragment(continuation=False, salience=0.8)
+        cc.update(frag)
+        assert cc.current_interval() == 12.0
+
+    def test_decelerates_after_streak(self) -> None:
+        cc = CadenceController(base_s=12.0, accelerated_s=4.0, decel_count=3)
+        # First accelerate
+        cc.update(_make_fragment(continuation=True, salience=0.5))
+        assert cc.current_interval() == 4.0
+        # Three non-continuations
+        for _ in range(3):
+            cc.update(_make_fragment(continuation=False, salience=0.1))
+        assert cc.current_interval() == 12.0
+
+    def test_tpn_doubles_interval(self) -> None:
+        cc = CadenceController(base_s=12.0, accelerated_s=4.0)
+        assert cc.current_interval() == 12.0
+        cc.set_tpn_active(True)
+        assert cc.current_interval() == 24.0
+        # Also doubles accelerated
+        cc.update(_make_fragment(continuation=True, salience=0.5))
+        assert cc.current_interval() == 8.0

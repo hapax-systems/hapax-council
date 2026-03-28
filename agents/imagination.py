@@ -98,6 +98,53 @@ def publish_fragment(
 
 
 # ---------------------------------------------------------------------------
+# Cadence controller
+# ---------------------------------------------------------------------------
+
+
+class CadenceController:
+    """Governs the pacing of imagination ticks based on salience and TPN state."""
+
+    def __init__(
+        self,
+        base_s: float = 12.0,
+        accelerated_s: float = 4.0,
+        salience_threshold: float = 0.3,
+        decel_count: int = 3,
+    ):
+        self._base_s = base_s
+        self._accelerated_s = accelerated_s
+        self._salience_threshold = salience_threshold
+        self._decel_count = decel_count
+        self._accelerated = False
+        self._non_continuation_streak = 0
+        self._tpn_active = False
+
+    def update(self, fragment: ImaginationFragment) -> None:
+        """Update cadence state based on the latest fragment."""
+        if fragment.continuation and fragment.salience > self._salience_threshold:
+            self._accelerated = True
+            self._non_continuation_streak = 0
+        elif not fragment.continuation:
+            self._non_continuation_streak += 1
+            if self._non_continuation_streak >= self._decel_count:
+                self._accelerated = False
+        else:
+            self._non_continuation_streak = 0
+
+    def current_interval(self) -> float:
+        """Return the current tick interval in seconds."""
+        interval = self._accelerated_s if self._accelerated else self._base_s
+        if self._tpn_active:
+            interval *= 2.0
+        return interval
+
+    def set_tpn_active(self, active: bool) -> None:
+        """Set task-positive network active state."""
+        self._tpn_active = active
+
+
+# ---------------------------------------------------------------------------
 # Escalation
 # ---------------------------------------------------------------------------
 
