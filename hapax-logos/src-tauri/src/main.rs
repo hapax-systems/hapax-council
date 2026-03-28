@@ -122,6 +122,7 @@ fn main() {
             commands::streaming::cancel_stream_and_server,
         ])
         .manage(commands::streaming::StreamRegistry::new())
+        .manage(commands::proxy::HttpClient(reqwest::Client::new()))
         .setup(|app| {
             // Spawn the wgpu visual surface on a dedicated thread
             // Skip if HAPAX_NO_VISUAL=1 (useful when visual surface conflicts with Wayland)

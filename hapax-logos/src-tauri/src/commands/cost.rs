@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
 
 const LANGFUSE_URL: &str = "http://127.0.0.1:3000";
 
@@ -34,8 +35,8 @@ struct LangfuseObservation {
 }
 
 #[tauri::command]
-pub async fn get_cost() -> CostSnapshot {
-    match fetch_cost().await {
+pub async fn get_cost(app: AppHandle) -> CostSnapshot {
+    match fetch_cost(&app).await {
         Ok(snapshot) => snapshot,
         Err(e) => {
             log::warn!("Langfuse cost fetch failed: {}", e);
@@ -50,8 +51,8 @@ pub async fn get_cost() -> CostSnapshot {
     }
 }
 
-async fn fetch_cost() -> Result<CostSnapshot, String> {
-    let client = reqwest::Client::new();
+async fn fetch_cost(app: &AppHandle) -> Result<CostSnapshot, String> {
+    let client = app.state::<super::proxy::HttpClient>().0.clone();
 
     // Get observations from last 7 days
     let now = std::time::SystemTime::now()

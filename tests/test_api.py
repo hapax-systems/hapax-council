@@ -23,13 +23,13 @@ class TestAppSkeleton:
         assert data["name"] == "logos-api"
         assert "version" in data
 
-    async def test_cors_headers_present(self, client):
+    async def test_no_cors_in_tauri_mode(self, client):
+        """CORS was removed in Tauri-only migration — all traffic goes through IPC."""
         resp = await client.options(
             "/",
             headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "GET"},
         )
-        assert resp.status_code == 200
-        assert "access-control-allow-origin" in resp.headers
+        assert "access-control-allow-origin" not in resp.headers
 
 
 from dataclasses import dataclass, field
