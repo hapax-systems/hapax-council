@@ -218,3 +218,45 @@ def test_write_state_atomic(tmp_path: Path):
     out_path = tmp_path / "visual-chain-state.json"
     cap.write_state(out_path)
     assert json.loads(out_path.read_text())
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Integration test
+# ---------------------------------------------------------------------------
+
+
+def test_full_activation_cycle(tmp_path: Path):
+    """Full cycle: activate → compute deltas → write shm → decay → write again."""
+    cap = VisualChainCapability(decay_rate=0.5)
+    imp = _make_impingement(strength=0.8)
+    out_path = tmp_path / "visual-chain-state.json"
+
+    # Activate intensity and tension
+    cap.activate_dimension("visual_chain.intensity", imp, 0.8)
+    cap.activate_dimension("visual_chain.tension", imp, 0.4)
+
+    # Write state
+    cap.write_state(out_path)
+    data = json.loads(out_path.read_text())
+    assert data["levels"]["visual_chain.intensity"] == 0.8
+    assert data["levels"]["visual_chain.tension"] == 0.4
+    assert len(data["params"]) > 0
+
+    # Decay 1 second
+    cap.decay(1.0)
+    assert abs(cap.get_dimension_level("visual_chain.intensity") - 0.3) < 0.001
+    assert cap.activation_level > 0.0
+
+    # Write updated state
+    cap.write_state(out_path)
+    data2 = json.loads(out_path.read_text())
+    assert abs(data2["levels"]["visual_chain.intensity"] - 0.3) < 0.001
+
+    # Decay to zero
+    cap.decay(10.0)
+    assert cap.activation_level == 0.0
+
+    # Write zero state — params should all be zero
+    cap.write_state(out_path)
+    data3 = json.loads(out_path.read_text())
+    assert len(data3["levels"]) == 0
