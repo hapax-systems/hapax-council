@@ -1,6 +1,11 @@
 """Tests for the visual chain capability — semantic visual expression."""
 
-from agents.visual_chain import VISUAL_DIMENSIONS, ParameterMapping, param_value_from_level
+from agents.visual_chain import (
+    VISUAL_CHAIN_RECORDS,
+    VISUAL_DIMENSIONS,
+    ParameterMapping,
+    param_value_from_level,
+)
 
 
 def test_param_value_at_zero():
@@ -88,3 +93,17 @@ def test_dimension_names_match_vocal_chain():
     }
     actual_suffixes = {name.split(".", 1)[1] for name in VISUAL_DIMENSIONS}
     assert actual_suffixes == expected_suffixes
+
+
+def test_nine_capability_records():
+    assert len(VISUAL_CHAIN_RECORDS) == 9
+
+
+def test_records_use_visual_layer_aggregator_daemon():
+    for rec in VISUAL_CHAIN_RECORDS:
+        assert rec.daemon == "visual_layer_aggregator"
+
+
+def test_records_are_realtime_latency():
+    for rec in VISUAL_CHAIN_RECORDS:
+        assert rec.operational.latency_class == "realtime"

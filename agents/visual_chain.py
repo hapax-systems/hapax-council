@@ -11,6 +11,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from shared.affordance import CapabilityRecord, OperationalProperties
+
 log = logging.getLogger(__name__)
 
 SHM_PATH = Path("/dev/shm/hapax-visual/visual-chain-state.json")
@@ -182,4 +184,24 @@ VISUAL_DIMENSIONS: dict[str, VisualDimension] = {
             ParameterMapping("physarum", "turn_speed", [(0.0, 0.0), (0.5, 0.15), (1.0, 0.5)]),
         ],
     ),
+}
+
+# CapabilityRecords for Qdrant indexing
+VISUAL_CHAIN_RECORDS = [
+    CapabilityRecord(
+        name=dim.name,
+        description=dim.description,
+        daemon="visual_layer_aggregator",
+        operational=OperationalProperties(latency_class="realtime"),
+    )
+    for dim in VISUAL_DIMENSIONS.values()
+]
+
+# Affordance keywords for can_resolve matching
+VISUAL_CHAIN_AFFORDANCES = {
+    "visual_modulation",
+    "stimmung_shift",
+    "visual_character",
+    "display_texture",
+    "ambient_expression",
 }
