@@ -158,6 +158,69 @@ New file `content_layer.wgsl`:
 - **Python:** Pillow (already available via system packages), httpx (already a dependency), Qdrant client (from shared/config)
 - **Rust:** `image` crate for JPEG decoding (check Cargo.toml, add if needed)
 
+## Dimensional Modulation of Content Geometry
+
+Content has no fixed geometric constraints — no locked positions, no fixed scales, no prescribed regions. Instead, the same 9 expressive dimensions that modulate the procedural techniques and the vocal chain modulate how content appears spatially. Content obeys the same expressive physics as the rest of the visual field.
+
+### Dimension → Spatial Mapping
+
+| Dimension | Spatial Effect on Content |
+|-----------|-------------------------|
+| **intensity** | Scale + opacity. Higher intensity = larger, more opaque presence. |
+| **tension** | Edge sharpness. Higher tension = crisper borders. Lower = softer feather. |
+| **diffusion** | Spatial scatter. Higher diffusion = content fragments into multiple smaller instances, spread across the field. |
+| **degradation** | Noise/distortion applied to content texture. Pixel displacement, scanline artifacts. |
+| **depth** | Recession. Higher depth = content shrinks, moves toward periphery, darkens. |
+| **pitch_displacement** | Spatial drift. Content position shifts/rotates over time. Higher = more displacement from center. |
+| **temporal_distortion** | Animation speed of drift/breathing. Can freeze (low) or accelerate (high). |
+| **spectral_color** | Color treatment applied to content (warmth/chroma shift, same as gradient). |
+| **coherence** | Structural integrity. Low coherence = content breaks apart, dissolves into procedural field. High = recognizable, intact. |
+
+### Implementation
+
+The content_layer.wgsl shader receives the 9 dimension values as uniforms. Each content texture's UV coordinates, opacity, edge feathering, and color treatment are computed per-pixel from these dimensions. No fixed layout — the shader generates all spatial properties procedurally from the dimensional state.
+
+Base behavior (all dimensions at 0.0): content appears centered at moderate scale (~40% of frame), fully feathered edges, static, at natural color. As dimensions activate, the appearance departs from this neutral state.
+
+### Cloud/Field Aesthetic
+
+The result is that content appears as a field phenomenon, not a UI element. A camera frame doesn't pop up in a rectangle — it materializes through the procedural texture, its edges dissolving into the RD patterns, its position drifting with the wave modulation, its scale breathing with the ambient speed. Text doesn't render in a box — it emerges from the gradient field, its letterforms blending with voronoi cell boundaries at low coherence.
+
+## Reflective Feedback — DMN Perceives Its Own Imagination
+
+The visual surface produces a rendered frame that combines procedural techniques, content textures, and dimensional coloring. This rendered output is itself perceptible — and the DMN should perceive it.
+
+### Why
+
+The imagination loop assesses its own salience before rendering. But the rendered combination of content + procedural + dimensions can produce visual results the imagination loop didn't predict. The system should be able to be surprised by what its imagination looks like — the "oh wait, that's interesting" response to seeing one's own thought rendered.
+
+Without reflective feedback, escalation can only happen based on the LLM's pre-render text assessment. With it, the DMN's evaluative tick can observe the visual output and detect patterns, juxtapositions, or emergent qualities that weren't in the fragment's narrative.
+
+### Implementation
+
+The visual surface already writes JPEG frames to `/dev/shm/hapax-visual/frame.jpg` via the ShmOutput module. This is the aggregate rendered output — all procedural techniques + content + postprocess.
+
+A new DMN sensor source reads this frame periodically (not every frame — every evaluative tick, ~30s). The frame is either:
+
+**A.** Described by a multimodal LLM (image → text) and added to the observation buffer as a visual observation alongside sensor data.
+
+**B.** Stored as an embedding (CLIP or similar) and compared to previous frames for change detection.
+
+For the initial implementation, use **A** — pass the JPEG frame as multimodal input to a vision-capable model (gemini-flash via LiteLLM, which supports image input) during the evaluative tick. This runs alongside the existing trajectory assessment, not replacing it.
+
+### Sensor Integration
+
+New field in the DMN sensor snapshot:
+```python
+"visual_surface": {
+    "frame_path": "/dev/shm/hapax-visual/frame.jpg",
+    "frame_age_s": 0.5,
+    "imagination_fragment_id": "abc123",
+}
+```
+
+The evaluative tick includes the frame in its LLM context when the imagination loop is active (fragment_id is non-null). This is not every tick — only when imagination content is being rendered.
+
 ## Testing
 
 ### Python
