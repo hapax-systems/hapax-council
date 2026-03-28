@@ -328,6 +328,29 @@ const VISUAL_STATE_PATH: &str = "/dev/shm/hapax-compositor/visual-layer-state.js
 const STIMMUNG_PATH: &str = "/dev/shm/hapax-stimmung/state.json";
 const CONTROL_PATH: &str = "/dev/shm/hapax-visual/control.json";
 const VISUAL_CHAIN_PATH: &str = "/dev/shm/hapax-visual/visual-chain-state.json";
+const IMAGINATION_CURRENT_PATH: &str = "/dev/shm/hapax-imagination/current.json";
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ImaginationState {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub continuation: bool,
+    #[serde(default)]
+    pub dimensions: HashMap<String, f64>,
+    #[serde(default)]
+    pub content_references: Vec<ImaginationContentRef>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ImaginationContentRef {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub salience: f64,
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct VisualChainState {
@@ -347,6 +370,7 @@ pub struct StateReader {
     pub visual: VisualLayerState,
     pub stimmung: SystemStimmung,
     pub smoothed: SmoothedParams,
+    pub imagination: ImaginationState,
     last_poll: Instant,
 }
 
@@ -356,6 +380,7 @@ impl StateReader {
             visual: VisualLayerState::default(),
             stimmung: SystemStimmung::default(),
             smoothed: SmoothedParams::default(),
+            imagination: ImaginationState::default(),
             last_poll: Instant::now(),
         };
         reader.poll_now();
@@ -390,6 +415,10 @@ impl StateReader {
                 .into_iter()
                 .map(|(k, v)| (k, v as f32))
                 .collect();
+        }
+        // Read imagination state for content layer
+        if let Some(img) = Self::read_json::<ImaginationState>(IMAGINATION_CURRENT_PATH) {
+            self.imagination = img;
         }
         // Read visual chain state for impingement-driven deltas
         if let Some(chain) = Self::read_json::<VisualChainState>(VISUAL_CHAIN_PATH) {
