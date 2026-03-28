@@ -10,8 +10,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from shared.affordance import CapabilityRecord, OperationalProperties
+from shared.impingement import Impingement
 
 log = logging.getLogger(__name__)
 
@@ -205,3 +207,110 @@ VISUAL_CHAIN_AFFORDANCES = {
     "display_texture",
     "ambient_expression",
 }
+
+
+class VisualChainCapability:
+    """Visual chain as a Capability — recruited for expressive visual modulation."""
+
+    def __init__(self, decay_rate: float = 0.02) -> None:
+        self._decay_rate = decay_rate
+        self._levels: dict[str, float] = {name: 0.0 for name in VISUAL_DIMENSIONS}
+        self._activation_level = 0.0
+
+    @property
+    def name(self) -> str:
+        return "visual_chain"
+
+    @property
+    def affordance_signature(self) -> set[str]:
+        return VISUAL_CHAIN_AFFORDANCES
+
+    @property
+    def activation_cost(self) -> float:
+        return 0.01
+
+    @property
+    def activation_level(self) -> float:
+        return self._activation_level
+
+    @property
+    def consent_required(self) -> bool:
+        return False
+
+    @property
+    def priority_floor(self) -> bool:
+        return False
+
+    def can_resolve(self, impingement: Impingement) -> float:
+        """Match impingements that warrant visual modulation."""
+        content = impingement.content
+        metric = content.get("metric", "")
+
+        if any(aff in metric for aff in VISUAL_CHAIN_AFFORDANCES):
+            return impingement.strength
+
+        if "stimmung" in impingement.source:
+            return impingement.strength * 0.4
+
+        if "dmn.evaluative" in impingement.source:
+            return impingement.strength * 0.3
+
+        return 0.0
+
+    def activate(self, impingement: Impingement, level: float) -> dict[str, Any]:
+        """Activate visual chain — sets activation level for cascade tracking."""
+        self._activation_level = level
+        log.info(
+            "Visual chain activated: %s (strength=%.2f, level=%.2f)",
+            impingement.content.get("metric", impingement.source),
+            impingement.strength,
+            level,
+        )
+        return {"visual_chain_activated": True, "level": level}
+
+    def activate_dimension(
+        self, dimension_name: str, impingement: Impingement, level: float
+    ) -> None:
+        """Activate a specific dimension and update parameter state."""
+        if dimension_name not in VISUAL_DIMENSIONS:
+            log.debug("Unknown dimension: %s", dimension_name)
+            return
+
+        self._levels[dimension_name] = max(0.0, min(1.0, level))
+        self._activation_level = max(self._levels.values())
+
+    def get_dimension_level(self, dimension_name: str) -> float:
+        """Get the current activation level of a dimension."""
+        return self._levels.get(dimension_name, 0.0)
+
+    def compute_param_deltas(self) -> dict[str, float]:
+        """Compute summed parameter deltas across all active dimensions."""
+        deltas: dict[str, float] = {}
+        for dim_name, dim in VISUAL_DIMENSIONS.items():
+            level = self._levels.get(dim_name, 0.0)
+            for mapping in dim.parameter_mappings:
+                key = f"{mapping.technique}.{mapping.param}"
+                value = param_value_from_level(level, mapping.breakpoints)
+                deltas[key] = deltas.get(key, 0.0) + value
+        return deltas
+
+    def decay(self, elapsed_s: float) -> None:
+        """Decay all active dimensions toward zero."""
+        amount = self._decay_rate * elapsed_s
+        any_active = False
+        for name in list(self._levels):
+            if self._levels[name] > 0.0:
+                self._levels[name] = max(0.0, self._levels[name] - amount)
+                if self._levels[name] > 0.0:
+                    any_active = True
+
+        if not any_active:
+            self._activation_level = 0.0
+        else:
+            self._activation_level = max(self._levels.values())
+
+    def deactivate(self) -> None:
+        """Reset all dimensions to zero."""
+        for name in self._levels:
+            self._levels[name] = 0.0
+        self._activation_level = 0.0
