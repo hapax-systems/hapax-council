@@ -3,15 +3,27 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "lab-journal/**"
+      - "research/**"
+      - "axioms/**/*.md"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "lab-journal/**"
+      - "research/**"
+      - "axioms/**/*.md"
 
 permissions:
   contents: read
   security-events: write
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
