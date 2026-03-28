@@ -112,6 +112,28 @@ def read_watch() -> dict:
     }
 
 
+VISUAL_SURFACE_FRAME = Path("/dev/shm/hapax-visual/frame.jpg")
+IMAGINATION_CURRENT = Path("/dev/shm/hapax-imagination/current.json")
+
+
+def read_visual_surface(
+    frame_path: Path | None = None,
+    imagination_path: Path | None = None,
+) -> dict:
+    """Read visual surface state (frame age + current imagination fragment)."""
+    fp = frame_path or VISUAL_SURFACE_FRAME
+    ip = imagination_path or IMAGINATION_CURRENT
+    frame_age = _age_s(fp)
+    imagination_data = _read_json(ip) or {}
+    return {
+        "source": "visual_surface",
+        "age_s": round(frame_age, 1),
+        "stale": frame_age > STALE_THRESHOLD_S,
+        "frame_path": str(fp) if fp.exists() else None,
+        "imagination_fragment_id": imagination_data.get("id"),
+    }
+
+
 def read_sensors() -> dict[str, dict]:
     """Read all /dev/shm/hapax-sensors/ state files.
 
@@ -137,5 +159,6 @@ def read_all() -> dict:
         "stimmung": read_stimmung(),
         "fortress": read_fortress(),
         "watch": read_watch(),
+        "visual_surface": read_visual_surface(),
         "sensors": read_sensors(),
     }
