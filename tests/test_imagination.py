@@ -10,6 +10,7 @@ from agents.imagination import (
     CadenceController,
     ContentReference,
     ImaginationFragment,
+    assemble_context,
     maybe_escalate,
     publish_fragment,
 )
@@ -245,3 +246,42 @@ class TestCadenceController:
         # Also doubles accelerated
         cc.update(_make_fragment(continuation=True, salience=0.5))
         assert cc.current_interval() == 8.0
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Context assembly tests
+# ---------------------------------------------------------------------------
+
+
+class TestAssembleContext:
+    def test_empty_sources(self) -> None:
+        ctx = assemble_context([], [], {})
+        assert "## Current Observations" in ctx
+        assert "(none)" in ctx
+
+    def test_includes_observations(self) -> None:
+        ctx = assemble_context(["obs1", "obs2"], [], {})
+        assert "- obs1" in ctx
+        assert "- obs2" in ctx
+
+    def test_includes_fragments(self) -> None:
+        frags = [
+            _make_fragment(narrative="thought A", continuation=False),
+            _make_fragment(narrative="thought B", continuation=True),
+        ]
+        ctx = assemble_context([], frags, {})
+        assert "- thought A" in ctx
+        assert "- (continuing) thought B" in ctx
+
+    def test_includes_sensor_data(self) -> None:
+        sensors = {
+            "stimmung": {"stance": "calm", "stress": "low"},
+            "perception": {"activity": "idle", "flow": "steady"},
+            "watch": {"hr": 72},
+            "weather": {"temp": "18C"},
+        }
+        ctx = assemble_context([], [], sensors)
+        assert "stance=calm" in ctx
+        assert "activity=idle" in ctx
+        assert "HR=72" in ctx
+        assert "18C" in ctx

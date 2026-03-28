@@ -145,6 +145,63 @@ class CadenceController:
 
 
 # ---------------------------------------------------------------------------
+# Context assembly
+# ---------------------------------------------------------------------------
+
+
+def assemble_context(
+    observations: list[str],
+    recent_fragments: list[ImaginationFragment],
+    sensor_snapshot: dict,
+) -> str:
+    """Build a prompt string from observations, sensor state, and recent fragments."""
+    sections: list[str] = []
+
+    # Observations (last 5)
+    sections.append("## Current Observations (from DMN)")
+    if observations:
+        for obs in observations[-5:]:
+            sections.append(f"- {obs}")
+    else:
+        sections.append("(none)")
+
+    # System state from sensor snapshot
+    sections.append("")
+    sections.append("## System State")
+    stimmung = sensor_snapshot.get("stimmung", {})
+    if stimmung:
+        stance = stimmung.get("stance", "unknown")
+        stress = stimmung.get("stress", "unknown")
+        sections.append(f"- Stimmung: stance={stance}, stress={stress}")
+    perception = sensor_snapshot.get("perception", {})
+    if perception:
+        activity = perception.get("activity", "unknown")
+        flow = perception.get("flow", "unknown")
+        sections.append(f"- Perception: activity={activity}, flow={flow}")
+    watch = sensor_snapshot.get("watch", {})
+    if watch:
+        hr = watch.get("hr", "unknown")
+        sections.append(f"- Watch: HR={hr}")
+    weather = sensor_snapshot.get("weather", {})
+    if weather:
+        sections.append(f"- Weather: {weather}")
+    if not any(sensor_snapshot.get(k) for k in ("stimmung", "perception", "watch", "weather")):
+        sections.append("(none)")
+
+    # Recent fragments (last 3)
+    sections.append("")
+    sections.append("## Recent Imagination")
+    if recent_fragments:
+        for frag in recent_fragments[-3:]:
+            prefix = "(continuing) " if frag.continuation else ""
+            sections.append(f"- {prefix}{frag.narrative}")
+    else:
+        sections.append("(none)")
+
+    return "\n".join(sections)
+
+
+# ---------------------------------------------------------------------------
 # Escalation
 # ---------------------------------------------------------------------------
 
