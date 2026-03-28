@@ -36,6 +36,7 @@ dependencies = [
     "llmlingua>=0.2.2",
     "model2vec>=0.7.0",
     "uvloop>=0.21.0",
+    "pillow>=11.3.0",
 ]
 
 [project.optional-dependencies]
