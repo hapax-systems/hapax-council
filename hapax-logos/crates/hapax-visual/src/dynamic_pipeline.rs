@@ -43,6 +43,10 @@ struct PlanPass {
     steps_per_frame: u32,
     #[serde(default)]
     compute: bool,
+    #[serde(default)]
+    uniforms: HashMap<String, f64>,
+    #[serde(default)]
+    param_order: Vec<String>,
 }
 
 fn default_output() -> String {
@@ -72,6 +76,9 @@ struct DynamicPass {
     compute_pipeline: Option<wgpu::ComputePipeline>,
     uniform_bind_group: Option<wgpu::BindGroup>,
     input_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    #[allow(dead_code)]
+    params_buffer: Option<wgpu::Buffer>,
+    params_bind_group: Option<wgpu::BindGroup>,
     inputs: Vec<String>,
     output: String,
     steps_per_frame: u32,
@@ -97,6 +104,7 @@ pub struct DynamicPipeline {
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group_layout: wgpu::BindGroupLayout,
     params_bind_group: wgpu::BindGroup,
+    params_bind_group_layout: wgpu::BindGroupLayout,
     #[allow(dead_code)]
     surface_format: wgpu::TextureFormat,
     width: u32,
@@ -251,6 +259,7 @@ impl DynamicPipeline {
             blit_pipeline,
             blit_bind_group_layout,
             params_bind_group,
+            params_bind_group_layout: params_bgl,
             surface_format,
             width,
             height,
@@ -374,6 +383,8 @@ impl DynamicPipeline {
                     compute_pipeline: Some(compute_pipeline),
                     uniform_bind_group: None,
                     input_bind_group_layout: None,
+                    params_buffer: None,
+                    params_bind_group: None,
                     inputs: plan_pass.inputs.clone(),
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
@@ -389,30 +400,28 @@ impl DynamicPipeline {
 
                 let input_bgl = Self::get_or_create_input_layout(device, input_count, &mut input_layouts);
 
-                // Explicit layout: group 0 = uniforms, group 1 = textures, group 2 = per-node params UBO
-                let params_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("per-node params"),
-                    entries: &[wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    }],
-                });
-                let pipeline_layout =
+                // Conditionally include group 2 (per-node params) only if shader has scalar uniforms
+                let has_params = !plan_pass.param_order.is_empty();
+                let pipeline_layout = if has_params {
                     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some(&format!("{} layout", plan_pass.node_id)),
                         bind_group_layouts: &[
                             &self.uniform_buffer.bind_group_layout,
                             &input_bgl,
-                            &params_bgl,
+                            &self.params_bind_group_layout,
                         ],
                         push_constant_ranges: &[],
-                    });
+                    })
+                } else {
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some(&format!("{} layout", plan_pass.node_id)),
+                        bind_group_layouts: &[
+                            &self.uniform_buffer.bind_group_layout,
+                            &input_bgl,
+                        ],
+                        push_constant_ranges: &[],
+                    })
+                };
                 let render_pipeline =
                     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                         label: Some(&plan_pass.node_id),
@@ -443,12 +452,42 @@ impl DynamicPipeline {
                         cache: None,
                     });
 
+                // Create per-node params buffer if shader has scalar uniforms
+                let (pbuf, pbg) = if has_params {
+                    let mut data: Vec<f32> = Vec::new();
+                    for name in &plan_pass.param_order {
+                        let val = plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32;
+                        data.push(val);
+                    }
+                    while data.len() < 4 { data.push(0.0); }
+                    while (data.len() * 4) % 16 != 0 { data.push(0.0); }
+
+                    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("{} params", plan_pass.node_id)),
+                        contents: bytemuck::cast_slice(&data),
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    });
+                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some(&format!("{} params bg", plan_pass.node_id)),
+                        layout: &self.params_bind_group_layout,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buf.as_entire_binding(),
+                        }],
+                    });
+                    (Some(buf), Some(bg))
+                } else {
+                    (None, None)
+                };
+
                 new_passes.push(DynamicPass {
                     node_id: plan_pass.node_id.clone(),
                     render_pipeline: Some(render_pipeline),
                     compute_pipeline: None,
                     uniform_bind_group: None,
                     input_bind_group_layout: None,
+                    params_buffer: pbuf,
+                    params_bind_group: pbg,
                     inputs: plan_pass.inputs.clone(),
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
@@ -549,7 +588,9 @@ impl DynamicPipeline {
                 rpass.set_pipeline(render_pipeline);
                 rpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
                 rpass.set_bind_group(1, &input_bind_group, &[]);
-                rpass.set_bind_group(2, &self.params_bind_group, &[]);
+                if let Some(ref pbg) = pass.params_bind_group {
+                    rpass.set_bind_group(2, pbg, &[]);
+                }
                 rpass.draw(0..3, 0..1);
             } else if let Some(ref compute_pipeline) = pass.compute_pipeline {
                 let input_bind_group = self.create_input_bind_group(device, &pass.inputs);
