@@ -1,5 +1,4 @@
 """Root conftest — prevent real notifications and GPU model loading during tests.
-
 This patches:
   1. I/O layer (urlopen, subprocess.run) inside shared.notify — prevents real
      ntfy or desktop notifications.
