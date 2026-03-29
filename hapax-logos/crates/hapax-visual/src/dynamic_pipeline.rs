@@ -642,9 +642,11 @@ impl DynamicPipeline {
                         let n1 = fbm(u + t * 0.05, v + t * 0.03, 5);
                         let n2 = fbm(u * 1.5 + t * 0.02 + 50.0, v * 1.5 - t * 0.04, 4);
                         let n3 = fbm(u * 0.8 - t * 0.01, v * 0.8 + t * 0.06 + 100.0, 4);
-                        let r = (n1 * 0.6 + n2 * 0.3).clamp(0.0, 1.0);
-                        let g = (n2 * 0.4 + n3 * 0.2).clamp(0.0, 1.0);
-                        let b_val = (n3 * 0.5 + n1 * 0.2).clamp(0.0, 1.0);
+                        // Bright source — downstream shaders apply brightness*0.5 + dual
+                        // vignette that attenuate ~4x. Need headroom to survive the chain.
+                        let r = (n1 * 1.5 + n2 * 0.8 + 0.2).clamp(0.0, 1.0);
+                        let g = (n2 * 1.2 + n3 * 0.6 + 0.15).clamp(0.0, 1.0);
+                        let b_val = (n3 * 1.3 + n1 * 0.5 + 0.1).clamp(0.0, 1.0);
                         let idx = (y * w + x) * 4;
                         pixels[idx] = (r * 255.0) as u8;
                         pixels[idx + 1] = (g * 255.0) as u8;

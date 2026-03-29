@@ -28,11 +28,19 @@ fn main_1() {
     c = _e9;
     let _e11 = v_texcoord_1;
     uv = ((_e11 * 2f) - vec2(1f));
-    let _e18 = uv;
-    d = length(_e18);
+    // Correct for aspect ratio — without this, non-square windows get a diagonal vignette
+    let tex_size = vec2<f32>(textureDimensions(tex));
+    let aspect = tex_size.x / tex_size.y;
+    var uv_corrected = uv;
+    if aspect > 1.0 {
+        uv_corrected.x = uv_corrected.x * aspect;
+    } else {
+        uv_corrected.y = uv_corrected.y / aspect;
+    }
+    d = length(uv_corrected);
     let _e23 = d;
     let _e25 = global.u_vignette_strength;
-    vig = (smoothstep(0.8f, 1.8f, _e23) * _e25);
+    vig = (smoothstep(1.2f, 2.5f, _e23) * _e25);
     let _e28 = c;
     let _e30 = c;
     let _e33 = vig;

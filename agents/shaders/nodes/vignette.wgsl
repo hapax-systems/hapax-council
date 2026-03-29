@@ -25,7 +25,16 @@ fn main_1() {
     let _e11 = textureSample(tex, tex_sampler, _e10);
     c = _e11;
     let _e13 = v_texcoord_1;
-    d = (length((_e13 - vec2(0.5f))) * 2f);
+    // Aspect-correct vignette — prevents diagonal cutoff on non-square windows
+    var vig_uv = (_e13 - vec2(0.5f)) * 2f;
+    let vig_size = vec2<f32>(textureDimensions(tex));
+    let vig_aspect = vig_size.x / vig_size.y;
+    if vig_aspect > 1.0 {
+        vig_uv.x = vig_uv.x * vig_aspect;
+    } else {
+        vig_uv.y = vig_uv.y / vig_aspect;
+    }
+    d = length(vig_uv);
     let _e21 = c;
     let _e23 = c;
     let _e26 = global.u_radius;
