@@ -129,15 +129,14 @@ impl ShmOutput {
             tx.send(result).ok();
         });
 
-        // Non-blocking poll — avoids stalling the render pipeline.
-        // Wait up to 16ms (one frame at 60fps) for the callback; skip if not ready.
-        device.poll(wgpu::Maintain::Poll);
+        // Block until GPU readback completes. This runs every other frame
+        // (~60ms cadence) so the stall is acceptable — typical readback is <2ms.
+        device.poll(wgpu::Maintain::Wait);
 
-        match rx.recv_timeout(std::time::Duration::from_millis(16)) {
+        match rx.recv_timeout(std::time::Duration::from_millis(5)) {
             Ok(Ok(())) => {}
             _ => {
-                // Not ready in 16ms — unmap and skip this frame's SHM write.
-                // Without unmap, the buffer stays mapped and the next queue::submit panics.
+                // Readback failed — skip this frame's SHM write.
                 self.staging_buffer.unmap();
                 return;
             }
