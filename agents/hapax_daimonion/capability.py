@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from shared.capability import CapabilityCategory, ResourceTier, SystemContext
 from shared.impingement import Impingement
 
 log = logging.getLogger("voice.capability")
@@ -41,6 +42,20 @@ class SpeechProductionCapability:
     @property
     def name(self) -> str:
         return "speech_production"
+
+    @property
+    def category(self) -> CapabilityCategory:
+        return CapabilityCategory.EXPRESSION
+
+    @property
+    def resource_tier(self) -> ResourceTier:
+        return ResourceTier.HEAVY
+
+    def available(self, ctx: SystemContext) -> bool:
+        return True
+
+    def degrade(self) -> str:
+        return "Speech production is unavailable — voice daemon not active."
 
     @property
     def affordance_signature(self) -> set[str]:

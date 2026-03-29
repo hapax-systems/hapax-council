@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from shared.capability import CapabilityCategory, ResourceTier, SystemContext
 from shared.impingement import Impingement
 
 log = logging.getLogger("effect_graph.capability")
@@ -33,6 +34,22 @@ class ShaderGraphCapability:
     @property
     def name(self) -> str:
         return "shader_graph"
+
+    @property
+    def category(self) -> CapabilityCategory:
+        return CapabilityCategory.EXPRESSION
+
+    @property
+    def resource_tier(self) -> ResourceTier:
+        return ResourceTier.HEAVY
+
+    def available(self, ctx: SystemContext) -> bool:
+        from pathlib import Path
+
+        return Path("/dev/shm/hapax-imagination/pipeline").exists()
+
+    def degrade(self) -> str:
+        return "Visual expression is unavailable — imagination pipeline not running."
 
     @property
     def activation_cost(self) -> float:

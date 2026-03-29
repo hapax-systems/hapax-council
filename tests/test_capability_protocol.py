@@ -156,3 +156,37 @@ class TestToolCapabilityConformance(unittest.TestCase):
         )
         assert isinstance(tool, Capability)
         assert tool.category == CapabilityCategory.TOOL
+
+
+class TestSpeechCapabilityConformance(unittest.TestCase):
+    def test_speech_capability_is_capability(self):
+        from agents.hapax_daimonion.capability import SpeechProductionCapability
+
+        cap = SpeechProductionCapability()
+        assert isinstance(cap, Capability)
+        assert cap.category == CapabilityCategory.EXPRESSION
+        assert cap.resource_tier == ResourceTier.HEAVY
+        assert cap.name == "speech_production"
+
+    def test_speech_degrade(self):
+        from agents.hapax_daimonion.capability import SpeechProductionCapability
+
+        cap = SpeechProductionCapability()
+        assert "speech" in cap.degrade().lower()
+
+
+class TestShaderGraphConformance(unittest.TestCase):
+    def test_shader_graph_is_capability(self):
+        from agents.effect_graph.capability import ShaderGraphCapability
+
+        cap = ShaderGraphCapability()
+        assert isinstance(cap, Capability)
+        assert cap.category == CapabilityCategory.EXPRESSION
+        assert cap.resource_tier == ResourceTier.HEAVY
+        assert cap.name == "shader_graph"
+
+    def test_shader_graph_degrade(self):
+        from agents.effect_graph.capability import ShaderGraphCapability
+
+        cap = ShaderGraphCapability()
+        assert "visual" in cap.degrade().lower() or "unavailable" in cap.degrade().lower()
