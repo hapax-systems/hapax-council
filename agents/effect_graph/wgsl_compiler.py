@@ -90,7 +90,12 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, Any]:
 
         # content_layer needs 4 content texture slot inputs for the compositing shader
         if step.node_type == "content_layer":
-            inputs.extend(f"content_slot_{i}" for i in range(4))
+            inputs.extend(f"content_slot_{j}" for j in range(4))
+
+        # Temporal nodes need their previous output as an accumulation input
+        is_temporal = step.temporal
+        if is_temporal:
+            inputs.append(f"@accum_{step.node_id}")
 
         descriptor: dict[str, Any] = {
             "node_id": step.node_id,
@@ -101,6 +106,9 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, Any]:
             "uniforms": uniforms,
             "param_order": param_order,
         }
+
+        if is_temporal:
+            descriptor["temporal"] = True
 
         if pass_type == "compute":
             descriptor["steps_per_frame"] = DEFAULT_STEPS_PER_FRAME.get(step.node_type, 1)

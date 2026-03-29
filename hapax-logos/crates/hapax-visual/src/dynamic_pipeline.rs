@@ -102,6 +102,7 @@ struct PoolTexture {
 pub struct DynamicPipeline {
     passes: Vec<DynamicPass>,
     textures: HashMap<String, PoolTexture>,
+    temporal_textures: HashMap<String, PoolTexture>,
     uniform_buffer: UniformBuffer,
     shm_output: ShmOutput,
     pending_reload: Arc<AtomicBool>,
@@ -257,6 +258,7 @@ impl DynamicPipeline {
         let mut pipeline = Self {
             passes: Vec::new(),
             textures: HashMap::new(),
+            temporal_textures: HashMap::new(),
             uniform_buffer,
             shm_output,
             pending_reload: pending,
@@ -590,6 +592,8 @@ impl DynamicPipeline {
 
         // Execute each pass
         for pass in &self.passes {
+            let is_temporal = pass.inputs.iter().any(|n| n.starts_with("@accum_"));
+
             if let Some(ref render_pipeline) = pass.render_pipeline {
                 let input_bind_group = self.create_input_bind_group(device, &pass.inputs, content_textures);
 
@@ -599,27 +603,48 @@ impl DynamicPipeline {
                     None => continue,
                 };
 
-                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some(&pass.node_id),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: output_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    ..Default::default()
-                });
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some(&pass.node_id),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: output_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        ..Default::default()
+                    });
 
-                rpass.set_pipeline(render_pipeline);
-                rpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
-                rpass.set_bind_group(1, &input_bind_group, &[]);
-                if let Some(ref pbg) = pass.params_bind_group {
-                    rpass.set_bind_group(2, pbg, &[]);
+                    rpass.set_pipeline(render_pipeline);
+                    rpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
+                    rpass.set_bind_group(1, &input_bind_group, &[]);
+                    if let Some(ref pbg) = pass.params_bind_group {
+                        rpass.set_bind_group(2, pbg, &[]);
+                    }
+                    rpass.draw(0..3, 0..1);
+                } // render pass dropped here
+
+                // Copy output to temporal buffer for next frame's feedback
+                if is_temporal {
+                    if let (Some(src), Some(dst)) = (
+                        self.textures.get(&pass.output),
+                        self.temporal_textures.get(&pass.node_id),
+                    ) {
+                        let copy_size = wgpu::Extent3d {
+                            width: self.width,
+                            height: self.height,
+                            depth_or_array_layers: 1,
+                        };
+                        encoder.copy_texture_to_texture(
+                            src.texture.as_image_copy(),
+                            dst.texture.as_image_copy(),
+                            copy_size,
+                        );
+                    }
                 }
-                rpass.draw(0..3, 0..1);
             } else if let Some(ref compute_pipeline) = pass.compute_pipeline {
                 let input_bind_group = self.create_input_bind_group(device, &pass.inputs, content_textures);
                 let storage_bind_group =
@@ -714,6 +739,13 @@ impl DynamicPipeline {
             self.ensure_texture(device, &name);
         }
 
+        // Recreate temporal textures at new size
+        let temporal_names: Vec<String> = self.temporal_textures.keys().cloned().collect();
+        for name in temporal_names {
+            self.temporal_textures.remove(&name);
+            self.ensure_temporal_texture(device, &name);
+        }
+
         self.shm_output.resize(device, width, height);
     }
 
@@ -743,6 +775,30 @@ impl DynamicPipeline {
         });
         let view = texture.create_view(&Default::default());
         self.textures.insert(name.to_string(), PoolTexture { texture, view });
+    }
+
+    fn ensure_temporal_texture(&mut self, device: &wgpu::Device, node_id: &str) {
+        if self.temporal_textures.contains_key(node_id) {
+            return;
+        }
+        let label = format!("temporal_{}", node_id);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&label),
+            size: wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TEXTURE_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        self.temporal_textures.insert(node_id.to_string(), PoolTexture { texture, view });
     }
 
     fn get_or_create_input_layout(
@@ -926,10 +982,18 @@ impl DynamicPipeline {
         } else {
             // Standard: alternating texture/sampler pairs
             for (i, name) in inputs.iter().enumerate() {
-                let view = self.textures.get(name.as_str())
-                    .or_else(|| self.textures.get("final"))
-                    .map(|t| &t.view)
-                    .unwrap();
+                let view = if let Some(node_id) = name.strip_prefix("@accum_") {
+                    // Temporal accumulation input — use feedback buffer
+                    self.temporal_textures.get(node_id)
+                        .or_else(|| self.textures.get("final"))
+                        .map(|t| &t.view)
+                        .unwrap()
+                } else {
+                    self.textures.get(name.as_str())
+                        .or_else(|| self.textures.get("final"))
+                        .map(|t| &t.view)
+                        .unwrap()
+                };
                 entries.push(wgpu::BindGroupEntry {
                     binding: (i * 2) as u32,
                     resource: wgpu::BindingResource::TextureView(view),
