@@ -281,16 +281,18 @@ class TestGpuChecks:
 
 class TestSystemdChecks:
     @pytest.mark.asyncio
-    async def test_rag_ingest_active(self):
+    async def test_systemd_services_healthy(self):
         from agents.health_monitor import check_systemd_services
 
         with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
 
             async def side_effect(cmd, **kwargs):
                 unit = cmd[-1] if cmd else ""
-                if "is-active" in cmd and "rag-ingest" in unit:
-                    return (0, "active", "")
                 if "is-active" in cmd and "profile-update" in unit:
+                    return (0, "active", "")
+                if "is-active" in cmd and "digest" in unit:
+                    return (0, "active", "")
+                if "is-active" in cmd and "knowledge-maint" in unit:
                     return (0, "active", "")
                 if "is-enabled" in cmd:
                     return (0, "enabled", "")
@@ -303,8 +305,8 @@ class TestSystemdChecks:
             mock.side_effect = side_effect
             results = await check_systemd_services()
 
-        rag = next(r for r in results if "rag-ingest" in r.name)
-        assert rag.status == Status.HEALTHY
+        profile = next(r for r in results if "profile-update" in r.name)
+        assert profile.status == Status.HEALTHY
 
         midi = next(r for r in results if "midi-route" in r.name)
         assert midi.status == Status.HEALTHY  # optional
