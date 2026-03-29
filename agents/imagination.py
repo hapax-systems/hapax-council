@@ -8,6 +8,8 @@ High-salience fragments escalate into Impingements for capability recruitment.
 from __future__ import annotations
 
 import logging
+import math
+import random
 import time as time_mod
 import uuid
 from pathlib import Path
@@ -26,7 +28,6 @@ SHM_DIR = Path("/dev/shm/hapax-imagination")
 CURRENT_PATH = SHM_DIR / "current.json"
 STREAM_PATH = SHM_DIR / "stream.jsonl"
 STREAM_MAX_LINES = 50
-ESCALATION_THRESHOLD = 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +54,7 @@ class ImaginationFragment(BaseModel, frozen=True):
     salience: float = Field(ge=0.0, le=1.0)
     continuation: bool
     narrative: str
+    material: str = "water"  # water, fire, earth, air, void
     parent_id: str | None = None
 
 
@@ -207,11 +209,19 @@ def assemble_context(
 
 
 def maybe_escalate(fragment: ImaginationFragment) -> Impingement | None:
-    """Escalate high-salience fragments into impingements for capability recruitment."""
-    if fragment.salience < ESCALATION_THRESHOLD:
+    """Probabilistic escalation — sigmoid around 0.55, boosted by continuation."""
+    midpoint = 0.55
+    steepness = 8.0
+    probability = 1.0 / (1.0 + math.exp(-steepness * (fragment.salience - midpoint)))
+
+    if fragment.continuation:
+        probability = min(1.0, probability * 1.3)
+
+    if random.random() > probability:
         return None
 
     return Impingement(
+        id=fragment.id,
         timestamp=fragment.timestamp,
         source="imagination",
         type=ImpingementType.SALIENCE_INTEGRATION,
@@ -220,11 +230,9 @@ def maybe_escalate(fragment: ImaginationFragment) -> Impingement | None:
             "narrative": fragment.narrative,
             "content_references": [ref.model_dump() for ref in fragment.content_references],
             "continuation": fragment.continuation,
+            "material": fragment.material,
         },
-        context={
-            "dimensions": fragment.dimensions,
-        },
-        parent_id=fragment.parent_id,
+        context={"dimensions": fragment.dimensions},
     )
 
 
@@ -248,6 +256,16 @@ Content sources you can reference:
 - text: any text you want to display
 - url: any image URL
 - file: any file path
+
+## Material Quality
+Each fragment has an elemental material that determines how it interacts
+with the visual field:
+- water: dissolving, flowing, reflective. For contemplative, fluid thoughts.
+- fire: consuming, vertical, rapid. For urgent, transformative insights.
+- earth: dense, persistent, resistant. For grounded, factual observations.
+- air: translucent, drifting, dispersing. For light, fleeting associations.
+- void: darkening, absorbing. For absence, loss, emptiness.
+Choose the material that matches the character of your thought.
 
 Produce one ImaginationFragment. Be specific in content_references —
 point to real things. Set dimensional coloring to match the emotional

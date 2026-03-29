@@ -30,11 +30,17 @@ def _passing_state() -> dict:
 class TestProactiveGate:
     def test_passes_when_all_conditions_met(self) -> None:
         gate = ProactiveGate()
-        assert gate.should_speak(_make_fragment(), _passing_state()) is True
+        # salience=0.95 → near-certain passage through sigmoid gate
+        frag = _make_fragment(salience=0.95)
+        # Retry a few times to handle rare sigmoid miss
+        passed = any(gate.should_speak(frag, _passing_state()) for _ in range(10))
+        assert passed is True
 
-    def test_fails_low_salience(self) -> None:
+    def test_low_salience_usually_fails(self) -> None:
         gate = ProactiveGate()
-        assert gate.should_speak(_make_fragment(salience=0.7), _passing_state()) is False
+        frag = _make_fragment(salience=0.5)
+        failures = sum(1 for _ in range(100) if not gate.should_speak(frag, _passing_state()))
+        assert failures > 80
 
     def test_fails_operator_idle(self) -> None:
         gate = ProactiveGate()
@@ -74,7 +80,9 @@ class TestProactiveGate:
     def test_cooldown_expires(self) -> None:
         gate = ProactiveGate(cooldown_s=0.0)
         gate.record_utterance()
-        assert gate.should_speak(_make_fragment(), _passing_state()) is True
+        frag = _make_fragment(salience=0.99)
+        passed = any(gate.should_speak(frag, _passing_state()) for _ in range(10))
+        assert passed is True
 
     def test_cooldown_resets_on_operator_speech(self) -> None:
         gate = ProactiveGate()
@@ -83,7 +91,9 @@ class TestProactiveGate:
         assert gate.should_speak(_make_fragment(), _passing_state()) is False
         # Operator speaks — clears cooldown
         gate.on_operator_speech()
-        assert gate.should_speak(_make_fragment(), _passing_state()) is True
+        frag = _make_fragment(salience=0.99)
+        passed = any(gate.should_speak(frag, _passing_state()) for _ in range(10))
+        assert passed is True
 
     def test_fails_unknown_activity(self) -> None:
         gate = ProactiveGate()

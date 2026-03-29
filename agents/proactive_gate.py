@@ -7,6 +7,8 @@ conversation gap, TPN state, and cooldown timing.
 
 from __future__ import annotations
 
+import math
+import random
 import time
 
 from agents.imagination import ImaginationFragment
@@ -15,7 +17,6 @@ from agents.imagination import ImaginationFragment
 # Constants
 # ---------------------------------------------------------------------------
 
-SALIENCE_THRESHOLD = 0.8
 GAP_THRESHOLD_S = 30.0
 DEFAULT_COOLDOWN_S = 120.0
 ABSENT_ACTIVITIES = {"idle", "away", "unknown"}
@@ -35,7 +36,11 @@ class ProactiveGate:
 
     def should_speak(self, fragment: ImaginationFragment, state: dict) -> bool:
         """Return True only when ALL gate conditions pass."""
-        if fragment.salience < SALIENCE_THRESHOLD:
+        # Sigmoid gate: 50% at 0.75, ~95% at 0.9
+        midpoint = 0.75
+        steepness = 10.0
+        speak_probability = 1.0 / (1.0 + math.exp(-steepness * (fragment.salience - midpoint)))
+        if random.random() > speak_probability:
             return False
         if state["perception_activity"] in ABSENT_ACTIVITIES:
             return False
