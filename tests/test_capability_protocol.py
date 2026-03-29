@@ -130,3 +130,29 @@ class TestCapabilityRegistry(unittest.TestCase):
     def test_get_missing_returns_none(self):
         reg = CapabilityRegistry()
         assert reg.get("nonexistent") is None
+
+
+class TestToolCapabilityConformance(unittest.TestCase):
+    def test_tool_capability_is_capability(self):
+        from agents.hapax_daimonion.tool_capability import ToolCapability, ToolCategory
+
+        async def noop(args):
+            return "ok"
+
+        tool = ToolCapability(
+            name="test",
+            description="test",
+            schema={
+                "type": "function",
+                "function": {
+                    "name": "test",
+                    "description": "",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+            handler=noop,
+            tool_category=ToolCategory.INFORMATION,
+            resource_tier=ResourceTier.INSTANT,
+        )
+        assert isinstance(tool, Capability)
+        assert tool.category == CapabilityCategory.TOOL

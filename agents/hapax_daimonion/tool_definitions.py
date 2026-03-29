@@ -11,11 +11,11 @@ import logging
 from collections.abc import Callable
 
 from agents.hapax_daimonion.tool_capability import (
-    ResourceTier,
     ToolCapability,
     ToolCategory,
     ToolRegistry,
 )
+from shared.capability import ResourceTier
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def _cap(
     name: str,
     handler: Callable,
     schema: dict,
-    category: ToolCategory = ToolCategory.INFORMATION,
+    tool_category: ToolCategory = ToolCategory.INFORMATION,
     resource_tier: ResourceTier = ResourceTier.LIGHT,
     requires_consent: list[str] | None = None,
     requires_backends: list[str] | None = None,
@@ -36,7 +36,7 @@ def _cap(
         description=schema.get("function", {}).get("description", ""),
         schema=schema,
         handler=handler,
-        category=category,
+        tool_category=tool_category,
         resource_tier=resource_tier,
         requires_consent=requires_consent or [],
         requires_backends=requires_backends or [],
@@ -232,7 +232,7 @@ def build_registry(
                 name,
                 handler,
                 schema,
-                category=cat,
+                tool_category=cat,
                 resource_tier=tier,
                 requires_consent=consent,
                 requires_backends=backends,

@@ -1147,8 +1147,8 @@ class VoiceDaemon:
             if recent_memory:
                 prompt += f"\n\n## Recent Conversations\n{recent_memory}"
 
-        # Dynamic tool filtering via ToolRegistry + ToolContext
-        from agents.hapax_daimonion.tool_capability import ToolContext
+        # Dynamic tool filtering via ToolRegistry + SystemContext
+        from shared.capability import SystemContext
 
         _stimmung_stance = "nominal"
         try:
@@ -1169,13 +1169,13 @@ class VoiceDaemon:
                 except Exception:
                     pass
 
-        tool_ctx = ToolContext(
+        tool_ctx = SystemContext(
             stimmung_stance=_stimmung_stance,
             consent_state={},
             guest_present=self.session.is_guest_mode,
             active_backends=frozenset(_active_backends),
             working_mode=get_working_mode().value,
-            experiment_tools_enabled=_exp.get("tools_enabled", False),
+            experiment_flags={"tools_enabled": _exp.get("tools_enabled", False)},
         )
 
         tools = self._tool_registry.schemas_for_llm(tool_ctx) or None

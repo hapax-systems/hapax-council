@@ -13,6 +13,12 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from shared.capability import (
+    CapabilityCategory,
+    ResourceTier,
+    SystemContext,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -22,22 +28,8 @@ class ToolCategory(enum.Enum):
     CONTROL = "control"
 
 
-class ResourceTier(enum.Enum):
-    INSTANT = "instant"
-    LIGHT = "light"
-    HEAVY = "heavy"
-
-
-@dataclass(frozen=True)
-class ToolContext:
-    """Snapshot of system state used for tool availability decisions."""
-
-    stimmung_stance: str = "nominal"
-    consent_state: dict = field(default_factory=dict)
-    guest_present: bool = False
-    active_backends: frozenset[str] = field(default_factory=frozenset)
-    working_mode: str = "rnd"
-    experiment_tools_enabled: bool = False
+# Backward-compat alias — other code importing ToolContext still works.
+ToolContext = SystemContext
 
 
 @dataclass
@@ -49,16 +41,21 @@ class ToolCapability:
     schema: dict
     handler: Callable
 
-    category: ToolCategory
+    tool_category: ToolCategory
     resource_tier: ResourceTier
     requires_consent: list[str] = field(default_factory=list)
     requires_backends: list[str] = field(default_factory=list)
     requires_confirmation: bool = False
     timeout_s: float = 3.0
 
-    def available(self, ctx: ToolContext) -> bool:
+    @property
+    def category(self) -> CapabilityCategory:
+        """Protocol-required property: all tools are CapabilityCategory.TOOL."""
+        return CapabilityCategory.TOOL
+
+    def available(self, ctx: SystemContext) -> bool:
         """Check all preconditions for this tool."""
-        if ctx.working_mode == "research" and not ctx.experiment_tools_enabled:
+        if ctx.working_mode == "research" and not ctx.experiment_flags.get("tools_enabled", False):
             return False
         if self.resource_tier == ResourceTier.HEAVY and ctx.stimmung_stance in (
             "degraded",

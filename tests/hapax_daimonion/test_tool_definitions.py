@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_daimonion.tool_capability import ToolCategory, ToolContext
+from agents.hapax_daimonion.tool_capability import ToolCategory
 from agents.hapax_daimonion.tool_definitions import build_registry
+from shared.capability import SystemContext
 
 
 class TestToolDefinitions(unittest.TestCase):
@@ -34,7 +35,7 @@ class TestToolDefinitions(unittest.TestCase):
 
     def test_categories_assigned(self):
         reg = build_registry()
-        cats = {t.category for t in reg.all_tools()}
+        cats = {t.tool_category for t in reg.all_tools()}
         assert ToolCategory.INFORMATION in cats
         assert ToolCategory.CONTROL in cats
 
@@ -63,7 +64,7 @@ class TestToolDefinitions(unittest.TestCase):
 
     def test_filtering_suppresses_vision_without_backend(self):
         reg = build_registry()
-        ctx = ToolContext(active_backends=frozenset({"hyprland", "phone"}))
+        ctx = SystemContext(active_backends=frozenset({"hyprland", "phone"}))
         available = {t.name for t in reg.available_tools(ctx)}
         assert "analyze_scene" not in available
         assert "get_current_time" in available

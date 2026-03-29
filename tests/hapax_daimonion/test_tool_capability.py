@@ -5,25 +5,24 @@ from __future__ import annotations
 import unittest
 
 from agents.hapax_daimonion.tool_capability import (
-    ResourceTier,
     ToolCapability,
     ToolCategory,
-    ToolContext,
     ToolRegistry,
 )
+from shared.capability import ResourceTier, SystemContext
 
 
-def _make_ctx(**overrides) -> ToolContext:
+def _make_ctx(**overrides) -> SystemContext:
     defaults = {
         "stimmung_stance": "nominal",
         "consent_state": {},
         "guest_present": False,
         "active_backends": {"vision", "hyprland", "phone"},
         "working_mode": "rnd",
-        "experiment_tools_enabled": False,
+        "experiment_flags": {},
     }
     defaults.update(overrides)
-    return ToolContext(**defaults)
+    return SystemContext(**defaults)
 
 
 async def _noop_handler(args: dict) -> str:
@@ -43,7 +42,7 @@ def _make_tool(name: str = "test_tool", **overrides) -> ToolCapability:
             },
         },
         "handler": _noop_handler,
-        "category": ToolCategory.INFORMATION,
+        "tool_category": ToolCategory.INFORMATION,
         "resource_tier": ResourceTier.INSTANT,
         "requires_consent": [],
         "requires_backends": [],
@@ -86,14 +85,18 @@ class TestToolCapabilityAvailability(unittest.TestCase):
     def test_research_mode_suppresses_without_flag(self):
         tool = _make_tool()
         assert (
-            tool.available(_make_ctx(working_mode="research", experiment_tools_enabled=False))
+            tool.available(
+                _make_ctx(working_mode="research", experiment_flags={"tools_enabled": False})
+            )
             is False
         )
 
     def test_research_mode_allows_with_flag(self):
         tool = _make_tool()
         assert (
-            tool.available(_make_ctx(working_mode="research", experiment_tools_enabled=True))
+            tool.available(
+                _make_ctx(working_mode="research", experiment_flags={"tools_enabled": True})
+            )
             is True
         )
 
