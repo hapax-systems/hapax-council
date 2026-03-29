@@ -386,6 +386,9 @@ async fn handle_connection(
 
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
+    let mut idle_cycles: u32 = 0;
+    // 30s idle timeout: 50ms per cycle × 600 cycles = 30s
+    const MAX_IDLE_CYCLES: u32 = 600;
 
     loop {
         // Check for any pending stats/responses to relay
@@ -404,6 +407,7 @@ async fn handle_connection(
 
         match line {
             Ok(Ok(Some(text))) => {
+                idle_cycles = 0; // Reset on activity
                 if text.trim().is_empty() {
                     continue;
                 }
@@ -450,7 +454,12 @@ async fn handle_connection(
                 return;
             }
             Err(_) => {
-                // Timeout — loop back to relay stats
+                // Timeout — check idle limit to prevent stale connections blocking new ones
+                idle_cycles += 1;
+                if idle_cycles >= MAX_IDLE_CYCLES {
+                    log::info!("UDS client idle for 30s, disconnecting");
+                    return;
+                }
                 continue;
             }
         }

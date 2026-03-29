@@ -73,6 +73,8 @@ struct DynamicPass {
     compute_pipeline: Option<wgpu::ComputePipeline>,
     uniform_bind_group: Option<wgpu::BindGroup>,
     input_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    /// Cached input bind group — rebuilt on reload and resize, not per-frame.
+    input_bind_group: Option<wgpu::BindGroup>,
     #[allow(dead_code)]
     params_buffer: Option<wgpu::Buffer>,
     params_bind_group: Option<wgpu::BindGroup>,
@@ -100,8 +102,12 @@ pub struct DynamicPipeline {
     input_bind_group_layouts: HashMap<usize, wgpu::BindGroupLayout>,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group_layout: wgpu::BindGroupLayout,
+    /// Cached blit bind group — rebuilt on reload and resize when "final" texture changes.
+    blit_bind_group: Option<wgpu::BindGroup>,
     params_bind_group: wgpu::BindGroup,
     params_bind_group_layout: wgpu::BindGroupLayout,
+    /// Cached uniforms.json overrides — only re-read when file watcher fires.
+    cached_overrides: UniformsOverride,
     #[allow(dead_code)]
     surface_format: wgpu::TextureFormat,
     width: u32,
@@ -255,8 +261,10 @@ impl DynamicPipeline {
             input_bind_group_layouts: HashMap::new(),
             blit_pipeline,
             blit_bind_group_layout,
+            blit_bind_group: None,
             params_bind_group,
             params_bind_group_layout: params_bgl,
+            cached_overrides: HashMap::new(),
             surface_format,
             width,
             height,
@@ -380,6 +388,7 @@ impl DynamicPipeline {
                     compute_pipeline: Some(compute_pipeline),
                     uniform_bind_group: None,
                     input_bind_group_layout: None,
+                    input_bind_group: None,
                     params_buffer: None,
                     params_bind_group: None,
                     inputs: plan_pass.inputs.clone(),
@@ -483,6 +492,7 @@ impl DynamicPipeline {
                     compute_pipeline: None,
                     uniform_bind_group: None,
                     input_bind_group_layout: None,
+                    input_bind_group: None,
                     params_buffer: pbuf,
                     params_bind_group: pbg,
                     inputs: plan_pass.inputs.clone(),
@@ -492,9 +502,29 @@ impl DynamicPipeline {
             }
         }
 
+        if new_passes.len() < plan.passes.len() {
+            log::warn!(
+                "Loaded {}/{} passes ({} skipped due to errors)",
+                new_passes.len(),
+                plan.passes.len(),
+                plan.passes.len() - new_passes.len()
+            );
+        }
+
         self.input_bind_group_layouts = input_layouts;
         let count = new_passes.len();
         self.passes = new_passes;
+
+        // Cache input bind groups for all passes
+        self.rebuild_cached_bind_groups(device, None);
+
+        // Refresh cached uniforms overrides from disk
+        if let Ok(data) = std::fs::read_to_string(UNIFORMS_JSON) {
+            if let Ok(overrides) = serde_json::from_str::<UniformsOverride>(&data) {
+                self.cached_overrides = overrides;
+            }
+        }
+
         log::info!("dynamic_pipeline: loaded {} passes", count);
         true
     }
@@ -520,33 +550,28 @@ impl DynamicPipeline {
 
         uniform_data.slot_opacities = content_slot_opacities;
 
-        // Apply uniforms.json signal overrides (flat dict from Python modulator)
-        // Format: {"signal.key": val, "node.param": val}
-        if let Ok(data) = std::fs::read_to_string(UNIFORMS_JSON) {
-            if let Ok(overrides) = serde_json::from_str::<UniformsOverride>(&data) {
-                for (key, &val) in &overrides {
-                    if let Some(signal) = key.strip_prefix("signal.") {
-                        let v = val as f32;
-                        match signal {
-                            "color_warmth" => uniform_data.color_warmth = v,
-                            "speed" => uniform_data.speed = v,
-                            "turbulence" => uniform_data.turbulence = v,
-                            "brightness" => uniform_data.brightness = v,
-                            "intensity" => uniform_data.intensity = v,
-                            "tension" => uniform_data.tension = v,
-                            "depth" => uniform_data.depth = v,
-                            "coherence" => uniform_data.coherence = v,
-                            "spectral_color" => uniform_data.spectral_color = v,
-                            "temporal_distortion" => uniform_data.temporal_distortion = v,
-                            "degradation" => uniform_data.degradation = v,
-                            "pitch_displacement" => uniform_data.pitch_displacement = v,
-                            "formant_character" => uniform_data.formant_character = v,
-                            _ => {}
-                        }
-                    }
-                    // node.param keys handled per-pass via params buffers at reload time
+        // Apply cached uniforms.json signal overrides (refreshed on file watcher fire)
+        for (key, &val) in &self.cached_overrides {
+            if let Some(signal) = key.strip_prefix("signal.") {
+                let v = val as f32;
+                match signal {
+                    "color_warmth" => uniform_data.color_warmth = v,
+                    "speed" => uniform_data.speed = v,
+                    "turbulence" => uniform_data.turbulence = v,
+                    "brightness" => uniform_data.brightness = v,
+                    "intensity" => uniform_data.intensity = v,
+                    "tension" => uniform_data.tension = v,
+                    "depth" => uniform_data.depth = v,
+                    "coherence" => uniform_data.coherence = v,
+                    "spectral_color" => uniform_data.spectral_color = v,
+                    "temporal_distortion" => uniform_data.temporal_distortion = v,
+                    "degradation" => uniform_data.degradation = v,
+                    "pitch_displacement" => uniform_data.pitch_displacement = v,
+                    "formant_character" => uniform_data.formant_character = v,
+                    _ => {}
                 }
             }
+            // node.param keys handled per-pass via params buffers at reload time
         }
 
         self.uniform_buffer.update(queue, &uniform_data);
@@ -579,7 +604,11 @@ impl DynamicPipeline {
         // Execute each pass
         for pass in &self.passes {
             if let Some(ref render_pipeline) = pass.render_pipeline {
-                let input_bind_group = self.create_input_bind_group(device, &pass.inputs, content_textures);
+                // Use cached input bind group (rebuilt on reload/resize)
+                let input_bg = match pass.input_bind_group {
+                    Some(ref bg) => bg,
+                    None => continue,
+                };
 
                 // Resolve output texture view
                 let output_view = match self.textures.get(&pass.output) {
@@ -603,13 +632,17 @@ impl DynamicPipeline {
 
                 rpass.set_pipeline(render_pipeline);
                 rpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
-                rpass.set_bind_group(1, &input_bind_group, &[]);
+                rpass.set_bind_group(1, input_bg, &[]);
                 if let Some(ref pbg) = pass.params_bind_group {
                     rpass.set_bind_group(2, pbg, &[]);
                 }
                 rpass.draw(0..3, 0..1);
             } else if let Some(ref compute_pipeline) = pass.compute_pipeline {
-                let input_bind_group = self.create_input_bind_group(device, &pass.inputs, content_textures);
+                // Use cached input bind group (rebuilt on reload/resize)
+                let input_bg = match pass.input_bind_group {
+                    Some(ref bg) => bg,
+                    None => continue,
+                };
                 let storage_bind_group =
                     self.create_storage_bind_group(device, &pass.output);
 
@@ -625,34 +658,15 @@ impl DynamicPipeline {
 
                     cpass.set_pipeline(compute_pipeline);
                     cpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
-                    cpass.set_bind_group(1, &input_bind_group, &[]);
+                    cpass.set_bind_group(1, input_bg, &[]);
                     cpass.set_bind_group(2, &storage_bind_group, &[]);
                     cpass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
                 }
             }
         }
 
-        // Blit final texture to surface
-        if let Some(final_tex) = self.textures.get("final") {
-            let blit_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("blit bind group"),
-                layout: &self.blit_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&final_tex.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            });
-
-            // The blit pipeline was created with TEXTURE_FORMAT but we need to render to the
-            // actual surface format. Create an ad-hoc blit pass that targets surface_view.
-            // For now, use a simple render pass with the existing blit pipeline if formats match,
-            // otherwise clear black as fallback.
+        // Blit final texture to surface using cached bind group
+        if let Some(ref blit_bg) = self.blit_bind_group {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("blit to surface"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -667,9 +681,8 @@ impl DynamicPipeline {
                 ..Default::default()
             });
 
-            // The blit pipeline targets TEXTURE_FORMAT which should match surface sRGB
             rpass.set_pipeline(&self.blit_pipeline);
-            rpass.set_bind_group(0, &blit_bg, &[]);
+            rpass.set_bind_group(0, blit_bg, &[]);
             rpass.draw(0..3, 0..1);
         }
 
@@ -702,10 +715,47 @@ impl DynamicPipeline {
             self.ensure_texture(device, &name);
         }
 
+        // Rebuild all cached bind groups (input + blit) with new textures
+        self.rebuild_cached_bind_groups(device, None);
+
         self.shm_output.resize(device, width, height);
     }
 
     // --- Internal helpers ---
+
+    /// Rebuild cached input bind groups for all passes and the blit bind group.
+    /// Called after reload and resize when textures change.
+    fn rebuild_cached_bind_groups(
+        &mut self,
+        device: &wgpu::Device,
+        content_textures: Option<&ContentTextureManager>,
+    ) {
+        // Rebuild per-pass input bind groups
+        // We need to iterate by index to satisfy the borrow checker
+        for i in 0..self.passes.len() {
+            let inputs = self.passes[i].inputs.clone();
+            let bg = self.create_input_bind_group(device, &inputs, content_textures);
+            self.passes[i].input_bind_group = Some(bg);
+        }
+
+        // Rebuild blit bind group
+        if let Some(final_tex) = self.textures.get("final") {
+            self.blit_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("blit bind group"),
+                layout: &self.blit_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&final_tex.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            }));
+        }
+    }
 
     fn ensure_texture(&mut self, device: &wgpu::Device, name: &str) {
         if self.textures.contains_key(name) {
@@ -822,12 +872,23 @@ impl DynamicPipeline {
                     .unwrap_or(0);
                 content_textures
                     .map(|ct| ct.slot_view(idx))
-                    .unwrap_or_else(|| self.textures.get("final").map(|t| &t.view).unwrap())
+                    .unwrap_or_else(|| {
+                        self.textures.get("final")
+                            .or_else(|| self.textures.values().next())
+                            .map(|t| &t.view)
+                            .unwrap_or_else(|| {
+                                log::error!("Texture '{}' not found in pool, using first available", name);
+                                self.textures.values().next().map(|t| &t.view).expect("no textures in pool")
+                            })
+                    })
             } else {
                 self.textures.get(name)
                     .or_else(|| self.textures.get("final"))
                     .map(|t| &t.view)
-                    .unwrap()
+                    .unwrap_or_else(|| {
+                        log::error!("Texture '{}' not found in pool, using first available", name);
+                        self.textures.values().next().map(|t| &t.view).expect("no textures in pool")
+                    })
             };
             entries.push(wgpu::BindGroupEntry {
                 binding: (i * 2) as u32,
@@ -869,7 +930,13 @@ impl DynamicPipeline {
         let view = if let Some(tex) = self.textures.get(output_name) {
             &tex.view
         } else {
-            &self.textures.get("final").unwrap().view
+            self.textures.get("final")
+                .or_else(|| self.textures.values().next())
+                .map(|t| &t.view)
+                .unwrap_or_else(|| {
+                    log::error!("Texture '{}' not found in pool, using first available", output_name);
+                    self.textures.values().next().map(|t| &t.view).expect("no textures in pool")
+                })
         };
 
         device.create_bind_group(&wgpu::BindGroupDescriptor {
