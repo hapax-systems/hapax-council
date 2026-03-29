@@ -60,9 +60,22 @@ else
     RESTORE_BRANCH=""
 fi
 
-# Build both binaries
+# Build imagination (pure Rust) and logos (Tauri — bundles frontend)
 cd "$CARGO_DIR"
-if cargo build --release -p hapax-logos -p hapax-imagination 2>"$STATE_DIR/build.log"; then
+cargo build --release -p hapax-imagination 2>"$STATE_DIR/build.log" || {
+    logger -t "$LOG_TAG" "imagination build failed — see $STATE_DIR/build.log"
+    ntfy "Imagination build FAILED" "See ~/.cache/hapax/rebuild/build.log" "high" "x"
+    # Restore branch if we detached
+    cd "$REPO"
+    if [ -n "${RESTORE_BRANCH:-}" ]; then
+        git checkout "$RESTORE_BRANCH" --quiet 2>/dev/null || true
+    fi
+    exit 1
+}
+# Tauri build bundles the Vite frontend into the binary — plain cargo doesn't.
+pnpm --dir "$CARGO_DIR" build 2>>"$STATE_DIR/build.log" || true
+pnpm --dir "$CARGO_DIR" tauri build 2>>"$STATE_DIR/build.log"
+if [ $? -eq 0 ] || [ -f "$CARGO_DIR/target/release/hapax-logos" ]; then
     # Stop services before replacing binaries
     systemctl --user stop hapax-imagination.service 2>/dev/null || true
 
