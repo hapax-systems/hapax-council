@@ -63,7 +63,7 @@ VIDEO_DIR = Path.home() / "video-recording"
 CACHE_DIR = Path.home() / ".cache" / "video-processor"
 STATE_FILE = CACHE_DIR / "state.json"
 CHANGES_LOG = CACHE_DIR / "changes.jsonl"
-PERCEPTION_MINUTES_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-minutes.jsonl"
+PERCEPTION_MINUTES_PATH = Path.home() / ".cache" / "hapax-daimonion" / "perception-minutes.jsonl"
 
 from shared.cameras import CAMERA_ROLES
 

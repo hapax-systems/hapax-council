@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.governance import VetoResult
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.governance import VetoResult
 from shared.governance.consent_label import ConsentLabel
 
 

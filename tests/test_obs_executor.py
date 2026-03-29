@@ -6,11 +6,13 @@ import unittest
 from unittest.mock import MagicMock
 
 pytest = __import__("pytest")
-pytest.importorskip("agents.hapax_voice.executor", reason="hapax_voice.executor not installed")
+pytest.importorskip(
+    "agents.hapax_daimonion.executor", reason="hapax_daimonion.executor not installed"
+)
 
-from agents.hapax_voice.commands import Command  # noqa: E402
-from agents.hapax_voice.executor import Executor  # noqa: E402
-from agents.hapax_voice.obs_executor import OBSExecutor  # noqa: E402
+from agents.hapax_daimonion.commands import Command  # noqa: E402
+from agents.hapax_daimonion.executor import Executor  # noqa: E402
+from agents.hapax_daimonion.obs_executor import OBSExecutor  # noqa: E402
 
 
 class TestOBSExecutor(unittest.TestCase):

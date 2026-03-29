@@ -1,7 +1,7 @@
 """L9 matrix tests for VoiceDaemon lifecycle.
 
 Fills dimensions B (lifecycle invariants), D (boundaries), E (error paths)
-to bring L9 from partial → matrix-complete. See agents/hapax_voice/LAYER_STATUS.yaml.
+to bring L9 from partial → matrix-complete. See agents/hapax_daimonion/LAYER_STATUS.yaml.
 
 Self-contained, unittest.mock only, asyncio_mode="auto".
 """
@@ -13,14 +13,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.config import VoiceConfig
+from agents.hapax_daimonion.config import DaimonionConfig
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
 def _make_daemon(**cfg_overrides) -> VoiceDaemon:
     """Create a VoiceDaemon with all hardware mocked."""
-    from agents.hapax_voice.__main__ import VoiceDaemon
+    from agents.hapax_daimonion.__main__ import VoiceDaemon
 
     defaults = dict(
         hotkey_socket="/tmp/test-hapax-lifecycle.sock",
@@ -30,19 +30,19 @@ def _make_daemon(**cfg_overrides) -> VoiceDaemon:
         screen_monitor_enabled=False,
     )
     defaults.update(cfg_overrides)
-    cfg = VoiceConfig(**defaults)
+    cfg = DaimonionConfig(**defaults)
 
     patches = [
-        patch("agents.hapax_voice.__main__.PresenceDetector"),
-        patch("agents.hapax_voice.__main__.ContextGate"),
-        patch("agents.hapax_voice.__main__.HotkeyServer"),
-        patch("agents.hapax_voice.__main__.WakeWordDetector"),
-        patch("agents.hapax_voice.__main__.PorcupineWakeWord"),
-        patch("agents.hapax_voice.__main__.AudioInputStream"),
-        patch("agents.hapax_voice.__main__.TTSManager"),
-        patch("agents.hapax_voice.__main__.ChimePlayer"),
-        patch("agents.hapax_voice.__main__.WorkspaceMonitor"),
-        patch("agents.hapax_voice.__main__.EventLog"),
+        patch("agents.hapax_daimonion.__main__.PresenceDetector"),
+        patch("agents.hapax_daimonion.__main__.ContextGate"),
+        patch("agents.hapax_daimonion.__main__.HotkeyServer"),
+        patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
+        patch("agents.hapax_daimonion.__main__.PorcupineWakeWord"),
+        patch("agents.hapax_daimonion.__main__.AudioInputStream"),
+        patch("agents.hapax_daimonion.__main__.TTSManager"),
+        patch("agents.hapax_daimonion.__main__.ChimePlayer"),
+        patch("agents.hapax_daimonion.__main__.WorkspaceMonitor"),
+        patch("agents.hapax_daimonion.__main__.EventLog"),
     ]
     for p in patches:
         p.start()
@@ -188,18 +188,18 @@ class TestDaemonBoundaries:
 
     def test_wake_word_event_exists(self):
         daemon = _make_daemon()
-        from agents.hapax_voice.primitives import Event
+        from agents.hapax_daimonion.primitives import Event
 
         assert isinstance(daemon.wake_word_event, Event)
 
     def test_focus_event_exists(self):
         daemon = _make_daemon()
-        from agents.hapax_voice.primitives import Event
+        from agents.hapax_daimonion.primitives import Event
 
         assert isinstance(daemon.focus_event, Event)
 
     def test_default_config_produces_valid_daemon(self):
-        """VoiceConfig defaults (with hardware mocked) produce a working daemon."""
+        """DaimonionConfig defaults (with hardware mocked) produce a working daemon."""
         daemon = _make_daemon()
         assert daemon.cfg.backend == "local"
         assert daemon.cfg.silence_timeout_s == 30
@@ -271,9 +271,9 @@ class TestDaemonErrorPaths:
 
     def test_mc_setup_failure_doesnt_crash_init(self):
         """MC actuation setup failure is caught and logged."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
 
-        cfg = VoiceConfig(
+        cfg = DaimonionConfig(
             hotkey_socket="/tmp/test-hapax-mc-fail.sock",
             mc_enabled=True,
             obs_enabled=False,
@@ -282,16 +282,16 @@ class TestDaemonErrorPaths:
         )
 
         patches = [
-            patch("agents.hapax_voice.__main__.PresenceDetector"),
-            patch("agents.hapax_voice.__main__.ContextGate"),
-            patch("agents.hapax_voice.__main__.HotkeyServer"),
-            patch("agents.hapax_voice.__main__.WakeWordDetector"),
-            patch("agents.hapax_voice.__main__.PorcupineWakeWord"),
-            patch("agents.hapax_voice.__main__.AudioInputStream"),
-            patch("agents.hapax_voice.__main__.TTSManager"),
-            patch("agents.hapax_voice.__main__.ChimePlayer"),
-            patch("agents.hapax_voice.__main__.WorkspaceMonitor"),
-            patch("agents.hapax_voice.__main__.EventLog"),
+            patch("agents.hapax_daimonion.__main__.PresenceDetector"),
+            patch("agents.hapax_daimonion.__main__.ContextGate"),
+            patch("agents.hapax_daimonion.__main__.HotkeyServer"),
+            patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
+            patch("agents.hapax_daimonion.__main__.PorcupineWakeWord"),
+            patch("agents.hapax_daimonion.__main__.AudioInputStream"),
+            patch("agents.hapax_daimonion.__main__.TTSManager"),
+            patch("agents.hapax_daimonion.__main__.ChimePlayer"),
+            patch("agents.hapax_daimonion.__main__.WorkspaceMonitor"),
+            patch("agents.hapax_daimonion.__main__.EventLog"),
         ]
         for p in patches:
             p.start()
@@ -306,9 +306,9 @@ class TestDaemonErrorPaths:
 
     def test_obs_setup_failure_doesnt_crash_init(self):
         """OBS actuation setup failure is caught and logged."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
 
-        cfg = VoiceConfig(
+        cfg = DaimonionConfig(
             hotkey_socket="/tmp/test-hapax-obs-fail.sock",
             mc_enabled=False,
             obs_enabled=True,
@@ -317,16 +317,16 @@ class TestDaemonErrorPaths:
         )
 
         patches = [
-            patch("agents.hapax_voice.__main__.PresenceDetector"),
-            patch("agents.hapax_voice.__main__.ContextGate"),
-            patch("agents.hapax_voice.__main__.HotkeyServer"),
-            patch("agents.hapax_voice.__main__.WakeWordDetector"),
-            patch("agents.hapax_voice.__main__.PorcupineWakeWord"),
-            patch("agents.hapax_voice.__main__.AudioInputStream"),
-            patch("agents.hapax_voice.__main__.TTSManager"),
-            patch("agents.hapax_voice.__main__.ChimePlayer"),
-            patch("agents.hapax_voice.__main__.WorkspaceMonitor"),
-            patch("agents.hapax_voice.__main__.EventLog"),
+            patch("agents.hapax_daimonion.__main__.PresenceDetector"),
+            patch("agents.hapax_daimonion.__main__.ContextGate"),
+            patch("agents.hapax_daimonion.__main__.HotkeyServer"),
+            patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
+            patch("agents.hapax_daimonion.__main__.PorcupineWakeWord"),
+            patch("agents.hapax_daimonion.__main__.AudioInputStream"),
+            patch("agents.hapax_daimonion.__main__.TTSManager"),
+            patch("agents.hapax_daimonion.__main__.ChimePlayer"),
+            patch("agents.hapax_daimonion.__main__.WorkspaceMonitor"),
+            patch("agents.hapax_daimonion.__main__.EventLog"),
         ]
         for p in patches:
             p.start()
@@ -351,7 +351,7 @@ class TestDaemonCompositionContracts:
         assert expected.issubset(actual)
 
     def test_governor_produces_valid_directives(self):
-        from agents.hapax_voice.perception import EnvironmentState
+        from agents.hapax_daimonion.perception import EnvironmentState
 
         daemon = _make_daemon()
         state = EnvironmentState(
@@ -370,7 +370,7 @@ class TestDaemonCompositionContracts:
         assert result in {"process", "pause", "withdraw"}
 
     def test_frame_gate_accepts_command(self):
-        from agents.hapax_voice.commands import Command
+        from agents.hapax_daimonion.commands import Command
 
         daemon = _make_daemon()
         cmd = Command(action="pause", trigger_source="test")
@@ -379,8 +379,8 @@ class TestDaemonCompositionContracts:
 
     def test_schedule_queue_accepts_well_formed_schedule(self):
         """G: daemon's ScheduleQueue accepts Schedule objects produced by L4 types."""
-        from agents.hapax_voice.commands import Command, Schedule
-        from agents.hapax_voice.governance import VetoResult
+        from agents.hapax_daimonion.commands import Command, Schedule
+        from agents.hapax_daimonion.governance import VetoResult
 
         daemon = _make_daemon()
         cmd = Command(
@@ -405,7 +405,7 @@ class TestDaemonCompositionContracts:
 
     def test_perception_tick_to_governor_to_frame_gate_pipeline(self):
         """G: full L8→L9 composition — perception tick feeds governor feeds frame gate."""
-        from agents.hapax_voice.commands import Command
+        from agents.hapax_daimonion.commands import Command
 
         daemon = _make_daemon()
         # Set presence values so perception.tick() works with real comparisons

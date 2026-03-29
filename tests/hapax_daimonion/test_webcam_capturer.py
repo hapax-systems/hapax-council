@@ -6,8 +6,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.screen_models import CameraConfig
-from agents.hapax_voice.webcam_capturer import WebcamCapturer
+from agents.hapax_daimonion.screen_models import CameraConfig
+from agents.hapax_daimonion.webcam_capturer import WebcamCapturer
 
 
 def test_capturer_init_with_cameras():
@@ -43,8 +43,10 @@ def test_capturer_returns_base64_on_success(tmp_path):
     fake_file.write_bytes(fake_jpg)
 
     with (
-        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
-        patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("agents.hapax_daimonion.webcam_capturer.subprocess.run") as mock_run,
+        patch(
+            "agents.hapax_daimonion.webcam_capturer.tempfile.mkdtemp", return_value=str(tmp_path)
+        ),
         patch.object(Path, "exists", return_value=True),
     ):
         mock_run.return_value = MagicMock(returncode=0)
@@ -60,7 +62,7 @@ def test_capturer_returns_none_on_ffmpeg_failure():
     cap = WebcamCapturer(cameras=cameras, cooldown_s=0)
 
     with (
-        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch("agents.hapax_daimonion.webcam_capturer.subprocess.run") as mock_run,
         patch.object(Path, "exists", return_value=True),
     ):
         mock_run.return_value = MagicMock(returncode=1)
@@ -94,12 +96,13 @@ def test_capturer_handles_ffmpeg_timeout():
 
     with (
         patch(
-            "agents.hapax_voice.webcam_capturer.subprocess.run",
+            "agents.hapax_daimonion.webcam_capturer.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10),
         ),
         patch.object(Path, "exists", return_value=True),
         patch(
-            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+            "agents.hapax_daimonion.webcam_capturer.tempfile.mkdtemp",
+            return_value="/tmp/fake-webcam",
         ),
     ):
         result = cap.capture("operator")
@@ -114,12 +117,13 @@ def test_capturer_handles_ffmpeg_not_found():
 
     with (
         patch(
-            "agents.hapax_voice.webcam_capturer.subprocess.run",
+            "agents.hapax_daimonion.webcam_capturer.subprocess.run",
             side_effect=FileNotFoundError("ffmpeg not found"),
         ),
         patch.object(Path, "exists", return_value=True),
         patch(
-            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+            "agents.hapax_daimonion.webcam_capturer.tempfile.mkdtemp",
+            return_value="/tmp/fake-webcam",
         ),
     ):
         result = cap.capture("operator")
@@ -133,10 +137,11 @@ def test_capturer_cooldown_not_updated_on_failure():
     cap = WebcamCapturer(cameras=cameras, cooldown_s=10)
 
     with (
-        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch("agents.hapax_daimonion.webcam_capturer.subprocess.run") as mock_run,
         patch.object(Path, "exists", return_value=True),
         patch(
-            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+            "agents.hapax_daimonion.webcam_capturer.tempfile.mkdtemp",
+            return_value="/tmp/fake-webcam",
         ),
     ):
         mock_run.return_value = MagicMock(returncode=1)
@@ -154,12 +159,13 @@ def test_capturer_tmpdir_cleaned_on_ffmpeg_exception():
 
     with (
         patch(
-            "agents.hapax_voice.webcam_capturer.subprocess.run",
+            "agents.hapax_daimonion.webcam_capturer.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10),
         ),
         patch.object(Path, "exists", return_value=True),
         patch(
-            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+            "agents.hapax_daimonion.webcam_capturer.tempfile.mkdtemp",
+            return_value="/tmp/fake-webcam",
         ),
         patch("shutil.rmtree") as mock_rmtree,
     ):
@@ -178,8 +184,10 @@ def test_capturer_handles_empty_output_file(tmp_path):
     empty_file.write_bytes(b"")
 
     with (
-        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
-        patch("agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("agents.hapax_daimonion.webcam_capturer.subprocess.run") as mock_run,
+        patch(
+            "agents.hapax_daimonion.webcam_capturer.tempfile.mkdtemp", return_value=str(tmp_path)
+        ),
         patch.object(Path, "exists", return_value=True),
     ):
         mock_run.return_value = MagicMock(returncode=0)
@@ -195,7 +203,7 @@ def test_capturer_device_check_before_subprocess():
     cameras = [CameraConfig(device="/dev/video_nonexistent", role="operator")]
     cap = WebcamCapturer(cameras=cameras, cooldown_s=0)
 
-    with patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run:
+    with patch("agents.hapax_daimonion.webcam_capturer.subprocess.run") as mock_run:
         # Device path doesn't exist on disk — no need to mock Path.exists
         result = cap.capture("operator")
 
@@ -209,10 +217,11 @@ def test_capturer_pixel_format_optional():
     cap = WebcamCapturer(cameras=cameras, cooldown_s=0)
 
     with (
-        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch("agents.hapax_daimonion.webcam_capturer.subprocess.run") as mock_run,
         patch.object(Path, "exists", return_value=True),
         patch(
-            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+            "agents.hapax_daimonion.webcam_capturer.tempfile.mkdtemp",
+            return_value="/tmp/fake-webcam",
         ),
     ):
         mock_run.return_value = MagicMock(returncode=1)
@@ -239,10 +248,11 @@ def test_capturer_independent_cooldowns():
 
     # hardware should NOT be on cooldown (just needs device to exist)
     with (
-        patch("agents.hapax_voice.webcam_capturer.subprocess.run") as mock_run,
+        patch("agents.hapax_daimonion.webcam_capturer.subprocess.run") as mock_run,
         patch.object(Path, "exists", return_value=True),
         patch(
-            "agents.hapax_voice.webcam_capturer.tempfile.mkdtemp", return_value="/tmp/fake-webcam"
+            "agents.hapax_daimonion.webcam_capturer.tempfile.mkdtemp",
+            return_value="/tmp/fake-webcam",
         ),
     ):
         mock_run.return_value = MagicMock(returncode=1)

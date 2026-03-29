@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.research
 
-from agents.hapax_voice.eval_grounding import (
+from agents.hapax_daimonion.eval_grounding import (
     SessionEval,
     collect_per_turn_scores,
     compute_trajectories,

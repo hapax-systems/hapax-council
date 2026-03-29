@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agents.hapax_voice.hotkey import HotkeyServer
+from agents.hapax_daimonion.hotkey import HotkeyServer
 
 
 class TestHotkeyServerLifecycle:

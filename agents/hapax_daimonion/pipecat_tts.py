@@ -14,7 +14,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.services.tts_service import TTSService
 
-from agents.hapax_voice.tts import VOXTRAL_SAMPLE_RATE, TTSManager
+from agents.hapax_daimonion.tts import VOXTRAL_SAMPLE_RATE, TTSManager
 
 log = logging.getLogger(__name__)
 

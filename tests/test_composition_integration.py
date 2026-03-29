@@ -9,22 +9,22 @@ from __future__ import annotations
 import time
 import unittest
 
-from agents.hapax_voice.actuation_event import ActuationEvent
-from agents.hapax_voice.arbiter import ResourceArbiter, ResourceClaim
-from agents.hapax_voice.chain_state import create_cross_role_behaviors
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.executor import ExecutorRegistry, ScheduleQueue
-from agents.hapax_voice.feedback import wire_feedback_behaviors
-from agents.hapax_voice.mc_governance import compose_mc_governance
-from agents.hapax_voice.musical_position import (
+from agents.hapax_daimonion.actuation_event import ActuationEvent
+from agents.hapax_daimonion.arbiter import ResourceArbiter, ResourceClaim
+from agents.hapax_daimonion.chain_state import create_cross_role_behaviors
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.executor import ExecutorRegistry, ScheduleQueue
+from agents.hapax_daimonion.feedback import wire_feedback_behaviors
+from agents.hapax_daimonion.mc_governance import compose_mc_governance
+from agents.hapax_daimonion.musical_position import (
     create_musical_position_behavior,
     update_musical_position,
 )
-from agents.hapax_voice.obs_governance import compose_obs_governance
-from agents.hapax_voice.primitives import Behavior, Event
-from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES
-from agents.hapax_voice.suppression import SuppressionField, effective_threshold
-from agents.hapax_voice.timeline import TimelineMapping, TransportState
+from agents.hapax_daimonion.obs_governance import compose_obs_governance
+from agents.hapax_daimonion.primitives import Behavior, Event
+from agents.hapax_daimonion.resource_config import DEFAULT_PRIORITIES
+from agents.hapax_daimonion.suppression import SuppressionField, effective_threshold
+from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
 
 class FakeExecutor:

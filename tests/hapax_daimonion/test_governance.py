@@ -8,7 +8,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.governance import (
     Candidate,
     FallbackChain,
     FreshnessGuard,
@@ -19,7 +19,7 @@ from agents.hapax_voice.governance import (
     VetoChain,
     VetoResult,
 )
-from agents.hapax_voice.primitives import Stamped
+from agents.hapax_daimonion.primitives import Stamped
 
 # ------------------------------------------------------------------
 # FusedContext
@@ -502,15 +502,15 @@ class TestGovernorGovernance:
     """Verify Governor uses governance types internally."""
 
     def test_governor_has_veto_chain(self):
-        from agents.hapax_voice.governor import PipelineGovernor
+        from agents.hapax_daimonion.governor import PipelineGovernor
 
         gov = PipelineGovernor()
         assert isinstance(gov.veto_chain, VetoChain)
         assert len(gov.veto_chain.vetoes) == 3
 
     def test_governor_records_veto_result(self):
-        from agents.hapax_voice.governor import PipelineGovernor
-        from agents.hapax_voice.perception import EnvironmentState
+        from agents.hapax_daimonion.governor import PipelineGovernor
+        from agents.hapax_daimonion.perception import EnvironmentState
 
         gov = PipelineGovernor()
         state = EnvironmentState(timestamp=time.monotonic(), operator_present=True, face_count=1)
@@ -519,8 +519,8 @@ class TestGovernorGovernance:
         assert gov.last_veto_result.allowed is True
 
     def test_governor_veto_on_production(self):
-        from agents.hapax_voice.governor import PipelineGovernor
-        from agents.hapax_voice.perception import EnvironmentState
+        from agents.hapax_daimonion.governor import PipelineGovernor
+        from agents.hapax_daimonion.perception import EnvironmentState
 
         gov = PipelineGovernor()
         state = EnvironmentState(
@@ -532,8 +532,8 @@ class TestGovernorGovernance:
         assert "activity_mode" in gov.last_veto_result.denied_by
 
     def test_governor_records_selection(self):
-        from agents.hapax_voice.governor import PipelineGovernor
-        from agents.hapax_voice.perception import EnvironmentState
+        from agents.hapax_daimonion.governor import PipelineGovernor
+        from agents.hapax_daimonion.perception import EnvironmentState
 
         gov = PipelineGovernor()
         state = EnvironmentState(timestamp=time.monotonic(), operator_present=True, face_count=1)

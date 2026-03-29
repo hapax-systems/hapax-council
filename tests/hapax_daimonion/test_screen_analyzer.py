@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.screen_analyzer import ScreenAnalyzer
-from agents.hapax_voice.screen_models import ScreenAnalysis
+from agents.hapax_daimonion.screen_analyzer import ScreenAnalyzer
+from agents.hapax_daimonion.screen_models import ScreenAnalysis
 
 
 @pytest.mark.asyncio
@@ -24,7 +24,7 @@ async def test_analyzer_returns_screen_analysis():
         }
     )
 
-    with patch("agents.hapax_voice.screen_analyzer.AsyncOpenAI") as mock_client_cls:
+    with patch("agents.hapax_daimonion.screen_analyzer.AsyncOpenAI") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
         mock_client_cls.return_value = mock_client
@@ -41,7 +41,7 @@ async def test_analyzer_returns_screen_analysis():
 async def test_analyzer_returns_none_on_failure():
     analyzer = ScreenAnalyzer(model="gemini-flash")
 
-    with patch("agents.hapax_voice.screen_analyzer.AsyncOpenAI") as mock_client_cls:
+    with patch("agents.hapax_daimonion.screen_analyzer.AsyncOpenAI") as mock_client_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API down"))
         mock_client_cls.return_value = mock_client
@@ -68,7 +68,7 @@ def test_analyzer_reuses_client():
     """AsyncOpenAI client should be created once and reused."""
     analyzer = ScreenAnalyzer(model="gemini-flash")
 
-    with patch("agents.hapax_voice.screen_analyzer.AsyncOpenAI") as mock_cls:
+    with patch("agents.hapax_daimonion.screen_analyzer.AsyncOpenAI") as mock_cls:
         mock_cls.return_value = MagicMock()
         client1 = analyzer._get_client()
         client2 = analyzer._get_client()

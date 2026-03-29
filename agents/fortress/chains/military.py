@@ -7,7 +7,7 @@ Suppression wiring (military_alert field) added in Batch 4.
 from __future__ import annotations
 
 from agents.fortress.schema import FullFortressState
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.governance import (
     Candidate,
     FallbackChain,
     Selected,

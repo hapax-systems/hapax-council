@@ -1,4 +1,4 @@
-"""Tests for hapax_voice presence detector."""
+"""Tests for hapax_daimonion presence detector."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from agents.hapax_voice.presence import FRAME_SAMPLES, PresenceDetector
+from agents.hapax_daimonion.presence import FRAME_SAMPLES, PresenceDetector
 
 
 def test_starts_absent() -> None:
@@ -100,11 +100,11 @@ def test_load_model_lazy() -> None:
     det = PresenceDetector()
     fake_model = MagicMock()
     with patch(
-        "agents.hapax_voice.presence.load_silero_vad",
+        "agents.hapax_daimonion.presence.load_silero_vad",
         create=True,
     ):
         # Patch the import inside load_model
-        import agents.hapax_voice.presence as mod
+        import agents.hapax_daimonion.presence as mod
 
         with (
             patch.object(mod, "__import__", create=True),

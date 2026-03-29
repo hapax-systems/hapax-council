@@ -1,6 +1,6 @@
 """Write perception state to disk for external consumers (e.g. studio compositor).
 
-Atomic write-then-rename to ~/.cache/hapax-voice/perception-state.json each
+Atomic write-then-rename to ~/.cache/hapax-daimonion/perception-state.json each
 perception tick. External readers can poll this file without coordination.
 """
 
@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.consent_state import ConsentStateTracker
-    from agents.hapax_voice.conversation_pipeline import ConversationPipeline
-    from agents.hapax_voice.perception import PerceptionEngine
-    from agents.hapax_voice.session import VoiceLifecycle
+    from agents.hapax_daimonion.consent_state import ConsentStateTracker
+    from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
+    from agents.hapax_daimonion.perception import PerceptionEngine
+    from agents.hapax_daimonion.session import VoiceLifecycle
     from shared.governance.consent import ConsentRegistry
 
 log = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def _safe_float(val: object, default: float = 0.0) -> float:
         return default
 
 
-PERCEPTION_STATE_DIR = Path.home() / ".cache" / "hapax-voice"
+PERCEPTION_STATE_DIR = Path.home() / ".cache" / "hapax-daimonion"
 PERCEPTION_STATE_FILE = PERCEPTION_STATE_DIR / "perception-state.json"
 _perception_write_failures: int = 0
 
@@ -489,7 +489,7 @@ def _push_to_ring(state: dict[str, Any]) -> None:
     """Push snapshot to the shared perception ring buffer."""
     global _perception_ring
     if _perception_ring is None:
-        from agents.hapax_voice.perception_ring import PerceptionRing
+        from agents.hapax_daimonion.perception_ring import PerceptionRing
 
         _perception_ring = PerceptionRing()
     snapshot = {**state, "ts": state.get("timestamp", time.time())}

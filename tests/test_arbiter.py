@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.arbiter import ResourceArbiter, ResourceClaim
+from agents.hapax_daimonion.arbiter import ResourceArbiter, ResourceClaim
 
 
 def _priorities() -> dict[tuple[str, str], int]:

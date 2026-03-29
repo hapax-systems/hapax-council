@@ -5,7 +5,11 @@ import wave
 import numpy as np
 import pytest
 
-from agents.hapax_voice.chime_synthesis import CHIME_SPECS, generate_all_chimes, synthesize_chime
+from agents.hapax_daimonion.chime_synthesis import (
+    CHIME_SPECS,
+    generate_all_chimes,
+    synthesize_chime,
+)
 
 
 class TestSynthesizeChime:

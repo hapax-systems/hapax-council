@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.presence import PresenceDetector
+from agents.hapax_daimonion.presence import PresenceDetector
 
 
 def test_presence_emits_transition_on_score_change():

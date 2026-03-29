@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.notification_queue import NotificationQueue, VoiceNotification
+from agents.hapax_daimonion.notification_queue import NotificationQueue, VoiceNotification
 
 
 def test_notification_emits_queued_event():

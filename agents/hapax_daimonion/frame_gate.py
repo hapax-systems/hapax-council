@@ -15,7 +15,7 @@ import logging
 from pipecat.frames.frames import AudioRawFrame, Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from agents.hapax_voice.commands import Command
+from agents.hapax_daimonion.commands import Command
 
 log = logging.getLogger(__name__)
 

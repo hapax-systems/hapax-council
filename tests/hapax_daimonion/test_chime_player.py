@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from agents.hapax_voice.chime_player import ChimePlayer
+from agents.hapax_daimonion.chime_player import ChimePlayer
 
 
 @pytest.fixture
@@ -53,7 +53,7 @@ class TestChimePlayerLoad:
 
 
 class TestChimePlayerPlay:
-    @patch("agents.hapax_voice.chime_player.pyaudio")
+    @patch("agents.hapax_daimonion.chime_player.pyaudio")
     def test_play_known_chime(self, mock_pa, chime_dir):
         mock_stream = MagicMock()
         mock_pa.PyAudio.return_value.open.return_value = mock_stream
@@ -68,14 +68,14 @@ class TestChimePlayerPlay:
         time.sleep(0.1)
         mock_stream.write.assert_called_once()
 
-    @patch("agents.hapax_voice.chime_player.pyaudio")
+    @patch("agents.hapax_daimonion.chime_player.pyaudio")
     def test_play_unknown_chime_no_error(self, mock_pa, chime_dir):
         player = ChimePlayer(chime_dir)
         player.load()
         # Should log warning but not raise
         player.play("nonexistent")
 
-    @patch("agents.hapax_voice.chime_player.pyaudio")
+    @patch("agents.hapax_daimonion.chime_player.pyaudio")
     def test_play_before_load_no_error(self, mock_pa, chime_dir):
         player = ChimePlayer(chime_dir)
         # Should handle gracefully
@@ -83,7 +83,7 @@ class TestChimePlayerPlay:
 
 
 class TestChimePlayerAutoGenerate:
-    @patch("agents.hapax_voice.chime_player.pyaudio")
+    @patch("agents.hapax_daimonion.chime_player.pyaudio")
     def test_auto_generates_if_dir_empty(self, mock_pa, tmp_path):
         chime_dir = tmp_path / "chimes"
         chime_dir.mkdir()
@@ -93,7 +93,7 @@ class TestChimePlayerAutoGenerate:
         assert len(player._buffers) == 4
         assert (chime_dir / "activation.wav").exists()
 
-    @patch("agents.hapax_voice.chime_player.pyaudio")
+    @patch("agents.hapax_daimonion.chime_player.pyaudio")
     def test_auto_generates_if_dir_missing(self, mock_pa, tmp_path):
         chime_dir = tmp_path / "chimes_new"
         player = ChimePlayer(chime_dir, auto_generate=True)
@@ -102,7 +102,7 @@ class TestChimePlayerAutoGenerate:
 
 
 class TestChimePlayerClose:
-    @patch("agents.hapax_voice.chime_player.pyaudio")
+    @patch("agents.hapax_daimonion.chime_player.pyaudio")
     def test_close_terminates_pyaudio(self, mock_pa, chime_dir):
         mock_instance = mock_pa.PyAudio.return_value
         player = ChimePlayer(chime_dir)

@@ -187,7 +187,7 @@ class ReactiveEngine:
         self._cooldown_default_s = cooldown_default_s or _env_float("ENGINE_COOLDOWN_S", 600)
 
         # Voice state directory for presence/consent reactive rules
-        _voice_state_dir = Path.home() / ".cache" / "hapax-voice"
+        _voice_state_dir = Path.home() / ".cache" / "hapax-daimonion"
 
         # Watch biometric state directory for biometric cascade rules
         _watch_state_dir = Path.home() / "hapax-state" / "watch"
@@ -377,7 +377,7 @@ class ReactiveEngine:
         """Read current Bayesian presence state. Returns 'PRESENT' on error (fail-open)."""
         import json
 
-        state_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+        state_path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
         try:
             data = json.loads(state_path.read_text(encoding="utf-8"))
             return data.get("presence_state", "PRESENT") or "PRESENT"

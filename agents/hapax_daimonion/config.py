@@ -1,4 +1,4 @@
-"""Configuration for hapax-voice daemon."""
+"""Configuration for hapax-daimonion daemon."""
 
 from __future__ import annotations
 
@@ -29,15 +29,15 @@ class PerceptionTier(StrEnum):
     DORMANT = "dormant"  # wake word only
 
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "hapax-voice" / "config.yaml"
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "hapax-daimonion" / "config.yaml"
 
 
 def _default_socket_path() -> str:
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    return f"{runtime_dir}/hapax-voice.sock"
+    return f"{runtime_dir}/hapax-daimonion.sock"
 
 
-class VoiceConfig(BaseModel):
+class DaimonionConfig(BaseModel):
     """All tunables for the voice daemon."""
 
     # Session
@@ -83,7 +83,7 @@ class VoiceConfig(BaseModel):
     gemini_model: str = "gemini-2.5-flash-preview-native-audio"
     local_stt_model: str = "distil-large-v3"
     voxtral_voice_id: str = "jessica"
-    voxtral_ref_audio: str = "~/.local/share/hapax-voice/formant-refs/reed-24k.wav"  # eSpeak-NG Reed (Klatt mode 6) — formant carrier for hardware chain
+    voxtral_ref_audio: str = "~/.local/share/hapax-daimonion/formant-refs/reed-24k.wav"  # eSpeak-NG Reed (Klatt mode 6) — formant carrier for hardware chain
 
     # Consent
     consent_debounce_s: float = 5.0  # sustained presence before triggering
@@ -126,7 +126,7 @@ class VoiceConfig(BaseModel):
     timelapse_enabled: bool = False
     timelapse_interval_s: float = 60.0
     timelapse_retention_days: int = 7
-    timelapse_path: str = "~/.local/share/hapax-voice/timelapse"
+    timelapse_path: str = "~/.local/share/hapax-daimonion/timelapse"
 
     # Input activity (logind IdleHint)
     input_idle_threshold_s: float = 5.0
@@ -185,11 +185,11 @@ class VoiceConfig(BaseModel):
     # Chime settings
     chime_enabled: bool = False
     chime_volume: float = 0.7
-    chime_dir: str = "~/.local/share/hapax-voice/chimes"
+    chime_dir: str = "~/.local/share/hapax-daimonion/chimes"
 
     # MC actuation
     mc_enabled: bool = False
-    mc_sample_dir: str = "~/.local/share/hapax-voice/mc-samples"
+    mc_sample_dir: str = "~/.local/share/hapax-daimonion/mc-samples"
     mc_sample_rate: int = 44100
     actuation_tick_ms: int = 10
 
@@ -233,19 +233,19 @@ class VoiceConfig(BaseModel):
     tts_lookahead_bars: int = 2
 
     @model_validator(mode="after")
-    def _apply_dynamic_defaults(self) -> VoiceConfig:
+    def _apply_dynamic_defaults(self) -> DaimonionConfig:
         if not self.hotkey_socket:
             self.hotkey_socket = _default_socket_path()
         return self
 
 
-def load_config(path: Path | None = None) -> VoiceConfig:
+def load_config(path: Path | None = None) -> DaimonionConfig:
     """Load config from YAML, falling back to defaults."""
     config_path = path or DEFAULT_CONFIG_PATH
     if config_path.exists():
         try:
             data = yaml.safe_load(config_path.read_text()) or {}
-            return VoiceConfig(**data)
+            return DaimonionConfig(**data)
         except Exception as exc:
             log.warning("Failed to load config from %s: %s", config_path, exc)
-    return VoiceConfig()
+    return DaimonionConfig()

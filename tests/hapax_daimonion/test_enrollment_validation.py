@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from agents.hapax_voice.enrollment import (
+from agents.hapax_daimonion.enrollment import (
     compute_pairwise_similarity,
     detect_outliers,
     threshold_test,

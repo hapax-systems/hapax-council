@@ -364,7 +364,7 @@ def audit_runtime() -> SpecReport:
     report = SpecReport(timestamp=time.time())
 
     # pc-heartbeat-001: perception ring has recent data
-    perception_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+    perception_path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
     try:
         data = json.loads(perception_path.read_text())
         ts = data.get("timestamp", 0)
@@ -478,7 +478,7 @@ def audit_runtime() -> SpecReport:
         )
 
     # tp-protention-learning-001: protention state exists
-    protention_path = Path.home() / ".cache" / "hapax-voice" / "protention-state.json"
+    protention_path = Path.home() / ".cache" / "hapax-daimonion" / "protention-state.json"
     try:
         data = json.loads(protention_path.read_text())
         chain_obs = sum(

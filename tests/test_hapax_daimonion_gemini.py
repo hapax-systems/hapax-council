@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.gemini_live import GeminiLiveConfig, GeminiLiveSession
+from agents.hapax_daimonion.gemini_live import GeminiLiveConfig, GeminiLiveSession
 
 
 class TestGeminiLiveConfig:
@@ -87,7 +87,7 @@ class TestGeminiLiveSession:
         ):
             # Patch the imports inside connect()
             with patch(
-                "agents.hapax_voice.gemini_live.GeminiLiveSession.connect",
+                "agents.hapax_daimonion.gemini_live.GeminiLiveSession.connect",
                 wraps=session.connect,
             ):
                 # Directly set up what connect() would do
@@ -122,7 +122,7 @@ class TestGeminiLiveSession:
         session._session = mock_ws_session
 
         mock_blob = MagicMock()
-        with patch("agents.hapax_voice.gemini_live.GeminiLiveSession.send_audio") as _:
+        with patch("agents.hapax_daimonion.gemini_live.GeminiLiveSession.send_audio") as _:
             # Call the real method
             pass
 

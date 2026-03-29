@@ -1,8 +1,8 @@
-"""Tests for hapax_voice persona module."""
+"""Tests for hapax_daimonion persona module."""
 
 from __future__ import annotations
 
-from agents.hapax_voice.persona import (
+from agents.hapax_daimonion.persona import (
     format_notification,
     session_end_message,
     system_prompt,

@@ -20,7 +20,7 @@ from agents.fortress.commands import FortressCommand
 from agents.fortress.config import FortressConfig
 from agents.fortress.schema import FastFortressState, FullFortressState
 from agents.fortress.suppression import create_fortress_suppression_fields
-from agents.hapax_voice.suppression import SuppressionField
+from agents.hapax_daimonion.suppression import SuppressionField
 
 log = logging.getLogger(__name__)
 

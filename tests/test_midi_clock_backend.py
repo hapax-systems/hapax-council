@@ -7,9 +7,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.backends.midi_clock import _PPQN, MidiClockBackend
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.timeline import TransportState
+from agents.hapax_daimonion.backends.midi_clock import _PPQN, MidiClockBackend
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.timeline import TransportState
 
 
 def _msg(msg_type: str) -> SimpleNamespace:
@@ -92,14 +92,14 @@ class TestMidiClockBackend(unittest.TestCase):
         for i in range(1, len(positions)):
             self.assertGreaterEqual(positions[i], positions[i - 1])
 
-    @patch("agents.hapax_voice.backends.midi_clock.mido", create=True)
+    @patch("agents.hapax_daimonion.backends.midi_clock.mido", create=True)
     def test_start_opens_port(self, mock_mido):
         b = MidiClockBackend(port_name="Test Port")
         b.start()
         mock_mido.open_input.assert_called_once_with("Test Port", callback=b._on_message)
         self.assertTrue(b._available)
 
-    @patch("agents.hapax_voice.backends.midi_clock.mido", create=True)
+    @patch("agents.hapax_daimonion.backends.midi_clock.mido", create=True)
     def test_start_unavailable_port(self, mock_mido):
         mock_mido.open_input.side_effect = OSError("No such port")
         b = MidiClockBackend(port_name="Missing Port")

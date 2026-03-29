@@ -264,13 +264,13 @@ class TestHyprlandDesktopAdapter:
 
 class TestCandidateNestedGating:
     def test_candidate_veto_chain_default_none(self):
-        from agents.hapax_voice.governance import Candidate
+        from agents.hapax_daimonion.governance import Candidate
 
         c = Candidate(name="test", predicate=lambda _: True, action="go")
         assert c.veto_chain is None
 
     def test_candidate_with_veto_chain(self):
-        from agents.hapax_voice.governance import Candidate, Veto, VetoChain
+        from agents.hapax_daimonion.governance import Candidate, Veto, VetoChain
 
         chain: VetoChain[int] = VetoChain([Veto("blocker", predicate=lambda x: x > 0)])
         c = Candidate(name="test", predicate=lambda _: True, action="go", veto_chain=chain)

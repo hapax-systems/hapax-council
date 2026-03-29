@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest as _pytest
 
-from agents.hapax_voice.phenomenal_context import (
+from agents.hapax_daimonion.phenomenal_context import (
     _clear_cache,
     _parse_temporal_snapshot,
     _read_json,
@@ -147,8 +147,8 @@ class TestProgressiveFidelity:
         stimmung = _make_stimmung_shm(tmp_path, stance="nominal")
 
         with (
-            patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands),
-            patch("agents.hapax_voice.phenomenal_context._STIMMUNG_PATH", stimmung),
+            patch("agents.hapax_daimonion.phenomenal_context._TEMPORAL_PATH", bands),
+            patch("agents.hapax_daimonion.phenomenal_context._STIMMUNG_PATH", stimmung),
         ):
             result = render(tier="LOCAL")
             assert result  # not empty
@@ -170,8 +170,8 @@ class TestProgressiveFidelity:
         stimmung = _make_stimmung_shm(tmp_path)
 
         with (
-            patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands),
-            patch("agents.hapax_voice.phenomenal_context._STIMMUNG_PATH", stimmung),
+            patch("agents.hapax_daimonion.phenomenal_context._TEMPORAL_PATH", bands),
+            patch("agents.hapax_daimonion.phenomenal_context._STIMMUNG_PATH", stimmung),
         ):
             result = render(tier="FAST")
             assert "Surprise" in result or "unexpected" in result
@@ -187,9 +187,9 @@ class TestProgressiveFidelity:
         )
 
         with (
-            patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands),
-            patch("agents.hapax_voice.phenomenal_context._STIMMUNG_PATH", stimmung),
-            patch("agents.hapax_voice.phenomenal_context._APPERCEPTION_PATH", apperception),
+            patch("agents.hapax_daimonion.phenomenal_context._TEMPORAL_PATH", bands),
+            patch("agents.hapax_daimonion.phenomenal_context._STIMMUNG_PATH", stimmung),
+            patch("agents.hapax_daimonion.phenomenal_context._APPERCEPTION_PATH", apperception),
         ):
             result = render(tier="CAPABLE")
             assert "activity recognition" in result  # self-state layer
@@ -212,8 +212,8 @@ class TestOrientation:
         bands = _make_temporal_shm(tmp_path, activity="coding")
         stimmung = _make_stimmung_shm(tmp_path)
         with (
-            patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands),
-            patch("agents.hapax_voice.phenomenal_context._STIMMUNG_PATH", stimmung),
+            patch("agents.hapax_daimonion.phenomenal_context._TEMPORAL_PATH", bands),
+            patch("agents.hapax_daimonion.phenomenal_context._STIMMUNG_PATH", stimmung),
         ):
             result = render(tier="CAPABLE")
             assert "<" not in result
@@ -224,8 +224,8 @@ class TestOrientation:
         bands = _make_temporal_shm(tmp_path, activity="coding")
         stimmung = _make_stimmung_shm(tmp_path)
         with (
-            patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands),
-            patch("agents.hapax_voice.phenomenal_context._STIMMUNG_PATH", stimmung),
+            patch("agents.hapax_daimonion.phenomenal_context._TEMPORAL_PATH", bands),
+            patch("agents.hapax_daimonion.phenomenal_context._STIMMUNG_PATH", stimmung),
         ):
             result = render(tier="CAPABLE")
             assert "retention" not in result.lower()
@@ -251,7 +251,7 @@ class TestSelfCompression:
 
     def test_missing_temporal_returns_empty(self):
         with patch(
-            "agents.hapax_voice.phenomenal_context._TEMPORAL_PATH",
+            "agents.hapax_daimonion.phenomenal_context._TEMPORAL_PATH",
             Path("/nonexistent"),
         ):
             result = render(tier="CAPABLE")
@@ -261,9 +261,11 @@ class TestSelfCompression:
         bands = _make_temporal_shm(tmp_path, activity="coding")
         stimmung = _make_stimmung_shm(tmp_path)
         with (
-            patch("agents.hapax_voice.phenomenal_context._TEMPORAL_PATH", bands),
-            patch("agents.hapax_voice.phenomenal_context._STIMMUNG_PATH", stimmung),
-            patch("agents.hapax_voice.phenomenal_context._APPERCEPTION_PATH", Path("/nonexistent")),
+            patch("agents.hapax_daimonion.phenomenal_context._TEMPORAL_PATH", bands),
+            patch("agents.hapax_daimonion.phenomenal_context._STIMMUNG_PATH", stimmung),
+            patch(
+                "agents.hapax_daimonion.phenomenal_context._APPERCEPTION_PATH", Path("/nonexistent")
+            ),
         ):
             result = render(tier="CAPABLE")
             assert result  # temporal layers still present

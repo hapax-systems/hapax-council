@@ -11,7 +11,7 @@ import asyncio
 import json
 import unittest
 
-from agents.hapax_voice.tools_openai import (
+from agents.hapax_daimonion.tools_openai import (
     _FakeParams,
     _make_async_wrapper,
     _schema_to_openai,
@@ -215,7 +215,7 @@ class TestUtilityHandlers(unittest.TestCase):
     """Test the new utility tool handlers."""
 
     def test_get_current_time_returns_formatted_string(self):
-        from agents.hapax_voice.tools import handle_get_current_time
+        from agents.hapax_daimonion.tools import handle_get_current_time
 
         async def run():
             params = _FakeParams(arguments={})

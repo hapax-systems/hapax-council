@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pipecat.frames.frames import TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame
 
-from agents.hapax_voice.pipecat_tts import VoxtralTTSService
-from agents.hapax_voice.tts import VOXTRAL_SAMPLE_RATE
+from agents.hapax_daimonion.pipecat_tts import VoxtralTTSService
+from agents.hapax_daimonion.tts import VOXTRAL_SAMPLE_RATE
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def mock_tts_manager() -> MagicMock:
 
 class TestVoxtralTTSServiceInit:
     def test_default_sample_rate(self) -> None:
-        with patch("agents.hapax_voice.pipecat_tts.TTSManager"):
+        with patch("agents.hapax_daimonion.pipecat_tts.TTSManager"):
             svc = VoxtralTTSService()
         assert svc._init_sample_rate == VOXTRAL_SAMPLE_RATE
 

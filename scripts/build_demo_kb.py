@@ -25,38 +25,42 @@ OUTPUT_PATH = PROJECT_ROOT / "profiles" / "demo-knowledge-base.yaml"
 SOURCES: list[dict] = [
     # P0 — Voice & Grounding Research (extract claims via heuristics)
     {
-        "path": "agents/hapax_voice/proofs/RESEARCH-STATE.md",
+        "path": "agents/hapax_daimonion/proofs/RESEARCH-STATE.md",
         "theme": "voice_grounding",
         "priority": 0,
     },
     {
-        "path": "agents/hapax_voice/proofs/THEORETICAL-FOUNDATIONS.md",
-        "theme": "voice_grounding",
-        "priority": 0,
-    },
-    {"path": "agents/hapax_voice/proofs/POSITION.md", "theme": "voice_grounding", "priority": 0},
-    {
-        "path": "agents/hapax_voice/proofs/CYCLE-2-PREREGISTRATION.md",
+        "path": "agents/hapax_daimonion/proofs/THEORETICAL-FOUNDATIONS.md",
         "theme": "voice_grounding",
         "priority": 0,
     },
     {
-        "path": "agents/hapax_voice/proofs/WHY-NO-ONE-IMPLEMENTED-CLARK.md",
+        "path": "agents/hapax_daimonion/proofs/POSITION.md",
         "theme": "voice_grounding",
         "priority": 0,
     },
     {
-        "path": "agents/hapax_voice/proofs/REFINEMENT-RESEARCH.md",
+        "path": "agents/hapax_daimonion/proofs/CYCLE-2-PREREGISTRATION.md",
         "theme": "voice_grounding",
         "priority": 0,
     },
     {
-        "path": "agents/hapax_voice/proofs/CYCLE-1-PILOT-REPORT.md",
+        "path": "agents/hapax_daimonion/proofs/WHY-NO-ONE-IMPLEMENTED-CLARK.md",
         "theme": "voice_grounding",
         "priority": 0,
     },
     {
-        "path": "agents/hapax_voice/proofs/BASELINE-ANALYSIS.md",
+        "path": "agents/hapax_daimonion/proofs/REFINEMENT-RESEARCH.md",
+        "theme": "voice_grounding",
+        "priority": 0,
+    },
+    {
+        "path": "agents/hapax_daimonion/proofs/CYCLE-1-PILOT-REPORT.md",
+        "theme": "voice_grounding",
+        "priority": 0,
+    },
+    {
+        "path": "agents/hapax_daimonion/proofs/BASELINE-ANALYSIS.md",
         "theme": "voice_grounding",
         "priority": 0,
     },
@@ -100,16 +104,16 @@ SOURCES: list[dict] = [
     {"path": "CLAUDE.md", "theme": "architecture", "priority": 0},
     # P1 — Voice Implementation
     {
-        "path": "agents/hapax_voice/conversational_policy.py",
+        "path": "agents/hapax_daimonion/conversational_policy.py",
         "theme": "voice_implementation",
         "priority": 1,
     },
     {
-        "path": "agents/hapax_voice/grounding_ledger.py",
+        "path": "agents/hapax_daimonion/grounding_ledger.py",
         "theme": "voice_implementation",
         "priority": 1,
     },
-    {"path": "agents/hapax_voice/persona.py", "theme": "voice_implementation", "priority": 1},
+    {"path": "agents/hapax_daimonion/persona.py", "theme": "voice_implementation", "priority": 1},
     # P1 — Domain Corpus
     {
         "path": "agents/demo_pipeline/domain_corpus/autonomous-agent-architectures.md",

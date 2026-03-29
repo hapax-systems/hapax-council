@@ -15,21 +15,21 @@ import time
 from types import MappingProxyType
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.combinator import with_latest_from
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.frame_gate import FrameGate
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.combinator import with_latest_from
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.context_gate import ContextGate
+from agents.hapax_daimonion.frame_gate import FrameGate
+from agents.hapax_daimonion.governance import (
     FreshnessGuard,
     FreshnessRequirement,
     FusedContext,
     Veto,
     VetoChain,
 )
-from agents.hapax_voice.governor import PipelineGovernor
-from agents.hapax_voice.perception import EnvironmentState, PerceptionEngine
-from agents.hapax_voice.primitives import Event, Stamped
-from agents.hapax_voice.session import SessionManager
+from agents.hapax_daimonion.governor import PipelineGovernor
+from agents.hapax_daimonion.perception import EnvironmentState, PerceptionEngine
+from agents.hapax_daimonion.primitives import Event, Stamped
+from agents.hapax_daimonion.session import SessionManager
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

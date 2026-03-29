@@ -9,11 +9,11 @@ from __future__ import annotations
 import time
 import unittest
 
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.executor import ExecutorRegistry, ScheduleQueue
-from agents.hapax_voice.mc_governance import MCAction, compose_mc_governance
-from agents.hapax_voice.primitives import Behavior, Event
-from agents.hapax_voice.timeline import TimelineMapping, TransportState
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.executor import ExecutorRegistry, ScheduleQueue
+from agents.hapax_daimonion.mc_governance import MCAction, compose_mc_governance
+from agents.hapax_daimonion.primitives import Behavior, Event
+from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
 
 class FakeAudioExecutor:

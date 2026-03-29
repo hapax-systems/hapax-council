@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.presence import SAMPLE_RATE, PresenceDetector
+from agents.hapax_daimonion.presence import SAMPLE_RATE, PresenceDetector
 
 # ---------------------------------------------------------------------------
 # Audio frame edge cases
@@ -77,7 +77,7 @@ class TestVADEventWindow:
         """Events older than window_minutes are pruned on score access."""
         detector = PresenceDetector(window_minutes=1, vad_threshold=0.4)
         base = 1000.0
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             # Record events at t=1000
             mock_time.monotonic.return_value = base
             for _ in range(5):
@@ -93,7 +93,7 @@ class TestVADEventWindow:
         """Event exactly at cutoff boundary is NOT pruned (< cutoff, not <=)."""
         detector = PresenceDetector(window_minutes=1, vad_threshold=0.4)
         base = 1000.0
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = base
             detector.record_vad_event(0.9)
 
@@ -118,7 +118,7 @@ class TestVADEventWindow:
     def test_at_threshold_events_recorded(self):
         """Confidence exactly at threshold → IS recorded (< threshold, not <=)."""
         detector = PresenceDetector(vad_threshold=0.4)
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0
             detector.record_vad_event(0.4)
         # 0.4 is NOT < 0.4, so it passes the guard and IS recorded
@@ -127,7 +127,7 @@ class TestVADEventWindow:
     def test_above_threshold_recorded(self):
         """Confidence above threshold → recorded."""
         detector = PresenceDetector(vad_threshold=0.4)
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0
             detector.record_vad_event(0.41)
         assert len(detector._events) == 1
@@ -145,7 +145,7 @@ class TestFaceDetectionDecay:
         """At exactly _face_decay_s after detection → NOT decayed (> not >=)."""
         detector = PresenceDetector()
         base = 1000.0
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = base
             detector.record_face_event(detected=True, count=1)
 
@@ -158,7 +158,7 @@ class TestFaceDetectionDecay:
         """Just past decay window → decayed."""
         detector = PresenceDetector()
         base = 1000.0
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = base
             detector.record_face_event(detected=True, count=1)
 
@@ -169,7 +169,7 @@ class TestFaceDetectionDecay:
         """Just inside decay window → still detected."""
         detector = PresenceDetector()
         base = 1000.0
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = base
             detector.record_face_event(detected=True, count=1)
 
@@ -179,7 +179,7 @@ class TestFaceDetectionDecay:
     def test_face_count_resets_on_not_detected(self):
         """record_face_event(detected=False) → face_count becomes 0."""
         detector = PresenceDetector()
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0
             detector.record_face_event(detected=True, count=3)
             assert detector.face_count == 3
@@ -201,7 +201,7 @@ class TestCompositeScoreMatrix:
         """Build a detector with the given number of VAD events and face state."""
         detector = PresenceDetector(window_minutes=5, vad_threshold=0.4)
         base = 1000.0
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = base
             for _ in range(vad_count):
                 detector.record_vad_event(0.9)
@@ -212,7 +212,7 @@ class TestCompositeScoreMatrix:
         return detector
 
     def _score_at(self, detector: PresenceDetector, t: float) -> str:
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = t
             return detector.score
 
@@ -271,7 +271,7 @@ class TestTransitionEvents:
         detector.set_event_log(mock_log)
 
         base = 1000.0
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = base
             # Start at likely_absent (default)
             _ = detector.score
@@ -301,7 +301,7 @@ class TestTransitionEvents:
         mock_log = MagicMock()
         detector.set_event_log(mock_log)
 
-        with patch("agents.hapax_voice.presence.time") as mock_time:
+        with patch("agents.hapax_daimonion.presence.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0
             _ = detector.score
             _ = detector.score

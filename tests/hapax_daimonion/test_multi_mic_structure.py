@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from agents.hapax_voice.multi_mic import NoiseReference
+from agents.hapax_daimonion.multi_mic import NoiseReference
 
 
 def _make_pcm(freq_hz: float = 200.0, amplitude: float = 0.3, n_samples: int = 512) -> bytes:

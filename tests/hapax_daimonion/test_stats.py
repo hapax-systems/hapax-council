@@ -1,10 +1,10 @@
-"""Tests for Bayesian analysis functions in agents.hapax_voice.stats."""
+"""Tests for Bayesian analysis functions in agents.hapax_daimonion.stats."""
 
 from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.stats import (
+from agents.hapax_daimonion.stats import (
     bayes_correlation,
     bayes_factor,
     rope_check,

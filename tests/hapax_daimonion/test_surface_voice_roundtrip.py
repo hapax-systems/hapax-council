@@ -9,20 +9,20 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.pipeline import build_pipeline_task
+from agents.hapax_daimonion.pipeline import build_pipeline_task
 
 
 class TestPipelineWiring:
     """Pipeline processors are wired in the correct order."""
 
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
-    @patch("agents.hapax_voice.pipeline.WhisperSTTService")
-    @patch("agents.hapax_voice.pipeline.OpenAILLMService")
-    @patch("agents.hapax_voice.pipeline.KokoroTTSService")
-    @patch("agents.hapax_voice.pipeline.LLMContext")
-    @patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair")
-    @patch("agents.hapax_voice.pipeline.Pipeline")
-    @patch("agents.hapax_voice.pipeline.PipelineTask")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
+    @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
+    @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.LLMContext")
+    @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
+    @patch("agents.hapax_daimonion.pipeline.Pipeline")
+    @patch("agents.hapax_daimonion.pipeline.PipelineTask")
     def test_processor_order(
         self,
         mock_task_cls,
@@ -57,14 +57,14 @@ class TestPipelineWiring:
         assert processors[5] == mock_transport.output()  # transport output
         assert processors[6] == mock_agg.assistant()  # assistant aggregator
 
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
-    @patch("agents.hapax_voice.pipeline.WhisperSTTService")
-    @patch("agents.hapax_voice.pipeline.OpenAILLMService")
-    @patch("agents.hapax_voice.pipeline.KokoroTTSService")
-    @patch("agents.hapax_voice.pipeline.LLMContext")
-    @patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair")
-    @patch("agents.hapax_voice.pipeline.Pipeline")
-    @patch("agents.hapax_voice.pipeline.PipelineTask")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
+    @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
+    @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.LLMContext")
+    @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
+    @patch("agents.hapax_daimonion.pipeline.Pipeline")
+    @patch("agents.hapax_daimonion.pipeline.PipelineTask")
     def test_frame_gate_inserted_when_provided(
         self,
         mock_task_cls,
@@ -97,14 +97,14 @@ class TestPipelineWiring:
         assert processors[2] == mock_stt_cls()  # STT
         assert len(processors) == 8
 
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
-    @patch("agents.hapax_voice.pipeline.WhisperSTTService")
-    @patch("agents.hapax_voice.pipeline.OpenAILLMService")
-    @patch("agents.hapax_voice.pipeline.KokoroTTSService")
-    @patch("agents.hapax_voice.pipeline.LLMContext")
-    @patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair")
-    @patch("agents.hapax_voice.pipeline.Pipeline")
-    @patch("agents.hapax_voice.pipeline.PipelineTask")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
+    @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
+    @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.LLMContext")
+    @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
+    @patch("agents.hapax_daimonion.pipeline.Pipeline")
+    @patch("agents.hapax_daimonion.pipeline.PipelineTask")
     def test_stt_model_forwarded(
         self,
         mock_task_cls,
@@ -129,14 +129,14 @@ class TestPipelineWiring:
             no_speech_prob=0.4,
         )
 
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
-    @patch("agents.hapax_voice.pipeline.WhisperSTTService")
-    @patch("agents.hapax_voice.pipeline.OpenAILLMService")
-    @patch("agents.hapax_voice.pipeline.KokoroTTSService")
-    @patch("agents.hapax_voice.pipeline.LLMContext")
-    @patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair")
-    @patch("agents.hapax_voice.pipeline.Pipeline")
-    @patch("agents.hapax_voice.pipeline.PipelineTask")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
+    @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
+    @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.LLMContext")
+    @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
+    @patch("agents.hapax_daimonion.pipeline.Pipeline")
+    @patch("agents.hapax_daimonion.pipeline.PipelineTask")
     def test_llm_uses_litellm_config(
         self,
         mock_task_cls,
@@ -167,14 +167,14 @@ class TestPipelineWiring:
             base_url="http://127.0.0.1:4000",
         )
 
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
-    @patch("agents.hapax_voice.pipeline.WhisperSTTService")
-    @patch("agents.hapax_voice.pipeline.OpenAILLMService")
-    @patch("agents.hapax_voice.pipeline.KokoroTTSService")
-    @patch("agents.hapax_voice.pipeline.LLMContext")
-    @patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair")
-    @patch("agents.hapax_voice.pipeline.Pipeline")
-    @patch("agents.hapax_voice.pipeline.PipelineTask")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
+    @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
+    @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.LLMContext")
+    @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
+    @patch("agents.hapax_daimonion.pipeline.Pipeline")
+    @patch("agents.hapax_daimonion.pipeline.PipelineTask")
     def test_tools_registered_in_context(
         self,
         mock_task_cls,
@@ -199,14 +199,14 @@ class TestPipelineWiring:
 
         assert isinstance(tools_arg, ToolsSchema)
 
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
-    @patch("agents.hapax_voice.pipeline.WhisperSTTService")
-    @patch("agents.hapax_voice.pipeline.OpenAILLMService")
-    @patch("agents.hapax_voice.pipeline.KokoroTTSService")
-    @patch("agents.hapax_voice.pipeline.LLMContext")
-    @patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair")
-    @patch("agents.hapax_voice.pipeline.Pipeline")
-    @patch("agents.hapax_voice.pipeline.PipelineTask")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
+    @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
+    @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.LLMContext")
+    @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
+    @patch("agents.hapax_daimonion.pipeline.Pipeline")
+    @patch("agents.hapax_daimonion.pipeline.PipelineTask")
     def test_guest_mode_has_no_tools(
         self,
         mock_task_cls,
@@ -229,14 +229,14 @@ class TestPipelineWiring:
 
         assert ctx_call.kwargs.get("tools") is NOT_GIVEN
 
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
-    @patch("agents.hapax_voice.pipeline.WhisperSTTService")
-    @patch("agents.hapax_voice.pipeline.OpenAILLMService")
-    @patch("agents.hapax_voice.pipeline.KokoroTTSService")
-    @patch("agents.hapax_voice.pipeline.LLMContext")
-    @patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair")
-    @patch("agents.hapax_voice.pipeline.Pipeline")
-    @patch("agents.hapax_voice.pipeline.PipelineTask")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
+    @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
+    @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.LLMContext")
+    @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
+    @patch("agents.hapax_daimonion.pipeline.Pipeline")
+    @patch("agents.hapax_daimonion.pipeline.PipelineTask")
     def test_returns_task_and_transport(
         self,
         mock_task_cls,
@@ -266,20 +266,20 @@ class TestSystemPromptContent:
     """System prompt contains expected persona elements."""
 
     def test_prompt_contains_hapax_identity(self):
-        from agents.hapax_voice.persona import system_prompt
+        from agents.hapax_daimonion.persona import system_prompt
 
         prompt = system_prompt(guest_mode=False)
         assert "hapax" in prompt.lower() or "assistant" in prompt.lower()
 
     def test_guest_prompt_differs(self):
-        from agents.hapax_voice.persona import system_prompt
+        from agents.hapax_daimonion.persona import system_prompt
 
         normal = system_prompt(guest_mode=False)
         guest = system_prompt(guest_mode=True)
         assert normal != guest
 
     def test_normal_prompt_mentions_system_access(self):
-        from agents.hapax_voice.persona import system_prompt
+        from agents.hapax_daimonion.persona import system_prompt
 
         prompt = system_prompt(guest_mode=False)
         # The normal prompt gives access to the operator's system
@@ -288,7 +288,7 @@ class TestSystemPromptContent:
         )
 
     def test_guest_prompt_restricts_access(self):
-        from agents.hapax_voice.persona import system_prompt
+        from agents.hapax_daimonion.persona import system_prompt
 
         prompt = system_prompt(guest_mode=True)
         # Guest prompt should indicate limited access

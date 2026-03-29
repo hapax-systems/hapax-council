@@ -413,7 +413,7 @@ class TestCompositorLogosStatus:
 class TestPerceptionStateWriter:
     def test_writes_valid_json(self, tmp_path: Path) -> None:
         """Writer should produce valid JSON with all expected fields."""
-        from agents.hapax_voice._perception_state_writer import (
+        from agents.hapax_daimonion._perception_state_writer import (
             write_perception_state,
         )
 
@@ -442,11 +442,11 @@ class TestPerceptionStateWriter:
 
         with (
             patch(
-                "agents.hapax_voice._perception_state_writer.PERCEPTION_STATE_DIR",
+                "agents.hapax_daimonion._perception_state_writer.PERCEPTION_STATE_DIR",
                 tmp_path,
             ),
             patch(
-                "agents.hapax_voice._perception_state_writer.PERCEPTION_STATE_FILE",
+                "agents.hapax_daimonion._perception_state_writer.PERCEPTION_STATE_FILE",
                 tmp_path / "perception-state.json",
             ),
         ):
@@ -464,7 +464,7 @@ class TestPerceptionStateWriter:
 
     def test_flow_state_thresholds(self, tmp_path: Path) -> None:
         """Flow state should be derived from flow_score."""
-        from agents.hapax_voice._perception_state_writer import write_perception_state
+        from agents.hapax_daimonion._perception_state_writer import write_perception_state
 
         perception = MagicMock()
         consent = MagicMock()
@@ -489,11 +489,11 @@ class TestPerceptionStateWriter:
 
             with (
                 patch(
-                    "agents.hapax_voice._perception_state_writer.PERCEPTION_STATE_DIR",
+                    "agents.hapax_daimonion._perception_state_writer.PERCEPTION_STATE_DIR",
                     tmp_path,
                 ),
                 patch(
-                    "agents.hapax_voice._perception_state_writer.PERCEPTION_STATE_FILE",
+                    "agents.hapax_daimonion._perception_state_writer.PERCEPTION_STATE_FILE",
                     tmp_path / "perception-state.json",
                 ),
             ):

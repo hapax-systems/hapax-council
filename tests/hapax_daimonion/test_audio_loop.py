@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from agents.hapax_voice.__main__ import VoiceDaemon
+from agents.hapax_daimonion.__main__ import VoiceDaemon
 
 _FRAME_SAMPLES = 480  # 30ms at 16kHz
 _FRAME_BYTES = _FRAME_SAMPLES * 2  # 960 bytes

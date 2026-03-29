@@ -14,9 +14,9 @@ import logging
 import threading
 import time
 
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.timeline import TimelineMapping, TransportState
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
 try:
     import mido

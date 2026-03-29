@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.musical_position import (
+from agents.hapax_daimonion.musical_position import (
     MusicalPosition,
     create_musical_position_behavior,
     musical_position,
     update_musical_position,
 )
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.timeline import TimelineMapping, TransportState
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
 
 class TestMusicalPosition(unittest.TestCase):

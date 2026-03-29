@@ -5,10 +5,10 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.frame_gate import FrameGate
-from agents.hapax_voice.governor import PipelineGovernor
-from agents.hapax_voice.perception import PerceptionEngine
-from agents.hapax_voice.session import VoiceLifecycle
+from agents.hapax_daimonion.frame_gate import FrameGate
+from agents.hapax_daimonion.governor import PipelineGovernor
+from agents.hapax_daimonion.perception import PerceptionEngine
+from agents.hapax_daimonion.session import VoiceLifecycle
 
 
 def _mock_presence(**overrides):

@@ -7,11 +7,11 @@ from unittest.mock import MagicMock
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.commands import Command
-from agents.hapax_voice.frame_gate import FrameGate
-from agents.hapax_voice.governor import PipelineGovernor
-from agents.hapax_voice.perception import PerceptionEngine
-from tests.hapax_voice.hypothesis_strategies import st_environment_state
+from agents.hapax_daimonion.commands import Command
+from agents.hapax_daimonion.frame_gate import FrameGate
+from agents.hapax_daimonion.governor import PipelineGovernor
+from agents.hapax_daimonion.perception import PerceptionEngine
+from tests.hapax_daimonion.hypothesis_strategies import st_environment_state
 
 
 class TestGovernorProperties:

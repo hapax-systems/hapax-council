@@ -7,9 +7,9 @@ import types
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.executor import ScheduleQueue
-from agents.hapax_voice.governance import VetoResult
-from tests.hapax_voice.hypothesis_strategies import st_command, st_schedule, st_veto_result
+from agents.hapax_daimonion.executor import ScheduleQueue
+from agents.hapax_daimonion.governance import VetoResult
+from tests.hapax_daimonion.hypothesis_strategies import st_command, st_schedule, st_veto_result
 
 
 class TestCommandProperties:

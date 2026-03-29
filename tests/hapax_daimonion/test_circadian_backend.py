@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agents.hapax_voice.backends.circadian import CircadianBackend
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.backends.circadian import CircadianBackend
+from agents.hapax_daimonion.primitives import Behavior
 
 
 class TestCircadianBackend:
@@ -36,7 +36,7 @@ class TestCircadianBackend:
         )
         backend = CircadianBackend(profile_path=path)
         mock_dt = datetime(2026, 3, 12, 10, 0)
-        with patch("agents.hapax_voice.backends.circadian.datetime") as mock_datetime:
+        with patch("agents.hapax_daimonion.backends.circadian.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_dt
             behaviors: dict[str, Behavior] = {}
             backend.contribute(behaviors)
@@ -59,7 +59,7 @@ class TestCircadianBackend:
         backend = CircadianBackend(profile_path=path)
         # 8am is adjacent to peak 9am → transition
         mock_dt = datetime(2026, 3, 12, 8, 0)
-        with patch("agents.hapax_voice.backends.circadian.datetime") as mock_datetime:
+        with patch("agents.hapax_daimonion.backends.circadian.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_dt
             behaviors: dict[str, Behavior] = {}
             backend.contribute(behaviors)
@@ -82,7 +82,7 @@ class TestCircadianBackend:
         backend = CircadianBackend(profile_path=path)
         # 3pm is far from peak
         mock_dt = datetime(2026, 3, 12, 15, 0)
-        with patch("agents.hapax_voice.backends.circadian.datetime") as mock_datetime:
+        with patch("agents.hapax_daimonion.backends.circadian.datetime") as mock_datetime:
             mock_datetime.now.return_value = mock_dt
             behaviors: dict[str, Behavior] = {}
             backend.contribute(behaviors)

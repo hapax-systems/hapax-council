@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
-from agents.hapax_voice.commands import Command
+from agents.hapax_daimonion.commands import Command
 
 if TYPE_CHECKING:
     import pyaudio

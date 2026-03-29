@@ -1,6 +1,6 @@
 """Tests for voice tool schema definitions."""
 
-from agents.hapax_voice.tools import TOOL_SCHEMAS, get_tool_schemas
+from agents.hapax_daimonion.tools import TOOL_SCHEMAS, get_tool_schemas
 
 EXPECTED_TOOL_NAMES = [
     "search_documents",

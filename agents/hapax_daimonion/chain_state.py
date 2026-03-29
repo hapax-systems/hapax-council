@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.primitives import Behavior
 
 
 class GovernanceChainState(Enum):

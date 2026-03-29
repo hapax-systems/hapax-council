@@ -9,23 +9,23 @@ from typing import TYPE_CHECKING
 
 from opentelemetry.trace import get_tracer
 
-from agents.hapax_voice.hyprland_listener import FocusEvent, HyprlandEventListener
-from agents.hapax_voice.notification_queue import VoiceNotification
-from agents.hapax_voice.screen_capturer import ScreenCapturer
-from agents.hapax_voice.screen_models import (
+from agents.hapax_daimonion.hyprland_listener import FocusEvent, HyprlandEventListener
+from agents.hapax_daimonion.notification_queue import VoiceNotification
+from agents.hapax_daimonion.screen_capturer import ScreenCapturer
+from agents.hapax_daimonion.screen_models import (
     CameraConfig,
     WorkspaceAnalysis,
 )
-from agents.hapax_voice.webcam_capturer import WebcamCapturer
-from agents.hapax_voice.workspace_analyzer import WorkspaceAnalyzer
+from agents.hapax_daimonion.webcam_capturer import WebcamCapturer
+from agents.hapax_daimonion.workspace_analyzer import WorkspaceAnalyzer
 from shared.hyprland import HyprlandIPC
 
-_tracer = get_tracer("hapax_voice.workspace_monitor")
+_tracer = get_tracer("hapax_daimonion.workspace_monitor")
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.face_detector import FaceDetector
-    from agents.hapax_voice.notification_queue import NotificationQueue
-    from agents.hapax_voice.presence import PresenceDetector
+    from agents.hapax_daimonion.face_detector import FaceDetector
+    from agents.hapax_daimonion.notification_queue import NotificationQueue
+    from agents.hapax_daimonion.presence import PresenceDetector
 
 log = logging.getLogger(__name__)
 
@@ -261,7 +261,7 @@ class WorkspaceMonitor:
         with _tracer.start_as_current_span(
             "workspace_analysis",
             attributes={
-                "agent.name": "hapax-voice",
+                "agent.name": "hapax-daimonion",
                 "agent.repo": "hapax-council",
                 "presence_score": str(self._presence.score) if self._presence else "unknown",
                 "images_sent": images_sent,
@@ -304,7 +304,7 @@ class WorkspaceMonitor:
             import json
             from pathlib import Path
 
-            state_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+            state_path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
             data = json.loads(state_path.read_text(encoding="utf-8"))
             local_activity = data.get("llm_activity", "")
             local_confidence = float(data.get("llm_confidence", 0.0))
@@ -409,7 +409,7 @@ class WorkspaceMonitor:
         import json
         from pathlib import Path
 
-        state_path = Path.home() / ".local" / "share" / "hapax-voice" / "workspace_state.json"
+        state_path = Path.home() / ".local" / "share" / "hapax-daimonion" / "workspace_state.json"
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
@@ -486,7 +486,7 @@ class WorkspaceMonitor:
         # Lazy-init face detector
         if self._face_detector is None:
             try:
-                from agents.hapax_voice.face_detector import FaceDetector
+                from agents.hapax_daimonion.face_detector import FaceDetector
 
                 self._face_detector = FaceDetector(min_confidence=self._face_min_confidence)
             except Exception as exc:

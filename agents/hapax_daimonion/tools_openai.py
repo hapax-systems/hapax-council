@@ -83,14 +83,14 @@ def get_openai_tools(
 
     Args:
         guest_mode: If True, return empty tools (guests get no tools).
-        config: VoiceConfig to initialize module-level tool state.
+        config: DaimonionConfig to initialize module-level tool state.
         webcam_capturer: WebcamCapturer instance for vision tools.
         screen_capturer: ScreenCapturer instance for vision tools.
     """
     if guest_mode:
         return [], {}
 
-    from agents.hapax_voice.desktop_tools import (
+    from agents.hapax_daimonion.desktop_tools import (
         DESKTOP_TOOL_SCHEMAS,
         handle_close_window,
         handle_confirm_open_app,
@@ -101,7 +101,7 @@ def get_openai_tools(
         handle_resize_window,
         handle_switch_workspace,
     )
-    from agents.hapax_voice.tools import (
+    from agents.hapax_daimonion.tools import (
         TOOL_SCHEMAS,
         handle_analyze_scene,
         handle_check_consent_status,
@@ -159,7 +159,7 @@ def get_openai_tools(
     }
 
     # Phone tools (sync, no Pipecat shim needed)
-    from agents.hapax_voice.phone_tools import PHONE_TOOL_DEFINITIONS, PHONE_TOOL_HANDLERS
+    from agents.hapax_daimonion.phone_tools import PHONE_TOOL_DEFINITIONS, PHONE_TOOL_HANDLERS
 
     # Register phone tool handlers (sync → async wrappers)
     for name, handler in PHONE_TOOL_HANDLERS.items():

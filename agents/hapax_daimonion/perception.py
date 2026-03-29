@@ -1,4 +1,4 @@
-"""Unified perception layer for the Hapax Voice daemon.
+"""Unified perception layer for the Hapax Daimonion daemon.
 
 Fuses audio and visual signals into a single EnvironmentState snapshot
 every fast tick (2-3s). Slow enrichment (10-15s) adds LLM workspace
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.primitives import Behavior
 from shared.impingement import Impingement, ImpingementType
 
 if TYPE_CHECKING:

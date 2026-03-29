@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.midi_output import MidiOutput
+from agents.hapax_daimonion.midi_output import MidiOutput
 
 
 class TestMidiOutputInit:
@@ -20,7 +20,7 @@ class TestMidiOutputInit:
 class TestMidiOutputSendCC:
     def test_send_cc_opens_port_and_sends(self) -> None:
         mock_port = MagicMock()
-        with patch("agents.hapax_voice.midi_output.mido") as mock_mido:
+        with patch("agents.hapax_daimonion.midi_output.mido") as mock_mido:
             mock_mido.open_output.return_value = mock_port
             mock_msg = MagicMock()
             mock_mido.Message.return_value = mock_msg
@@ -36,7 +36,7 @@ class TestMidiOutputSendCC:
 
     def test_send_cc_reuses_port(self) -> None:
         mock_port = MagicMock()
-        with patch("agents.hapax_voice.midi_output.mido") as mock_mido:
+        with patch("agents.hapax_daimonion.midi_output.mido") as mock_mido:
             mock_mido.open_output.return_value = mock_port
             mock_mido.Message.return_value = MagicMock()
 
@@ -48,7 +48,7 @@ class TestMidiOutputSendCC:
 
     def test_send_cc_clamps_value(self) -> None:
         mock_port = MagicMock()
-        with patch("agents.hapax_voice.midi_output.mido") as mock_mido:
+        with patch("agents.hapax_daimonion.midi_output.mido") as mock_mido:
             mock_mido.open_output.return_value = mock_port
             mock_mido.Message.return_value = MagicMock()
 
@@ -61,7 +61,7 @@ class TestMidiOutputSendCC:
 
     def test_send_cc_clamps_negative(self) -> None:
         mock_port = MagicMock()
-        with patch("agents.hapax_voice.midi_output.mido") as mock_mido:
+        with patch("agents.hapax_daimonion.midi_output.mido") as mock_mido:
             mock_mido.open_output.return_value = mock_port
             mock_mido.Message.return_value = MagicMock()
 
@@ -75,7 +75,7 @@ class TestMidiOutputSendCC:
 
 class TestMidiOutputGracefulDegradation:
     def test_port_unavailable_logs_warning(self) -> None:
-        with patch("agents.hapax_voice.midi_output.mido") as mock_mido:
+        with patch("agents.hapax_daimonion.midi_output.mido") as mock_mido:
             mock_mido.open_output.side_effect = OSError("No MIDI devices")
 
             out = MidiOutput(port_name="Nonexistent")
@@ -83,7 +83,7 @@ class TestMidiOutputGracefulDegradation:
             assert out._port is None
 
     def test_send_after_failed_init_is_noop(self) -> None:
-        with patch("agents.hapax_voice.midi_output.mido") as mock_mido:
+        with patch("agents.hapax_daimonion.midi_output.mido") as mock_mido:
             mock_mido.open_output.side_effect = OSError("No MIDI")
 
             out = MidiOutput()
@@ -96,7 +96,7 @@ class TestMidiOutputGracefulDegradation:
 class TestMidiOutputClose:
     def test_close_closes_port(self) -> None:
         mock_port = MagicMock()
-        with patch("agents.hapax_voice.midi_output.mido") as mock_mido:
+        with patch("agents.hapax_daimonion.midi_output.mido") as mock_mido:
             mock_mido.open_output.return_value = mock_port
             mock_mido.Message.return_value = MagicMock()
 

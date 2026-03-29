@@ -3,7 +3,7 @@
 import datetime
 import json
 
-from agents.hapax_voice.event_log import EventLog
+from agents.hapax_daimonion.event_log import EventLog
 
 
 def test_emit_writes_jsonl(tmp_path):
@@ -20,7 +20,7 @@ def test_emit_writes_jsonl(tmp_path):
     assert event["type"] == "test_event"
     assert event["foo"] == "bar"
     assert event["count"] == 42
-    assert event["source_service"] == "hapax-voice"
+    assert event["source_service"] == "hapax-daimonion"
     assert "ts" in event
     assert "session_id" in event
 

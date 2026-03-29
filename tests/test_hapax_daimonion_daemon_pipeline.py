@@ -7,25 +7,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.config import VoiceConfig
+from agents.hapax_daimonion.config import DaimonionConfig
 
 
 def _make_daemon(backend: str = "local") -> VoiceDaemon:
     """Create a VoiceDaemon with mocked subsystems for testing."""
-    from agents.hapax_voice.__main__ import VoiceDaemon
+    from agents.hapax_daimonion.__main__ import VoiceDaemon
 
-    cfg = VoiceConfig(
+    cfg = DaimonionConfig(
         backend=backend,
         silence_timeout_s=10,
-        hotkey_socket="/tmp/test-hapax-voice.sock",
+        hotkey_socket="/tmp/test-hapax-daimonion.sock",
     )
 
     with (
-        patch("agents.hapax_voice.__main__.PresenceDetector"),
-        patch("agents.hapax_voice.__main__.ContextGate"),
-        patch("agents.hapax_voice.__main__.HotkeyServer"),
-        patch("agents.hapax_voice.__main__.WakeWordDetector"),
-        patch("agents.hapax_voice.__main__.TTSManager"),
+        patch("agents.hapax_daimonion.__main__.PresenceDetector"),
+        patch("agents.hapax_daimonion.__main__.ContextGate"),
+        patch("agents.hapax_daimonion.__main__.HotkeyServer"),
+        patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
+        patch("agents.hapax_daimonion.__main__.TTSManager"),
     ):
         daemon = VoiceDaemon(cfg=cfg)
 
@@ -53,7 +53,7 @@ class TestStartPipeline:
 
         with (
             patch(
-                "agents.hapax_voice.pipeline.build_pipeline_task",
+                "agents.hapax_daimonion.pipeline.build_pipeline_task",
                 return_value=(mock_task, mock_transport),
             ) as mock_build,
             patch("pipecat.pipeline.runner.PipelineRunner") as mock_runner_cls,
@@ -70,7 +70,7 @@ class TestStartPipeline:
     async def test_gemini_pipeline_starts(self) -> None:
         daemon = _make_daemon(backend="gemini")
 
-        with patch("agents.hapax_voice.gemini_live.GeminiLiveSession") as mock_session_cls:
+        with patch("agents.hapax_daimonion.gemini_live.GeminiLiveSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.is_connected = True
             mock_session_cls.return_value = mock_session
@@ -190,15 +190,15 @@ class TestHotkeyIntegration:
 
 class TestConfigBackendField:
     def test_default_is_local(self) -> None:
-        cfg = VoiceConfig()
+        cfg = DaimonionConfig()
         assert cfg.backend == "local"
 
     def test_gemini_backend(self) -> None:
-        cfg = VoiceConfig(backend="gemini")
+        cfg = DaimonionConfig(backend="gemini")
         assert cfg.backend == "gemini"
 
     def test_llm_model_default(self) -> None:
-        cfg = VoiceConfig()
+        cfg = DaimonionConfig()
         assert cfg.llm_model == "claude-sonnet"
 
 
@@ -206,20 +206,20 @@ def test_daemon_creates_perception_engine():
     """VoiceDaemon initializes a PerceptionEngine."""
     from unittest.mock import MagicMock, patch
 
-    from agents.hapax_voice.__main__ import VoiceDaemon
-    from agents.hapax_voice.config import VoiceConfig
+    from agents.hapax_daimonion.__main__ import VoiceDaemon
+    from agents.hapax_daimonion.config import DaimonionConfig
 
     with (
-        patch("agents.hapax_voice.__main__.AudioInputStream"),
-        patch("agents.hapax_voice.__main__.WorkspaceMonitor") as MockWM,
-        patch("agents.hapax_voice.__main__.TTSManager"),
-        patch("agents.hapax_voice.__main__.ChimePlayer"),
-        patch("agents.hapax_voice.__main__.EventLog"),
+        patch("agents.hapax_daimonion.__main__.AudioInputStream"),
+        patch("agents.hapax_daimonion.__main__.WorkspaceMonitor") as MockWM,
+        patch("agents.hapax_daimonion.__main__.TTSManager"),
+        patch("agents.hapax_daimonion.__main__.ChimePlayer"),
+        patch("agents.hapax_daimonion.__main__.EventLog"),
     ):
         MockWM.return_value.set_notification_queue = MagicMock()
         MockWM.return_value.set_presence = MagicMock()
         MockWM.return_value.set_event_log = MagicMock()
-        daemon = VoiceDaemon(cfg=VoiceConfig())
+        daemon = VoiceDaemon(cfg=DaimonionConfig())
         assert hasattr(daemon, "perception")
         assert hasattr(daemon, "governor")
         assert hasattr(daemon, "_frame_gate")

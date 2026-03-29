@@ -1,7 +1,7 @@
 import time
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.perception import EnvironmentState, PerceptionEngine
+from agents.hapax_daimonion.perception import EnvironmentState, PerceptionEngine
 from shared.hyprland import WindowInfo
 
 

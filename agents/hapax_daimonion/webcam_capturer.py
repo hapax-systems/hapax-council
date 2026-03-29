@@ -10,7 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from agents.hapax_voice.screen_models import CameraConfig
+from agents.hapax_daimonion.screen_models import CameraConfig
 
 log = logging.getLogger(__name__)
 

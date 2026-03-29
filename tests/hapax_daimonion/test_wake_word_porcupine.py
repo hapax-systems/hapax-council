@@ -5,33 +5,37 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from agents.hapax_voice.wake_word_porcupine import (
+from agents.hapax_daimonion.wake_word_porcupine import (
     PorcupineWakeWord,
     _load_access_key,
 )
 
 
 class TestLoadAccessKey:
-    @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run")
+    @patch("agents.hapax_daimonion.wake_word_porcupine.subprocess.run")
     def test_returns_key_on_success(self, mock_run):
         mock_run.return_value = MagicMock(stdout="test-key-123\n", returncode=0)
         assert _load_access_key() == "test-key-123"
 
-    @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run")
+    @patch("agents.hapax_daimonion.wake_word_porcupine.subprocess.run")
     def test_returns_none_on_empty_output(self, mock_run):
         mock_run.return_value = MagicMock(stdout="", returncode=0)
         assert _load_access_key() is None
 
-    @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run")
+    @patch("agents.hapax_daimonion.wake_word_porcupine.subprocess.run")
     def test_returns_none_on_nonzero_returncode(self, mock_run):
         mock_run.return_value = MagicMock(stdout="key", returncode=1)
         assert _load_access_key() is None
 
-    @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run", side_effect=FileNotFoundError)
+    @patch(
+        "agents.hapax_daimonion.wake_word_porcupine.subprocess.run", side_effect=FileNotFoundError
+    )
     def test_returns_none_when_pass_not_found(self, _):
         assert _load_access_key() is None
 
-    @patch("agents.hapax_voice.wake_word_porcupine.subprocess.run", side_effect=Exception("boom"))
+    @patch(
+        "agents.hapax_daimonion.wake_word_porcupine.subprocess.run", side_effect=Exception("boom")
+    )
     def test_returns_none_on_generic_error(self, _):
         assert _load_access_key() is None
 
@@ -40,7 +44,7 @@ class TestPorcupineWakeWordInit:
     def test_default_model_path(self):
         detector = PorcupineWakeWord()
         assert detector.model_path == (
-            Path.home() / ".local" / "share" / "hapax-voice" / "hapax_porcupine.ppn"
+            Path.home() / ".local" / "share" / "hapax-daimonion" / "hapax_porcupine.ppn"
         )
 
     def test_custom_model_path(self):
@@ -62,7 +66,7 @@ class TestPorcupineWakeWordInit:
 
 
 class TestPorcupineWakeWordLoad:
-    @patch("agents.hapax_voice.wake_word_porcupine._load_access_key", return_value=None)
+    @patch("agents.hapax_daimonion.wake_word_porcupine._load_access_key", return_value=None)
     def test_load_fails_without_access_key(self, _):
         detector = PorcupineWakeWord()
         detector.model_path = MagicMock(exists=MagicMock(return_value=True))
@@ -74,7 +78,7 @@ class TestPorcupineWakeWordLoad:
         detector.load()
         assert not detector.is_loaded
 
-    @patch("agents.hapax_voice.wake_word_porcupine._load_access_key", return_value="test-key")
+    @patch("agents.hapax_daimonion.wake_word_porcupine._load_access_key", return_value="test-key")
     def test_load_fails_without_pvporcupine(self, _):
         detector = PorcupineWakeWord()
         detector.model_path = MagicMock(exists=MagicMock(return_value=True))
@@ -82,8 +86,8 @@ class TestPorcupineWakeWordLoad:
         detector.load()
         assert not detector.is_loaded
 
-    @patch("agents.hapax_voice.wake_word_porcupine._load_access_key", return_value="test-key")
-    @patch("agents.hapax_voice.wake_word_porcupine.pvporcupine", create=True)
+    @patch("agents.hapax_daimonion.wake_word_porcupine._load_access_key", return_value="test-key")
+    @patch("agents.hapax_daimonion.wake_word_porcupine.pvporcupine", create=True)
     def test_load_success(self, mock_pv, _):
         import sys
 
@@ -182,34 +186,34 @@ class TestPorcupineClose:
 
 
 class TestDaemonWakeWordSelection:
-    @patch("agents.hapax_voice.__main__._screen_flash")
-    @patch("agents.hapax_voice.__main__.AudioInputStream")
-    @patch("agents.hapax_voice.__main__.TTSManager")
-    @patch("agents.hapax_voice.__main__.WakeWordDetector")
-    @patch("agents.hapax_voice.__main__.PorcupineWakeWord")
-    @patch("agents.hapax_voice.__main__.HotkeyServer")
-    @patch("agents.hapax_voice.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.__main__._screen_flash")
+    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
+    @patch("agents.hapax_daimonion.__main__.TTSManager")
+    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
+    @patch("agents.hapax_daimonion.__main__.PorcupineWakeWord")
+    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
+    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
     def test_porcupine_selected_by_default(self, _chime, _hotkey, MockPorc, MockOWW, *_):
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.config import VoiceConfig
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.config import DaimonionConfig
 
-        cfg = VoiceConfig(wake_word_engine="porcupine")
+        cfg = DaimonionConfig(wake_word_engine="porcupine")
         VoiceDaemon(cfg=cfg)
         MockPorc.assert_called_once_with(sensitivity=0.5)
         MockOWW.assert_not_called()
 
-    @patch("agents.hapax_voice.__main__._screen_flash")
-    @patch("agents.hapax_voice.__main__.AudioInputStream")
-    @patch("agents.hapax_voice.__main__.TTSManager")
-    @patch("agents.hapax_voice.__main__.WakeWordDetector")
-    @patch("agents.hapax_voice.__main__.PorcupineWakeWord")
-    @patch("agents.hapax_voice.__main__.HotkeyServer")
-    @patch("agents.hapax_voice.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.__main__._screen_flash")
+    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
+    @patch("agents.hapax_daimonion.__main__.TTSManager")
+    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
+    @patch("agents.hapax_daimonion.__main__.PorcupineWakeWord")
+    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
+    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
     def test_oww_selected_when_configured(self, _chime, _hotkey, MockPorc, MockOWW, *_):
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.config import VoiceConfig
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.config import DaimonionConfig
 
-        cfg = VoiceConfig(wake_word_engine="oww")
+        cfg = DaimonionConfig(wake_word_engine="oww")
         VoiceDaemon(cfg=cfg)
         MockOWW.assert_called_once()
         MockPorc.assert_not_called()

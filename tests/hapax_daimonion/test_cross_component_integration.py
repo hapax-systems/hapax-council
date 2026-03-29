@@ -1,4 +1,4 @@
-"""Cross-component integration tests for hapax-voice subsystems.
+"""Cross-component integration tests for hapax-daimonion subsystems.
 
 These tests verify that multiple subsystems work together correctly.
 All external services are mocked, but the internal wiring between
@@ -13,17 +13,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.event_log import EventLog
-from agents.hapax_voice.notification_queue import NotificationQueue, VoiceNotification
-from agents.hapax_voice.presence import PresenceDetector
-from agents.hapax_voice.screen_models import (
+from agents.hapax_daimonion.context_gate import ContextGate
+from agents.hapax_daimonion.event_log import EventLog
+from agents.hapax_daimonion.notification_queue import NotificationQueue, VoiceNotification
+from agents.hapax_daimonion.presence import PresenceDetector
+from agents.hapax_daimonion.screen_models import (
     GearObservation,
     Issue,
     WorkspaceAnalysis,
 )
-from agents.hapax_voice.session import SessionManager
-from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
+from agents.hapax_daimonion.session import SessionManager
+from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
 
 def _make_analysis(**kwargs) -> WorkspaceAnalysis:
@@ -237,7 +237,7 @@ def test_gate_allows_when_idle_and_quiet(tmp_path):
     mock_aconnect_result = MagicMock()
     mock_aconnect_result.stdout = "client 0: 'System' [type=kernel]\n"
 
-    with patch("agents.hapax_voice.context_gate.subprocess.run") as mock_run:
+    with patch("agents.hapax_daimonion.context_gate.subprocess.run") as mock_run:
 
         def route_subprocess(cmd, **kwargs):
             if cmd[0] == "wpctl":
@@ -409,7 +409,7 @@ async def test_workspace_monitor_rag_augmentation_failure(tmp_path):
     # Set a previous analysis with keywords so _query_rag is attempted
     monitor._latest_analysis = _make_analysis(keywords=["docker", "error"])
 
-    with patch("agents.hapax_voice.workspace_monitor.WorkspaceMonitor._query_rag") as mock_rag:
+    with patch("agents.hapax_daimonion.workspace_monitor.WorkspaceMonitor._query_rag") as mock_rag:
         mock_rag.return_value = None  # Simulates failure fallback
         await monitor._capture_and_analyze()
 
@@ -508,7 +508,7 @@ class TestAudioPipelineIntegration:
     @pytest.mark.asyncio
     async def test_audio_to_wake_word_to_session(self):
         """Audio frame triggers wake word which opens a session."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
 
         daemon = object.__new__(VoiceDaemon)
         daemon._running = True

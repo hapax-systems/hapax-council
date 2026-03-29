@@ -6,7 +6,7 @@ Wraps LAION CLAP (laion/larger_clap_music_and_speech) for:
   - classify_zero_shot(): multi-label classification against candidate labels
 
 Model is lazy-loaded on first call and protected by VRAMLock to coordinate
-GPU access with audio_processor and hapax_voice.
+GPU access with audio_processor and hapax_daimonion.
 
 Chunking: Audio longer than 10s is split into overlapping chunks (10s window,
 5s hop) and embeddings are mean-pooled. This matches the audio_processor's

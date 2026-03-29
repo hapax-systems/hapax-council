@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from agents.hapax_voice.vocal_fx import (
+from agents.hapax_daimonion.vocal_fx import (
     _DEFAULT_PRESETS,
     VocalFXProcessor,
     VocalPreset,

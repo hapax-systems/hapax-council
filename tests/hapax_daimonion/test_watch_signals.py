@@ -7,8 +7,8 @@ import os
 import time
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.presence import PresenceDetector
-from agents.hapax_voice.watch_signals import (
+from agents.hapax_daimonion.presence import PresenceDetector
+from agents.hapax_daimonion.watch_signals import (
     is_phone_connected,
     is_stress_elevated,
     is_watch_bt_nearby,
@@ -151,7 +151,7 @@ class TestWatchPresence:
     def test_watch_disconnected_when_no_file(self, tmp_path):
         assert is_watch_connected(watch_dir=tmp_path) is False
 
-    @patch("agents.hapax_voice.watch_signals.is_watch_bt_nearby", return_value=True)
+    @patch("agents.hapax_daimonion.watch_signals.is_watch_bt_nearby", return_value=True)
     def test_watch_connected_via_bt_when_wifi_stale(self, mock_bt, tmp_path):
         """Falls back to BLE when WiFi connection.json is stale."""
         conn = tmp_path / "connection.json"
@@ -168,12 +168,12 @@ class TestWatchPresence:
         assert is_watch_connected(watch_dir=tmp_path) is True
         mock_bt.assert_called_once()
 
-    @patch("agents.hapax_voice.watch_signals.is_watch_bt_nearby", return_value=False)
+    @patch("agents.hapax_daimonion.watch_signals.is_watch_bt_nearby", return_value=False)
     def test_watch_disconnected_when_both_fail(self, mock_bt, tmp_path):
         """Disconnected when both WiFi and BLE fail."""
         assert is_watch_connected(watch_dir=tmp_path) is False
 
-    @patch("agents.hapax_voice.watch_signals.is_watch_bt_nearby", return_value=None)
+    @patch("agents.hapax_daimonion.watch_signals.is_watch_bt_nearby", return_value=None)
     def test_watch_disconnected_when_bt_unavailable(self, mock_bt, tmp_path):
         """Disconnected when WiFi stale and BT adapter unavailable."""
         assert is_watch_connected(watch_dir=tmp_path) is False
@@ -276,7 +276,7 @@ class TestBluetoothPresence:
             result = is_watch_bt_nearby(bt_mac="AA:BB:CC:DD:EE:FF")
             assert result is True
 
-    @patch("agents.hapax_voice.presence.is_watch_connected", return_value=True)
+    @patch("agents.hapax_daimonion.presence.is_watch_connected", return_value=True)
     def test_watch_presence_confirmed_via_trigger_file(self, mock_conn, tmp_path):
         """Presence confirmed when trigger file appears after haptic tap."""
         detector = PresenceDetector()
@@ -288,39 +288,39 @@ class TestBluetoothPresence:
             return True
 
         with patch(
-            "agents.hapax_voice.presence.send_haptic_tap", side_effect=write_trigger_on_tap
+            "agents.hapax_daimonion.presence.send_haptic_tap", side_effect=write_trigger_on_tap
         ) as mock_tap:
-            with patch("agents.hapax_voice.presence.WATCH_STATE_DIR", tmp_path):
+            with patch("agents.hapax_daimonion.presence.WATCH_STATE_DIR", tmp_path):
                 result = detector.try_watch_presence_check(timeout=0.5, poll_interval=0.1)
         assert result is True
         mock_tap.assert_called_once()
 
-    @patch("agents.hapax_voice.presence.send_haptic_tap", return_value=True)
-    @patch("agents.hapax_voice.presence.is_watch_connected", return_value=True)
+    @patch("agents.hapax_daimonion.presence.send_haptic_tap", return_value=True)
+    @patch("agents.hapax_daimonion.presence.is_watch_connected", return_value=True)
     def test_watch_presence_timeout_returns_none(self, mock_conn, mock_tap, tmp_path):
         """Returns None (fall through) when no trigger file appears."""
         detector = PresenceDetector()
-        with patch("agents.hapax_voice.presence.WATCH_STATE_DIR", tmp_path):
+        with patch("agents.hapax_daimonion.presence.WATCH_STATE_DIR", tmp_path):
             result = detector.try_watch_presence_check(timeout=0.5, poll_interval=0.1)
         assert result is None
 
-    @patch("agents.hapax_voice.presence.is_watch_connected", return_value=False)
+    @patch("agents.hapax_daimonion.presence.is_watch_connected", return_value=False)
     def test_watch_presence_skips_when_disconnected(self, mock_conn):
         """Returns None immediately when watch not connected."""
         detector = PresenceDetector()
         result = detector.try_watch_presence_check()
         assert result is None
 
-    @patch("agents.hapax_voice.presence.send_haptic_tap", return_value=False)
-    @patch("agents.hapax_voice.presence.is_watch_connected", return_value=True)
+    @patch("agents.hapax_daimonion.presence.send_haptic_tap", return_value=False)
+    @patch("agents.hapax_daimonion.presence.is_watch_connected", return_value=True)
     def test_watch_presence_falls_through_on_haptic_failure(self, mock_conn, mock_tap):
         """Returns None when haptic tap send fails."""
         detector = PresenceDetector()
         result = detector.try_watch_presence_check()
         assert result is None
 
-    @patch("agents.hapax_voice.presence.send_haptic_tap", return_value=True)
-    @patch("agents.hapax_voice.presence.is_watch_connected", return_value=True)
+    @patch("agents.hapax_daimonion.presence.send_haptic_tap", return_value=True)
+    @patch("agents.hapax_daimonion.presence.is_watch_connected", return_value=True)
     def test_watch_presence_ignores_stale_trigger(self, mock_conn, mock_tap, tmp_path):
         """Ignores trigger file that predates the haptic tap."""
         detector = PresenceDetector()
@@ -329,13 +329,13 @@ class TestBluetoothPresence:
         # Set mtime to 10 seconds ago so it predates the haptic send
         old_time = time.time() - 10
         os.utime(trigger, (old_time, old_time))
-        with patch("agents.hapax_voice.presence.WATCH_STATE_DIR", tmp_path):
+        with patch("agents.hapax_daimonion.presence.WATCH_STATE_DIR", tmp_path):
             result = detector.try_watch_presence_check(timeout=0.5, poll_interval=0.1)
         assert result is None
 
     def test_watch_presence_returns_none_when_watch_module_unavailable(self):
         """Returns None when watch_signals module is not available."""
         detector = PresenceDetector()
-        with patch("agents.hapax_voice.presence._WATCH_AVAILABLE", False):
+        with patch("agents.hapax_daimonion.presence._WATCH_AVAILABLE", False):
             result = detector.try_watch_presence_check()
         assert result is None

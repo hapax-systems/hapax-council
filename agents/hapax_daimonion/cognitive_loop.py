@@ -22,18 +22,18 @@ import time
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from agents.hapax_voice.perception import PerceptionTier as BackendTier
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.perception import PerceptionTier as BackendTier
+from agents.hapax_daimonion.primitives import Behavior
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.conversation_buffer import ConversationBuffer
-    from agents.hapax_voice.conversation_pipeline import ConversationPipeline
-    from agents.hapax_voice.conversational_model import ConversationalModel
-    from agents.hapax_voice.event_log import EventLog
-    from agents.hapax_voice.salience_router import SalienceRouter
-    from agents.hapax_voice.session import SessionManager
-    from agents.hapax_voice.speaker_id import SpeakerIdentifier
-    from agents.hapax_voice.speculative_stt import SpeculativeTranscriber
+    from agents.hapax_daimonion.conversation_buffer import ConversationBuffer
+    from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
+    from agents.hapax_daimonion.conversational_model import ConversationalModel
+    from agents.hapax_daimonion.event_log import EventLog
+    from agents.hapax_daimonion.salience_router import SalienceRouter
+    from agents.hapax_daimonion.session import SessionManager
+    from agents.hapax_daimonion.speaker_id import SpeakerIdentifier
+    from agents.hapax_daimonion.speculative_stt import SpeculativeTranscriber
 
 log = logging.getLogger(__name__)
 
@@ -265,7 +265,7 @@ class CognitiveLoop:
             return TurnPhase.OPERATOR_SPEAKING
 
         # Neither speaking
-        from agents.hapax_voice.conversation_pipeline import ConvState
+        from agents.hapax_daimonion.conversation_pipeline import ConvState
 
         if self._pipeline.state in (ConvState.TRANSCRIBING, ConvState.THINKING):
             return TurnPhase.TRANSITION
@@ -359,7 +359,7 @@ class CognitiveLoop:
         """
         if self._processing_task is not None and not self._processing_task.done():
             return True
-        from agents.hapax_voice.conversation_pipeline import ConvState
+        from agents.hapax_daimonion.conversation_pipeline import ConvState
 
         return self._pipeline.state == ConvState.SPEAKING
 

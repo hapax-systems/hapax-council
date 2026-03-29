@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.governance import FusedContext
-from agents.hapax_voice.obs_governance import OBSScene, build_obs_fallback_chain
-from agents.hapax_voice.primitives import Stamped
+from agents.hapax_daimonion.governance import FusedContext
+from agents.hapax_daimonion.obs_governance import OBSScene, build_obs_fallback_chain
+from agents.hapax_daimonion.primitives import Stamped
 
 
 def _make_ctx(desk_activity: str | None = None) -> FusedContext:

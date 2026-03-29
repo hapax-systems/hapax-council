@@ -12,7 +12,7 @@ from agents.fortress.creativity import (
     neuroception_safe,
 )
 from agents.fortress.schema import FullFortressState
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.governance import (
     Candidate,
     FallbackChain,
     Selected,

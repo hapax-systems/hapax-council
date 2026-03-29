@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from agents.hapax_voice.presence import PresenceDetector
+from agents.hapax_daimonion.presence import PresenceDetector
 
 
 class TestLoadModelFailure:
@@ -16,7 +16,7 @@ class TestLoadModelFailure:
 
         with (
             patch.dict("sys.modules", {"silero_vad": None}),
-            patch("agents.hapax_voice.presence.torch") as mock_torch,
+            patch("agents.hapax_daimonion.presence.torch") as mock_torch,
         ):
             # Make import fail via the patched sys.modules (ImportError)
             # and torch.hub.load raise a RuntimeError

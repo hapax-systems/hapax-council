@@ -20,10 +20,10 @@ import logging
 import time
 from dataclasses import dataclass
 
-from agents.hapax_voice.model_router import TIER_ROUTES, ModelTier, RoutingDecision
-from agents.hapax_voice.salience.concern_graph import ConcernGraph
-from agents.hapax_voice.salience.embedder import Embedder
-from agents.hapax_voice.salience.utterance_features import UtteranceFeatures, extract
+from agents.hapax_daimonion.model_router import TIER_ROUTES, ModelTier, RoutingDecision
+from agents.hapax_daimonion.salience.concern_graph import ConcernGraph
+from agents.hapax_daimonion.salience.embedder import Embedder
+from agents.hapax_daimonion.salience.utterance_features import UtteranceFeatures, extract
 
 log = logging.getLogger(__name__)
 
@@ -343,7 +343,7 @@ class SalienceRouter:
         text = transcript.strip()
 
         # Import canned patterns from model_router (reuse, don't duplicate)
-        from agents.hapax_voice.model_router import _CANNED_PATTERNS, _GREETING_CANNED
+        from agents.hapax_daimonion.model_router import _CANNED_PATTERNS, _GREETING_CANNED
 
         # First-turn greetings
         if turn_count <= 1 and len(text.split()) <= 6:

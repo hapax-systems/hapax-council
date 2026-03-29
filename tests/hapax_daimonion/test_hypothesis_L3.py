@@ -5,9 +5,9 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.combinator import with_latest_from
-from agents.hapax_voice.governance import FusedContext, VetoChain
-from agents.hapax_voice.primitives import Behavior, Event
+from agents.hapax_daimonion.combinator import with_latest_from
+from agents.hapax_daimonion.governance import FusedContext, VetoChain
+from agents.hapax_daimonion.primitives import Behavior, Event
 
 
 class TestWithLatestFromProperties:

@@ -5,9 +5,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.executor import Executor, ExecutorRegistry, ScheduleQueue
-from agents.hapax_voice.governance import VetoResult
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.executor import Executor, ExecutorRegistry, ScheduleQueue
+from agents.hapax_daimonion.governance import VetoResult
 
 
 class FakeExecutor:

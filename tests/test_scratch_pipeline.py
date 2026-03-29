@@ -12,23 +12,23 @@ class TestPerceptionStateExport:
 
     def test_desk_activity_in_state_dict_keys(self):
         """The perception state writer must include desk_activity."""
-        writer_path = _PROJECT_ROOT / "agents/hapax_voice/_perception_state_writer.py"
+        writer_path = _PROJECT_ROOT / "agents/hapax_daimonion/_perception_state_writer.py"
         source = writer_path.read_text()
         assert '"desk_activity"' in source
 
     def test_desk_energy_in_state_dict_keys(self):
-        writer_path = _PROJECT_ROOT / "agents/hapax_voice/_perception_state_writer.py"
+        writer_path = _PROJECT_ROOT / "agents/hapax_daimonion/_perception_state_writer.py"
         source = writer_path.read_text()
         assert '"desk_energy"' in source
 
 
 class TestMidiExport:
     def test_beat_position_in_state_dict(self):
-        source = (_PROJECT_ROOT / "agents/hapax_voice/_perception_state_writer.py").read_text()
+        source = (_PROJECT_ROOT / "agents/hapax_daimonion/_perception_state_writer.py").read_text()
         assert '"beat_position"' in source
 
     def test_bar_position_in_state_dict(self):
-        source = (_PROJECT_ROOT / "agents/hapax_voice/_perception_state_writer.py").read_text()
+        source = (_PROJECT_ROOT / "agents/hapax_daimonion/_perception_state_writer.py").read_text()
         assert '"bar_position"' in source
 
 
@@ -61,7 +61,7 @@ class TestOverlayDataField:
 class TestFlowModifier:
     def test_scratching_boosts_flow(self):
         """Source check: perception state writer adds flow modifier for scratching."""
-        source = (_PROJECT_ROOT / "agents/hapax_voice/_perception_state_writer.py").read_text()
+        source = (_PROJECT_ROOT / "agents/hapax_daimonion/_perception_state_writer.py").read_text()
         assert "scratching" in source
         assert "drumming" in source
         assert "flow_modifier" in source

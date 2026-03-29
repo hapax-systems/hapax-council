@@ -7,7 +7,7 @@ enforcement from Batch 4) can be used as a VetoChain predicate.
 
 from __future__ import annotations
 
-from agents.hapax_voice.governance import Veto
+from agents.hapax_daimonion.governance import Veto
 from shared.capabilities.protocols import HealthStatus
 from shared.capabilities.registry import CapabilityRegistry
 

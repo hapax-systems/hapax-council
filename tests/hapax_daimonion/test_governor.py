@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import time
 
-from agents.hapax_voice.governor import _RUNTIME_COMPLIANCE_RULES, PipelineGovernor
-from agents.hapax_voice.perception import EnvironmentState
+from agents.hapax_daimonion.governor import _RUNTIME_COMPLIANCE_RULES, PipelineGovernor
+from agents.hapax_daimonion.perception import EnvironmentState
 from shared.axiom_enforcement import check_fast
 
 

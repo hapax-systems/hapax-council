@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.chain_state import (
+from agents.hapax_daimonion.chain_state import (
     ConversationState,
     GovernanceChainState,
     create_cross_role_behaviors,
 )
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.primitives import Behavior
 
 
 class TestGovernanceChainState(unittest.TestCase):

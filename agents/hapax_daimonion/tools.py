@@ -22,7 +22,7 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from agents.hapax_voice.desktop_tools import (
+from agents.hapax_daimonion.desktop_tools import (
     DESKTOP_TOOL_SCHEMAS,
     handle_confirm_open_app,
     handle_focus_window,
@@ -36,13 +36,13 @@ from shared.google_auth import build_service
 if TYPE_CHECKING:
     from pipecat.services.openai.llm import OpenAILLMService
 
-    from agents.hapax_voice.config import VoiceConfig
+    from agents.hapax_daimonion.config import DaimonionConfig
 
 log = logging.getLogger(__name__)
 
 # Module-level state for SMS confirmation flow and config reference
 _pending_sms: dict[str, dict] = {}
-_voice_config = None
+_daimonion_config = None
 
 # Capturer instances — populated during tool registration
 _webcam_capturer = None
@@ -651,7 +651,7 @@ async def handle_send_sms(params) -> None:
     recipient = params.arguments["recipient"]
     message = params.arguments["message"]
 
-    cfg = _voice_config
+    cfg = _daimonion_config
     if cfg is None:
         await params.result_callback({"status": "error", "detail": "SMS not configured"})
         return
@@ -721,7 +721,7 @@ async def handle_confirm_send_sms(params) -> None:
         )
         return
 
-    cfg = _voice_config
+    cfg = _daimonion_config
     if cfg is None or not cfg.sms_gateway_host:
         await params.result_callback({"status": "error", "detail": "SMS gateway not configured"})
         return
@@ -767,7 +767,7 @@ async def handle_confirm_send_sms(params) -> None:
 
 def _vision_analyze(images: list[str], question: str) -> str:
     """Send base64 images to Gemini Flash for visual analysis via LiteLLM."""
-    from agents.hapax_voice.config import LITELLM_BASE
+    from agents.hapax_daimonion.config import LITELLM_BASE
 
     base_url = LITELLM_BASE
     api_key = os.environ.get("LITELLM_API_KEY", "not-set")
@@ -1211,7 +1211,7 @@ async def handle_check_governance_health(params) -> None:
 # Scene inventory + detection overlay tools
 # ---------------------------------------------------------------------------
 
-PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 
 
 async def handle_query_scene_inventory(params) -> None:
@@ -1492,14 +1492,14 @@ async def handle_query_scene_state(params) -> None:
 # ---------------------------------------------------------------------------
 
 
-def init_tool_state(config: VoiceConfig, webcam_capturer=None, screen_capturer=None) -> None:
+def init_tool_state(config: DaimonionConfig, webcam_capturer=None, screen_capturer=None) -> None:
     """Initialize module-level state needed by tool handlers.
 
     Called by both register_tool_handlers (Pipecat path) and
     get_openai_tools (conversation pipeline path).
     """
-    global _voice_config, _webcam_capturer, _screen_capturer
-    _voice_config = config
+    global _daimonion_config, _webcam_capturer, _screen_capturer
+    _daimonion_config = config
     _webcam_capturer = webcam_capturer
     _screen_capturer = screen_capturer
 
@@ -1511,7 +1511,7 @@ def init_tool_state(config: VoiceConfig, webcam_capturer=None, screen_capturer=N
 
 def register_tool_handlers(
     llm: OpenAILLMService,
-    config: VoiceConfig,
+    config: DaimonionConfig,
     webcam_capturer=None,
     screen_capturer=None,
 ) -> None:

@@ -19,7 +19,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.resident_stt import ResidentSTT
+    from agents.hapax_daimonion.resident_stt import ResidentSTT
 
 log = logging.getLogger(__name__)
 

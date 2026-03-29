@@ -45,15 +45,15 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.consent_state import ConsentPhase, ConsentStateTracker
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.conversation_pipeline import ConversationPipeline, ConvState
-from agents.hapax_voice.conversational_policy import get_policy
-from agents.hapax_voice.governance import Veto
-from agents.hapax_voice.governor import PipelineGovernor
-from agents.hapax_voice.perception import EnvironmentState, compute_interruptibility
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.session import SessionManager
+from agents.hapax_daimonion.consent_state import ConsentPhase, ConsentStateTracker
+from agents.hapax_daimonion.context_gate import ContextGate
+from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline, ConvState
+from agents.hapax_daimonion.conversational_policy import get_policy
+from agents.hapax_daimonion.governance import Veto
+from agents.hapax_daimonion.governor import PipelineGovernor
+from agents.hapax_daimonion.perception import EnvironmentState, compute_interruptibility
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.session import SessionManager
 from shared.governance.consent import ConsentContract, ConsentRegistry
 from shared.governance.consent_reader import ConsentGatedReader, RetrievedDatum
 from shared.governance.degradation import degrade

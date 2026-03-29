@@ -45,7 +45,7 @@ class TestCheckVoiceServices:
     async def test_voice_service_down(self, mock_cmd, _mock_httpx):
         async def side_effect(cmd, **kwargs):
             unit = cmd[-1]
-            if "hapax-voice" in unit:
+            if "hapax-daimonion" in unit:
                 return (3, "inactive", "")
             return (0, "active", "")
 
@@ -79,7 +79,7 @@ class TestCheckVoiceSocket:
     @pytest.mark.asyncio
     @patch("agents.health_monitor._voice_socket_path")
     async def test_socket_exists(self, mock_path, tmp_path):
-        sock = tmp_path / "hapax-voice.sock"
+        sock = tmp_path / "hapax-daimonion.sock"
         sock.touch()
         mock_path.return_value = str(sock)
         results = await check_voice_socket()
@@ -98,7 +98,7 @@ class TestCheckVoiceSocket:
     @pytest.mark.asyncio
     @patch("agents.health_monitor._voice_socket_path")
     async def test_socket_name(self, mock_path, tmp_path):
-        mock_path.return_value = str(tmp_path / "hapax-voice.sock")
+        mock_path.return_value = str(tmp_path / "hapax-daimonion.sock")
         results = await check_voice_socket()
         assert results[0].name == "voice.hotkey_socket"
         assert results[0].group == "voice"

@@ -54,7 +54,7 @@ def test_spontaneous_speech_imagination_prompt():
     """generate_spontaneous_speech uses imagination-specific prompt for source='imagination'."""
     from unittest.mock import MagicMock
 
-    from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+    from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
 
     # Create a minimal pipeline with mocked dependencies
     pipeline = ConversationPipeline.__new__(ConversationPipeline)

@@ -1,6 +1,6 @@
 """Tests for verbal bridge and persona instructions in system prompt."""
 
-from agents.hapax_voice.persona import system_prompt
+from agents.hapax_daimonion.persona import system_prompt
 
 
 class TestBridgeInstructions:

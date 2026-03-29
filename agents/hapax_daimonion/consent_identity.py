@@ -26,7 +26,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-ENROLLMENT_DIR = Path.home() / ".local" / "share" / "hapax-voice" / "speaker-embeddings"
+ENROLLMENT_DIR = Path.home() / ".local" / "share" / "hapax-daimonion" / "speaker-embeddings"
 
 
 @dataclass(frozen=True)

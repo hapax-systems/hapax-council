@@ -9,7 +9,7 @@ from collections.abc import Callable, Coroutine
 
 import httpx
 
-from agents.hapax_voice.notification_queue import VoiceNotification
+from agents.hapax_daimonion.notification_queue import VoiceNotification
 
 log = logging.getLogger(__name__)
 

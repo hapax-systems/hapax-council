@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from agents.hapax_voice.multi_mic import NoiseReference, discover_pipewire_sources
+from agents.hapax_daimonion.multi_mic import NoiseReference, discover_pipewire_sources
 
 
 def _make_pcm_frame(freq_hz: float, sample_rate: int = 16000, n_samples: int = 512) -> bytes:

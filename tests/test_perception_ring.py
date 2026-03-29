@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agents.hapax_voice.perception_ring import PerceptionRing
+from agents.hapax_daimonion.perception_ring import PerceptionRing
 
 
 class TestBasicOperations:

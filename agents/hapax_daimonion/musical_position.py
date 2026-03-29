@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.timeline import TimelineMapping, TransportState
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
 
 @dataclass(frozen=True)

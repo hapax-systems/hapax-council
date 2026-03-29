@@ -4,7 +4,7 @@ Fetches Langfuse scores, computes Bayes Factors per claim against
 pre-registered priors and ROPEs, applies stopping rules, and writes
 results to proofs/claim-N/analysis/.
 
-Run as: uv run python -m agents.hapax_voice.experiment_runner [--since HOURS]
+Run as: uv run python -m agents.hapax_daimonion.experiment_runner [--since HOURS]
 """
 
 from __future__ import annotations
@@ -15,7 +15,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agents.hapax_voice.stats import bayes_correlation, bayes_factor, rope_check, sequential_check
+from agents.hapax_daimonion.stats import (
+    bayes_correlation,
+    bayes_factor,
+    rope_check,
+    sequential_check,
+)
 
 log = logging.getLogger(__name__)
 

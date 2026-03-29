@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.hapax_voice.screen_models import WorkspaceAnalysis
+from agents.hapax_daimonion.screen_models import WorkspaceAnalysis
 
 # Apps that suggest coding/development
 _CODE_APPS = {"foot", "code", "com.visualstudio.code", "neovim", "vim"}

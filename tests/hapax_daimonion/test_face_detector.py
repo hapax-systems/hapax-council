@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from agents.hapax_voice.face_detector import FaceDetector
+from agents.hapax_daimonion.face_detector import FaceDetector
 
 
 def test_detector_init():
@@ -21,7 +21,7 @@ def test_detector_returns_false_on_empty_image():
 
 
 def test_detector_result_dataclass():
-    from agents.hapax_voice.face_detector import FaceResult
+    from agents.hapax_daimonion.face_detector import FaceResult
 
     r = FaceResult(detected=True, count=2)
     assert r.detected is True
@@ -77,8 +77,8 @@ def test_detector_from_base64():
 class TestModelDownloadFailures:
     """Tests for model download failure handling."""
 
-    @patch("agents.hapax_voice.face_detector._MODEL_PATH")
-    @patch("agents.hapax_voice.face_detector.urllib.request.urlretrieve")
+    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
+    @patch("agents.hapax_daimonion.face_detector.urllib.request.urlretrieve")
     def test_model_download_network_failure(self, mock_urlretrieve, mock_path):
         """URLError during download → _ensure_model returns None, detect returns FaceResult(False, 0)."""
         import urllib.error
@@ -92,8 +92,8 @@ class TestModelDownloadFailures:
         assert result.detected is False
         assert result.count == 0
 
-    @patch("agents.hapax_voice.face_detector._MODEL_PATH")
-    @patch("agents.hapax_voice.face_detector.urllib.request.urlretrieve")
+    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
+    @patch("agents.hapax_daimonion.face_detector.urllib.request.urlretrieve")
     def test_model_download_timeout(self, mock_urlretrieve, mock_path):
         """TimeoutError during download → same graceful degradation."""
         mock_path.exists.return_value = False
@@ -105,8 +105,8 @@ class TestModelDownloadFailures:
         assert result.detected is False
         assert result.count == 0
 
-    @patch("agents.hapax_voice.face_detector.urllib.request.urlretrieve")
-    @patch("agents.hapax_voice.face_detector._MODEL_PATH")
+    @patch("agents.hapax_daimonion.face_detector.urllib.request.urlretrieve")
+    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
     def test_model_path_exists_skips_download(self, mock_path, mock_urlretrieve):
         """When model file already exists, urlretrieve is never called."""
         mock_path.exists.return_value = True
@@ -120,7 +120,7 @@ class TestModelDownloadFailures:
 class TestMediaPipeInitFailures:
     """Tests for MediaPipe initialization failure handling."""
 
-    @patch("agents.hapax_voice.face_detector._MODEL_PATH")
+    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
     def test_mediapipe_import_failure(self, mock_path):
         """ImportError on mediapipe → detector stays None, detect returns FaceResult(False, 0)."""
         mock_path.exists.return_value = True
@@ -136,7 +136,7 @@ class TestMediaPipeInitFailures:
             assert detect_result.detected is False
             assert detect_result.count == 0
 
-    @patch("agents.hapax_voice.face_detector._MODEL_PATH")
+    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
     def test_mediapipe_init_failure(self, mock_path):
         """MediaPipe available but create_from_options raises RuntimeError → detector stays None."""
         mock_path.exists.return_value = True
@@ -182,7 +182,7 @@ class TestNormalizeColor:
 
     def test_normalize_color_all_black(self):
         """All-zero image (overall < 1.0) → returned unchanged, no crash."""
-        from agents.hapax_voice.face_detector import _normalize_color
+        from agents.hapax_daimonion.face_detector import _normalize_color
 
         black = np.zeros((100, 100, 3), dtype=np.uint8)
         result = _normalize_color(black)
@@ -190,7 +190,7 @@ class TestNormalizeColor:
 
     def test_normalize_color_all_white(self):
         """All-255 image → normalization is near-identity (scale ≈ 1.0 per channel)."""
-        from agents.hapax_voice.face_detector import _normalize_color
+        from agents.hapax_daimonion.face_detector import _normalize_color
 
         white = np.full((100, 100, 3), 255, dtype=np.uint8)
         result = _normalize_color(white)
@@ -199,7 +199,7 @@ class TestNormalizeColor:
 
     def test_normalize_color_single_channel_dominant(self):
         """Red-tinted image → output should be more balanced across channels."""
-        from agents.hapax_voice.face_detector import _normalize_color
+        from agents.hapax_daimonion.face_detector import _normalize_color
 
         # BGR format: high blue channel value = 20, green = 20, red = 200
         red_tinted = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -229,7 +229,7 @@ class TestDetectorEdgeCases:
         assert result.detected is False
         assert result.count == 0
 
-    @patch("agents.hapax_voice.face_detector._MODEL_PATH")
+    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
     def test_detector_caches_after_init(self, mock_path):
         """_get_detector() called twice → MediaPipe init happens only once."""
         mock_path.exists.return_value = True
@@ -248,7 +248,7 @@ class TestDetectorEdgeCases:
         assert second is mock_detector_instance
         mock_mp.tasks.vision.FaceDetector.create_from_options.assert_called_once()
 
-    @patch("agents.hapax_voice.face_detector._MODEL_PATH")
+    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
     def test_detector_stays_none_after_failed_init(self, mock_path):
         """After failed init, _get_detector() should retry since self._detector is still None."""
         mock_path.exists.return_value = True

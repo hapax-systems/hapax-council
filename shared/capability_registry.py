@@ -9,7 +9,7 @@ Capabilities self-select by evaluating their affordance match against
 broadcast impingement signals. The registry handles broadcast, competition
 resolution, and cascade tracking.
 
-Follows the PerceptionBackend protocol pattern from hapax_voice/perception.py.
+Follows the PerceptionBackend protocol pattern from hapax_daimonion/perception.py.
 Extends (does not replace) AgentManifest/AgentRegistry for static metadata.
 """
 

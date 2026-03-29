@@ -33,7 +33,7 @@ from unittest.mock import patch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.conversational_policy import (
+from agents.hapax_daimonion.conversational_policy import (
     _ACTIVITY_MODULATIONS,
     _format_block,
     _modulate_for_environment,
@@ -269,7 +269,7 @@ class TestEdgeCaseMatrix:
     def test_late_evening(self):
         """Late evening: lighter tone overlay on operator style."""
         env = FakeEnv(activity_mode="idle")
-        with patch("agents.hapax_voice.conversational_policy.datetime") as mock_dt:
+        with patch("agents.hapax_daimonion.conversational_policy.datetime") as mock_dt:
             mock_dt.now.return_value.hour = 23
             p = get_policy(env=env)
         _has_dignity_floor(p)
@@ -281,7 +281,7 @@ class TestEdgeCaseMatrix:
     def test_early_morning(self):
         """Early morning (before 6): same late-hours modulation."""
         env = FakeEnv(activity_mode="idle")
-        with patch("agents.hapax_voice.conversational_policy.datetime") as mock_dt:
+        with patch("agents.hapax_daimonion.conversational_policy.datetime") as mock_dt:
             mock_dt.now.return_value.hour = 4
             p = get_policy(env=env)
         assert "Late hours" in p
@@ -289,7 +289,7 @@ class TestEdgeCaseMatrix:
     def test_boundary_hour_22(self):
         """Hour 22 is the first late hour."""
         env = FakeEnv(activity_mode="unknown")
-        with patch("agents.hapax_voice.conversational_policy.datetime") as mock_dt:
+        with patch("agents.hapax_daimonion.conversational_policy.datetime") as mock_dt:
             mock_dt.now.return_value.hour = 22
             rules = _modulate_for_environment(env)
         assert any("Late hours" in r for r in rules)
@@ -297,7 +297,7 @@ class TestEdgeCaseMatrix:
     def test_boundary_hour_6_not_late(self):
         """Hour 6 is NOT late — it's the first non-late morning hour."""
         env = FakeEnv(activity_mode="unknown")
-        with patch("agents.hapax_voice.conversational_policy.datetime") as mock_dt:
+        with patch("agents.hapax_daimonion.conversational_policy.datetime") as mock_dt:
             mock_dt.now.return_value.hour = 6
             rules = _modulate_for_environment(env)
         assert not any("Late hours" in r for r in rules)
@@ -424,7 +424,7 @@ class TestPolicyInvariants:
     def test_modulation_pure_function(self):
         """_modulate_for_environment has no side effects — same input, same output."""
         env = FakeEnv(activity_mode="coding", face_count=2)
-        with patch("agents.hapax_voice.conversational_policy.datetime") as mock_dt:
+        with patch("agents.hapax_daimonion.conversational_policy.datetime") as mock_dt:
             mock_dt.now.return_value.hour = 14
             r1 = _modulate_for_environment(env)
             r2 = _modulate_for_environment(env)

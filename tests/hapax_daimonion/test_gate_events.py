@@ -2,8 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.session import SessionManager
+from agents.hapax_daimonion.context_gate import ContextGate
+from agents.hapax_daimonion.session import SessionManager
 
 
 def test_gate_emits_decision_event():

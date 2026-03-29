@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def event_log(tmp_path: Path):
     """Create an EventLog writing to a temp directory."""
-    from agents.hapax_voice.event_log import EventLog
+    from agents.hapax_daimonion.event_log import EventLog
 
     el = EventLog(base_dir=tmp_path, enabled=True)
     el.set_session_id("test-session")

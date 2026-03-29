@@ -17,7 +17,7 @@ _SHM_PATHS = {
     "compositor": Path("/dev/shm/hapax-compositor/visual-layer-state.json"),
 }
 
-_PERCEPTION_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+_PERCEPTION_PATH = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 
 # Consent coverage cache (60s TTL — avoids hammering Qdrant every 3s poll)
 _consent_cache: dict = {"data": None, "ts": 0.0}

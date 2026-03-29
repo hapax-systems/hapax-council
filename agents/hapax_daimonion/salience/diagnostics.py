@@ -10,8 +10,8 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.salience.concern_graph import ConcernGraph
-    from agents.hapax_voice.salience_router import SalienceRouter
+    from agents.hapax_daimonion.salience.concern_graph import ConcernGraph
+    from agents.hapax_daimonion.salience_router import SalienceRouter
 
 log = logging.getLogger(__name__)
 

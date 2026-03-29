@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.backends.local_llm import LocalLLMBackend
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.backends.local_llm import LocalLLMBackend
+from agents.hapax_daimonion.primitives import Behavior
 
 
 class TestParseResponse:
@@ -72,7 +72,7 @@ class TestBackendProperties:
         assert backend.provides == frozenset({"llm_activity", "llm_flow_hint", "llm_confidence"})
 
     def test_tier_is_slow(self):
-        from agents.hapax_voice.perception import PerceptionTier
+        from agents.hapax_daimonion.perception import PerceptionTier
 
         backend = LocalLLMBackend()
         assert backend.tier == PerceptionTier.SLOW

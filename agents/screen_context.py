@@ -27,7 +27,7 @@ RAG_DIR = Path.home() / "documents" / "rag-sources" / "screen-context"
 CACHE_DIR = Path.home() / ".cache" / "screen-context"
 STATE_FILE = CACHE_DIR / "state.json"
 FACTS_FILE = CACHE_DIR / "screen-context-profile-facts.jsonl"
-PERCEPTION_STATE = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+PERCEPTION_STATE = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 STIMMUNG_STATE = Path("/dev/shm/hapax-stimmung/state.json")
 
 

@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.notification_queue import NotificationQueue, VoiceNotification
-from agents.hapax_voice.ntfy_listener import parse_ntfy_event
+from agents.hapax_daimonion.notification_queue import NotificationQueue, VoiceNotification
+from agents.hapax_daimonion.ntfy_listener import parse_ntfy_event
 
 
 class TestNtfyParsing:
@@ -191,8 +191,8 @@ class TestProactiveDeliveryConditions:
     @pytest.mark.asyncio
     async def test_no_delivery_during_active_session(self):
         """Proactive delivery loop skips delivery when session is active."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.session import VoiceLifecycle
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.session import VoiceLifecycle
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()
@@ -224,8 +224,8 @@ class TestProactiveDeliveryConditions:
     @pytest.mark.asyncio
     async def test_no_delivery_when_operator_absent(self):
         """Proactive delivery is suppressed when presence score is likely_absent."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.session import VoiceLifecycle
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.session import VoiceLifecycle
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()
@@ -258,8 +258,8 @@ class TestProactiveDeliveryConditions:
     @pytest.mark.asyncio
     async def test_delivery_when_conditions_met(self):
         """Proactive delivery proceeds when queue has items, session idle, presence present."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.session import VoiceLifecycle
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.session import VoiceLifecycle
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()
@@ -283,7 +283,7 @@ class TestProactiveDeliveryConditions:
         daemon.event_log = MagicMock()
 
         with patch(
-            "agents.hapax_voice.__main__.format_notification",
+            "agents.hapax_daimonion.__main__.format_notification",
             return_value="Notification: Ready — deliver me",
         ):
             # Simulate the full delivery branch
@@ -304,8 +304,8 @@ class TestProactiveDeliveryConditions:
     @pytest.mark.asyncio
     async def test_no_delivery_when_gate_blocks(self):
         """Proactive delivery is suppressed when context gate blocks."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.session import VoiceLifecycle
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.session import VoiceLifecycle
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()
@@ -344,8 +344,8 @@ class TestProactiveDeliveryConditions:
     @pytest.mark.asyncio
     async def test_no_delivery_when_queue_empty(self):
         """Proactive delivery loop is a no-op when queue is empty."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.session import VoiceLifecycle
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.session import VoiceLifecycle
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()
@@ -367,7 +367,7 @@ class TestNtfyCallbackWiring:
     @pytest.mark.asyncio
     async def test_ntfy_callback_enqueues_notification(self):
         """_ntfy_callback() enqueues a VoiceNotification into self.notifications."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()
@@ -388,7 +388,7 @@ class TestNtfyCallbackWiring:
     @pytest.mark.asyncio
     async def test_ntfy_callback_multiple_enqueued(self):
         """Multiple callback calls accumulate in the queue."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()

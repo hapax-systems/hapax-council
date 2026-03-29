@@ -10,7 +10,7 @@ import threading
 import numpy as np
 import pytest
 
-from agents.hapax_voice.backends.mixer_input import (
+from agents.hapax_daimonion.backends.mixer_input import (
     _FRAME_SAMPLES,
     _SAMPLE_RATE,
     MixerInputBackend,
@@ -19,8 +19,8 @@ from agents.hapax_voice.backends.mixer_input import (
     _detect_beat,
     _MixerCache,
 )
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
 
 
 def _make_pcm_frame(

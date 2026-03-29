@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.screen_models import WorkspaceAnalysis
-from agents.hapax_voice.workspace_analyzer import WorkspaceAnalyzer
+from agents.hapax_daimonion.screen_models import WorkspaceAnalysis
+from agents.hapax_daimonion.workspace_analyzer import WorkspaceAnalyzer
 
 
 @pytest.mark.asyncio
@@ -38,7 +38,7 @@ async def test_analyzer_returns_workspace_analysis():
         }
     )
 
-    with patch("agents.hapax_voice.workspace_analyzer.AsyncOpenAI") as mock_cls:
+    with patch("agents.hapax_daimonion.workspace_analyzer.AsyncOpenAI") as mock_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
         mock_cls.return_value = mock_client
@@ -75,7 +75,7 @@ async def test_analyzer_works_with_screen_only():
         }
     )
 
-    with patch("agents.hapax_voice.workspace_analyzer.AsyncOpenAI") as mock_cls:
+    with patch("agents.hapax_daimonion.workspace_analyzer.AsyncOpenAI") as mock_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
         mock_cls.return_value = mock_client
@@ -91,7 +91,7 @@ async def test_analyzer_works_with_screen_only():
 async def test_analyzer_returns_none_on_failure():
     analyzer = WorkspaceAnalyzer(model="gemini-flash")
 
-    with patch("agents.hapax_voice.workspace_analyzer.AsyncOpenAI") as mock_cls:
+    with patch("agents.hapax_daimonion.workspace_analyzer.AsyncOpenAI") as mock_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API down"))
         mock_cls.return_value = mock_client
@@ -151,7 +151,7 @@ async def _run_analyze(content: str) -> object:
     """Helper: patch AsyncOpenAI, call analyze(), return result."""
     analyzer = WorkspaceAnalyzer(model="gemini-flash")
     mock_response = _make_mock_response(content)
-    with patch("agents.hapax_voice.workspace_analyzer.AsyncOpenAI") as mock_cls:
+    with patch("agents.hapax_daimonion.workspace_analyzer.AsyncOpenAI") as mock_cls:
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
         mock_cls.return_value = mock_client

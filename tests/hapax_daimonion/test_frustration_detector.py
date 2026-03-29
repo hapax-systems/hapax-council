@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.hapax_voice.frustration_detector import (
+from agents.hapax_daimonion.frustration_detector import (
     SPIKE_THRESHOLD,
     FrustrationDetector,
     TurnSignals,

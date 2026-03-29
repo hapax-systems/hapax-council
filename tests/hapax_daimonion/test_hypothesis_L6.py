@@ -5,9 +5,9 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.arbiter import ResourceArbiter, ResourceClaim
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.executor import ScheduleQueue
+from agents.hapax_daimonion.arbiter import ResourceArbiter, ResourceClaim
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.executor import ScheduleQueue
 
 # ── Strategy helpers (L6-specific, not general enough for shared library) ──
 

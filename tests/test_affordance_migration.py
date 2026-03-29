@@ -10,7 +10,7 @@ from shared.impingement import Impingement, ImpingementType, render_impingement_
 
 
 def test_speech_description_exists():
-    from agents.hapax_voice.capability import SPEECH_DESCRIPTION
+    from agents.hapax_daimonion.capability import SPEECH_DESCRIPTION
 
     assert "audible" in SPEECH_DESCRIPTION
     assert "GPU" in SPEECH_DESCRIPTION
@@ -54,8 +54,8 @@ def test_rule_description_phase_2():
 
 def test_interrupt_registration_speech():
     pipeline = AffordancePipeline()
-    pipeline.register_interrupt("population_critical", "speech_production", "hapax_voice")
-    pipeline.register_interrupt("operator_distress", "speech_production", "hapax_voice")
+    pipeline.register_interrupt("population_critical", "speech_production", "hapax_daimonion")
+    pipeline.register_interrupt("operator_distress", "speech_production", "hapax_daimonion")
 
     imp = Impingement(
         timestamp=time.time(),
@@ -169,12 +169,12 @@ def test_pipeline_context_association_updates():
 
 
 def test_speech_capability_record():
-    from agents.hapax_voice.capability import SPEECH_DESCRIPTION
+    from agents.hapax_daimonion.capability import SPEECH_DESCRIPTION
 
     rec = CapabilityRecord(
         name="speech_production",
         description=SPEECH_DESCRIPTION,
-        daemon="hapax_voice",
+        daemon="hapax_daimonion",
         operational=OperationalProperties(requires_gpu=True),
     )
     assert rec.operational.requires_gpu

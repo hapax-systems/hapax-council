@@ -2,20 +2,20 @@
 
 from unittest.mock import AsyncMock, patch
 
-from agents.hapax_voice.config import VoiceConfig
+from agents.hapax_daimonion.config import DaimonionConfig
 
 
 class TestDeactivationChime:
-    @patch("agents.hapax_voice.__main__._screen_flash")
-    @patch("agents.hapax_voice.__main__.AudioInputStream")
-    @patch("agents.hapax_voice.__main__.TTSManager")
-    @patch("agents.hapax_voice.__main__.WakeWordDetector")
-    @patch("agents.hapax_voice.__main__.HotkeyServer")
-    @patch("agents.hapax_voice.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.__main__._screen_flash")
+    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
+    @patch("agents.hapax_daimonion.__main__.TTSManager")
+    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
+    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
+    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
     def test_close_session_plays_deactivation_chime(self, MockChime, *_, **__):
-        from agents.hapax_voice.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
 
-        cfg = VoiceConfig(chime_enabled=True)
+        cfg = DaimonionConfig(chime_enabled=True)
         daemon = VoiceDaemon(cfg=cfg)
         mock_player = MockChime.return_value
         daemon._stop_pipeline = AsyncMock()
@@ -27,18 +27,18 @@ class TestDeactivationChime:
         asyncio.get_event_loop().run_until_complete(daemon._close_session(reason="test"))
         mock_player.play.assert_called_with("deactivation")
 
-    @patch("agents.hapax_voice.__main__._screen_flash")
-    @patch("agents.hapax_voice.__main__.AudioInputStream")
-    @patch("agents.hapax_voice.__main__.TTSManager")
-    @patch("agents.hapax_voice.__main__.WakeWordDetector")
-    @patch("agents.hapax_voice.__main__.HotkeyServer")
-    @patch("agents.hapax_voice.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.__main__._screen_flash")
+    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
+    @patch("agents.hapax_daimonion.__main__.TTSManager")
+    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
+    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
+    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
     def test_chime_disabled_uses_screen_flash(
         self, MockChime, _hotkey, _ww, _tts, _audio, mock_flash
     ):
-        from agents.hapax_voice.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
 
-        cfg = VoiceConfig(chime_enabled=False)
+        cfg = DaimonionConfig(chime_enabled=False)
         daemon = VoiceDaemon(cfg=cfg)
         mock_player = MockChime.return_value
         daemon._stop_pipeline = AsyncMock()

@@ -1,4 +1,4 @@
-"""Tests for hapax_voice hotkey activation via Unix socket."""
+"""Tests for hapax_daimonion hotkey activation via Unix socket."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agents.hapax_voice.hotkey import HotkeyServer
+from agents.hapax_daimonion.hotkey import HotkeyServer
 
 
 @pytest.mark.asyncio

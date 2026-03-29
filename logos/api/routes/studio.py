@@ -387,7 +387,7 @@ async def compositor_live():
     # Read audio energy from perception state for the audio_energy_rms field
     audio_rms = 0.0
     try:
-        perc_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+        perc_path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
         if perc_path.exists():
             perc = json.loads(perc_path.read_text())
             audio_rms = perc.get("audio_energy_rms", 0.0)
@@ -500,7 +500,7 @@ async def get_perception_state():
     """
     import json as _json
 
-    perc_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+    perc_path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
     if not perc_path.exists():
         return {"available": False, "operator_present": False, "presence_score": 0.0}
     try:

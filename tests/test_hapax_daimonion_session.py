@@ -4,7 +4,7 @@ import time
 
 
 def test_session_starts_idle():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=30)
     assert sm.state == "idle"
@@ -12,7 +12,7 @@ def test_session_starts_idle():
 
 
 def test_session_open_close():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=30)
     sm.open(trigger="wake_word")
@@ -25,7 +25,7 @@ def test_session_open_close():
 
 
 def test_session_tracks_speaker():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=30)
     sm.open(trigger="hotkey")
@@ -35,7 +35,7 @@ def test_session_tracks_speaker():
 
 
 def test_session_guest_mode():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=30)
     sm.open(trigger="wake_word")
@@ -44,7 +44,7 @@ def test_session_guest_mode():
 
 
 def test_session_silence_timeout():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=1)
     sm.open(trigger="hotkey")
@@ -54,7 +54,7 @@ def test_session_silence_timeout():
 
 
 def test_session_activity_resets_timeout():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=2)
     sm.open(trigger="hotkey")
@@ -65,7 +65,7 @@ def test_session_activity_resets_timeout():
 
 
 def test_open_while_active_is_noop():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=30)
     sm.open(trigger="wake_word")
@@ -74,7 +74,7 @@ def test_open_while_active_is_noop():
 
 
 def test_close_while_idle_is_noop():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=30)
     sm.close(reason="explicit")
@@ -82,7 +82,7 @@ def test_close_while_idle_is_noop():
 
 
 def test_session_id_generated_on_open():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=10)
     assert sm.session_id is None
@@ -93,7 +93,7 @@ def test_session_id_generated_on_open():
 
 
 def test_session_id_unique_per_session():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=10)
     sm.open(trigger="test")
@@ -106,7 +106,7 @@ def test_session_id_unique_per_session():
 
 
 def test_session_id_stable_during_session():
-    from agents.hapax_voice.session import SessionManager
+    from agents.hapax_daimonion.session import SessionManager
 
     sm = SessionManager(silence_timeout_s=10)
     sm.open(trigger="test")
@@ -118,7 +118,7 @@ def test_session_id_stable_during_session():
 
 def test_pause_stops_timeout_clock():
     """Paused sessions should not time out."""
-    from agents.hapax_voice.session import VoiceLifecycle
+    from agents.hapax_daimonion.session import VoiceLifecycle
 
     session = VoiceLifecycle(silence_timeout_s=1)
     session.open(trigger="wake_word")
@@ -130,7 +130,7 @@ def test_pause_stops_timeout_clock():
 
 def test_resume_restarts_timeout_clock():
     """Resuming resets the activity timestamp."""
-    from agents.hapax_voice.session import VoiceLifecycle
+    from agents.hapax_daimonion.session import VoiceLifecycle
 
     session = VoiceLifecycle(silence_timeout_s=1)
     session.open(trigger="wake_word")
@@ -143,7 +143,7 @@ def test_resume_restarts_timeout_clock():
 
 def test_pause_noop_when_idle():
     """Pausing an idle session does nothing."""
-    from agents.hapax_voice.session import VoiceLifecycle
+    from agents.hapax_daimonion.session import VoiceLifecycle
 
     session = VoiceLifecycle(silence_timeout_s=30)
     session.pause(reason="test")
@@ -153,7 +153,7 @@ def test_pause_noop_when_idle():
 
 def test_resume_noop_when_not_paused():
     """Resuming a non-paused session does nothing harmful."""
-    from agents.hapax_voice.session import VoiceLifecycle
+    from agents.hapax_daimonion.session import VoiceLifecycle
 
     session = VoiceLifecycle(silence_timeout_s=30)
     session.open(trigger="wake_word")

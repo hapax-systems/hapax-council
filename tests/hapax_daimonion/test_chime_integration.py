@@ -4,8 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from agents.hapax_voice.chime_player import ChimePlayer
-from agents.hapax_voice.chime_synthesis import SAMPLE_RATE, generate_all_chimes, synthesize_chime
+from agents.hapax_daimonion.chime_player import ChimePlayer
+from agents.hapax_daimonion.chime_synthesis import (
+    SAMPLE_RATE,
+    generate_all_chimes,
+    synthesize_chime,
+)
 
 
 class TestChimeIntegration:
@@ -60,7 +64,7 @@ class TestChimeIntegration:
         assert fft1[g6_bin1] > np.median(fft1) * 5
         assert fft2[d6_bin2] > np.median(fft2) * 3
 
-    @patch("agents.hapax_voice.chime_player.pyaudio")
+    @patch("agents.hapax_daimonion.chime_player.pyaudio")
     def test_auto_generate_and_play(self, mock_pa, tmp_path):
         """Auto-generate chimes, then play activation."""
         mock_stream = MagicMock()

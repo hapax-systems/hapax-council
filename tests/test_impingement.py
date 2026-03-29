@@ -303,7 +303,7 @@ def test_tpn_active_signal_on_phase_transition():
     """Cognitive loop signals DMN when TPN transitions active↔idle."""
     from unittest.mock import MagicMock
 
-    from agents.hapax_voice.cognitive_loop import CognitiveLoop, TurnPhase
+    from agents.hapax_daimonion.cognitive_loop import CognitiveLoop, TurnPhase
 
     mock_daemon = MagicMock()
     loop = MagicMock()
@@ -332,7 +332,7 @@ def test_tpn_signal_not_called_within_active_phases():
     """No signal when transitioning between active phases."""
     from unittest.mock import MagicMock
 
-    from agents.hapax_voice.cognitive_loop import CognitiveLoop, TurnPhase
+    from agents.hapax_daimonion.cognitive_loop import CognitiveLoop, TurnPhase
 
     mock_daemon = MagicMock()
     loop = MagicMock()
@@ -352,7 +352,7 @@ def test_tpn_signal_graceful_without_daemon():
     """Phase transition doesn't crash when _daemon is not wired."""
     from unittest.mock import MagicMock
 
-    from agents.hapax_voice.cognitive_loop import CognitiveLoop, TurnPhase
+    from agents.hapax_daimonion.cognitive_loop import CognitiveLoop, TurnPhase
 
     loop = MagicMock()
     loop._daemon = None
@@ -371,7 +371,7 @@ def test_tpn_signal_graceful_without_daemon():
 
 def test_speech_capability_can_resolve():
     """SpeechProductionCapability matches operator stress and interrupt tokens."""
-    from agents.hapax_voice.capability import SpeechProductionCapability
+    from agents.hapax_daimonion.capability import SpeechProductionCapability
 
     cap = SpeechProductionCapability()
 
@@ -397,7 +397,7 @@ def test_speech_capability_can_resolve():
 
 def test_speech_capability_activate_queues():
     """activate() queues impingement for cognitive loop consumption."""
-    from agents.hapax_voice.capability import SpeechProductionCapability
+    from agents.hapax_daimonion.capability import SpeechProductionCapability
 
     cap = SpeechProductionCapability()
     imp = Impingement(

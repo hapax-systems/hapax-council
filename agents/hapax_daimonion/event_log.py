@@ -10,7 +10,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_DIR = Path.home() / ".local" / "share" / "hapax-voice"
+_DEFAULT_DIR = Path.home() / ".local" / "share" / "hapax-daimonion"
 
 
 class EventLog:
@@ -110,7 +110,7 @@ class EventLog:
             "ts": time.time(),
             "type": event_type,
             "session_id": self._session_id,
-            "source_service": "hapax-voice",
+            "source_service": "hapax-daimonion",
             **fields,
         }
         # Inject experiment metadata if active

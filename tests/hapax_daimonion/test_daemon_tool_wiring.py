@@ -16,7 +16,7 @@ async def test_start_local_pipeline_passes_config():
     # So we'll just verify the pipeline.py signature accepts the params
     import inspect
 
-    from agents.hapax_voice.pipeline import build_pipeline_task
+    from agents.hapax_daimonion.pipeline import build_pipeline_task
 
     sig = inspect.signature(build_pipeline_task)
     assert "config" in sig.parameters

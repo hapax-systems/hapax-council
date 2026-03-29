@@ -1,4 +1,4 @@
-"""Robustness tests for OTel tracing in hapax-voice.
+"""Robustness tests for OTel tracing in hapax-daimonion.
 
 Replaces old VoiceTracer robustness tests. OTel spans are fail-open
 by design — if no TracerProvider is configured, get_tracer() returns
@@ -16,7 +16,7 @@ def test_noop_tracer_does_not_crash():
     # Reset to default (no-op) provider
     trace.set_tracer_provider(TracerProvider())
 
-    t = trace.get_tracer("hapax_voice.noop_test")
+    t = trace.get_tracer("hapax_daimonion.noop_test")
     with t.start_as_current_span("should_not_crash"):
         pass  # no error
 
@@ -28,7 +28,7 @@ def test_span_with_exception_in_body():
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 
-    t = trace.get_tracer("hapax_voice.exception_test")
+    t = trace.get_tracer("hapax_daimonion.exception_test")
     try:
         with t.start_as_current_span("failing_span"):
             raise ValueError("user error")
@@ -52,7 +52,7 @@ def test_nested_spans():
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 
-    t = trace.get_tracer("hapax_voice.nesting_test")
+    t = trace.get_tracer("hapax_daimonion.nesting_test")
     with t.start_as_current_span("parent"):
         with t.start_as_current_span("child"):
             pass
@@ -72,11 +72,11 @@ def test_attributes_are_recorded():
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 
-    t = trace.get_tracer("hapax_voice.attrs_test")
+    t = trace.get_tracer("hapax_daimonion.attrs_test")
     with t.start_as_current_span(
         "attr_span",
         attributes={
-            "agent.name": "hapax-voice",
+            "agent.name": "hapax-daimonion",
             "presence_score": "likely_absent",
             "images_sent": 0,
         },
@@ -84,5 +84,5 @@ def test_attributes_are_recorded():
         pass
 
     spans = exporter.get_finished_spans()
-    assert spans[0].attributes["agent.name"] == "hapax-voice"
+    assert spans[0].attributes["agent.name"] == "hapax-daimonion"
     assert spans[0].attributes["images_sent"] == 0

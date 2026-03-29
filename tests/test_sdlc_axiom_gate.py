@@ -60,7 +60,7 @@ class TestProtectedPathDetection:
 
     def test_systemd_blocked(self):
         result = _check_structural(
-            ["systemd/hapax-voice.service"],
+            ["systemd/hapax-daimonion.service"],
             "diff",
             "[agent] update service",
         )

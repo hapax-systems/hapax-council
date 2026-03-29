@@ -5,7 +5,7 @@ from __future__ import annotations
 
 class TestSeededEntries:
     def test_seeded_entry_has_prior_marker(self):
-        from agents.hapax_voice.conversation_pipeline import ThreadEntry, _render_thread
+        from agents.hapax_daimonion.conversation_pipeline import ThreadEntry, _render_thread
 
         entries = [
             ThreadEntry(
@@ -27,7 +27,7 @@ class TestSeededEntries:
         assert "[PRIOR]" in rendered
 
     def test_seeded_entry_uses_oldest_tier(self):
-        from agents.hapax_voice.conversation_pipeline import ThreadEntry, _render_thread
+        from agents.hapax_daimonion.conversation_pipeline import ThreadEntry, _render_thread
 
         # Build 10 entries: 2 seeded + 8 current
         entries = [
@@ -57,7 +57,7 @@ class TestSeededEntries:
 
 class TestSeededAgeOut:
     def _make_pipeline_with_seeds(self, n_seeds=2, n_current=0):
-        from agents.hapax_voice.conversation_pipeline import ConversationPipeline, ThreadEntry
+        from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline, ThreadEntry
 
         pipeline = ConversationPipeline.__new__(ConversationPipeline)
         pipeline._conversation_thread = []
@@ -86,7 +86,7 @@ class TestSeededAgeOut:
         assert len(seeded) == 2
 
     def test_seeds_compressed_at_6_current(self):
-        from agents.hapax_voice.conversation_pipeline import ThreadEntry
+        from agents.hapax_daimonion.conversation_pipeline import ThreadEntry
 
         pipeline = self._make_pipeline_with_seeds(n_seeds=3, n_current=5)
         # Simulate adding the 6th current entry (triggers compression)
@@ -112,7 +112,7 @@ class TestSeededAgeOut:
 
 class TestUnresolvedPersistence:
     def test_digest_includes_unresolved(self):
-        from agents.hapax_voice.conversation_pipeline import ConversationPipeline, ThreadEntry
+        from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline, ThreadEntry
 
         pipeline = ConversationPipeline.__new__(ConversationPipeline)
         pipeline._conversation_thread = [

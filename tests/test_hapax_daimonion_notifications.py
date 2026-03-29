@@ -1,10 +1,10 @@
-"""Tests for hapax_voice notification queue."""
+"""Tests for hapax_daimonion notification queue."""
 
 from __future__ import annotations
 
 import time
 
-from agents.hapax_voice.notification_queue import (
+from agents.hapax_daimonion.notification_queue import (
     NotificationQueue,
     VoiceNotification,
 )

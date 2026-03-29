@@ -9,11 +9,11 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from agents.hapax_voice.screen_models import Issue, ScreenAnalysis
+from agents.hapax_daimonion.screen_models import Issue, ScreenAnalysis
 
 log = logging.getLogger(__name__)
 
-DEFAULT_CONTEXT_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "screen_context.md"
+DEFAULT_CONTEXT_PATH = Path.home() / ".local" / "share" / "hapax-daimonion" / "screen_context.md"
 
 _BASE_PROMPT = """\
 You are a screen awareness system for a single-operator Linux workstation (Hyprland/Wayland).
@@ -78,7 +78,7 @@ class ScreenAnalyzer:
     def _get_client(self) -> AsyncOpenAI:
         """Return a lazily-initialized AsyncOpenAI client."""
         if self._client is None:
-            from agents.hapax_voice.config import LITELLM_BASE
+            from agents.hapax_daimonion.config import LITELLM_BASE
 
             base_url = LITELLM_BASE
             api_key = os.environ.get("LITELLM_API_KEY", "not-set")

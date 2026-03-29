@@ -6,9 +6,9 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.governance import FusedContext
-from agents.hapax_voice.primitives import Behavior, Event, Stamped
-from tests.hapax_voice.hypothesis_strategies import st_monotonic_timestamps, watermarks
+from agents.hapax_daimonion.governance import FusedContext
+from agents.hapax_daimonion.primitives import Behavior, Event, Stamped
+from tests.hapax_daimonion.hypothesis_strategies import st_monotonic_timestamps, watermarks
 
 
 class TestBehaviorProperties:

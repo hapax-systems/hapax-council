@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.desktop_tools import (
+from agents.hapax_daimonion.desktop_tools import (
     DESKTOP_TOOL_SCHEMAS,
     handle_confirm_open_app,
     handle_focus_window,
@@ -34,7 +34,7 @@ class TestFocusWindow:
         params.arguments = {"target": "google-chrome"}
         params.result_callback = AsyncMock()
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.dispatch.return_value = True
             await handle_focus_window(params)
 
@@ -51,7 +51,7 @@ class TestSwitchWorkspace:
         params.arguments = {"workspace": 3}
         params.result_callback = AsyncMock()
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.dispatch.return_value = True
             await handle_switch_workspace(params)
 
@@ -61,7 +61,7 @@ class TestSwitchWorkspace:
 class TestOpenApp:
     @pytest.mark.asyncio
     async def test_open_returns_pending_confirmation(self):
-        import agents.hapax_voice.desktop_tools as dt
+        import agents.hapax_daimonion.desktop_tools as dt
 
         dt._pending_open = None  # Reset state
 
@@ -77,7 +77,7 @@ class TestOpenApp:
 
     @pytest.mark.asyncio
     async def test_confirm_launches_pending(self):
-        import agents.hapax_voice.desktop_tools as dt
+        import agents.hapax_daimonion.desktop_tools as dt
 
         dt._pending_open = {"command": "foot", "workspace": 2}
 
@@ -85,7 +85,7 @@ class TestOpenApp:
         params.arguments = {}
         params.result_callback = AsyncMock()
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.dispatch.return_value = True
             await handle_confirm_open_app(params)
 
@@ -111,7 +111,7 @@ class TestGetDesktopState:
             WorkspaceInfo(3, "3", 1, "chrome", "DP-1"),
         ]
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.get_clients.return_value = mock_clients
             mock_ipc.get_workspaces.return_value = mock_workspaces
             mock_ipc.get_active_window.return_value = mock_clients[0]

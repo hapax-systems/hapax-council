@@ -11,7 +11,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "hapax_wake_word.onnx"
+DEFAULT_MODEL_PATH = Path.home() / ".local" / "share" / "hapax-daimonion" / "hapax_wake_word.onnx"
 DETECTION_COOLDOWN_S = 1.5  # Suppress duplicate detections from multi-frame triggers
 _SCORE_LOG_INTERVAL = 100  # Log peak score every N frames at DEBUG level
 

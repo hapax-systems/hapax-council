@@ -79,8 +79,8 @@ class TestFrequencyWindow:
 
 class TestModelDisagreement:
     def test_infer_activity_from_analysis(self):
-        from agents.hapax_voice.screen_models import WorkspaceAnalysis
-        from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
+        from agents.hapax_daimonion.screen_models import WorkspaceAnalysis
+        from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
         cases = [
             (

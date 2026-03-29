@@ -15,8 +15,8 @@ import time
 from collections import deque
 from typing import Any
 
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
 
 log = logging.getLogger(__name__)
 

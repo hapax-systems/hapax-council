@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import time
 
-from agents.hapax_voice.governor import PipelineGovernor
-from agents.hapax_voice.perception import EnvironmentState
+from agents.hapax_daimonion.governor import PipelineGovernor
+from agents.hapax_daimonion.perception import EnvironmentState
 from agents.visual_layer_state import SEVERITY_CRITICAL, SEVERITY_HIGH, SEVERITY_LOW
 
 

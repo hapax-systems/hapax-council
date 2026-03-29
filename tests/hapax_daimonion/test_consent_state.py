@@ -14,7 +14,7 @@ import unittest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.consent_state import ConsentPhase, ConsentStateTracker
+from agents.hapax_daimonion.consent_state import ConsentPhase, ConsentStateTracker
 
 
 class TestConsentStateTransitions(unittest.TestCase):

@@ -1,6 +1,6 @@
 """Tests for TTS tier map after chime cleanup — Voxtral backend."""
 
-from agents.hapax_voice.tts import _TIER_MAP, select_tier
+from agents.hapax_daimonion.tts import _TIER_MAP, select_tier
 
 
 class TestTierMapCleanup:

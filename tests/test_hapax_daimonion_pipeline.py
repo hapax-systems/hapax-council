@@ -4,20 +4,20 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.pipeline import (
+from agents.hapax_daimonion.pipeline import (
     INPUT_SAMPLE_RATE,
     _build_context,
     _build_transport,
 )
-from agents.hapax_voice.tts import VOXTRAL_SAMPLE_RATE
+from agents.hapax_daimonion.tts import VOXTRAL_SAMPLE_RATE
 
 
 class TestBuildTransport:
     """Tests for _build_transport helper."""
 
-    @patch("agents.hapax_voice.pipeline.SileroVADAnalyzer")
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransportParams")
+    @patch("agents.hapax_daimonion.pipeline.SileroVADAnalyzer")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransportParams")
     def test_default_sample_rates(self, mock_params_cls, mock_transport_cls, mock_vad) -> None:
         mock_params_cls.return_value = "params"
         mock_transport_cls.return_value = "transport"
@@ -36,9 +36,9 @@ class TestBuildTransport:
         mock_transport_cls.assert_called_once_with("params")
         assert result == "transport"
 
-    @patch("agents.hapax_voice.pipeline.SileroVADAnalyzer")
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransport")
-    @patch("agents.hapax_voice.pipeline.LocalAudioTransportParams")
+    @patch("agents.hapax_daimonion.pipeline.SileroVADAnalyzer")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
+    @patch("agents.hapax_daimonion.pipeline.LocalAudioTransportParams")
     def test_custom_sample_rates(self, mock_params_cls, mock_transport_cls, mock_vad) -> None:
         mock_vad.return_value = "vad_analyzer"
         _build_transport(input_rate=8000, output_rate=22050)
@@ -66,13 +66,13 @@ class TestBuildContext:
 class TestBuildPipelineTask:
     """Tests for the full build_pipeline_task function."""
 
-    @patch("agents.hapax_voice.pipeline._build_transport")
-    @patch("agents.hapax_voice.pipeline._build_stt")
-    @patch("agents.hapax_voice.pipeline._build_llm")
-    @patch("agents.hapax_voice.pipeline._build_tts")
-    @patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair")
-    @patch("agents.hapax_voice.pipeline.Pipeline")
-    @patch("agents.hapax_voice.pipeline.PipelineTask")
+    @patch("agents.hapax_daimonion.pipeline._build_transport")
+    @patch("agents.hapax_daimonion.pipeline._build_stt")
+    @patch("agents.hapax_daimonion.pipeline._build_llm")
+    @patch("agents.hapax_daimonion.pipeline._build_tts")
+    @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
+    @patch("agents.hapax_daimonion.pipeline.Pipeline")
+    @patch("agents.hapax_daimonion.pipeline.PipelineTask")
     def test_returns_task_and_transport(
         self,
         mock_pipeline_task_cls,
@@ -83,7 +83,7 @@ class TestBuildPipelineTask:
         mock_stt,
         mock_transport,
     ) -> None:
-        from agents.hapax_voice.pipeline import build_pipeline_task
+        from agents.hapax_daimonion.pipeline import build_pipeline_task
 
         mock_transport_inst = MagicMock()
         mock_transport_inst.input.return_value = "input_proc"
@@ -102,7 +102,7 @@ class TestBuildPipelineTask:
         mock_pipeline_cls.return_value = "pipeline"
         mock_pipeline_task_cls.return_value = "task"
 
-        with patch("agents.hapax_voice.pipeline.LLMContext") as mock_ctx:
+        with patch("agents.hapax_daimonion.pipeline.LLMContext") as mock_ctx:
             mock_ctx.return_value = MagicMock()
             task, transport = build_pipeline_task(
                 stt_model="base",
@@ -117,13 +117,13 @@ class TestBuildPipelineTask:
         mock_llm.assert_called_once()
         mock_tts.assert_called_once_with("jessica")
 
-    @patch("agents.hapax_voice.pipeline._build_transport")
-    @patch("agents.hapax_voice.pipeline._build_stt")
-    @patch("agents.hapax_voice.pipeline._build_llm")
-    @patch("agents.hapax_voice.pipeline._build_tts")
-    @patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair")
-    @patch("agents.hapax_voice.pipeline.Pipeline")
-    @patch("agents.hapax_voice.pipeline.PipelineTask")
+    @patch("agents.hapax_daimonion.pipeline._build_transport")
+    @patch("agents.hapax_daimonion.pipeline._build_stt")
+    @patch("agents.hapax_daimonion.pipeline._build_llm")
+    @patch("agents.hapax_daimonion.pipeline._build_tts")
+    @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
+    @patch("agents.hapax_daimonion.pipeline.Pipeline")
+    @patch("agents.hapax_daimonion.pipeline.PipelineTask")
     def test_guest_mode_uses_guest_prompt(
         self,
         mock_pipeline_task_cls,
@@ -134,7 +134,7 @@ class TestBuildPipelineTask:
         mock_stt,
         mock_transport,
     ) -> None:
-        from agents.hapax_voice.pipeline import build_pipeline_task
+        from agents.hapax_daimonion.pipeline import build_pipeline_task
 
         mock_transport_inst = MagicMock()
         mock_transport.return_value = mock_transport_inst
@@ -146,8 +146,8 @@ class TestBuildPipelineTask:
         mock_pipeline_task_cls.return_value = "task"
 
         with (
-            patch("agents.hapax_voice.pipeline.system_prompt") as mock_prompt,
-            patch("agents.hapax_voice.pipeline.LLMContext") as mock_ctx,
+            patch("agents.hapax_daimonion.pipeline.system_prompt") as mock_prompt,
+            patch("agents.hapax_daimonion.pipeline.LLMContext") as mock_ctx,
         ):
             mock_prompt.return_value = "guest prompt"
             mock_ctx.return_value = MagicMock()
@@ -158,9 +158,9 @@ class TestBuildPipelineTask:
 class TestBuildSTT:
     """Tests for _build_stt helper."""
 
-    @patch("agents.hapax_voice.pipeline.WhisperSTTService")
+    @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     def test_parakeet_falls_back_to_whisper(self, mock_whisper) -> None:
-        from agents.hapax_voice.pipeline import _build_stt
+        from agents.hapax_daimonion.pipeline import _build_stt
 
         _build_stt("nvidia/parakeet-tdt-0.6b-v2")
         mock_whisper.assert_called_once_with(
@@ -170,9 +170,9 @@ class TestBuildSTT:
             no_speech_prob=0.4,
         )
 
-    @patch("agents.hapax_voice.pipeline.WhisperSTTService")
+    @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     def test_whisper_model_passed_directly(self, mock_whisper) -> None:
-        from agents.hapax_voice.pipeline import _build_stt
+        from agents.hapax_daimonion.pipeline import _build_stt
 
         _build_stt("base")
         mock_whisper.assert_called_once_with(
@@ -185,20 +185,20 @@ class TestBuildSTT:
 
 def test_frame_gate_inserted_before_stt():
     """When a FrameGate is provided, it appears before STT in pipeline."""
-    from agents.hapax_voice.frame_gate import FrameGate
+    from agents.hapax_daimonion.frame_gate import FrameGate
 
     gate = FrameGate()
 
     with (
-        patch("agents.hapax_voice.pipeline.LocalAudioTransport") as MockTransport,
-        patch("agents.hapax_voice.pipeline.WhisperSTTService") as MockSTT,
-        patch("agents.hapax_voice.pipeline.OpenAILLMService"),
-        patch("agents.hapax_voice.pipeline.VoxtralTTSService"),
-        patch("agents.hapax_voice.pipeline.LLMContext") as MockContext,
-        patch("agents.hapax_voice.pipeline.LLMContextAggregatorPair") as MockAggPair,
-        patch("agents.hapax_voice.pipeline.Pipeline") as MockPipeline,
-        patch("agents.hapax_voice.pipeline.PipelineTask"),
-        patch("agents.hapax_voice.pipeline.system_prompt", return_value="test"),
+        patch("agents.hapax_daimonion.pipeline.LocalAudioTransport") as MockTransport,
+        patch("agents.hapax_daimonion.pipeline.WhisperSTTService") as MockSTT,
+        patch("agents.hapax_daimonion.pipeline.OpenAILLMService"),
+        patch("agents.hapax_daimonion.pipeline.VoxtralTTSService"),
+        patch("agents.hapax_daimonion.pipeline.LLMContext") as MockContext,
+        patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair") as MockAggPair,
+        patch("agents.hapax_daimonion.pipeline.Pipeline") as MockPipeline,
+        patch("agents.hapax_daimonion.pipeline.PipelineTask"),
+        patch("agents.hapax_daimonion.pipeline.system_prompt", return_value="test"),
     ):
         mock_transport = MockTransport.return_value
         mock_transport.input.return_value = MagicMock()
@@ -207,10 +207,10 @@ def test_frame_gate_inserted_before_stt():
         MockAggPair.return_value = MagicMock()
 
         with (
-            patch("agents.hapax_voice.tools.get_tool_schemas", return_value=None),
-            patch("agents.hapax_voice.tools.register_tool_handlers"),
+            patch("agents.hapax_daimonion.tools.get_tool_schemas", return_value=None),
+            patch("agents.hapax_daimonion.tools.register_tool_handlers"),
         ):
-            from agents.hapax_voice.pipeline import build_pipeline_task
+            from agents.hapax_daimonion.pipeline import build_pipeline_task
 
             build_pipeline_task(frame_gate=gate)
 

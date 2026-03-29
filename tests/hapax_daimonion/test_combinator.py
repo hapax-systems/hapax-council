@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from agents.hapax_voice.combinator import with_latest_from
-from agents.hapax_voice.governance import FusedContext
-from agents.hapax_voice.primitives import Behavior, Event
+from agents.hapax_daimonion.combinator import with_latest_from
+from agents.hapax_daimonion.governance import FusedContext
+from agents.hapax_daimonion.primitives import Behavior, Event
 
 
 class TestWithLatestFrom:
@@ -121,7 +121,7 @@ class TestWithLatestFrom:
         """Integration: uses PerceptionEngine's behaviors dict."""
         from unittest.mock import MagicMock
 
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.7

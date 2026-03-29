@@ -595,7 +595,7 @@ def step_8_summary():
             )
 
     # Write to YAML
-    output_path = Path.home() / ".cache" / "hapax-voice" / "calibration.json"
+    output_path = Path.home() / ".cache" / "hapax-daimonion" / "calibration.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Convert OVERHEAD_ZONES to serializable format
@@ -630,7 +630,7 @@ def step_8_summary():
     2. Apply to source code:
        - contact_mic.py constants (lines 37-55)
        - cameras.py OVERHEAD_ZONES
-    3. Restart hapax-voice to pick up new values
+    3. Restart hapax-daimonion to pick up new values
     4. Monitor perception-state.json during a production session
     5. Re-run this script if classifications feel wrong
     """)

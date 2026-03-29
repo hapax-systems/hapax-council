@@ -5,13 +5,13 @@ via pyannote, averages them for a robust operator voice profile. Also
 captures face embedding from the BRIO camera for consistent ReID.
 
 Usage:
-    python -m agents.hapax_voice.enrollment
+    python -m agents.hapax_daimonion.enrollment
     # Follow the prompts — speak naturally for each sample
     # Takes ~2 minutes total
 
 Output:
-    ~/.local/share/hapax-voice/speaker_embedding.npy  (pyannote, averaged)
-    ~/.local/share/hapax-voice/operator_face.npy      (insightface, refreshed)
+    ~/.local/share/hapax-daimonion/speaker_embedding.npy  (pyannote, averaged)
+    ~/.local/share/hapax-daimonion/operator_face.npy      (insightface, refreshed)
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-ENROLLMENT_DIR = Path.home() / ".local" / "share" / "hapax-voice"
+ENROLLMENT_DIR = Path.home() / ".local" / "share" / "hapax-daimonion"
 SPEAKER_EMBEDDING_PATH = ENROLLMENT_DIR / "speaker_embedding.npy"
 FACE_EMBEDDING_PATH = ENROLLMENT_DIR / "operator_face.npy"
 SAMPLE_RATE = 16000
@@ -162,7 +162,7 @@ def record_audio(duration_s: float, source: str | None = None) -> np.ndarray:
 def extract_speaker_embedding(audio: np.ndarray) -> np.ndarray | None:
     """Extract speaker embedding via pyannote."""
     try:
-        from agents.hapax_voice.speaker_id import SpeakerIdentifier
+        from agents.hapax_daimonion.speaker_id import SpeakerIdentifier
 
         # Use a temporary identifier just for embedding extraction
         identifier = SpeakerIdentifier.__new__(SpeakerIdentifier)
@@ -190,7 +190,7 @@ def extract_speaker_embedding(audio: np.ndarray) -> np.ndarray | None:
 
         # Fallback: use the existing SpeakerIdentifier
         try:
-            from agents.hapax_voice.speaker_id import SpeakerIdentifier
+            from agents.hapax_daimonion.speaker_id import SpeakerIdentifier
 
             si = SpeakerIdentifier.__new__(SpeakerIdentifier)
             si._model = None
@@ -206,7 +206,7 @@ def enroll_face() -> bool:
     try:
         import cv2
 
-        from agents.hapax_voice.face_detector import FaceDetector
+        from agents.hapax_daimonion.face_detector import FaceDetector
 
         shm = Path("/dev/shm/hapax-compositor/brio-operator.jpg")
         if not shm.exists():

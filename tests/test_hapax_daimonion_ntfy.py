@@ -1,4 +1,4 @@
-"""Tests for hapax_voice ntfy listener."""
+"""Tests for hapax_daimonion ntfy listener."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from agents.hapax_voice.ntfy_listener import (
+from agents.hapax_daimonion.ntfy_listener import (
     _ntfy_priority_to_str,
     parse_ntfy_event,
     subscribe_ntfy,

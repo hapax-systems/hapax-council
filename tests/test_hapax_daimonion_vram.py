@@ -1,4 +1,4 @@
-"""Tests for hapax_voice VRAM coordinator."""
+"""Tests for hapax_daimonion VRAM coordinator."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from agents.hapax_voice.vram import VRAMLock
+from agents.hapax_daimonion.vram import VRAMLock
 
 
 def _temp_lock_path() -> Path:

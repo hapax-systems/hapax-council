@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from agents.hapax_voice.backends.watch import (
+from agents.hapax_daimonion.backends.watch import (
     WatchBackend,
     _compute_physiological_load,
     _compute_sleep_quality,
 )
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.primitives import Behavior
 
 
 def _write_json(path: Path, data: dict) -> None:

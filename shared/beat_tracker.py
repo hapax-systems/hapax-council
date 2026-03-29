@@ -2,7 +2,7 @@
 
 Wraps the beat_this model for beat and downbeat detection on audio.
 Returns BPM estimates and beat grid timestamps. GPU model — must
-respect VRAMLock for coordination with audio_processor and hapax_voice.
+respect VRAMLock for coordination with audio_processor and hapax_daimonion.
 
 The model is lazy-loaded on first call.
 """

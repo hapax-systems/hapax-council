@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agents.hapax_voice.vocal_chain import (
+from agents.hapax_daimonion.vocal_chain import (
     DIMENSIONS,
     VOCAL_CHAIN_RECORDS,
     VocalChainCapability,
@@ -68,7 +68,7 @@ class TestCapabilityRecords:
 
     def test_records_have_daemon(self) -> None:
         for r in VOCAL_CHAIN_RECORDS:
-            assert r.daemon == "hapax_voice"
+            assert r.daemon == "hapax_daimonion"
 
     def test_records_not_gpu(self) -> None:
         for r in VOCAL_CHAIN_RECORDS:

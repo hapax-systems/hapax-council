@@ -7,18 +7,18 @@ from unittest.mock import patch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.config import VoiceConfig
-from agents.hapax_voice.executor import ScheduleQueue
-from agents.hapax_voice.governance import VetoResult
-from tests.hapax_voice.hypothesis_strategies import st_schedule
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.config import DaimonionConfig
+from agents.hapax_daimonion.executor import ScheduleQueue
+from agents.hapax_daimonion.governance import VetoResult
+from tests.hapax_daimonion.hypothesis_strategies import st_schedule
 
 
 def _make_daemon():
     """Create a minimal VoiceDaemon with all hardware mocked."""
-    from agents.hapax_voice.__main__ import VoiceDaemon
+    from agents.hapax_daimonion.__main__ import VoiceDaemon
 
-    cfg = VoiceConfig(
+    cfg = DaimonionConfig(
         hotkey_socket="/tmp/test-hapax-hypothesis.sock",
         mc_enabled=False,
         obs_enabled=False,
@@ -26,16 +26,16 @@ def _make_daemon():
         screen_monitor_enabled=False,
     )
     patches = [
-        patch("agents.hapax_voice.__main__.PresenceDetector"),
-        patch("agents.hapax_voice.__main__.ContextGate"),
-        patch("agents.hapax_voice.__main__.HotkeyServer"),
-        patch("agents.hapax_voice.__main__.WakeWordDetector"),
-        patch("agents.hapax_voice.__main__.PorcupineWakeWord"),
-        patch("agents.hapax_voice.__main__.AudioInputStream"),
-        patch("agents.hapax_voice.__main__.TTSManager"),
-        patch("agents.hapax_voice.__main__.ChimePlayer"),
-        patch("agents.hapax_voice.__main__.WorkspaceMonitor"),
-        patch("agents.hapax_voice.__main__.EventLog"),
+        patch("agents.hapax_daimonion.__main__.PresenceDetector"),
+        patch("agents.hapax_daimonion.__main__.ContextGate"),
+        patch("agents.hapax_daimonion.__main__.HotkeyServer"),
+        patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
+        patch("agents.hapax_daimonion.__main__.PorcupineWakeWord"),
+        patch("agents.hapax_daimonion.__main__.AudioInputStream"),
+        patch("agents.hapax_daimonion.__main__.TTSManager"),
+        patch("agents.hapax_daimonion.__main__.ChimePlayer"),
+        patch("agents.hapax_daimonion.__main__.WorkspaceMonitor"),
+        patch("agents.hapax_daimonion.__main__.EventLog"),
     ]
     for p in patches:
         p.start()

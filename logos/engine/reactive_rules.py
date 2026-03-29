@@ -816,7 +816,7 @@ async def _handle_biometric_state_change(*, path: str) -> str:
     """
     from pathlib import Path as _Path
 
-    from agents.hapax_voice.watch_signals import WATCH_STATE_DIR, is_stress_elevated
+    from agents.hapax_daimonion.watch_signals import WATCH_STATE_DIR, is_stress_elevated
 
     global _last_stress_elevated
     stress_now = is_stress_elevated(WATCH_STATE_DIR)

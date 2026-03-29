@@ -142,7 +142,7 @@ async def get_management():
 @router.get("/workspace")
 async def workspace():
     """Latest workspace analysis (screen + camera + hardware state)."""
-    state_path = Path.home() / ".local" / "share" / "hapax-voice" / "workspace_state.json"
+    state_path = Path.home() / ".local" / "share" / "hapax-daimonion" / "workspace_state.json"
     try:
         if state_path.exists():
             data = json.loads(state_path.read_text())

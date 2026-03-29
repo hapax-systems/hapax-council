@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import time
 
-from agents.hapax_voice.frame_gate import FrameGate
-from agents.hapax_voice.governor import PipelineGovernor
-from agents.hapax_voice.perception import EnvironmentState
+from agents.hapax_daimonion.frame_gate import FrameGate
+from agents.hapax_daimonion.governor import PipelineGovernor
+from agents.hapax_daimonion.perception import EnvironmentState
 
 
 def _make_state(

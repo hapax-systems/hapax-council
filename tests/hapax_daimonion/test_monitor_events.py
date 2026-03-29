@@ -2,8 +2,8 @@
 
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.screen_models import WorkspaceAnalysis
-from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
+from agents.hapax_daimonion.screen_models import WorkspaceAnalysis
+from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
 
 def test_monitor_emits_analysis_complete():
@@ -68,7 +68,7 @@ def test_monitor_no_event_without_log():
 
 def test_monitor_uses_otel_tracer():
     """WorkspaceMonitor uses module-level OTel tracer (no set_tracer needed)."""
-    from agents.hapax_voice.workspace_monitor import _tracer
+    from agents.hapax_daimonion.workspace_monitor import _tracer
 
     assert _tracer is not None
     assert hasattr(_tracer, "start_as_current_span")

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.perception import EnvironmentState
+    from agents.hapax_daimonion.perception import EnvironmentState
 
 log = logging.getLogger(__name__)
 

@@ -8,7 +8,7 @@ import time
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
-from agents.hapax_voice.ir_signals import IR_STATE_DIR
+from agents.hapax_daimonion.ir_signals import IR_STATE_DIR
 from shared.ir_models import IrDetectionReport
 
 log = logging.getLogger(__name__)

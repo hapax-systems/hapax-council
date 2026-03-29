@@ -13,9 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from agents.hapax_voice.combinator import with_latest_from
-from agents.hapax_voice.commands import Command
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.combinator import with_latest_from
+from agents.hapax_daimonion.commands import Command
+from agents.hapax_daimonion.governance import (
     Candidate,
     FallbackChain,
     FreshnessGuard,
@@ -24,8 +24,8 @@ from agents.hapax_voice.governance import (
     Veto,
     VetoChain,
 )
-from agents.hapax_voice.primitives import Behavior, Event
-from agents.hapax_voice.timeline import TimelineMapping, TransportState
+from agents.hapax_daimonion.primitives import Behavior, Event
+from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
 
 class OBSScene(Enum):

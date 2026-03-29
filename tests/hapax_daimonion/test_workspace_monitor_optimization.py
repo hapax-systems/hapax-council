@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
+from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
 
 class TestDeterministicContext:
@@ -22,10 +22,10 @@ class TestDeterministicContext:
         ]
 
         with (
-            patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC,
-            patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener"),
-            patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"),
-            patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"),
+            patch("agents.hapax_daimonion.workspace_monitor.HyprlandIPC") as MockIPC,
+            patch("agents.hapax_daimonion.workspace_monitor.HyprlandEventListener"),
+            patch("agents.hapax_daimonion.workspace_monitor.ScreenCapturer"),
+            patch("agents.hapax_daimonion.workspace_monitor.WorkspaceAnalyzer"),
         ):
             mock_ipc = MagicMock()
             mock_ipc.get_clients.return_value = mock_clients
@@ -46,10 +46,10 @@ class TestDeterministicContext:
     def test_returns_empty_when_no_clients(self):
         """Returns empty string when hyprctl reports no open windows."""
         with (
-            patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC,
-            patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener"),
-            patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"),
-            patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"),
+            patch("agents.hapax_daimonion.workspace_monitor.HyprlandIPC") as MockIPC,
+            patch("agents.hapax_daimonion.workspace_monitor.HyprlandEventListener"),
+            patch("agents.hapax_daimonion.workspace_monitor.ScreenCapturer"),
+            patch("agents.hapax_daimonion.workspace_monitor.WorkspaceAnalyzer"),
         ):
             mock_ipc = MagicMock()
             mock_ipc.get_clients.return_value = []
@@ -69,10 +69,10 @@ class TestDeterministicContext:
         ]
 
         with (
-            patch("agents.hapax_voice.workspace_monitor.HyprlandIPC") as MockIPC,
-            patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener"),
-            patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"),
-            patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"),
+            patch("agents.hapax_daimonion.workspace_monitor.HyprlandIPC") as MockIPC,
+            patch("agents.hapax_daimonion.workspace_monitor.HyprlandEventListener"),
+            patch("agents.hapax_daimonion.workspace_monitor.ScreenCapturer"),
+            patch("agents.hapax_daimonion.workspace_monitor.WorkspaceAnalyzer"),
         ):
             mock_ipc = MagicMock()
             mock_ipc.get_clients.return_value = mock_clients

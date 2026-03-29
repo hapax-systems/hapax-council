@@ -1,11 +1,11 @@
-"""Tests for hapax_voice context gate."""
+"""Tests for hapax_daimonion context gate."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.session import SessionManager
+from agents.hapax_daimonion.context_gate import ContextGate
+from agents.hapax_daimonion.session import SessionManager
 
 
 def test_blocks_during_active_session() -> None:

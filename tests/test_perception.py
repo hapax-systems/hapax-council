@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agents.hapax_voice.perception import EnvironmentState
+from agents.hapax_daimonion.perception import EnvironmentState
 
 
 def test_environment_state_is_frozen():
@@ -60,7 +60,7 @@ def test_environment_state_no_conversation_no_speech():
     assert state.conversation_detected is False
 
 
-from agents.hapax_voice.perception import PerceptionEngine
+from agents.hapax_daimonion.perception import PerceptionEngine
 
 
 def _make_mock_presence(**overrides):
@@ -138,12 +138,12 @@ def test_engine_notifies_subscribers():
 # PerceptionBackend Protocol + Registration (Batch 3)
 # ------------------------------------------------------------------
 
-from agents.hapax_voice.perception import (
+from agents.hapax_daimonion.perception import (
     PerceptionBackend,
     PerceptionTier,
     compute_interruptibility,
 )
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.primitives import Behavior
 
 
 class StubBackend:
@@ -649,13 +649,13 @@ class TestHyprlandBackendStripped:
     """Prove HyprlandBackend only provides active_window_class."""
 
     def test_provides_only_active_window_class(self):
-        from agents.hapax_voice.backends.hyprland import HyprlandBackend
+        from agents.hapax_daimonion.backends.hyprland import HyprlandBackend
 
         backend = HyprlandBackend()
         assert backend.provides == frozenset({"active_window_class", "desktop_active"})
 
     def test_no_removed_behaviors_after_registration(self):
-        from agents.hapax_voice.backends.hyprland import HyprlandBackend
+        from agents.hapax_daimonion.backends.hyprland import HyprlandBackend
 
         backend = HyprlandBackend()
         behaviors: dict[str, Behavior] = {}

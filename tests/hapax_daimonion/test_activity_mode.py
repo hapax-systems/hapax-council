@@ -1,7 +1,7 @@
 """Tests for activity mode detection."""
 
-from agents.hapax_voice.activity_mode import classify_activity_mode
-from agents.hapax_voice.screen_models import GearObservation, WorkspaceAnalysis
+from agents.hapax_daimonion.activity_mode import classify_activity_mode
+from agents.hapax_daimonion.screen_models import GearObservation, WorkspaceAnalysis
 
 
 def test_coding_mode():

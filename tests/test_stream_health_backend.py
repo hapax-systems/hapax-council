@@ -6,8 +6,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.backends.stream_health import StreamHealthBackend
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.backends.stream_health import StreamHealthBackend
+from agents.hapax_daimonion.primitives import Behavior
 
 
 class TestStreamHealthBackend(unittest.TestCase):

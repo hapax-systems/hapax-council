@@ -8,10 +8,10 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.musical_position import musical_position
-from agents.hapax_voice.suppression import SuppressionField, effective_threshold
-from agents.hapax_voice.timeline import TimelineMapping
-from tests.hapax_voice.hypothesis_strategies import (
+from agents.hapax_daimonion.musical_position import musical_position
+from agents.hapax_daimonion.suppression import SuppressionField, effective_threshold
+from agents.hapax_daimonion.timeline import TimelineMapping
+from tests.hapax_daimonion.hypothesis_strategies import (
     small_floats,
     st_suppression_config,
     st_timeline_mapping,

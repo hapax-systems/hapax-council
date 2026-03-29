@@ -11,14 +11,14 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from agents.hapax_voice.backends.studio_ingestion import (
+from agents.hapax_daimonion.backends.studio_ingestion import (
     _ACTIVITY_MAP,
     StudioIngestionBackend,
     _compute_rms,
     _estimate_flow_score,
     _InferenceCache,
 )
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.primitives import Behavior
 
 
 class TestInferenceCache:
@@ -146,7 +146,7 @@ class TestStudioIngestionBackend:
         assert backend.provides == frozenset(expected)
 
     def test_tier_is_slow(self):
-        from agents.hapax_voice.perception import PerceptionTier
+        from agents.hapax_daimonion.perception import PerceptionTier
 
         backend = StudioIngestionBackend()
         assert backend.tier == PerceptionTier.SLOW
@@ -191,7 +191,7 @@ class TestStudioIngestionBackend:
         backend = StudioIngestionBackend(poll_interval=0.1)
 
         with patch(
-            "agents.hapax_voice.backends.studio_ingestion._capture_audio",
+            "agents.hapax_daimonion.backends.studio_ingestion._capture_audio",
             return_value=None,
         ):
             backend.start()
@@ -207,7 +207,7 @@ class TestStudioIngestionBackend:
         silence = np.zeros(48000 * 10, dtype=np.float32)
 
         with patch(
-            "agents.hapax_voice.backends.studio_ingestion._capture_audio",
+            "agents.hapax_daimonion.backends.studio_ingestion._capture_audio",
             return_value=silence,
         ):
             backend._run_inference_step()
@@ -253,7 +253,7 @@ class TestStudioIngestionBackend:
 
         with (
             patch(
-                "agents.hapax_voice.backends.studio_ingestion._capture_audio",
+                "agents.hapax_daimonion.backends.studio_ingestion._capture_audio",
                 return_value=audio,
             ),
             patch(

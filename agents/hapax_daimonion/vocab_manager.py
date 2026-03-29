@@ -109,7 +109,7 @@ class VocabularyManager:
     def __init__(self, persist_path: Path | None = None) -> None:
         self._entries: dict[str, VocabEntry] = {}
         self._persist_path = (
-            persist_path or Path.home() / ".cache" / "hapax-voice" / "learned-vocabulary.json"
+            persist_path or Path.home() / ".cache" / "hapax-daimonion" / "learned-vocabulary.json"
         )
         self._session_labels: set[str] = set()  # labels seen this session
         self._load()

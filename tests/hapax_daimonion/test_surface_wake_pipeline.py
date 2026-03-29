@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.__main__ import VoiceDaemon
-from agents.hapax_voice.primitives import Event
-from agents.hapax_voice.session import VoiceLifecycle
+from agents.hapax_daimonion.__main__ import VoiceDaemon
+from agents.hapax_daimonion.primitives import Event
+from agents.hapax_daimonion.session import VoiceLifecycle
 
 
 def _make_daemon() -> VoiceDaemon:
@@ -148,7 +148,7 @@ class TestWakeWordStartsPipeline:
 
         with (
             patch(
-                "agents.hapax_voice.pipeline.build_pipeline_task",
+                "agents.hapax_daimonion.pipeline.build_pipeline_task",
                 return_value=(mock_task, mock_transport),
             ),
             patch("pipecat.pipeline.runner.PipelineRunner"),
@@ -162,7 +162,7 @@ class TestWakeWordStartsPipeline:
         daemon = _make_daemon()
 
         with patch(
-            "agents.hapax_voice.pipeline.build_pipeline_task",
+            "agents.hapax_daimonion.pipeline.build_pipeline_task",
             side_effect=RuntimeError("build failed"),
         ):
             await daemon._start_local_pipeline()

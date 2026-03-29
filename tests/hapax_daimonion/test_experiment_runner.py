@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agents.hapax_voice.experiment_runner import (
+from agents.hapax_daimonion.experiment_runner import (
     CLAIMS,
     ClaimSpec,
     analyze_claim,
@@ -30,7 +30,7 @@ class TestClaimSpecs(unittest.TestCase):
             self.assertGreater(spec.max_sessions, 0)
 
     def test_claim_slugs_match_proof_dirs(self) -> None:
-        proofs_dir = Path(__file__).parent.parent.parent / "agents" / "hapax_voice" / "proofs"
+        proofs_dir = Path(__file__).parent.parent.parent / "agents" / "hapax_daimonion" / "proofs"
         for spec in CLAIMS.values():
             self.assertTrue(
                 (proofs_dir / spec.slug).exists(),
@@ -39,14 +39,14 @@ class TestClaimSpecs(unittest.TestCase):
 
 
 class TestAnalyzeClaim(unittest.TestCase):
-    @patch("agents.hapax_voice.experiment_runner._fetch_scores")
+    @patch("agents.hapax_daimonion.experiment_runner._fetch_scores")
     def test_no_data_returns_no_data(self, mock_fetch: unittest.mock.MagicMock) -> None:
         mock_fetch.return_value = []
         result = analyze_claim(1)
         self.assertEqual(result["status"], "no_data")
         self.assertEqual(result["decision"], "no_data")
 
-    @patch("agents.hapax_voice.experiment_runner._fetch_scores")
+    @patch("agents.hapax_daimonion.experiment_runner._fetch_scores")
     def test_strong_evidence(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """18/20 sessions above threshold → strong BF."""
         scores = []
@@ -62,7 +62,7 @@ class TestAnalyzeClaim(unittest.TestCase):
         self.assertGreater(result["bf"], 1.0)
         self.assertIn(result["decision"], ("continue", "stop_h1", "stop_max"))
 
-    @patch("agents.hapax_voice.experiment_runner._fetch_scores")
+    @patch("agents.hapax_daimonion.experiment_runner._fetch_scores")
     def test_sessions_below_min_turns_filtered(self, mock_fetch: unittest.mock.MagicMock) -> None:
         """Sessions with fewer than min_turns are excluded."""
         scores = []
@@ -76,14 +76,14 @@ class TestAnalyzeClaim(unittest.TestCase):
 
 
 class TestAnalyzeClaim5(unittest.TestCase):
-    @patch("agents.hapax_voice.experiment_runner._fetch_activation_pairs")
+    @patch("agents.hapax_daimonion.experiment_runner._fetch_activation_pairs")
     def test_insufficient_data(self, mock_fetch: unittest.mock.MagicMock) -> None:
         mock_fetch.return_value = [{"activation": 0.5, "tokens": 10.0, "anchor": 0.8}] * 30
         result = analyze_claim5()
         self.assertEqual(result["status"], "insufficient_data")
         self.assertEqual(result["n_turns"], 30)
 
-    @patch("agents.hapax_voice.experiment_runner._fetch_activation_pairs")
+    @patch("agents.hapax_daimonion.experiment_runner._fetch_activation_pairs")
     def test_sufficient_data(self, mock_fetch: unittest.mock.MagicMock) -> None:
         pairs = [
             {"activation": float(i) / 60, "tokens": float(i * 2), "anchor": 0.5 + i * 0.005}
@@ -137,7 +137,7 @@ class TestSaveResults(unittest.TestCase):
         # Cleanup
         path.unlink(missing_ok=True)
         # Also clean per-claim file
-        from agents.hapax_voice.experiment_runner import PROOFS_DIR
+        from agents.hapax_daimonion.experiment_runner import PROOFS_DIR
 
         for f in (PROOFS_DIR / "claim-1-stable-frame" / "analysis").glob("run-*.json"):
             f.unlink(missing_ok=True)

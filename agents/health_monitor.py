@@ -2661,13 +2661,13 @@ async def check_axiom_ef_notifications() -> list[CheckResult]:
 
 # ── Voice daemon checks ──────────────────────────────────────────────────────
 
-VOICE_VRAM_LOCK = Path.home() / ".cache" / "hapax-voice" / "vram.lock"
+VOICE_VRAM_LOCK = Path.home() / ".cache" / "hapax-daimonion" / "vram.lock"
 
 
 def _voice_socket_path() -> str:
-    """Return expected path for the hapax-voice hotkey socket."""
+    """Return expected path for the hapax-daimonion hotkey socket."""
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    return f"{runtime_dir}/hapax-voice.sock"
+    return f"{runtime_dir}/hapax-daimonion.sock"
 
 
 @check_group("voice")
@@ -2696,7 +2696,9 @@ async def check_voice_services() -> list[CheckResult]:
 
     # Fall back to systemd
     if not voice_active:
-        rc, out, _err = await run_cmd(["systemctl", "--user", "is-active", "hapax-voice.service"])
+        rc, out, _err = await run_cmd(
+            ["systemctl", "--user", "is-active", "hapax-daimonion.service"]
+        )
         voice_active = out.strip() == "active"
 
     results.append(
@@ -2753,7 +2755,7 @@ async def check_voice_socket() -> list[CheckResult]:
             status=Status.DEGRADED,
             message=f"socket not found at {sock_path}",
             detail="Hotkey commands will not work until daemon creates the socket",
-            remediation="systemctl --user restart hapax-voice",
+            remediation="systemctl --user restart hapax-daimonion",
             duration_ms=_timed(t),
         )
     ]

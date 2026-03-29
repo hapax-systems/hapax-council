@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.context_enrichment import render_goals, render_health, render_nudges
+from agents.hapax_daimonion.context_enrichment import render_goals, render_health, render_nudges
 
 
 class TestRenderGoals:
@@ -99,14 +99,14 @@ class TestRenderHealth:
 
 class TestRenderNudges:
     def test_no_nudges(self):
-        import agents.hapax_voice.context_enrichment as mod
+        import agents.hapax_daimonion.context_enrichment as mod
 
         mod._nudge_cache = None
         with patch("logos.data.nudges.collect_nudges", return_value=[]):
             assert render_nudges() == ""
 
     def test_with_nudges(self):
-        import agents.hapax_voice.context_enrichment as mod
+        import agents.hapax_daimonion.context_enrichment as mod
 
         mod._nudge_cache = None
         nudge = MagicMock()
@@ -118,7 +118,7 @@ class TestRenderNudges:
             assert "Profile stale" in result
 
     def test_cache_reused(self):
-        import agents.hapax_voice.context_enrichment as mod
+        import agents.hapax_daimonion.context_enrichment as mod
 
         nudge = MagicMock()
         nudge.priority_label = "low"
@@ -132,7 +132,7 @@ class TestRenderNudges:
             assert "Cached" in result
 
     def test_exception_returns_empty(self):
-        import agents.hapax_voice.context_enrichment as mod
+        import agents.hapax_daimonion.context_enrichment as mod
 
         mod._nudge_cache = None
         with patch("logos.data.nudges.collect_nudges", side_effect=Exception):

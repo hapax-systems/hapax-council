@@ -7,7 +7,7 @@ No vetoes: advisory output is never blocked.
 from __future__ import annotations
 
 from agents.fortress.schema import FullFortressState
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.governance import (
     Candidate,
     FallbackChain,
     Selected,

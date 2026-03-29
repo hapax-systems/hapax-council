@@ -1,4 +1,4 @@
-"""Tests for hapax_voice TTS tier abstraction and Voxtral synthesis backend."""
+"""Tests for hapax_daimonion TTS tier abstraction and Voxtral synthesis backend."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from agents.hapax_voice.tts import (
+from agents.hapax_daimonion.tts import (
     TTSManager,
     _audio_to_pcm_int16,
     _decode_pcm_f32_b64,

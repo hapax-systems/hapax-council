@@ -6,7 +6,7 @@ import re
 import time
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.governance import VetoChain
+from agents.hapax_daimonion.governance import VetoChain
 from shared.capabilities.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerConfig,

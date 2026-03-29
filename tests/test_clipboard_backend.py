@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.hapax_voice.backends.clipboard import classify_clipboard
+from agents.hapax_daimonion.backends.clipboard import classify_clipboard
 
 
 class TestClipboardClassification:

@@ -3,13 +3,13 @@
 Four suppression fields implementing Brooks' subsumption with graduated
 inhibition. See docs/superpowers/specs/2026-03-23-fortress-suppression-topology.md.
 
-Reuses SuppressionField from agents.hapax_voice.suppression without modification.
+Reuses SuppressionField from agents.hapax_daimonion.suppression without modification.
 """
 
 from __future__ import annotations
 
 from agents.fortress.config import SuppressionConfig
-from agents.hapax_voice.suppression import SuppressionField
+from agents.hapax_daimonion.suppression import SuppressionField
 
 
 def create_fortress_suppression_fields(

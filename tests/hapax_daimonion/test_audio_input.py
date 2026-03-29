@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.audio_input import AudioInputStream
+from agents.hapax_daimonion.audio_input import AudioInputStream
 
 
 def _make_stream(**kwargs):
@@ -18,9 +18,9 @@ def _make_stream(**kwargs):
     pactl_stderr = kwargs.pop("pactl_stderr", b"")
     mock_result = MagicMock(returncode=pactl_rc, stderr=pactl_stderr)
     with (
-        patch("agents.hapax_voice.audio_input.pyaudio.PyAudio", return_value=mock_pa),
+        patch("agents.hapax_daimonion.audio_input.pyaudio.PyAudio", return_value=mock_pa),
         patch(
-            "agents.hapax_voice.audio_input.subprocess.run", return_value=mock_result
+            "agents.hapax_daimonion.audio_input.subprocess.run", return_value=mock_result
         ) as mock_run,
     ):
         stream = AudioInputStream(**kwargs)
@@ -61,9 +61,9 @@ class TestPipeWireRouting:
         mock_pa = MagicMock()
         mock_pa.get_device_count.return_value = 0
         with (
-            patch("agents.hapax_voice.audio_input.pyaudio.PyAudio", return_value=mock_pa),
+            patch("agents.hapax_daimonion.audio_input.pyaudio.PyAudio", return_value=mock_pa),
             patch(
-                "agents.hapax_voice.audio_input.subprocess.run",
+                "agents.hapax_daimonion.audio_input.subprocess.run",
                 side_effect=FileNotFoundError("pactl"),
             ),
         ):
@@ -125,8 +125,8 @@ class TestLifecycle:
         mock_pa.open.return_value = mock_stream
         mock_result = MagicMock(returncode=0)
         with (
-            patch("agents.hapax_voice.audio_input.pyaudio.PyAudio", return_value=mock_pa),
-            patch("agents.hapax_voice.audio_input.subprocess.run", return_value=mock_result),
+            patch("agents.hapax_daimonion.audio_input.pyaudio.PyAudio", return_value=mock_pa),
+            patch("agents.hapax_daimonion.audio_input.subprocess.run", return_value=mock_result),
         ):
             stream = AudioInputStream()
             stream.start()
@@ -146,8 +146,8 @@ class TestLifecycle:
         mock_pa.open.return_value = mock_stream
         mock_result = MagicMock(returncode=0)
         with (
-            patch("agents.hapax_voice.audio_input.pyaudio.PyAudio", return_value=mock_pa),
-            patch("agents.hapax_voice.audio_input.subprocess.run", return_value=mock_result),
+            patch("agents.hapax_daimonion.audio_input.pyaudio.PyAudio", return_value=mock_pa),
+            patch("agents.hapax_daimonion.audio_input.subprocess.run", return_value=mock_result),
         ):
             stream = AudioInputStream()
             stream.start()
@@ -165,8 +165,8 @@ class TestLifecycle:
         mock_pa.open.return_value = mock_stream
         mock_result = MagicMock(returncode=0)
         with (
-            patch("agents.hapax_voice.audio_input.pyaudio.PyAudio", return_value=mock_pa),
-            patch("agents.hapax_voice.audio_input.subprocess.run", return_value=mock_result),
+            patch("agents.hapax_daimonion.audio_input.pyaudio.PyAudio", return_value=mock_pa),
+            patch("agents.hapax_daimonion.audio_input.subprocess.run", return_value=mock_result),
         ):
             stream = AudioInputStream()
             stream.start()
@@ -184,10 +184,10 @@ class TestLifecycle:
         mock_result = MagicMock(returncode=0)
         with (
             patch(
-                "agents.hapax_voice.audio_input.pyaudio.PyAudio",
+                "agents.hapax_daimonion.audio_input.pyaudio.PyAudio",
                 side_effect=[mock_pa_1, mock_pa_2],
             ),
-            patch("agents.hapax_voice.audio_input.subprocess.run", return_value=mock_result),
+            patch("agents.hapax_daimonion.audio_input.subprocess.run", return_value=mock_result),
         ):
             stream = AudioInputStream()
             stream.start()
@@ -213,8 +213,8 @@ class TestLifecycle:
         mock_pa.open.side_effect = OSError("No audio device")
         mock_result = MagicMock(returncode=0)
         with (
-            patch("agents.hapax_voice.audio_input.pyaudio.PyAudio", return_value=mock_pa),
-            patch("agents.hapax_voice.audio_input.subprocess.run", return_value=mock_result),
+            patch("agents.hapax_daimonion.audio_input.pyaudio.PyAudio", return_value=mock_pa),
+            patch("agents.hapax_daimonion.audio_input.subprocess.run", return_value=mock_result),
         ):
             stream = AudioInputStream()
             stream.start()

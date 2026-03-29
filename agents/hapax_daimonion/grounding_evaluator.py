@@ -172,7 +172,7 @@ def score_reference_accuracy(
     if lcs_fn is not None:
         lcs_len = lcs_fn(resp_words, prior_words)
     else:
-        from agents.hapax_voice.conversation_pipeline import _lcs_word_length
+        from agents.hapax_daimonion.conversation_pipeline import _lcs_word_length
 
         lcs_len = _lcs_word_length(resp_words[:30], prior_words[:100])
 

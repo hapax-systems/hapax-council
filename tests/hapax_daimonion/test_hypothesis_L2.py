@@ -9,14 +9,14 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.governance import (
     FreshnessGuard,
     FreshnessRequirement,
     FusedContext,
     VetoChain,
 )
-from agents.hapax_voice.primitives import Stamped
-from tests.hapax_voice.hypothesis_strategies import (
+from agents.hapax_daimonion.primitives import Stamped
+from tests.hapax_daimonion.hypothesis_strategies import (
     st_fused_context,
     st_threshold_veto,
     st_veto_chain,

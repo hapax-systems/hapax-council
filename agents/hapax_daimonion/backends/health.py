@@ -11,8 +11,8 @@ import logging
 import time
 from pathlib import Path
 
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
 from shared.config import PROFILES_DIR
 
 log = logging.getLogger(__name__)

@@ -17,7 +17,7 @@ def test_force_flush_completes():
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 
-    t = trace.get_tracer("hapax_voice.test_flush")
+    t = trace.get_tracer("hapax_daimonion.test_flush")
     with t.start_as_current_span("flush_test"):
         pass
 

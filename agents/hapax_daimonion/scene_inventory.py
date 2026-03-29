@@ -127,7 +127,7 @@ class SceneInventory:
         # Cross-camera trajectory stitcher
         self._stitcher: Any = None
         self._persist_path = (
-            persist_path or Path.home() / ".cache" / "hapax-voice" / "scene-inventory.json"
+            persist_path or Path.home() / ".cache" / "hapax-daimonion" / "scene-inventory.json"
         )
         self._persist_counter = 0
         # Per-camera ByteTrack instances for proper multi-object association

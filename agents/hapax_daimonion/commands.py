@@ -16,7 +16,7 @@ import types
 from dataclasses import dataclass, field
 from typing import Any
 
-from agents.hapax_voice.governance import VetoResult
+from agents.hapax_daimonion.governance import VetoResult
 from shared.governance.consent_label import ConsentLabel
 
 

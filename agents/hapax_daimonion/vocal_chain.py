@@ -183,7 +183,7 @@ VOCAL_CHAIN_RECORDS = [
     CapabilityRecord(
         name=dim.name,
         description=dim.description,
-        daemon="hapax_voice",
+        daemon="hapax_daimonion",
         operational=OperationalProperties(latency_class="fast"),
     )
     for dim in DIMENSIONS.values()

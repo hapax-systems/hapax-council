@@ -5,11 +5,11 @@ import time
 import types
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.screen_models import (
+from agents.hapax_daimonion.screen_models import (
     Issue,
     WorkspaceAnalysis,
 )
-from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
+from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
 
 def _make_analysis(**kwargs):
@@ -122,12 +122,12 @@ def test_workspace_monitor_uses_hyprland_listener():
     """WorkspaceMonitor should accept a HyprlandEventListener."""
     from unittest.mock import MagicMock, patch
 
-    from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
+    from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
     with (
-        patch("agents.hapax_voice.workspace_monitor.HyprlandEventListener") as MockListener,
-        patch("agents.hapax_voice.workspace_monitor.ScreenCapturer"),
-        patch("agents.hapax_voice.workspace_monitor.WorkspaceAnalyzer"),
+        patch("agents.hapax_daimonion.workspace_monitor.HyprlandEventListener") as MockListener,
+        patch("agents.hapax_daimonion.workspace_monitor.ScreenCapturer"),
+        patch("agents.hapax_daimonion.workspace_monitor.WorkspaceAnalyzer"),
     ):
         mock_instance = MagicMock()
         mock_instance.available = True

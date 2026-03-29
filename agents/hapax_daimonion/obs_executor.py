@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agents.hapax_voice.commands import Command
+from agents.hapax_daimonion.commands import Command
 
 log = logging.getLogger(__name__)
 

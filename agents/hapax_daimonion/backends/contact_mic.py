@@ -17,8 +17,8 @@ from collections import deque
 
 import numpy as np
 
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
 
 log = logging.getLogger(__name__)
 

@@ -33,9 +33,9 @@ CC_HISTORY = Path.home() / ".claude" / "history.jsonl"
 PROFILES_DIR = Path.home() / "projects" / "hapax-council" / "profiles"
 BRIEFING_PATH = PROFILES_DIR / "briefing.md"
 DRIFT_REPORT = PROFILES_DIR / "drift-report.json"
-FLOW_STATE_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "flow_state.json"
-WORKSPACE_STATE_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "workspace_state.json"
-VOICE_EVENTS_DIR = Path.home() / ".local" / "share" / "hapax-voice"
+FLOW_STATE_PATH = Path.home() / ".local" / "share" / "hapax-daimonion" / "flow_state.json"
+WORKSPACE_STATE_PATH = Path.home() / ".local" / "share" / "hapax-daimonion" / "workspace_state.json"
+VOICE_EVENTS_DIR = Path.home() / ".local" / "share" / "hapax-daimonion"
 WEATHER_DIR = Path.home() / "documents" / "rag-sources" / "weather"
 
 

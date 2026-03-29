@@ -1,13 +1,13 @@
-# tests/hapax_voice/test_observability_integration.py
+# tests/hapax_daimonion/test_observability_integration.py
 """Integration test: verify observability events flow end-to-end."""
 
 import json
 
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.event_log import EventLog
-from agents.hapax_voice.notification_queue import NotificationQueue, VoiceNotification
-from agents.hapax_voice.presence import PresenceDetector
-from agents.hapax_voice.session import SessionManager
+from agents.hapax_daimonion.context_gate import ContextGate
+from agents.hapax_daimonion.event_log import EventLog
+from agents.hapax_daimonion.notification_queue import NotificationQueue, VoiceNotification
+from agents.hapax_daimonion.presence import PresenceDetector
+from agents.hapax_daimonion.session import SessionManager
 
 
 def test_full_event_flow(tmp_path):
@@ -56,7 +56,7 @@ def test_full_event_flow(tmp_path):
     for e in events:
         assert "ts" in e
         assert "source_service" in e
-        assert e["source_service"] == "hapax-voice"
+        assert e["source_service"] == "hapax-daimonion"
         assert "session_id" in e
 
     # Session events have the session_id set

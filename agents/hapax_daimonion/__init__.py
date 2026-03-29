@@ -1,1 +1,1 @@
-"""Hapax Voice — persistent voice interaction daemon."""
+"""Hapax Daimonion — persistent voice interaction daemon."""

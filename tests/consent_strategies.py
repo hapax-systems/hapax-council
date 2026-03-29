@@ -1,7 +1,7 @@
 """Composable hypothesis strategies for consent governance types.
 
 Provides strategies for Principal, ConsentLabel, and Labeled[T].
-Follows the pattern from tests/hapax_voice/hypothesis_strategies.py.
+Follows the pattern from tests/hapax_daimonion/hypothesis_strategies.py.
 """
 
 from __future__ import annotations

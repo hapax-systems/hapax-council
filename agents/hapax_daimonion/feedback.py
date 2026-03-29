@@ -6,8 +6,8 @@ chains can read. Closes the perception → governance → actuation → feedback
 
 from __future__ import annotations
 
-from agents.hapax_voice.actuation_event import ActuationEvent
-from agents.hapax_voice.primitives import Behavior, Event
+from agents.hapax_daimonion.actuation_event import ActuationEvent
+from agents.hapax_daimonion.primitives import Behavior, Event
 
 # Actions that map to specific feedback Behaviors
 _MC_ACTIONS = frozenset({"vocal_throw", "ad_lib"})

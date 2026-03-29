@@ -17,9 +17,9 @@ from typing import TYPE_CHECKING
 from shared.context_compression import to_toon
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.ambient_classifier import AmbientResult
-    from agents.hapax_voice.perception import EnvironmentState
-    from agents.hapax_voice.screen_models import WorkspaceAnalysis
+    from agents.hapax_daimonion.ambient_classifier import AmbientResult
+    from agents.hapax_daimonion.perception import EnvironmentState
+    from agents.hapax_daimonion.screen_models import WorkspaceAnalysis
 
 log = logging.getLogger(__name__)
 

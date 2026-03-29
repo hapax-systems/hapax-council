@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.hapax_voice.backends.vision import _infer_cross_modal_activity
+from agents.hapax_daimonion.backends.vision import _infer_cross_modal_activity
 
 
 class TestCrossModalFusionWithZones:

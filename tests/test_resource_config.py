@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES, RESOURCE_MAP, resource_for
+from agents.hapax_daimonion.resource_config import DEFAULT_PRIORITIES, RESOURCE_MAP, resource_for
 
 
 class TestResourceFor(unittest.TestCase):

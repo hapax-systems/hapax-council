@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.governor import PipelineGovernor
-from agents.hapax_voice.perception import EnvironmentState
+from agents.hapax_daimonion.governor import PipelineGovernor
+from agents.hapax_daimonion.perception import EnvironmentState
 
 
 def _make_state(**overrides) -> EnvironmentState:
@@ -221,13 +221,13 @@ class TestFrameGateDirective:
     """
 
     def test_initial_directive_is_process(self):
-        from agents.hapax_voice.frame_gate import FrameGate
+        from agents.hapax_daimonion.frame_gate import FrameGate
 
         gate = FrameGate()
         assert gate.directive == "process"
 
     def test_set_directive_changes_value(self):
-        from agents.hapax_voice.frame_gate import FrameGate
+        from agents.hapax_daimonion.frame_gate import FrameGate
 
         gate = FrameGate()
         gate.set_directive("pause")
@@ -237,7 +237,7 @@ class TestFrameGateDirective:
 
     def test_set_directive_same_value_is_noop(self):
         """Setting the same directive a second time should not change anything."""
-        from agents.hapax_voice.frame_gate import FrameGate
+        from agents.hapax_daimonion.frame_gate import FrameGate
 
         gate = FrameGate()
         gate.set_directive("process")
@@ -250,8 +250,8 @@ class TestGovernorPerceptionLoopIntegration:
     @pytest.mark.asyncio
     async def test_perception_loop_applies_pause_directive(self):
         """When governor returns pause, frame_gate gets 'pause' and session pauses."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.session import VoiceLifecycle
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.session import VoiceLifecycle
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()
@@ -300,8 +300,8 @@ class TestGovernorPerceptionLoopIntegration:
     @pytest.mark.asyncio
     async def test_perception_loop_applies_process_resumes_session(self):
         """When governor returns process and session is paused, session resumes."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.session import VoiceLifecycle
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.session import VoiceLifecycle
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()
@@ -337,8 +337,8 @@ class TestGovernorPerceptionLoopIntegration:
     @pytest.mark.asyncio
     async def test_perception_loop_withdraw_closes_session(self):
         """When governor returns withdraw and session is active, _close_session is called."""
-        from agents.hapax_voice.__main__ import VoiceDaemon
-        from agents.hapax_voice.session import VoiceLifecycle
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.session import VoiceLifecycle
 
         with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
             daemon = VoiceDaemon()

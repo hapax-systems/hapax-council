@@ -11,9 +11,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.commands import Command
-from agents.hapax_voice.governance import VetoResult
-from agents.hapax_voice.primitives import Behavior, Event
+from agents.hapax_daimonion.commands import Command
+from agents.hapax_daimonion.governance import VetoResult
+from agents.hapax_daimonion.primitives import Behavior, Event
 
 # ── D1.1: Denied Command Cannot Dispatch ───────────────────────────────
 
@@ -22,7 +22,7 @@ class TestD1_1_GovernanceDenialBlocks(unittest.TestCase):
     """dispatch() must refuse commands with governance_result.allowed=False."""
 
     def test_denied_command_returns_false(self):
-        from agents.hapax_voice.executor import ExecutorRegistry
+        from agents.hapax_daimonion.executor import ExecutorRegistry
 
         reg = ExecutorRegistry()
         ex = _fake_executor("audio", frozenset({"vocal_throw"}))
@@ -35,7 +35,7 @@ class TestD1_1_GovernanceDenialBlocks(unittest.TestCase):
         self.assertEqual(len(ex.executed), 0)
 
     def test_allowed_command_dispatches(self):
-        from agents.hapax_voice.executor import ExecutorRegistry
+        from agents.hapax_daimonion.executor import ExecutorRegistry
 
         reg = ExecutorRegistry()
         ex = _fake_executor("audio", frozenset({"vocal_throw"}))
@@ -56,21 +56,21 @@ class TestD4_2_OBSArbiterWiring(unittest.TestCase):
 
     def test_resource_config_has_obs_governance_chain(self):
         """Priority map uses 'obs_governance' matching OBS Command.trigger_source."""
-        from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES
+        from agents.hapax_daimonion.resource_config import DEFAULT_PRIORITIES
 
         self.assertIn(("obs_scene", "obs_governance"), DEFAULT_PRIORITIES)
         self.assertEqual(DEFAULT_PRIORITIES[("obs_scene", "obs_governance")], 70)
 
     def test_resource_config_has_mc_governance_chain(self):
         """Priority map uses 'mc_governance' matching MC Command.trigger_source."""
-        from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES
+        from agents.hapax_daimonion.resource_config import DEFAULT_PRIORITIES
 
         self.assertIn(("audio_output", "mc_governance"), DEFAULT_PRIORITIES)
         self.assertEqual(DEFAULT_PRIORITIES[("audio_output", "mc_governance")], 50)
 
     def test_obs_actions_mapped_to_obs_scene(self):
         """All OBS actions route to the obs_scene resource."""
-        from agents.hapax_voice.resource_config import RESOURCE_MAP
+        from agents.hapax_daimonion.resource_config import RESOURCE_MAP
 
         obs_actions = ["wide_ambient", "gear_closeup", "face_cam", "rapid_cut"]
         for action in obs_actions:
@@ -78,7 +78,7 @@ class TestD4_2_OBSArbiterWiring(unittest.TestCase):
 
     def test_obs_priority_beats_mc_on_obs_scene(self):
         """OBS governance has higher priority than MC on obs_scene resource."""
-        from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES
+        from agents.hapax_daimonion.resource_config import DEFAULT_PRIORITIES
 
         obs_priority = DEFAULT_PRIORITIES[("obs_scene", "obs_governance")]
         mc_priority = DEFAULT_PRIORITIES[("obs_scene", "mc_governance")]
@@ -86,8 +86,8 @@ class TestD4_2_OBSArbiterWiring(unittest.TestCase):
 
     def test_arbiter_resolves_obs_over_mc_for_obs_scene(self):
         """When both OBS and MC claim obs_scene, OBS wins (priority 70 > 40)."""
-        from agents.hapax_voice.arbiter import ResourceArbiter, ResourceClaim
-        from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES
+        from agents.hapax_daimonion.arbiter import ResourceArbiter, ResourceClaim
+        from agents.hapax_daimonion.resource_config import DEFAULT_PRIORITIES
 
         arb = ResourceArbiter(DEFAULT_PRIORITIES)
         mc_cmd = Command(action="face_cam", trigger_source="mc_governance")
@@ -125,7 +125,7 @@ class TestD5_2_ScopedBackendWrites(unittest.TestCase):
 
     def test_backend_receives_scoped_dict(self):
         """contribute() gets only the behaviors in its provides set."""
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.0
@@ -159,7 +159,7 @@ class TestD5_2_ScopedBackendWrites(unittest.TestCase):
 
     def test_backend_cannot_write_undeclared_behavior(self):
         """A rogue backend trying to access undeclared behaviors gets a filtered dict."""
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.5
@@ -198,7 +198,7 @@ class TestD6_3_CompositionTimeValidation(unittest.TestCase):
     """compose_*_governance() must raise ValueError for missing behaviors."""
 
     def test_mc_governance_rejects_empty_behaviors(self):
-        from agents.hapax_voice.mc_governance import compose_mc_governance
+        from agents.hapax_daimonion.mc_governance import compose_mc_governance
 
         trigger = Event[float]()
         with self.assertRaises(ValueError) as ctx:
@@ -206,7 +206,7 @@ class TestD6_3_CompositionTimeValidation(unittest.TestCase):
         self.assertIn("missing required behaviors", str(ctx.exception).lower())
 
     def test_mc_governance_rejects_partial_behaviors(self):
-        from agents.hapax_voice.mc_governance import compose_mc_governance
+        from agents.hapax_daimonion.mc_governance import compose_mc_governance
 
         trigger = Event[float]()
         partial = {"audio_energy_rms": Behavior(0.0, watermark=0.0)}
@@ -215,7 +215,7 @@ class TestD6_3_CompositionTimeValidation(unittest.TestCase):
         self.assertIn("missing required behaviors", str(ctx.exception).lower())
 
     def test_mc_governance_accepts_complete_behaviors(self):
-        from agents.hapax_voice.mc_governance import compose_mc_governance
+        from agents.hapax_daimonion.mc_governance import compose_mc_governance
 
         trigger = Event[float]()
         behaviors = _full_mc_behaviors()
@@ -224,7 +224,7 @@ class TestD6_3_CompositionTimeValidation(unittest.TestCase):
         self.assertIsNotNone(result)
 
     def test_obs_governance_rejects_empty_behaviors(self):
-        from agents.hapax_voice.obs_governance import compose_obs_governance
+        from agents.hapax_daimonion.obs_governance import compose_obs_governance
 
         trigger = Event[float]()
         with self.assertRaises(ValueError) as ctx:
@@ -232,7 +232,7 @@ class TestD6_3_CompositionTimeValidation(unittest.TestCase):
         self.assertIn("missing required behaviors", str(ctx.exception).lower())
 
     def test_obs_governance_accepts_complete_behaviors(self):
-        from agents.hapax_voice.obs_governance import compose_obs_governance
+        from agents.hapax_daimonion.obs_governance import compose_obs_governance
 
         trigger = Event[float]()
         behaviors = _full_obs_behaviors()
@@ -288,7 +288,7 @@ class TestL3_D2_CombinatorWatermarkFidelity(unittest.TestCase):
 
     def test_min_watermark_reflects_stalest_behavior(self):
         """FusedContext.min_watermark must equal the oldest behavior watermark."""
-        from agents.hapax_voice.combinator import with_latest_from
+        from agents.hapax_daimonion.combinator import with_latest_from
 
         trigger = Event[float]()
         b_fresh = Behavior(1.0, watermark=100.0)
@@ -305,7 +305,7 @@ class TestL3_D2_CombinatorWatermarkFidelity(unittest.TestCase):
 
     def test_empty_behaviors_uses_trigger_time(self):
         """With no behaviors, min_watermark falls back to trigger timestamp."""
-        from agents.hapax_voice.combinator import with_latest_from
+        from agents.hapax_daimonion.combinator import with_latest_from
 
         trigger = Event[float]()
         fused_output = with_latest_from(trigger, {})
@@ -317,7 +317,7 @@ class TestL3_D2_CombinatorWatermarkFidelity(unittest.TestCase):
 
     def test_output_timestamp_matches_trigger(self):
         """Combinator must not fabricate timestamps — output matches trigger exactly."""
-        from agents.hapax_voice.combinator import with_latest_from
+        from agents.hapax_daimonion.combinator import with_latest_from
 
         trigger = Event[float]()
         b = Behavior(0.0, watermark=1.0)
@@ -330,7 +330,7 @@ class TestL3_D2_CombinatorWatermarkFidelity(unittest.TestCase):
 
     def test_no_emission_without_trigger(self):
         """Combinator must not emit spontaneously — only on trigger."""
-        from agents.hapax_voice.combinator import with_latest_from
+        from agents.hapax_daimonion.combinator import with_latest_from
 
         trigger = Event[float]()
         b = Behavior(0.0, watermark=1.0)
@@ -351,21 +351,21 @@ class TestL5_TimelineSuppressionDogStar(unittest.TestCase):
 
     def test_timeline_rejects_zero_tempo(self):
         """TimelineMapping with tempo=0 is a forbidden construction."""
-        from agents.hapax_voice.timeline import TimelineMapping
+        from agents.hapax_daimonion.timeline import TimelineMapping
 
         with self.assertRaises(ValueError):
             TimelineMapping(reference_time=0.0, reference_beat=0.0, tempo=0.0)
 
     def test_timeline_rejects_negative_tempo(self):
         """TimelineMapping with negative tempo is forbidden."""
-        from agents.hapax_voice.timeline import TimelineMapping
+        from agents.hapax_daimonion.timeline import TimelineMapping
 
         with self.assertRaises(ValueError):
             TimelineMapping(reference_time=0.0, reference_beat=0.0, tempo=-120.0)
 
     def test_stopped_transport_freezes_beat(self):
         """STOPPED transport must return reference_beat regardless of time — prevents stale scheduling."""
-        from agents.hapax_voice.timeline import TimelineMapping, TransportState
+        from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
         m = TimelineMapping(
             reference_time=0.0,
@@ -380,21 +380,21 @@ class TestL5_TimelineSuppressionDogStar(unittest.TestCase):
 
     def test_suppression_rejects_zero_attack(self):
         """SuppressionField with attack_s=0 is forbidden (division by zero)."""
-        from agents.hapax_voice.suppression import SuppressionField
+        from agents.hapax_daimonion.suppression import SuppressionField
 
         with self.assertRaises(ValueError):
             SuppressionField(attack_s=0.0)
 
     def test_suppression_rejects_negative_release(self):
         """SuppressionField with negative release_s is forbidden."""
-        from agents.hapax_voice.suppression import SuppressionField
+        from agents.hapax_daimonion.suppression import SuppressionField
 
         with self.assertRaises(ValueError):
             SuppressionField(release_s=-1.0)
 
     def test_full_suppression_makes_threshold_unreachable(self):
         """At suppression=1.0, effective_threshold must be 1.0 (impossible to exceed)."""
-        from agents.hapax_voice.suppression import effective_threshold
+        from agents.hapax_daimonion.suppression import effective_threshold
 
         for base in [0.0, 0.3, 0.5, 0.7, 0.99]:
             self.assertEqual(
@@ -412,8 +412,8 @@ class TestL9_DaemonActuationDogStar(unittest.TestCase):
 
     def test_denied_schedule_not_dispatched_through_queue(self):
         """A Schedule whose Command has allowed=False must not trigger execute()."""
-        from agents.hapax_voice.commands import Schedule
-        from agents.hapax_voice.executor import ExecutorRegistry, ScheduleQueue
+        from agents.hapax_daimonion.commands import Schedule
+        from agents.hapax_daimonion.executor import ExecutorRegistry, ScheduleQueue
 
         queue = ScheduleQueue()
         registry = ExecutorRegistry()
@@ -444,8 +444,8 @@ class TestL9_DaemonActuationDogStar(unittest.TestCase):
 
     def test_allowed_schedule_dispatches_through_queue(self):
         """A Schedule whose Command has allowed=True must reach the executor."""
-        from agents.hapax_voice.commands import Schedule
-        from agents.hapax_voice.executor import ExecutorRegistry, ScheduleQueue
+        from agents.hapax_daimonion.commands import Schedule
+        from agents.hapax_daimonion.executor import ExecutorRegistry, ScheduleQueue
 
         queue = ScheduleQueue()
         registry = ExecutorRegistry()
@@ -473,8 +473,8 @@ class TestL9_DaemonActuationDogStar(unittest.TestCase):
 
     def test_expired_schedule_never_reaches_executor(self):
         """A Schedule past its tolerance window must be silently dropped."""
-        from agents.hapax_voice.commands import Schedule
-        from agents.hapax_voice.executor import ExecutorRegistry, ScheduleQueue
+        from agents.hapax_daimonion.commands import Schedule
+        from agents.hapax_daimonion.executor import ExecutorRegistry, ScheduleQueue
 
         queue = ScheduleQueue()
         registry = ExecutorRegistry()
@@ -533,7 +533,7 @@ def _fake_executor(name: str, handles: frozenset[str]) -> _FakeExecutor:
 
 
 def _full_mc_behaviors() -> dict[str, Behavior]:
-    from agents.hapax_voice.timeline import TimelineMapping, TransportState
+    from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
     return {
         "audio_energy_rms": Behavior(0.5, watermark=0.0),
@@ -553,7 +553,7 @@ def _full_mc_behaviors() -> dict[str, Behavior]:
 
 
 def _full_obs_behaviors() -> dict[str, Behavior]:
-    from agents.hapax_voice.timeline import TimelineMapping, TransportState
+    from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
     return {
         "audio_energy_rms": Behavior(0.5, watermark=0.0),

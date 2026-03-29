@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agents.hapax_voice.primitives import Behavior, Event, Stamped
+from agents.hapax_daimonion.primitives import Behavior, Event, Stamped
 
 # ------------------------------------------------------------------
 # Stamped
@@ -207,7 +207,7 @@ class TestEvent:
 
 class TestBehaviorWithPerceptionEngine:
     def test_behaviors_dict_populated(self):
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.0
@@ -218,7 +218,7 @@ class TestBehaviorWithPerceptionEngine:
         assert len(engine.behaviors) == 11
 
     def test_tick_updates_fast_behaviors(self):
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.8
@@ -233,7 +233,7 @@ class TestBehaviorWithPerceptionEngine:
         assert engine.behaviors["face_count"].value == 2
 
     def test_slow_update_works(self):
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.0
@@ -244,7 +244,7 @@ class TestBehaviorWithPerceptionEngine:
         assert engine.behaviors["activity_mode"].value == "meeting"
 
     def test_desktop_update_works(self):
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
         from shared.hyprland import WindowInfo
 
         presence = MagicMock()
@@ -271,7 +271,7 @@ class TestBehaviorWithPerceptionEngine:
         assert engine.behaviors["active_workspace_id"].value == 2
 
     def test_watermarks_advance_monotonically(self):
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.0
@@ -285,7 +285,7 @@ class TestBehaviorWithPerceptionEngine:
         assert w2 >= w1
 
     def test_environment_state_matches_behavior_values(self):
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.6
@@ -319,26 +319,26 @@ def _mock_daemon():
     """Context manager yielding a VoiceDaemon with mocked subsystems."""
     from unittest.mock import patch
 
-    from agents.hapax_voice.__main__ import VoiceDaemon
+    from agents.hapax_daimonion.__main__ import VoiceDaemon
 
     class _Ctx:
         def __enter__(self):
             self._patches = [
-                patch("agents.hapax_voice.__main__.load_config"),
-                patch("agents.hapax_voice.__main__.SessionManager"),
-                patch("agents.hapax_voice.__main__.PresenceDetector"),
-                patch("agents.hapax_voice.__main__.ContextGate"),
-                patch("agents.hapax_voice.__main__.NotificationQueue"),
-                patch("agents.hapax_voice.__main__.HotkeyServer"),
-                patch("agents.hapax_voice.__main__.WakeWordDetector"),
-                patch("agents.hapax_voice.__main__.PorcupineWakeWord"),
-                patch("agents.hapax_voice.__main__.AudioInputStream"),
-                patch("agents.hapax_voice.__main__.TTSManager"),
-                patch("agents.hapax_voice.__main__.ChimePlayer"),
-                patch("agents.hapax_voice.__main__.WorkspaceMonitor"),
-                patch("agents.hapax_voice.__main__.PipelineGovernor"),
-                patch("agents.hapax_voice.__main__.FrameGate"),
-                patch("agents.hapax_voice.__main__.EventLog"),
+                patch("agents.hapax_daimonion.__main__.load_config"),
+                patch("agents.hapax_daimonion.__main__.SessionManager"),
+                patch("agents.hapax_daimonion.__main__.PresenceDetector"),
+                patch("agents.hapax_daimonion.__main__.ContextGate"),
+                patch("agents.hapax_daimonion.__main__.NotificationQueue"),
+                patch("agents.hapax_daimonion.__main__.HotkeyServer"),
+                patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
+                patch("agents.hapax_daimonion.__main__.PorcupineWakeWord"),
+                patch("agents.hapax_daimonion.__main__.AudioInputStream"),
+                patch("agents.hapax_daimonion.__main__.TTSManager"),
+                patch("agents.hapax_daimonion.__main__.ChimePlayer"),
+                patch("agents.hapax_daimonion.__main__.WorkspaceMonitor"),
+                patch("agents.hapax_daimonion.__main__.PipelineGovernor"),
+                patch("agents.hapax_daimonion.__main__.FrameGate"),
+                patch("agents.hapax_daimonion.__main__.EventLog"),
             ]
             for p in self._patches:
                 p.start()

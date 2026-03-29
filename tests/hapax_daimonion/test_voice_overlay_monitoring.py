@@ -100,7 +100,7 @@ class TestConversationPipelineExposesScores:
     """ConversationPipeline stores per-turn scores for perception state writer."""
 
     def test_pipeline_has_monitoring_attributes(self):
-        from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+        from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
 
         pipe = ConversationPipeline.__new__(ConversationPipeline)
         pipe._frustration_detector = None

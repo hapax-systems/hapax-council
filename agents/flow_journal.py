@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 RAG_DIR = Path.home() / "documents" / "rag-sources" / "flow"
 CACHE_DIR = Path.home() / ".cache" / "flow-journal"
 STATE_FILE = CACHE_DIR / "state.json"
-PERCEPTION_STATE = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+PERCEPTION_STATE = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 STIMMUNG_STATE = Path("/dev/shm/hapax-stimmung/state.json")
 
 

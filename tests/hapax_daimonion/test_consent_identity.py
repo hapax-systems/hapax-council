@@ -14,7 +14,7 @@ import numpy as np
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.consent_identity import (
+from agents.hapax_daimonion.consent_identity import (
     GuestIdentity,
     GuestTracker,
     enroll_guest_speaker,
@@ -123,7 +123,7 @@ class TestEnrollGuestSpeaker(unittest.TestCase):
             enrollment_dir = Path(tmpdir)
             embedding = np.random.randn(256).astype(np.float32)
 
-            with patch("agents.hapax_voice.consent_identity.ENROLLMENT_DIR", enrollment_dir):
+            with patch("agents.hapax_daimonion.consent_identity.ENROLLMENT_DIR", enrollment_dir):
                 success = enroll_guest_speaker("wife", embedding)
 
             assert success
@@ -138,7 +138,7 @@ class TestEnrollGuestSpeaker(unittest.TestCase):
             enrollment_dir = Path(tmpdir)
             embedding = np.array([3.0, 4.0], dtype=np.float32)  # norm = 5
 
-            with patch("agents.hapax_voice.consent_identity.ENROLLMENT_DIR", enrollment_dir):
+            with patch("agents.hapax_daimonion.consent_identity.ENROLLMENT_DIR", enrollment_dir):
                 enroll_guest_speaker("test", embedding)
 
             loaded = np.load(enrollment_dir / "test.npy")
@@ -148,7 +148,7 @@ class TestEnrollGuestSpeaker(unittest.TestCase):
 class TestFindEnrolledGuests(unittest.TestCase):
     def test_empty_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("agents.hapax_voice.consent_identity.ENROLLMENT_DIR", Path(tmpdir)):
+            with patch("agents.hapax_daimonion.consent_identity.ENROLLMENT_DIR", Path(tmpdir)):
                 assert find_enrolled_guests() == []
 
     def test_finds_guests(self):
@@ -158,7 +158,7 @@ class TestFindEnrolledGuests(unittest.TestCase):
             np.save(d / "friend.npy", np.zeros(10))
             np.save(d / "operator.npy", np.zeros(10))  # should be excluded
 
-            with patch("agents.hapax_voice.consent_identity.ENROLLMENT_DIR", d):
+            with patch("agents.hapax_daimonion.consent_identity.ENROLLMENT_DIR", d):
                 guests = find_enrolled_guests()
                 assert "wife" in guests
                 assert "friend" in guests
@@ -177,7 +177,7 @@ class TestProcessCurtailedSegments(unittest.TestCase):
             flac.write_text("audio data")
 
             with patch(
-                "agents.hapax_voice.consent_identity.Path.home",
+                "agents.hapax_daimonion.consent_identity.Path.home",
                 return_value=Path(tmpdir),
             ):
                 queued = process_curtailed_segments(

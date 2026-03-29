@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from agents.hapax_voice.backends.contact_mic import (
+from agents.hapax_daimonion.backends.contact_mic import (
     ContactMicBackend,
     _classify_activity,
     _compute_rms,
@@ -19,7 +19,7 @@ from agents.hapax_voice.backends.contact_mic import (
     _ContactMicCache,
     _detect_onsets,
 )
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.primitives import Behavior
 
 
 def _make_pcm_frame(freq_hz: float = 440.0, amplitude: float = 0.5, n_samples: int = 512) -> bytes:
@@ -169,25 +169,25 @@ class TestGestureDetection:
     """
 
     def test_no_gesture_single_onset(self):
-        from agents.hapax_voice.backends.contact_mic import _classify_gesture
+        from agents.hapax_daimonion.backends.contact_mic import _classify_gesture
 
         now = time.monotonic()
         assert _classify_gesture([now]) == "none"
 
     def test_double_tap(self):
-        from agents.hapax_voice.backends.contact_mic import _classify_gesture
+        from agents.hapax_daimonion.backends.contact_mic import _classify_gesture
 
         now = time.monotonic()
         assert _classify_gesture([now, now + 0.15]) == "double_tap"
 
     def test_triple_tap(self):
-        from agents.hapax_voice.backends.contact_mic import _classify_gesture
+        from agents.hapax_daimonion.backends.contact_mic import _classify_gesture
 
         now = time.monotonic()
         assert _classify_gesture([now, now + 0.12, now + 0.25]) == "triple_tap"
 
     def test_too_slow_is_no_gesture(self):
-        from agents.hapax_voice.backends.contact_mic import _classify_gesture
+        from agents.hapax_daimonion.backends.contact_mic import _classify_gesture
 
         now = time.monotonic()
         # 500ms between taps — too slow for double tap
@@ -196,12 +196,12 @@ class TestGestureDetection:
 
 class TestContactMicBackendProtocol:
     def test_name(self):
-        with patch("agents.hapax_voice.backends.contact_mic.pyaudio", None):
+        with patch("agents.hapax_daimonion.backends.contact_mic.pyaudio", None):
             backend = ContactMicBackend(source_name="Test Mic")
             assert backend.name == "contact_mic"
 
     def test_provides(self):
-        with patch("agents.hapax_voice.backends.contact_mic.pyaudio", None):
+        with patch("agents.hapax_daimonion.backends.contact_mic.pyaudio", None):
             backend = ContactMicBackend(source_name="Test Mic")
             assert backend.provides == frozenset(
                 {
@@ -215,14 +215,14 @@ class TestContactMicBackendProtocol:
             )
 
     def test_tier_is_fast(self):
-        from agents.hapax_voice.perception import PerceptionTier
+        from agents.hapax_daimonion.perception import PerceptionTier
 
-        with patch("agents.hapax_voice.backends.contact_mic.pyaudio", None):
+        with patch("agents.hapax_daimonion.backends.contact_mic.pyaudio", None):
             backend = ContactMicBackend(source_name="Test Mic")
             assert backend.tier == PerceptionTier.FAST
 
     def test_contribute_updates_behaviors(self):
-        with patch("agents.hapax_voice.backends.contact_mic.pyaudio", None):
+        with patch("agents.hapax_daimonion.backends.contact_mic.pyaudio", None):
             backend = ContactMicBackend(source_name="Test Mic")
             behaviors: dict[str, Behavior] = {}
             backend.contribute(behaviors)
@@ -240,7 +240,7 @@ class TestEnvelopeAutocorrelation:
         import math
         from collections import deque
 
-        from agents.hapax_voice.backends.contact_mic import _compute_envelope_autocorrelation
+        from agents.hapax_daimonion.backends.contact_mic import _compute_envelope_autocorrelation
 
         # Simulate scratching: sinusoidal energy at 5 Hz (200ms period, lag ~6 at 32ms)
         buf: deque[float] = deque(maxlen=60)
@@ -252,7 +252,7 @@ class TestEnvelopeAutocorrelation:
     def test_flat_envelope_low_peak(self):
         from collections import deque
 
-        from agents.hapax_voice.backends.contact_mic import _compute_envelope_autocorrelation
+        from agents.hapax_daimonion.backends.contact_mic import _compute_envelope_autocorrelation
 
         buf: deque[float] = deque(maxlen=60)
         for _ in range(60):
@@ -263,7 +263,7 @@ class TestEnvelopeAutocorrelation:
     def test_impulsive_envelope_low_peak(self):
         from collections import deque
 
-        from agents.hapax_voice.backends.contact_mic import _compute_envelope_autocorrelation
+        from agents.hapax_daimonion.backends.contact_mic import _compute_envelope_autocorrelation
 
         # Simulate typing: aperiodic sparse impulses (not evenly spaced)
         buf: deque[float] = deque(maxlen=60)
@@ -277,7 +277,7 @@ class TestEnvelopeAutocorrelation:
     def test_short_buffer_returns_zero(self):
         from collections import deque
 
-        from agents.hapax_voice.backends.contact_mic import _compute_envelope_autocorrelation
+        from agents.hapax_daimonion.backends.contact_mic import _compute_envelope_autocorrelation
 
         buf: deque[float] = deque(maxlen=60)
         buf.append(0.5)

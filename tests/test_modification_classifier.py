@@ -32,7 +32,7 @@ class TestClassifyPath:
         assert classify_path("hooks/pre-commit") == ModificationClass.NEVER_MODIFY
 
     def test_systemd(self):
-        assert classify_path("systemd/hapax-voice.service") == ModificationClass.NEVER_MODIFY
+        assert classify_path("systemd/hapax-daimonion.service") == ModificationClass.NEVER_MODIFY
 
     def test_backup_scripts(self):
         assert classify_path("hapax-backup-local.sh") == ModificationClass.NEVER_MODIFY

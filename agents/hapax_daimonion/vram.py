@@ -8,7 +8,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-DEFAULT_LOCK_PATH = Path.home() / ".cache" / "hapax-voice" / "vram.lock"
+DEFAULT_LOCK_PATH = Path.home() / ".cache" / "hapax-daimonion" / "vram.lock"
 
 
 class VRAMLock:

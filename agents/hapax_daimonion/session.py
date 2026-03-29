@@ -1,4 +1,4 @@
-"""Voice conversation lifecycle state machine for Hapax Voice."""
+"""Voice conversation lifecycle state machine for Hapax Daimonion."""
 
 from __future__ import annotations
 

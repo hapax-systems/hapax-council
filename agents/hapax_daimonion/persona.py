@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from logos.voice import greeting, operator_name
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.screen_models import ScreenAnalysis
+    from agents.hapax_daimonion.screen_models import ScreenAnalysis
 
 log = logging.getLogger(__name__)
 

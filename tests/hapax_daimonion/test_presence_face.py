@@ -2,7 +2,7 @@
 
 import time
 
-from agents.hapax_voice.presence import PresenceDetector
+from agents.hapax_daimonion.presence import PresenceDetector
 
 
 def test_presence_record_face_event():

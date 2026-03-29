@@ -11,7 +11,7 @@ from agents.content_scheduler import (
     ContentSource,
     SchedulerContext,
 )
-from agents.hapax_voice.perception import compute_interruptibility
+from agents.hapax_daimonion.perception import compute_interruptibility
 
 
 def _default_pools() -> ContentPools:

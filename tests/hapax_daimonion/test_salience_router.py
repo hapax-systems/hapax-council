@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from agents.hapax_voice.model_router import ModelTier
-from agents.hapax_voice.salience.concern_graph import ConcernAnchor, ConcernGraph
-from agents.hapax_voice.salience.utterance_features import extract
-from agents.hapax_voice.salience_router import SalienceRouter
+from agents.hapax_daimonion.model_router import ModelTier
+from agents.hapax_daimonion.salience.concern_graph import ConcernAnchor, ConcernGraph
+from agents.hapax_daimonion.salience.utterance_features import extract
+from agents.hapax_daimonion.salience_router import SalienceRouter
 
 # ── Utterance feature extraction tests ──────────────────────────────
 

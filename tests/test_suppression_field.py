@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.primitives import Behavior, Event
-from agents.hapax_voice.suppression import SuppressionField, effective_threshold
+from agents.hapax_daimonion.primitives import Behavior, Event
+from agents.hapax_daimonion.suppression import SuppressionField, effective_threshold
 
 
 class TestSuppressionFieldConstruction(unittest.TestCase):
@@ -165,8 +165,8 @@ class TestEffectiveThreshold(unittest.TestCase):
 class TestSuppressionFieldWithCombinator(unittest.TestCase):
     def test_behavior_works_in_with_latest_from(self):
         """SuppressionField.behavior participates in Combinator sampling."""
-        from agents.hapax_voice.combinator import with_latest_from
-        from agents.hapax_voice.governance import FusedContext
+        from agents.hapax_daimonion.combinator import with_latest_from
+        from agents.hapax_daimonion.governance import FusedContext
 
         sf = SuppressionField(initial=0.5, watermark=1.0)
         trigger = Event[float]()

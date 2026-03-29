@@ -52,7 +52,7 @@ def test_shader_capability_record():
 
 def _make_engine():
     """Create a PerceptionEngine with mock dependencies."""
-    from agents.hapax_voice.perception import PerceptionEngine
+    from agents.hapax_daimonion.perception import PerceptionEngine
 
     presence = MagicMock()
     presence.latest_vad_confidence = 0.0
@@ -84,7 +84,7 @@ def test_perception_drain_impingements():
 
 def test_behavior_change_emits_impingement():
     """Significant behavior changes produce impingements."""
-    from agents.hapax_voice.primitives import Behavior
+    from agents.hapax_daimonion.primitives import Behavior
 
     engine = _make_engine()
     behaviors: dict[str, Behavior] = {"flow_score": Behavior(0.0)}
@@ -105,7 +105,7 @@ def test_behavior_change_emits_impingement():
 
 def test_behavior_change_caps_strength():
     """Impingement strength is capped at 1.0."""
-    from agents.hapax_voice.primitives import Behavior
+    from agents.hapax_daimonion.primitives import Behavior
 
     engine = _make_engine()
     behaviors: dict[str, Behavior] = {"big_jump": Behavior(0.0)}
@@ -118,7 +118,7 @@ def test_behavior_change_caps_strength():
 
 def test_non_numeric_behaviors_ignored():
     """Non-numeric behavior values don't produce impingements."""
-    from agents.hapax_voice.primitives import Behavior
+    from agents.hapax_daimonion.primitives import Behavior
 
     engine = _make_engine()
     behaviors: dict[str, Behavior] = {"window_class": Behavior("firefox")}

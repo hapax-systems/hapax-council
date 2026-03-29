@@ -1,11 +1,11 @@
-"""tests/hapax_voice/test_ir_presence_backend.py"""
+"""tests/hapax_daimonion/test_ir_presence_backend.py"""
 
 import json
 from pathlib import Path
 
-from agents.hapax_voice.backends.ir_presence import IrPresenceBackend
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.backends.ir_presence import IrPresenceBackend
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
 
 
 def _write_report(tmp_path: Path, role: str, **overrides):

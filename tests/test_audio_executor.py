@@ -9,10 +9,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.audio_executor import AudioExecutor
-from agents.hapax_voice.commands import Command
-from agents.hapax_voice.executor import Executor
-from agents.hapax_voice.sample_bank import SampleBank
+from agents.hapax_daimonion.audio_executor import AudioExecutor
+from agents.hapax_daimonion.commands import Command
+from agents.hapax_daimonion.executor import Executor
+from agents.hapax_daimonion.sample_bank import SampleBank
 
 
 def _write_wav(path: Path, rate: int = 44100, channels: int = 1, n_frames: int = 100) -> None:
@@ -45,7 +45,7 @@ class TestAudioExecutor(unittest.TestCase):
             executor, _, _ = self._make_executor(tmpdir)
             self.assertIsInstance(executor, Executor)
 
-    @patch("agents.hapax_voice.audio_executor.threading.Thread")
+    @patch("agents.hapax_daimonion.audio_executor.threading.Thread")
     def test_execute_spawns_daemon_thread(self, mock_thread_cls):
         mock_thread = MagicMock()
         mock_thread_cls.return_value = mock_thread
@@ -88,7 +88,7 @@ class TestAudioExecutor(unittest.TestCase):
         """execute with unknown action does not spawn thread."""
         with TemporaryDirectory() as tmpdir:
             executor, _, _ = self._make_executor(tmpdir)
-            with patch("agents.hapax_voice.audio_executor.threading.Thread") as mock_thread_cls:
+            with patch("agents.hapax_daimonion.audio_executor.threading.Thread") as mock_thread_cls:
                 executor.execute(Command(action="nonexistent"))
                 mock_thread_cls.assert_not_called()
 

@@ -29,8 +29,8 @@ log = logging.getLogger("test_wake_handoff")
 
 
 async def main() -> None:
-    from agents.hapax_voice.audio_input import AudioInputStream
-    from agents.hapax_voice.wake_word_porcupine import PorcupineWakeWord
+    from agents.hapax_daimonion.audio_input import AudioInputStream
+    from agents.hapax_daimonion.wake_word_porcupine import PorcupineWakeWord
 
     # --- Init ---
     audio = AudioInputStream(source_name="echo_cancel_capture")
@@ -73,7 +73,7 @@ async def main() -> None:
             subprocess.Popen(
                 [
                     "notify-send",
-                    "--app-name=Hapax Voice",
+                    "--app-name=Hapax Daimonion",
                     "--icon=audio-input-microphone",
                     "--expire-time=2000",
                     "--transient",

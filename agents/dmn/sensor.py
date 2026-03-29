@@ -17,7 +17,7 @@ log = logging.getLogger("dmn.sensor")
 STIMMUNG_STATE = Path("/dev/shm/hapax-stimmung/state.json")
 FORTRESS_STATE = Path("/dev/shm/hapax-df/state.json")
 WATCH_DIR = Path.home() / "hapax-state" / "watch"
-VOICE_PERCEPTION = Path("/dev/shm/hapax-voice/perception-state.json")
+VOICE_PERCEPTION = Path("/dev/shm/hapax-daimonion/perception-state.json")
 
 # Staleness threshold — sensors older than this are marked stale
 STALE_THRESHOLD_S = 30.0

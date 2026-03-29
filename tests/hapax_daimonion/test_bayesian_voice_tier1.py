@@ -13,13 +13,13 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from agents.hapax_voice.conversation_pipeline import (
+from agents.hapax_daimonion.conversation_pipeline import (
     _DENSITY_WORD_LIMITS,
     _MAX_SPOKEN_WORDS,
     _density_word_limit,
 )
-from agents.hapax_voice.governor import PipelineGovernor
-from agents.hapax_voice.perception import EnvironmentState
+from agents.hapax_daimonion.governor import PipelineGovernor
+from agents.hapax_daimonion.perception import EnvironmentState
 
 
 def _make_state(**overrides: object) -> EnvironmentState:

@@ -1,10 +1,10 @@
-"""Tests for agents/hapax_voice/env_context.py — environment TOON serialization."""
+"""Tests for agents/hapax_daimonion/env_context.py — environment TOON serialization."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from agents.hapax_voice.env_context import serialize_environment
+from agents.hapax_daimonion.env_context import serialize_environment
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class _FakeAmbient:
 class TestSerializeEnvironment:
     def setup_method(self):
         # Reset change detection between tests
-        import agents.hapax_voice.env_context as mod
+        import agents.hapax_daimonion.env_context as mod
 
         mod._last_hash = 0
 

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.actuation_event import ActuationEvent
-from agents.hapax_voice.feedback import wire_feedback_behaviors
-from agents.hapax_voice.primitives import Behavior, Event
+from agents.hapax_daimonion.actuation_event import ActuationEvent
+from agents.hapax_daimonion.feedback import wire_feedback_behaviors
+from agents.hapax_daimonion.primitives import Behavior, Event
 
 
 class TestWireFeedbackBehaviors(unittest.TestCase):
@@ -68,8 +68,8 @@ class TestWireFeedbackBehaviors(unittest.TestCase):
 
     def test_integration_with_with_latest_from(self):
         """Feedback Behaviors can be sampled via Combinator."""
-        from agents.hapax_voice.combinator import with_latest_from
-        from agents.hapax_voice.governance import FusedContext
+        from agents.hapax_daimonion.combinator import with_latest_from
+        from agents.hapax_daimonion.governance import FusedContext
 
         actuation = Event[ActuationEvent]()
         fb = wire_feedback_behaviors(actuation, watermark=0.0)

@@ -156,7 +156,7 @@ class ClassifyEffect(BaseEffect):
             import json as _json
             from pathlib import Path
 
-            state_path = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+            state_path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
             if not state_path.exists():
                 return None
             state = _json.loads(state_path.read_text())

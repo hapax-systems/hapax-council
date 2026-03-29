@@ -1,4 +1,4 @@
-"""agents/hapax_voice/ir_signals.py — Read Pi NoIR state files.
+"""agents/hapax_daimonion/ir_signals.py — Read Pi NoIR state files.
 
 Follows the same pattern as watch_signals.py: read JSON state files
 from ~/hapax-state/pi-noir/ with staleness checking.

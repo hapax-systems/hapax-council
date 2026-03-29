@@ -75,7 +75,7 @@ class TestAdaptiveConfidenceThreshold:
     """WS5: self-tuning confidence threshold."""
 
     def _make_monitor(self):
-        from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
+        from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
         return WorkspaceMonitor(enabled=False)
 

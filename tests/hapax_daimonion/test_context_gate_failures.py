@@ -13,9 +13,9 @@ import subprocess
 import time
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.session import SessionManager
+from agents.hapax_daimonion.context_gate import ContextGate
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.session import SessionManager
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -248,7 +248,7 @@ class TestAmbientFailures:
     def test_ambient_import_failure(self) -> None:
         """ImportError on ambient_classifier module -> blocks with fail-closed."""
         gate, _ = _make_gate()
-        with patch.dict("sys.modules", {"agents.hapax_voice.ambient_classifier": None}):
+        with patch.dict("sys.modules", {"agents.hapax_daimonion.ambient_classifier": None}):
             ok, reason = gate._check_ambient()
         assert not ok
         assert "fail-closed" in reason.lower()
@@ -258,7 +258,7 @@ class TestAmbientFailures:
         gate, _ = _make_gate()
         mock_module = MagicMock()
         mock_module.classify.side_effect = RuntimeError("GPU OOM")
-        with patch.dict("sys.modules", {"agents.hapax_voice.ambient_classifier": mock_module}):
+        with patch.dict("sys.modules", {"agents.hapax_daimonion.ambient_classifier": mock_module}):
             ok, reason = gate._check_ambient()
         assert not ok
         assert "fail-closed" in reason.lower()

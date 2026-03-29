@@ -8,7 +8,7 @@ the additive effective_threshold formula.
 
 from __future__ import annotations
 
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.primitives import Behavior
 
 
 class SuppressionField:

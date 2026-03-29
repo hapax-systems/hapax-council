@@ -1,10 +1,10 @@
-"""tests/hapax_voice/test_ir_signals.py"""
+"""tests/hapax_daimonion/test_ir_signals.py"""
 
 import json
 import os
 import time
 
-from agents.hapax_voice.ir_signals import IR_STATE_DIR, read_ir_signal
+from agents.hapax_daimonion.ir_signals import IR_STATE_DIR, read_ir_signal
 
 
 def test_read_missing_file(tmp_path):

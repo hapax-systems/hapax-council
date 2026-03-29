@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agents.hapax_voice.compound_goals import CompoundGoals
+from agents.hapax_daimonion.compound_goals import CompoundGoals
 
 
 class TestCompoundGoals(unittest.TestCase):

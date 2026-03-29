@@ -2,14 +2,14 @@
 
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.config import VoiceConfig
+from agents.hapax_daimonion.config import DaimonionConfig
 
 
 def test_register_tool_handlers_calls_register_function():
-    from agents.hapax_voice.tools import register_tool_handlers
+    from agents.hapax_daimonion.tools import register_tool_handlers
 
     mock_llm = MagicMock()
-    cfg = VoiceConfig(tools_enabled=True)
+    cfg = DaimonionConfig(tools_enabled=True)
 
     register_tool_handlers(mock_llm, cfg)
 
@@ -33,10 +33,10 @@ def test_register_tool_handlers_calls_register_function():
 
 
 def test_register_skipped_when_tools_disabled():
-    from agents.hapax_voice.tools import register_tool_handlers
+    from agents.hapax_daimonion.tools import register_tool_handlers
 
     mock_llm = MagicMock()
-    cfg = VoiceConfig(tools_enabled=False)
+    cfg = DaimonionConfig(tools_enabled=False)
 
     register_tool_handlers(mock_llm, cfg)
 

@@ -254,7 +254,7 @@ class CircadianModel:
 
 # ── Protention Engine ────────────────────────────────────────────────────────
 
-PROTENTION_STATE_PATH = Path.home() / ".cache" / "hapax-voice" / "protention-state.json"
+PROTENTION_STATE_PATH = Path.home() / ".cache" / "hapax-daimonion" / "protention-state.json"
 
 
 class ProtentionEngine:

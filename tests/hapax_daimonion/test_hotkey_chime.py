@@ -2,22 +2,22 @@
 
 from unittest.mock import AsyncMock, patch
 
-from agents.hapax_voice.config import VoiceConfig
+from agents.hapax_daimonion.config import DaimonionConfig
 
 
 class TestHotkeyChime:
-    @patch("agents.hapax_voice.__main__._screen_flash")
-    @patch("agents.hapax_voice.__main__.AudioInputStream")
-    @patch("agents.hapax_voice.__main__.TTSManager")
-    @patch("agents.hapax_voice.__main__.WakeWordDetector")
-    @patch("agents.hapax_voice.__main__.HotkeyServer")
-    @patch("agents.hapax_voice.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.__main__._screen_flash")
+    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
+    @patch("agents.hapax_daimonion.__main__.TTSManager")
+    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
+    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
+    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
     def test_toggle_open_plays_activation(self, MockChime, *_, **__):
         import asyncio
 
-        from agents.hapax_voice.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
 
-        cfg = VoiceConfig(chime_enabled=True)
+        cfg = DaimonionConfig(chime_enabled=True)
         daemon = VoiceDaemon(cfg=cfg)
         mock_player = MockChime.return_value
         daemon._start_pipeline = AsyncMock()
@@ -26,18 +26,18 @@ class TestHotkeyChime:
         asyncio.get_event_loop().run_until_complete(daemon._handle_hotkey("toggle"))
         mock_player.play.assert_called_with("activation")
 
-    @patch("agents.hapax_voice.__main__._screen_flash")
-    @patch("agents.hapax_voice.__main__.AudioInputStream")
-    @patch("agents.hapax_voice.__main__.TTSManager")
-    @patch("agents.hapax_voice.__main__.WakeWordDetector")
-    @patch("agents.hapax_voice.__main__.HotkeyServer")
-    @patch("agents.hapax_voice.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.__main__._screen_flash")
+    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
+    @patch("agents.hapax_daimonion.__main__.TTSManager")
+    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
+    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
+    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
     def test_open_cmd_plays_activation(self, MockChime, *_, **__):
         import asyncio
 
-        from agents.hapax_voice.__main__ import VoiceDaemon
+        from agents.hapax_daimonion.__main__ import VoiceDaemon
 
-        cfg = VoiceConfig(chime_enabled=True)
+        cfg = DaimonionConfig(chime_enabled=True)
         daemon = VoiceDaemon(cfg=cfg)
         mock_player = MockChime.return_value
         daemon._start_pipeline = AsyncMock()

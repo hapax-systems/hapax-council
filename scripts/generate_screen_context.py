@@ -4,7 +4,7 @@
 Queries live system state and writes a context file that the screen
 analyzer uses as its system knowledge prompt.
 
-Output: ~/.local/share/hapax-voice/screen_context.md
+Output: ~/.local/share/hapax-daimonion/screen_context.md
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-OUTPUT_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "screen_context.md"
+OUTPUT_PATH = Path.home() / ".local" / "share" / "hapax-daimonion" / "screen_context.md"
 
 
 def run_cmd(cmd: list[str], timeout: int = 10) -> str:

@@ -12,9 +12,9 @@ import logging
 import time
 from typing import Protocol, runtime_checkable
 
-from agents.hapax_voice.actuation_event import ActuationEvent
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.primitives import Event
+from agents.hapax_daimonion.actuation_event import ActuationEvent
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.primitives import Event
 
 log = logging.getLogger(__name__)
 

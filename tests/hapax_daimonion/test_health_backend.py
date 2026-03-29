@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from agents.hapax_voice.backends.health import HealthBackend
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.backends.health import HealthBackend
+from agents.hapax_daimonion.primitives import Behavior
 
 
 class TestHealthBackend:
@@ -71,7 +71,7 @@ class TestHealthBackend:
         import time
         from unittest.mock import MagicMock
 
-        from agents.hapax_voice.context_gate import ContextGate
+        from agents.hapax_daimonion.context_gate import ContextGate
 
         path = tmp_path / "health-history.jsonl"
         path.write_text(json.dumps({"healthy": 0, "total": 80}) + "\n")
@@ -100,7 +100,7 @@ class TestHealthBackend:
         import time
         from unittest.mock import MagicMock
 
-        from agents.hapax_voice.context_gate import ContextGate
+        from agents.hapax_daimonion.context_gate import ContextGate
 
         path = tmp_path / "health-history.jsonl"
         path.write_text(json.dumps({"healthy": 70, "total": 80}) + "\n")

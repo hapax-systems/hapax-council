@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.hapax_voice.wake_word import WakeWordDetector
+from agents.hapax_daimonion.wake_word import WakeWordDetector
 
 
 class TestWakeWordDetector:

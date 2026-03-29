@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from hypothesis import given, settings
 
-from agents.hapax_voice.governance import FusedContext, Veto, VetoChain, VetoResult
-from agents.hapax_voice.mc_governance import (
+from agents.hapax_daimonion.governance import FusedContext, Veto, VetoChain, VetoResult
+from agents.hapax_daimonion.mc_governance import (
     MCConfig,
     build_mc_fallback_chain,
     build_mc_veto_chain,
 )
-from tests.hapax_voice.hypothesis_strategies import st_mc_fused_context
+from tests.hapax_daimonion.hypothesis_strategies import st_mc_fused_context
 
 
 class TestMCGovernanceProperties:
@@ -69,7 +69,7 @@ class TestMCGovernanceProperties:
     @settings(max_examples=100)
     def test_fallback_selects_from_known_actions(self, ctx):
         """FallbackChain always selects a known MCAction or default."""
-        from agents.hapax_voice.mc_governance import MCAction
+        from agents.hapax_daimonion.mc_governance import MCAction
 
         chain = build_mc_fallback_chain()
         result = chain.select(ctx)

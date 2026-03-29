@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from unittest.mock import patch
 
-from agents.hapax_voice.conversational_policy import (
+from agents.hapax_daimonion.conversational_policy import (
     _modulate_for_environment,
     get_policy,
 )
@@ -123,7 +123,7 @@ class TestEnvironmentalModulation:
 
     def test_late_evening_lighter_tone(self):
         env = FakeEnv()
-        with patch("agents.hapax_voice.conversational_policy.datetime") as mock_dt:
+        with patch("agents.hapax_daimonion.conversational_policy.datetime") as mock_dt:
             mock_dt.now.return_value.hour = 23
             policy = get_policy(env=env)
         assert "Late hours" in policy
@@ -190,7 +190,7 @@ class TestPolicyFormat:
         assert policy.startswith("\n\n## Conversational Policy")
 
     def test_empty_sections_produce_empty_string(self):
-        from agents.hapax_voice.conversational_policy import _format_block
+        from agents.hapax_daimonion.conversational_policy import _format_block
 
         assert _format_block([]) == ""
 

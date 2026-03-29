@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.consent_state import ConsentPhase, ConsentStateTracker
+from agents.hapax_daimonion.consent_state import ConsentPhase, ConsentStateTracker
 
 
 class TestConsentTrackerInDaemon(unittest.TestCase):
@@ -101,13 +101,13 @@ class TestConsentPhaseInEnvironmentState(unittest.TestCase):
     """EnvironmentState includes consent_phase for observability."""
 
     def test_default_consent_phase(self):
-        from agents.hapax_voice.perception import EnvironmentState
+        from agents.hapax_daimonion.perception import EnvironmentState
 
         state = EnvironmentState(timestamp=0.0)
         assert state.consent_phase == "no_guest"
 
     def test_consent_phase_settable(self):
-        from agents.hapax_voice.perception import EnvironmentState
+        from agents.hapax_daimonion.perception import EnvironmentState
 
         state = EnvironmentState(timestamp=0.0, consent_phase="consent_pending")
         assert state.consent_phase == "consent_pending"

@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.consent_session import (
+from agents.hapax_daimonion.consent_session import (
     CONSENT_SYSTEM_PROMPT,
     CONSENT_TOOL_SCHEMAS,
     ConsentSessionState,
@@ -86,7 +86,7 @@ class TestRecordConsentDecision(unittest.TestCase):
         state = ConsentSessionState()
         tracker = MagicMock()
 
-        with patch("agents.hapax_voice.consent_session._purge_session_data") as mock_purge:
+        with patch("agents.hapax_daimonion.consent_session._purge_session_data") as mock_purge:
             result = json.loads(
                 handle_record_consent_decision(
                     state,
@@ -190,7 +190,7 @@ class TestPurgeSessionData(unittest.TestCase):
             guest_seen = time.time() - 60  # 1 minute ago
 
             with patch(
-                "agents.hapax_voice.consent_session.Path.home",
+                "agents.hapax_daimonion.consent_session.Path.home",
                 return_value=Path(tmpdir).parent,
             ):
                 # Can't easily mock Path.home for glob, test the logic directly

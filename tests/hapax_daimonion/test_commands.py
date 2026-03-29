@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.governance import VetoResult
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.governance import VetoResult
 
 # ------------------------------------------------------------------
 # Command
@@ -92,7 +92,7 @@ class TestSchedule:
 
 class TestFrameGateCommand:
     def test_apply_command_sets_directive(self):
-        from agents.hapax_voice.frame_gate import FrameGate
+        from agents.hapax_daimonion.frame_gate import FrameGate
 
         gate = FrameGate()
         cmd = Command(action="pause", trigger_source="perception_tick")
@@ -100,7 +100,7 @@ class TestFrameGateCommand:
         assert gate.directive == "pause"
 
     def test_apply_command_stores_provenance(self):
-        from agents.hapax_voice.frame_gate import FrameGate
+        from agents.hapax_daimonion.frame_gate import FrameGate
 
         gate = FrameGate()
         cmd = Command(
@@ -115,13 +115,13 @@ class TestFrameGateCommand:
         assert gate.last_command.min_watermark == 41.5
 
     def test_last_command_initially_none(self):
-        from agents.hapax_voice.frame_gate import FrameGate
+        from agents.hapax_daimonion.frame_gate import FrameGate
 
         gate = FrameGate()
         assert gate.last_command is None
 
     def test_set_directive_still_works(self):
-        from agents.hapax_voice.frame_gate import FrameGate
+        from agents.hapax_daimonion.frame_gate import FrameGate
 
         gate = FrameGate()
         gate.set_directive("pause")
@@ -137,7 +137,7 @@ class TestFrameGateCommand:
 class TestCommandErrorPaths:
     def test_empty_action_does_not_crash_frame_gate(self):
         """Commands with empty action are structurally valid frozen data."""
-        from agents.hapax_voice.frame_gate import FrameGate
+        from agents.hapax_daimonion.frame_gate import FrameGate
 
         gate = FrameGate()
         cmd = Command(action="")
@@ -177,7 +177,7 @@ class TestPerceptionMinWatermark:
     def test_min_watermark_property(self):
         from unittest.mock import MagicMock
 
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.0
@@ -191,7 +191,7 @@ class TestPerceptionMinWatermark:
     def test_min_watermark_reflects_stalest(self):
         from unittest.mock import MagicMock
 
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         presence = MagicMock()
         presence.latest_vad_confidence = 0.0

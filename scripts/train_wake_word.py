@@ -44,7 +44,7 @@ Notes:
       automatically by openwakeword or can be fetched manually.
     - Minimum recommended: 5000+ positive samples, 1000+ hours negative features.
     - The official negative feature dataset (~2000 hours) is downloaded from HuggingFace.
-    - Output model: ~/.local/share/hapax-voice/hapax_wake_word.onnx
+    - Output model: ~/.local/share/hapax-daimonion/hapax_wake_word.onnx
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ WORK_DIR = PROJECT_ROOT / "data" / "wake-word-training"
 POSITIVE_DIR = WORK_DIR / "positive"
 NEGATIVE_DIR = WORK_DIR / "negative"
 FEATURES_DIR = WORK_DIR / "features"
-MODEL_OUTPUT_DIR = Path.home() / ".local" / "share" / "hapax-voice"
+MODEL_OUTPUT_DIR = Path.home() / ".local" / "share" / "hapax-daimonion"
 MODEL_OUTPUT_PATH = MODEL_OUTPUT_DIR / "hapax_wake_word.onnx"
 VOICE_SAMPLE_PATH = PROJECT_ROOT / "profiles" / "voice-sample.wav"
 
@@ -388,7 +388,7 @@ def generate_with_piper(
         log.warning("Piper TTS not installed, skipping")
         return False
 
-    model_path = Path.home() / ".local" / "share" / "hapax-voice" / "piper-voice.onnx"
+    model_path = Path.home() / ".local" / "share" / "hapax-daimonion" / "piper-voice.onnx"
     if not model_path.exists():
         # Search common Piper model locations
         search_dirs = [
@@ -1455,7 +1455,7 @@ def run_full_pipeline(args: argparse.Namespace) -> None:
         "Test with:\n"
         "  cd ~/projects/ai-agents\n"
         '  uv run python -c "\n'
-        "    from agents.hapax_voice.wake_word import WakeWordDetector\n"
+        "    from agents.hapax_daimonion.wake_word import WakeWordDetector\n"
         "    d = WakeWordDetector(threshold=0.5)\n"
         "    d.load()\n"
         "    print('Model loaded successfully!' if d._model else 'Load failed')\n"

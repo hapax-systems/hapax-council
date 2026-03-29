@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "hapax_porcupine.ppn"
+DEFAULT_MODEL_PATH = Path.home() / ".local" / "share" / "hapax-daimonion" / "hapax_porcupine.ppn"
 DETECTION_COOLDOWN_S = 1.5
 
 

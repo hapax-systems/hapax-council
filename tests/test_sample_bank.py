@@ -8,7 +8,7 @@ import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from agents.hapax_voice.sample_bank import SampleBank
+from agents.hapax_daimonion.sample_bank import SampleBank
 
 
 def _write_wav(path: Path, rate: int = 44100, channels: int = 1, n_frames: int = 100) -> None:

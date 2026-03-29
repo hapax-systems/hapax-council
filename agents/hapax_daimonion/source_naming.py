@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.primitives import Behavior
 
 SEPARATOR = ":"
 

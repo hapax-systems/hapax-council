@@ -1,6 +1,6 @@
 """Hardware integration tests for AudioInputStream.
 
-Run with: pytest tests/hapax_voice/test_audio_hardware.py -v -m hardware
+Run with: pytest tests/hapax_daimonion/test_audio_hardware.py -v -m hardware
 Requires: PipeWire running, echo_cancel_capture source available.
 """
 
@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from agents.hapax_voice.audio_input import AudioInputStream
+from agents.hapax_daimonion.audio_input import AudioInputStream
 
 
 @pytest.mark.hardware

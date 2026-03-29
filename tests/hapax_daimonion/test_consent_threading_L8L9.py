@@ -12,13 +12,13 @@ import unittest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from agents.hapax_voice.actuation_event import ActuationEvent
-from agents.hapax_voice.commands import Command
-from agents.hapax_voice.executor import ExecutorRegistry
-from agents.hapax_voice.feedback import wire_feedback_behaviors
-from agents.hapax_voice.frame_gate import FrameGate
-from agents.hapax_voice.governance import VetoResult
-from agents.hapax_voice.primitives import Event
+from agents.hapax_daimonion.actuation_event import ActuationEvent
+from agents.hapax_daimonion.commands import Command
+from agents.hapax_daimonion.executor import ExecutorRegistry
+from agents.hapax_daimonion.feedback import wire_feedback_behaviors
+from agents.hapax_daimonion.frame_gate import FrameGate
+from agents.hapax_daimonion.governance import VetoResult
+from agents.hapax_daimonion.primitives import Event
 from shared.governance.consent_label import ConsentLabel
 
 # --- Shared test data ---

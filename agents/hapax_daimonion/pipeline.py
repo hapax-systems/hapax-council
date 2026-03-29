@@ -1,4 +1,4 @@
-"""Pipecat pipeline construction for the Hapax Voice daemon.
+"""Pipecat pipeline construction for the Hapax Daimonion daemon.
 
 Builds a local voice pipeline:
   transport.input() -> STT -> user_aggregator -> LLM -> tts -> transport.output()
@@ -13,7 +13,7 @@ import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.frame_gate import FrameGate
+    from agents.hapax_daimonion.frame_gate import FrameGate
 
 from openai import NOT_GIVEN
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -28,9 +28,9 @@ from pipecat.transports.local.audio import (
     LocalAudioTransportParams,
 )
 
-from agents.hapax_voice.persona import system_prompt
-from agents.hapax_voice.pipecat_tts import VoxtralTTSService
-from agents.hapax_voice.tts import VOXTRAL_SAMPLE_RATE
+from agents.hapax_daimonion.persona import system_prompt
+from agents.hapax_daimonion.pipecat_tts import VoxtralTTSService
+from agents.hapax_daimonion.tts import VOXTRAL_SAMPLE_RATE
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ def _build_llm(model: str, prompt: str) -> OpenAILLMService:
     Returns:
         Configured OpenAILLMService.
     """
-    from agents.hapax_voice.config import LITELLM_BASE
+    from agents.hapax_daimonion.config import LITELLM_BASE
 
     base_url = LITELLM_BASE
     api_key = os.environ.get("LITELLM_API_KEY", "not-set")
@@ -159,7 +159,7 @@ def build_pipeline_task(
         llm_model: LLM model alias for LiteLLM routing.
         voxtral_voice: Voxtral voice ID for TTS.
         guest_mode: Whether the session is in guest mode (limited access).
-        config: Optional VoiceConfig for tool registration.
+        config: Optional DaimonionConfig for tool registration.
         webcam_capturer: Optional WebcamCapturer for analyze_scene tool.
         screen_capturer: Optional ScreenCapturer for analyze_scene tool.
 
@@ -175,7 +175,7 @@ def build_pipeline_task(
     tts = _build_tts(voxtral_voice)
 
     # Register tool handlers and get schemas for the LLM context
-    from agents.hapax_voice.tools import get_tool_schemas, register_tool_handlers
+    from agents.hapax_daimonion.tools import get_tool_schemas, register_tool_handlers
 
     tools = get_tool_schemas(guest_mode=guest_mode)
     if config is not None:

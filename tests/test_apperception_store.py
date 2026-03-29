@@ -176,7 +176,7 @@ class TestApperceptionAnchors:
 
     def test_pending_actions_become_anchors(self, tmp_path):
         """Pending actions from cascade become high-weight concern anchors."""
-        from agents.hapax_voice.salience.anchor_builder import _read_apperception_anchors
+        from agents.hapax_daimonion.salience.anchor_builder import _read_apperception_anchors
 
         data = {
             "self_model": {"dimensions": {}, "recent_observations": [], "coherence": 0.7},
@@ -185,7 +185,7 @@ class TestApperceptionAnchors:
         }
 
         with patch(
-            "agents.hapax_voice.salience.anchor_builder._APPERCEPTION_PATH",
+            "agents.hapax_daimonion.salience.anchor_builder._APPERCEPTION_PATH",
             tmp_path / "self-band.json",
         ):
             (tmp_path / "self-band.json").write_text(json.dumps(data))
@@ -198,7 +198,7 @@ class TestApperceptionAnchors:
 
     def test_low_confidence_dimensions_become_anchors(self, tmp_path):
         """Dimensions with confidence < 0.3 become concern anchors."""
-        from agents.hapax_voice.salience.anchor_builder import _read_apperception_anchors
+        from agents.hapax_daimonion.salience.anchor_builder import _read_apperception_anchors
 
         data = {
             "self_model": {
@@ -220,7 +220,7 @@ class TestApperceptionAnchors:
         }
 
         with patch(
-            "agents.hapax_voice.salience.anchor_builder._APPERCEPTION_PATH",
+            "agents.hapax_daimonion.salience.anchor_builder._APPERCEPTION_PATH",
             tmp_path / "self-band.json",
         ):
             (tmp_path / "self-band.json").write_text(json.dumps(data))
@@ -232,7 +232,7 @@ class TestApperceptionAnchors:
 
     def test_stale_data_returns_empty(self, tmp_path):
         """Stale apperception data (> 30s) returns no anchors."""
-        from agents.hapax_voice.salience.anchor_builder import _read_apperception_anchors
+        from agents.hapax_daimonion.salience.anchor_builder import _read_apperception_anchors
 
         data = {
             "self_model": {"dimensions": {}},
@@ -241,7 +241,7 @@ class TestApperceptionAnchors:
         }
 
         with patch(
-            "agents.hapax_voice.salience.anchor_builder._APPERCEPTION_PATH",
+            "agents.hapax_daimonion.salience.anchor_builder._APPERCEPTION_PATH",
             tmp_path / "self-band.json",
         ):
             (tmp_path / "self-band.json").write_text(json.dumps(data))
@@ -251,10 +251,10 @@ class TestApperceptionAnchors:
 
     def test_missing_file_returns_empty(self):
         """Missing self-band file returns empty (graceful degradation)."""
-        from agents.hapax_voice.salience.anchor_builder import _read_apperception_anchors
+        from agents.hapax_daimonion.salience.anchor_builder import _read_apperception_anchors
 
         with patch(
-            "agents.hapax_voice.salience.anchor_builder._APPERCEPTION_PATH",
+            "agents.hapax_daimonion.salience.anchor_builder._APPERCEPTION_PATH",
             Path("/nonexistent/path/self-band.json"),
         ):
             anchors = _read_apperception_anchors()
@@ -263,7 +263,7 @@ class TestApperceptionAnchors:
 
     def test_build_anchors_includes_self(self, tmp_path):
         """build_anchors() includes self-band anchors when available."""
-        from agents.hapax_voice.salience.anchor_builder import build_anchors
+        from agents.hapax_daimonion.salience.anchor_builder import build_anchors
 
         data = {
             "self_model": {
@@ -277,11 +277,11 @@ class TestApperceptionAnchors:
 
         with (
             patch(
-                "agents.hapax_voice.salience.anchor_builder._APPERCEPTION_PATH",
+                "agents.hapax_daimonion.salience.anchor_builder._APPERCEPTION_PATH",
                 tmp_path / "self-band.json",
             ),
             patch(
-                "agents.hapax_voice.salience.anchor_builder._TEMPORAL_PATH",
+                "agents.hapax_daimonion.salience.anchor_builder._TEMPORAL_PATH",
                 Path("/nonexistent/temporal"),
             ),
         ):

@@ -14,9 +14,9 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
-from agents.hapax_voice.cadence import CadenceGroup
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.source_naming import (
+from agents.hapax_daimonion.cadence import CadenceGroup
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.source_naming import (
     behaviors_for_base,
     qualify,
     validate_source_id,

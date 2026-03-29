@@ -16,9 +16,9 @@ from pathlib import Path
 
 import numpy as np
 
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.vram import VRAMLock
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.vram import VRAMLock
 
 log = logging.getLogger(__name__)
 

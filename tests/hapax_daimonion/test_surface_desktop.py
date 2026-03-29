@@ -4,7 +4,7 @@ Tests that desktop tool handlers dispatch to Hyprland correctly
 and that the open_app confirmation flow works end-to-end.
 
 Key implementation details (verified against source):
-- Module-level _ipc singleton: patch agents.hapax_voice.desktop_tools._ipc
+- Module-level _ipc singleton: patch agents.hapax_daimonion.desktop_tools._ipc
 - result_callback receives a dict, not a string
 - focus_window uses "target" arg (class name), not "window_title"
 - switch_workspace uses "workspace" arg (int), not "workspace_id"
@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import agents.hapax_voice.desktop_tools as desktop_mod
-from agents.hapax_voice.desktop_tools import (
+import agents.hapax_daimonion.desktop_tools as desktop_mod
+from agents.hapax_daimonion.desktop_tools import (
     DESKTOP_TOOL_SCHEMAS,
     handle_confirm_open_app,
     handle_focus_window,

@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.hapax_voice.hyprland_listener import (
+from agents.hapax_daimonion.hyprland_listener import (
     FocusEvent,
     HyprlandEventListener,
 )

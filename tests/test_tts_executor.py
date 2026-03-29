@@ -6,9 +6,9 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.executor import Executor, ScheduleQueue
-from agents.hapax_voice.tts_executor import TTSExecutor
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.executor import Executor, ScheduleQueue
+from agents.hapax_daimonion.tts_executor import TTSExecutor
 
 
 class TestTTSExecutor(unittest.TestCase):
@@ -35,7 +35,7 @@ class TestTTSExecutor(unittest.TestCase):
         mock_stream.stop_stream.assert_called_once()
         mock_stream.close.assert_called_once()
 
-    @patch("agents.hapax_voice.tts_executor.threading.Thread")
+    @patch("agents.hapax_daimonion.tts_executor.threading.Thread")
     def test_execute_spawns_daemon_thread(self, mock_thread_cls):
         mock_thread = MagicMock()
         mock_thread_cls.return_value = mock_thread

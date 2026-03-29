@@ -1,4 +1,4 @@
-"""Hardware integration tests for hapax_voice.
+"""Hardware integration tests for hapax_daimonion.
 
 These tests exercise real hardware and services. They are marked with
 @pytest.mark.hardware and skip automatically when hardware isn't available
@@ -14,7 +14,7 @@ class TestScreenCaptureHardware:
 
     def test_screen_capture_produces_valid_base64(self):
         """Capture actual screen and verify base64 is decodable."""
-        from agents.hapax_voice.screen_capturer import ScreenCapturer
+        from agents.hapax_daimonion.screen_capturer import ScreenCapturer
 
         capturer = ScreenCapturer(cooldown_s=0)
         result = capturer.capture()
@@ -28,7 +28,7 @@ class TestScreenCaptureHardware:
 
     def test_screen_capture_respects_cooldown(self):
         """Two rapid captures — second should be None due to cooldown."""
-        from agents.hapax_voice.screen_capturer import ScreenCapturer
+        from agents.hapax_daimonion.screen_capturer import ScreenCapturer
 
         capturer = ScreenCapturer(cooldown_s=60)
         first = capturer.capture()
@@ -45,8 +45,8 @@ class TestWebcamCaptureHardware:
         """Capture frame from first available camera."""
         import glob
 
-        from agents.hapax_voice.screen_models import CameraConfig
-        from agents.hapax_voice.webcam_capturer import WebcamCapturer
+        from agents.hapax_daimonion.screen_models import CameraConfig
+        from agents.hapax_daimonion.webcam_capturer import WebcamCapturer
 
         # Find first video device
         devices = sorted(glob.glob("/dev/video*"))
@@ -76,7 +76,7 @@ class TestFaceDetectorHardware:
         """Run face detector on a blank image — should detect 0 faces."""
         import numpy as np
 
-        from agents.hapax_voice.face_detector import FaceDetector
+        from agents.hapax_daimonion.face_detector import FaceDetector
 
         detector = FaceDetector(min_confidence=0.5)
         blank = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -86,7 +86,7 @@ class TestFaceDetectorHardware:
 
     def test_face_detector_model_download_or_cached(self):
         """Verify model can be downloaded or is already cached."""
-        from agents.hapax_voice.face_detector import FaceDetector
+        from agents.hapax_daimonion.face_detector import FaceDetector
 
         detector = FaceDetector(min_confidence=0.5)
         # _ensure_model should either find cached or download
@@ -98,9 +98,9 @@ class TestFaceDetectorHardware:
         """Capture from webcam and run face detection (may or may not find faces)."""
         import glob
 
-        from agents.hapax_voice.face_detector import FaceDetector
-        from agents.hapax_voice.screen_models import CameraConfig
-        from agents.hapax_voice.webcam_capturer import WebcamCapturer
+        from agents.hapax_daimonion.face_detector import FaceDetector
+        from agents.hapax_daimonion.screen_models import CameraConfig
+        from agents.hapax_daimonion.webcam_capturer import WebcamCapturer
 
         devices = sorted(glob.glob("/dev/video*"))
         if not devices:

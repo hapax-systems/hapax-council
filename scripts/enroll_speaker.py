@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enroll operator voice for the Hapax Voice speaker identification system.
+"""Enroll operator voice for the Hapax Daimonion speaker identification system.
 
 Records audio samples via PipeWire (parecord), extracts speaker embeddings
 using pyannote.audio, and saves a reference embedding for runtime speaker ID.
@@ -23,9 +23,9 @@ import numpy as np
 # Ensure the agents package is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agents.hapax_voice.speaker_id import SpeakerIdentifier
+from agents.hapax_daimonion.speaker_id import SpeakerIdentifier
 
-DEFAULT_OUTPUT = Path.home() / ".local" / "share" / "hapax-voice" / "speaker_embedding.npy"
+DEFAULT_OUTPUT = Path.home() / ".local" / "share" / "hapax-daimonion" / "speaker_embedding.npy"
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH = 2  # 16-bit
@@ -110,7 +110,7 @@ def prompt_yn(question: str) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Enroll operator voice for Hapax Voice speaker identification."
+        description="Enroll operator voice for Hapax Daimonion speaker identification."
     )
     parser.add_argument(
         "--samples",
@@ -133,7 +133,7 @@ def main() -> None:
     args = parser.parse_args()
 
     print("=" * 60)
-    print("  Hapax Voice — Speaker Enrollment")
+    print("  Hapax Daimonion — Speaker Enrollment")
     print("=" * 60)
     print()
     print(f"  Samples to record : {args.samples}")
@@ -227,7 +227,7 @@ def main() -> None:
 
     # Report inter-sample consistency
     if len(embeddings) > 1:
-        from agents.hapax_voice.speaker_id import _cosine_similarity
+        from agents.hapax_daimonion.speaker_id import _cosine_similarity
 
         sims = []
         for i in range(len(embeddings)):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from agents.fortress.config import FortressConfig
 from agents.fortress.schema import FastFortressState
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.governance import (
     Candidate,
     FallbackChain,
     Selected,

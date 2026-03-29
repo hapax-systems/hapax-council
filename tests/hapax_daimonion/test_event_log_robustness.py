@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.event_log import EventLog
+from agents.hapax_daimonion.event_log import EventLog
 
 
 def test_emit_survives_write_permission_error(tmp_path):
@@ -57,7 +57,7 @@ def test_date_rollover(tmp_path):
 
     elog = EventLog(base_dir=tmp_path)
 
-    with patch("agents.hapax_voice.event_log.datetime") as mock_dt:
+    with patch("agents.hapax_daimonion.event_log.datetime") as mock_dt:
         mock_dt.date.today.return_value = day1
         mock_dt.date.fromisoformat = datetime.date.fromisoformat
         mock_dt.timedelta = datetime.timedelta

@@ -5,8 +5,8 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.primitives import Behavior, Stamped
-from tests.hapax_voice.hypothesis_strategies import st_stamped, watermarks
+from agents.hapax_daimonion.primitives import Behavior, Stamped
+from tests.hapax_daimonion.hypothesis_strategies import st_stamped, watermarks
 
 
 class TestStampedProperties:

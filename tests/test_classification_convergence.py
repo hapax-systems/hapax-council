@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 
-from agents.hapax_voice.scene_inventory import SceneInventory
+from agents.hapax_daimonion.scene_inventory import SceneInventory
 from agents.visual_layer_aggregator import _map_scene_inventory
 from agents.visual_layer_state import ClassificationDetection
 

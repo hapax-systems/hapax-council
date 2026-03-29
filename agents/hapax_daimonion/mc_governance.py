@@ -10,9 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from agents.hapax_voice.combinator import with_latest_from
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.combinator import with_latest_from
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.governance import (
     Candidate,
     FallbackChain,
     FreshnessGuard,
@@ -21,8 +21,8 @@ from agents.hapax_voice.governance import (
     Veto,
     VetoChain,
 )
-from agents.hapax_voice.primitives import Behavior, Event
-from agents.hapax_voice.timeline import TimelineMapping, TransportState
+from agents.hapax_daimonion.primitives import Behavior, Event
+from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
 
 class MCAction(Enum):
@@ -74,7 +74,7 @@ def energy_sufficient(ctx: FusedContext, threshold: float = 0.3) -> bool:
         suppression = ctx.get_sample("conversation_suppression").value
     except KeyError:
         suppression = 0.0
-    from agents.hapax_voice.suppression import effective_threshold
+    from agents.hapax_daimonion.suppression import effective_threshold
 
     eff = effective_threshold(threshold, suppression)
     return ctx.get_sample("audio_energy_rms").value >= eff

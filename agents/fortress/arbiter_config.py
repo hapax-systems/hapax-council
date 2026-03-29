@@ -1,12 +1,12 @@
 """Fortress resource arbitration — priority configuration.
 
 Configures ResourceArbiter for shared fortress resources (dwarf labor, materials).
-Reuses ResourceArbiter/ResourceClaim from agents.hapax_voice.arbiter.
+Reuses ResourceArbiter/ResourceClaim from agents.hapax_daimonion.arbiter.
 """
 
 from __future__ import annotations
 
-from agents.hapax_voice.arbiter import ResourceArbiter
+from agents.hapax_daimonion.arbiter import ResourceArbiter
 
 
 def create_fortress_arbiter() -> ResourceArbiter:

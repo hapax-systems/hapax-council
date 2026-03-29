@@ -1,4 +1,4 @@
-from agents.hapax_voice.screen_models import (
+from agents.hapax_daimonion.screen_models import (
     CameraConfig,
     GearObservation,
     Issue,

@@ -12,7 +12,7 @@ CAMERAS = {
     "operator": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index0",
     "hardware": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_2657DFCF-video-index0",
 }
-DEFAULT_PATH = Path.home() / ".local" / "share" / "hapax-voice" / "timelapse"
+DEFAULT_PATH = Path.home() / ".local" / "share" / "hapax-daimonion" / "timelapse"
 
 
 def capture_frame(device: str, role: str, output_dir: Path) -> None:

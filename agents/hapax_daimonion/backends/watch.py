@@ -9,8 +9,8 @@ from __future__ import annotations
 import logging
 import time
 
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class WatchBackend:
     """
 
     def __init__(self, watch_dir=None, cache_ttl: float = 5.0) -> None:
-        from agents.hapax_voice.watch_signals import WatchSignalReader
+        from agents.hapax_daimonion.watch_signals import WatchSignalReader
 
         self._reader = WatchSignalReader(watch_dir=watch_dir, cache_ttl=cache_ttl)
 

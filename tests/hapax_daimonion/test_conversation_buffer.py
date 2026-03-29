@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import unittest
 
-from agents.hapax_voice.conversation_buffer import (
+from agents.hapax_daimonion.conversation_buffer import (
     SPEECH_END_DEFAULT,
     SPEECH_START_CONSECUTIVE,
     ConversationBuffer,
@@ -139,7 +139,7 @@ class TestResidentSTTInterface(unittest.TestCase):
     """Verify ResidentSTT interface (mock model)."""
 
     def test_not_loaded_by_default(self):
-        from agents.hapax_voice.resident_stt import ResidentSTT
+        from agents.hapax_daimonion.resident_stt import ResidentSTT
 
         stt = ResidentSTT(model="tiny")
         assert not stt.is_loaded
@@ -147,7 +147,7 @@ class TestResidentSTTInterface(unittest.TestCase):
     def test_transcribe_returns_empty_when_not_loaded(self):
         import asyncio
 
-        from agents.hapax_voice.resident_stt import ResidentSTT
+        from agents.hapax_daimonion.resident_stt import ResidentSTT
 
         stt = ResidentSTT(model="tiny")
         result = asyncio.get_event_loop().run_until_complete(stt.transcribe(b"\x00" * 1000))

@@ -1,4 +1,4 @@
-"""Shared fixtures and markers for hapax_voice tests."""
+"""Shared fixtures and markers for hapax_daimonion tests."""
 
 import subprocess
 import sys
@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 # Stub hardware/ML C-extension modules that aren't in the test venv.
-# These must be injected before any hapax_voice module is imported,
-# so that `from agents.hapax_voice.__main__ import VoiceDaemon` works
+# These must be injected before any hapax_daimonion module is imported,
+# so that `from agents.hapax_daimonion.__main__ import VoiceDaemon` works
 # without pyaudio, pipecat, torch, or openwakeword installed.
 
 
@@ -59,7 +59,7 @@ def _stub_hardware_modules():
     modules for frames and processors use real stub classes so FrameGate
     can inherit from FrameProcessor and be tested normally.
     """
-    # All pipecat submodule paths used in agents/hapax_voice/
+    # All pipecat submodule paths used in agents/hapax_daimonion/
     _pipecat_leaves = [
         "pipecat.adapters.schemas.function_schema",
         "pipecat.adapters.schemas.tools_schema",

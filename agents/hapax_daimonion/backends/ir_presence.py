@@ -17,9 +17,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from agents.hapax_voice.ir_signals import read_all_ir_reports
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.ir_signals import read_all_ir_reports
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
 
 log = logging.getLogger(__name__)
 

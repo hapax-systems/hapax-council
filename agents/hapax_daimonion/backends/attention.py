@@ -17,12 +17,12 @@ import logging
 import time
 from pathlib import Path
 
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
 
 log = logging.getLogger(__name__)
 
-_ATTENTION_STATE_PATH = Path.home() / ".cache" / "hapax-voice" / "attention-state.json"
+_ATTENTION_STATE_PATH = Path.home() / ".cache" / "hapax-daimonion" / "attention-state.json"
 
 
 class AttentionBackend:

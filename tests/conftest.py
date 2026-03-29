@@ -25,8 +25,8 @@ _AUDIO_DEP_FILES = {
     "test_voice_checks.py",
 }
 
-# Prefixes for hapax_voice test files at top level
-_HAPAX_VOICE_PREFIX = "test_hapax_voice_"
+# Prefixes for hapax_daimonion test files at top level
+_HAPAX_VOICE_PREFIX = "test_hapax_daimonion_"
 _OTHER_VOICE_PREFIXES = ("test_governor", "test_dimensions")
 
 # Test files that depend on local-only profile files (gitignored)
@@ -75,7 +75,7 @@ collect_ignore_glob: list[str] = []
 if not _has_audio:
     collect_ignore_glob.extend(
         [
-            "hapax_voice/*",
+            "hapax_daimonion/*",
             _HAPAX_VOICE_PREFIX + "*",
         ]
     )

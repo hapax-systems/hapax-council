@@ -9,7 +9,7 @@ Features:
 - Per-camera watchdog timeout (freeze last frame on disconnect)
 - Bus error handling: camera failures are isolated, other cameras continue
 - Cairo overlay: role labels, consent badges, flow state, audio meter
-- Perception state bridge: reads ~/.cache/hapax-voice/perception-state.json
+- Perception state bridge: reads ~/.cache/hapax-daimonion/perception-state.json
 - Status file written atomically to ~/.cache/hapax-compositor/status.json
 - Per-camera recording via nvh264enc + splitmuxsink
 - HLS output for browser preview via hlssink2
@@ -296,7 +296,7 @@ def compute_tile_layout(
 # Overlay state (thread-safe cache, read from perception-state.json)
 # ---------------------------------------------------------------------------
 
-PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 VISUAL_LAYER_STATE_PATH = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
 
 

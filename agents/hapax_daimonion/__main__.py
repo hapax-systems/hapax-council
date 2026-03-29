@@ -1,4 +1,4 @@
-"""Entry point for hapax-voice daemon."""
+"""Entry point for hapax-daimonion daemon."""
 
 from __future__ import annotations
 
@@ -12,42 +12,42 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agents.hapax_voice._perception_state_writer import write_perception_state
-from agents.hapax_voice.activity_mode import classify_activity_mode
-from agents.hapax_voice.audio_input import AudioInputStream
-from agents.hapax_voice.chime_player import ChimePlayer
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.config import load_config
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.event_log import EventLog
-from agents.hapax_voice.executor import ExecutorRegistry, ScheduleQueue
-from agents.hapax_voice.frame_gate import FrameGate
-from agents.hapax_voice.governance import VetoResult
-from agents.hapax_voice.governor import PipelineGovernor
-from agents.hapax_voice.hotkey import HotkeyServer
-from agents.hapax_voice.notification_queue import NotificationQueue
-from agents.hapax_voice.ntfy_listener import subscribe_ntfy
-from agents.hapax_voice.perception import EnvironmentState, PerceptionEngine
-from agents.hapax_voice.persona import format_notification, session_end_message
-from agents.hapax_voice.presence import PresenceDetector
-from agents.hapax_voice.primitives import Event
-from agents.hapax_voice.screen_models import CameraConfig
+from agents.hapax_daimonion._perception_state_writer import write_perception_state
+from agents.hapax_daimonion.activity_mode import classify_activity_mode
+from agents.hapax_daimonion.audio_input import AudioInputStream
+from agents.hapax_daimonion.chime_player import ChimePlayer
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.config import load_config
+from agents.hapax_daimonion.context_gate import ContextGate
+from agents.hapax_daimonion.event_log import EventLog
+from agents.hapax_daimonion.executor import ExecutorRegistry, ScheduleQueue
+from agents.hapax_daimonion.frame_gate import FrameGate
+from agents.hapax_daimonion.governance import VetoResult
+from agents.hapax_daimonion.governor import PipelineGovernor
+from agents.hapax_daimonion.hotkey import HotkeyServer
+from agents.hapax_daimonion.notification_queue import NotificationQueue
+from agents.hapax_daimonion.ntfy_listener import subscribe_ntfy
+from agents.hapax_daimonion.perception import EnvironmentState, PerceptionEngine
+from agents.hapax_daimonion.persona import format_notification, session_end_message
+from agents.hapax_daimonion.presence import PresenceDetector
+from agents.hapax_daimonion.primitives import Event
+from agents.hapax_daimonion.screen_models import CameraConfig
 
 if TYPE_CHECKING:
-    from agents.hapax_voice.hyprland_listener import FocusEvent
-from agents.hapax_voice.session import SessionManager
-from agents.hapax_voice.tts import TTSManager
+    from agents.hapax_daimonion.hyprland_listener import FocusEvent
+from agents.hapax_daimonion.session import SessionManager
+from agents.hapax_daimonion.tts import TTSManager
 
 try:
     from shared import langfuse_config  # noqa: F401
 except ImportError:
     pass
-from agents.hapax_voice.wake_word import WakeWordDetector
-from agents.hapax_voice.wake_word_porcupine import PorcupineWakeWord
-from agents.hapax_voice.wake_word_whisper import WhisperWakeWord
-from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
+from agents.hapax_daimonion.wake_word import WakeWordDetector
+from agents.hapax_daimonion.wake_word_porcupine import PorcupineWakeWord
+from agents.hapax_daimonion.wake_word_whisper import WhisperWakeWord
+from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
-log = logging.getLogger("hapax_voice")
+log = logging.getLogger("hapax_daimonion")
 
 _DEFAULT_VETO_RESULT = VetoResult(allowed=True)
 
@@ -70,7 +70,7 @@ def _screen_flash(kind: str = "activation") -> None:
         subprocess.Popen(
             [
                 "notify-send",
-                "--app-name=Hapax Voice",
+                "--app-name=Hapax Daimonion",
                 f"--icon={icons.get(kind, 'dialog-information')}",
                 "--expire-time=1500",
                 "--transient",
@@ -94,7 +94,7 @@ _NTFY_TOPICS = ["hapax"]
 class VoiceDaemon:
     """Main daemon coordinating all voice subsystems."""
 
-    def __init__(self, cfg: VoiceConfig | None = None) -> None:
+    def __init__(self, cfg: DaimonionConfig | None = None) -> None:
 
         self.cfg = cfg if cfg is not None else load_config()
         self.session = SessionManager(silence_timeout_s=self.cfg.silence_timeout_s)
@@ -188,7 +188,7 @@ class VoiceDaemon:
         )
         # Voice daemon principal — bound, delegated by operator
         self._daemon_principal = self._operator_principal.delegate(
-            child_id="hapax-voice",
+            child_id="hapax-daimonion",
             scope=frozenset(
                 {
                     "audio",
@@ -256,7 +256,7 @@ class VoiceDaemon:
         self._wake_word_signal = asyncio.Event()
 
         # Observability
-        events_dir = Path.home() / ".local" / "share" / "hapax-voice"
+        events_dir = Path.home() / ".local" / "share" / "hapax-daimonion"
         self.event_log = EventLog(
             base_dir=events_dir,
             retention_days=self.cfg.observability_events_retention_days,
@@ -273,7 +273,7 @@ class VoiceDaemon:
         # Wire consent curtailment into event log (deferred — consent_tracker not yet created)
 
         # Consent tracking (interpersonal_transparency axiom)
-        from agents.hapax_voice.consent_state import ConsentStateTracker
+        from agents.hapax_daimonion.consent_state import ConsentStateTracker
 
         self.consent_tracker = ConsentStateTracker(
             debounce_s=self.cfg.consent_debounce_s,
@@ -286,8 +286,8 @@ class VoiceDaemon:
         self._perception_tier = self.cfg.perception_tier
 
         # Lightweight voice pipeline (replaces Pipecat)
-        from agents.hapax_voice.conversation_buffer import ConversationBuffer
-        from agents.hapax_voice.resident_stt import ResidentSTT
+        from agents.hapax_daimonion.conversation_buffer import ConversationBuffer
+        from agents.hapax_daimonion.resident_stt import ResidentSTT
 
         self._conversation_buffer = ConversationBuffer()
         self._resident_stt = ResidentSTT(
@@ -303,19 +303,19 @@ class VoiceDaemon:
         self._echo_canceller = None
         if self.cfg.aec_enabled:
             try:
-                from agents.hapax_voice.echo_canceller import EchoCanceller
+                from agents.hapax_daimonion.echo_canceller import EchoCanceller
 
                 self._echo_canceller = EchoCanceller(frame_size=480, tail_ms=self.cfg.aec_tail_ms)
             except Exception:
                 log.warning("Echo canceller init failed, continuing without AEC", exc_info=True)
 
         # Audio preprocessing (highpass + noise gate + normalization)
-        from agents.hapax_voice.audio_preprocess import AudioPreprocessor
+        from agents.hapax_daimonion.audio_preprocess import AudioPreprocessor
 
         self._audio_preprocessor = AudioPreprocessor()
 
         # Multi-mic noise reference (pw-record capture from all matching sources)
-        from agents.hapax_voice.multi_mic import NoiseReference, discover_pipewire_sources
+        from agents.hapax_daimonion.multi_mic import NoiseReference, discover_pipewire_sources
 
         _room_sources = discover_pipewire_sources(self.cfg.noise_ref_room_patterns)
         _structure_sources = discover_pipewire_sources(self.cfg.noise_ref_structure_patterns)
@@ -335,9 +335,9 @@ class VoiceDaemon:
         # Speaker identification (operator vs guest voice gating)
         self._speaker_identifier = None
         try:
-            from agents.hapax_voice.speaker_id import SpeakerIdentifier
+            from agents.hapax_daimonion.speaker_id import SpeakerIdentifier
 
-            enrollment_path = Path.home() / ".local/share/hapax-voice/speaker_embedding.npy"
+            enrollment_path = Path.home() / ".local/share/hapax-daimonion/speaker_embedding.npy"
             if enrollment_path.exists():
                 self._speaker_identifier = SpeakerIdentifier(enrollment_path=enrollment_path)
                 # Pre-load pyannote model at startup (takes ~8s, avoids first-utterance delay)
@@ -354,7 +354,7 @@ class VoiceDaemon:
             log.warning("Speaker identifier init failed — speaker gating disabled", exc_info=True)
 
         # Bridge phrase engine (pre-synthesized contextual gap fillers)
-        from agents.hapax_voice.bridge_engine import BridgeEngine
+        from agents.hapax_daimonion.bridge_engine import BridgeEngine
 
         self._bridge_engine = BridgeEngine()
 
@@ -366,9 +366,9 @@ class VoiceDaemon:
         self._context_distillation: str = ""
         if self.cfg.salience_enabled:
             try:
-                from agents.hapax_voice.salience.concern_graph import ConcernGraph
-                from agents.hapax_voice.salience.embedder import Embedder
-                from agents.hapax_voice.salience_router import SalienceRouter
+                from agents.hapax_daimonion.salience.concern_graph import ConcernGraph
+                from agents.hapax_daimonion.salience.embedder import Embedder
+                from agents.hapax_daimonion.salience_router import SalienceRouter
 
                 self._salience_embedder = Embedder(model_name=self.cfg.salience_model)
                 if self._salience_embedder.available:
@@ -382,7 +382,7 @@ class VoiceDaemon:
                         weights=self.cfg.salience_weights,
                     )
 
-                    from agents.hapax_voice.salience.diagnostics import SalienceDiagnostics
+                    from agents.hapax_daimonion.salience.diagnostics import SalienceDiagnostics
 
                     self._salience_diagnostics = SalienceDiagnostics(
                         router=self._salience_router,
@@ -404,8 +404,8 @@ class VoiceDaemon:
         self._shared_pa = None  # lazy init in run() if needed
 
         # Resource arbiter for contention resolution between governance chains
-        from agents.hapax_voice.arbiter import ResourceArbiter
-        from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES
+        from agents.hapax_daimonion.arbiter import ResourceArbiter
+        from agents.hapax_daimonion.resource_config import DEFAULT_PRIORITIES
 
         self.arbiter = ResourceArbiter(priorities=DEFAULT_PRIORITIES)
 
@@ -432,7 +432,7 @@ class VoiceDaemon:
                 log.exception("OBS actuation setup failed")
 
         # Feedback behaviors: actuation events → perception behaviors (closed loop)
-        from agents.hapax_voice.feedback import wire_feedback_behaviors
+        from agents.hapax_daimonion.feedback import wire_feedback_behaviors
 
         feedback_behaviors = wire_feedback_behaviors(
             actuation_event=self.executor_registry.actuation_event,
@@ -443,9 +443,9 @@ class VoiceDaemon:
 
     def _setup_mc_actuation(self) -> None:
         """Wire MC governance pipeline to AudioExecutor."""
-        from agents.hapax_voice.audio_executor import AudioExecutor
-        from agents.hapax_voice.mc_governance import compose_mc_governance
-        from agents.hapax_voice.sample_bank import SampleBank
+        from agents.hapax_daimonion.audio_executor import AudioExecutor
+        from agents.hapax_daimonion.mc_governance import compose_mc_governance
+        from agents.hapax_daimonion.sample_bank import SampleBank
 
         # Load samples
         sample_bank = SampleBank(
@@ -493,8 +493,8 @@ class VoiceDaemon:
 
     def _setup_obs_actuation(self) -> None:
         """Wire OBS governance pipeline to OBSExecutor."""
-        from agents.hapax_voice.obs_executor import OBSExecutor
-        from agents.hapax_voice.obs_governance import compose_obs_governance
+        from agents.hapax_daimonion.obs_executor import OBSExecutor
+        from agents.hapax_daimonion.obs_governance import compose_obs_governance
 
         obs_exec = OBSExecutor(
             host=self.cfg.obs_host,
@@ -511,8 +511,8 @@ class VoiceDaemon:
         def _on_obs_command(timestamp: float, cmd: Command | None) -> None:
             if cmd is None:
                 return
-            from agents.hapax_voice.arbiter import ResourceClaim
-            from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES, RESOURCE_MAP
+            from agents.hapax_daimonion.arbiter import ResourceClaim
+            from agents.hapax_daimonion.resource_config import DEFAULT_PRIORITIES, RESOURCE_MAP
 
             resource = RESOURCE_MAP.get(cmd.action)
             if resource:
@@ -553,35 +553,35 @@ class VoiceDaemon:
     def _register_perception_backends(self) -> None:
         """Instantiate and register available perception backends."""
         try:
-            from agents.hapax_voice.backends.pipewire import PipeWireBackend
+            from agents.hapax_daimonion.backends.pipewire import PipeWireBackend
 
             self.perception.register_backend(PipeWireBackend())
         except Exception:
             log.info("PipeWireBackend not available, skipping")
 
         try:
-            from agents.hapax_voice.backends.hyprland import HyprlandBackend
+            from agents.hapax_daimonion.backends.hyprland import HyprlandBackend
 
             self.perception.register_backend(HyprlandBackend())
         except Exception:
             log.info("HyprlandBackend not available, skipping")
 
         try:
-            from agents.hapax_voice.backends.watch import WatchBackend
+            from agents.hapax_daimonion.backends.watch import WatchBackend
 
             self.perception.register_backend(WatchBackend())
         except Exception:
             log.info("WatchBackend not available, skipping")
 
         try:
-            from agents.hapax_voice.backends.health import HealthBackend
+            from agents.hapax_daimonion.backends.health import HealthBackend
 
             self.perception.register_backend(HealthBackend())
         except Exception:
             log.info("HealthBackend not available, skipping")
 
         try:
-            from agents.hapax_voice.backends.circadian import CircadianBackend
+            from agents.hapax_daimonion.backends.circadian import CircadianBackend
 
             self.perception.register_backend(CircadianBackend())
         except Exception:
@@ -589,7 +589,7 @@ class VoiceDaemon:
 
         # Studio ingestion backend (CLAP audio classification)
         try:
-            from agents.hapax_voice.backends.studio_ingestion import StudioIngestionBackend
+            from agents.hapax_daimonion.backends.studio_ingestion import StudioIngestionBackend
 
             self.perception.register_backend(StudioIngestionBackend())
         except Exception:
@@ -597,7 +597,7 @@ class VoiceDaemon:
 
         # Vision backend (YOLO object detection + pose + tracking)
         try:
-            from agents.hapax_voice.backends.vision import VisionBackend
+            from agents.hapax_daimonion.backends.vision import VisionBackend
 
             webcam = getattr(self.workspace_monitor, "_webcam_capturer", None)
             if webcam is not None:
@@ -607,7 +607,7 @@ class VoiceDaemon:
 
         # Device state backend (USB, network)
         try:
-            from agents.hapax_voice.backends.devices import DeviceStateBackend
+            from agents.hapax_daimonion.backends.devices import DeviceStateBackend
 
             self.perception.register_backend(DeviceStateBackend())
         except Exception:
@@ -615,7 +615,7 @@ class VoiceDaemon:
 
         # Local LLM backend (WS5: fast perception classification)
         try:
-            from agents.hapax_voice.backends.local_llm import LocalLLMBackend
+            from agents.hapax_daimonion.backends.local_llm import LocalLLMBackend
 
             self._local_llm_backend = LocalLLMBackend()
             self.perception.register_backend(self._local_llm_backend)
@@ -625,7 +625,7 @@ class VoiceDaemon:
 
         # MIDI clock backend (for MC governance)
         try:
-            from agents.hapax_voice.backends.midi_clock import MidiClockBackend
+            from agents.hapax_daimonion.backends.midi_clock import MidiClockBackend
 
             self.perception.register_backend(
                 MidiClockBackend(
@@ -638,7 +638,7 @@ class VoiceDaemon:
 
         # Input activity backend (keyboard/mouse via logind)
         try:
-            from agents.hapax_voice.backends.input_activity import InputActivityBackend
+            from agents.hapax_daimonion.backends.input_activity import InputActivityBackend
 
             self.perception.register_backend(
                 InputActivityBackend(idle_threshold_s=self.cfg.input_idle_threshold_s)
@@ -648,7 +648,7 @@ class VoiceDaemon:
 
         # Contact microphone backend (desk vibration via Cortado)
         try:
-            from agents.hapax_voice.backends.contact_mic import ContactMicBackend
+            from agents.hapax_daimonion.backends.contact_mic import ContactMicBackend
 
             self.perception.register_backend(
                 ContactMicBackend(source_name=self.cfg.contact_mic_source)
@@ -658,7 +658,7 @@ class VoiceDaemon:
 
         # Mixer master audio input (clean line-level from mixer)
         try:
-            from agents.hapax_voice.backends.mixer_input import MixerInputBackend
+            from agents.hapax_daimonion.backends.mixer_input import MixerInputBackend
 
             self.perception.register_backend(MixerInputBackend())
         except Exception:
@@ -666,7 +666,7 @@ class VoiceDaemon:
 
         # IR presence (Pi NoIR edge cameras)
         try:
-            from agents.hapax_voice.backends.ir_presence import IrPresenceBackend
+            from agents.hapax_daimonion.backends.ir_presence import IrPresenceBackend
 
             self.perception.register_backend(IrPresenceBackend())
         except Exception:
@@ -674,7 +674,7 @@ class VoiceDaemon:
 
         # Bluetooth phone presence (paired Pixel 10)
         try:
-            from agents.hapax_voice.backends.bt_presence import BTPresenceBackend
+            from agents.hapax_daimonion.backends.bt_presence import BTPresenceBackend
 
             self.perception.register_backend(BTPresenceBackend())
         except Exception:
@@ -682,7 +682,7 @@ class VoiceDaemon:
 
         # Phone media (AVRCP track info via Bluetooth)
         try:
-            from agents.hapax_voice.backends.phone_media import PhoneMediaBackend
+            from agents.hapax_daimonion.backends.phone_media import PhoneMediaBackend
 
             self.perception.register_backend(PhoneMediaBackend())
         except Exception:
@@ -690,7 +690,7 @@ class VoiceDaemon:
 
         # Phone SMS (MAP via Bluetooth)
         try:
-            from agents.hapax_voice.backends.phone_messages import PhoneMessagesBackend
+            from agents.hapax_daimonion.backends.phone_messages import PhoneMessagesBackend
 
             self.perception.register_backend(PhoneMessagesBackend())
         except Exception:
@@ -698,7 +698,7 @@ class VoiceDaemon:
 
         # Phone calls (HFP via PipeWire Telephony)
         try:
-            from agents.hapax_voice.backends.phone_calls import PhoneCallsBackend
+            from agents.hapax_daimonion.backends.phone_calls import PhoneCallsBackend
 
             self.perception.register_backend(PhoneCallsBackend())
         except Exception:
@@ -706,7 +706,7 @@ class VoiceDaemon:
 
         # Phone unified awareness (KDE Connect)
         try:
-            from agents.hapax_voice.backends.phone_awareness import PhoneAwarenessBackend
+            from agents.hapax_daimonion.backends.phone_awareness import PhoneAwarenessBackend
 
             self.perception.register_backend(PhoneAwarenessBackend())
         except Exception:
@@ -715,7 +715,7 @@ class VoiceDaemon:
         # Bayesian presence engine (fuses all signals into presence probability)
         if self.cfg.presence_bayesian_enabled:
             try:
-                from agents.hapax_voice.presence_engine import PresenceEngine
+                from agents.hapax_daimonion.presence_engine import PresenceEngine
 
                 self._presence_engine = PresenceEngine(
                     prior=self.cfg.presence_prior,
@@ -907,9 +907,9 @@ class VoiceDaemon:
         are stable across sessions. Only the system prompt needs refreshing
         per session (policy + screen context depend on current environment).
         """
-        from agents.hapax_voice.conversational_policy import get_policy
-        from agents.hapax_voice.env_context import serialize_environment
-        from agents.hapax_voice.tools_openai import get_openai_tools
+        from agents.hapax_daimonion.conversational_policy import get_policy
+        from agents.hapax_daimonion.env_context import serialize_environment
+        from agents.hapax_daimonion.tools_openai import get_openai_tools
 
         # Tools (stable across sessions for operator mode)
         self._precomputed_tools = None
@@ -955,7 +955,7 @@ class VoiceDaemon:
             experiment_mode=getattr(self, "_experiment_flags", {}).get("experiment_mode", False),
         )
 
-        from agents.hapax_voice.context_enrichment import (
+        from agents.hapax_daimonion.context_enrichment import (
             render_dmn,
             render_goals,
             render_health,
@@ -979,7 +979,7 @@ class VoiceDaemon:
         self._last_utterance_time = time.monotonic()
 
         # Impingement cascade: speech as a recruited capability
-        from agents.hapax_voice.capability import SPEECH_DESCRIPTION, SpeechProductionCapability
+        from agents.hapax_daimonion.capability import SPEECH_DESCRIPTION, SpeechProductionCapability
 
         self._speech_capability = SpeechProductionCapability()
         self._dmn_impingement_cursor = 0
@@ -993,20 +993,20 @@ class VoiceDaemon:
             CapabilityRecord(
                 name="speech_production",
                 description=SPEECH_DESCRIPTION,
-                daemon="hapax_voice",
+                daemon="hapax_daimonion",
                 operational=OperationalProperties(requires_gpu=True),
             )
         )
         self._affordance_pipeline.register_interrupt(
-            "population_critical", "speech_production", "hapax_voice"
+            "population_critical", "speech_production", "hapax_daimonion"
         )
         self._affordance_pipeline.register_interrupt(
-            "operator_distress", "speech_production", "hapax_voice"
+            "operator_distress", "speech_production", "hapax_daimonion"
         )
 
         # Vocal chain: MIDI affordances for speech modulation
-        from agents.hapax_voice.midi_output import MidiOutput
-        from agents.hapax_voice.vocal_chain import VOCAL_CHAIN_RECORDS, VocalChainCapability
+        from agents.hapax_daimonion.midi_output import MidiOutput
+        from agents.hapax_daimonion.vocal_chain import VOCAL_CHAIN_RECORDS, VocalChainCapability
 
         self._midi_output = MidiOutput(port_name=self.cfg.midi_output_port)
         self._vocal_chain = VocalChainCapability(
@@ -1048,7 +1048,7 @@ class VoiceDaemon:
             return
 
         try:
-            from agents.hapax_voice.salience.anchor_builder import build_anchors
+            from agents.hapax_daimonion.salience.anchor_builder import build_anchors
 
             env = self.perception.latest if hasattr(self, "perception") else None
 
@@ -1073,7 +1073,7 @@ class VoiceDaemon:
     def _refresh_context_distillation(self) -> None:
         """Generate context distillation for LOCAL tier prompts."""
         try:
-            from agents.hapax_voice.salience.anchor_builder import build_context_distillation
+            from agents.hapax_daimonion.salience.anchor_builder import build_context_distillation
 
             env = self.perception.latest if hasattr(self, "perception") else None
             notif_count = self.notifications.pending_count if hasattr(self, "notifications") else 0
@@ -1096,10 +1096,10 @@ class VoiceDaemon:
         the fresh system prompt (policy + screen context) and creates the
         pipeline object. Should complete in <50ms.
         """
-        from agents.hapax_voice.conversation_pipeline import ConversationPipeline
-        from agents.hapax_voice.conversational_policy import get_policy
-        from agents.hapax_voice.persona import screen_context_block, system_prompt
-        from agents.hapax_voice.tools_openai import get_openai_tools
+        from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
+        from agents.hapax_daimonion.conversational_policy import get_policy
+        from agents.hapax_daimonion.persona import screen_context_block, system_prompt
+        from agents.hapax_daimonion.tools_openai import get_openai_tools
 
         # Load experiment flags early so they affect prompt construction
         if not hasattr(self, "_experiment_flags"):
@@ -1218,9 +1218,9 @@ class VoiceDaemon:
         log.info("Conversation pipeline started (mic stays shared)")
 
         # Create and start cognitive loop
-        from agents.hapax_voice.cognitive_loop import CognitiveLoop
-        from agents.hapax_voice.conversational_model import ConversationalModel
-        from agents.hapax_voice.speculative_stt import SpeculativeTranscriber
+        from agents.hapax_daimonion.cognitive_loop import CognitiveLoop
+        from agents.hapax_daimonion.conversational_model import ConversationalModel
+        from agents.hapax_daimonion.speculative_stt import SpeculativeTranscriber
 
         spec_stt = SpeculativeTranscriber(self._resident_stt) if self._resident_stt else None
         conv_model = ConversationalModel()
@@ -1255,7 +1255,7 @@ class VoiceDaemon:
         # open after start(), so we can write PCM directly.
         # Set speaking flag on buffer to prevent echo capture (#6).
         try:
-            from agents.hapax_voice.bridge_engine import BridgeContext
+            from agents.hapax_daimonion.bridge_engine import BridgeContext
 
             ctx = BridgeContext(
                 turn_position=0,
@@ -1273,9 +1273,9 @@ class VoiceDaemon:
 
     async def _start_gemini_session(self) -> None:
         """Connect and start a Gemini Live session."""
-        from agents.hapax_voice.conversational_policy import get_policy
-        from agents.hapax_voice.gemini_live import GeminiLiveSession
-        from agents.hapax_voice.persona import system_prompt
+        from agents.hapax_daimonion.conversational_policy import get_policy
+        from agents.hapax_daimonion.gemini_live import GeminiLiveSession
+        from agents.hapax_daimonion.persona import system_prompt
 
         policy_block = get_policy(
             env=self.perception.latest,
@@ -1440,7 +1440,7 @@ class VoiceDaemon:
 
     def _set_perception_tier(self, tier_name: str) -> None:
         """Switch perception tier (voice/hotkey command)."""
-        from agents.hapax_voice.config import PerceptionTier
+        from agents.hapax_daimonion.config import PerceptionTier
 
         try:
             new_tier = PerceptionTier(tier_name)
@@ -1549,7 +1549,7 @@ class VoiceDaemon:
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-            from agents.hapax_voice.conversation_pipeline import ThreadEntry
+            from agents.hapax_daimonion.conversation_pipeline import ThreadEntry
             from shared.episodic_memory import EpisodeStore
 
             store = EpisodeStore()
@@ -1702,12 +1702,12 @@ class VoiceDaemon:
         log.info("Starting consent voice session for detected guest")
 
         try:
-            from agents.hapax_voice.consent_session import (
+            from agents.hapax_daimonion.consent_session import (
                 CONSENT_SYSTEM_PROMPT,
                 CONSENT_TOOL_SCHEMAS,
                 build_consent_tools_for_llm,
             )
-            from agents.hapax_voice.pipeline import _build_llm, _build_stt, _build_tts
+            from agents.hapax_daimonion.pipeline import _build_llm, _build_stt, _build_tts
 
             # Build minimal pipeline components
             stt = _build_stt(self.cfg.local_stt_model)
@@ -2050,7 +2050,7 @@ class VoiceDaemon:
 
     async def _perception_loop(self) -> None:
         """Run perception fast tick + governor evaluation on cadence."""
-        from agents.hapax_voice.config import PerceptionTier
+        from agents.hapax_daimonion.config import PerceptionTier
 
         while self._running:
             try:
@@ -2153,7 +2153,7 @@ class VoiceDaemon:
 
                 # Feed perception snapshot to local LLM backend (WS5)
                 if self._local_llm_backend is not None:
-                    from agents.hapax_voice._perception_state_writer import (
+                    from agents.hapax_daimonion._perception_state_writer import (
                         get_perception_ring,
                     )
 
@@ -2209,8 +2209,8 @@ class VoiceDaemon:
 
     async def _actuation_loop(self) -> None:
         """Drain ScheduleQueue, resolve resource contention, dispatch winners."""
-        from agents.hapax_voice.arbiter import ResourceClaim
-        from agents.hapax_voice.resource_config import DEFAULT_PRIORITIES, RESOURCE_MAP
+        from agents.hapax_daimonion.arbiter import ResourceClaim
+        from agents.hapax_daimonion.resource_config import DEFAULT_PRIORITIES, RESOURCE_MAP
 
         tick_s = self.cfg.actuation_tick_ms / 1000.0
         while self._running:
@@ -2268,7 +2268,7 @@ class VoiceDaemon:
 
     async def _run_inner(self) -> None:
         """Inner run loop — executes within consent_scope context."""
-        log.info("Hapax Voice daemon starting (backend=%s)", self.cfg.backend)
+        log.info("Hapax Daimonion daemon starting (backend=%s)", self.cfg.backend)
         self._loop = asyncio.get_running_loop()
 
         # Start hotkey server
@@ -2461,17 +2461,19 @@ class VoiceDaemon:
             self._background_tasks.clear()
 
             await self.hotkey.stop()
-            log.info("Hapax Voice daemon stopped")
+            log.info("Hapax Daimonion daemon stopped")
 
     def stop(self) -> None:
         self._running = False
 
 
-_PID_FILE = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hapax-voice.pid"
+_PID_FILE = (
+    Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hapax-daimonion.pid"
+)
 
 
 def _enforce_single_instance() -> None:
-    """Kill any stale hapax-voice process and write our PID file.
+    """Kill any stale hapax-daimonion process and write our PID file.
 
     Prevents the dual-daemon problem where a masked/unmasked systemd
     cycle leaves an orphaned process competing for the microphone.
@@ -2479,10 +2481,10 @@ def _enforce_single_instance() -> None:
     if _PID_FILE.exists():
         try:
             old_pid = int(_PID_FILE.read_text().strip())
-            # Check if it's actually a hapax-voice process
+            # Check if it's actually a hapax-daimonion process
             cmdline = Path(f"/proc/{old_pid}/cmdline").read_text()
-            if "hapax_voice" in cmdline or "hapax.voice" in cmdline:
-                log.warning("Killing stale hapax-voice process (PID %d)", old_pid)
+            if "hapax_daimonion" in cmdline or "hapax.voice" in cmdline:
+                log.warning("Killing stale hapax-daimonion process (PID %d)", old_pid)
                 os.kill(old_pid, signal.SIGTERM)
                 # Give it a moment to die gracefully
                 import time as _time
@@ -2510,14 +2512,14 @@ def _cleanup_pid_file() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Hapax Voice daemon")
+    parser = argparse.ArgumentParser(description="Hapax Daimonion daemon")
     parser.add_argument("--config", type=str, help="Path to config YAML")
     parser.add_argument("--check", action="store_true", help="Verify config and exit")
     args = parser.parse_args()
 
     from shared.log_setup import configure_logging
 
-    configure_logging(agent="hapax-voice")
+    configure_logging(agent="hapax-daimonion")
 
     cfg = load_config(Path(args.config) if args.config else None)
     if args.check:

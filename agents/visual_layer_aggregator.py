@@ -75,7 +75,7 @@ log = logging.getLogger("visual_layer_aggregator")
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 OUTPUT_DIR = Path("/dev/shm/hapax-compositor")
 OUTPUT_FILE = OUTPUT_DIR / "visual-layer-state.json"
 STIMMUNG_DIR = Path("/dev/shm/hapax-stimmung")
@@ -86,7 +86,7 @@ WATERSHED_FILE = OUTPUT_DIR / "watershed-events.json"
 
 # ── Stimmung data source paths ─────────────────────────────────────────────
 
-PERCEPTION_MINUTES_PATH = Path.home() / ".cache" / "hapax-voice" / "perception-minutes.jsonl"
+PERCEPTION_MINUTES_PATH = Path.home() / ".cache" / "hapax-daimonion" / "perception-minutes.jsonl"
 
 HEALTH_HISTORY_PATH = Path("profiles/health-history.jsonl")
 INFRA_SNAPSHOT_PATH = Path("profiles/infra-snapshot.json")
@@ -876,7 +876,7 @@ class VisualLayerAggregator:
 
         # Local perception ring — aggregator maintains its own ring from perception-state.json
         # reads, since the voice daemon's in-process ring is not accessible cross-process.
-        from agents.hapax_voice.perception_ring import PerceptionRing
+        from agents.hapax_daimonion.perception_ring import PerceptionRing
 
         self._local_ring = PerceptionRing(maxlen=20)
 
@@ -1339,7 +1339,7 @@ class VisualLayerAggregator:
             import json as _json
             from pathlib import Path as _Path
 
-            _gqi_path = _Path("/dev/shm/hapax-voice/grounding-quality.json")
+            _gqi_path = _Path("/dev/shm/hapax-daimonion/grounding-quality.json")
             if _gqi_path.exists():
                 _gqi_data = _json.loads(_gqi_path.read_text())
                 _gqi_age = time.time() - _gqi_data.get("timestamp", 0)
@@ -1381,7 +1381,7 @@ class VisualLayerAggregator:
 
         Best-effort: silently falls back to defaults when sensors unavailable.
         """
-        from agents.hapax_voice.watch_signals import read_watch_signal
+        from agents.hapax_daimonion.watch_signals import read_watch_signal
 
         # HRV data
         hrv_current = None
@@ -1553,7 +1553,7 @@ class VisualLayerAggregator:
     def _compute_temporal_context(self) -> TemporalContext:
         """Build temporal context from the perception ring buffer."""
         try:
-            from agents.hapax_voice._perception_state_writer import get_perception_ring
+            from agents.hapax_daimonion._perception_state_writer import get_perception_ring
         except ImportError:
             return TemporalContext()
 

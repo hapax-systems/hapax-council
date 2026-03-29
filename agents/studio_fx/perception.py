@@ -1,4 +1,4 @@
-"""Perception state reader — polls the JSON written by hapax-voice."""
+"""Perception state reader — polls the JSON written by hapax-daimonion."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-PERCEPTION_STATE_FILE = Path.home() / ".cache" / "hapax-voice" / "perception-state.json"
+PERCEPTION_STATE_FILE = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 
 
 @dataclass(frozen=True)

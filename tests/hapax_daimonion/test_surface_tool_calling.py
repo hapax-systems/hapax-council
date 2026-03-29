@@ -10,16 +10,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import agents.hapax_voice.tools as tools_mod
-from agents.hapax_voice.config import VoiceConfig
+import agents.hapax_daimonion.tools as tools_mod
+from agents.hapax_daimonion.config import DaimonionConfig
 
 
-def _setup_tools(config: VoiceConfig | None = None):
+def _setup_tools(config: DaimonionConfig | None = None):
     """Register tools on a mock LLM and return the handler map."""
-    from agents.hapax_voice.tools import register_tool_handlers
+    from agents.hapax_daimonion.tools import register_tool_handlers
 
     mock_llm = MagicMock()
-    cfg = config or VoiceConfig(tools_enabled=True)
+    cfg = config or DaimonionConfig(tools_enabled=True)
     register_tool_handlers(mock_llm, cfg)
 
     handlers = {}
@@ -104,8 +104,8 @@ class TestSearchDocumentsTool:
         mock_results.points = [mock_point]
 
         with (
-            patch("agents.hapax_voice.tools.embed", return_value=[0.1] * 768),
-            patch("agents.hapax_voice.tools.get_qdrant") as mock_get_qdrant,
+            patch("agents.hapax_daimonion.tools.embed", return_value=[0.1] * 768),
+            patch("agents.hapax_daimonion.tools.get_qdrant") as mock_get_qdrant,
         ):
             mock_client = MagicMock()
             mock_client.query_points.return_value = mock_results
@@ -127,8 +127,8 @@ class TestSearchDocumentsTool:
         mock_results.points = []
 
         with (
-            patch("agents.hapax_voice.tools.embed", return_value=[0.1] * 768),
-            patch("agents.hapax_voice.tools.get_qdrant") as mock_get_qdrant,
+            patch("agents.hapax_daimonion.tools.embed", return_value=[0.1] * 768),
+            patch("agents.hapax_daimonion.tools.get_qdrant") as mock_get_qdrant,
         ):
             mock_client = MagicMock()
             mock_client.query_points.return_value = mock_results
@@ -145,7 +145,7 @@ class TestSearchDocumentsTool:
         handler = handlers["search_documents"]
         params = _make_params({"query": "test"})
 
-        with patch("agents.hapax_voice.tools.embed", side_effect=RuntimeError("embed failed")):
+        with patch("agents.hapax_daimonion.tools.embed", side_effect=RuntimeError("embed failed")):
             await handler(params)
 
         params.result_callback.assert_called_once()
@@ -163,8 +163,8 @@ class TestSearchDocumentsTool:
         mock_results.points = []
 
         with (
-            patch("agents.hapax_voice.tools.embed", return_value=[0.1] * 768),
-            patch("agents.hapax_voice.tools.get_qdrant") as mock_get_qdrant,
+            patch("agents.hapax_daimonion.tools.embed", return_value=[0.1] * 768),
+            patch("agents.hapax_daimonion.tools.get_qdrant") as mock_get_qdrant,
         ):
             mock_client = MagicMock()
             mock_client.query_points.return_value = mock_results
@@ -200,8 +200,8 @@ class TestSearchDriveTool:
         mock_results.points = []
 
         with (
-            patch("agents.hapax_voice.tools.embed", return_value=[0.1] * 768),
-            patch("agents.hapax_voice.tools.get_qdrant") as mock_get_qdrant,
+            patch("agents.hapax_daimonion.tools.embed", return_value=[0.1] * 768),
+            patch("agents.hapax_daimonion.tools.get_qdrant") as mock_get_qdrant,
         ):
             mock_client = MagicMock()
             mock_client.query_points.return_value = mock_results
@@ -232,7 +232,7 @@ class TestGetSystemStatusTool:
             {"name": "gpu-vram", "group": "gpu", "status": "ok", "message": "12GB free"},
         ]
 
-        with patch("agents.hapax_voice.tools._run_health_checks", return_value=mock_results):
+        with patch("agents.hapax_daimonion.tools._run_health_checks", return_value=mock_results):
             await handler(params)
 
         params.result_callback.assert_called_once()
@@ -246,7 +246,7 @@ class TestGetSystemStatusTool:
         handler = handlers["get_system_status"]
         params = _make_params({})
 
-        with patch("agents.hapax_voice.tools._run_health_checks", return_value=[]):
+        with patch("agents.hapax_daimonion.tools._run_health_checks", return_value=[]):
             await handler(params)
 
         params.result_callback.assert_called_once()
@@ -262,7 +262,7 @@ class TestGetSystemStatusTool:
         mock_results = [{"name": "gpu-vram", "group": "gpu", "status": "ok", "message": "ok"}]
 
         with patch(
-            "agents.hapax_voice.tools._run_health_checks", return_value=mock_results
+            "agents.hapax_daimonion.tools._run_health_checks", return_value=mock_results
         ) as mock_checks:
             await handler(params)
 
@@ -280,15 +280,15 @@ class TestSendSmsTool:
     def setup_method(self):
         """Clear module-level SMS state before each test."""
         tools_mod._pending_sms.clear()
-        tools_mod._voice_config = None
+        tools_mod._daimonion_config = None
 
     @pytest.mark.asyncio
     async def test_send_sms_no_config_returns_error(self):
-        handlers = _setup_tools(VoiceConfig(tools_enabled=True, sms_contacts={}))
+        handlers = _setup_tools(DaimonionConfig(tools_enabled=True, sms_contacts={}))
         handler = handlers["send_sms"]
 
         # Explicitly unset config to simulate unconfigured state
-        tools_mod._voice_config = None
+        tools_mod._daimonion_config = None
 
         params = _make_params({"recipient": "+1234567890", "message": "Hello"})
         await handler(params)
@@ -299,7 +299,7 @@ class TestSendSmsTool:
 
     @pytest.mark.asyncio
     async def test_send_sms_unknown_contact_returns_error(self):
-        cfg = VoiceConfig(tools_enabled=True, sms_contacts={"Wife": "+15550001234"})
+        cfg = DaimonionConfig(tools_enabled=True, sms_contacts={"Wife": "+15550001234"})
         handlers = _setup_tools(cfg)
         handler = handlers["send_sms"]
 
@@ -313,7 +313,7 @@ class TestSendSmsTool:
 
     @pytest.mark.asyncio
     async def test_send_sms_known_contact_stores_pending(self):
-        cfg = VoiceConfig(tools_enabled=True, sms_contacts={"Wife": "+15550001234"})
+        cfg = DaimonionConfig(tools_enabled=True, sms_contacts={"Wife": "+15550001234"})
         handlers = _setup_tools(cfg)
         handler = handlers["send_sms"]
 
@@ -333,7 +333,7 @@ class TestSendSmsTool:
 
     @pytest.mark.asyncio
     async def test_send_sms_direct_phone_number_accepted(self):
-        cfg = VoiceConfig(tools_enabled=True, sms_contacts={})
+        cfg = DaimonionConfig(tools_enabled=True, sms_contacts={})
         handlers = _setup_tools(cfg)
         handler = handlers["send_sms"]
 
@@ -347,7 +347,7 @@ class TestSendSmsTool:
 
     @pytest.mark.asyncio
     async def test_send_sms_case_insensitive_lookup(self):
-        cfg = VoiceConfig(tools_enabled=True, sms_contacts={"Wife": "+15550001234"})
+        cfg = DaimonionConfig(tools_enabled=True, sms_contacts={"Wife": "+15550001234"})
         handlers = _setup_tools(cfg)
         handler = handlers["send_sms"]
 
@@ -365,11 +365,11 @@ class TestConfirmSendSmsTool:
 
     def setup_method(self):
         tools_mod._pending_sms.clear()
-        tools_mod._voice_config = None
+        tools_mod._daimonion_config = None
 
     @pytest.mark.asyncio
     async def test_confirm_with_no_pending_returns_error(self):
-        cfg = VoiceConfig(tools_enabled=True)
+        cfg = DaimonionConfig(tools_enabled=True)
         handlers = _setup_tools(cfg)
         handler = handlers["confirm_send_sms"]
 
@@ -383,7 +383,7 @@ class TestConfirmSendSmsTool:
 
     @pytest.mark.asyncio
     async def test_confirm_valid_id_but_no_gateway_config(self):
-        cfg = VoiceConfig(tools_enabled=True, sms_gateway_host="")
+        cfg = DaimonionConfig(tools_enabled=True, sms_gateway_host="")
         handlers = _setup_tools(cfg)
         handler = handlers["confirm_send_sms"]
 
@@ -404,7 +404,7 @@ class TestConfirmSendSmsTool:
 
     @pytest.mark.asyncio
     async def test_confirm_gateway_success(self):
-        cfg = VoiceConfig(
+        cfg = DaimonionConfig(
             tools_enabled=True,
             sms_gateway_host="sms.local:8888",
             sms_gateway_user="user",
@@ -425,8 +425,8 @@ class TestConfirmSendSmsTool:
         params = _make_params({"confirmation_id": "abc-123"})
 
         with (
-            patch("agents.hapax_voice.tools._get_sms_password", return_value="secret"),
-            patch("agents.hapax_voice.tools.httpx.post", return_value=mock_response),
+            patch("agents.hapax_daimonion.tools._get_sms_password", return_value="secret"),
+            patch("agents.hapax_daimonion.tools.httpx.post", return_value=mock_response),
         ):
             await handler(params)
 
@@ -439,7 +439,7 @@ class TestConfirmSendSmsTool:
 
     @pytest.mark.asyncio
     async def test_confirm_gateway_http_error(self):
-        cfg = VoiceConfig(
+        cfg = DaimonionConfig(
             tools_enabled=True,
             sms_gateway_host="sms.local:8888",
             sms_gateway_user="user",
@@ -460,8 +460,8 @@ class TestConfirmSendSmsTool:
         params = _make_params({"confirmation_id": "fail-id"})
 
         with (
-            patch("agents.hapax_voice.tools._get_sms_password", return_value="secret"),
-            patch("agents.hapax_voice.tools.httpx.post", return_value=mock_response),
+            patch("agents.hapax_daimonion.tools._get_sms_password", return_value="secret"),
+            patch("agents.hapax_daimonion.tools.httpx.post", return_value=mock_response),
         ):
             await handler(params)
 
@@ -482,10 +482,10 @@ class TestAnalyzeSceneTool:
     @pytest.mark.asyncio
     async def test_no_capturers_returns_no_images_message(self):
         """Without webcam/screen capturers, returns a 'no images' response."""
-        from agents.hapax_voice.tools import register_tool_handlers
+        from agents.hapax_daimonion.tools import register_tool_handlers
 
         mock_llm = MagicMock()
-        cfg = VoiceConfig(tools_enabled=True)
+        cfg = DaimonionConfig(tools_enabled=True)
         # Pass no capturers
         register_tool_handlers(mock_llm, cfg, webcam_capturer=None, screen_capturer=None)
         handlers = {
@@ -502,10 +502,10 @@ class TestAnalyzeSceneTool:
     @pytest.mark.asyncio
     async def test_with_screen_capturer_calls_vision(self):
         """When screen capturer returns a frame, vision model is called."""
-        from agents.hapax_voice.tools import register_tool_handlers
+        from agents.hapax_daimonion.tools import register_tool_handlers
 
         mock_llm = MagicMock()
-        cfg = VoiceConfig(tools_enabled=True)
+        cfg = DaimonionConfig(tools_enabled=True)
 
         mock_screen = MagicMock()
         mock_screen.capture.return_value = "base64encodedimage=="
@@ -519,7 +519,7 @@ class TestAnalyzeSceneTool:
         params = _make_params({"cameras": ["screen"], "question": "What is on screen?"})
 
         with patch(
-            "agents.hapax_voice.tools._vision_analyze", return_value="A terminal window is open"
+            "agents.hapax_daimonion.tools._vision_analyze", return_value="A terminal window is open"
         ):
             await handlers["analyze_scene"](params)
 
@@ -542,7 +542,7 @@ class TestFocusWindowTool:
         handler = handlers["focus_window"]
         params = _make_params({"target": "foot"})
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.dispatch.return_value = True
             await handler(params)
 
@@ -557,7 +557,7 @@ class TestFocusWindowTool:
         handler = handlers["focus_window"]
         params = _make_params({"target": "nonexistent-app"})
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.dispatch.return_value = False
             await handler(params)
 
@@ -575,7 +575,7 @@ class TestSwitchWorkspaceTool:
         handler = handlers["switch_workspace"]
         params = _make_params({"workspace": 3})
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.dispatch.return_value = True
             await handler(params)
 
@@ -590,7 +590,7 @@ class TestSwitchWorkspaceTool:
         handler = handlers["switch_workspace"]
         params = _make_params({"workspace": 99})
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.dispatch.return_value = False
             await handler(params)
 
@@ -603,7 +603,7 @@ class TestOpenAppTool:
     """open_app sets pending state and returns pending_confirmation status."""
 
     def setup_method(self):
-        import agents.hapax_voice.desktop_tools as dt
+        import agents.hapax_daimonion.desktop_tools as dt
 
         dt._pending_open = None
 
@@ -622,7 +622,7 @@ class TestOpenAppTool:
 
     @pytest.mark.asyncio
     async def test_open_app_stores_pending(self):
-        import agents.hapax_voice.desktop_tools as dt
+        import agents.hapax_daimonion.desktop_tools as dt
 
         handlers = _setup_tools()
         handler = handlers["open_app"]
@@ -639,7 +639,7 @@ class TestConfirmOpenAppTool:
     """confirm_open_app dispatches exec or errors when no pending state."""
 
     def setup_method(self):
-        import agents.hapax_voice.desktop_tools as dt
+        import agents.hapax_daimonion.desktop_tools as dt
 
         dt._pending_open = None
 
@@ -658,7 +658,7 @@ class TestConfirmOpenAppTool:
 
     @pytest.mark.asyncio
     async def test_confirm_launches_app(self):
-        import agents.hapax_voice.desktop_tools as dt
+        import agents.hapax_daimonion.desktop_tools as dt
 
         dt._pending_open = {"command": "foot", "workspace": None}
 
@@ -666,7 +666,7 @@ class TestConfirmOpenAppTool:
         handler = handlers["confirm_open_app"]
         params = _make_params({})
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.dispatch.return_value = True
             await handler(params)
 
@@ -679,7 +679,7 @@ class TestConfirmOpenAppTool:
 
     @pytest.mark.asyncio
     async def test_confirm_with_workspace_uses_workspace_dispatch(self):
-        import agents.hapax_voice.desktop_tools as dt
+        import agents.hapax_daimonion.desktop_tools as dt
 
         dt._pending_open = {"command": "obsidian", "workspace": 4}
 
@@ -687,7 +687,7 @@ class TestConfirmOpenAppTool:
         handler = handlers["confirm_open_app"]
         params = _make_params({})
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.dispatch.return_value = True
             await handler(params)
 
@@ -720,7 +720,7 @@ class TestGetDesktopStateTool:
         mock_ws.name = "1"
         mock_ws.window_count = 1
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.get_active_window.return_value = mock_active
             mock_ipc.get_clients.return_value = [mock_client]
             mock_ipc.get_workspaces.return_value = [mock_ws]
@@ -739,7 +739,7 @@ class TestGetDesktopStateTool:
         handler = handlers["get_desktop_state"]
         params = _make_params({})
 
-        with patch("agents.hapax_voice.desktop_tools._ipc") as mock_ipc:
+        with patch("agents.hapax_daimonion.desktop_tools._ipc") as mock_ipc:
             mock_ipc.get_active_window.return_value = None
             mock_ipc.get_clients.return_value = []
             mock_ipc.get_workspaces.return_value = []

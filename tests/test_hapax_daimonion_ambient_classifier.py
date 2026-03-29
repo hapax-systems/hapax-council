@@ -1,4 +1,4 @@
-"""Tests for hapax_voice ambient audio classifier."""
+"""Tests for hapax_daimonion ambient audio classifier."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from agents.hapax_voice import ambient_classifier
-from agents.hapax_voice.ambient_classifier import (
+from agents.hapax_daimonion import ambient_classifier
+from agents.hapax_daimonion.ambient_classifier import (
     PANNS_SAMPLE_RATE,
     _build_label_index,
     classify,
@@ -254,7 +254,9 @@ def test_classify_fail_closed_no_audio() -> None:
         patch.object(ambient_classifier, "_model", model),
         patch.object(ambient_classifier, "_labels", labels),
         patch.object(ambient_classifier, "_load_attempted", True),
-        patch("agents.hapax_voice.ambient_classifier._capture_audio_pipewire", return_value=None),
+        patch(
+            "agents.hapax_daimonion.ambient_classifier._capture_audio_pipewire", return_value=None
+        ),
     ):
         # Call without audio= so it tries to capture
         result = classify()

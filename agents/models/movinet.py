@@ -24,7 +24,7 @@ import numpy as np  # noqa: TC002 — used at runtime for frame processing
 
 log = logging.getLogger(__name__)
 
-_LABELS_CACHE = Path.home() / ".cache" / "hapax-voice" / "kinetics400_labels.json"
+_LABELS_CACHE = Path.home() / ".cache" / "hapax-daimonion" / "kinetics400_labels.json"
 _LABELS_URL = (
     "https://dl.fbaipublicfiles.com/pyslowfast/dataset/class_names/kinetics_classnames.json"
 )

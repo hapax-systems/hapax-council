@@ -458,14 +458,14 @@ def check_doc_freshness() -> list[DriftItem]:
 def check_screen_context_drift() -> list[DriftItem]:
     """Check if screen analyzer context file has drifted from live state.
 
-    Compares the static context at ~/.local/share/hapax-voice/screen_context.md
+    Compares the static context at ~/.local/share/hapax-daimonion/screen_context.md
     against live Docker services and systemd units. If the file is missing or
     significantly different, flags as drift and regenerates.
     """
     import datetime
     import subprocess
 
-    context_path = Path.home() / ".local" / "share" / "hapax-voice" / "screen_context.md"
+    context_path = Path.home() / ".local" / "share" / "hapax-daimonion" / "screen_context.md"
     items: list[DriftItem] = []
 
     # Check if file exists

@@ -1,6 +1,6 @@
 """Tests for tool-aware system prompt."""
 
-from agents.hapax_voice.persona import system_prompt
+from agents.hapax_daimonion.persona import system_prompt
 
 
 def test_operator_prompt_mentions_tools():

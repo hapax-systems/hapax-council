@@ -9,7 +9,7 @@ pytestmark = pytest.mark.research
 
 class TestDUStateTransitions:
     def _make_ledger(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.add_du(1, "initial statement")
@@ -70,7 +70,7 @@ class TestDUStateTransitions:
         assert ledger.last_du_state == "UNGROUNDED"
 
     def test_no_du_returns_neutral(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         strategy = ledger.update_from_acceptance("ACCEPT")
@@ -79,7 +79,7 @@ class TestDUStateTransitions:
 
 class TestConcernAwareThresholds:
     def _make_ledger_with_history(self, accepts=5, rejects=0):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         for i in range(accepts):
@@ -92,7 +92,7 @@ class TestConcernAwareThresholds:
         return ledger
 
     def test_high_concern_low_gqi_tight_threshold(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         # Simulate low GQI by feeding rejects
@@ -113,14 +113,14 @@ class TestConcernAwareThresholds:
 
 class TestGQI:
     def test_cold_start_neutral(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         gqi = ledger.compute_gqi()
         assert 0.4 <= gqi <= 0.6  # neutral cold start
 
     def test_all_accepts_high_gqi(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         for i in range(10):
@@ -130,7 +130,7 @@ class TestGQI:
         assert gqi > 0.7
 
     def test_all_rejects_low_gqi(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         for i in range(10):
@@ -140,7 +140,7 @@ class TestGQI:
         assert gqi < 0.3
 
     def test_gqi_bounded(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         for i in range(20):
@@ -151,7 +151,7 @@ class TestGQI:
 
 class TestEffortCalibration:
     def test_high_activation_low_gqi_elaborative(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         # Low GQI: feed rejects
@@ -163,7 +163,7 @@ class TestEffortCalibration:
         assert effort.word_limit >= 40
 
     def test_low_activation_high_gqi_efficient(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         # High GQI: feed accepts
@@ -178,14 +178,14 @@ class TestEffortCalibration:
         assert effort.word_limit <= 25
 
     def test_moderate_is_baseline(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         effort = ledger.effort_calibration(activation=0.5)
         assert effort.level_name == "BASELINE"
 
     def test_hysteresis_delays_deescalation(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         # Escalate to ELABORATIVE
@@ -207,7 +207,7 @@ class TestEffortCalibration:
         assert e3.level_name != "ELABORATIVE"  # now de-escalated
 
     def test_effort_score_bounded(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         e = ledger.effort_calibration(activation=1.0)
@@ -218,13 +218,13 @@ class TestEffortCalibration:
 
 class TestGroundingDirective:
     def test_empty_when_no_dus(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         assert ledger.grounding_directive() == ""
 
     def test_advance_after_accept(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.add_du(1, "statement")
@@ -234,7 +234,7 @@ class TestGroundingDirective:
         assert "Advance" in directive or "advance" in directive.lower()
 
     def test_rephrase_after_clarify(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.add_du(1, "statement")
@@ -243,7 +243,7 @@ class TestGroundingDirective:
         assert "Rephrase" in directive or "rephrase" in directive.lower()
 
     def test_reasoning_after_reject(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.add_du(1, "statement")
@@ -252,7 +252,7 @@ class TestGroundingDirective:
         assert "reasoning" in directive.lower()
 
     def test_ungrounded_caution_after_high_concern_ignore(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.add_du(1, "important statement")
@@ -263,7 +263,7 @@ class TestGroundingDirective:
 
 class TestIgnoreBranch:
     def test_low_concern_ignore_grounds(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.add_du(1, "test statement", concern_overlap=0.1)
@@ -271,7 +271,7 @@ class TestIgnoreBranch:
         assert result == "advance"
 
     def test_high_concern_ignore_ungrounds(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.add_du(1, "test statement", concern_overlap=0.8)
@@ -279,7 +279,7 @@ class TestIgnoreBranch:
         assert result == "ungrounded_caution"
 
     def test_medium_concern_ignore_ungrounds(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.add_du(1, "test statement", concern_overlap=0.5)
@@ -289,7 +289,7 @@ class TestIgnoreBranch:
 
 class TestEffortHoldCounter:
     def test_same_rank_preserves_hold_counter(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.effort_calibration(activation=0.5)
@@ -305,7 +305,7 @@ class TestEffortHoldCounter:
         # the counter (M5 fix), so: de-escalate(hold=1) → same-rank(hold=1 preserved)
         # → de-escalate(hold=2) → de-escalates immediately.
         # But a true re-escalation (EFFICIENT→ELABORATIVE) resets hold to 0.
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         # Start at BASELINE (cold start), escalate to ELABORATIVE
@@ -321,7 +321,7 @@ class TestEffortHoldCounter:
 
 class TestUngroundedCount:
     def test_counts_ungrounded_and_abandoned(self):
-        from agents.hapax_voice.grounding_ledger import GroundingLedger
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
         ledger = GroundingLedger()
         ledger.add_du(1, "s1")

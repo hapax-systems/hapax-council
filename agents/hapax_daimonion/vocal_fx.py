@@ -3,7 +3,7 @@
 Processes raw TTS audio through a configurable effects chain before playback.
 Uses pedalboard (Spotify) for both built-in DSP and external VST3 plugins.
 
-Presets are YAML files in ~/.config/hapax-voice/vocal-fx/. Each defines an
+Presets are YAML files in ~/.config/hapax-daimonion/vocal-fx/. Each defines an
 ordered chain of effects with parameters. The active preset can be swapped
 at runtime — Hapax can call switch_preset() based on context (conversation
 vs briefing vs notification) or environmental factors.
@@ -28,7 +28,7 @@ import yaml
 log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 24000
-PRESETS_DIR = Path.home() / ".config" / "hapax-voice" / "vocal-fx"
+PRESETS_DIR = Path.home() / ".config" / "hapax-daimonion" / "vocal-fx"
 LSP_VST3 = Path("/usr/lib/vst3/lsp-plugins.vst3")
 DRAGONFLY_ROOM_VST3 = Path("/usr/lib/vst3/DragonflyRoomReverb.vst3")
 RNNOISE_VST3 = Path("/usr/lib/vst3/rnnoise.vst3")

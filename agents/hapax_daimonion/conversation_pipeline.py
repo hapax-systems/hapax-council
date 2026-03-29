@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from agents.hapax_voice.config import LITELLM_BASE as _voice_litellm_base
+from agents.hapax_daimonion.config import LITELLM_BASE as _voice_litellm_base
 
 log = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ def _stimmung_downgrade(model: str, tier: ModelTier) -> tuple[str, ModelTier]:
     """
     from pathlib import Path
 
-    from agents.hapax_voice.model_router import TIER_ROUTES, ModelTier
+    from agents.hapax_daimonion.model_router import TIER_ROUTES, ModelTier
 
     try:
         raw = json.loads(Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
@@ -494,7 +494,7 @@ class ConversationPipeline:
 
         # Initialize grounding ledger if experiment flags enable it
         if self._experiment_flags.get("grounding_directive", False):
-            from agents.hapax_voice.grounding_ledger import GroundingLedger
+            from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
             self._grounding_ledger = GroundingLedger()
 
@@ -522,7 +522,7 @@ class ConversationPipeline:
             log.info("Experiment lockdown: volatile context frozen at session start")
 
         # Create frustration detector for this session
-        from agents.hapax_voice.frustration_detector import FrustrationDetector
+        from agents.hapax_daimonion.frustration_detector import FrustrationDetector
 
         self._frustration_detector = FrustrationDetector()
         self.turn_count = 0
@@ -649,7 +649,7 @@ class ConversationPipeline:
         _stimmung_only = self._experiment_flags.get("phenomenal_stimmung_only", False)
         if not _lockdown:
             try:
-                from agents.hapax_voice.phenomenal_context import render as render_phenomenal
+                from agents.hapax_daimonion.phenomenal_context import render as render_phenomenal
 
                 phenom = render_phenomenal(tier="LOCAL" if _stimmung_only else "CAPABLE")
                 if phenom:
@@ -691,7 +691,7 @@ class ConversationPipeline:
         if _ledger is not None:
             try:
                 _gqi = _ledger.compute_gqi()
-                _gqi_dir = Path("/dev/shm/hapax-voice")
+                _gqi_dir = Path("/dev/shm/hapax-daimonion")
                 _gqi_dir.mkdir(parents=True, exist_ok=True)
                 _gqi_path = _gqi_dir / "grounding-quality.json"
                 _tmp_path = _gqi_path.with_suffix(".tmp")
@@ -862,7 +862,7 @@ class ConversationPipeline:
         # The salience router still computes activation/novelty/concern
         # signals — these are injected into the model's context (Batch 2)
         # rather than used to select a tier.
-        from agents.hapax_voice.model_router import TIER_ROUTES, ModelTier
+        from agents.hapax_daimonion.model_router import TIER_ROUTES, ModelTier
 
         if self._salience_router is not None:
             routing = self._salience_router.route(
@@ -885,7 +885,7 @@ class ConversationPipeline:
                 )
         else:
             # No salience router — default to CAPABLE
-            from agents.hapax_voice.model_router import RoutingDecision
+            from agents.hapax_daimonion.model_router import RoutingDecision
 
             routing = RoutingDecision(
                 tier=ModelTier.CAPABLE,
@@ -985,7 +985,7 @@ class ConversationPipeline:
 
         # Per-turn context anchoring evaluation (lightweight, no LLM call)
         try:
-            from agents.hapax_voice.grounding_evaluator import evaluate_turn
+            from agents.hapax_daimonion.grounding_evaluator import evaluate_turn
 
             # Get last assistant response from messages
             _last_response = ""
@@ -1197,7 +1197,7 @@ class ConversationPipeline:
             _messages = self.messages
             if _tier_name == "LOCAL" and _messages and _messages[0].get("role") == "system":
                 try:
-                    from agents.hapax_voice.phenomenal_context import render as render_phenom
+                    from agents.hapax_daimonion.phenomenal_context import render as render_phenom
 
                     phenom = render_phenom(tier="LOCAL")
                 except Exception:
@@ -1453,7 +1453,7 @@ class ConversationPipeline:
         """Execute tool calls and generate follow-up response."""
         # Play bridge phrase to signal tool execution ("Let me check...")
         if self._bridge_engine is not None:
-            from agents.hapax_voice.bridge_engine import BridgeContext
+            from agents.hapax_daimonion.bridge_engine import BridgeContext
 
             ctx = BridgeContext(
                 turn_position=self.turn_count,
@@ -1538,7 +1538,7 @@ class ConversationPipeline:
         if self._bridge_engine is None:
             return
 
-        from agents.hapax_voice.bridge_engine import BridgeContext
+        from agents.hapax_daimonion.bridge_engine import BridgeContext
 
         _tier = getattr(self, "_turn_model_tier", "")
 

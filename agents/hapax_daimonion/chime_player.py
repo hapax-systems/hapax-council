@@ -130,7 +130,7 @@ class ChimePlayer:
 
         log.info("Generating chime WAVs in %s", self._chime_dir)
         try:
-            from agents.hapax_voice.chime_synthesis import generate_all_chimes
+            from agents.hapax_daimonion.chime_synthesis import generate_all_chimes
 
             generate_all_chimes(self._chime_dir)
         except Exception as exc:

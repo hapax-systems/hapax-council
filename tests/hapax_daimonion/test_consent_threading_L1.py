@@ -12,7 +12,7 @@ import unittest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from agents.hapax_voice.primitives import Behavior, Stamped
+from agents.hapax_daimonion.primitives import Behavior, Stamped
 from shared.governance.consent_label import ConsentLabel
 from tests.consent_strategies import st_consent_label
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-from agents.hapax_voice.backends.local_llm import LocalLLMBackend
+from agents.hapax_daimonion.backends.local_llm import LocalLLMBackend
 
 
 class TestLocalLLMBackend:
@@ -66,7 +66,7 @@ class TestLocalLLMBackend:
 
 class TestCloudGate:
     def _make_monitor(self):
-        from agents.hapax_voice.workspace_monitor import WorkspaceMonitor
+        from agents.hapax_daimonion.workspace_monitor import WorkspaceMonitor
 
         return WorkspaceMonitor(enabled=False)
 
@@ -79,7 +79,7 @@ class TestCloudGate:
 
     def test_no_skip_when_low_confidence(self, tmp_path):
         monitor = self._make_monitor()
-        cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-voice"
+        cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-daimonion"
         cache_dir.mkdir(parents=True)
         (cache_dir / "perception-state.json").write_text(
             json.dumps({"llm_confidence": 0.3, "llm_activity": "idle"})
@@ -104,7 +104,7 @@ class TestCloudGate:
 
     def test_no_skip_when_no_activity(self, tmp_path):
         monitor = self._make_monitor()
-        cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-voice"
+        cache_dir = tmp_path / "fake_home" / ".cache" / "hapax-daimonion"
         cache_dir.mkdir(parents=True)
         (cache_dir / "perception-state.json").write_text(
             json.dumps({"llm_confidence": 0.9, "llm_activity": ""})

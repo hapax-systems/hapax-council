@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agents.hapax_voice.frame_gate import FrameGate
+from agents.hapax_daimonion.frame_gate import FrameGate
 
 
 @pytest.mark.asyncio

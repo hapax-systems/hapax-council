@@ -3,7 +3,7 @@
 Pulls phonebook from paired phone, caches as JSON for name lookup.
 Used by phone_messages backend to resolve sender numbers to names.
 
-Cache: ~/.cache/hapax-voice/contacts.json
+Cache: ~/.cache/hapax-daimonion/contacts.json
 Refresh: on daemon startup + every 24h
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _PHONE_MAC = "B0:D5:FB:A5:86:E8"
-_CACHE_PATH = Path.home() / ".cache" / "hapax-voice" / "contacts.json"
+_CACHE_PATH = Path.home() / ".cache" / "hapax-daimonion" / "contacts.json"
 _CACHE_MAX_AGE_S = 86400  # 24 hours
 
 

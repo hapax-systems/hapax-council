@@ -27,9 +27,9 @@ from typing import Any
 import cv2
 import numpy as np
 
-from agents.hapax_voice.perception import PerceptionTier
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.vram import VRAMLock
+from agents.hapax_daimonion.perception import PerceptionTier
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.vram import VRAMLock
 
 log = logging.getLogger(__name__)
 
@@ -564,7 +564,7 @@ class VisionBackend:
         self._vram_lock = VRAMLock()
 
         # Face detector for cross-camera ReID
-        from agents.hapax_voice.face_detector import FaceDetector
+        from agents.hapax_daimonion.face_detector import FaceDetector
 
         self._face_detector = FaceDetector(min_confidence=0.5)
 
@@ -1272,7 +1272,9 @@ class VisionBackend:
                     # Load Kinetics-400 labels
                     from pathlib import Path
 
-                    labels_path = Path.home() / ".cache" / "hapax-voice" / "kinetics400_labels.json"
+                    labels_path = (
+                        Path.home() / ".cache" / "hapax-daimonion" / "kinetics400_labels.json"
+                    )
                     if not labels_path.exists():
                         import urllib.request
 
@@ -1483,7 +1485,7 @@ class VisionBackend:
 
                         # ── Vocabulary manager: learned vocab replaces hardcoded ──
                         try:
-                            from agents.hapax_voice.vocab_manager import VocabularyManager
+                            from agents.hapax_daimonion.vocab_manager import VocabularyManager
 
                             if not hasattr(self, "_vocab_mgr"):
                                 self._vocab_mgr = VocabularyManager()
@@ -1621,7 +1623,7 @@ class VisionBackend:
                     # ── Feed detections to scene inventory ─────────────────
                     try:
                         if not hasattr(self, "_inventory"):
-                            from agents.hapax_voice.scene_inventory import SceneInventory
+                            from agents.hapax_daimonion.scene_inventory import SceneInventory
 
                             self._inventory = SceneInventory()
                         self._inventory.ingest(objects, role, time.time(), face_embedding=_face_emb)

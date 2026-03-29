@@ -11,8 +11,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from agents.hapax_voice.perception import PerceptionBackend
-from agents.hapax_voice.primitives import Behavior, Event
+from agents.hapax_daimonion.perception import PerceptionBackend
+from agents.hapax_daimonion.primitives import Behavior, Event
 
 log = logging.getLogger(__name__)
 

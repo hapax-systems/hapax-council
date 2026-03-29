@@ -12,7 +12,7 @@ import json
 import logging
 from pathlib import Path
 
-from agents.hapax_voice.salience.concern_graph import ConcernAnchor
+from agents.hapax_daimonion.salience.concern_graph import ConcernAnchor
 
 log = logging.getLogger(__name__)
 

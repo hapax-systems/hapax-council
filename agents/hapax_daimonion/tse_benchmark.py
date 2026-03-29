@@ -4,7 +4,7 @@ Two-stage architecture:
   1. Blind source separation — splits mixture into N channels
   2. Speaker channel identification — cosine similarity against enrolled embedding
 
-Run: uv run python -m agents.hapax_voice.tse_benchmark
+Run: uv run python -m agents.hapax_daimonion.tse_benchmark
 """
 
 from __future__ import annotations
@@ -331,7 +331,7 @@ def main() -> None:
             report.notes.append("NO-GO — no identification model meets latency threshold")
 
     # Save report
-    out_dir = Path.home() / ".local" / "share" / "hapax-voice"
+    out_dir = Path.home() / ".local" / "share" / "hapax-daimonion"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "tse_benchmark_report.json"
     out_path.write_text(json.dumps(asdict(report), indent=2))

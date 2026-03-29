@@ -12,12 +12,14 @@ import logging
 import subprocess
 from dataclasses import dataclass
 
-from agents.hapax_voice.governance import Veto, VetoChain
-from agents.hapax_voice.primitives import Behavior
-from agents.hapax_voice.session import SessionManager
+from agents.hapax_daimonion.governance import Veto, VetoChain
+from agents.hapax_daimonion.primitives import Behavior
+from agents.hapax_daimonion.session import SessionManager
 
 try:
-    from agents.hapax_voice.watch_signals import is_stress_elevated as _is_stress_elevated_fallback
+    from agents.hapax_daimonion.watch_signals import (
+        is_stress_elevated as _is_stress_elevated_fallback,
+    )
 except ImportError:
     _is_stress_elevated_fallback = None  # type: ignore[assignment]
 
@@ -317,7 +319,7 @@ class ContextGate:
         The veto predicate reads from the cache, keeping the loop fast.
         """
         try:
-            from agents.hapax_voice.ambient_classifier import async_classify
+            from agents.hapax_daimonion.ambient_classifier import async_classify
 
             self._ambient_result = await async_classify(
                 block_threshold=self.ambient_block_threshold,

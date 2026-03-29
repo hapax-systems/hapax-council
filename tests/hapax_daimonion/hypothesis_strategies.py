@@ -1,4 +1,4 @@
-"""Composable hypothesis strategies for hapax_voice type system.
+"""Composable hypothesis strategies for hapax_daimonion type system.
 
 Organized by layer (L0–L9). Each layer's strategies compose from layers below,
 mirroring the composition ladder's dependency structure.
@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from hypothesis import strategies as st
 
-from agents.hapax_voice.governance import (
+from agents.hapax_daimonion.governance import (
     FreshnessRequirement,
     FusedContext,
     Veto,
     VetoChain,
     VetoResult,
 )
-from agents.hapax_voice.primitives import Behavior, Stamped
+from agents.hapax_daimonion.primitives import Behavior, Stamped
 
 # ── Shared float strategies ────────────────────────────────────────────
 
@@ -137,7 +137,7 @@ def st_veto_result(draw):
 
 # ── L4: Command, Schedule ─────────────────────────────────────────────
 
-from agents.hapax_voice.commands import Command, Schedule  # noqa: E402
+from agents.hapax_daimonion.commands import Command, Schedule  # noqa: E402
 
 
 @st.composite
@@ -182,7 +182,7 @@ def st_schedule(draw, command_strategy=None):
 
 # ── L5: TimelineMapping, SuppressionField ──────────────────────────────
 
-from agents.hapax_voice.timeline import TimelineMapping, TransportState  # noqa: E402
+from agents.hapax_daimonion.timeline import TimelineMapping, TransportState  # noqa: E402
 
 
 @st.composite
@@ -249,7 +249,7 @@ def st_mc_fused_context(draw):
 
 # ── L8: EnvironmentState ──────────────────────────────────────────────
 
-from agents.hapax_voice.perception import EnvironmentState  # noqa: E402
+from agents.hapax_daimonion.perception import EnvironmentState  # noqa: E402
 
 
 @st.composite

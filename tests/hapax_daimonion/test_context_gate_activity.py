@@ -2,8 +2,8 @@
 
 from unittest.mock import MagicMock
 
-from agents.hapax_voice.context_gate import ContextGate
-from agents.hapax_voice.primitives import Behavior
+from agents.hapax_daimonion.context_gate import ContextGate
+from agents.hapax_daimonion.primitives import Behavior
 
 
 def test_gate_blocks_during_production():

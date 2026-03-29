@@ -7,30 +7,30 @@ from __future__ import annotations
 
 class TestExtractSubstance:
     def test_strips_greeting_prefix(self):
-        from agents.hapax_voice.conversation_pipeline import _extract_substance
+        from agents.hapax_daimonion.conversation_pipeline import _extract_substance
 
         assert _extract_substance("hey hapax, what's the weather") == "what's the weather"
 
     def test_strips_hi_prefix(self):
-        from agents.hapax_voice.conversation_pipeline import _extract_substance
+        from agents.hapax_daimonion.conversation_pipeline import _extract_substance
 
         assert _extract_substance("Hi Hapax, play some music") == "play some music"
 
     def test_no_greeting_passthrough(self):
-        from agents.hapax_voice.conversation_pipeline import _extract_substance
+        from agents.hapax_daimonion.conversation_pipeline import _extract_substance
 
         result = _extract_substance("what time is it")
         assert result == "what time is it"
 
     def test_greeting_only_returns_original(self):
-        from agents.hapax_voice.conversation_pipeline import _extract_substance
+        from agents.hapax_daimonion.conversation_pipeline import _extract_substance
 
         # "hey hapax" alone → stripped to empty → falls back to original
         result = _extract_substance("hey hapax")
         assert result  # should not be empty
 
     def test_truncates_at_100_chars(self):
-        from agents.hapax_voice.conversation_pipeline import _extract_substance
+        from agents.hapax_daimonion.conversation_pipeline import _extract_substance
 
         long_text = "a" * 150
         assert len(_extract_substance(long_text)) <= 100
@@ -41,7 +41,7 @@ class TestExtractSubstance:
 
 class TestSentinelSurvival:
     def _make_pipeline(self, **kwargs):
-        from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+        from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
 
         pipeline = ConversationPipeline.__new__(ConversationPipeline)
         pipeline.system_prompt = "You are Hapax."
@@ -63,7 +63,7 @@ class TestSentinelSurvival:
         assert "number is 42" in content
 
     def test_sentinel_survives_thread_update(self):
-        from agents.hapax_voice.conversation_pipeline import ThreadEntry
+        from agents.hapax_daimonion.conversation_pipeline import ThreadEntry
 
         pipeline = self._make_pipeline()
         pipeline._conversation_thread = [
@@ -88,7 +88,7 @@ class TestSentinelSurvival:
 
 class TestMessageDrop:
     def _make_pipeline_with_messages(self, messages, flags=None):
-        from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+        from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
 
         pipeline = ConversationPipeline.__new__(ConversationPipeline)
         pipeline.messages = messages
@@ -174,7 +174,7 @@ class TestMessageDrop:
 
 class TestExperimentFlags:
     def test_all_on_by_default(self):
-        from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+        from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
 
         pipeline = ConversationPipeline.__new__(ConversationPipeline)
         pipeline._experiment_flags = {}
@@ -185,7 +185,7 @@ class TestExperimentFlags:
         assert pipeline._experiment_flags.get("sentinel", True) is True
 
     def test_stable_frame_disabled(self):
-        from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+        from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
 
         pipeline = ConversationPipeline.__new__(ConversationPipeline)
         pipeline.system_prompt = "You are Hapax."

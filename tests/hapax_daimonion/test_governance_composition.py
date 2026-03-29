@@ -1,7 +1,7 @@
 """L7 matrix tests for compose_mc_governance and compose_obs_governance.
 
 Fills dimensions A (construction), B (invariants), D (boundaries) to bring
-L7 from partial → matrix-complete. See agents/hapax_voice/LAYER_STATUS.yaml.
+L7 from partial → matrix-complete. See agents/hapax_daimonion/LAYER_STATUS.yaml.
 
 Self-contained, unittest.mock only, asyncio_mode="auto".
 """
@@ -11,15 +11,15 @@ from __future__ import annotations
 import time
 import unittest
 
-from agents.hapax_voice.commands import Command, Schedule
-from agents.hapax_voice.mc_governance import (
+from agents.hapax_daimonion.commands import Command, Schedule
+from agents.hapax_daimonion.mc_governance import (
     MCConfig,
     build_mc_fallback_chain,
     build_mc_freshness_guard,
     build_mc_veto_chain,
     compose_mc_governance,
 )
-from agents.hapax_voice.obs_governance import (
+from agents.hapax_daimonion.obs_governance import (
     OBSConfig,
     OBSTransition,
     build_obs_fallback_chain,
@@ -28,8 +28,8 @@ from agents.hapax_voice.obs_governance import (
     compose_obs_governance,
     select_transition,
 )
-from agents.hapax_voice.primitives import Behavior, Event
-from agents.hapax_voice.timeline import TimelineMapping, TransportState
+from agents.hapax_daimonion.primitives import Behavior, Event
+from agents.hapax_daimonion.timeline import TimelineMapping, TransportState
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -492,8 +492,8 @@ class TestTransitionSelection(unittest.TestCase):
     """Boundary tests for select_transition."""
 
     def test_high_energy_selects_cut(self):
-        from agents.hapax_voice.governance import FusedContext
-        from agents.hapax_voice.primitives import Stamped
+        from agents.hapax_daimonion.governance import FusedContext
+        from agents.hapax_daimonion.primitives import Stamped
 
         ctx = FusedContext(
             trigger_time=1.0,
@@ -503,8 +503,8 @@ class TestTransitionSelection(unittest.TestCase):
         self.assertEqual(select_transition(ctx), OBSTransition.CUT)
 
     def test_low_energy_selects_dissolve(self):
-        from agents.hapax_voice.governance import FusedContext
-        from agents.hapax_voice.primitives import Stamped
+        from agents.hapax_daimonion.governance import FusedContext
+        from agents.hapax_daimonion.primitives import Stamped
 
         ctx = FusedContext(
             trigger_time=1.0,
@@ -514,8 +514,8 @@ class TestTransitionSelection(unittest.TestCase):
         self.assertEqual(select_transition(ctx), OBSTransition.DISSOLVE)
 
     def test_exact_threshold_selects_cut(self):
-        from agents.hapax_voice.governance import FusedContext
-        from agents.hapax_voice.primitives import Stamped
+        from agents.hapax_daimonion.governance import FusedContext
+        from agents.hapax_daimonion.primitives import Stamped
 
         ctx = FusedContext(
             trigger_time=1.0,
@@ -543,7 +543,7 @@ class TestGovernanceCompositionContracts(unittest.TestCase):
 
     def test_obs_command_has_resource_mappable_action(self):
         """OBS output Command.action is in RESOURCE_MAP (except hold)."""
-        from agents.hapax_voice.resource_config import RESOURCE_MAP
+        from agents.hapax_daimonion.resource_config import RESOURCE_MAP
 
         trigger = Event[float]()
         behaviors = _obs_behaviors(energy=0.5, arousal=0.5)

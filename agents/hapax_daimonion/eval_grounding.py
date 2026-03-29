@@ -6,7 +6,7 @@ and evaluates Clark's three grounding mechanisms (Clark 1996):
   2. Acceptance: classify operator response type
   3. Evidence of understanding: check later turns for correct reference
 
-Run as: uv run python -m agents.hapax_voice.eval_grounding [--sessions N] [--since HOURS]
+Run as: uv run python -m agents.hapax_daimonion.eval_grounding [--sessions N] [--since HOURS]
 """
 
 from __future__ import annotations
@@ -484,7 +484,7 @@ def analyze_salience_correlation(
     if len(activations) < 50:
         return None
 
-    from agents.hapax_voice.stats import bayes_correlation as _bayes_corr
+    from agents.hapax_daimonion.stats import bayes_correlation as _bayes_corr
 
     corr_tokens = _bayes_corr(activations, token_counts, prior_mu=0.3, prior_sigma=0.15)
     corr_anchor = _bayes_corr(activations, anchor_scores, prior_mu=0.3, prior_sigma=0.15)

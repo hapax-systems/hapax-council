@@ -13,13 +13,13 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
-from agents.hapax_voice.cognitive_loop import (
+from agents.hapax_daimonion.cognitive_loop import (
     TICK_INTERVAL_S,
     CognitiveLoop,
     TurnPhase,
 )
-from agents.hapax_voice.conversational_model import ConversationalModel
-from agents.hapax_voice.speculative_stt import SpeculativeTranscriber
+from agents.hapax_daimonion.conversational_model import ConversationalModel
+from agents.hapax_daimonion.speculative_stt import SpeculativeTranscriber
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ def _mock_buffer(*, speech_active=False, is_speaking=False, speech_duration_s=0.
 
 def _mock_pipeline(*, state="listening", is_active=True, turn_count=0):
     """Create a mock ConversationPipeline."""
-    from agents.hapax_voice.conversation_pipeline import ConvState
+    from agents.hapax_daimonion.conversation_pipeline import ConvState
 
     pipe = MagicMock()
     state_map = {
@@ -299,7 +299,7 @@ class TestPerceptionBackendInterface:
         assert "predicted_tier" in loop.provides
 
     def test_tier_is_fast(self):
-        from agents.hapax_voice.perception import PerceptionTier
+        from agents.hapax_daimonion.perception import PerceptionTier
 
         loop = _make_loop()
         assert loop.tier == PerceptionTier.FAST
@@ -309,7 +309,7 @@ class TestPerceptionBackendInterface:
         assert loop.available()
 
     def test_contribute_updates_behaviors(self):
-        from agents.hapax_voice.primitives import Behavior
+        from agents.hapax_daimonion.primitives import Behavior
 
         loop = _make_loop()
         loop._turn_phase = TurnPhase.OPERATOR_SPEAKING
@@ -617,7 +617,7 @@ class TestReplaceBackend:
     """replace_backend swaps an existing backend without conflict."""
 
     def test_replace_existing_backend(self):
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         engine = PerceptionEngine(
             presence=MagicMock(
@@ -640,7 +640,7 @@ class TestReplaceBackend:
         assert engine.registered_backends["cognitive_loop"] is loop2
 
     def test_replace_nonexistent_is_register(self):
-        from agents.hapax_voice.perception import PerceptionEngine
+        from agents.hapax_daimonion.perception import PerceptionEngine
 
         engine = PerceptionEngine(
             presence=MagicMock(
@@ -691,7 +691,7 @@ class TestConversationBufferProperties:
     """Batch 2-3: Read-only properties added to ConversationBuffer."""
 
     def test_speech_active_property(self):
-        from agents.hapax_voice.conversation_buffer import ConversationBuffer
+        from agents.hapax_daimonion.conversation_buffer import ConversationBuffer
 
         buf = ConversationBuffer()
         assert buf.speech_active is False
@@ -699,7 +699,7 @@ class TestConversationBufferProperties:
         assert buf.speech_active is True
 
     def test_is_speaking_property(self):
-        from agents.hapax_voice.conversation_buffer import ConversationBuffer
+        from agents.hapax_daimonion.conversation_buffer import ConversationBuffer
 
         buf = ConversationBuffer()
         assert buf.is_speaking is False
@@ -707,13 +707,13 @@ class TestConversationBufferProperties:
         assert buf.is_speaking is True
 
     def test_speech_duration_s_zero_when_not_speaking(self):
-        from agents.hapax_voice.conversation_buffer import ConversationBuffer
+        from agents.hapax_daimonion.conversation_buffer import ConversationBuffer
 
         buf = ConversationBuffer()
         assert buf.speech_duration_s == 0.0
 
     def test_speech_duration_s_positive_during_speech(self):
-        from agents.hapax_voice.conversation_buffer import ConversationBuffer
+        from agents.hapax_daimonion.conversation_buffer import ConversationBuffer
 
         buf = ConversationBuffer()
         buf._speech_active = True
@@ -721,7 +721,7 @@ class TestConversationBufferProperties:
         assert buf.speech_duration_s >= 1.5
 
     def test_speech_frames_snapshot_is_copy(self):
-        from agents.hapax_voice.conversation_buffer import ConversationBuffer
+        from agents.hapax_daimonion.conversation_buffer import ConversationBuffer
 
         buf = ConversationBuffer()
         buf._speech_frames = [b"\x00", b"\x01"]
@@ -738,9 +738,9 @@ class TestConfigFields:
     """Batch 6: Active silence config fields."""
 
     def test_active_silence_defaults(self):
-        from agents.hapax_voice.config import VoiceConfig
+        from agents.hapax_daimonion.config import DaimonionConfig
 
-        cfg = VoiceConfig()
+        cfg = DaimonionConfig()
         assert cfg.active_silence_enabled is False
         assert cfg.silence_notification_threshold_s == 8.0
         assert cfg.silence_winddown_threshold_s == 20.0
