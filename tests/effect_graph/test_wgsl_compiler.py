@@ -85,9 +85,10 @@ class TestCompileToWgslPlan:
         assert uniforms["intensity"] == 0.7
         assert uniforms["radius"] == 3
 
-    def test_compute_node_type(self):
+    def test_temporal_node_type(self):
+        """fluid_sim is a temporal render pass (transpiled from GLSL fragment shader)."""
         graph = EffectGraph(
-            name="test-compute",
+            name="test-temporal",
             nodes={
                 "fs": {"type": "fluid_sim", "params": {"viscosity": 0.001}},
                 "out": {"type": "output"},
@@ -95,9 +96,9 @@ class TestCompileToWgslPlan:
             edges=[["@live", "fs"], ["fs", "out"]],
         )
         plan = compile_to_wgsl_plan(graph)
-        assert plan["passes"][0]["type"] == "compute"
-        assert "steps_per_frame" in plan["passes"][0]
-        assert plan["passes"][0]["steps_per_frame"] > 0
+        assert plan["passes"][0]["type"] == "render"
+        assert plan["passes"][0].get("temporal") is True
+        assert "@accum_fs" in plan["passes"][0]["inputs"]
 
 
 # ---------------------------------------------------------------------------

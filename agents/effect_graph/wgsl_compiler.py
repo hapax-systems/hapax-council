@@ -14,18 +14,13 @@ from .types import EffectGraph
 
 log = logging.getLogger(__name__)
 
-# Nodes that require compute dispatches instead of render passes.
-# These are temporal nodes that run multi-step simulation each frame.
-COMPUTE_NODES: set[str] = {
-    "fluid_sim",
-    "reaction_diffusion",
-}
+# NOTE: No WGSL compute shaders exist yet — all nodes were transpiled from GLSL
+# fragment shaders via naga. reaction_diffusion and fluid_sim are temporal render
+# passes, not compute dispatches. When true compute shaders are added, list them here.
+COMPUTE_NODES: set[str] = set()
 
 # Default steps per frame for compute nodes (can be overridden by params).
-DEFAULT_STEPS_PER_FRAME: dict[str, int] = {
-    "fluid_sim": 4,
-    "reaction_diffusion": 8,
-}
+DEFAULT_STEPS_PER_FRAME: dict[str, int] = {}
 
 DEFAULT_OUTPUT_DIR = Path("/dev/shm/hapax-imagination/pipeline/")
 DEFAULT_NODES_DIR = Path(__file__).resolve().parent.parent / "shaders" / "nodes"
