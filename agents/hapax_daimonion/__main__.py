@@ -909,26 +909,19 @@ class VoiceDaemon:
         """
         from agents.hapax_daimonion.conversational_policy import get_policy
         from agents.hapax_daimonion.env_context import serialize_environment
-        from agents.hapax_daimonion.tools_openai import get_openai_tools
+        from agents.hapax_daimonion.tool_definitions import build_registry
 
-        # Tools (stable across sessions for operator mode)
-        self._precomputed_tools = None
-        self._precomputed_handlers: dict = {}
-        if self.cfg.tools_enabled:
-            tool_kwargs: dict = {
-                "guest_mode": False,
-                "config": self.cfg,
-                "webcam_capturer": getattr(self.workspace_monitor, "_webcam_capturer", None),
-                "screen_capturer": getattr(self.workspace_monitor, "_screen_capturer", None),
-            }
-            vfx = getattr(self.tts, "vocal_fx", None)
-            if vfx is not None:
-                import inspect
-
-                sig = inspect.signature(get_openai_tools)
-                if "vocal_fx" in sig.parameters:
-                    tool_kwargs["vocal_fx"] = vfx
-            self._precomputed_tools, self._precomputed_handlers = get_openai_tools(**tool_kwargs)
+        # Tools (stable across sessions — ToolRegistry replaces flat tuple)
+        self._tool_registry = (
+            build_registry(
+                guest_mode=False,
+                config=self.cfg,
+                webcam_capturer=getattr(self.workspace_monitor, "_webcam_capturer", None),
+                screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
+            )
+            if self.cfg.tools_enabled
+            else build_registry(guest_mode=True)
+        )
 
         # Consent reader (stable, reloads contracts on session start)
         self._precomputed_consent_reader = None
@@ -1099,7 +1092,6 @@ class VoiceDaemon:
         from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
         from agents.hapax_daimonion.conversational_policy import get_policy
         from agents.hapax_daimonion.persona import screen_context_block, system_prompt
-        from agents.hapax_daimonion.tools_openai import get_openai_tools
 
         # Load experiment flags early so they affect prompt construction
         if not hasattr(self, "_experiment_flags"):
@@ -1120,6 +1112,13 @@ class VoiceDaemon:
             log.debug("Experiment config load failed (non-fatal)", exc_info=True)
 
         _exp = self._experiment_flags
+
+        # R&D mode: grounding always on (research mode respects flag)
+        from shared.working_mode import get_working_mode
+
+        if get_working_mode().value == "rnd":
+            _exp["enable_grounding"] = True
+
         _experiment_mode = _exp.get("experiment_mode", False)
 
         policy_block = get_policy(
@@ -1148,17 +1147,39 @@ class VoiceDaemon:
             if recent_memory:
                 prompt += f"\n\n## Recent Conversations\n{recent_memory}"
 
-        # Guest mode needs fresh tools (restricted set)
-        if self.session.is_guest_mode and self.cfg.tools_enabled:
-            tools, tool_handlers = get_openai_tools(
-                guest_mode=True,
-                config=self.cfg,
-                webcam_capturer=getattr(self.workspace_monitor, "_webcam_capturer", None),
-                screen_capturer=getattr(self.workspace_monitor, "_screen_capturer", None),
-            )
-        else:
-            tools = self._precomputed_tools
-            tool_handlers = self._precomputed_handlers
+        # Dynamic tool filtering via ToolRegistry + ToolContext
+        from agents.hapax_daimonion.tool_capability import ToolContext
+
+        _stimmung_stance = "nominal"
+        try:
+            import json as _json
+
+            _shm = Path("/dev/shm/hapax-stimmung/state.json")
+            if _shm.exists():
+                _stimmung_stance = _json.loads(_shm.read_text()).get("overall_stance", "nominal")
+        except Exception:
+            pass
+
+        _active_backends: set[str] = set()
+        if hasattr(self, "perception") and self.perception is not None:
+            for b in getattr(self.perception, "_backends", []):
+                try:
+                    if b.available():
+                        _active_backends.add(b.name)
+                except Exception:
+                    pass
+
+        tool_ctx = ToolContext(
+            stimmung_stance=_stimmung_stance,
+            consent_state={},
+            guest_present=self.session.is_guest_mode,
+            active_backends=frozenset(_active_backends),
+            working_mode=get_working_mode().value,
+            experiment_tools_enabled=_exp.get("tools_enabled", False),
+        )
+
+        tools = self._tool_registry.schemas_for_llm(tool_ctx) or None
+        tool_handlers = self._tool_registry.handler_map(tool_ctx)
 
         # Fallback: presynthesise if startup presynthesis failed
         if not self._bridges_presynthesized:
