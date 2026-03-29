@@ -69,8 +69,9 @@ install: build check
     # Install binaries — DO NOT restart services.
     # Restarting imagination opens a new window on the operator's workspace.
     # The operator restarts services manually when ready (mod+Q or systemctl).
-    cp "$LOGOS_SRC" "$LOGOS_DST"
-    cp "$IMAG_SRC" "$IMAG_DST"
+    # Use rename trick to handle "text file busy" (can't overwrite running binary).
+    cp "$IMAG_SRC" "$IMAG_DST.new" && mv -f "$IMAG_DST.new" "$IMAG_DST"
+    cp "$LOGOS_SRC" "$LOGOS_DST.new" && mv -f "$LOGOS_DST.new" "$LOGOS_DST"
 
     echo "Installed (not restarted — restart manually when ready)."
     echo "  systemctl --user restart hapax-imagination.service"
