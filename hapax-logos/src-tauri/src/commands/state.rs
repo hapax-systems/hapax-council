@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::Path;
 
 // --- Working Mode ---
@@ -198,6 +197,7 @@ struct GoalsSection {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct GoalRaw {
     #[serde(default)]
     id: String,

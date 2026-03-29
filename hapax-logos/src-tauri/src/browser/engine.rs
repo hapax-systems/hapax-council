@@ -190,6 +190,7 @@ impl BrowserEngine {
     }
 
     /// Shutdown the browser.
+    #[allow(dead_code)]
     pub async fn close(&self) -> Result<(), String> {
         // Browser::close is not &self, so we just log.
         // The handler task will exit when the browser process dies.

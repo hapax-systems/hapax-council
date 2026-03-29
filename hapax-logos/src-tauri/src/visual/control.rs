@@ -100,13 +100,6 @@ pub fn get_visual_surface_state() -> VisualSurfaceState {
     }
 }
 
-/// Set visual surface layer params by writing to shm control file.
-#[derive(Deserialize)]
-pub struct LayerParamUpdate {
-    pub layer: String,
-    pub opacity: f64,
-}
-
 #[tauri::command]
 pub fn set_visual_layer_param(layer: String, opacity: f64) -> bool {
     let path = "/dev/shm/hapax-visual/control.json";
