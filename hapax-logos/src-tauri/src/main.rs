@@ -124,12 +124,11 @@ fn main() {
         .manage(commands::streaming::StreamRegistry::new())
         .manage(commands::proxy::HttpClient(reqwest::Client::new()))
         .setup(|app| {
-            // Spawn the wgpu visual surface on a dedicated thread
-            // Skip if HAPAX_NO_VISUAL=1 (useful when visual surface conflicts with Wayland)
-            if std::env::var("HAPAX_NO_VISUAL").unwrap_or_default() != "1" {
-                visual::bridge::spawn_visual_surface(app.handle().clone());
+            // Visual surface runs as separate hapax-imagination binary (systemd)
+            if visual::client::is_connected() {
+                log::info!("Imagination surface connected via UDS");
             } else {
-                log::info!("Visual surface disabled (HAPAX_NO_VISUAL=1)");
+                log::warn!("Imagination surface not available — visual commands will fail gracefully");
             }
             // Spawn the HTTP frame server (GET /frame, GET /stats on :8053)
             visual::http_server::start_frame_server();

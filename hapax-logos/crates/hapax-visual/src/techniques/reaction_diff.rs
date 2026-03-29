@@ -1,8 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::visual::gpu::GpuContext;
-use crate::visual::state::{SmoothedParams, Stance};
+use crate::gpu::GpuContext;
+use crate::state::{SmoothedParams, Stance};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]

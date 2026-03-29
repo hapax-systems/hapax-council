@@ -1,4 +1,6 @@
-//! Tauri commands for controlling the visual surface from the webview.
+//! Control interface for the visual surface — reads/writes /dev/shm state files.
+//!
+//! These are plain library functions. Tauri command wrappers live in src-tauri.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -36,7 +38,6 @@ struct ShmVisualState {
     frame_time_ms: f64,
 }
 
-#[tauri::command]
 pub fn get_visual_surface_state() -> VisualSurfaceState {
     let path = "/dev/shm/hapax-visual/state.json";
     match std::fs::read_to_string(path) {
@@ -107,7 +108,6 @@ pub struct LayerParamUpdate {
     pub opacity: f64,
 }
 
-#[tauri::command]
 pub fn set_visual_layer_param(layer: String, opacity: f64) -> bool {
     let path = "/dev/shm/hapax-visual/control.json";
 
@@ -129,20 +129,7 @@ pub fn set_visual_layer_param(layer: String, opacity: f64) -> bool {
 }
 
 /// Get a JPEG snapshot of the visual surface.
-#[tauri::command]
 pub fn get_visual_surface_snapshot() -> Result<Vec<u8>, String> {
     let path = "/dev/shm/hapax-visual/frame.jpg";
     std::fs::read(path).map_err(|e| format!("No visual snapshot: {}", e))
-}
-
-#[tauri::command]
-pub fn toggle_visual_window(visible: bool) -> bool {
-    let action = if visible { "show" } else { "hide" };
-    match super::client::window_command(action) {
-        Ok(_) => visible,
-        Err(e) => {
-            log::warn!("Failed to toggle imagination window: {}", e);
-            false
-        }
-    }
 }

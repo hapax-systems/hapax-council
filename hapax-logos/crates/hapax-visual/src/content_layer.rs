@@ -4,8 +4,8 @@ use std::path::Path;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use super::compositor::COMPOSITE_FORMAT;
-use super::gpu::GpuContext;
+use crate::compositor::COMPOSITE_FORMAT;
+use crate::gpu::GpuContext;
 
 const MAX_SLOTS: usize = 4;
 

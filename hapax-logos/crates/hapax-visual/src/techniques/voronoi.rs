@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::visual::gpu::GpuContext;
+use crate::gpu::GpuContext;
 
 
 // Zone spatial positions (center of each zone, normalized 0-1)

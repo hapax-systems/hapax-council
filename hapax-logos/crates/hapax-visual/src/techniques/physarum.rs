@@ -1,8 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::visual::gpu::GpuContext;
-use crate::visual::state::SmoothedParams;
+use crate::gpu::GpuContext;
+use crate::state::SmoothedParams;
 
 const AGENT_COUNT: u32 = 5_000_000;
 

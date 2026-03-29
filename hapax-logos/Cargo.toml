@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "src-tauri",
+    "crates/hapax-visual",
+    "src-imagination",
+]
+resolver = "2"
