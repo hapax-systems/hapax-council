@@ -1,1 +1,1 @@
-{"node_type":"content_layer","glsl_fragment":"content_layer.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{},"temporal":false,"temporal_buffers":0}
+{"node_type":"content_layer","glsl_fragment":"content_layer.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"u_salience":0.0,"u_intensity":0.0,"u_material":0.0,"u_time":0.0},"temporal":false,"temporal_buffers":0}
