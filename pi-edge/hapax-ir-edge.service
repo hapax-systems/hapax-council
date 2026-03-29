@@ -1,0 +1,20 @@
+# Hapax IR Edge Inference Daemon
+# Install: sudo cp hapax-ir-edge.service /etc/systemd/system/
+# Configure: sudo sed -i 's/ROLE_PLACEHOLDER/<desk|room|overhead>/' /etc/systemd/system/hapax-ir-edge.service
+# Enable: sudo systemctl enable --now hapax-ir-edge
+[Unit]
+Description=Hapax IR Edge Inference Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hapax
+ExecStart=%h/hapax-edge/.venv/bin/python %h/hapax-edge/hapax_ir_edge.py --role=ROLE_PLACEHOLDER --hostname=%H
+WorkingDirectory=%h/hapax-edge
+Restart=always
+RestartSec=5
+Environment=LIBCAMERA_LOG_LEVELS=*:ERROR
+
+[Install]
+WantedBy=multi-user.target

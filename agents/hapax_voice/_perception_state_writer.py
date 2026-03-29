@@ -420,6 +420,15 @@ def write_perception_state(
             # Overhead hand tracking (zone-based)
             "overhead_hand_zones": str(_bval("overhead_hand_zones", "")),
             "detected_action": str(_bval("detected_action", "")),
+            # IR perception (Pi NoIR edge cameras)
+            "ir_person_detected": bool(_bval("ir_person_detected", False)),
+            "ir_gaze_zone": str(_bval("ir_gaze_zone", "unknown")),
+            "ir_hand_activity": str(_bval("ir_hand_activity", "idle")),
+            "ir_screen_looking": bool(_bval("ir_screen_looking", False)),
+            "ir_drowsiness_score": _safe_float(_bval("ir_drowsiness_score", 0.0)),
+            "ir_blink_rate": _safe_float(_bval("ir_blink_rate", 0.0)),
+            "ir_heart_rate_bpm": _safe_int(_bval("ir_heart_rate_bpm", 0)),
+            "ir_brightness": _safe_float(_bval("ir_brightness", 0.0)),
             # Voice session (Batch A)
             "voice_session": _snapshot_voice_session(session, pipeline),
             # Supplementary content (Batch B)

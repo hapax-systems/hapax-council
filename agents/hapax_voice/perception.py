@@ -88,6 +88,7 @@ def compute_interruptibility(
     gaze_direction: str = "unknown",
     emotion: str = "neutral",
     posture: str = "unknown",
+    ir_drowsiness_score: float = 0.0,
 ) -> float:
     """Compute an interruptibility score from perception signals.
 
@@ -140,6 +141,10 @@ def compute_interruptibility(
         score -= 0.2  # stressed = don't interrupt
     if posture == "slouching":
         score -= 0.1  # low energy = gentler
+
+    # IR drowsiness — don't interrupt drowsy operator with low-priority items
+    if ir_drowsiness_score > 0.6:
+        score -= 0.2
 
     return max(0.0, min(1.0, score))
 
@@ -425,6 +430,7 @@ class PerceptionEngine:
             gaze_direction=self._sval("gaze_direction", "unknown"),
             emotion=self._sval("top_emotion", "neutral"),
             posture=self._sval("posture", "unknown"),
+            ir_drowsiness_score=self._fval("ir_drowsiness_score", 0.0),
         )
 
         presence_score = getattr(self._presence, "score", "likely_absent")
