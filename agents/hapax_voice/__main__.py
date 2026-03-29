@@ -959,6 +959,17 @@ class VoiceDaemon:
         self._nudges_fn = render_nudges
         self._dmn_fn = render_dmn
 
+        # Imagination context injection
+        from agents.imagination_context import format_imagination_context
+
+        self._imagination_fn = format_imagination_context
+
+        # Proactive gate for imagination-driven speech
+        from agents.proactive_gate import ProactiveGate
+
+        self._proactive_gate = ProactiveGate()
+        self._last_utterance_time = time.monotonic()
+
         # Impingement cascade: speech as a recruited capability
         from agents.hapax_voice.capability import SPEECH_DESCRIPTION, SpeechProductionCapability
 
@@ -1169,6 +1180,7 @@ class VoiceDaemon:
         self._conversation_pipeline._health_fn = self._health_fn
         self._conversation_pipeline._nudges_fn = self._nudges_fn
         self._conversation_pipeline._dmn_fn = self._dmn_fn
+        self._conversation_pipeline._imagination_fn = self._imagination_fn
 
         # Wire speech capability into cognitive loop for spontaneous speech polling
         self._cognitive_loop._speech_capability = self._speech_capability
@@ -1853,6 +1865,42 @@ class VoiceDaemon:
                                             "Speech recruited via affordance pipeline: %s (score=%.2f)",
                                             imp.content.get("metric", imp.source),
                                             c.combined,
+                                        )
+                                # Proactive utterance: imagination-sourced impingements
+                                if imp.source == "imagination" and imp.strength >= 0.8:
+                                    gate_state = {
+                                        "perception_activity": (
+                                            self.perception.latest.activity
+                                            if self.perception.latest
+                                            else "unknown"
+                                        ),
+                                        "vad_active": self.session.is_active,
+                                        "last_utterance_time": self._last_utterance_time,
+                                        "tpn_active": False,
+                                    }
+                                    from agents.imagination import ImaginationFragment
+
+                                    try:
+                                        proxy_frag = ImaginationFragment(
+                                            content_references=[],
+                                            dimensions=imp.context.get("dimensions", {}),
+                                            salience=imp.strength,
+                                            continuation=imp.content.get("continuation", False),
+                                            narrative=imp.content.get("narrative", ""),
+                                        )
+                                        if self._proactive_gate.should_speak(
+                                            proxy_frag, gate_state
+                                        ):
+                                            self._proactive_gate.record_utterance()
+                                            self._last_utterance_time = time.monotonic()
+                                            log.info(
+                                                "Proactive utterance triggered: %s",
+                                                imp.content.get("narrative", "")[:60],
+                                            )
+                                    except Exception:
+                                        log.debug(
+                                            "Proactive gate check failed (non-fatal)",
+                                            exc_info=True,
                                         )
                             except Exception:
                                 pass
