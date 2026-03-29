@@ -76,8 +76,9 @@ class IrEdgeDaemon:
             loop.run_until_complete(self._client.aclose())
             loop.close()
 
-    def _capture_frame(self) -> np.ndarray:
-        """Capture a single greyscale frame via rpicam-still."""
+    def _capture_frame(self) -> tuple[np.ndarray, np.ndarray]:
+        """Capture a frame via rpicam-still. Returns (color, greyscale)."""
+        import os
         import subprocess
         import tempfile
 
@@ -100,15 +101,16 @@ class IrEdgeDaemon:
             capture_output=True,
             timeout=10,
         )
-        import os
 
+        empty = np.zeros(DEFAULT_CAPTURE_SIZE[::-1], dtype=np.uint8)
         if not os.path.exists(path):
-            return np.zeros(DEFAULT_CAPTURE_SIZE[::-1], dtype=np.uint8)
-        frame = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            return cv2.cvtColor(empty, cv2.COLOR_GRAY2BGR), empty
+        color = cv2.imread(path, cv2.IMREAD_COLOR)
         os.unlink(path)
-        if frame is None:
-            return np.zeros(DEFAULT_CAPTURE_SIZE[::-1], dtype=np.uint8)
-        return frame
+        if color is None:
+            return cv2.cvtColor(empty, cv2.COLOR_GRAY2BGR), empty
+        grey = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+        return color, grey
 
     async def _main_loop(self) -> None:
         """Main inference + POST loop."""
@@ -118,7 +120,7 @@ class IrEdgeDaemon:
         while self._running:
             t0 = time.monotonic()
 
-            grey = await asyncio.get_event_loop().run_in_executor(None, self._capture_frame)
+            color, grey = await asyncio.get_event_loop().run_in_executor(None, self._capture_frame)
 
             motion_delta = self._compute_motion(grey)
 
@@ -135,7 +137,8 @@ class IrEdgeDaemon:
             if not skip_inference:
                 t_infer = time.monotonic()
 
-                raw_persons = self._yolo.detect_persons(grey)
+                # Use color for YOLO (trained on RGB), greyscale for hand/screen detection
+                raw_persons = self._yolo.detect_persons(color)
 
                 for p in raw_persons:
                     face_data = self._face.detect(grey, p["bbox"])

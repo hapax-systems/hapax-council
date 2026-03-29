@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 MODEL_PATH = Path(__file__).parent / "yolov8n_full_integer_quant.tflite"
 PERSON_CLASS_ID = 0
-CONFIDENCE_THRESHOLD = 0.4
+CONFIDENCE_THRESHOLD = 0.10
 INPUT_SIZE = 320
 
 
@@ -32,14 +32,17 @@ class YoloDetector:
         self._output_details = self._interpreter.get_output_details()
         log.info("YOLO detector loaded from %s", path)
 
-    def detect_persons(self, grey_frame: np.ndarray) -> list[dict]:
-        """Run person detection on a greyscale frame.
+    def detect_persons(self, frame: np.ndarray) -> list[dict]:
+        """Run person detection on a frame (color BGR or greyscale).
 
         Returns list of {confidence, bbox: [x1, y1, x2, y2]} dicts.
         """
-        h, w = grey_frame.shape[:2]
-        resized = cv2.resize(grey_frame, (INPUT_SIZE, INPUT_SIZE))
-        rgb = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
+        h, w = frame.shape[:2]
+        resized = cv2.resize(frame, (INPUT_SIZE, INPUT_SIZE))
+        if resized.ndim == 2:
+            rgb = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
+        else:
+            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         input_data = np.expand_dims(rgb, axis=0)
 
         input_detail = self._input_details[0]
@@ -70,6 +73,10 @@ class YoloDetector:
             output = output.T
 
         persons = []
+        # Detect if coordinates are normalized (0-1) or pixel-scale
+        max_coord = float(np.max(np.abs(output[:, :4]))) if len(output) > 0 else 0
+        coords_normalized = max_coord <= 1.5  # normalized outputs are in [0, 1]
+
         for detection in output:
             cx, cy, dw, dh = detection[:4]
             class_scores = detection[4:]
@@ -79,12 +86,20 @@ class YoloDetector:
             if class_id != PERSON_CLASS_ID or confidence < CONFIDENCE_THRESHOLD:
                 continue
 
-            scale_x = orig_w / INPUT_SIZE
-            scale_y = orig_h / INPUT_SIZE
-            x1 = int((cx - dw / 2) * scale_x)
-            y1 = int((cy - dh / 2) * scale_y)
-            x2 = int((cx + dw / 2) * scale_x)
-            y2 = int((cy + dh / 2) * scale_y)
+            if coords_normalized:
+                # Coords are normalized [0, 1] — scale to original image
+                x1 = int((cx - dw / 2) * orig_w)
+                y1 = int((cy - dh / 2) * orig_h)
+                x2 = int((cx + dw / 2) * orig_w)
+                y2 = int((cy + dh / 2) * orig_h)
+            else:
+                # Coords are in INPUT_SIZE pixel space — scale to original
+                scale_x = orig_w / INPUT_SIZE
+                scale_y = orig_h / INPUT_SIZE
+                x1 = int((cx - dw / 2) * scale_x)
+                y1 = int((cy - dh / 2) * scale_y)
+                x2 = int((cx + dw / 2) * scale_x)
+                y2 = int((cy + dh / 2) * scale_y)
 
             persons.append(
                 {
