@@ -602,17 +602,58 @@ impl DynamicPipeline {
                 let h = self.height as usize;
                 let mut pixels = vec![0u8; w * h * 4];
                 let t = time;
+
+                // Simple hash-based noise (cheaper than proper FBM but visually rich)
+                #[inline]
+                fn hash(x: f32, y: f32) -> f32 {
+                    // Two-axis hash — avoids diagonal correlation from single dot product
+                    let h = ((x * 127.1 + y * 311.7).sin() * 43758.547
+                        + (x * 269.5 + y * 183.3).cos() * 28461.321)
+                        * 0.5;
+                    h - h.floor()
+                }
+                #[inline]
+                fn noise(x: f32, y: f32) -> f32 {
+                    let ix = x.floor();
+                    let iy = y.floor();
+                    let fx = x - ix;
+                    let fy = y - iy;
+                    let sx = fx * fx * (3.0 - 2.0 * fx);
+                    let sy = fy * fy * (3.0 - 2.0 * fy);
+                    let a = hash(ix, iy);
+                    let b = hash(ix + 1.0, iy);
+                    let c = hash(ix, iy + 1.0);
+                    let d = hash(ix + 1.0, iy + 1.0);
+                    a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy
+                }
+                fn fbm(mut x: f32, mut y: f32, octaves: u32) -> f32 {
+                    let mut v = 0.0f32;
+                    let mut a = 0.5f32;
+                    for _ in 0..octaves {
+                        v += a * noise(x, y);
+                        x = x * 2.0 + 100.0;
+                        y = y * 2.0 + 100.0;
+                        a *= 0.5;
+                    }
+                    v
+                }
+
                 for y in 0..h {
                     for x in 0..w {
-                        let u = x as f32 / w as f32;
-                        let v = y as f32 / h as f32;
-                        let r = (u * 4.0 + t * 0.1).sin() * 0.5 + 0.5;
-                        let g = (v * 3.0 + t * 0.07).cos() * 0.4 + 0.3;
-                        let b = (u * 3.0 + v * 2.0 + t * 0.13).sin() * 0.5 + 0.5;
+                        let u = x as f32 / w as f32 * 4.0;
+                        let v = y as f32 / h as f32 * 3.0;
+                        // Three FBM layers at different scales, offsets, and time rates
+                        // to produce rich, non-diagonal noise patterns
+                        let n1 = fbm(u * 3.0 + t * 0.08 + 17.3, v * 2.5 - t * 0.05 + 41.7, 5);
+                        let n2 = fbm(v * 2.0 + t * 0.03 + 89.1, u * 3.5 - t * 0.07 + 63.2, 4);
+                        let n3 = fbm(u * 1.5 + v * 1.5 + t * 0.04 + 137.0, u * 1.0 - v * 2.0 + t * 0.02 + 211.0, 4);
+                        let r = (n1 * 0.8 + n2 * 0.4 + 0.3).clamp(0.0, 1.0);
+                        let g = (n2 * 0.7 + n3 * 0.3 + 0.25).clamp(0.0, 1.0);
+                        let b_val = (n3 * 0.6 + n1 * 0.3 + 0.3).clamp(0.0, 1.0);
                         let idx = (y * w + x) * 4;
                         pixels[idx] = (r * 255.0) as u8;
                         pixels[idx + 1] = (g * 255.0) as u8;
-                        pixels[idx + 2] = (b * 255.0) as u8;
+                        pixels[idx + 2] = (b_val * 255.0) as u8;
                         pixels[idx + 3] = 255;
                     }
                 }
@@ -1107,9 +1148,12 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    // Fullscreen triangle: 3 vertices that cover the entire viewport.
+    // Vertex 0: (-1, -1), Vertex 1: (3, -1), Vertex 2: (-1, 3)
+    // The GPU clips the oversized triangle to the viewport automatically.
     var out: VertexOutput;
-    let x = f32(i32(vertex_index & 1u) * 2 - 1);
-    let y = f32(i32(vertex_index >> 1u) * 2 - 1);
+    let x = f32(i32(vertex_index & 1u)) * 4.0 - 1.0;
+    let y = f32(i32(vertex_index >> 1u)) * 4.0 - 1.0;
     out.position = vec4<f32>(x, y, 0.0, 1.0);
     out.uv = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
     return out;
