@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 
 from agents.imagination import ContentReference, ImaginationFragment
-from agents.imagination_resolver import cleanup_content_dir, resolve_references, resolve_text
+from agents.imagination_resolver import (
+    cleanup_content_dir,
+    resolve_references,
+    resolve_references_staged,
+    resolve_text,
+    write_slot_manifest,
+)
 
 
 def _make_fragment(refs: list[ContentReference], fid: str = "test123") -> ImaginationFragment:
@@ -58,6 +64,89 @@ def test_resolve_references_skips_fast_kinds(tmp_path):
     results = resolve_references(frag, tmp_path)
     assert len(results) == 1
     assert results[0].name == "test123-2.jpg"
+
+
+# ---------------------------------------------------------------------------
+# Task 1b: staging + slot manifest
+# ---------------------------------------------------------------------------
+
+
+def test_write_slot_manifest(tmp_path):
+    refs = [
+        ContentReference(kind="text", source="Hello", query=None, salience=0.7),
+        ContentReference(kind="text", source="World", query=None, salience=0.4),
+    ]
+    frag = _make_fragment(refs, fid="m1")
+    manifest_path = tmp_path / "slots.json"
+    paths = [tmp_path / "m1-0.jpg", tmp_path / "m1-1.jpg"]
+    for p in paths:
+        p.write_bytes(b"\xff\xd8dummy")
+    write_slot_manifest(frag, paths, manifest_path)
+    data = json.loads(manifest_path.read_text())
+    assert data["fragment_id"] == "m1"
+    assert len(data["slots"]) == 2
+    assert data["slots"][0]["index"] == 0
+    assert data["slots"][0]["salience"] == 0.7
+    assert data["material"] == "water"
+    assert data["continuation"] is False
+
+
+def test_resolve_references_staged_atomic(tmp_path):
+    staging = tmp_path / "staging"
+    active = tmp_path / "active"
+    refs = [ContentReference(kind="text", source="Test content", query=None, salience=0.5)]
+    frag = _make_fragment(refs, fid="s1")
+    resolve_references_staged(frag, staging_dir=staging, active_dir=active)
+    assert active.exists()
+    assert not staging.exists()
+    assert (active / "s1-0.jpg").exists()
+    manifest = json.loads((active / "slots.json").read_text())
+    assert manifest["fragment_id"] == "s1"
+
+
+def test_resolve_references_staged_replaces_previous(tmp_path):
+    staging = tmp_path / "staging"
+    active = tmp_path / "active"
+    refs1 = [ContentReference(kind="text", source="First", query=None, salience=0.5)]
+    frag1 = _make_fragment(refs1, fid="r1")
+    resolve_references_staged(frag1, staging_dir=staging, active_dir=active)
+    assert (active / "r1-0.jpg").exists()
+    refs2 = [ContentReference(kind="text", source="Second", query=None, salience=0.6)]
+    frag2 = _make_fragment(refs2, fid="r2")
+    resolve_references_staged(frag2, staging_dir=staging, active_dir=active)
+    assert (active / "r2-0.jpg").exists()
+    assert not (active / "r1-0.jpg").exists()
+
+
+def test_manifest_camera_frame_uses_source_path(tmp_path):
+    refs = [ContentReference(kind="camera_frame", source="overhead", query=None, salience=0.8)]
+    frag = _make_fragment(refs, fid="c1")
+    manifest_path = tmp_path / "slots.json"
+    write_slot_manifest(frag, [], manifest_path)
+    data = json.loads(manifest_path.read_text())
+    assert data["slots"][0]["path"] == "/dev/shm/hapax-compositor/overhead.jpg"
+    assert data["slots"][0]["kind"] == "camera_frame"
+
+
+def test_manifest_file_ref_uses_source_path(tmp_path):
+    refs = [ContentReference(kind="file", source="/tmp/test.jpg", query=None, salience=0.6)]
+    frag = _make_fragment(refs, fid="f1")
+    manifest_path = tmp_path / "slots.json"
+    write_slot_manifest(frag, [], manifest_path)
+    data = json.loads(manifest_path.read_text())
+    assert data["slots"][0]["path"] == "/tmp/test.jpg"
+
+
+def test_manifest_max_four_slots(tmp_path):
+    refs = [
+        ContentReference(kind="text", source=f"Slot {i}", query=None, salience=0.5)
+        for i in range(6)
+    ]
+    frag = _make_fragment(refs, fid="max")
+    manifest_path = tmp_path / "slots.json"
+    write_slot_manifest(frag, [tmp_path / f"max-{i}.jpg" for i in range(6)], manifest_path)
+    data = json.loads(manifest_path.read_text())
+    assert len(data["slots"]) == 4  # capped at MAX_SLOTS
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,9 @@ are skipped — handled by the Rust visual surface.
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
 import textwrap
 from pathlib import Path
 
@@ -25,6 +27,9 @@ CONTENT_DIR = Path("/dev/shm/hapax-imagination/content")
 RENDER_WIDTH = 1920
 RENDER_HEIGHT = 1080
 SLOW_KINDS = {"text", "qdrant_query", "url"}
+CAMERA_FRAME_DIR = "/dev/shm/hapax-compositor"
+FAST_KINDS = {"camera_frame", "file"}
+MAX_SLOTS = 4
 
 # ---------------------------------------------------------------------------
 # Font loading
@@ -113,6 +118,74 @@ def resolve_references(
         if path is not None:
             results.append(path)
     return results
+
+
+def write_slot_manifest(
+    fragment: ImaginationFragment,
+    resolved_paths: list[Path],
+    manifest_path: Path,
+) -> None:
+    """Write a slot manifest JSON for the Rust content texture manager."""
+    slots = []
+    resolved_idx = 0
+
+    for i, ref in enumerate(fragment.content_references[:MAX_SLOTS]):
+        if ref.kind == "camera_frame":
+            path = f"{CAMERA_FRAME_DIR}/{ref.source}.jpg"
+        elif ref.kind == "file":
+            path = ref.source
+        elif resolved_idx < len(resolved_paths):
+            path = str(resolved_paths[resolved_idx])
+            resolved_idx += 1
+        else:
+            continue
+
+        slots.append(
+            {
+                "index": i,
+                "path": path,
+                "kind": ref.kind,
+                "salience": ref.salience,
+            }
+        )
+
+    manifest = {
+        "fragment_id": fragment.id,
+        "slots": slots,
+        "continuation": fragment.continuation,
+        "material": fragment.material,
+    }
+
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = manifest_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(manifest))
+    tmp.rename(manifest_path)
+
+
+def resolve_references_staged(
+    fragment: ImaginationFragment,
+    staging_dir: Path | None = None,
+    active_dir: Path | None = None,
+) -> list[Path]:
+    """Resolve content references to staging, then atomically swap to active."""
+    staging = staging_dir or (CONTENT_DIR / "staging")
+    active = active_dir or (CONTENT_DIR / "active")
+
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
+
+    resolved = resolve_references(fragment, content_dir=staging)
+    write_slot_manifest(fragment, resolved, staging / "slots.json")
+
+    old = active.with_name("old")
+    if active.exists():
+        active.rename(old)
+    staging.rename(active)
+    if old.exists():
+        shutil.rmtree(old, ignore_errors=True)
+
+    return resolved
 
 
 # ---------------------------------------------------------------------------
