@@ -277,6 +277,13 @@ class ImaginationLoop:
         self._stream_path = stream_path or STREAM_PATH
         self._agent = None  # lazy-init
 
+    @property
+    def activation_level(self) -> float:
+        """Return the salience of the most recent fragment, or 0."""
+        if not self.recent_fragments:
+            return 0.0
+        return self.recent_fragments[-1].salience
+
     def _get_agent(self):
         """Lazy-init pydantic_ai Agent for imagination generation."""
         if self._agent is None:
