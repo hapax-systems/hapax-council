@@ -128,9 +128,9 @@ class FaceLandmarkDetector:
             self._landmarker = FaceLandmark()
             self._available = True
             log.info("Face landmark detector loaded (fdlite)")
-        except ImportError:
+        except (ImportError, AttributeError, Exception) as exc:
             self._available = False
-            log.warning("face-detection-tflite not installed, face landmarks disabled")
+            log.warning("Face landmarks disabled: %s", exc)
 
     @property
     def available(self) -> bool:
