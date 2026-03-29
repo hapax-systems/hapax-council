@@ -189,7 +189,7 @@ export function StudioDetailPane({
         >
           <PaletteStrip
             presets={presets}
-            activePreset={isLive ? activePreset : undefined}
+            activePreset={isLive ? activePreset ?? undefined : undefined}
             onSelect={activatePreset}
           />
         </LayerRow>
@@ -205,7 +205,7 @@ export function StudioDetailPane({
         >
           <PaletteStrip
             presets={presets}
-            activePreset={isHls ? activePreset : undefined}
+            activePreset={isHls ? activePreset ?? undefined : undefined}
             onSelect={activatePreset}
           />
         </LayerRow>

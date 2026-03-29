@@ -193,6 +193,7 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
     if (hlsRef.current) return;
 
     let destroyed = false;
+    let revealTimer: ReturnType<typeof setTimeout> | undefined;
 
     // Start hidden until first frame is buffered -- prevents initial black flash
     video.style.opacity = "0";
@@ -226,7 +227,7 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
         }
       });
       // Fallback: reveal after 5s in case FRAG_BUFFERED never fires
-      const revealTimer = setTimeout(() => {
+      revealTimer = setTimeout(() => {
         if (!destroyed && video.style.opacity === "0") video.style.opacity = "1";
       }, 5000);
       hls.on(Hls.Events.ERROR, (_event: string, data: any) => {
