@@ -50,9 +50,9 @@ fi
 # ── 90%+ : Kill duplicate GPU processes (keep newest per type) ──
 if [ "$PCT" -ge 90 ]; then
     # Find duplicate voice daemons — keep the one systemd tracks
-    VOICE_PID=$(systemctl --user show hapax-voice.service -p MainPID --value 2>/dev/null || echo 0)
+    VOICE_PID=$(systemctl --user show hapax-daimonion.service -p MainPID --value 2>/dev/null || echo 0)
 
-    for pid in $(nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null | grep hapax_voice | cut -d, -f1 | tr -d ' '); do
+    for pid in $(nvidia-smi --query-compute-apps=pid,name --format=csv,noheader 2>/dev/null | grep hapax_daimonion | cut -d, -f1 | tr -d ' '); do
         if [ "$pid" != "$VOICE_PID" ] && [ "$pid" != "0" ]; then
             log "Killing duplicate voice daemon PID $pid (systemd tracks $VOICE_PID)"
             kill "$pid" 2>/dev/null || true
@@ -70,8 +70,8 @@ if [ "$PCT" -ge 90 ]; then
     fi
 
     # Kill rogue GPU processes — anything not in the allowlist
-    # Allowlist: hapax_voice, studio_compositor, video_processor, ollama_llama_server
-    ALLOWLIST="hapax_voice|studio_compositor|video_processor|ollama_llama_server"
+    # Allowlist: hapax_daimonion, studio_compositor, video_processor, ollama_llama_server
+    ALLOWLIST="hapax_daimonion|studio_compositor|video_processor|ollama_llama_server"
     while IFS=, read -r pid name; do
         pid=$(echo "$pid" | tr -d ' ')
         name=$(echo "$name" | tr -d ' ')

@@ -12,9 +12,9 @@ website:
       - text: "Entries"
         href: posts.md
       - text: "Theory"
-        href: ../agents/hapax_voice/proofs/THEORETICAL-FOUNDATIONS.md
+        href: ../agents/hapax_daimonion/proofs/THEORETICAL-FOUNDATIONS.md
       - text: "Position"
-        href: ../agents/hapax_voice/proofs/POSITION.md
+        href: ../agents/hapax_daimonion/proofs/POSITION.md
       - text: "Observations"
         href: observations.md
 

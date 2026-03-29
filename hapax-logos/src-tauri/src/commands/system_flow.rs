@@ -110,7 +110,7 @@ pub fn get_system_flow() -> SystemFlowState {
 
     // ── Perception ──────────────────────────────────────────────
     let perception_path = format!(
-        "{}/.cache/hapax-voice/perception-state.json",
+        "{}/.cache/hapax-daimonion/perception-state.json",
         std::env::var("HOME").unwrap_or_default()
     );
     let perception = read_json(&perception_path);

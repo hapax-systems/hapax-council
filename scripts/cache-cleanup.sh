@@ -70,7 +70,7 @@ rm -rf /home/hapax/.config/google-chrome/GrShaderCache/ 2>/dev/null || true
 find /home/hapax/projects -name "__pycache__" -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
 
 # 8. Perception minutes log — keep 7 days
-PERCEPTION_LOG="$HOME/.cache/hapax-voice/perception-minutes.jsonl"
+PERCEPTION_LOG="$HOME/.cache/hapax-daimonion/perception-minutes.jsonl"
 if [ -f "$PERCEPTION_LOG" ]; then
     cutoff=$(date -d "7 days ago" +%s)
     before_lines=$(wc -l < "$PERCEPTION_LOG")

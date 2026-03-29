@@ -1,7 +1,7 @@
 [Unit]
 Description=Studio Compositor — GPU-accelerated camera tiling, recording, HLS streaming, and visual effects
-After=hapax-voice.service
-Wants=hapax-voice.service
+After=hapax-daimonion.service
+Wants=hapax-daimonion.service
 Conflicts=hapax-video-cam@brio.service hapax-video-cam@c920-desk.service hapax-video-cam@c920-room.service hapax-video-cam@c920-overhead.service
 StartLimitBurst=5
 StartLimitIntervalSec=300

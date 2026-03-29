@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Live smoke tests for hapax-voice daemon
+# Live smoke tests for hapax-daimonion daemon
 # Requires: daemon running, socat installed
 
-SOCKET="/run/user/1000/hapax-voice.sock"
+SOCKET="/run/user/1000/hapax-daimonion.sock"
 PASS=0
 FAIL=0
 
@@ -14,20 +14,20 @@ fail() { echo "  ✗ $1"; ((FAIL++)); }
 check_log() {
     local seconds=$1
     local pattern=$2
-    journalctl --user -u hapax-voice --since "${seconds} sec ago" --no-pager 2>/dev/null | grep -q "$pattern"
+    journalctl --user -u hapax-daimonion --since "${seconds} sec ago" --no-pager 2>/dev/null | grep -q "$pattern"
 }
 
-echo "=== Hapax Voice Daemon Smoke Tests ==="
+echo "=== Hapax Daimonion Daemon Smoke Tests ==="
 echo ""
 
 # --- Prerequisite checks ---
 echo "Prerequisites:"
 
-if systemctl --user is-active hapax-voice.service >/dev/null 2>&1; then
+if systemctl --user is-active hapax-daimonion.service >/dev/null 2>&1; then
     pass "Daemon is running"
 else
     fail "Daemon is not running"
-    echo "  Start with: systemctl --user start hapax-voice.service"
+    echo "  Start with: systemctl --user start hapax-daimonion.service"
     exit 1
 fi
 
@@ -87,7 +87,7 @@ echo ""
 echo "Surface 1: Wake Word (requires manual test)"
 echo "  → Say 'Hapax' near the microphone"
 echo "  → Verify: chime plays, session opens, pipeline starts"
-echo "  → Check: journalctl --user -u hapax-voice -f | grep -i 'wake\|session\|pipeline'"
+echo "  → Check: journalctl --user -u hapax-daimonion -f | grep -i 'wake\|session\|pipeline'"
 
 # --- Surface 2: Voice round-trip (manual) ---
 echo ""
@@ -96,7 +96,7 @@ echo "  → After wake word, speak a question"
 echo "  → Verify: STT transcription appears in logs"
 echo "  → Verify: LLM response generated"
 echo "  → Verify: TTS audio plays through speakers"
-echo "  → Check: journalctl --user -u hapax-voice -f"
+echo "  → Check: journalctl --user -u hapax-daimonion -f"
 
 # --- Surface 7: Notification delivery ---
 echo ""

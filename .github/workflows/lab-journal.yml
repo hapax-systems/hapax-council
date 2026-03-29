@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'lab-journal/**'
-      - 'agents/hapax_voice/proofs/**'
+      - 'agents/hapax_daimonion/proofs/**'
 
 permissions:
   contents: read

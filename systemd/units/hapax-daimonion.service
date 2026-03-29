@@ -1,5 +1,5 @@
 [Unit]
-Description=Hapax Voice — persistent voice interaction daemon
+Description=Hapax Daimonion — persistent voice interaction daemon
 After=pipewire.service pipewire-pulse.service hapax-secrets.service
 Requires=pipewire.service hapax-secrets.service
 Wants=pipewire-pulse.service
@@ -18,7 +18,7 @@ WorkingDirectory=/home/hapax/projects/hapax-council
 # Delay startup to let logos-api initialize first,
 # preventing GPU memory spike that causes SIGKILL during boot
 ExecStartPre=/bin/sleep 10
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.hapax_voice
+ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.hapax_daimonion
 Restart=always
 RestartSec=10
 EnvironmentFile=/run/user/1000/hapax-secrets.env
@@ -33,7 +33,7 @@ MemoryMax=8G
 OOMScoreAdjust=-500
 Nice=-10
 LimitNOFILE=1048576
-SyslogIdentifier=hapax-voice
+SyslogIdentifier=hapax-daimonion
 
 [Install]
 WantedBy=default.target

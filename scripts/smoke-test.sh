@@ -27,7 +27,7 @@ for c in "${EXPECTED_CONTAINERS[@]}"; do
 done
 
 echo "[Systemd - critical services]"
-CRITICAL_SERVICES=(logos-api hapax-imagination hapax-voice visual-layer-aggregator)
+CRITICAL_SERVICES=(logos-api hapax-imagination hapax-daimonion visual-layer-aggregator)
 for svc in "${CRITICAL_SERVICES[@]}"; do
     status=$(systemctl --user is-active "$svc" 2>/dev/null || echo "inactive")
     if [[ "$status" == "active" ]]; then

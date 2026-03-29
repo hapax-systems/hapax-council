@@ -69,10 +69,10 @@ jobs:
           set +e
           timeout -s KILL 300 \
             uv run pytest tests/ -q \
-              --ignore=tests/hapax_voice --ignore=tests/contract \
+              --ignore=tests/hapax_daimonion --ignore=tests/contract \
               --ignore=tests/test_frame_gate.py \
-              --ignore=tests/test_hapax_voice_pipecat_tts.py \
-              --ignore=tests/test_hapax_voice_pipeline.py \
+              --ignore=tests/test_hapax_daimonion_pipecat_tts.py \
+              --ignore=tests/test_hapax_daimonion_pipeline.py \
               --ignore=tests/test_perception_integration.py \
               --ignore=tests/test_sensor_tier2_tier3.py \
               --ignore=tests/fortress \

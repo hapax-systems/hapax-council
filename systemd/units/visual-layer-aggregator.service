@@ -1,6 +1,6 @@
 [Unit]
 Description=Visual Layer Aggregator — polls logos API and perception state for compositor overlay
-After=logos-api.service hapax-voice.service hapax-secrets.service
+After=logos-api.service hapax-daimonion.service hapax-secrets.service
 Requires=hapax-secrets.service
 Wants=logos-api.service
 

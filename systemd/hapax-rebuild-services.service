@@ -9,8 +9,8 @@ Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 SyslogIdentifier=hapax-rebuild-services
 TimeoutStartSec=120
 
-# hapax-voice: restart if voice agent or shared code changed
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-voice.service --watch "agents/hapax_voice/ shared/" --sha-key voice
+# hapax-daimonion: restart if voice agent or shared code changed
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-daimonion.service --watch "agents/hapax_daimonion/ shared/" --sha-key voice
 
 # logos-api: restart if logos backend code changed
 ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service logos-api.service --watch "logos/" --sha-key logos-api

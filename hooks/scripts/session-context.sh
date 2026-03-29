@@ -246,7 +246,7 @@ fi
 
 # /refresh-research — research mode active
 if [ "$MODE" = "research" ]; then
-  RESEARCH_STATE="$HOME/projects/hapax-council/agents/hapax_voice/proofs/RESEARCH-STATE.md"
+  RESEARCH_STATE="$HOME/projects/hapax-council/agents/hapax_daimonion/proofs/RESEARCH-STATE.md"
   if [ -f "$RESEARCH_STATE" ]; then
     RS_AGE=$(( ($(date +%s) - $(stat -c %Y "$RESEARCH_STATE")) / 3600 ))
     if [ "$RS_AGE" -gt 48 ]; then

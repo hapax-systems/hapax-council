@@ -5,8 +5,8 @@
 #
 # Usage:
 #   rebuild-service.sh --repo ~/projects/hapax-council \
-#       --service hapax-voice.service \
-#       --watch "agents/hapax_voice/ shared/" \
+#       --service hapax-daimonion.service \
+#       --watch "agents/hapax_daimonion/ shared/" \
 #       --sha-key voice
 #
 #   rebuild-service.sh --repo ~/projects/hapax-mcp \

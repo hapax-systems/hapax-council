@@ -10,7 +10,7 @@
 # Stop:   process-compose down
 #
 # Before using: stop the systemd services to avoid port conflicts:
-#   systemctl --user stop logos-api hapax-voice visual-layer-aggregator studio-compositor
+#   systemctl --user stop logos-api hapax-daimonion visual-layer-aggregator studio-compositor
 
 version: "0.5"
 
@@ -30,11 +30,11 @@ processes:
   secrets:
     command: |
       bash -c '
-        echo "export LITELLM_API_KEY=$(pass show litellm/master-key)" > /run/user/1000/hapax-voice.env
-        echo "export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key)" >> /run/user/1000/hapax-voice.env
-        echo "export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key)" >> /run/user/1000/hapax-voice.env
-        echo "export HF_TOKEN=$(pass show api/huggingface)" >> /run/user/1000/hapax-voice.env
-        chmod 600 /run/user/1000/hapax-voice.env
+        echo "export LITELLM_API_KEY=$(pass show litellm/master-key)" > /run/user/1000/hapax-daimonion.env
+        echo "export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key)" >> /run/user/1000/hapax-daimonion.env
+        echo "export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key)" >> /run/user/1000/hapax-daimonion.env
+        echo "export HF_TOKEN=$(pass show api/huggingface)" >> /run/user/1000/hapax-daimonion.env
+        chmod 600 /run/user/1000/hapax-daimonion.env
         echo "Secrets loaded"
       '
     working_dir: /home/hapax/projects/hapax-council
@@ -46,7 +46,7 @@ processes:
 
   # ── Logos API (FastAPI on :8051) ────────────────────────────────
   logos-api:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/hapax/projects/hapax-council/.venv/bin/python -m logos.api --host 0.0.0.0'
+    command: bash -c 'source /run/user/1000/hapax-daimonion.env && exec /home/hapax/projects/hapax-council/.venv/bin/python -m logos.api --host 0.0.0.0'
     working_dir: /home/hapax/projects/hapax-council
     disabled: true  # Managed by systemd logos-api.service to avoid port conflicts
     depends_on:
@@ -66,9 +66,9 @@ processes:
 
   # ── Voice Daemon ────────────────────────────────────────────────
   voice:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/hapax/projects/hapax-council/.venv/bin/python -m agents.hapax_voice'
+    command: bash -c 'source /run/user/1000/hapax-daimonion.env && exec /home/hapax/projects/hapax-council/.venv/bin/python -m agents.hapax_daimonion'
     working_dir: /home/hapax/projects/hapax-council
-    disabled: true  # Managed by systemd hapax-voice.service (OOM protection, nice, secrets)
+    disabled: true  # Managed by systemd hapax-daimonion.service (OOM protection, nice, secrets)
     depends_on:
       secrets:
         condition: process_completed_successfully
@@ -80,13 +80,13 @@ processes:
       max_restarts: 10
     readiness_probe:
       exec:
-        command: "test -f /home/hapax/.cache/hapax-voice/perception-state.json"
+        command: "test -f /home/hapax/.cache/hapax-daimonion/perception-state.json"
       initial_delay_seconds: 15
       period_seconds: 10
 
   # ── Visual Layer Aggregator ─────────────────────────────────────
   visual:
-    command: bash -c 'source /run/user/1000/hapax-voice.env && exec /home/hapax/projects/hapax-council/.venv/bin/python -m agents.visual_layer_aggregator'
+    command: bash -c 'source /run/user/1000/hapax-daimonion.env && exec /home/hapax/projects/hapax-council/.venv/bin/python -m agents.visual_layer_aggregator'
     working_dir: /home/hapax/projects/hapax-council
     depends_on:
       logos-api:

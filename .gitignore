@@ -58,7 +58,7 @@ plugins/gst-temporalfx/target/
 profiles/tmp*
 
 # Voice experiment session data (contains operator interactions)
-agents/hapax_voice/proofs/**/data/
+agents/hapax_daimonion/proofs/**/data/
 
 # Screenshots (smoke tests, stress tests, explorations)
 *.png
