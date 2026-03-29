@@ -136,6 +136,22 @@ Mixed R&D and infrastructure. No changes to experiment code or grounding theory.
 
 **VRAM budget resolution.** qwen3.5:27b (22GB) cannot coexist with daimonion (3GB STT+vision) + imagination (120MB) + DMN qwen3:4b (3.3GB) + embeddings (1GB) on a 24GB GPU. Caused VRAM emergency cycle: timer agents load 27b via LiteLLM → watchdog unloads → repeat every 30s. Fixed by downsizing reasoning/coding alias from qwen3.5:27b to qwen3:8b (5.2GB). Updated shared/config.py, LiteLLM proxy config, health monitor, scout. Total VRAM with all services: ~12.4GB, 12GB headroom.
 
+## Session 19c (2026-03-29): VRAM Headroom Research + DMN Model Upgrade
+
+Infrastructure optimization. No changes to experiment code or grounding theory.
+
+**DMN model upgrade (PR #430).** Replaced qwen3:4b with qwen3.5:4b for both DMN pulse engine and perception classification backend. Intelligence Index improvement 18→27 (approaching old qwen3-80B-A3B quality). VRAM cost increased from ~3.3GB to ~5.6GB. Updated LiteLLM config, all code references, docs, tests.
+
+**VRAM headroom research.** Comprehensive survey of upgrade options for the ~14GB headroom. Key findings:
+- *Free upgrades:* qwen3.5:4b (done), faster-whisper large-v3-turbo (pending), YOLO26 (pending)
+- *High-value additions:* qwen3.5:9b for on-demand reasoning (~5.5GB, tops IFBench), Moondream 2B for semantic scene VQA (~1GB), Chatterbox-Turbo for TTS (~4.5GB)
+- *Not viable for coexistence:* Voxtral self-hosted (16GB), qwen3.5-35B-A3B (22GB), image generation (8-12GB)
+- *No improvement needed:* nomic-embed-v2-moe already at efficiency frontier
+
+**Updated VRAM budget:** Always-on ~13.1GB (53%), peak with reasoning ~18.3GB (75%), minimum headroom ~6.2GB.
+
+**Impact on grounding research:** None. DMN quality improvement benefits situation modeling but does not affect experiment LLM paths.
+
 **Impact on grounding research:** Tool re-enablement is gated by ToolContext — Research mode suppresses all tools unless `experiment_tools_enabled` flag is set. Phase A baseline continues unaffected. Model downsize changes the reasoning tier available to non-experiment agents but does not affect the voice daemon's experiment LLM path (routed through `balanced`/`fast` tiers).
 
 ## Research Infrastructure (added session 3)
