@@ -1,5 +1,6 @@
 // Content layer — Bachelard phenomenology surface.
-// Reads procedural field as input, modulates with 5 effects:
+// Reads procedural field as input, composites 4 content texture slots over it.
+// Bachelard effects:
 // 1. Materialization from substrate (noise-gated crystallization)
 // 2. Corner incubation (low salience → peripheral)
 // 3. Off-screen entry / immensity (slide in from beyond viewport)
@@ -17,6 +18,15 @@ var<private> v_texcoord_1: vec2<f32>;
 var tex: texture_2d<f32>;
 @group(1) @binding(1)
 var tex_sampler: sampler;
+
+@group(1) @binding(2)
+var content_slot_0: texture_2d<f32>;
+@group(1) @binding(3)
+var content_slot_1: texture_2d<f32>;
+@group(1) @binding(4)
+var content_slot_2: texture_2d<f32>;
+@group(1) @binding(5)
+var content_slot_3: texture_2d<f32>;
 
 // --- Noise ---
 
@@ -102,30 +112,62 @@ fn dwelling_trace_boost(salience: f32) -> f32 {
     return 1.0 + (1.0 - smoothstep(0.3, 0.7, salience)) * 0.15;
 }
 
+// --- Per-slot blending ---
+
+fn sample_and_blend_slot(
+    slot_tex: texture_2d<f32>,
+    samp: sampler,
+    uv: vec2<f32>,
+    uv_raw: vec2<f32>,
+    opacity: f32,
+    material_id: u32,
+    time: f32,
+    base: vec3<f32>,
+) -> vec3<f32> {
+    if opacity < 0.001 {
+        return base;
+    }
+    let content = textureSample(slot_tex, samp, uv);
+    let gated = content.rgb * materialization(uv_raw, opacity, time);
+    let colored = material_color(gated, material_id);
+    let weighted = colored * opacity;
+    // Screen blend: result = 1 - (1 - base) * (1 - layer)
+    return 1.0 - (1.0 - base) * (1.0 - weighted);
+}
+
 // --- Main ---
 
 fn main_1() {
     let uv_raw = v_texcoord_1;
     let time = uniforms.time;
-    let salience = uniforms.slot_opacities[0];
     let intensity = uniforms.intensity;
     let material_id = u32(round(uniforms.custom[0][0]));
 
+    // UV modulation for content (not the procedural background)
     var uv = corner_incubation(uv_raw, intensity);
-    uv = immensity_entry(uv, salience, time);
+    let max_salience = max(max(uniforms.slot_opacities[0], uniforms.slot_opacities[1]),
+                           max(uniforms.slot_opacities[2], uniforms.slot_opacities[3]));
+    uv = immensity_entry(uv, max_salience, time);
     uv = material_uv(uv, material_id, time);
 
-    var color = textureSample(tex, tex_sampler, uv);
+    // Sample procedural field at original UV (background unaffected by content distortion)
+    var base = textureSample(tex, tex_sampler, uv_raw).rgb;
 
-    let mat_factor = materialization(uv_raw, salience, time);
-    color = vec4<f32>(color.rgb * mat_factor, color.a);
+    // Screen-blend each content slot over the procedural field
+    base = sample_and_blend_slot(content_slot_0, tex_sampler, uv, uv_raw,
+        uniforms.slot_opacities[0], material_id, time, base);
+    base = sample_and_blend_slot(content_slot_1, tex_sampler, uv, uv_raw,
+        uniforms.slot_opacities[1], material_id, time, base);
+    base = sample_and_blend_slot(content_slot_2, tex_sampler, uv, uv_raw,
+        uniforms.slot_opacities[2], material_id, time, base);
+    base = sample_and_blend_slot(content_slot_3, tex_sampler, uv, uv_raw,
+        uniforms.slot_opacities[3], material_id, time, base);
 
-    color = vec4<f32>(material_color(color.rgb, material_id), color.a);
+    // Dwelling trace boost on final composited result
+    let trace_boost = dwelling_trace_boost(max_salience);
+    base *= trace_boost;
 
-    let trace_boost = dwelling_trace_boost(salience);
-    color = vec4<f32>(color.rgb * trace_boost, color.a);
-
-    fragColor = color;
+    fragColor = vec4<f32>(base, 1.0);
     return;
 }
 
