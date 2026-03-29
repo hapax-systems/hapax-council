@@ -126,3 +126,28 @@ class TestImaginationLoopReverberation:
         loop._record_fragment(_make_fragment())
         loop._check_reverberation()
         assert loop._last_reverberation > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Reverberation semantics — visual description vs health text
+# ---------------------------------------------------------------------------
+
+
+class TestReverberationSemantics:
+    def test_similar_visual_descriptions_low_reverberation(self, tmp_path: Path) -> None:
+        obs_path = tmp_path / "visual-observation.txt"
+        obs_path.write_text("warm orange gradient with faint text fragments drifting upward")
+        loop = ImaginationLoop(visual_observation_path=obs_path)
+        loop._record_fragment(
+            _make_fragment(narrative="warm sunset tones with text floating upward in the field")
+        )
+        reverb = loop._check_reverberation()
+        assert reverb < 0.8
+
+    def test_health_text_always_high_reverberation(self, tmp_path: Path) -> None:
+        obs_path = tmp_path / "visual-observation.txt"
+        obs_path.write_text("Trajectory: stable. Concern: none")
+        loop = ImaginationLoop(visual_observation_path=obs_path)
+        loop._record_fragment(_make_fragment(narrative="warm sunset over distant hills"))
+        reverb = loop._check_reverberation()
+        assert reverb > 0.7
