@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,45 @@ DEFAULT_STEPS_PER_FRAME: dict[str, int] = {}
 
 DEFAULT_OUTPUT_DIR = Path("/dev/shm/hapax-imagination/pipeline/")
 DEFAULT_NODES_DIR = Path(__file__).resolve().parent.parent / "shaders" / "nodes"
+
+# Path to shared uniforms prepended by DynamicPipeline before compiling each shader.
+_UNIFORMS_WGSL = (
+    Path(__file__).resolve().parents[2]
+    / "hapax-logos"
+    / "crates"
+    / "hapax-visual"
+    / "src"
+    / "shaders"
+    / "uniforms.wgsl"
+)
+
+
+def validate_wgsl(source: str) -> bool:
+    """Validate WGSL source. Returns True if parseable.
+
+    Uses naga-cli for validation if available, otherwise falls back
+    to basic struct/function syntax checks.
+    """
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wgsl", mode="w", delete=False) as f:
+            f.write(source)
+            f.flush()
+            tmp_path = f.name
+        result = subprocess.run(
+            ["naga", tmp_path],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        # naga-cli not installed — fall back to basic checks
+        return "@fragment" in source or "@compute" in source
+    except Exception:
+        return False
+    finally:
+        if tmp_path is not None:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, Any]:
@@ -135,17 +176,38 @@ def write_wgsl_pipeline(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    plan_path = output_dir / "plan.json"
-    plan_path.write_text(json.dumps(plan, indent=2))
+    # Load shared uniforms once — DynamicPipeline prepends these before compilation.
+    uniforms_prefix = ""
+    if _UNIFORMS_WGSL.is_file():
+        uniforms_prefix = _UNIFORMS_WGSL.read_text()
+    else:
+        log.warning(
+            "Shared uniforms not found at %s; skipping prefix in validation", _UNIFORMS_WGSL
+        )
 
-    # Copy each required .wgsl file
+    # Copy each required .wgsl file, validating combined source first.
+    valid_passes: list[dict[str, Any]] = []
     for p in plan.get("passes", []):
         shader_name = p.get("shader", "")
         src = nodes_dir / shader_name
-        if src.is_file():
-            shutil.copy2(src, output_dir / shader_name)
-        else:
+        if not src.is_file():
             log.warning("WGSL shader not found: %s", src)
+            continue
+
+        shader_source = src.read_text()
+        combined = uniforms_prefix + "\n" + shader_source if uniforms_prefix else shader_source
+        if not validate_wgsl(combined):
+            log.error("WGSL validation failed for %s — shader will not be deployed", shader_name)
+            continue
+
+        shutil.copy2(src, output_dir / shader_name)
+        valid_passes.append(p)
+
+    # Rewrite plan with only the validated passes.
+    validated_plan = dict(plan)
+    validated_plan["passes"] = valid_passes
+    plan_path = output_dir / "plan.json"
+    plan_path.write_text(json.dumps(validated_plan, indent=2))
 
     return plan_path
 
