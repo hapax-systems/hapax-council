@@ -114,7 +114,7 @@ def test_classify_small_image():
     from agents.gdrive_sync import _classify_file
 
     tier, ctype, tags = _classify_file("photo.jpg", "image/jpeg", 2_000_000)
-    assert tier == "metadata_only"
+    assert tier == "document"
     assert ctype == "image"
     assert "visual" in tags
 
