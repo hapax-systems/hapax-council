@@ -466,7 +466,7 @@ class TestEndpointChecks:
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
-                if "4000" in url:
+                if "liveliness" in url:
                     return (0, "Connection refused")
                 return (200, "ok")
 
@@ -657,7 +657,7 @@ class TestQuickCheck:
         with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
-                if "4000" in url:
+                if "liveliness" in url:
                     return (0, "Connection refused")
                 return (200, "ok")
 

@@ -49,19 +49,17 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --extra ci
-      - run: uv run pytest tests/ -q --ignore=tests/hapax_voice --ignore=tests/contract -m "not llm" --cov=agents --cov=shared --cov=logos --cov-report=term --cov-report=json:coverage.json
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-report
-          path: coverage.json
-          if-no-files-found: ignore
+      - name: Run tests
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+        run: uv run pytest tests/ -q --ignore=tests/hapax_voice --ignore=tests/contract -m "not llm" -p no:cacheprovider
 
   web-build:
     runs-on: ubuntu-latest

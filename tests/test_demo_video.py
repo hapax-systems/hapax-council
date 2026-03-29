@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("PIL", reason="Pillow not installed")
+pytest.importorskip("moviepy", reason="moviepy not installed")
 
 from agents.demo_pipeline.title_cards import generate_title_card  # noqa: E402
 
