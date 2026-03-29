@@ -46,7 +46,7 @@ async function fetchBatch(): Promise<void> {
   polling = true;
   try {
     const resp = await fetch(
-      `/api/studio/stream/cameras/batch?roles=${roles.join(",")}&_t=${Date.now()}`,
+      `http://localhost:8051/api/studio/stream/cameras/batch?roles=${roles.join(",")}&_t=${Date.now()}`,
     );
     if (!resp.ok) return;
 

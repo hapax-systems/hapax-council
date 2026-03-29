@@ -50,7 +50,7 @@ pub struct CaptureStatus {
 
 #[tauri::command]
 pub fn get_studio() -> StudioSnapshot {
-    let compositor_path = "/dev/shm/hapax-compositor/status.json";
+    let compositor_path = &format!("{}/.cache/hapax-compositor/status.json", std::env::var("HOME").unwrap_or_default());
     let compositor: CompositorStatus =
         read_json(compositor_path).unwrap_or_else(|| CompositorStatus {
             state: "offline".into(),
@@ -91,7 +91,7 @@ pub struct StudioStreamInfo {
 
 #[tauri::command]
 pub fn get_studio_stream_info() -> StudioStreamInfo {
-    let compositor_path = "/dev/shm/hapax-compositor/status.json";
+    let compositor_path = &format!("{}/.cache/hapax-compositor/status.json", std::env::var("HOME").unwrap_or_default());
     let compositor: Option<CompositorStatus> = read_json(compositor_path);
 
     match compositor {

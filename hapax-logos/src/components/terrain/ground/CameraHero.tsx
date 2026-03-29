@@ -198,7 +198,7 @@ function HlsPlayer({ enabled = true }: { enabled?: boolean }) {
     video.style.opacity = "0";
     video.style.transition = "opacity 0.3s ease-in";
 
-    const url = "/api/studio/hls/stream.m3u8";
+    const url = "http://localhost:8051/api/studio/hls/stream.m3u8";
 
     (async () => {
       const Hls = (await import("hls.js")).default;

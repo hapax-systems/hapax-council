@@ -17,7 +17,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { AmbientShader } from "../components/hapax/AmbientShader";
 import { usePageVisible } from "../hooks/usePageVisible";
 
-const API = "/api";
+const API = "http://localhost:8051/api";
 const POLL_FAST_MS = 2000;
 const SNAPSHOT_MS = 200; // camera composite refresh
 const FRAGMENT_CYCLE_MS = 12000; // rotate floating text fragments
