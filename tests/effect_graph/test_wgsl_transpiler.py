@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,11 @@ from agents.effect_graph.wgsl_transpiler import (
     adapt_glsl,
     transpile_all_nodes,
     transpile_glsl_to_wgsl,
+)
+
+requires_naga = pytest.mark.skipif(
+    shutil.which("naga") is None,
+    reason="naga CLI not installed",
 )
 
 # ---------------------------------------------------------------------------
@@ -161,6 +167,7 @@ void main() {
 # ---------------------------------------------------------------------------
 
 
+@requires_naga
 class TestTranspileGlslToWgsl:
     def test_simple_passthrough(self):
         wgsl = transpile_glsl_to_wgsl(SAMPLER_ONLY_SHADER)
@@ -181,6 +188,7 @@ class TestTranspileGlslToWgsl:
 # ---------------------------------------------------------------------------
 
 
+@requires_naga
 class TestTranspileAllNodes:
     def test_batch_success_count(self, tmp_path: Path):
         nodes = tmp_path / "nodes"
