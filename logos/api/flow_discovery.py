@@ -26,7 +26,7 @@ def _expand_home(path: str) -> str:
 def _read_json(path: str) -> dict | None:
     try:
         return json.loads(Path(_expand_home(path)).read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
 
 
