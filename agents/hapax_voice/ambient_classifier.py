@@ -155,43 +155,68 @@ def _build_label_index(
     return block_idx, allow_idx
 
 
-def _capture_audio_pipewire(duration_s: float = CAPTURE_DURATION_S) -> np.ndarray | None:
-    """Capture audio from the PipeWire default monitor source.
-
-    Returns float32 mono audio at PANNS_SAMPLE_RATE, or None on failure.
-    Uses synchronous subprocess — call from executor thread to avoid
-    blocking the asyncio event loop.
-    """
+def _get_default_sink_name() -> str | None:
+    """Get the PipeWire default audio sink node name for monitor capture."""
     try:
         result = subprocess.run(
-            [
-                "pw-record",
-                "--format",
-                "s16",
-                "--rate",
-                str(PANNS_SAMPLE_RATE),
-                "--channels",
-                "1",
-                "-",
-            ],
+            ["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"],
             capture_output=True,
-            timeout=duration_s + 2,
+            text=True,
+            timeout=3,
         )
-        if not result.stdout:
+        for line in result.stdout.splitlines():
+            if "node.name" in line:
+                return line.split('"')[1]
+    except Exception:
+        pass
+    return None
+
+
+def _capture_audio_pipewire(duration_s: float = CAPTURE_DURATION_S) -> np.ndarray | None:
+    """Capture audio from the PipeWire default sink monitor.
+
+    Returns float32 mono audio at PANNS_SAMPLE_RATE, or None on failure.
+    Uses Popen with explicit cleanup to prevent zombie pw-record processes.
+    """
+    cmd = [
+        "pw-record",
+        "--format",
+        "s16",
+        "--rate",
+        str(PANNS_SAMPLE_RATE),
+        "--channels",
+        "1",
+    ]
+    target = _get_default_sink_name()
+    if target:
+        cmd.extend(["--target", target])
+    cmd.append("-")
+
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        stdout, _ = proc.communicate(timeout=duration_s + 2)
+        if not stdout:
             log.warning("pw-record produced no output")
             return None
-        # Raw PCM int16 → float32
-        audio_int16 = np.frombuffer(result.stdout, dtype=np.int16)
+        audio_int16 = np.frombuffer(stdout, dtype=np.int16)
         if len(audio_int16) < PANNS_SAMPLE_RATE:
             log.warning("pw-record captured too little audio (%d samples)", len(audio_int16))
             return None
         return audio_int16.astype(np.float32) / 32768.0
     except subprocess.TimeoutExpired:
+        if proc:
+            proc.kill()
+            proc.wait()
         log.warning("pw-record timed out after %.1fs", duration_s + 2)
     except FileNotFoundError:
         log.warning("pw-record not found — PipeWire not available")
     except Exception:
         log.exception("Failed to capture audio via pw-record")
+    finally:
+        if proc and proc.poll() is None:
+            proc.kill()
+            proc.wait()
     return None
 
 
