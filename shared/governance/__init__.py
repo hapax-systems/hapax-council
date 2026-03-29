@@ -24,6 +24,15 @@ from shared.governance.agent_governor import create_agent_governor
 from shared.governance.carrier import CarrierFact, CarrierRegistry, DisplacementResult
 from shared.governance.consent import ConsentContract, ConsentRegistry, load_contracts
 from shared.governance.consent_label import ConsentLabel
+from shared.governance.primitives import (
+    Candidate,
+    FallbackChain,
+    GatedResult,
+    Selected,
+    Veto,
+    VetoChain,
+    VetoResult,
+)
 
 
 def __getattr__(name: str):
@@ -92,4 +101,12 @@ __all__ = [
     "check_provenance",
     "get_revocation_propagator",
     "set_revocation_propagator",
+    # Compositional governance primitives
+    "Candidate",
+    "FallbackChain",
+    "GatedResult",
+    "Selected",
+    "Veto",
+    "VetoChain",
+    "VetoResult",
 ]
