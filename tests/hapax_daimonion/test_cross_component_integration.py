@@ -516,6 +516,11 @@ class TestAudioPipelineIntegration:
         daemon.presence = MagicMock()
         daemon.presence.process_audio_frame.return_value = 0.5  # open VAD gate
         daemon._gemini_session = None
+        daemon._echo_canceller = None
+        daemon._noise_reference = None
+        daemon._audio_preprocessor = None
+        daemon._conversation_buffer = MagicMock()
+        daemon._conversation_buffer.is_active = False
         daemon.session = MagicMock()
         daemon.session.is_active = False
         daemon.session.session_id = "test123"

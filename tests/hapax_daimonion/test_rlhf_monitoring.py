@@ -86,6 +86,10 @@ class TestSelectiveLockdown:
         }
         pipeline._env_context_fn = None
         pipeline._policy_fn = None
+        pipeline._goals_fn = None
+        pipeline._health_fn = None
+        pipeline._nudges_fn = None
+        pipeline._dmn_fn = None
         pipeline._last_env_hash = 0
         pipeline._salience_router = None
         pipeline._sentinel_line = ""
@@ -114,6 +118,10 @@ class TestSelectiveLockdown:
         pipeline._experiment_flags = {"salience_context": False}
         pipeline._env_context_fn = None
         pipeline._policy_fn = None
+        pipeline._goals_fn = None
+        pipeline._health_fn = None
+        pipeline._nudges_fn = None
+        pipeline._dmn_fn = None
         pipeline._last_env_hash = 0
         pipeline._salience_router = None
         pipeline._sentinel_line = ""

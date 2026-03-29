@@ -110,12 +110,10 @@ class TestDaemonLifecycleInvariants:
             await asyncio.sleep(999)
 
         daemon._pipeline_task = asyncio.create_task(_noop())
-        daemon._pipecat_task = MagicMock()
-        daemon._pipecat_transport = MagicMock()
 
         await daemon._stop_pipeline()
         assert daemon._pipeline_task is None
-        assert daemon._pipecat_task is None
+        assert daemon._conversation_pipeline is None
 
     @pytest.mark.asyncio
     async def test_close_session_stops_pipeline_and_session(self):
@@ -265,7 +263,9 @@ class TestDaemonErrorPaths:
     async def test_duplicate_start_is_noop(self):
         """Starting pipeline when already running is a no-op."""
         daemon = _make_daemon()
-        daemon._pipeline_task = MagicMock()  # Pretend running
+        # Pretend pipeline is running (guard checks _conversation_pipeline.is_active)
+        daemon._conversation_pipeline = MagicMock()
+        daemon._conversation_pipeline.is_active = True
         # Should return early without error
         await daemon._start_pipeline()
 

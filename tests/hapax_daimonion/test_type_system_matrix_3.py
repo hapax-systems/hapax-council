@@ -228,8 +228,8 @@ class TestMonotonicSafety:
             selected_by=gov.last_selected.selected_by,
         )
 
-        # Grace period: 3 ticks return "process" via wake_word_grace
-        for _ in range(3):
+        # Grace period: 8 ticks return "process" via wake_word_grace
+        for _ in range(8):
             rg = gov.evaluate(state)
             assert rg == "process"
             assert gov.last_selected.selected_by == "wake_word_grace"

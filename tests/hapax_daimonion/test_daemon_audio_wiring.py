@@ -32,43 +32,15 @@ class TestAudioInputCreated:
 
 def _make_daemon(audio_active: bool) -> VoiceDaemon:
     """Create a VoiceDaemon with mocked subsystems for run() testing."""
-    with patch.object(VoiceDaemon, "__init__", lambda self, **kw: None):
-        daemon = VoiceDaemon()
-
-    daemon._running = False  # Exit main loop immediately
-    daemon._background_tasks = []
-    daemon._pipeline_task = None
-    daemon.event_log = MagicMock()
-    daemon.tracer = MagicMock()
-    daemon.hotkey = AsyncMock()
-    daemon.wake_word = MagicMock()
-    daemon.session = MagicMock()
-    daemon.session.is_active = False
-    daemon.notifications = MagicMock()
-    daemon.notifications.pending_count = 0
-    daemon.workspace_monitor = MagicMock()
-    daemon.workspace_monitor.run = AsyncMock()
-    daemon.workspace_monitor.latest_analysis = None
-    daemon.gate = MagicMock()
-    daemon.presence = MagicMock()
-    daemon.cfg = MagicMock()
-    daemon.cfg.ntfy_topic = ""
-    daemon.cfg.backend = "local"
-    daemon.cfg.audio_input_source = "echo_cancel_capture"
-    daemon.cfg.silence_timeout_s = 30
-    daemon.cfg.presence_window_minutes = 5
-    daemon.cfg.presence_vad_threshold = 0.5
-    daemon.cfg.context_gate_volume_threshold = 0.5
-    daemon.cfg.screen_monitor_enabled = False
-    daemon.cfg.webcam_enabled = False
-    daemon.tts = MagicMock()
-    daemon.chime_player = MagicMock()
-    daemon._gemini_session = None
+    from tests.hapax_daimonion.conftest import make_stub_daemon
 
     mock_audio = MagicMock()
     mock_audio.is_active = audio_active
-    daemon._audio_input = mock_audio
-
+    daemon = make_stub_daemon(
+        _audio_input=mock_audio,
+        hotkey=AsyncMock(),
+    )
+    daemon.workspace_monitor.run = AsyncMock()
     return daemon
 
 
@@ -158,6 +130,7 @@ class TestAudioLoopBackgroundTask:
         with patch("agents.hapax_daimonion.__main__.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
-        # Should have 4 tasks (proactive delivery, ntfy, workspace monitor, perception)
-        # but NOT 5 (no audio loop since inactive)
-        assert tracking.total_appended == 4
+        # Should have 7 tasks (proactive delivery, ntfy, workspace monitor,
+        # perception, wake_word_processor, ambient_refresh, impingement_consumer)
+        # but NOT 8 (no audio loop since inactive)
+        assert tracking.total_appended == 7

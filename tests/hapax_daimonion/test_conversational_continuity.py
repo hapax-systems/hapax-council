@@ -49,9 +49,19 @@ class TestSentinelSurvival:
         pipeline._conversation_thread = []
         pipeline._experiment_flags = kwargs.get("experiment_flags", {})
         pipeline._env_context_fn = None
+        pipeline._ambient_fn = None
         pipeline._policy_fn = None
+        pipeline._goals_fn = None
+        pipeline._health_fn = None
+        pipeline._nudges_fn = None
+        pipeline._dmn_fn = None
         pipeline._last_env_hash = 0
         pipeline._salience_router = None
+        pipeline._salience_diagnostics = None
+        pipeline._context_distillation = ""
+        pipeline._guest_mode = False
+        pipeline._face_count = 0
+        pipeline._consent_reader = None
         pipeline._sentinel_line = "\n\nInternal test fact: number is 42."
         pipeline._sentinel_number = 42
         return pipeline
@@ -96,9 +106,15 @@ class TestMessageDrop:
         pipeline._conversation_thread = []
         pipeline._experiment_flags = flags or {}
         pipeline._env_context_fn = None
+        pipeline._ambient_fn = None
         pipeline._policy_fn = None
+        pipeline._goals_fn = None
+        pipeline._health_fn = None
+        pipeline._nudges_fn = None
+        pipeline._dmn_fn = None
         pipeline._last_env_hash = 0
         pipeline._salience_router = None
+        pipeline._salience_diagnostics = None
         pipeline._sentinel_line = ""
         pipeline._turn_model = "test"
         pipeline._turn_model_tier = "CAPABLE"
@@ -106,6 +122,9 @@ class TestMessageDrop:
         pipeline.tools = None
         pipeline.tool_handlers = {}
         pipeline._context_distillation = ""
+        pipeline._guest_mode = False
+        pipeline._face_count = 0
+        pipeline._consent_reader = None
         return pipeline
 
     def test_preserves_tool_sequences(self):
@@ -194,9 +213,15 @@ class TestExperimentFlags:
         pipeline._experiment_flags = {"stable_frame": False}
         pipeline._env_context_fn = None
         pipeline._policy_fn = None
+        pipeline._goals_fn = None
+        pipeline._health_fn = None
+        pipeline._nudges_fn = None
+        pipeline._dmn_fn = None
         pipeline._last_env_hash = 0
         pipeline._salience_router = None
         pipeline._sentinel_line = ""
+        pipeline._sentinel_number = None
+        pipeline._grounding_ledger = None
 
         pipeline._update_system_context()
         content = pipeline.messages[0]["content"]

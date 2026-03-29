@@ -273,8 +273,8 @@ class TestFullSystemConvergence:
             selected_by=(gov.last_selected.selected_by if gov.last_selected else "vetoed"),
         )
 
-        # Exhaust 3-tick grace period
-        for _ in range(3):
+        # Exhaust 8-tick grace period
+        for _ in range(8):
             engine.tick()
             gov.evaluate(engine.latest)
 
@@ -414,8 +414,8 @@ class TestSteadyStateUnderStress:
         r2 = gov.evaluate(engine.latest)
         assert r2 == "process"
 
-        # Exhaust 3-tick grace period
-        for _ in range(3):
+        # Exhaust 8-tick grace period
+        for _ in range(8):
             engine.tick()
             gov.evaluate(engine.latest)
 
@@ -432,7 +432,6 @@ class TestSteadyStateUnderStress:
 
         # Verify no residual wake word state
         assert gov.wake_word_active is False
-        assert gov._paused_by_conversation is False
 
 
 class TestHolisticProvenance:

@@ -63,20 +63,20 @@ class TestGraceProtectsAgainstMeetingMode:
         assert result == "process"
         assert gov.last_selected.selected_by == "wake_word_grace"
 
-    def test_grace_period_lasts_three_ticks(self):
-        """Grace period protects for exactly 3 ticks after wake word."""
+    def test_grace_period_lasts_eight_ticks(self):
+        """Grace period protects for exactly 8 ticks after wake word."""
         gov = PipelineGovernor()
         gov.wake_word_active = True
 
         # Tick 0: wake word consumed
         assert gov.evaluate(_make_state()) == "process"
 
-        # Ticks 1-3: grace period
-        for i in range(3):
+        # Ticks 1-8: grace period
+        for i in range(8):
             result = gov.evaluate(_make_state(activity_mode="meeting"))
             assert result == "process", f"Grace tick {i + 1} should be 'process'"
 
-        # Tick 4: grace expired, meeting mode takes effect
+        # Tick 9: grace expired, meeting mode takes effect
         result = gov.evaluate(_make_state(activity_mode="meeting"))
         assert result == "pause"
 
@@ -84,18 +84,18 @@ class TestGraceProtectsAgainstMeetingMode:
         """Each evaluate() call decrements grace by 1."""
         gov = PipelineGovernor()
         gov.wake_word_active = True
-        gov.evaluate(_make_state())  # consumes wake_word_active, sets grace=3
+        gov.evaluate(_make_state())  # consumes wake_word_active, sets grace=8
 
-        assert gov._wake_word_grace_remaining == 3
-
-        gov.evaluate(_make_state())
-        assert gov._wake_word_grace_remaining == 2
+        assert gov._wake_word_grace_remaining == 8
 
         gov.evaluate(_make_state())
-        assert gov._wake_word_grace_remaining == 1
+        assert gov._wake_word_grace_remaining == 7
 
         gov.evaluate(_make_state())
-        assert gov._wake_word_grace_remaining == 0
+        assert gov._wake_word_grace_remaining == 6
+
+        gov.evaluate(_make_state())
+        assert gov._wake_word_grace_remaining == 5
 
 
 class TestGraceProtectsAgainstConversationDebounce:
@@ -122,8 +122,8 @@ class TestGraceProtectsAgainstConversationDebounce:
         gov.wake_word_active = True
         gov.evaluate(_make_state())  # consume wake word
 
-        # Exhaust grace period
-        for _ in range(3):
+        # Exhaust grace period (8 ticks)
+        for _ in range(8):
             gov.evaluate(_make_state())
 
         # Now conversation should trigger debounce → pause
@@ -221,15 +221,15 @@ class TestGraceEdgeCases:
         gov = PipelineGovernor()
 
         gov.wake_word_active = True
-        gov.evaluate(_make_state())  # consume, grace=3
+        gov.evaluate(_make_state())  # consume, grace=8
 
-        gov.evaluate(_make_state())  # grace=2
+        gov.evaluate(_make_state())  # grace=7
 
         # Second wake word
         gov.wake_word_active = True
-        gov.evaluate(_make_state())  # consume again, grace=3
+        gov.evaluate(_make_state())  # consume again, grace=8
 
-        assert gov._wake_word_grace_remaining == 3
+        assert gov._wake_word_grace_remaining == 8
 
     def test_grace_plus_meeting_then_clear(self):
         """Grace protects during meeting, normal eval resumes after grace + meeting clears."""
@@ -238,8 +238,8 @@ class TestGraceEdgeCases:
         gov.wake_word_active = True
         gov.evaluate(_make_state())
 
-        # Exhaust grace with meeting mode
-        for _ in range(3):
+        # Exhaust grace with meeting mode (8 ticks)
+        for _ in range(8):
             gov.evaluate(_make_state(activity_mode="meeting"))
 
         # Meeting mode still active — now pauses

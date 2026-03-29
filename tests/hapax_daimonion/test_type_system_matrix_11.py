@@ -145,8 +145,8 @@ class TestIdleToActiveLifecycle:
         assert gov.last_selected.selected_by == "wake_word_override"
         assert gov.wake_word_active is False  # consumed
 
-        # Grace period: 3 ticks protected by wake_word_grace
-        for _ in range(3):
+        # Grace period: 8 ticks protected by wake_word_grace
+        for _ in range(8):
             engine.tick()
             rg = gov.evaluate(engine.latest)
             assert rg == "process"
@@ -241,25 +241,23 @@ class TestConversationDebounceLifecycle:
         gov.evaluate(s1)
         assert gov._paused_by_conversation is True
 
-        # Perturbation: wake word
+        # Perturbation: wake word overrides (doesn't clear debounce state)
         gov.wake_word_active = True
         s2 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r2 = gov.evaluate(s2)
         assert r2 == "process"
-        assert gov._paused_by_conversation is False
-        assert gov._conversation_first_seen is None
+        assert gov.last_selected.selected_by == "wake_word_override"
 
-        # Grace period: 3 ticks protected by wake_word_grace
-        for _ in range(3):
+        # Grace period: 8 ticks protected by wake_word_grace
+        for _ in range(8):
             s_grace = _make_state(face_count=2, guest_count=1, speech_detected=True)
             rg = gov.evaluate(s_grace)
             assert rg == "process"
             assert gov.last_selected.selected_by == "wake_word_grace"
 
-        # Feedback: grace exhausted, conversation still happening → re-debounces
+        # Feedback: grace exhausted, conversation still happening → pause
         s3 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r3 = gov.evaluate(s3)
-        # Will start accumulating again, debounce_s=0 so immediate
         assert r3 == "pause"
 
     def test_rapid_perturbation_oscillation_across_cycles(self):
@@ -304,8 +302,8 @@ class TestFullDaemonLifecycle:
         engine.tick()
         directives.append(gov.evaluate(engine.latest))
 
-        # Exhaust 3-tick grace period
-        for _ in range(3):
+        # Exhaust 8-tick grace period
+        for _ in range(8):
             engine.tick()
             gov.evaluate(engine.latest)
 

@@ -1,6 +1,6 @@
 """Tests for ChimePlayer wiring into VoiceDaemon."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 from agents.hapax_daimonion.config import DaimonionConfig
 
@@ -32,41 +32,28 @@ class TestDaemonChimeWiring:
         VoiceDaemon(cfg=cfg)
         MockChime.assert_called_once()
 
-    @patch("agents.hapax_daimonion.__main__._screen_flash")
-    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
-    @patch("agents.hapax_daimonion.__main__.TTSManager")
-    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
-    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
-    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
-    def test_on_wake_word_plays_activation_chime(self, MockChime, *_, **__):
-        from agents.hapax_daimonion.__main__ import VoiceDaemon
+    def test_acknowledge_plays_chime_when_enabled(self):
+        """_acknowledge('activation') plays chime when chime_enabled=True."""
+        from tests.hapax_daimonion.conftest import make_stub_daemon
 
-        cfg = DaimonionConfig(chime_enabled=True)
-        daemon = VoiceDaemon(cfg=cfg)
-        mock_player = MockChime.return_value
+        daemon = make_stub_daemon()
+        daemon.cfg.chime_enabled = True
+        mock_player = MagicMock()
+        daemon.chime_player = mock_player
 
-        # Mock pipeline start to avoid actual pipeline creation
-        daemon._start_pipeline = AsyncMock()
-
-        daemon._on_wake_word()
+        daemon._acknowledge("activation")
         mock_player.play.assert_called_once_with("activation")
 
     @patch("agents.hapax_daimonion.__main__._screen_flash")
-    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
-    @patch("agents.hapax_daimonion.__main__.TTSManager")
-    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
-    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
-    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
-    def test_chime_disabled_uses_screen_flash(
-        self, MockChime, _hotkey, _ww, _tts, _audio, mock_flash
-    ):
-        from agents.hapax_daimonion.__main__ import VoiceDaemon
+    def test_acknowledge_uses_screen_flash_when_disabled(self, mock_flash):
+        """_acknowledge('activation') uses screen flash when chime_enabled=False."""
+        from tests.hapax_daimonion.conftest import make_stub_daemon
 
-        cfg = DaimonionConfig(chime_enabled=False)
-        daemon = VoiceDaemon(cfg=cfg)
-        mock_player = MockChime.return_value
+        daemon = make_stub_daemon()
+        daemon.cfg.chime_enabled = False
+        mock_player = MagicMock()
+        daemon.chime_player = mock_player
 
-        daemon._start_pipeline = AsyncMock()
-        daemon._on_wake_word()
+        daemon._acknowledge("activation")
         mock_player.play.assert_not_called()
         mock_flash.assert_called_with("activation")

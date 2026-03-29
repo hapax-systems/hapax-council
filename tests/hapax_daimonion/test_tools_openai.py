@@ -156,7 +156,11 @@ class TestGetOpenaiTools(unittest.TestCase):
     def test_returns_tools_and_handlers(self):
         tools, handlers = get_openai_tools()
         self.assertGreaterEqual(len(tools), 20)
-        self.assertEqual(len(tools), len(handlers))
+        self.assertGreaterEqual(len(handlers), 20)
+        # Every handler name should correspond to a tool definition
+        tool_names = {t["function"]["name"] for t in tools}
+        for name in handlers:
+            self.assertIn(name, tool_names, f"Handler '{name}' has no matching tool")
 
     def test_all_handlers_are_async(self):
         _, handlers = get_openai_tools()

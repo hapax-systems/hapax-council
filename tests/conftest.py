@@ -73,12 +73,9 @@ _has_operator = (_PROJECT_ROOT / "profiles" / "operator.json").is_file()
 collect_ignore_glob: list[str] = []
 
 if not _has_audio:
-    collect_ignore_glob.extend(
-        [
-            "hapax_daimonion/*",
-            _HAPAX_VOICE_PREFIX + "*",
-        ]
-    )
+    # NOTE: hapax_daimonion/ is NOT ignored here — it has its own conftest.py
+    # that stubs pipecat/pyaudio/torch/openwakeword before imports.
+    collect_ignore_glob.append(_HAPAX_VOICE_PREFIX + "*")
     for f in _AUDIO_DEP_FILES:
         collect_ignore_glob.append(f)
     for prefix in _OTHER_VOICE_PREFIXES:

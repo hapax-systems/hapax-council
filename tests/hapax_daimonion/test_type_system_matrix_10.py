@@ -129,8 +129,8 @@ class TestDaemonLoopSimulation:
             selected_by=gov.last_selected.selected_by,
         )
 
-        # Exhaust 3-tick grace period
-        for _ in range(3):
+        # Exhaust 8-tick grace period
+        for _ in range(8):
             gov.evaluate(state)
 
         # Cycle 3: grace exhausted → pause
@@ -453,8 +453,8 @@ class TestCyclicPipelineIntegrity:
         assert r1 == "process"
         assert gov.wake_word_active is False
 
-        # Grace period: 3 ticks return "process" with wake_word_grace
-        for _ in range(3):
+        # Grace period: 8 ticks return "process" with wake_word_grace
+        for _ in range(8):
             rg = gov.evaluate(state)
             assert rg == "process"
             assert gov.last_selected.selected_by == "wake_word_grace"

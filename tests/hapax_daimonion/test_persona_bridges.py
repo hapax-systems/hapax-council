@@ -35,9 +35,9 @@ class TestProactiveOverture:
         prompt = system_prompt(guest_mode=False)
         assert "calendar" in prompt.lower()
 
-    def test_prompt_frames_as_gentle(self):
+    def test_prompt_frames_as_warm(self):
         prompt = system_prompt(guest_mode=False)
-        assert "gentle" in prompt.lower() or "possibility" in prompt.lower()
+        assert "warm" in prompt.lower() or "friendly" in prompt.lower()
 
 
 class TestImageGenInstruction:

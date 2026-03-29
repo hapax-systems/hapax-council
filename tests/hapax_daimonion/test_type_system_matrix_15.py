@@ -290,8 +290,8 @@ class TestEvolutionAcrossCycles:
         r1 = gov.evaluate(engine.latest)
         result1 = (r1, gov.last_veto_result.allowed)
 
-        # Exhaust 3-tick grace period
-        for _ in range(3):
+        # Exhaust 8-tick grace period
+        for _ in range(8):
             engine.tick()
             gov.evaluate(engine.latest)
 

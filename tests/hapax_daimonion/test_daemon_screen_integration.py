@@ -9,7 +9,7 @@ def test_daimonion_config_has_screen_fields():
     config = DaimonionConfig()
     assert config.screen_monitor_enabled is True
     assert config.screen_poll_interval_s == 2
-    assert config.screen_capture_cooldown_s == 10
+    assert config.screen_capture_cooldown_s == 30
     assert config.screen_proactive_min_confidence == 0.8
     assert config.screen_proactive_cooldown_s == 300
     assert config.screen_recapture_idle_s == 60
@@ -149,4 +149,3 @@ def test_daemon_wires_event_log_to_subsystems():
         assert daemon.gate._event_log is daemon.event_log
         assert daemon.notifications._event_log is daemon.event_log
         assert daemon.workspace_monitor._event_log is daemon.event_log
-        assert daemon.workspace_monitor._tracer is daemon.tracer

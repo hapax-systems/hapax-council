@@ -409,8 +409,8 @@ class TestWakeWordReconfigurationInvariants:
         gov.wake_word_active = True
         results.append(gov.evaluate(state))
 
-        # Exhaust 3-tick grace period
-        for _ in range(3):
+        # Exhaust 8-tick grace period
+        for _ in range(8):
             gov.evaluate(state)
 
         # Eval 3: grace exhausted → pause
@@ -425,8 +425,8 @@ class TestWakeWordReconfigurationInvariants:
         cmd = Command(action="process", params={"toggles": 4})
         assert isinstance(cmd.params, MappingProxyType)
 
-    def test_wake_word_clears_conversation_invariant_across_reconfiguration(self):
-        """S5, S6, S3, S4 + A2, A3, A5: Wake word clears conversation; custom veto survives."""
+    def test_wake_word_overrides_conversation_invariant_across_reconfiguration(self):
+        """S5, S6, S3, S4 + A2, A3, A5: Wake word overrides conversation; custom veto survives."""
         now = time.monotonic()
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={}, min_watermark=now)
         guard = FreshnessGuard(
@@ -435,7 +435,10 @@ class TestWakeWordReconfigurationInvariants:
             ]
         )
 
-        gov = PipelineGovernor(conversation_debounce_s=0.0)
+        gov = PipelineGovernor(
+            conversation_debounce_s=0.0,
+            environment_clear_resume_s=0.0,
+        )
         gov.veto_chain.add(
             Veto(
                 name="custom_freshness",
@@ -450,14 +453,13 @@ class TestWakeWordReconfigurationInvariants:
         gov.evaluate(conv_state)
         assert gov._paused_by_conversation is True
 
-        # Wake word clears conversation
+        # Wake word overrides conversation (doesn't clear state)
         gov.wake_word_active = True
         r = gov.evaluate(conv_state)
         assert r == "process"
-        assert gov._paused_by_conversation is False
 
-        # Exhaust 3-tick grace period
-        for _ in range(3):
+        # Exhaust 8-tick grace period with no conversation → auto-resume clears debounce
+        for _ in range(8):
             gov.evaluate(_make_state(activity_mode="idle", face_count=1, speech_detected=False))
 
         # After grace exhausted, custom freshness veto still active

@@ -39,7 +39,13 @@ def _make_daemon() -> VoiceDaemon:
     daemon.wake_word.frame_length = _WAKE_SAMPLES
     daemon.presence = MagicMock()
     daemon.presence.process_audio_frame.return_value = 0.5
+    daemon.presence._latest_vad_confidence = 0.5
     daemon._gemini_session = None
+    daemon._echo_canceller = None
+    daemon._noise_reference = None
+    daemon._audio_preprocessor = None
+    daemon._conversation_buffer = MagicMock()
+    daemon._conversation_buffer.is_active = False
     return daemon
 
 

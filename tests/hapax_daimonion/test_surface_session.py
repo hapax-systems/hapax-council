@@ -24,7 +24,7 @@ def _make_daemon(silence_timeout_s: int = 30) -> VoiceDaemon:
     daemon.cfg.chime_enabled = False
     daemon.cfg.local_stt_model = "base"
     daemon.cfg.llm_model = "test-model"
-    daemon.cfg.kokoro_voice = "af_heart"
+    daemon.cfg.voxtral_voice_id = "jessica"
 
     daemon.session = VoiceLifecycle(silence_timeout_s=silence_timeout_s)
     daemon.event_log = MagicMock()
@@ -38,6 +38,15 @@ def _make_daemon(silence_timeout_s: int = 30) -> VoiceDaemon:
     daemon._frame_gate = MagicMock()
     daemon.governor = MagicMock()
     daemon.workspace_monitor = MagicMock()
+    daemon.perception = MagicMock()
+    daemon._cognitive_loop = None
+    daemon._conversation_pipeline = None
+    daemon._salience_router = None
+    daemon._conversation_buffer = MagicMock()
+    daemon._conversation_buffer.is_active = False
+    daemon._echo_canceller = None
+    daemon._resident_stt = MagicMock()
+    daemon._resident_stt.is_loaded = True
 
     return daemon
 

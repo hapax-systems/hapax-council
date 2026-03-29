@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 from types import MappingProxyType
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from agents.hapax_daimonion.combinator import with_latest_from
 from agents.hapax_daimonion.commands import Command, Schedule
@@ -63,9 +63,20 @@ def _make_engine(face_detected: bool = False, face_count: int = 0, vad: float = 
 
 
 def _make_context_gate(session: SessionManager, activity_mode: str = "idle") -> ContextGate:
-    """ContextGate with subprocess checks stubbed to allow."""
+    """ContextGate with behaviors set to allow (no subprocess calls)."""
+    import time as _time
+
+    from agents.hapax_daimonion.primitives import Behavior
+
     gate = ContextGate(session=session, ambient_classification=False)
     gate.set_activity_mode(activity_mode)
+    now = _time.monotonic()
+    gate.set_behaviors(
+        {
+            "sink_volume": Behavior(0.3, watermark=now),
+            "midi_active": Behavior(False, watermark=now),
+        }
+    )
     return gate
 
 
@@ -169,12 +180,12 @@ class TestWakeWordUseCases:
         assert gate.directive == "process"
         assert gov.wake_word_active is False  # consumed
 
-        # Exhaust 3-tick grace period
-        for _ in range(3):
+        # Exhaust 8-tick grace period
+        for _ in range(8):
             engine.tick()
             gov.evaluate(engine.latest)
 
-        # Tick 3: grace exhausted, production still active → pause again
+        # Tick 8: grace exhausted, production still active → pause again
         engine.tick()
         r3 = gov.evaluate(engine.latest)
         cmd3 = Command(action=r3, governance_result=gov.last_veto_result)
@@ -187,8 +198,8 @@ class TestWakeWordUseCases:
         assert not cmd3.governance_result.allowed
         assert "activity_mode" in cmd3.governance_result.denied_by
 
-    def test_wake_word_clears_conversation_debounce(self):
-        """UC4: Conversation debounce accumulating → wake word → clears state."""
+    def test_wake_word_overrides_conversation_debounce(self):
+        """UC4: Conversation debounce active → wake word → process via override."""
         gov = PipelineGovernor(conversation_debounce_s=0.0)
 
         # Drive into conversation pause
@@ -196,7 +207,7 @@ class TestWakeWordUseCases:
         gov.evaluate(s1)
         assert gov._paused_by_conversation is True
 
-        # Wake word
+        # Wake word — overrides all vetoes
         gov.wake_word_active = True
         s2 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r2 = gov.evaluate(s2)
@@ -204,9 +215,7 @@ class TestWakeWordUseCases:
         # Use-case: processing despite conversation
         assert r2 == "process"
 
-        # Primitive: governor state cleared
-        assert gov._paused_by_conversation is False
-        assert gov._conversation_first_seen is None
+        # Primitive: override is active, conversation state persists but overridden
         assert gov.last_selected.selected_by == "wake_word_override"
 
 
@@ -311,11 +320,7 @@ class TestGovernanceUseCases:
         session = SessionManager(silence_timeout_s=30)
         gate = _make_context_gate(session, activity_mode="production")
 
-        with (
-            patch.object(gate, "_get_sink_volume", return_value=0.3),
-            patch.object(gate, "_check_studio", return_value=(True, "")),
-        ):
-            result = gate.check()
+        result = gate.check()
 
         # Use-case: not eligible
         assert result.eligible is False
@@ -323,11 +328,7 @@ class TestGovernanceUseCases:
 
         # Primitive: ContextGate uses VetoChain internally — verify deny-wins
         gate2 = _make_context_gate(session, activity_mode="idle")
-        with (
-            patch.object(gate2, "_get_sink_volume", return_value=0.3),
-            patch.object(gate2, "_check_studio", return_value=(True, "")),
-        ):
-            result2 = gate2.check()
+        result2 = gate2.check()
         assert result2.eligible is True
 
 
@@ -342,11 +343,7 @@ class TestFullPipelineUseCases:
         session = SessionManager(silence_timeout_s=30)
         gate = _make_context_gate(session, activity_mode="idle")
 
-        with (
-            patch.object(gate, "_get_sink_volume", return_value=0.3),
-            patch.object(gate, "_check_studio", return_value=(True, "")),
-        ):
-            result = gate.check()
+        result = gate.check()
 
         assert result.eligible is True
         assert result.reason == ""

@@ -48,8 +48,8 @@ def _make_params(arguments: dict):
 class TestDesktopToolSchemas:
     """Desktop tool schemas are correctly defined."""
 
-    def test_five_desktop_tools(self):
-        assert len(DESKTOP_TOOL_SCHEMAS) == 5
+    def test_eight_desktop_tools(self):
+        assert len(DESKTOP_TOOL_SCHEMAS) == 8
 
     def test_schema_names(self):
         names = [s.name for s in DESKTOP_TOOL_SCHEMAS]

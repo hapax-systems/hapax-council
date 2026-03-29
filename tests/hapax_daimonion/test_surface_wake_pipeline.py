@@ -25,7 +25,7 @@ def _make_daemon() -> VoiceDaemon:
     daemon.cfg.backend = "local"
     daemon.cfg.local_stt_model = "base"
     daemon.cfg.llm_model = "test-model"
-    daemon.cfg.kokoro_voice = "af_heart"
+    daemon.cfg.voxtral_voice_id = "jessica"
     daemon.cfg.chime_enabled = False
 
     daemon.session = VoiceLifecycle(silence_timeout_s=30)
@@ -45,6 +45,16 @@ def _make_daemon() -> VoiceDaemon:
     daemon.wake_word_event = Event()
     daemon.focus_event = Event()
     daemon._wake_word_signal = asyncio.Event()
+    daemon.perception = MagicMock()
+    daemon._cognitive_loop = None
+    daemon._conversation_pipeline = None
+    daemon._salience_router = None
+    daemon._conversation_buffer = MagicMock()
+    daemon._conversation_buffer.is_active = False
+    daemon._echo_canceller = None
+    daemon._resident_stt = MagicMock()
+    daemon._resident_stt.is_loaded = True
+    daemon._salience_concern_graph = None
 
     return daemon
 
@@ -140,46 +150,39 @@ class TestWakeWordStartsPipeline:
             mock_start.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_audio_input_stops_for_pipeline(self):
+    async def test_pipeline_start_keeps_mic_shared(self):
+        """New conversation pipeline keeps mic shared (no stop/start)."""
         daemon = _make_daemon()
-
-        mock_task = MagicMock()
-        mock_transport = MagicMock()
 
         with (
-            patch(
-                "agents.hapax_daimonion.pipeline.build_pipeline_task",
-                return_value=(mock_task, mock_transport),
-            ),
-            patch("pipecat.pipeline.runner.PipelineRunner"),
+            patch.object(daemon, "_start_conversation_pipeline", new_callable=AsyncMock),
         ):
-            await daemon._start_local_pipeline()
+            await daemon._start_pipeline()
 
-        daemon._audio_input.stop.assert_called_once()
+        # Mic should NOT be stopped — conversation buffer shares audio
+        daemon._audio_input.stop.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_audio_input_restored_on_pipeline_build_failure(self):
+    async def test_pipeline_stop_clears_task(self):
         daemon = _make_daemon()
-
-        with patch(
-            "agents.hapax_daimonion.pipeline.build_pipeline_task",
-            side_effect=RuntimeError("build failed"),
-        ):
-            await daemon._start_local_pipeline()
-
-        daemon._audio_input.start.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_pipeline_stop_restores_audio(self):
-        daemon = _make_daemon()
-        daemon._audio_input.is_active = False
 
         fake_task = asyncio.create_task(asyncio.sleep(10))
         daemon._pipeline_task = fake_task
-        daemon._pipecat_task = MagicMock()
-        daemon._pipecat_transport = MagicMock()
+        daemon._salience_concern_graph = None
 
         await daemon._stop_pipeline()
 
-        daemon._audio_input.start.assert_called_once()
         assert daemon._pipeline_task is None
+
+    @pytest.mark.asyncio
+    async def test_pipeline_stop_clears_cognitive_loop(self):
+        daemon = _make_daemon()
+        daemon._salience_concern_graph = None
+
+        mock_loop = MagicMock()
+        daemon._cognitive_loop = mock_loop
+
+        await daemon._stop_pipeline()
+
+        mock_loop.stop_loop.assert_called_once()
+        assert daemon._cognitive_loop is None

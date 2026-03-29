@@ -74,84 +74,46 @@ def test_detector_from_base64():
 # --- Failure-mode and edge case tests ---
 
 
-class TestModelDownloadFailures:
-    """Tests for model download failure handling."""
+class TestInsightFaceInitFailures:
+    """Tests for InsightFace initialization failure handling."""
 
-    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
-    @patch("agents.hapax_daimonion.face_detector.urllib.request.urlretrieve")
-    def test_model_download_network_failure(self, mock_urlretrieve, mock_path):
-        """URLError during download → _ensure_model returns None, detect returns FaceResult(False, 0)."""
-        import urllib.error
-
-        mock_path.exists.return_value = False
-        mock_urlretrieve.side_effect = urllib.error.URLError("Connection refused")
-
-        detector = FaceDetector()
-        assert detector._ensure_model() is None
-        result = detector.detect(np.zeros((240, 320, 3), dtype=np.uint8))
-        assert result.detected is False
-        assert result.count == 0
-
-    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
-    @patch("agents.hapax_daimonion.face_detector.urllib.request.urlretrieve")
-    def test_model_download_timeout(self, mock_urlretrieve, mock_path):
-        """TimeoutError during download → same graceful degradation."""
-        mock_path.exists.return_value = False
-        mock_urlretrieve.side_effect = TimeoutError("Download timed out")
-
-        detector = FaceDetector()
-        assert detector._ensure_model() is None
-        result = detector.detect(np.zeros((240, 320, 3), dtype=np.uint8))
-        assert result.detected is False
-        assert result.count == 0
-
-    @patch("agents.hapax_daimonion.face_detector.urllib.request.urlretrieve")
-    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
-    def test_model_path_exists_skips_download(self, mock_path, mock_urlretrieve):
-        """When model file already exists, urlretrieve is never called."""
-        mock_path.exists.return_value = True
-
-        detector = FaceDetector()
-        result = detector._ensure_model()
-        assert result is mock_path
-        mock_urlretrieve.assert_not_called()
-
-
-class TestMediaPipeInitFailures:
-    """Tests for MediaPipe initialization failure handling."""
-
-    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
-    def test_mediapipe_import_failure(self, mock_path):
-        """ImportError on mediapipe → detector stays None, detect returns FaceResult(False, 0)."""
-        mock_path.exists.return_value = True
-
+    def test_insightface_import_failure(self):
+        """ImportError on insightface → _get_app returns None, detect returns FaceResult(False, 0)."""
         detector = FaceDetector()
 
-        with patch.dict("sys.modules", {"mediapipe": None}):
-            result = detector._get_detector()
+        with patch.dict("sys.modules", {"insightface": None, "insightface.app": None}):
+            result = detector._get_app()
             assert result is None
-            assert detector._detector is None
+            assert detector._init_failed is True
 
             detect_result = detector.detect(np.zeros((240, 320, 3), dtype=np.uint8))
             assert detect_result.detected is False
             assert detect_result.count == 0
 
-    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
-    def test_mediapipe_init_failure(self, mock_path):
-        """MediaPipe available but create_from_options raises RuntimeError → detector stays None."""
-        mock_path.exists.return_value = True
-
-        mock_mp = MagicMock()
-        mock_mp.tasks.vision.FaceDetector.create_from_options.side_effect = RuntimeError(
-            "Failed to initialize"
-        )
+    def test_insightface_init_exception(self):
+        """FaceAnalysis raises RuntimeError → _get_app returns None, _init_failed set."""
+        mock_insight = MagicMock()
+        mock_insight_app = MagicMock()
+        mock_insight_app.FaceAnalysis.side_effect = RuntimeError("GPU not available")
 
         detector = FaceDetector()
 
-        with patch.dict("sys.modules", {"mediapipe": mock_mp}):
-            result = detector._get_detector()
+        with patch.dict(
+            "sys.modules",
+            {"insightface": mock_insight, "insightface.app": mock_insight_app},
+        ):
+            result = detector._get_app()
             assert result is None
-            assert detector._detector is None
+            assert detector._init_failed is True
+
+    def test_detect_graceful_without_model(self):
+        """When _get_app returns None, detect returns FaceResult(False, 0)."""
+        detector = FaceDetector()
+        detector._init_failed = True  # simulate failed init
+
+        result = detector.detect(np.zeros((240, 320, 3), dtype=np.uint8))
+        assert result.detected is False
+        assert result.count == 0
 
 
 class TestBase64Decoding:
@@ -229,42 +191,40 @@ class TestDetectorEdgeCases:
         assert result.detected is False
         assert result.count == 0
 
-    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
-    def test_detector_caches_after_init(self, mock_path):
-        """_get_detector() called twice → MediaPipe init happens only once."""
-        mock_path.exists.return_value = True
-
-        mock_mp = MagicMock()
-        mock_detector_instance = MagicMock()
-        mock_mp.tasks.vision.FaceDetector.create_from_options.return_value = mock_detector_instance
+    def test_detector_caches_after_init(self):
+        """_get_app() called twice → InsightFace init happens only once."""
+        mock_insight_app = MagicMock()
+        mock_app_instance = MagicMock()
+        mock_insight_app.FaceAnalysis.return_value = mock_app_instance
 
         detector = FaceDetector()
 
-        with patch.dict("sys.modules", {"mediapipe": mock_mp}):
-            first = detector._get_detector()
-            second = detector._get_detector()
+        with patch.dict(
+            "sys.modules",
+            {"insightface": MagicMock(), "insightface.app": mock_insight_app},
+        ):
+            first = detector._get_app()
+            second = detector._get_app()
 
-        assert first is mock_detector_instance
-        assert second is mock_detector_instance
-        mock_mp.tasks.vision.FaceDetector.create_from_options.assert_called_once()
+        assert first is mock_app_instance
+        assert second is mock_app_instance
+        mock_insight_app.FaceAnalysis.assert_called_once()
 
-    @patch("agents.hapax_daimonion.face_detector._MODEL_PATH")
-    def test_detector_stays_none_after_failed_init(self, mock_path):
-        """After failed init, _get_detector() should retry since self._detector is still None."""
-        mock_path.exists.return_value = True
-
-        mock_mp = MagicMock()
-        mock_mp.tasks.vision.FaceDetector.create_from_options.side_effect = RuntimeError(
-            "Init failed"
-        )
+    def test_detector_stays_none_after_failed_init(self):
+        """After failed init, _get_app() should not retry (_init_failed guards)."""
+        mock_insight_app = MagicMock()
+        mock_insight_app.FaceAnalysis.side_effect = RuntimeError("Init failed")
 
         detector = FaceDetector()
 
-        with patch.dict("sys.modules", {"mediapipe": mock_mp}):
-            first = detector._get_detector()
-            second = detector._get_detector()
+        with patch.dict(
+            "sys.modules",
+            {"insightface": MagicMock(), "insightface.app": mock_insight_app},
+        ):
+            first = detector._get_app()
+            second = detector._get_app()
 
         assert first is None
         assert second is None
-        # Should have tried twice since _detector stays None
-        assert mock_mp.tasks.vision.FaceDetector.create_from_options.call_count == 2
+        # Should have tried only once since _init_failed is set
+        mock_insight_app.FaceAnalysis.assert_called_once()

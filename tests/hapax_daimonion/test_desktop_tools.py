@@ -13,8 +13,8 @@ from agents.hapax_daimonion.desktop_tools import (
 
 
 class TestToolSchemas:
-    def test_five_desktop_tools_defined(self):
-        assert len(DESKTOP_TOOL_SCHEMAS) == 5
+    def test_eight_desktop_tools_defined(self):
+        assert len(DESKTOP_TOOL_SCHEMAS) == 8
 
     def test_schema_names(self):
         names = {s.name for s in DESKTOP_TOOL_SCHEMAS}
@@ -24,6 +24,9 @@ class TestToolSchemas:
             "open_app",
             "confirm_open_app",
             "get_desktop_state",
+            "move_window",
+            "resize_window",
+            "close_window",
         }
 
 
@@ -77,9 +80,11 @@ class TestOpenApp:
 
     @pytest.mark.asyncio
     async def test_confirm_launches_pending(self):
+        import time
+
         import agents.hapax_daimonion.desktop_tools as dt
 
-        dt._pending_open = {"command": "foot", "workspace": 2}
+        dt._pending_open = {"command": "foot", "workspace": 2, "created_at": time.monotonic()}
 
         params = MagicMock()
         params.arguments = {}

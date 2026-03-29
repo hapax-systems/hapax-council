@@ -506,7 +506,7 @@ class TestGovernorGovernance:
 
         gov = PipelineGovernor()
         assert isinstance(gov.veto_chain, VetoChain)
-        assert len(gov.veto_chain.vetoes) == 3
+        assert len(gov.veto_chain.vetoes) == 5
 
     def test_governor_records_veto_result(self):
         from agents.hapax_daimonion.governor import PipelineGovernor

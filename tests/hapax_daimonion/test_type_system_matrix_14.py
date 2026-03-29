@@ -425,8 +425,8 @@ class TestGracefulDegradationInFullPipeline:
         assert r2 == "process"
         assert gov.last_selected.selected_by == "wake_word_override"
 
-        # Exhaust 3-tick grace period
-        for _ in range(3):
+        # Exhaust 8-tick grace period
+        for _ in range(8):
             gov.evaluate(_make_state(activity_mode="production"))
 
         # Post-recovery: grace exhausted, production still active → degrades again

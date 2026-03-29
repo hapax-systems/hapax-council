@@ -18,7 +18,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -43,7 +43,7 @@ class TestPipelineWiring:
         build_pipeline_task(
             stt_model="base",
             llm_model="test",
-            kokoro_voice="af_heart",
+            voxtral_voice="jessica",
         )
 
         call_kwargs = mock_pipeline_cls.call_args.kwargs
@@ -60,7 +60,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -100,7 +100,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -132,7 +132,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -152,12 +152,12 @@ class TestPipelineWiring:
         mock_transport_cls.return_value = MagicMock()
         mock_agg_pair_cls.return_value = MagicMock()
 
-        with patch.dict(
-            "os.environ",
-            {
-                "LITELLM_BASE_URL": "http://127.0.0.1:4000",
-                "LITELLM_API_KEY": "test-key",
-            },
+        with (
+            patch(
+                "agents.hapax_daimonion.config.LITELLM_BASE",
+                "http://127.0.0.1:4000",
+            ),
+            patch.dict("os.environ", {"LITELLM_API_KEY": "test-key"}),
         ):
             build_pipeline_task(llm_model="claude-sonnet")
 
@@ -170,7 +170,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -202,7 +202,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -232,7 +232,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
+    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")

@@ -192,7 +192,7 @@ class TestGenerateImageRegistration:
         config = DaimonionConfig()
         register_tool_handlers(mock_llm, config)
 
-        assert mock_llm.register_function.call_count == 14
+        assert mock_llm.register_function.call_count == 26
 
 
 class TestGenaiGenerateImage:

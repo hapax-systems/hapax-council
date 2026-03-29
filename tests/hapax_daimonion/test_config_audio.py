@@ -4,9 +4,9 @@ from agents.hapax_daimonion.config import DaimonionConfig
 
 
 def test_default_audio_input_source():
-    """Default audio_input_source is echo_cancel_capture."""
+    """Default audio_input_source is the Yeti mic ALSA device."""
     cfg = DaimonionConfig()
-    assert cfg.audio_input_source == "echo_cancel_capture"
+    assert "Yeti" in cfg.audio_input_source
 
 
 def test_custom_audio_input_source():

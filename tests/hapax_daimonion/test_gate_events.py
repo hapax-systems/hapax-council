@@ -7,17 +7,25 @@ from agents.hapax_daimonion.session import SessionManager
 
 
 def test_gate_emits_decision_event():
+    import time
+
+    from agents.hapax_daimonion.primitives import Behavior
+
     sm = SessionManager(silence_timeout_s=10)
-    gate = ContextGate(session=sm, volume_threshold=0.7)
+    gate = ContextGate(session=sm, volume_threshold=0.7, ambient_classification=False)
     mock_log = MagicMock()
     gate.set_event_log(mock_log)
 
-    with (
-        patch.object(gate, "_get_sink_volume", return_value=0.3),
-        patch.object(gate, "_check_studio", return_value=(True, "")),
-        patch.object(gate, "_check_ambient", return_value=(True, "")),
-    ):
-        result = gate.check()
+    # Provide behaviors so veto predicates pass without subprocess calls
+    now = time.monotonic()
+    gate.set_behaviors(
+        {
+            "sink_volume": Behavior(0.3, watermark=now),
+            "midi_active": Behavior(False, watermark=now),
+        }
+    )
+
+    result = gate.check()
 
     assert result.eligible is True
     mock_log.emit.assert_called_once()
@@ -48,7 +56,7 @@ def test_gate_emits_subprocess_failed_on_wpctl_error():
     gate.set_event_log(mock_log)
 
     with patch("subprocess.run", side_effect=FileNotFoundError("wpctl not found")):
-        gate._get_sink_volume()
+        gate._read_volume()
 
     calls = [c for c in mock_log.emit.call_args_list if c[0][0] == "subprocess_failed"]
     assert len(calls) == 1

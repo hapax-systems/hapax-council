@@ -46,7 +46,7 @@ class TestSearchDocumentsHandler:
         mock_fn_params.arguments = {"query": "meeting notes"}
 
         with (
-            patch("agents.hapax_daimonion.tools.get_qdrant", return_value=mock_qdrant),
+            patch("agents.hapax_daimonion.tools.get_qdrant_grpc", return_value=mock_qdrant),
             patch("agents.hapax_daimonion.tools.embed", mock_embed),
         ):
             await handle_search_documents(mock_fn_params)
@@ -65,7 +65,7 @@ class TestSearchDocumentsHandler:
         mock_fn_params.arguments = {"query": "budget", "source_filter": "gdrive"}
 
         with (
-            patch("agents.hapax_daimonion.tools.get_qdrant", return_value=mock_qdrant),
+            patch("agents.hapax_daimonion.tools.get_qdrant_grpc", return_value=mock_qdrant),
             patch("agents.hapax_daimonion.tools.embed", mock_embed),
         ):
             await handle_search_documents(mock_fn_params)
@@ -84,7 +84,7 @@ class TestSearchDocumentsHandler:
         empty_client.query_points.return_value = empty_response
 
         with (
-            patch("agents.hapax_daimonion.tools.get_qdrant", return_value=empty_client),
+            patch("agents.hapax_daimonion.tools.get_qdrant_grpc", return_value=empty_client),
             patch("agents.hapax_daimonion.tools.embed", mock_embed),
         ):
             await handle_search_documents(mock_fn_params)
@@ -99,7 +99,8 @@ class TestSearchDocumentsHandler:
         mock_fn_params.arguments = {"query": "test"}
 
         with patch(
-            "agents.hapax_daimonion.tools.get_qdrant", side_effect=RuntimeError("connection failed")
+            "agents.hapax_daimonion.tools.get_qdrant_grpc",
+            side_effect=RuntimeError("connection failed"),
         ):
             await handle_search_documents(mock_fn_params)
 
@@ -184,7 +185,7 @@ class TestSearchEmailsHandler:
         mock_fn_params.arguments = {"query": "invoice from Sarah"}
 
         with (
-            patch("agents.hapax_daimonion.tools.get_qdrant", return_value=mock_qdrant),
+            patch("agents.hapax_daimonion.tools.get_qdrant_grpc", return_value=mock_qdrant),
             patch("agents.hapax_daimonion.tools.embed", mock_embed),
         ):
             await handle_search_emails(mock_fn_params)
@@ -237,7 +238,7 @@ class TestSearchEmailsHandler:
         empty_client.query_points.return_value = empty_response
 
         with (
-            patch("agents.hapax_daimonion.tools.get_qdrant", return_value=empty_client),
+            patch("agents.hapax_daimonion.tools.get_qdrant_grpc", return_value=empty_client),
             patch("agents.hapax_daimonion.tools.embed", mock_embed),
         ):
             await handle_search_emails(mock_fn_params)
@@ -301,6 +302,8 @@ class TestSendSmsHandler:
 class TestConfirmSendSmsHandler:
     @pytest.mark.asyncio
     async def test_confirm_sends_sms(self, mock_fn_params):
+        import time
+
         from agents.hapax_daimonion.tools import _pending_sms, handle_confirm_send_sms
 
         _pending_sms.clear()
@@ -308,6 +311,7 @@ class TestConfirmSendSmsHandler:
             "phone": "+15551234567",
             "message": "Running late",
             "recipient": "Wife",
+            "created_at": time.monotonic(),
         }
         mock_fn_params.arguments = {"confirmation_id": "test-123"}
 

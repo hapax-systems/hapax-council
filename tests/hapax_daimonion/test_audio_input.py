@@ -79,20 +79,24 @@ class TestFrameQueue:
 
     def test_callback_enqueues_frame(self):
         """PyAudio callback writes audio data to internal queue."""
+        import pyaudio
+
         stream, _, _ = _make_stream()
         audio_data = b"\x00" * 960
         result = stream._pyaudio_callback(audio_data, 480, {}, 0)
-        assert result[1] == 0  # pyaudio.paContinue = 0
+        assert result[1] is pyaudio.paContinue
         assert stream._queue.get_nowait() == audio_data
 
     def test_callback_drops_frame_when_queue_full(self):
         """Callback drops frames when queue is full instead of blocking."""
+        import pyaudio
+
         stream, _, _ = _make_stream()
         stream._queue = queue.Queue(maxsize=2)
         stream._queue.put(b"a")
         stream._queue.put(b"b")
         result = stream._pyaudio_callback(b"c", 480, {}, 0)
-        assert result[1] == 0
+        assert result[1] is pyaudio.paContinue
         assert stream._queue.qsize() == 2
 
     @pytest.mark.asyncio

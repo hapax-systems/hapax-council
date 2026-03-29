@@ -135,9 +135,9 @@ class TestMCGovernanceConstruction(unittest.TestCase):
         # Energy 0.8 < 0.9 threshold → vetoed
         self.assertIsNone(results[0])
 
-    def test_build_mc_veto_chain_returns_four_vetoes(self):
+    def test_build_mc_veto_chain_returns_five_vetoes(self):
         chain = build_mc_veto_chain()
-        self.assertEqual(len(chain.vetoes), 4)
+        self.assertEqual(len(chain.vetoes), 5)
 
     def test_build_mc_fallback_chain_returns_two_candidates(self):
         chain = build_mc_fallback_chain()
@@ -176,9 +176,9 @@ class TestOBSGovernanceConstruction(unittest.TestCase):
         chain = build_obs_veto_chain()
         self.assertEqual(len(chain.vetoes), 4)
 
-    def test_build_obs_fallback_chain_returns_four_candidates(self):
+    def test_build_obs_fallback_chain_returns_five_candidates(self):
         chain = build_obs_fallback_chain()
-        self.assertEqual(len(chain.candidates), 4)
+        self.assertEqual(len(chain.candidates), 5)
 
     def test_build_obs_freshness_guard_returns_three_requirements(self):
         guard = build_obs_freshness_guard()

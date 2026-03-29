@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("pedalboard")
+
 import numpy as np
 
 from agents.hapax_daimonion.vocal_fx import (

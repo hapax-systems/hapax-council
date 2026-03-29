@@ -12,6 +12,18 @@ EXPECTED_TOOL_NAMES = [
     "analyze_scene",
     "get_system_status",
     "generate_image",
+    "get_current_time",
+    "get_weather",
+    "get_briefing",
+    "check_consent_status",
+    "describe_consent_flow",
+    "check_governance_health",
+    "query_scene_inventory",
+    "highlight_detection",
+    "set_detection_layers",
+    "query_person_details",
+    "query_object_motion",
+    "query_scene_state",
 ]
 
 
@@ -32,7 +44,7 @@ def test_all_expected_tools_present():
 
 
 def test_total_tool_count():
-    assert len(TOOL_SCHEMAS) == 9
+    assert len(TOOL_SCHEMAS) == 21
 
 
 def test_search_documents_has_required_query():

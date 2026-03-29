@@ -198,7 +198,7 @@ class TestSalienceRouter:
 
     def test_consent_override(self):
         router = self._make_router()
-        result = router.route("just checking in", consent_phase="pending")
+        result = router.route("just checking in", consent_phase="refused")
         assert result.tier == ModelTier.CAPABLE
         assert "consent" in result.reason
 

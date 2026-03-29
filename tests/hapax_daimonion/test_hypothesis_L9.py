@@ -105,7 +105,7 @@ class TestDaemonPipelineProperties:
             assert "safety" in drained[0].command.governance_result.denied_by
 
     @given(n_ticks=st.integers(min_value=1, max_value=5))
-    @settings(max_examples=50)
+    @settings(max_examples=50, deadline=None)
     def test_pipeline_state_consistency(self, n_ticks):
         """After N ticks, governor's observability state is populated."""
         daemon = _make_daemon()

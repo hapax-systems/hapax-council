@@ -5,6 +5,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("audiomentations")
+
 import numpy as np
 
 # scripts/ is not a package — add it to sys.path so we can import train_wake_word

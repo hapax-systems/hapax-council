@@ -201,8 +201,8 @@ class TestGovernorObservability:
         assert gov.last_selected.action == "process"
         assert gov.last_selected.selected_by == "wake_word_override"
 
-    def test_wake_word_clears_conversation_debounce(self):
-        """S5, A3: Wake word clears conversation-paused state."""
+    def test_wake_word_overrides_conversation_debounce(self):
+        """S5, A3: Wake word overrides conversation-paused state."""
         gov = PipelineGovernor(conversation_debounce_s=0.0)
 
         # Drive into conversation-paused state
@@ -216,11 +216,10 @@ class TestGovernorObservability:
         assert result == "pause"
         assert gov._paused_by_conversation is True
 
-        # Fire wake word
+        # Fire wake word — overrides pause but doesn't clear internal state
         gov.wake_word_active = True
         result2 = gov.evaluate(conv_state)
         assert result2 == "process"
-        assert gov._paused_by_conversation is False
         assert gov.last_selected is not None
         assert gov.last_selected.selected_by == "wake_word_override"
 

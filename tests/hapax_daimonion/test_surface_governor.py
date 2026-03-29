@@ -112,8 +112,8 @@ class TestGovernorWakeWordOverride:
         state_prod = _make_state(activity_mode="production")
         # First call: override → process
         assert gov.evaluate(state_prod) == "process"
-        # Exhaust grace period (3 ticks)
-        for _ in range(3):
+        # Exhaust grace period (8 ticks)
+        for _ in range(8):
             assert gov.evaluate(state_prod) == "process"
         # Grace expired: normal evaluation → pause (production mode)
         assert gov.evaluate(state_prod) == "pause"

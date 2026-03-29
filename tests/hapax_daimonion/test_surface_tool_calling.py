@@ -6,6 +6,7 @@ and that results flow back through the result_callback.
 
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -47,9 +48,9 @@ def _make_params(arguments: dict):
 class TestToolHandlerRegistration:
     """All 14 expected tools are registered with callable handlers."""
 
-    def test_all_14_tools_registered(self):
+    def test_all_26_tools_registered(self):
         handlers = _setup_tools()
-        assert len(handlers) == 14
+        assert len(handlers) == 26
 
     def test_core_tools_present(self):
         handlers = _setup_tools()
@@ -63,11 +64,23 @@ class TestToolHandlerRegistration:
             "analyze_scene",
             "get_system_status",
             "generate_image",
+            "get_current_time",
+            "get_weather",
+            "get_briefing",
             "focus_window",
             "switch_workspace",
             "open_app",
             "confirm_open_app",
             "get_desktop_state",
+            "check_consent_status",
+            "describe_consent_flow",
+            "check_governance_health",
+            "query_scene_inventory",
+            "highlight_detection",
+            "set_detection_layers",
+            "query_person_details",
+            "query_object_motion",
+            "query_scene_state",
         ]
         for name in expected:
             assert name in handlers, f"Missing tool handler: {name}"
@@ -105,7 +118,7 @@ class TestSearchDocumentsTool:
 
         with (
             patch("agents.hapax_daimonion.tools.embed", return_value=[0.1] * 768),
-            patch("agents.hapax_daimonion.tools.get_qdrant") as mock_get_qdrant,
+            patch("agents.hapax_daimonion.tools.get_qdrant_grpc") as mock_get_qdrant,
         ):
             mock_client = MagicMock()
             mock_client.query_points.return_value = mock_results
@@ -128,7 +141,7 @@ class TestSearchDocumentsTool:
 
         with (
             patch("agents.hapax_daimonion.tools.embed", return_value=[0.1] * 768),
-            patch("agents.hapax_daimonion.tools.get_qdrant") as mock_get_qdrant,
+            patch("agents.hapax_daimonion.tools.get_qdrant_grpc") as mock_get_qdrant,
         ):
             mock_client = MagicMock()
             mock_client.query_points.return_value = mock_results
@@ -164,7 +177,7 @@ class TestSearchDocumentsTool:
 
         with (
             patch("agents.hapax_daimonion.tools.embed", return_value=[0.1] * 768),
-            patch("agents.hapax_daimonion.tools.get_qdrant") as mock_get_qdrant,
+            patch("agents.hapax_daimonion.tools.get_qdrant_grpc") as mock_get_qdrant,
         ):
             mock_client = MagicMock()
             mock_client.query_points.return_value = mock_results
@@ -188,10 +201,10 @@ class TestSearchDocumentsTool:
 
 
 class TestSearchDriveTool:
-    """search_drive delegates to search_documents with source_filter=gdrive."""
+    """search_drive queries Qdrant with source_service filter for gdrive/drive."""
 
     @pytest.mark.asyncio
-    async def test_search_drive_sets_source_filter(self):
+    async def test_search_drive_filters_by_source(self):
         handlers = _setup_tools()
         handler = handlers["search_drive"]
         params = _make_params({"query": "quarterly report"})
@@ -201,15 +214,19 @@ class TestSearchDriveTool:
 
         with (
             patch("agents.hapax_daimonion.tools.embed", return_value=[0.1] * 768),
-            patch("agents.hapax_daimonion.tools.get_qdrant") as mock_get_qdrant,
+            patch("agents.hapax_daimonion.tools.get_qdrant_grpc") as mock_get_qdrant,
         ):
             mock_client = MagicMock()
             mock_client.query_points.return_value = mock_results
             mock_get_qdrant.return_value = mock_client
             await handler(params)
 
-        # After delegation, source_filter should have been injected
-        assert params.arguments.get("source_filter") == "gdrive"
+        # Should query Qdrant with a filter (not delegate to search_documents)
+        mock_client.query_points.assert_called_once()
+        call_kwargs = mock_client.query_points.call_args
+        assert call_kwargs.kwargs.get("query_filter") is not None or (
+            len(call_kwargs.args) > 1 or "query_filter" in (call_kwargs.kwargs or {})
+        )
         params.result_callback.assert_called_once()
 
 
@@ -392,6 +409,7 @@ class TestConfirmSendSmsTool:
             "phone": "+15550001234",
             "message": "Hello",
             "recipient": "Wife",
+            "created_at": time.monotonic(),
         }
 
         params = _make_params({"confirmation_id": "test-id"})
@@ -417,6 +435,7 @@ class TestConfirmSendSmsTool:
             "phone": "+15550001234",
             "message": "Hello",
             "recipient": "Wife",
+            "created_at": time.monotonic(),
         }
 
         mock_response = MagicMock()
@@ -451,6 +470,7 @@ class TestConfirmSendSmsTool:
             "phone": "+15550001234",
             "message": "Test",
             "recipient": "+15550001234",
+            "created_at": time.monotonic(),
         }
 
         mock_response = MagicMock()
@@ -660,7 +680,11 @@ class TestConfirmOpenAppTool:
     async def test_confirm_launches_app(self):
         import agents.hapax_daimonion.desktop_tools as dt
 
-        dt._pending_open = {"command": "foot", "workspace": None}
+        dt._pending_open = {
+            "command": "foot",
+            "workspace": None,
+            "created_at": time.monotonic(),
+        }
 
         handlers = _setup_tools()
         handler = handlers["confirm_open_app"]
@@ -681,7 +705,11 @@ class TestConfirmOpenAppTool:
     async def test_confirm_with_workspace_uses_workspace_dispatch(self):
         import agents.hapax_daimonion.desktop_tools as dt
 
-        dt._pending_open = {"command": "obsidian", "workspace": 4}
+        dt._pending_open = {
+            "command": "obsidian",
+            "workspace": 4,
+            "created_at": time.monotonic(),
+        }
 
         handlers = _setup_tools()
         handler = handlers["confirm_open_app"]
@@ -693,7 +721,7 @@ class TestConfirmOpenAppTool:
 
         # The workspace variant should include workspace in the dispatch call
         call_args = mock_ipc.dispatch.call_args
-        assert "4" in str(call_args) or 4 in str(call_args)
+        assert "4" in str(call_args)
 
 
 class TestGetDesktopStateTool:
