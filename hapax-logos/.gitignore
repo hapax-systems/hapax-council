@@ -1,3 +1,8 @@
 node_modules/
 dist/
 src-tauri/target/
+target/
+Cargo.lock
+src-imagination/target/
+src-imagination/Cargo.lock
+crates/*/target/
