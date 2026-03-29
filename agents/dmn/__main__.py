@@ -22,6 +22,8 @@ from pathlib import Path
 
 from agents.dmn.buffer import DMNBuffer
 from agents.dmn.pulse import DMNPulse
+from agents.imagination import CURRENT_PATH, ImaginationFragment, ImaginationLoop
+from agents.imagination_resolver import CONTENT_DIR, cleanup_content_dir, resolve_references
 
 log = logging.getLogger("dmn")
 
@@ -42,6 +44,7 @@ class DMNDaemon:
     def __init__(self) -> None:
         self._buffer = DMNBuffer()
         self._pulse = DMNPulse(self._buffer)
+        self._imagination = ImaginationLoop()
         self._running = True
         self._start_time = time.monotonic()
 
@@ -49,6 +52,9 @@ class DMNDaemon:
         """Main loop — never stops unless signalled."""
         DMN_STATE_DIR.mkdir(parents=True, exist_ok=True)
         log.info("DMN daemon starting")
+
+        asyncio.create_task(self._imagination_loop())
+        asyncio.create_task(self._resolver_loop())
 
         while self._running:
             try:
@@ -60,6 +66,51 @@ class DMNDaemon:
             await asyncio.sleep(LOOP_TICK_S)
 
         log.info("DMN daemon stopped")
+
+    async def _imagination_loop(self) -> None:
+        """Run imagination loop on its own variable cadence."""
+        from agents.dmn.sensor import read_all
+
+        log.info("Imagination loop starting")
+        while self._running:
+            try:
+                try:
+                    if TPN_ACTIVE_FILE.exists():
+                        active = TPN_ACTIVE_FILE.read_text().strip() == "1"
+                        self._imagination.set_tpn_active(active)
+                except OSError:
+                    pass
+
+                observations = self._buffer.recent_observations(5)
+                snapshot = read_all()
+                await self._imagination.tick(observations, snapshot)
+            except Exception:
+                log.debug("Imagination tick failed (non-fatal)", exc_info=True)
+
+            interval = self._imagination.cadence.current_interval()
+            await asyncio.sleep(interval)
+
+    async def _resolver_loop(self) -> None:
+        """Watch imagination fragments and resolve slow content references."""
+        log.info("Content resolver starting")
+        last_fragment_id = ""
+        CONTENT_DIR.mkdir(parents=True, exist_ok=True)
+
+        while self._running:
+            try:
+                if CURRENT_PATH.exists():
+                    data = json.loads(CURRENT_PATH.read_text())
+                    frag_id = data.get("id", "")
+                    if frag_id and frag_id != last_fragment_id:
+                        last_fragment_id = frag_id
+                        frag = ImaginationFragment.model_validate(data)
+                        cleanup_content_dir()
+                        resolve_references(frag)
+                        log.debug("Resolved content for fragment %s", frag_id)
+            except Exception:
+                log.debug("Resolver tick failed (non-fatal)", exc_info=True)
+
+            await asyncio.sleep(0.5)
 
     def _write_output(self) -> None:
         """Write buffer, impingements, and status to /dev/shm."""
@@ -74,6 +125,7 @@ class DMNDaemon:
 
         # Drain and persist impingements (cross-daemon transport)
         impingements = self._pulse.drain_impingements()
+        impingements.extend(self._imagination.drain_impingements())
         if impingements:
             try:
                 with IMPINGEMENTS_FILE.open("a", encoding="utf-8") as f:
@@ -97,6 +149,7 @@ class DMNDaemon:
             "uptime_s": round(time.monotonic() - self._start_time, 1),
             "buffer_entries": len(self._buffer),
             "tick": self._buffer.tick,
+            "imagination_active": self._imagination.activation_level > 0,
             "timestamp": time.time(),
         }
         try:
