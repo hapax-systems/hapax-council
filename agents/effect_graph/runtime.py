@@ -52,6 +52,19 @@ class GraphRuntime:
         for k, v in graph.layer_palettes.items():
             if k in self._layer_palettes:
                 self._layer_palettes[k] = v
+        # Compile to WGSL pipeline for hapax-imagination
+        try:
+            from .wgsl_compiler import compile_to_wgsl_plan, write_wgsl_pipeline
+
+            wgsl_plan = compile_to_wgsl_plan(graph)
+            write_wgsl_pipeline(wgsl_plan)
+            log.info(
+                "WGSL pipeline written for %s (%d passes)",
+                graph.name,
+                len(wgsl_plan["passes"]),
+            )
+        except Exception:
+            log.warning("Failed to write WGSL pipeline", exc_info=True)
         if self._on_plan_changed:
             self._on_plan_changed(old, plan)
         log.info("Loaded graph '%s' (%d nodes)", graph.name, len(graph.nodes))

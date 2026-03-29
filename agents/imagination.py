@@ -29,6 +29,9 @@ CURRENT_PATH = SHM_DIR / "current.json"
 STREAM_PATH = SHM_DIR / "stream.jsonl"
 STREAM_MAX_LINES = 50
 
+VISUAL_OBSERVATION_PATH = Path("/dev/shm/hapax-dmn/visual-observation.txt")
+REVERBERATION_THRESHOLD = 0.5
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -280,6 +283,34 @@ train of thought or let it go. Don't force continuation.\
 MAX_RECENT_FRAGMENTS = 5
 
 
+def reverberation_check(narrative: str, perceived_description: str) -> float:
+    """Measure reverberation: how much the visual output surprised the imagination.
+
+    High reverberation (close to 1.0) means the rendered result differs
+    significantly from what was imagined — the system surprises itself.
+    Low reverberation means the output matched prediction.
+
+    Uses inverted word-overlap similarity: shared words = low reverberation.
+    """
+    if not narrative or not perceived_description:
+        return 0.0
+
+    narrative_words = set(narrative.lower().split())
+    perceived_words = set(perceived_description.lower().split())
+
+    if not narrative_words or not perceived_words:
+        return 0.0
+
+    intersection = narrative_words & perceived_words
+    union = narrative_words | perceived_words
+
+    if not union:
+        return 0.0
+
+    similarity = len(intersection) / len(union)  # Jaccard similarity
+    return 1.0 - similarity
+
+
 class ImaginationLoop:
     """Main loop that drives imagination ticks via an LLM agent."""
 
@@ -287,13 +318,16 @@ class ImaginationLoop:
         self,
         current_path: Path | None = None,
         stream_path: Path | None = None,
+        visual_observation_path: Path | None = None,
     ):
         self.cadence = CadenceController()
         self.recent_fragments: list[ImaginationFragment] = []
         self._pending_impingements: list[Impingement] = []
         self._current_path = current_path or CURRENT_PATH
         self._stream_path = stream_path or STREAM_PATH
+        self._visual_observation_path = visual_observation_path or VISUAL_OBSERVATION_PATH
         self._agent = None  # lazy-init
+        self._last_reverberation: float = 0.0
 
     @property
     def activation_level(self) -> float:
@@ -341,11 +375,47 @@ class ImaginationLoop:
         """Delegate TPN state to cadence controller."""
         self.cadence.set_tpn_active(active)
 
+    def _read_visual_observation(self) -> str:
+        """Read the DMN's visual observation from shm."""
+        try:
+            if self._visual_observation_path.exists():
+                return self._visual_observation_path.read_text().strip()
+        except OSError:
+            pass
+        return ""
+
+    def _check_reverberation(self) -> float:
+        """Compare last fragment's narrative against DMN visual observation."""
+        if not self.recent_fragments:
+            return 0.0
+        perceived = self._read_visual_observation()
+        if not perceived:
+            return 0.0
+        last_narrative = self.recent_fragments[-1].narrative
+        reverb = reverberation_check(last_narrative, perceived)
+        self._last_reverberation = reverb
+        if reverb > REVERBERATION_THRESHOLD:
+            log.info("Reverberation %.2f — visual output surprised imagination", reverb)
+        return reverb
+
     async def tick(
         self, observations: list[str], sensor_snapshot: dict
     ) -> ImaginationFragment | None:
         """Run one imagination tick: assemble context, call agent, process result."""
+        # Check reverberation from last tick's output
+        reverb = self._check_reverberation()
+
         context = assemble_context(observations, self.recent_fragments, sensor_snapshot)
+
+        # High reverberation: boost context and accelerate cadence
+        if reverb > REVERBERATION_THRESHOLD:
+            context += (
+                "\n\n## Reverberation\n"
+                "The visual output surprised you — what you see differs from what you "
+                "imagined. This is generative tension. Lean into the surprise."
+            )
+            self.cadence._accelerated = True
+
         try:
             agent = self._get_agent()
             result = await agent.run(context)

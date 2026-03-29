@@ -7,7 +7,6 @@
 mod ipc;
 mod window_state;
 
-use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,18 +16,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use hapax_visual::compositor::Compositor;
-use hapax_visual::content_layer::ContentLayer;
+use hapax_visual::dynamic_pipeline::DynamicPipeline;
 use hapax_visual::gpu::GpuContext;
-use hapax_visual::output::ShmOutput;
-use hapax_visual::postprocess::PostProcess;
 use hapax_visual::state::StateReader;
-use hapax_visual::techniques::feedback::FeedbackTechnique;
-use hapax_visual::techniques::gradient::GradientTechnique;
-use hapax_visual::techniques::physarum::PhysarumTechnique;
-use hapax_visual::techniques::reaction_diff::ReactionDiffTechnique;
-use hapax_visual::techniques::voronoi::VoronoiTechnique;
-use hapax_visual::techniques::wave::WaveTechnique;
 
 use ipc::{Command, RenderAction, Response, WindowAction};
 use window_state::{WindowMode, WindowState};
@@ -45,22 +35,12 @@ struct ImaginationApp {
     window_state: WindowState,
     gpu: Option<GpuContext>,
 
-    gradient: Option<GradientTechnique>,
-    reaction_diff: Option<ReactionDiffTechnique>,
-    voronoi: Option<VoronoiTechnique>,
-    wave: Option<WaveTechnique>,
-    physarum: Option<PhysarumTechnique>,
-    feedback: Option<FeedbackTechnique>,
-    compositor: Option<Compositor>,
-    content_layer: Option<ContentLayer>,
-    postprocess: Option<PostProcess>,
-    shm_output: Option<ShmOutput>,
+    dynamic_pipeline: Option<DynamicPipeline>,
     state_reader: StateReader,
 
     start_time: Instant,
     last_frame: Instant,
     frame_count: u64,
-    voronoi_computed: bool,
     paused: bool,
 }
 
@@ -72,21 +52,11 @@ impl ImaginationApp {
             window: None,
             window_state: WindowState::load(),
             gpu: None,
-            gradient: None,
-            reaction_diff: None,
-            voronoi: None,
-            wave: None,
-            physarum: None,
-            feedback: None,
-            compositor: None,
-            content_layer: None,
-            postprocess: None,
-            shm_output: None,
+            dynamic_pipeline: None,
             state_reader: StateReader::new(),
             start_time: Instant::now(),
             last_frame: Instant::now(),
             frame_count: 0,
-            voronoi_computed: false,
             paused: false,
         }
     }
@@ -204,22 +174,6 @@ impl ImaginationApp {
 
     fn render(&mut self) {
         let Some(gpu) = &self.gpu else { return };
-        let Some(gradient) = &self.gradient else { return };
-        let Some(rd) = &mut self.reaction_diff else {
-            return;
-        };
-        let Some(voronoi) = &self.voronoi else { return };
-        let Some(wave) = &mut self.wave else { return };
-        let Some(physarum) = &self.physarum else { return };
-        let Some(feedback_tech) = &self.feedback else {
-            return;
-        };
-        let Some(compositor) = &self.compositor else {
-            return;
-        };
-        let Some(postprocess) = &self.postprocess else {
-            return;
-        };
         let Some(window) = &self.window else { return };
 
         let now = Instant::now();
@@ -242,114 +196,19 @@ impl ImaginationApp {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        gradient.update_uniforms(&gpu.queue, &self.state_reader.smoothed, time);
-        rd.update_params(&gpu.queue, &self.state_reader.smoothed, dt);
-        physarum.update_params(&gpu.queue, &self.state_reader.smoothed, time);
-        postprocess.update_uniforms(&gpu.queue, time);
-        compositor.update_opacities(&gpu.queue, &self.state_reader.smoothed.layer_opacities);
-
-        wave.flush_events(&gpu.queue);
-
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame"),
-            });
-
-        feedback_tech.process(&mut encoder, gpu);
-        gradient.render(&mut encoder);
-        rd.step(&mut encoder, 8);
-
-        if !self.voronoi_computed {
-            voronoi.compute(&mut encoder, gpu);
-            self.voronoi_computed = true;
+        if let Some(pipeline) = &mut self.dynamic_pipeline {
+            pipeline.render(
+                &gpu.device,
+                &gpu.queue,
+                &surface_view,
+                gpu.format,
+                &self.state_reader,
+                dt,
+                time,
+            );
         }
 
-        wave.step(&mut encoder, gpu);
-        physarum.step(&mut encoder, gpu);
-
-        let frame_bg = compositor.create_frame_bind_group(
-            &gpu.device,
-            &gradient.view,
-            rd.output_view(),
-            &voronoi.color_view,
-            wave.output_view(),
-            physarum.output_view(),
-            &feedback_tech.output_view,
-        );
-        compositor.render(&mut encoder, &frame_bg);
-
-        // Content layer: decode imagination fragments, modulate with 9 dimensions, screen-blend
-        if let Some(content) = &mut self.content_layer {
-            let new_id = &self.state_reader.imagination.id;
-            if !new_id.is_empty() && *new_id != content.current_fragment_id {
-                let is_continuation = self.state_reader.imagination.continuation;
-                if !is_continuation {
-                    content.fade_out_all();
-                }
-                let content_dir = std::path::Path::new("/dev/shm/hapax-imagination/content");
-                for (i, cref) in self
-                    .state_reader
-                    .imagination
-                    .content_references
-                    .iter()
-                    .enumerate()
-                {
-                    if i >= 4 {
-                        break;
-                    }
-                    let path = match cref.kind.as_str() {
-                        "camera_frame" => std::path::PathBuf::from(format!(
-                            "/dev/shm/hapax-compositor/{}.jpg",
-                            cref.source
-                        )),
-                        "file" => std::path::PathBuf::from(&cref.source),
-                        _ => content_dir.join(format!("{}-{}.jpg", new_id, i)),
-                    };
-                    if path.exists() {
-                        content.upload_to_slot(gpu, i, &path, cref.salience as f32, &cref.source);
-                    }
-                }
-                content.current_fragment_id = new_id.clone();
-                content.is_continuation = is_continuation;
-            }
-            content.tick_fades(dt);
-            let dims: HashMap<String, f32> = self
-                .state_reader
-                .imagination
-                .dimensions
-                .iter()
-                .map(|(k, v)| (k.clone(), *v as f32))
-                .collect();
-            content.update_uniforms(&gpu.queue, &dims, time);
-            content.render(&mut encoder, &compositor.composite_view, &gpu.device);
-        }
-
-        // Final composited view: content layer output if active, else compositor
-        let (final_view, final_texture) = if let Some(content) = &self.content_layer {
-            (&content.output_view, &content.output_texture)
-        } else {
-            (&compositor.composite_view, &compositor.composite_texture)
-        };
-
-        feedback_tech.capture_frame(&mut encoder, final_texture);
-
-        if let Some(shm) = &self.shm_output {
-            if self.frame_count % 2 == 0 {
-                shm.copy_to_staging(&mut encoder, final_texture);
-            }
-        }
-
-        postprocess.render(&mut encoder, &surface_view, final_view, &gpu.device);
-
-        gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-
-        if let Some(shm) = &mut self.shm_output {
-            if self.frame_count % 2 == 0 {
-                shm.write_frame(&gpu.device);
-            }
-        }
 
         self.frame_count += 1;
         if self.frame_count % 300 == 0 {
@@ -368,11 +227,10 @@ impl ImaginationApp {
             let _ = self.stats_tx.send(stats);
 
             log::info!(
-                "frame_time: {:.2}ms | stance: {:?} | warmth: {:.2} | F: {:.4}",
+                "frame_time: {:.2}ms | stance: {:?} | warmth: {:.2}",
                 dt * 1000.0,
                 self.state_reader.smoothed.stance,
                 self.state_reader.smoothed.color_warmth,
-                rd.current_f(),
             );
         }
 
@@ -425,29 +283,11 @@ impl ApplicationHandler for ImaginationApp {
         let w = size.width.max(1);
         let h = size.height.max(1);
 
-        let gradient = GradientTechnique::new(&gpu, w, h);
-        let reaction_diff = ReactionDiffTechnique::new(&gpu, w, h);
-        let voronoi = VoronoiTechnique::new(&gpu, w, h);
-        let wave = WaveTechnique::new(&gpu, w, h);
-        let physarum = PhysarumTechnique::new(&gpu, w, h);
-        let feedback = FeedbackTechnique::new(&gpu, w, h);
-        let compositor = Compositor::new(&gpu, w, h);
-        let postprocess = PostProcess::new(&gpu);
-        let content_layer = ContentLayer::new(&gpu, w, h);
-        let shm_output = ShmOutput::new(&gpu.device, w, h);
+        let dynamic_pipeline = DynamicPipeline::new(&gpu.device, &gpu.queue, w, h);
 
         self.window = Some(window.clone());
         self.gpu = Some(gpu);
-        self.gradient = Some(gradient);
-        self.reaction_diff = Some(reaction_diff);
-        self.voronoi = Some(voronoi);
-        self.wave = Some(wave);
-        self.physarum = Some(physarum);
-        self.feedback = Some(feedback);
-        self.compositor = Some(compositor);
-        self.content_layer = Some(content_layer);
-        self.postprocess = Some(postprocess);
-        self.shm_output = Some(shm_output);
+        self.dynamic_pipeline = Some(dynamic_pipeline);
 
         log::info!("Visual surface initialized ({}x{})", w, h);
         window.request_redraw();
@@ -465,50 +305,9 @@ impl ApplicationHandler for ImaginationApp {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.resize(w, h);
                 }
-                if let Some(gradient) = &mut self.gradient {
+                if let Some(pipeline) = &mut self.dynamic_pipeline {
                     if let Some(gpu) = &self.gpu {
-                        gradient.resize(&gpu.device, w, h);
-                    }
-                }
-                if let Some(rd) = &mut self.reaction_diff {
-                    if let Some(gpu) = &self.gpu {
-                        rd.resize(gpu, w, h);
-                    }
-                }
-                if let Some(voronoi) = &mut self.voronoi {
-                    if let Some(gpu) = &self.gpu {
-                        voronoi.resize(gpu, w, h);
-                        self.voronoi_computed = false;
-                    }
-                }
-                if let Some(wave) = &mut self.wave {
-                    if let Some(gpu) = &self.gpu {
-                        wave.resize(gpu, w, h);
-                    }
-                }
-                if let Some(physarum) = &mut self.physarum {
-                    if let Some(gpu) = &self.gpu {
-                        physarum.resize(gpu, w, h);
-                    }
-                }
-                if let Some(feedback) = &mut self.feedback {
-                    if let Some(gpu) = &self.gpu {
-                        feedback.resize(gpu, w, h);
-                    }
-                }
-                if let Some(compositor) = &mut self.compositor {
-                    if let Some(gpu) = &self.gpu {
-                        compositor.resize(&gpu.device, w, h);
-                    }
-                }
-                if let Some(content) = &mut self.content_layer {
-                    if let Some(gpu) = &self.gpu {
-                        content.resize(&gpu.device, w, h);
-                    }
-                }
-                if let Some(shm) = &mut self.shm_output {
-                    if let Some(gpu) = &self.gpu {
-                        shm.resize(&gpu.device, w, h);
+                        pipeline.resize(&gpu.device, w, h);
                     }
                 }
 

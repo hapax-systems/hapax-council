@@ -2,6 +2,7 @@
 
 import json
 import time
+import unittest.mock
 from pathlib import Path
 
 from agents.imagination import ContentReference, ImaginationFragment
@@ -43,7 +44,10 @@ def test_proactive_gate_checks_imagination_source():
         "last_utterance_time": time.monotonic() - 60.0,
         "tpn_active": False,
     }
-    assert gate.should_speak(frag, state) is True
+    # Sigmoid gate is probabilistic — mock RNG for deterministic test
+    with unittest.mock.patch("agents.proactive_gate.random") as mock_rng:
+        mock_rng.random.return_value = 0.0  # always below sigmoid probability
+        assert gate.should_speak(frag, state) is True
 
 
 def test_spontaneous_speech_imagination_prompt():

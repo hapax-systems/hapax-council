@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 import httpx
 
 from agents.dmn.buffer import DMNBuffer
 from agents.dmn.sensor import read_all
 from shared.impingement import Impingement, ImpingementType
+
+VISUAL_OBSERVATION_PATH = Path("/dev/shm/hapax-dmn/visual-observation.txt")
 
 log = logging.getLogger("dmn.pulse")
 
@@ -232,6 +235,17 @@ class DMNPulse:
         self._pending_impingements.clear()
         return pending
 
+    @staticmethod
+    def _write_visual_observation(evaluative_result: str) -> None:
+        """Write visual observation to shm for imagination reverberation loop."""
+        try:
+            VISUAL_OBSERVATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = VISUAL_OBSERVATION_PATH.with_suffix(".tmp")
+            tmp.write_text(evaluative_result)
+            tmp.rename(VISUAL_OBSERVATION_PATH)
+        except OSError:
+            pass
+
     async def _evaluative_tick(self, snapshot: dict) -> None:
         """Assess value trajectory + check absolute thresholds."""
         # Anti-habituation: always check absolute thresholds regardless of deltas
@@ -265,6 +279,9 @@ class DMNPulse:
 
             self._buffer.add_evaluation(trajectory, concerns)
             log.debug("Evaluative: %s %s", trajectory, concerns)
+
+            # Write visual observation for imagination reverberation loop
+            self._write_visual_observation(result)
 
             # Emit impingement for degrading trajectory
             if trajectory == "degrading":
