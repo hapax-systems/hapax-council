@@ -2,6 +2,7 @@
 Description=Hapax Imagination — GPU visual surface
 After=hapax-secrets.service
 Requires=hapax-secrets.service
+PartOf=hapax-visual-stack.target
 
 [Service]
 Type=simple

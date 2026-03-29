@@ -60,36 +60,13 @@ else
     RESTORE_BRANCH=""
 fi
 
-# Build imagination (pure Rust) and logos (Tauri — bundles frontend)
+# Build and install via justfile (isolated CARGO_TARGET_DIR, rollback backup)
 cd "$CARGO_DIR"
-cargo build --release -p hapax-imagination 2>"$STATE_DIR/build.log" || {
-    logger -t "$LOG_TAG" "imagination build failed — see $STATE_DIR/build.log"
-    ntfy "Imagination build FAILED" "See ~/.cache/hapax/rebuild/build.log" "high" "x"
-    # Restore branch if we detached
-    cd "$REPO"
-    if [ -n "${RESTORE_BRANCH:-}" ]; then
-        git checkout "$RESTORE_BRANCH" --quiet 2>/dev/null || true
-    fi
-    exit 1
-}
-# Build frontend dist, then cargo with custom-protocol to embed it.
-# Using cargo directly (not pnpm tauri build) avoids the bundler which
-# opens a window and produces unwanted .deb/.rpm/.AppImage artifacts.
-pnpm --dir "$CARGO_DIR" build 2>>"$STATE_DIR/build.log" || true
-cargo build --release -p hapax-logos --features tauri/custom-protocol 2>>"$STATE_DIR/build.log"
-if [ $? -eq 0 ] || [ -f "$CARGO_DIR/target/release/hapax-logos" ]; then
-    # Stop services before replacing binaries
-    systemctl --user stop hapax-imagination.service 2>/dev/null || true
-
-    cp "$CARGO_DIR/target/release/hapax-logos" "$LOGOS_BIN"
-    cp "$CARGO_DIR/target/release/hapax-imagination" "$IMAGINATION_BIN"
-
-    # Restart imagination (always-on service)
-    systemctl --user start hapax-imagination.service 2>/dev/null || true
-
+if just install 2>"$STATE_DIR/build.log"; then
     echo "$CURRENT_SHA" > "$SHA_FILE"
-    logger -t "$LOG_TAG" "rebuild complete — ${CURRENT_SHA:0:8} installed"
-    ntfy "Logos rebuild complete" "${CURRENT_SHA:0:8} installed" "default" "white_check_mark"
+    VERSION=$(just version 2>/dev/null | head -1)
+    logger -t "$LOG_TAG" "rebuild complete — $VERSION"
+    ntfy "Logos rebuild complete" "${CURRENT_SHA:0:8} — $VERSION" "default" "white_check_mark"
 else
     logger -t "$LOG_TAG" "build failed — see $STATE_DIR/build.log"
     ntfy "Logos rebuild FAILED" "See ~/.cache/hapax/rebuild/build.log" "high" "x"
