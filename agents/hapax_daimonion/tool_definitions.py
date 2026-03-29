@@ -15,7 +15,7 @@ from agents.hapax_daimonion.tool_capability import (
     ToolCategory,
     ToolRegistry,
 )
-from shared.capability import ResourceTier
+from shared.capability import CapabilityRegistry, ResourceTier
 
 log = logging.getLogger(__name__)
 
@@ -50,13 +50,14 @@ def build_registry(
     config=None,
     webcam_capturer=None,
     screen_capturer=None,
+    capability_registry: CapabilityRegistry | None = None,
 ) -> ToolRegistry:
     """Build the tool registry with all capabilities.
 
     This replaces the flat (tools, handlers) tuple from get_openai_tools().
     """
     if guest_mode:
-        return ToolRegistry()
+        return ToolRegistry(capability_registry)
 
     from agents.hapax_daimonion.tools_openai import get_openai_tools
 
@@ -214,7 +215,7 @@ def build_registry(
         ),
     }
 
-    registry = ToolRegistry()
+    registry = ToolRegistry(capability_registry)
 
     for name, handler in handler_map.items():
         schema = schema_by_name.get(name)

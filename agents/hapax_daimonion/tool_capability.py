@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from shared.capability import (
     CapabilityCategory,
+    CapabilityRegistry,
     ResourceTier,
     SystemContext,
 )
@@ -80,27 +81,37 @@ class ToolCapability:
 
 
 class ToolRegistry:
-    """Manages tool capabilities with dynamic availability filtering."""
+    """Tool-specific view over CapabilityRegistry."""
 
-    def __init__(self) -> None:
-        self._tools: dict[str, ToolCapability] = {}
+    def __init__(self, registry: CapabilityRegistry | None = None) -> None:
+        self._registry = registry or CapabilityRegistry()
+
+    @property
+    def capability_registry(self) -> CapabilityRegistry:
+        return self._registry
 
     def register(self, tool: ToolCapability) -> None:
-        if tool.name in self._tools:
-            log.warning("Tool %s already registered, replacing", tool.name)
-        self._tools[tool.name] = tool
+        try:
+            self._registry.register(tool)
+        except ValueError:
+            log.warning("Tool %s already registered, skipping", tool.name)
 
     def get(self, name: str) -> ToolCapability | None:
-        return self._tools.get(name)
+        cap = self._registry.get(name)
+        return cap if isinstance(cap, ToolCapability) else None
 
-    def available_tools(self, ctx: ToolContext) -> list[ToolCapability]:
-        return [t for t in self._tools.values() if t.available(ctx)]
+    def available_tools(self, ctx: SystemContext) -> list[ToolCapability]:
+        return [
+            c
+            for c in self._registry.available(ctx, category=CapabilityCategory.TOOL)
+            if isinstance(c, ToolCapability)
+        ]
 
-    def schemas_for_llm(self, ctx: ToolContext) -> list[dict]:
+    def schemas_for_llm(self, ctx: SystemContext) -> list[dict]:
         return [t.schema for t in self.available_tools(ctx)]
 
-    def handler_map(self, ctx: ToolContext) -> dict[str, Callable]:
+    def handler_map(self, ctx: SystemContext) -> dict[str, Callable]:
         return {t.name: t.handler for t in self.available_tools(ctx)}
 
     def all_tools(self) -> list[ToolCapability]:
-        return list(self._tools.values())
+        return [c for c in self._registry.all() if isinstance(c, ToolCapability)]
