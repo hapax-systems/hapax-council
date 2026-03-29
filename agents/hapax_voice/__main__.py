@@ -664,6 +664,14 @@ class VoiceDaemon:
         except Exception:
             log.info("MixerInputBackend not available, skipping")
 
+        # IR presence (Pi NoIR edge cameras)
+        try:
+            from agents.hapax_voice.backends.ir_presence import IrPresenceBackend
+
+            self.perception.register_backend(IrPresenceBackend())
+        except Exception:
+            log.info("IrPresenceBackend not available, skipping")
+
         # Bluetooth phone presence (paired Pixel 10)
         try:
             from agents.hapax_voice.backends.bt_presence import BTPresenceBackend

@@ -36,6 +36,7 @@ DEFAULT_SIGNAL_WEIGHTS: dict[str, tuple[float, float]] = {
     "bt_phone_connected": (0.95, 0.05),  # BT paired phone in range = very strong presence
     "phone_kde_connected": (0.80, 0.25),  # KDE Connect WiFi reachable = likely in house
     "room_occupancy": (0.85, 0.20),  # person detected on any camera = strong presence signal
+    "ir_person_detected": (0.90, 0.10),  # lighting-invariant IR detection from Pi NoIR
 }
 
 
@@ -238,6 +239,10 @@ class PresenceEngine:
             obs["room_occupancy"] = True
         else:
             obs["room_occupancy"] = None  # no data = neutral
+
+        # IR person detected (from Pi NoIR edge cameras)
+        b = behaviors.get("ir_person_detected")
+        obs["ir_person_detected"] = b.value if b is not None else None
 
         return obs
 
