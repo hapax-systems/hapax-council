@@ -45,7 +45,8 @@ Managed by:                         studio-fx-output  → ffmpeg /dev/video50
 8. visual-layer-aggregator   After: logos-api, hapax-voice, hapax-secrets
 9. studio-compositor         After: hapax-voice, visual-layer-aggregator (+10s for USB cameras)
 10. studio-fx-output         After: studio-compositor
-11. Timers activate          vram-watchdog (30s), health-monitor (15m), sync agents, backups
+11. Timers activate          vram-watchdog (30s), health-monitor (15m), sync agents, backups,
+                              rebuild-logos (5m), rebuild-services (5m)
 ```
 
 ## Secrets
@@ -96,6 +97,27 @@ process-compose attach       # attach to running instance
 ```
 
 See `process-compose.yaml` (development only, not in boot chain).
+
+## Auto-Rebuild on Main Advance
+
+Two timers poll `origin/main` every 5 minutes and rebuild/restart services when relevant files change. Notifications go to ntfy topic `hapax-build` on `localhost:8090`.
+
+### Rust Binaries (`hapax-rebuild-logos.timer`)
+
+`scripts/rebuild-logos.sh` — fetches main, compares SHA to `~/.cache/hapax/rebuild/last-build-sha`, runs `cargo build --release` for hapax-logos and hapax-imagination, copies binaries to `~/.local/bin/`, restarts `hapax-imagination.service`.
+
+### Python Services (`hapax-rebuild-services.timer`)
+
+`scripts/rebuild-service.sh` — generic script accepting `--repo`, `--service`, `--watch`, `--sha-key`, `--pull-only`. Checks if watched paths changed between last SHA and current `origin/main`. Only restarts the service if relevant files differ.
+
+| Service | Repo | Watched Paths | SHA Key |
+|---------|------|---------------|---------|
+| `hapax-voice.service` | hapax-council | `agents/hapax_voice/` `shared/` | `voice` |
+| `logos-api.service` | hapax-council | `logos/` | `logos-api` |
+| `officium-api.service` | hapax-officium | (entire repo) | `officium` |
+| hapax-mcp (pull-only) | hapax-mcp | (entire repo) | `hapax-mcp` |
+
+SHA state files: `~/.cache/hapax/rebuild/last-{key}-sha`.
 
 ## Storage Management
 
