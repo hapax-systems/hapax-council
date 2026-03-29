@@ -6,9 +6,6 @@ struct Params {
     u_color_g: f32,
     u_color_b: f32,
     u_gravity_y: f32,
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -53,9 +50,8 @@ fn main_1() {
     let _e25 = textureSample(tex, tex_sampler, _e24);
     base = _e25;
     let _e27 = v_texcoord_1;
-    let _e28 = global.u_width;
-    let _e29 = global.u_height;
-    pixel = (_e27 * vec2<f32>(_e28, _e29));
+
+    pixel = (_e27 * vec2<f32>(uniforms.resolution.x, uniforms.resolution.y));
     let _e33 = global.u_emit_rate;
     particle_count = min(_e33, 2000f);
     loop {
@@ -69,19 +65,19 @@ fn main_1() {
             if (_e48 >= _e49) {
                 break;
             }
-            let _e51 = global.u_time;
+
             let _e52 = global.u_lifetime;
             let _e54 = i;
             let _e57 = hash((_e54 * 7.31f));
-            age = fract(((_e51 / _e52) + _e57));
+            age = fract(((uniforms.time / _e52) + _e57));
             let _e61 = i;
             let _e64 = hash((_e61 * 13.7f));
-            let _e65 = global.u_width;
-            spawn_x = (_e64 * _e65);
+
+            spawn_x = (_e64 * uniforms.resolution.x);
             let _e68 = i;
             let _e71 = hash((_e68 * 23.1f));
-            let _e72 = global.u_height;
-            spawn_y = (_e71 * _e72);
+
+            spawn_y = (_e71 * uniforms.resolution.y);
             let _e75 = i;
             let _e78 = hash((_e75 * 37.3f));
             vel_x = ((_e78 - 0.5f) * 100f);

@@ -3,9 +3,6 @@ struct Params {
     u_vorticity: f32,
     u_dissipation: f32,
     u_speed: f32,
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -43,9 +40,7 @@ fn main_1() {
     var new_vel: vec2<f32>;
     var density: f32;
 
-    let _e21 = global.u_width;
-    let _e24 = global.u_height;
-    texel = vec2<f32>((1f / _e21), (1f / _e24));
+    texel = vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y));
     let _e28 = v_texcoord_1;
     let _e29 = textureSample(tex_accum, tex_accum_sampler, _e28);
     prev = _e29;

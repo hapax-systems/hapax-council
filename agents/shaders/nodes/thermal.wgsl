@@ -1,7 +1,4 @@
 struct Params {
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
     u_edge_glow: f32,
     u_palette_shift: f32,
 }
@@ -88,16 +85,14 @@ fn main_1() {
             return;
         }
     }
-    let _e22 = global.u_width;
-    let _e23 = global.u_height;
-    quantRes = (vec2<f32>(_e22, _e23) * 0.25f);
+
+    quantRes = (vec2<f32>(uniforms.resolution.x, uniforms.resolution.y) * 0.25f);
     let _e28 = uv;
     let _e29 = quantRes;
     let _e32 = quantRes;
     uv = (floor((_e28 * _e29)) / _e32);
-    let _e35 = global.u_width;
-    let _e38 = global.u_height;
-    texel = vec2<f32>((1f / _e35), (1f / _e38));
+
+    texel = vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y));
     loop {
         let _e49 = dy;
         if !((_e49 <= 2f)) {
@@ -157,9 +152,8 @@ fn main_1() {
     let _e124 = bloom;
     color = (_e123 + (_e124 * vec3<f32>(1f, 0.9f, 0.7f)));
     let _e131 = uv;
-    let _e134 = global.u_time;
-    let _e137 = global.u_time;
-    let _e142 = hash(((_e131 * 40f) + vec2<f32>((_e134 * 0.3f), (_e137 * 0.2f))));
+
+    let _e142 = hash(((_e131 * 40f) + vec2<f32>((uniforms.time * 0.3f), (uniforms.time * 0.2f))));
     noise = _e142;
     let _e144 = noise;
     noise = ((_e144 - 0.5f) * 0.04f);

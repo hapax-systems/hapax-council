@@ -1,8 +1,6 @@
 struct Params {
     u_threshold: f32,
     u_color_mode: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -41,9 +39,7 @@ fn main_1() {
     var edge: f32;
     var color: vec4<f32>;
 
-    let _e13 = global.u_width;
-    let _e16 = global.u_height;
-    texel = vec2<f32>((1f / _e13), (1f / _e16));
+    texel = vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y));
     let _e20 = v_texcoord_1;
     let _e21 = texel;
     let _e24 = texel;

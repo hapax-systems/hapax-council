@@ -3,7 +3,6 @@ struct Params {
     u_twist: f32,
     u_radius: f32,
     u_distortion: f32,
-    u_time: f32,
 }
 
 struct FragmentOutput {
@@ -42,9 +41,9 @@ fn main_1() {
     let _e34 = angle;
     tunnel_a = (_e34 / 3.1415927f);
     let _e38 = tunnel_r;
-    let _e39 = global.u_time;
+
     let _e40 = global.u_speed;
-    tunnel_r = (_e38 + (_e39 * _e40));
+    tunnel_r = (_e38 + (uniforms.time * _e40));
     let _e43 = tunnel_a;
     let _e44 = global.u_twist;
     let _e45 = tunnel_r;

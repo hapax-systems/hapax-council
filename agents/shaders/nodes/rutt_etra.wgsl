@@ -3,7 +3,6 @@ struct Params {
     u_line_density: f32,
     u_line_width: f32,
     u_color_mode: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -38,8 +37,8 @@ fn main_1() {
     let _e19 = color;
     lum = dot(_e19.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
     let _e27 = uv;
-    let _e29 = global.u_height;
-    let _e30 = (_e27.y * _e29);
+
+    let _e30 = (_e27.y * uniforms.resolution.y);
     let _e31 = global.u_line_density;
     linePos = (_e30 - (floor((_e30 / _e31)) * _e31));
     let _e37 = global.u_line_density;

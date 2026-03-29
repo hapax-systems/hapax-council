@@ -1,10 +1,7 @@
 struct Params {
-    u_time: f32,
     u_chroma_shift: f32,
     u_head_switch_y: f32,
     u_noise_band_y: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -81,15 +78,14 @@ fn main_1() {
             return;
         }
     }
-    let _e24 = global.u_width;
-    px = (1f / _e24);
+
+    px = (1f / uniforms.resolution.x);
     let _e27 = uv;
     if (_e27.y > 0.93f) {
         {
             let _e31 = uv;
-            let _e33 = global.u_height;
-            let _e36 = global.u_time;
-            let _e38 = hash(vec2<f32>(floor((_e31.y * _e33)), _e36));
+
+            let _e38 = hash(vec2<f32>(floor((_e31.y * uniforms.resolution.y)), uniforms.time));
             lineNoise = _e38;
             let _e40 = lineNoise;
             let _e45 = px;
@@ -144,11 +140,10 @@ fn main_1() {
     let _e131 = (vec3(_e128) + _e130);
     color = vec4<f32>(_e131.x, _e131.y, _e131.z, 1f);
     let _e138 = uv;
-    let _e140 = global.u_width;
+
     let _e148 = uv;
-    let _e150 = global.u_height;
-    let _e155 = global.u_time;
-    subcarrier = sin(((((((_e138.x * _e140) * 3.14159f) * 2f) / 4f) + ((_e148.y * _e150) * 0.5f)) + (_e155 * 2f)));
+
+    subcarrier = sin(((((((_e138.x * uniforms.resolution.x) * 3.14159f) * 2f) / 4f) + ((_e148.y * uniforms.resolution.y) * 0.5f)) + (uniforms.time * 2f)));
     let _e161 = uv;
     let _e162 = px;
     let _e166 = textureSample(tex, tex_sampler, (_e161 + vec2<f32>(_e162, 0f)));
@@ -168,10 +163,10 @@ fn main_1() {
     let _e204 = uv;
     if (_e204.y > 0.93f) {
         {
-            let _e208 = global.u_time;
+
             let _e209 = uv;
-            let _e211 = global.u_height;
-            let _e215 = hash(vec2<f32>(_e208, floor((_e209.y * _e211))));
+
+            let _e215 = hash(vec2<f32>(uniforms.time, floor((_e209.y * uniforms.resolution.y))));
             brightShift = ((_e215 * 0.3f) - 0.15f);
             let _e221 = color;
             let _e223 = color;
@@ -223,16 +218,15 @@ fn main_1() {
     if (_e324 < _e325) {
         {
             let _e327 = uv;
-            let _e328 = global.u_time;
-            let _e332 = hash(((_e327 * _e328) * 100f));
+
+            let _e332 = hash(((_e327 * uniforms.time) * 100f));
             noise = _e332;
             let _e335 = bandDist;
             let _e336 = bandWidth;
             bandIntensity = (1f - (_e335 / _e336));
             let _e340 = uv;
-            let _e342 = global.u_height;
-            let _e345 = global.u_time;
-            let _e349 = hash(vec2<f32>(floor((_e340.y * _e342)), (_e345 * 5f)));
+
+            let _e349 = hash(vec2<f32>(floor((_e340.y * uniforms.resolution.y)), (uniforms.time * 5f)));
             let _e354 = px;
             disp = (((_e349 - 0.5f) * 6f) * _e354);
             let _e357 = uv;
@@ -263,8 +257,8 @@ fn main_1() {
     if (_e405 < _e406) {
         {
             let _e408 = uv;
-            let _e409 = global.u_time;
-            let _e413 = hash(((_e408 * _e409) * 77f));
+
+            let _e413 = hash(((_e408 * uniforms.time) * 77f));
             noise2_ = _e413;
             let _e416 = band2Dist;
             let _e417 = band2Width;
@@ -280,9 +274,8 @@ fn main_1() {
         }
     }
     let _e438 = uv;
-    let _e440 = global.u_height;
-    let _e443 = global.u_time;
-    let _e448 = hash(vec2<f32>(floor((_e438.y * _e440)), floor((_e443 * 8f))));
+
+    let _e448 = hash(vec2<f32>(floor((_e438.y * uniforms.resolution.y)), floor((uniforms.time * 8f))));
     dropHash = _e448;
     let _e450 = dropHash;
     if (_e450 < 0.003f) {
@@ -296,9 +289,8 @@ fn main_1() {
         }
     }
     let _e468 = uv;
-    let _e470 = global.u_height;
-    let _e475 = global.u_time;
-    let _e479 = hash(vec2<f32>(floor(((_e468.y * _e470) * 0.5f)), (_e475 * 3f)));
+
+    let _e479 = hash(vec2<f32>(floor(((_e468.y * uniforms.resolution.y) * 0.5f)), (uniforms.time * 3f)));
     lineJitter = ((_e479 - 0.5f) * 0.03f);
     let _e485 = color;
     let _e487 = color;

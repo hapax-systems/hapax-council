@@ -2,8 +2,6 @@ struct Params {
     u_angle: f32,
     u_strength: f32,
     u_blend: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -29,9 +27,7 @@ fn main_1() {
     var s2_: vec4<f32>;
     var embossed: vec3<f32>;
 
-    let _e15 = global.u_width;
-    let _e18 = global.u_height;
-    texel = vec2<f32>((1f / _e15), (1f / _e18));
+    texel = vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y));
     let _e22 = global.u_angle;
     c = cos(_e22);
     let _e25 = global.u_angle;

@@ -1,7 +1,6 @@
 struct Params {
     u_rate: f32,
     u_amplitude: f32,
-    u_time: f32,
 }
 
 struct FragmentOutput {
@@ -22,10 +21,9 @@ fn main_1() {
     var center: vec2<f32> = vec2<f32>(0.5f, 0.5f);
     var uv: vec2<f32>;
 
-    let _e11 = global.u_time;
     let _e12 = global.u_rate;
     let _e19 = global.u_amplitude;
-    scale = (1f + (sin((((_e11 * _e12) * 2f) * 3.1415927f)) * _e19));
+    scale = (1f + (sin((((uniforms.time * _e12) * 2f) * 3.1415927f)) * _e19));
     let _e27 = v_texcoord_1;
     let _e28 = center;
     let _e30 = scale;

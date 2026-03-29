@@ -1,7 +1,4 @@
 struct Params {
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
     u_cell_size: f32,
     u_color_mode: f32,
 }
@@ -50,9 +47,9 @@ fn charFill(lum: f32, cellPos: vec2<f32>) -> f32 {
     dy = (_e28 - 0.5f);
     let _e32 = dx;
     let _e33 = dx;
-    let _e35 = dy;
+    let uniforms.resolution.y = dy;
     let _e36 = dy;
-    d = sqrt(((_e32 * _e33) + (_e35 * _e36)));
+    d = sqrt(((_e32 * _e33) + (uniforms.resolution.y * _e36)));
     let _e41 = lum_1;
     if (_e41 < 0.05f) {
         return 0f;
@@ -219,10 +216,10 @@ fn main_1() {
     let _e24 = global.u_cell_size;
     cellH = floor((_e24 * 1.5f));
     let _e29 = uv;
-    let _e31 = global.u_width;
+
     let _e33 = uv;
-    let _e35 = global.u_height;
-    pixel = vec2<f32>((_e29.x * _e31), (_e33.y * _e35));
+
+    pixel = vec2<f32>((_e29.x * uniforms.resolution.x), (_e33.y * uniforms.resolution.y));
     let _e39 = pixel;
     let _e40 = cellW;
     let _e41 = cellH;
@@ -232,15 +229,13 @@ fn main_1() {
     let _e51 = cellH;
     cellCenter = ((_e46 + vec2(0.5f)) * vec2<f32>(_e50, _e51));
     let _e55 = cellCenter;
-    let _e56 = global.u_width;
-    let _e57 = global.u_height;
-    centerUV = (_e55 / vec2<f32>(_e56, _e57));
+
+    centerUV = (_e55 / vec2<f32>(uniforms.resolution.x, uniforms.resolution.y));
     let _e61 = centerUV;
     let _e62 = textureSample(tex, tex_sampler, _e61);
     centerColor = _e62.xyz;
-    let _e66 = global.u_width;
-    let _e69 = global.u_height;
-    texel = vec2<f32>((1f / _e66), (1f / _e69));
+
+    texel = vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y));
     let _e73 = centerUV;
     let _e74 = texel;
     let _e82 = textureSample(tex, tex_sampler, (_e73 + (_e74 * vec2<f32>(-1f, -1f))));

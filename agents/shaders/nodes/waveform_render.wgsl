@@ -6,7 +6,6 @@ struct Params {
     u_color_b: f32,
     u_color_a: f32,
     u_scale: f32,
-    u_time: f32,
 }
 
 struct FragmentOutput {
@@ -58,9 +57,9 @@ fn main_1() {
             fi = f32(_e45);
             let _e49 = fi;
             freq = (3f + (_e49 * 2f));
-            let _e54 = global.u_time;
+
             let _e56 = fi;
-            phase = (_e54 * (1f + (_e56 * 0.3f)));
+            phase = (uniforms.time * (1f + (_e56 * 0.3f)));
             let _e62 = wave;
             let _e63 = angle;
             let _e64 = freq;

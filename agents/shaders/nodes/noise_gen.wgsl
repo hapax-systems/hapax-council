@@ -4,7 +4,6 @@ struct Params {
     u_octaves: f32,
     u_amplitude: f32,
     u_speed: f32,
-    u_time: f32,
 }
 
 struct FragmentOutput {
@@ -114,9 +113,9 @@ fn main_1() {
     let _e16 = global.u_frequency_y;
     uv = (_e14 * vec2<f32>(_e15, _e16));
     let _e20 = uv;
-    let _e21 = global.u_time;
+
     let _e22 = global.u_speed;
-    uv = (_e20 + vec2(((_e21 * _e22) * 0.1f)));
+    uv = (_e20 + vec2(((uniforms.time * _e22) * 0.1f)));
     let _e28 = uv;
     let _e29 = global.u_octaves;
     let _e30 = fbm(_e28, _e29);

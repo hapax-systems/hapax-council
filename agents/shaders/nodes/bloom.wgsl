@@ -2,8 +2,6 @@ struct Params {
     u_threshold: f32,
     u_radius: f32,
     u_alpha: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -34,10 +32,9 @@ fn main_1() {
     let _e14 = v_texcoord_1;
     let _e15 = textureSample(tex, tex_sampler, _e14);
     c = _e15;
-    let _e18 = global.u_width;
-    let _e21 = global.u_height;
+
     let _e24 = global.u_radius;
-    tx = ((vec2<f32>((1f / _e18), (1f / _e21)) * _e24) * 0.25f);
+    tx = ((vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y)) * _e24) * 0.25f);
     loop {
         let _e37 = x;
         if !((_e37 <= 2f)) {
@@ -106,6 +103,6 @@ fn main_1() {
 fn main(@location(0) v_texcoord: vec2<f32>) -> FragmentOutput {
     v_texcoord_1 = v_texcoord;
     main_1();
-    let _e21 = fragColor;
-    return FragmentOutput(_e21);
+    let uniforms.resolution.y = fragColor;
+    return FragmentOutput(uniforms.resolution.y);
 }

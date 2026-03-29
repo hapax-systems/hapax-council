@@ -1,7 +1,6 @@
 struct Params {
     u_direction: f32,
     u_speed: f32,
-    u_time: f32,
 }
 
 struct FragmentOutput {
@@ -28,8 +27,8 @@ fn main_1() {
     let _e12 = v_texcoord_1;
     uv = _e12;
     let _e14 = global.u_speed;
-    let _e15 = global.u_time;
-    offset = ((_e14 * _e15) * 0.01f);
+
+    offset = ((_e14 * uniforms.time) * 0.01f);
     let _e20 = global.u_direction;
     if (_e20 < 0.5f) {
         {

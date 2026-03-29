@@ -1,7 +1,4 @@
 struct Params {
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
     u_block_size: f32,
     u_intensity: f32,
     u_rgb_split: f32,
@@ -72,8 +69,8 @@ fn main_1() {
     let _e27 = pixel;
     let _e28 = global.u_block_size;
     blockID_2 = floor((_e27 / vec2(_e28)));
-    let _e33 = global.u_time;
-    timeSlot = floor((_e33 * 5f));
+
+    timeSlot = floor((uniforms.time * 5f));
     let _e38 = blockID_2;
     let _e39 = timeSlot;
     let _e40 = blockHash(_e38, _e39);
@@ -94,13 +91,13 @@ fn main_1() {
                     let _e58 = blockID_2;
                     let _e59 = timeSlot;
                     let _e62 = blockHash(_e58, (_e59 + 1f));
-                    let _e67 = global.u_width;
-                    shiftX = (((_e62 - 0.5f) * 60f) / _e67);
+
+                    shiftX = (((_e62 - 0.5f) * 60f) / uniforms.resolution.x);
                     let _e70 = blockID_2;
                     let _e71 = timeSlot;
                     let _e74 = blockHash(_e70, (_e71 + 2f));
-                    let _e79 = global.u_height;
-                    shiftY = (((_e74 - 0.5f) * 6f) / _e79);
+
+                    shiftY = (((_e74 - 0.5f) * 6f) / uniforms.resolution.y);
                     let _e82 = uv;
                     let _e83 = shiftX;
                     let _e84 = shiftY;
@@ -110,8 +107,8 @@ fn main_1() {
                     let _e91 = blockID_2;
                     let _e92 = timeSlot;
                     let _e95 = blockHash(_e91, (_e92 + 3f));
-                    let _e99 = global.u_width;
-                    split = (((_e90 * _e95) * 8f) / _e99);
+
+                    split = (((_e90 * _e95) * 8f) / uniforms.resolution.x);
                     let _e102 = displaced;
                     let _e103 = split;
                     let _e107 = textureSample(tex, tex_sampler, (_e102 + vec2<f32>(_e103, 0f)));

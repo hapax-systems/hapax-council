@@ -1,7 +1,4 @@
 struct Params {
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
     u_dot_size: f32,
     u_color_mode: f32,
 }

@@ -3,7 +3,6 @@ struct Params {
     u_edge_width: f32,
     u_animation_speed: f32,
     u_jitter: f32,
-    u_time: f32,
 }
 
 struct FragmentOutput {
@@ -75,10 +74,10 @@ fn main_1() {
                     let _e60 = hash2_((_e57 + _e58));
                     point = _e60;
                     let _e63 = global.u_jitter;
-                    let _e66 = global.u_time;
+
                     let _e67 = global.u_animation_speed;
                     let _e70 = point;
-                    point = (vec2(0.5f) + ((_e63 * 0.5f) * sin((vec2((_e66 * _e67)) + (6.2831f * _e70)))));
+                    point = (vec2(0.5f) + ((_e63 * 0.5f) * sin((vec2((uniforms.time * _e67)) + (6.2831f * _e70)))));
                     let _e78 = neighbor;
                     let _e79 = point;
                     let _e81 = frac_uv;

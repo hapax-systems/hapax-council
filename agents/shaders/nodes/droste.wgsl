@@ -4,7 +4,6 @@ struct Params {
     u_center_x: f32,
     u_center_y: f32,
     u_branches: f32,
-    u_time: f32,
 }
 
 struct FragmentOutput {
@@ -50,9 +49,9 @@ fn main_1() {
     n = _e38;
     let _e40 = global.u_spiral;
     p = _e40;
-    let _e42 = global.u_time;
+
     let _e43 = global.u_zoom_speed;
-    t = (_e42 * _e43);
+    t = (uniforms.time * _e43);
     let _e46 = theta;
     let _e47 = p;
     let _e48 = logr;

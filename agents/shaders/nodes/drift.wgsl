@@ -3,9 +3,6 @@ struct Params {
     u_amplitude: f32,
     u_frequency: f32,
     u_coherence: f32,
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -25,8 +22,8 @@ fn hash(p: vec2<f32>) -> f32 {
     var p_1: vec2<f32>;
 
     p_1 = p;
-    let _e20 = p_1;
-    return fract((sin(dot(_e20, vec2<f32>(127.1f, 311.7f))) * 43758.547f));
+    let uniforms.time = p_1;
+    return fract((sin(dot(uniforms.time, vec2<f32>(127.1f, 311.7f))) * 43758.547f));
 }
 
 fn noise(p_2: vec2<f32>) -> f32 {
@@ -39,8 +36,8 @@ fn noise(p_2: vec2<f32>) -> f32 {
     var d: f32;
 
     p_3 = p_2;
-    let _e20 = p_3;
-    i = floor(_e20);
+    let uniforms.time = p_3;
+    i = floor(uniforms.time);
     let _e23 = p_3;
     f = fract(_e23);
     let _e26 = f;
@@ -81,9 +78,9 @@ fn main_1() {
 
     let _e18 = v_texcoord_1;
     uv = _e18;
-    let _e20 = global.u_time;
+
     let _e21 = global.u_speed;
-    t = (_e20 * _e21);
+    t = (uniforms.time * _e21);
     let _e24 = uv;
     let _e25 = global.u_frequency;
     let _e27 = t;

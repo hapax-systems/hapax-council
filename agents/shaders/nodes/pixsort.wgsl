@@ -1,7 +1,4 @@
 struct Params {
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
     u_threshold_low: f32,
     u_threshold_high: f32,
     u_sort_length: f32,
@@ -98,9 +95,8 @@ fn main_1() {
     let _e46 = angle;
     let _e48 = angle;
     dir = vec2<f32>(cos(_e46), sin(_e48));
-    let _e53 = global.u_width;
-    let _e56 = global.u_height;
-    texel = vec2<f32>((1f / _e53), (1f / _e56));
+
+    texel = vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y));
     loop {
         let _e64 = i;
         if !((_e64 < 64i)) {

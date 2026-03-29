@@ -4,9 +4,6 @@ struct Params {
     u_blend_mode: f32,
     u_drift_x: f32,
     u_drift_y: f32,
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -34,16 +31,15 @@ fn main_1() {
     var cur: vec4<f32>;
     var r: vec3<f32>;
 
-    let _e22 = global.u_time;
-    t = (_e22 * 0.015f);
+    t = (uniforms.time * 0.015f);
     let _e26 = global.u_drift_x;
     let _e27 = t;
-    let _e32 = global.u_width;
-    dx = (((_e26 * sin(_e27)) * 0.15f) / _e32);
+
+    dx = (((_e26 * sin(_e27)) * 0.15f) / uniforms.resolution.x);
     let _e35 = global.u_drift_y;
     let _e36 = t;
-    let _e43 = global.u_height;
-    dy = (((_e35 * cos((_e36 * 0.7f))) * 0.15f) / _e43);
+
+    dy = (((_e35 * cos((_e36 * 0.7f))) * 0.15f) / uniforms.resolution.y);
     let _e46 = v_texcoord_1;
     let _e47 = dx;
     let _e48 = dy;

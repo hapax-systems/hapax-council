@@ -4,8 +4,6 @@ struct Params {
     u_diffusion_a: f32,
     u_diffusion_b: f32,
     u_speed: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -41,9 +39,7 @@ fn main_1() {
     var dB: f32;
     var seed: f32;
 
-    let _e21 = global.u_width;
-    let _e24 = global.u_height;
-    texel = vec2<f32>((1f / _e21), (1f / _e24));
+    texel = vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y));
     let _e28 = v_texcoord_1;
     let _e29 = textureSample(tex_accum, tex_accum_sampler, _e28);
     c = _e29;

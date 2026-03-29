@@ -2,7 +2,6 @@ struct Params {
     u_opacity: f32,
     u_spacing: f32,
     u_thickness: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -28,8 +27,8 @@ fn main_1() {
     let _e15 = global.u_spacing;
     let _e16 = global.u_thickness;
     let _e18 = v_texcoord_1;
-    let _e20 = global.u_height;
-    let _e21 = (_e18.y * _e20);
+
+    let _e21 = (_e18.y * uniforms.resolution.y);
     let _e22 = global.u_spacing;
     line = step((_e15 - _e16), (_e21 - (floor((_e21 / _e22)) * _e22)));
     let _e29 = c;

@@ -1,8 +1,6 @@
 struct Params {
     u_amount: f32,
     u_radius: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -23,10 +21,8 @@ fn main_1() {
     var color: vec4<f32>;
     var blur: vec4<f32>;
 
-    let _e13 = global.u_width;
-    let _e16 = global.u_height;
     let _e19 = global.u_radius;
-    texel = (vec2<f32>((1f / _e13), (1f / _e16)) * _e19);
+    texel = (vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y)) * _e19);
     let _e22 = v_texcoord_1;
     let _e23 = textureSample(tex, tex_sampler, _e22);
     color = _e23;

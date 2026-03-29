@@ -1,9 +1,6 @@
 struct Params {
     u_intensity: f32,
     u_animated: f32,
-    u_time: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -47,14 +44,13 @@ fn main_1() {
     let _e15 = textureSample(tex, tex_sampler, _e14);
     c = _e15;
     let _e17 = v_texcoord_1;
-    let _e18 = global.u_width;
-    let _e19 = global.u_height;
-    uv = floor(((_e17 * vec2<f32>(_e18, _e19)) / vec2(8f)));
+
+    uv = floor(((_e17 * vec2<f32>(uniforms.resolution.x, uniforms.resolution.y)) / vec2(8f)));
     let _e27 = uv;
     let _e28 = global.u_animated;
     if (_e28 > 0.5f) {
-        let _e31 = global.u_time;
-        local = floor((_e31 * 10f));
+
+        local = floor((uniforms.time * 10f));
     } else {
         local = 0f;
     }

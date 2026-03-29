@@ -1,5 +1,4 @@
 struct Params {
-    u_time: f32,
     u_slice_count: f32,
     u_slice_amplitude: f32,
     u_pan_x: f32,
@@ -7,8 +6,6 @@ struct Params {
     u_rotation: f32,
     u_zoom: f32,
     u_zoom_breath: f32,
-    u_width: f32,
-    u_height: f32,
 }
 
 struct FragmentOutput {
@@ -39,16 +36,16 @@ fn main_1() {
 
     let _e24 = v_texcoord_1;
     uv = _e24;
-    let _e26 = global.u_time;
-    t = _e26;
+
+    t = uniforms.time;
     let _e28 = t;
     let _e30 = global.u_pan_x;
-    let _e32 = global.u_width;
-    panX = ((sin(_e28) * _e30) / _e32);
+
+    panX = ((sin(_e28) * _e30) / uniforms.resolution.x);
     let _e35 = t;
     let _e39 = global.u_pan_y;
-    let _e41 = global.u_height;
-    panY = ((sin((_e35 * 0.7f)) * _e39) / _e41);
+
+    panY = ((sin((_e35 * 0.7f)) * _e39) / uniforms.resolution.y);
     let _e44 = t;
     let _e48 = global.u_rotation;
     rot = (sin((_e44 * 0.5f)) * _e48);
@@ -88,13 +85,13 @@ fn main_1() {
             slicePhase = (_e102 + (_e103 * 0.15f));
             let _e108 = slicePhase;
             let _e110 = global.u_slice_amplitude;
-            let _e112 = global.u_width;
-            sliceShift = ((sin(_e108) * _e110) / _e112);
+
+            sliceShift = ((sin(_e108) * _e110) / uniforms.resolution.x);
             let _e115 = sliceShift;
             let _e116 = slicePhase;
             let _e120 = global.u_slice_amplitude;
-            let _e124 = global.u_width;
-            sliceShift = (_e115 + ((sin((_e116 * 2.3f)) * (_e120 * 0.5f)) / _e124));
+
+            sliceShift = (_e115 + ((sin((_e116 * 2.3f)) * (_e120 * 0.5f)) / uniforms.resolution.x));
             let _e128 = uv;
             let _e130 = sliceShift;
             uv.x = (_e128.x + _e130);
