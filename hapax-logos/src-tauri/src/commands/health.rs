@@ -177,6 +177,26 @@ pub fn get_infrastructure() -> Infrastructure {
     }
 }
 
+// --- Build Info ---
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BuildInfo {
+    pub git_sha: &'static str,
+    pub git_dirty: &'static str,
+    pub git_branch: &'static str,
+    pub build_timestamp: &'static str,
+}
+
+#[tauri::command]
+pub fn get_build_info() -> BuildInfo {
+    BuildInfo {
+        git_sha: env!("VERGEN_GIT_SHA"),
+        git_dirty: option_env!("VERGEN_GIT_DIRTY").unwrap_or("unknown"),
+        git_branch: option_env!("VERGEN_GIT_BRANCH").unwrap_or("detached"),
+        build_timestamp: env!("VERGEN_BUILD_TIMESTAMP"),
+    }
+}
+
 // --- Health History ---
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,7 +1,8 @@
 [Unit]
 Description=Hapax Logos — native visual + wgpu rendering surface
-After=graphical-session.target logos-api.service
-Wants=graphical-session.target
+After=graphical-session.target logos-api.service hapax-imagination.service
+Wants=graphical-session.target hapax-imagination.service
+PartOf=hapax-visual-stack.target
 # Replaces standalone hapax-visual (visual surface is now a second window)
 Conflicts=hapax-visual.service
 StartLimitBurst=5

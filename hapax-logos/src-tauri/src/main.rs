@@ -17,6 +17,7 @@ fn main() {
             commands::health::get_gpu,
             commands::health::get_infrastructure,
             commands::health::get_health_history,
+            commands::health::get_build_info,
             // State
             commands::state::get_working_mode,
             commands::state::set_working_mode,

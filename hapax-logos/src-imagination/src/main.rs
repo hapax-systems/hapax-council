@@ -461,7 +461,15 @@ async fn handle_connection(
 // Entry point
 // ---------------------------------------------------------------------------
 
+const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
+const BUILD_TS: &str = env!("VERGEN_BUILD_TIMESTAMP");
+
 fn main() {
+    if std::env::args().any(|a| a == "--version") {
+        println!("hapax-imagination {} (built {})", GIT_SHA, BUILD_TS);
+        return;
+    }
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     // Ensure shm directories exist
@@ -469,7 +477,7 @@ fn main() {
     std::fs::create_dir_all("/dev/shm/hapax-stimmung").ok();
     std::fs::create_dir_all("/dev/shm/hapax-imagination/content").ok();
 
-    log::info!("hapax-imagination starting");
+    log::info!("hapax-imagination {} (built {})", GIT_SHA, BUILD_TS);
 
     // Channels between winit thread (main) and UDS server (background)
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();

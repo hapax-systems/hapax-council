@@ -1,0 +1,104 @@
+# Hapax Logos + Imagination build orchestration.
+# Production builds use an isolated CARGO_TARGET_DIR to prevent
+# stomping dev builds (which use the default ./target/).
+
+set dotenv-load := false
+
+prod_target := env("HOME") / ".cache/hapax/build-target"
+bin_dir     := env("HOME") / ".local/bin"
+state_dir   := env("HOME") / ".cache/hapax/rebuild"
+repo_root   := justfile_directory() / ".."
+
+export CARGO_TARGET_DIR := prod_target
+
+# ── Info ──────────────────────────────────────────────────────────
+
+# Show version of installed binaries
+version:
+    @{{bin_dir}}/hapax-imagination --version 2>/dev/null || echo "hapax-imagination: not installed"
+    @strings {{bin_dir}}/hapax-logos 2>/dev/null | grep -oP 'VERGEN_GIT_SHA.\K[a-f0-9]{9}' | head -1 | xargs -I{} echo "hapax-logos {}" || echo "hapax-logos: version unknown"
+
+# ── Build ─────────────────────────────────────────────────────────
+
+# Build frontend (Vite)
+frontend:
+    pnpm build
+
+# Build imagination binary
+imagination:
+    cargo build --release -p hapax-imagination
+
+# Build logos binary with bundled frontend
+logos: frontend
+    cargo build --release -p hapax-logos --features tauri/custom-protocol
+
+# Build everything
+build: imagination logos
+
+# ── Install ───────────────────────────────────────────────────────
+
+# Pre-flight checks
+check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{repo_root}}
+    SHA=$(git rev-parse HEAD)
+    MAIN_SHA=$(git rev-parse origin/main 2>/dev/null || echo "unknown")
+    if [ "$SHA" != "$MAIN_SHA" ]; then
+        echo "WARNING: HEAD (${SHA:0:8}) != origin/main (${MAIN_SHA:0:8})"
+    fi
+    LOGOS="{{prod_target}}/release/hapax-logos"
+    IMAG="{{prod_target}}/release/hapax-imagination"
+    [ -f "$LOGOS" ] || { echo "ERROR: $LOGOS not found — run 'just build' first"; exit 1; }
+    [ -f "$IMAG" ] || { echo "ERROR: $IMAG not found — run 'just build' first"; exit 1; }
+    echo "OK: $(git log --oneline -1)"
+
+# Build, check, and install with rollback backup
+install: build check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LOGOS_SRC="{{prod_target}}/release/hapax-logos"
+    IMAG_SRC="{{prod_target}}/release/hapax-imagination"
+    LOGOS_DST="{{bin_dir}}/hapax-logos"
+    IMAG_DST="{{bin_dir}}/hapax-imagination"
+
+    # Backup current binaries
+    [ -f "$LOGOS_DST" ] && cp "$LOGOS_DST" "$LOGOS_DST.prev"
+    [ -f "$IMAG_DST" ] && cp "$IMAG_DST" "$IMAG_DST.prev"
+
+    # Stop imagination (logos is user-launched, don't touch it)
+    systemctl --user stop hapax-imagination.service 2>/dev/null || true
+
+    # Install
+    cp "$LOGOS_SRC" "$LOGOS_DST"
+    cp "$IMAG_SRC" "$IMAG_DST"
+
+    # Restart imagination
+    systemctl --user start hapax-imagination.service 2>/dev/null || true
+
+    echo "Installed. Previous binaries saved as .prev"
+    $IMAG_DST --version 2>/dev/null || true
+
+# ── Rollback ──────────────────────────────────────────────────────
+
+# Restore previous binaries
+rollback:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LOGOS="{{bin_dir}}/hapax-logos"
+    IMAG="{{bin_dir}}/hapax-imagination"
+    [ -f "$LOGOS.prev" ] || { echo "No logos backup found"; exit 1; }
+    [ -f "$IMAG.prev" ] || { echo "No imagination backup found"; exit 1; }
+    systemctl --user stop hapax-imagination.service 2>/dev/null || true
+    mv "$LOGOS.prev" "$LOGOS"
+    mv "$IMAG.prev" "$IMAG"
+    systemctl --user start hapax-imagination.service 2>/dev/null || true
+    echo "Rolled back."
+    $IMAG --version 2>/dev/null || true
+
+# ── Clean ─────────────────────────────────────────────────────────
+
+# Remove production build cache (does not affect dev target/)
+clean:
+    rm -rf {{prod_target}}
+    echo "Cleaned {{prod_target}}"
