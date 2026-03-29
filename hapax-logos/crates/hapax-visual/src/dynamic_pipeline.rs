@@ -20,7 +20,7 @@ const PLAN_FILE: &str = "/dev/shm/hapax-imagination/pipeline/plan.json";
 const UNIFORMS_JSON: &str = "/dev/shm/hapax-imagination/pipeline/uniforms.json";
 const SHARED_UNIFORMS_WGSL: &str = include_str!("shaders/uniforms.wgsl");
 const SHARED_VERTEX_WGSL: &str = include_str!("shaders/fullscreen_quad.wgsl");
-const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 // --- Plan JSON schema ---
 
@@ -93,13 +93,15 @@ pub struct DynamicPipeline {
     input_bind_group_layouts: HashMap<usize, wgpu::BindGroupLayout>,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group_layout: wgpu::BindGroupLayout,
+    #[allow(dead_code)]
+    surface_format: wgpu::TextureFormat,
     width: u32,
     height: u32,
     frame_count: u64,
 }
 
 impl DynamicPipeline {
-    pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, width: u32, height: u32) -> Self {
+    pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, width: u32, height: u32, surface_format: wgpu::TextureFormat) -> Self {
         let uniform_buffer = UniformBuffer::new(device);
         let shm_output = ShmOutput::new(device, width, height);
 
@@ -166,7 +168,7 @@ impl DynamicPipeline {
                 module: &blit_shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: TEXTURE_FORMAT,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -216,6 +218,7 @@ impl DynamicPipeline {
             input_bind_group_layouts: HashMap::new(),
             blit_pipeline,
             blit_bind_group_layout,
+            surface_format,
             width,
             height,
             frame_count: 0,
