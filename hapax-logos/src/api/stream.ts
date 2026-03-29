@@ -97,6 +97,9 @@ export async function startCancellableStream(
   return {
     streamId: handle.streamId,
     cancel: async () => {
+      // handle.cancel() unlistens the Tauri event + cancels the local stream
+      // cancel_stream_and_server also cancels locally (idempotent) + tells server to abort
+      await handle.cancel();
       await invoke("cancel_stream_and_server", { streamId: handle.streamId });
     },
   };

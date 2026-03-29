@@ -226,6 +226,8 @@ class TestLoadStructuredFacts:
         monkeypatch.setattr("agents.profiler.PROFILES_DIR", tmp_path)
         monkeypatch.setattr("agents.profiler_sources.read_watch_facts", lambda: [])
         monkeypatch.setattr("agents.profiler._sync_fact_paths", lambda: [])
+        monkeypatch.setattr("agents.profiler_sources.read_correction_facts", lambda: [])
+        monkeypatch.setattr("agents.profiler_sources.read_flow_facts", lambda: [])
 
     def test_load_valid_facts(self, tmp_path, monkeypatch):
         from agents.profiler import load_structured_facts

@@ -79,9 +79,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let pos = vec2<i32>(gid.xy);
-    let srgb = textureLoad(prev_frame, pos, 0).rgb;
-    let linear = srgb_to_linear(srgb);
-    var lab = linear_to_oklab(linear);
+    // Composite texture is Rgba8Unorm — textureLoad returns linear values directly
+    let linear_color = textureLoad(prev_frame, pos, 0).rgb;
+    var lab = linear_to_oklab(linear_color);
 
     // Decay lightness
     lab.x *= params.decay;
@@ -95,6 +95,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     lab.y = new_a;
     lab.z = new_b;
 
-    let result = linear_to_srgb(clamp(oklab_to_linear(lab), vec3<f32>(0.0), vec3<f32>(1.0)));
+    // Output linear — storage texture is rgba8unorm (linear, no automatic encode)
+    let result = clamp(oklab_to_linear(lab), vec3<f32>(0.0), vec3<f32>(1.0));
     textureStore(dst, pos, vec4<f32>(result, 1.0));
 }

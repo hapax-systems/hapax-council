@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+pytest.importorskip("playwright", reason="playwright not installed")
+
 from agents.demo_models import (
     ContentSkeleton,
     DemoQualityReport,

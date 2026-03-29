@@ -29,7 +29,6 @@ from agents.demo_models import (
     load_audiences,
     load_personas,
 )
-from agents.demo_pipeline.screenshots import capture_screenshots
 from agents.demo_pipeline.slides import render_slides
 from shared.config import PROFILES_DIR, get_model
 
@@ -1347,6 +1346,8 @@ async def generate_demo(
 
         # Screenshots via Playwright
         if screenshot_specs:
+            from agents.demo_pipeline.screenshots import capture_screenshots
+
             screenshot_paths = await capture_screenshots(
                 screenshot_specs, visual_dir, on_progress=progress
             )

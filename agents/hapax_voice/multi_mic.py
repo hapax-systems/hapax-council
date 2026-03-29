@@ -13,9 +13,14 @@ conservative) then airborne subtraction (alpha=1.5, aggressive).
 This is spectral subtraction, not beamforming — no array geometry
 needed. Works with arbitrary mic placement.
 
+Capture uses pw-record (PipeWire) instead of PyAudio. Each reference
+source gets its own pw-record subprocess. Multiple room sources are
+averaged for a more robust noise estimate.
+
 Usage:
+    sources = discover_pipewire_sources(["C920"])
     ref = NoiseReference(
-        room_sources=["HD Pro Webcam C920"],
+        room_sources=sources,
         structure_sources=["Contact Microphone"],
     )
     ref.start()
@@ -26,9 +31,10 @@ Usage:
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 import threading
 import time
-from collections import deque
 
 import numpy as np
 
@@ -48,12 +54,57 @@ _STRUCTURE_ALPHA = 1.0  # less aggressive (contact mic signal is already clean)
 _STRUCTURE_BETA = 0.02  # slightly higher floor (preserve transient detail)
 
 
+def discover_pipewire_sources(
+    patterns: list[str],
+    *,
+    _pactl_output: str | None = None,
+) -> list[str]:
+    """Discover PipeWire sources matching name patterns.
+
+    Runs ``pactl list sources short`` and returns full source names whose
+    name column contains any of the given substrings.
+
+    Args:
+        patterns: Substrings to match against source names.
+        _pactl_output: Override pactl output for testing.
+
+    Returns:
+        List of full PipeWire source names.
+    """
+    if _pactl_output is None:
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sources", "short"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            _pactl_output = result.stdout
+        except Exception:
+            log.warning("Failed to list PipeWire sources via pactl")
+            return []
+
+    matched: list[str] = []
+    for line in _pactl_output.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        source_name = parts[1]
+        for pattern in patterns:
+            if pattern in source_name:
+                matched.append(source_name)
+                break
+    return matched
+
+
 class NoiseReference:
     """Captures room noise from reference mics and subtracts from primary mic.
 
     The reference signal estimates what the room sounds like WITHOUT the
     operator's voice. Spectral subtraction removes this estimate from the
     Yeti signal, leaving mostly the operator's voice.
+
+    Multiple room sources are averaged for a more robust noise estimate.
     """
 
     def __init__(
@@ -67,22 +118,35 @@ class NoiseReference:
         self._sample_rate = sample_rate
         self._running = False
         self._threads: list[threading.Thread] = []
+        self._processes: list[subprocess.Popen] = []  # type: ignore[type-arg]
 
-        # Airborne noise estimate (room mics)
-        self._noise_estimate: np.ndarray | None = None
-        self._lock = threading.Lock()
+        # Per-source room noise estimates (averaged for subtraction)
+        self._room_estimates: dict[str, np.ndarray] = {}
+        self._room_lock = threading.Lock()
 
         # Structure-borne noise estimate (contact mic)
         self._structure_noise_estimate: np.ndarray | None = None
         self._structure_lock = threading.Lock()
 
-        # Ring buffer of recent reference frames for averaging
-        self._ref_frames: deque[np.ndarray] = deque(maxlen=20)  # ~600ms at 30ms/frame
+    def _averaged_room_estimate(self) -> np.ndarray | None:
+        """Average all room noise estimates into a single spectrum.
+
+        Returns None if no estimates are available.
+        """
+        with self._room_lock:
+            estimates = list(self._room_estimates.values())
+        if not estimates:
+            return None
+        return np.mean(estimates, axis=0)
 
     def start(self) -> None:
-        """Start capturing from reference microphones."""
+        """Start capturing from reference microphones via pw-record."""
         if not self._room_sources and not self._structure_sources:
             log.info("No reference sources configured — noise subtraction disabled")
+            return
+
+        if shutil.which("pw-record") is None:
+            log.warning("pw-record not found — noise subtraction disabled")
             return
 
         self._running = True
@@ -113,7 +177,18 @@ class NoiseReference:
         )
 
     def stop(self) -> None:
+        """Stop all capture threads and terminate pw-record processes."""
         self._running = False
+        for proc in self._processes:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self._processes.clear()
         for t in self._threads:
             t.join(timeout=2)
         self._threads.clear()
@@ -143,7 +218,8 @@ class NoiseReference:
         Returns:
             Cleaned PCM int16 mono audio frame.
         """
-        if self._noise_estimate is None and self._structure_noise_estimate is None:
+        room_est = self._averaged_room_estimate()
+        if room_est is None and self._structure_noise_estimate is None:
             return frame  # no reference data yet — pass through
 
         # Convert to float
@@ -162,10 +238,8 @@ class NoiseReference:
             structure_mag = self._structure_noise_estimate
         mag = self._apply_subtraction(mag, structure_mag, _STRUCTURE_ALPHA, _STRUCTURE_BETA)
 
-        # 2. Airborne subtraction (room mics — aggressive)
-        with self._lock:
-            noise_mag = self._noise_estimate
-        mag = self._apply_subtraction(mag, noise_mag, _AIRBORNE_ALPHA, _AIRBORNE_BETA)
+        # 2. Airborne subtraction (room mics — aggressive, using averaged estimate)
+        mag = self._apply_subtraction(mag, room_est, _AIRBORNE_ALPHA, _AIRBORNE_BETA)
 
         # Reconstruct
         clean_spec = mag * np.exp(1j * phase)
@@ -176,79 +250,54 @@ class NoiseReference:
         return clean_int16.tobytes()
 
     def _capture_loop(self, source: str, *, is_structure: bool = False) -> None:
-        """Continuously capture from a reference mic and update noise estimate.
+        """Continuously capture from a reference mic via pw-record.
+
+        Spawns ``pw-record --target <source> --format s16 --rate 16000
+        --channels 1 -`` and reads raw PCM from stdout. On process death,
+        logs a warning, sleeps 2s, and restarts.
 
         Args:
-            source: Device name substring to match.
+            source: PipeWire source name to capture from.
             is_structure: If True, updates structure-borne estimate instead of airborne.
         """
-        lock = self._structure_lock if is_structure else self._lock
         kind = "structure" if is_structure else "room"
+        chunk_bytes = _FFT_SIZE * 2  # int16 = 2 bytes per sample
 
-        try:
-            import pyaudio
+        while self._running:
+            proc: subprocess.Popen | None = None  # type: ignore[type-arg]
+            try:
+                proc = subprocess.Popen(
+                    [
+                        "pw-record",
+                        "--target",
+                        source,
+                        "--format",
+                        "s16",
+                        "--rate",
+                        str(self._sample_rate),
+                        "--channels",
+                        "1",
+                        "-",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                self._processes.append(proc)
+                log.info("Noise reference capturing from %s source: %s", kind, source)
 
-            pa = pyaudio.PyAudio()
-
-            # Structure sources (PipeWire virtual) need pactl default-source;
-            # room sources (hardware ALSA) use PyAudio device name matching.
-            device_idx = None
-            if is_structure:
-                import subprocess
-
-                try:
-                    subprocess.run(
-                        ["pactl", "set-default-source", "contact_mic"],
-                        capture_output=True,
-                        timeout=5,
-                    )
-                except Exception:
-                    log.warning("Failed to set contact_mic as default source for %s ref", kind)
-                # Use default device (now routed to contact_mic)
-                device_idx = None  # None = default
-            else:
-                for i in range(pa.get_device_count()):
-                    info = pa.get_device_info_by_index(i)
-                    if source in str(info.get("name", "")):
-                        device_idx = i
+                while self._running and proc.poll() is None:
+                    assert proc.stdout is not None
+                    data = proc.stdout.read(chunk_bytes)
+                    if len(data) < chunk_bytes:
                         break
-                if device_idx is None:
-                    log.warning("Noise reference source not found (%s): %s", kind, source)
-                    pa.terminate()
-                    return
 
-            open_kwargs: dict = {
-                "format": pyaudio.paInt16,
-                "channels": 1,
-                "rate": self._sample_rate,
-                "input": True,
-                "frames_per_buffer": _FFT_SIZE,
-            }
-            if device_idx is not None:
-                open_kwargs["input_device_index"] = device_idx
-
-            stream = pa.open(**open_kwargs)
-
-            log.info(
-                "Noise reference capturing from %s source: %s (device %s)",
-                kind,
-                source,
-                device_idx if device_idx is not None else "default",
-            )
-
-            while self._running:
-                try:
-                    data = stream.read(_FFT_SIZE, exception_on_overflow=False)
                     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-
-                    # Compute magnitude spectrum
                     window = np.hanning(_FFT_SIZE)
                     spec = np.fft.rfft(samples * window)
                     mag = np.abs(spec)
 
-                    # Update noise estimate with exponential smoothing
-                    with lock:
-                        if is_structure:
+                    if is_structure:
+                        with self._structure_lock:
                             if self._structure_noise_estimate is None:
                                 self._structure_noise_estimate = mag
                             else:
@@ -256,20 +305,28 @@ class NoiseReference:
                                     _SMOOTHING * self._structure_noise_estimate
                                     + (1 - _SMOOTHING) * mag
                                 )
-                        else:
-                            if self._noise_estimate is None:
-                                self._noise_estimate = mag
+                    else:
+                        with self._room_lock:
+                            if source not in self._room_estimates:
+                                self._room_estimates[source] = mag
                             else:
-                                self._noise_estimate = (
-                                    _SMOOTHING * self._noise_estimate + (1 - _SMOOTHING) * mag
+                                self._room_estimates[source] = (
+                                    _SMOOTHING * self._room_estimates[source]
+                                    + (1 - _SMOOTHING) * mag
                                 )
 
-                except Exception:
-                    time.sleep(0.1)
+            except Exception:
+                log.debug("Noise reference capture failed for %s (%s)", source, kind, exc_info=True)
+            finally:
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
+                    if proc in self._processes:
+                        self._processes.remove(proc)
 
-            stream.stop_stream()
-            stream.close()
-            pa.terminate()
-
-        except Exception:
-            log.debug("Noise reference capture failed for %s (%s)", source, kind, exc_info=True)
+            if self._running:
+                log.warning("pw-record died for %s source %s — restarting in 2s", kind, source)
+                time.sleep(2)

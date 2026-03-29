@@ -58,7 +58,8 @@ def test_all_tools_are_async():
 @pytest.mark.asyncio
 async def test_lookup_constraints_all():
     ctx = _mock_ctx()
-    result = await lookup_constraints(ctx)
+    with patch("shared.operator.get_constraints", return_value=["use uv", "type hints"]):
+        result = await lookup_constraints(ctx)
     assert "Operator constraints" in result
     assert "rules)" in result
 
@@ -66,21 +67,24 @@ async def test_lookup_constraints_all():
 @pytest.mark.asyncio
 async def test_lookup_constraints_filtered():
     ctx = _mock_ctx()
-    result = await lookup_constraints(ctx, categories="python")
+    with patch("shared.operator.get_constraints", return_value=["use uv", "type hints"]):
+        result = await lookup_constraints(ctx, categories="python")
     assert "uv" in result.lower() or "type hints" in result.lower()
 
 
 @pytest.mark.asyncio
 async def test_lookup_constraints_empty_category():
     ctx = _mock_ctx()
-    result = await lookup_constraints(ctx, categories="nonexistent_category")
+    with patch("shared.operator.get_constraints", return_value=[]):
+        result = await lookup_constraints(ctx, categories="nonexistent_category")
     assert "No constraints found" in result
 
 
 @pytest.mark.asyncio
 async def test_lookup_constraints_multiple_categories():
     ctx = _mock_ctx()
-    result = await lookup_constraints(ctx, categories="python,docker")
+    with patch("shared.operator.get_constraints", return_value=["use uv", "docker compose"]):
+        result = await lookup_constraints(ctx, categories="python,docker")
     assert "Operator constraints" in result
 
 
@@ -90,7 +94,8 @@ async def test_lookup_constraints_multiple_categories():
 @pytest.mark.asyncio
 async def test_lookup_patterns_all():
     ctx = _mock_ctx()
-    result = await lookup_patterns(ctx)
+    with patch("shared.operator.get_patterns", return_value=["prefers TDD", "short PRs"]):
+        result = await lookup_patterns(ctx)
     assert "Operator patterns" in result
     assert "items)" in result
 
@@ -98,9 +103,9 @@ async def test_lookup_patterns_all():
 @pytest.mark.asyncio
 async def test_lookup_patterns_filtered():
     ctx = _mock_ctx()
-    result = await lookup_patterns(ctx, categories="development")
-    # Should have some development patterns
-    assert "Operator patterns" in result or "No patterns found" in result
+    with patch("shared.operator.get_patterns", return_value=["prefers TDD"]):
+        result = await lookup_patterns(ctx, categories="development")
+    assert "Operator patterns" in result
 
 
 @pytest.mark.asyncio

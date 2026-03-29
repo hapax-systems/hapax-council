@@ -218,6 +218,8 @@ pub struct SmoothedParams {
     pub transition_type: u32, // 0=none, 1=breathe, 2=expand, 3=contract, 4=drift
     // Layer opacity overrides from control.json
     pub layer_opacities: HashMap<String, f32>,
+    // Visual chain additive deltas (from impingement activation)
+    pub chain_deltas: HashMap<String, f32>,
 }
 
 impl Default for SmoothedParams {
@@ -237,6 +239,7 @@ impl Default for SmoothedParams {
             transition_progress: 1.0,
             transition_type: 0,
             layer_opacities: HashMap::new(),
+            chain_deltas: HashMap::new(),
         }
     }
 }
@@ -281,6 +284,21 @@ impl SmoothedParams {
         self.parallax_x += (target_px - self.parallax_x) * parallax_alpha;
         self.parallax_y += (target_py - self.parallax_y) * parallax_alpha;
 
+        // Apply visual chain additive deltas (impingement-driven expression)
+        for (key, &delta) in &self.chain_deltas {
+            match key.as_str() {
+                "gradient.brightness" => self.brightness += delta,
+                "gradient.speed" => self.speed += delta,
+                "gradient.turbulence" => self.turbulence += delta,
+                "gradient.color_warmth" => {
+                    self.color_warmth = (self.color_warmth + delta).clamp(0.0, 1.0)
+                }
+                "gradient.hue_offset" => self.env_hue_shift += delta,
+                "gradient.chroma_boost" => self.env_chroma_scale += delta,
+                _ => {} // compositor/postprocess/technique-specific deltas read directly
+            }
+        }
+
         // Transition progress: computed from wall clock, not lerped
         let t = &state.transition;
         if !t.from_state.is_empty() && t.started_at > 0.0 && t.duration_s > 0.0 {
@@ -309,6 +327,38 @@ impl SmoothedParams {
 const VISUAL_STATE_PATH: &str = "/dev/shm/hapax-compositor/visual-layer-state.json";
 const STIMMUNG_PATH: &str = "/dev/shm/hapax-stimmung/state.json";
 const CONTROL_PATH: &str = "/dev/shm/hapax-visual/control.json";
+const VISUAL_CHAIN_PATH: &str = "/dev/shm/hapax-visual/visual-chain-state.json";
+const IMAGINATION_CURRENT_PATH: &str = "/dev/shm/hapax-imagination/current.json";
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ImaginationState {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub continuation: bool,
+    #[serde(default)]
+    pub dimensions: HashMap<String, f64>,
+    #[serde(default)]
+    pub content_references: Vec<ImaginationContentRef>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ImaginationContentRef {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub salience: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct VisualChainState {
+    #[serde(default)]
+    params: HashMap<String, f64>,
+    #[serde(default)]
+    timestamp: f64,
+}
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct ControlFile {
@@ -320,6 +370,7 @@ pub struct StateReader {
     pub visual: VisualLayerState,
     pub stimmung: SystemStimmung,
     pub smoothed: SmoothedParams,
+    pub imagination: ImaginationState,
     last_poll: Instant,
 }
 
@@ -329,6 +380,7 @@ impl StateReader {
             visual: VisualLayerState::default(),
             stimmung: SystemStimmung::default(),
             smoothed: SmoothedParams::default(),
+            imagination: ImaginationState::default(),
             last_poll: Instant::now(),
         };
         reader.poll_now();
@@ -360,6 +412,18 @@ impl StateReader {
         if let Some(ctrl) = Self::read_json::<ControlFile>(CONTROL_PATH) {
             self.smoothed.layer_opacities = ctrl
                 .layer_opacities
+                .into_iter()
+                .map(|(k, v)| (k, v as f32))
+                .collect();
+        }
+        // Read imagination state for content layer
+        if let Some(img) = Self::read_json::<ImaginationState>(IMAGINATION_CURRENT_PATH) {
+            self.imagination = img;
+        }
+        // Read visual chain state for impingement-driven deltas
+        if let Some(chain) = Self::read_json::<VisualChainState>(VISUAL_CHAIN_PATH) {
+            self.smoothed.chain_deltas = chain
+                .params
                 .into_iter()
                 .map(|(k, v)| (k, v as f32))
                 .collect();

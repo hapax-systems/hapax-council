@@ -3,6 +3,11 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "lab-journal/**"
+      - "research/**"
 
 permissions:
   contents: read
