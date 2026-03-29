@@ -73,7 +73,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run implementation agent
-        uses: anthropics/claude-code-action@5d0cc745cd0cce4c0e9e0b3511de26c3bc285eb5
+        uses: anthropics/claude-code-action@88c168b39e7e64da0286d812b6e9fbebb6708185
         with:
           model: claude-opus-4-6
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -228,7 +228,7 @@ jobs:
 
       - name: Run fixer agent
         if: steps.round.outputs.exceeded == 'false'
-        uses: anthropics/claude-code-action@5d0cc745cd0cce4c0e9e0b3511de26c3bc285eb5
+        uses: anthropics/claude-code-action@88c168b39e7e64da0286d812b6e9fbebb6708185
         with:
           model: claude-sonnet-4-6
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
