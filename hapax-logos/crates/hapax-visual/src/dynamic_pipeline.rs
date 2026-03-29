@@ -311,7 +311,7 @@ impl DynamicPipeline {
                         source: wgpu::ShaderSource::Wgsl(compute_source.into()),
                     });
 
-                let input_bgl = self.get_or_create_input_layout(device, input_count, &mut input_layouts);
+                let input_bgl = Self::get_or_create_input_layout(device, input_count, &mut input_layouts);
                 let storage_bgl = Self::create_storage_texture_layout(device);
 
                 let pipeline_layout =
@@ -352,7 +352,7 @@ impl DynamicPipeline {
                         source: wgpu::ShaderSource::Wgsl(combined_source.into()),
                     });
 
-                let input_bgl = self.get_or_create_input_layout(device, input_count, &mut input_layouts);
+                let input_bgl = Self::get_or_create_input_layout(device, input_count, &mut input_layouts);
 
                 let pipeline_layout =
                     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -626,18 +626,16 @@ impl DynamicPipeline {
     }
 
     fn get_or_create_input_layout(
-        &self,
         device: &wgpu::Device,
         input_count: usize,
         layouts: &mut HashMap<usize, wgpu::BindGroupLayout>,
     ) -> wgpu::BindGroupLayout {
-        if layouts.contains_key(&input_count) {
-            // Layout already cached — create a matching one (wgpu layouts are not Clone)
-            return Self::create_input_layout(device, input_count);
+        if !layouts.contains_key(&input_count) {
+            layouts.insert(input_count, Self::create_input_layout(device, input_count));
         }
-        let layout = Self::create_input_layout(device, input_count);
-        layouts.insert(input_count, Self::create_input_layout(device, input_count));
-        layout
+        // Always create a fresh one to return — wgpu layouts are not Clone,
+        // but two layouts created with the same descriptor are compatible.
+        Self::create_input_layout(device, input_count)
     }
 
     fn create_input_layout(device: &wgpu::Device, input_count: usize) -> wgpu::BindGroupLayout {
@@ -693,27 +691,30 @@ impl DynamicPipeline {
         inputs: &[String],
     ) -> wgpu::BindGroup {
         let input_count = inputs.len();
-        let layout = Self::create_input_layout(device, input_count);
+
+        // Use cached layout from reload — fall back to fresh creation if uncached
+        let owned_layout;
+        let layout = match self.input_bind_group_layouts.get(&input_count) {
+            Some(cached) => cached,
+            None => {
+                owned_layout = Self::create_input_layout(device, input_count);
+                &owned_layout
+            }
+        };
 
         let mut entries: Vec<wgpu::BindGroupEntry> = Vec::new();
 
         for (i, name) in inputs.iter().enumerate() {
-            if let Some(tex) = self.textures.get(name) {
-                entries.push(wgpu::BindGroupEntry {
-                    binding: i as u32,
-                    resource: wgpu::BindingResource::TextureView(&tex.view),
-                });
-            } else {
-                // Fallback: use "final" texture (always exists)
-                let fallback = self.textures.get("final").unwrap();
-                entries.push(wgpu::BindGroupEntry {
-                    binding: i as u32,
-                    resource: wgpu::BindingResource::TextureView(&fallback.view),
-                });
-            }
+            let view = self.textures.get(name)
+                .or_else(|| self.textures.get("final"))
+                .map(|t| &t.view)
+                .unwrap();
+            entries.push(wgpu::BindGroupEntry {
+                binding: i as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
         }
 
-        // Sampler at the end
         entries.push(wgpu::BindGroupEntry {
             binding: input_count as u32,
             resource: wgpu::BindingResource::Sampler(&self.sampler),
@@ -721,7 +722,7 @@ impl DynamicPipeline {
 
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("dynamic input bg"),
-            layout: &layout,
+            layout,
             entries: &entries,
         })
     }
