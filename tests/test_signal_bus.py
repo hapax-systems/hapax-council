@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from shared.signal_bus import ModulationBinding, SignalBus
+from shared.signal_bus import SignalBus, SignalModulationBinding
 
 
 class TestSignalBus(unittest.TestCase):
@@ -48,11 +48,11 @@ class TestSignalBus(unittest.TestCase):
         assert bus.snapshot() == {}
 
 
-class TestModulationBinding(unittest.TestCase):
+class TestSignalModulationBinding(unittest.TestCase):
     def test_apply_binding_simple(self):
         bus = SignalBus()
         bus.publish("energy", 0.8)
-        bindings = [ModulationBinding(target="bloom.alpha", signal="energy")]
+        bindings = [SignalModulationBinding(target="bloom.alpha", signal="energy")]
         result = bus.apply_bindings(bindings)
         assert result["bloom.alpha"] == 0.8
 
@@ -60,7 +60,7 @@ class TestModulationBinding(unittest.TestCase):
         bus = SignalBus()
         bus.publish("density", 0.5)
         bindings = [
-            ModulationBinding(target="word_limit", signal="density", scale=-30.0, offset=50.0)
+            SignalModulationBinding(target="word_limit", signal="density", scale=-30.0, offset=50.0)
         ]
         result = bus.apply_bindings(bindings)
         assert result["word_limit"] == 35.0  # 0.5 * -30 + 50
@@ -68,14 +68,14 @@ class TestModulationBinding(unittest.TestCase):
     def test_apply_binding_smoothing(self):
         bus = SignalBus()
         bus.publish("energy", 1.0)
-        bindings = [ModulationBinding(target="bloom", signal="energy", smoothing=0.5)]
+        bindings = [SignalModulationBinding(target="bloom", signal="energy", smoothing=0.5)]
         current = {"bloom": 0.0}
         result = bus.apply_bindings(bindings, current=current)
         assert result["bloom"] == 0.5  # 0.5 * 0.0 + 0.5 * 1.0
 
     def test_apply_binding_missing_signal(self):
         bus = SignalBus()
-        bindings = [ModulationBinding(target="x", signal="missing")]
+        bindings = [SignalModulationBinding(target="x", signal="missing")]
         result = bus.apply_bindings(bindings)
         assert result["x"] == 0.0
 
@@ -84,8 +84,8 @@ class TestModulationBinding(unittest.TestCase):
         bus.publish("a", 0.5)
         bus.publish("b", 0.8)
         bindings = [
-            ModulationBinding(target="x", signal="a"),
-            ModulationBinding(target="y", signal="b", scale=2.0),
+            SignalModulationBinding(target="x", signal="a"),
+            SignalModulationBinding(target="y", signal="b", scale=2.0),
         ]
         result = bus.apply_bindings(bindings)
         assert result["x"] == 0.5

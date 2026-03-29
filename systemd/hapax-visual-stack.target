@@ -1,0 +1,7 @@
+[Unit]
+Description=Hapax Visual Stack — Logos + Imagination + API
+Wants=logos-api.service hapax-imagination.service hapax-logos.service
+After=hapax-secrets.service
+
+[Install]
+WantedBy=graphical-session.target

@@ -17,10 +17,12 @@ log = logging.getLogger(__name__)
 
 
 @dataclass
-class ModulationBinding:
+class SignalModulationBinding:
     """Binds a signal to a target parameter with scaling and smoothing.
 
     Used by both daimonion (voice.word_limit) and Reverie (bloom.alpha).
+    Named SignalModulationBinding to avoid collision with
+    agents.effect_graph.types.ModulationBinding (different schema).
     """
 
     target: str  # "bloom.alpha" or "voice.word_limit"
@@ -64,7 +66,7 @@ class SignalBus:
 
     def apply_bindings(
         self,
-        bindings: list[ModulationBinding],
+        bindings: list[SignalModulationBinding],
         current: dict[str, float] | None = None,
     ) -> dict[str, float]:
         """Apply modulation bindings to current values.

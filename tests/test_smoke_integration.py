@@ -34,7 +34,7 @@ from shared.expression import (
 )
 from shared.governance import FallbackChain, Veto, VetoChain
 from shared.governance.primitives import Candidate
-from shared.signal_bus import ModulationBinding, SignalBus
+from shared.signal_bus import SignalBus, SignalModulationBinding
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -390,7 +390,7 @@ class TestSignalBusThreading(unittest.TestCase):
         bus = SignalBus()
         bus.publish("energy", 1.0)
         bindings = [
-            ModulationBinding(target="bloom.alpha", signal="energy", scale=0.5, smoothing=0.8)
+            SignalModulationBinding(target="bloom.alpha", signal="energy", scale=0.5, smoothing=0.8)
         ]
         # First application without current values
         result = bus.apply_bindings(bindings)

@@ -52,9 +52,7 @@ class FlowObserver:
 
                 full_path = str(f)
                 for reader_id, reader_path in self._readers.items():
-                    if reader_path == full_path or (
-                        reader_path and full_path.endswith(reader_path.rsplit("/", 1)[-1])
-                    ):
+                    if reader_path == full_path:
                         if now - mtime < 30:
                             self._observed[(writer_name, reader_id)] = now
 

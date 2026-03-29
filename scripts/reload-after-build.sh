@@ -35,11 +35,15 @@ if systemctl --user is-enabled logos-api.service &>/dev/null; then
     RESTARTED+=("logos-api")
 fi
 
-# hapax-imagination — always restart (headless GPU renderer)
-if systemctl --user is-enabled hapax-imagination.service &>/dev/null; then
-    log "restarting hapax-imagination"
+# hapax-imagination — has a winit window. Restarting pops a new window on the
+# operator's workspace. The binary is already replaced atomically by `just install`,
+# so the NEXT launch will use it. Only restart if already running via systemd.
+if systemctl --user is-active hapax-imagination.service &>/dev/null; then
+    log "restarting hapax-imagination (was running)"
     systemctl --user restart hapax-imagination.service
     RESTARTED+=("imagination")
+else
+    log "hapax-imagination not running — skipping (new binary will be used on next launch)"
 fi
 
 # hapax-logos — only if already running (don't pop unsolicited windows)
@@ -47,15 +51,6 @@ if systemctl --user is-active hapax-logos.service &>/dev/null; then
     log "restarting hapax-logos (was running)"
     systemctl --user restart hapax-logos.service
     RESTARTED+=("logos")
-elif pgrep -x hapax-logos &>/dev/null; then
-    # Launched outside systemd (legacy launcher path) — kill and relaunch via service
-    log "killing orphan hapax-logos process, relaunching via systemd"
-    pkill -x hapax-logos || true
-    sleep 1
-    if systemctl --user is-enabled hapax-logos.service &>/dev/null; then
-        systemctl --user start hapax-logos.service
-        RESTARTED+=("logos(adopted)")
-    fi
 fi
 
 # Report
