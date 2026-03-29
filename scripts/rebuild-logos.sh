@@ -12,8 +12,19 @@ LOG_TAG="hapax-rebuild"
 
 LOGOS_BIN="$HOME/.local/bin/hapax-logos"
 IMAGINATION_BIN="$HOME/.local/bin/hapax-imagination"
+NTFY_URL="${NTFY_BASE_URL:-http://localhost:8090}/hapax-build"
 
 mkdir -p "$STATE_DIR"
+
+ntfy() {
+    local title="$1" msg="$2" priority="${3:-default}" tags="${4:-}"
+    curl -s -o /dev/null \
+        -H "Title: $title" \
+        -H "Priority: $priority" \
+        ${tags:+-H "Tags: $tags"} \
+        -d "$msg" \
+        "$NTFY_URL" 2>/dev/null || true
+}
 
 # Fetch latest main
 cd "$REPO"
@@ -30,6 +41,7 @@ if [ "$CURRENT_SHA" = "$LAST_SHA" ]; then
 fi
 
 logger -t "$LOG_TAG" "main advanced: ${LAST_SHA:0:8} → ${CURRENT_SHA:0:8} — rebuilding"
+ntfy "Logos rebuild starting" "${LAST_SHA:0:8} → ${CURRENT_SHA:0:8}" "low" "hammer_and_wrench"
 
 # Ensure worktree is on main (or detach to origin/main)
 CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
@@ -62,8 +74,10 @@ if cargo build --release -p hapax-logos -p hapax-imagination 2>"$STATE_DIR/build
 
     echo "$CURRENT_SHA" > "$SHA_FILE"
     logger -t "$LOG_TAG" "rebuild complete — ${CURRENT_SHA:0:8} installed"
+    ntfy "Logos rebuild complete" "${CURRENT_SHA:0:8} installed" "default" "white_check_mark"
 else
     logger -t "$LOG_TAG" "build failed — see $STATE_DIR/build.log"
+    ntfy "Logos rebuild FAILED" "See ~/.cache/hapax/rebuild/build.log" "high" "x"
 fi
 
 # Restore branch if we detached
