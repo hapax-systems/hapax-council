@@ -53,7 +53,7 @@
     {
       "number": 8,
       "title": "Add drift detection for voice daemon config",
-      "body": "The drift detector should compare hapax-voice systemd unit configuration against the documented expected state in docs/voice-subsystem.md.",
+      "body": "The drift detector should compare hapax-daimonion systemd unit configuration against the documented expected state in docs/voice-subsystem.md.",
       "expected_type": "feature",
       "expected_complexity": "M"
     },
