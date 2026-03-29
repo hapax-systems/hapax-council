@@ -86,6 +86,7 @@ async def get_stream_info():
 
 
 SNAPSHOT_PATH = Path("/dev/shm/hapax-compositor/snapshot.jpg")
+RECORDING_CONTROL = Path("/dev/shm/hapax-compositor/recording-control.txt")
 
 
 _NO_CACHE = {
@@ -408,6 +409,22 @@ async def compositor_live():
         "audio_energy_rms": audio_rms,
         "timestamp": data.get("timestamp", 0),
     }
+
+
+@router.post("/studio/recording/enable")
+async def enable_recording():
+    """Enable recording via compositor control file."""
+    RECORDING_CONTROL.parent.mkdir(parents=True, exist_ok=True)
+    RECORDING_CONTROL.write_text("1")
+    return {"recording": True}
+
+
+@router.post("/studio/recording/disable")
+async def disable_recording():
+    """Disable recording via compositor control file."""
+    RECORDING_CONTROL.parent.mkdir(parents=True, exist_ok=True)
+    RECORDING_CONTROL.write_text("0")
+    return {"recording": False}
 
 
 @router.get("/studio/disk")
