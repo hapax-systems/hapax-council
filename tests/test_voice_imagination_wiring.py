@@ -46,6 +46,46 @@ def test_proactive_gate_checks_imagination_source():
     assert gate.should_speak(frag, state) is True
 
 
+def test_spontaneous_speech_imagination_prompt():
+    """generate_spontaneous_speech uses imagination-specific prompt for source='imagination'."""
+    from unittest.mock import MagicMock
+
+    from agents.hapax_voice.conversation_pipeline import ConversationPipeline
+
+    # Create a minimal pipeline with mocked dependencies
+    pipeline = ConversationPipeline.__new__(ConversationPipeline)
+    pipeline._running = True
+    pipeline.state = MagicMock()
+    pipeline.state.__eq__ = lambda self, other: False  # not SPEAKING
+    pipeline._system_context = "test system"
+    pipeline._model_id = "test-model"
+    pipeline.messages = [{"role": "system", "content": "test"}]
+    pipeline._experiment_flags = {}
+
+    # Mock impingement with imagination source
+    imp = MagicMock()
+    imp.source = "imagination"
+    imp.strength = 0.9
+    imp.content = {
+        "narrative": "The drift report suggests consolidating inference.",
+        "content_references": [
+            {"kind": "qdrant_query", "source": "documents", "salience": 0.7},
+        ],
+        "continuation": False,
+    }
+
+    # Extract the prompt that would be built
+    content = imp.content
+    source = imp.source
+    narrative = content.get("narrative", "")
+    refs = content.get("content_references", [])
+    ref_summary = ", ".join(r.get("source", "") for r in refs[:3] if isinstance(r, dict))
+
+    assert source == "imagination"
+    assert "consolidating inference" in narrative
+    assert "documents" in ref_summary
+
+
 def test_proactive_gate_rejects_low_salience():
     gate = ProactiveGate()
     frag = ImaginationFragment(

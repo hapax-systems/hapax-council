@@ -430,16 +430,31 @@ class ConversationPipeline:
             return
 
         content = getattr(impingement, "content", {})
-        metric = content.get("metric", "")
+        source = getattr(impingement, "source", "")
         strength = getattr(impingement, "strength", 0.5)
 
-        # Build a concise impingement-aware prompt
-        prompt = (
-            f"You noticed something worth mentioning: {metric}. "
-            f"Urgency: {'high' if strength > 0.7 else 'moderate' if strength > 0.4 else 'low'}. "
-            f"If this warrants a brief, natural remark to the operator, say it in one sentence. "
-            f"If not worth mentioning, respond with exactly: [silence]"
-        )
+        # Build source-appropriate prompt
+        if source == "imagination":
+            narrative = content.get("narrative", "")
+            refs = content.get("content_references", [])
+            ref_summary = ", ".join(r.get("source", "") for r in refs[:3] if isinstance(r, dict))
+            prompt = (
+                "You just had a thought worth sharing with the operator. "
+                "Express it naturally and concisely — 1-3 sentences. "
+                "Don't announce that you had a thought; just share the insight "
+                "as if continuing a natural conversation.\n\n"
+                f"The thought: {narrative}"
+            )
+            if ref_summary:
+                prompt += f"\nRelated context: {ref_summary}"
+        else:
+            metric = content.get("metric", "")
+            prompt = (
+                f"You noticed something worth mentioning: {metric}. "
+                f"Urgency: {'high' if strength > 0.7 else 'moderate' if strength > 0.4 else 'low'}. "
+                f"If this warrants a brief, natural remark to the operator, say it in one sentence. "
+                f"If not worth mentioning, respond with exactly: [silence]"
+            )
 
         try:
             log.info("Generating spontaneous speech: %s (strength=%.2f)", metric, strength)

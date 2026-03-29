@@ -1897,6 +1897,13 @@ class VoiceDaemon:
                                                 "Proactive utterance triggered: %s",
                                                 imp.content.get("narrative", "")[:60],
                                             )
+                                            # Generate and speak via conversation pipeline
+                                            if self._conversation_pipeline:
+                                                asyncio.create_task(
+                                                    self._conversation_pipeline.generate_spontaneous_speech(
+                                                        imp
+                                                    )
+                                                )
                                     except Exception:
                                         log.debug(
                                             "Proactive gate check failed (non-fatal)",
