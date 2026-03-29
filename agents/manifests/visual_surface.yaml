@@ -8,5 +8,5 @@ schedule:
 pipeline_role: actuator
 pipeline_layer: output
 pipeline_state:
-  path: "/dev/shm/hapax-visual/frame.jpg"
-  metrics: [frame_age_s, pass_count]
+  path: "/dev/shm/hapax-imagination/pipeline/plan.json"
+  metrics: []
