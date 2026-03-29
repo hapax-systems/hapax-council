@@ -22,7 +22,7 @@ The imagination loop runs as an independent async task inside the voice daemon p
 
 ### Model
 
-qwen3.5:27b via LiteLLM gateway at `:4000`. Higher tier than the DMN's qwen3:4b because imagination requires synthesis and novel connection, not just situation description.
+qwen3.5:27b via LiteLLM gateway at `:4000`. Higher tier than the DMN's qwen3.5:4b because imagination requires synthesis and novel connection, not just situation description.
 
 ### Cadence
 

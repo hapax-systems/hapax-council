@@ -89,7 +89,7 @@ Environment="CUDA_MODULE_LOADING=LAZY"
 | nomic-embed-text | ~275 MiB | Keep loaded permanently |
 | distil-large-v3 (STT) | ~5 GB | Replaces large-v3 (~10 GB) |
 | Kokoro TTS | ~500 MiB | Keep loaded |
-| Classification model | ~2.5 GB | qwen3:4b or phi4-mini |
+| Classification model | ~5.6 GB | qwen3.5:4b |
 | KV cache headroom | ~2 GB | Buffer |
 | **Total** | **~10.6 GB** | **~14 GB free** |
 
