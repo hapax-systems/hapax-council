@@ -45,7 +45,7 @@ struct PlanPass {
     /// Pass type from Python: "render" or "compute"
     #[serde(rename = "type", default)]
     pass_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_numeric_only")]
     uniforms: HashMap<String, f64>,
     #[serde(default)]
     param_order: Vec<String>,
@@ -57,6 +57,18 @@ fn default_output() -> String {
 
 fn default_steps() -> u32 {
     1
+}
+
+/// Deserialize a JSON object into HashMap<String, f64>, silently skipping non-numeric values.
+fn deserialize_numeric_only<'de, D>(deserializer: D) -> Result<HashMap<String, f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: HashMap<String, serde_json::Value> = HashMap::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|(k, v)| v.as_f64().map(|n| (k, n)))
+        .collect())
 }
 
 // --- Uniforms JSON override ---
@@ -350,7 +362,7 @@ impl DynamicPipeline {
                         source: wgpu::ShaderSource::Wgsl(compute_source.into()),
                     });
 
-                let input_bgl = Self::get_or_create_input_layout(device, input_count, &mut input_layouts);
+                let input_bgl = Self::get_or_create_input_layout(device, input_count, &plan_pass.inputs, &mut input_layouts);
                 let storage_bgl = Self::create_storage_texture_layout(device);
 
                 let pipeline_layout =
@@ -395,7 +407,7 @@ impl DynamicPipeline {
                         source: wgpu::ShaderSource::Wgsl(combined_source.into()),
                     });
 
-                let input_bgl = Self::get_or_create_input_layout(device, input_count, &mut input_layouts);
+                let input_bgl = Self::get_or_create_input_layout(device, input_count, &plan_pass.inputs, &mut input_layouts);
 
                 // Conditionally include group 2 (per-node params) only if shader has scalar uniforms
                 let has_params = !plan_pass.param_order.is_empty();
@@ -736,45 +748,100 @@ impl DynamicPipeline {
     fn get_or_create_input_layout(
         device: &wgpu::Device,
         input_count: usize,
+        input_names: &[String],
         layouts: &mut HashMap<usize, wgpu::BindGroupLayout>,
     ) -> wgpu::BindGroupLayout {
-        if !layouts.contains_key(&input_count) {
-            layouts.insert(input_count, Self::create_input_layout(device, input_count));
+        let has_content_slots = input_names.iter().any(|n| n.starts_with("content_slot_"));
+        if !has_content_slots {
+            if !layouts.contains_key(&input_count) {
+                layouts.insert(input_count, Self::create_input_layout(device, input_count));
+            }
         }
         // Always create a fresh one to return — wgpu layouts are not Clone,
         // but two layouts created with the same descriptor are compatible.
-        Self::create_input_layout(device, input_count)
+        Self::create_input_layout_for(device, input_count, input_names)
     }
 
     fn create_input_layout(device: &wgpu::Device, input_count: usize) -> wgpu::BindGroupLayout {
-        let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
+        Self::create_input_layout_for(device, input_count, &[])
+    }
 
-        // Transpiled shaders use alternating texture/sampler pairs:
-        // binding 0 = texture, binding 1 = sampler, binding 2 = texture, binding 3 = sampler, ...
-        let count = input_count.max(1); // at least 1 texture (from @live/previous pass)
-        for i in 0..count {
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: (i * 2) as u32,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
+    /// Create a bind group layout for group 1 inputs.
+    ///
+    /// Standard inputs get alternating texture/sampler pairs.
+    /// Inputs named `content_slot_*` are bare textures sharing the first sampler
+    /// (matches the content_layer.wgsl hand-written binding layout).
+    fn create_input_layout_for(
+        device: &wgpu::Device,
+        input_count: usize,
+        input_names: &[String],
+    ) -> wgpu::BindGroupLayout {
+        let has_content_slots = input_names.iter().any(|n| n.starts_with("content_slot_"));
+
+        if has_content_slots {
+            // content_layer layout: binding 0=tex, 1=sampler, 2..N=bare textures
+            let mut entries = vec![
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            });
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: (i * 2 + 1) as u32,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            });
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ];
+            let slot_count = input_names.iter().filter(|n| n.starts_with("content_slot_")).count();
+            for i in 0..slot_count {
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: (2 + i) as u32,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                });
+            }
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("content_layer input bgl"),
+                entries: &entries,
+            })
+        } else {
+            // Standard: alternating texture/sampler pairs
+            let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
+            let count = input_count.max(1);
+            for i in 0..count {
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: (i * 2) as u32,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                });
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: (i * 2 + 1) as u32,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                });
+            }
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("dynamic input bgl"),
+                entries: &entries,
+            })
         }
-
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("dynamic input bgl"),
-            entries: &entries,
-        })
     }
 
     fn create_storage_texture_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -800,43 +867,78 @@ impl DynamicPipeline {
         content_textures: Option<&ContentTextureManager>,
     ) -> wgpu::BindGroup {
         let input_count = inputs.len();
+        let has_content_slots = inputs.iter().any(|n| n.starts_with("content_slot_"));
 
         // Use cached layout from reload — fall back to fresh creation if uncached
         let owned_layout;
-        let layout = match self.input_bind_group_layouts.get(&input_count) {
-            Some(cached) => cached,
-            None => {
-                owned_layout = Self::create_input_layout(device, input_count);
-                &owned_layout
+        let layout = if has_content_slots {
+            owned_layout = Self::create_input_layout_for(device, input_count, inputs);
+            &owned_layout
+        } else {
+            match self.input_bind_group_layouts.get(&input_count) {
+                Some(cached) => cached,
+                None => {
+                    owned_layout = Self::create_input_layout(device, input_count);
+                    &owned_layout
+                }
             }
         };
 
         let mut entries: Vec<wgpu::BindGroupEntry> = Vec::new();
 
-        // Alternating texture/sampler pairs matching transpiler convention
-        let _count = inputs.len().max(1);
-        for (i, name) in inputs.iter().enumerate() {
-            let view = if name.starts_with("content_slot_") {
-                let idx: usize = name.strip_prefix("content_slot_")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
-                content_textures
-                    .map(|ct| ct.slot_view(idx))
-                    .unwrap_or_else(|| self.textures.get("final").map(|t| &t.view).unwrap())
-            } else {
-                self.textures.get(name)
+        if has_content_slots {
+            // content_layer layout: binding 0=tex, 1=sampler, 2..N=bare content textures
+            // First input is the pipeline texture (non-content-slot)
+            let pipeline_inputs: Vec<_> = inputs.iter().filter(|n| !n.starts_with("content_slot_")).collect();
+            let content_inputs: Vec<_> = inputs.iter().filter(|n| n.starts_with("content_slot_")).collect();
+
+            // Binding 0: pipeline input texture
+            let view = if let Some(name) = pipeline_inputs.first() {
+                self.textures.get(name.as_str())
                     .or_else(|| self.textures.get("final"))
                     .map(|t| &t.view)
                     .unwrap()
+            } else {
+                self.textures.values().next().map(|t| &t.view).unwrap()
             };
             entries.push(wgpu::BindGroupEntry {
-                binding: (i * 2) as u32,
+                binding: 0,
                 resource: wgpu::BindingResource::TextureView(view),
             });
+            // Binding 1: shared sampler
             entries.push(wgpu::BindGroupEntry {
-                binding: (i * 2 + 1) as u32,
+                binding: 1,
                 resource: wgpu::BindingResource::Sampler(&self.sampler),
             });
+            // Binding 2..N: content slot textures
+            for (i, name) in content_inputs.iter().enumerate() {
+                let idx: usize = name.strip_prefix("content_slot_")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let slot_view = content_textures
+                    .map(|ct| ct.slot_view(idx))
+                    .unwrap_or_else(|| self.textures.get("final").map(|t| &t.view).unwrap());
+                entries.push(wgpu::BindGroupEntry {
+                    binding: (2 + i) as u32,
+                    resource: wgpu::BindingResource::TextureView(slot_view),
+                });
+            }
+        } else {
+            // Standard: alternating texture/sampler pairs
+            for (i, name) in inputs.iter().enumerate() {
+                let view = self.textures.get(name.as_str())
+                    .or_else(|| self.textures.get("final"))
+                    .map(|t| &t.view)
+                    .unwrap();
+                entries.push(wgpu::BindGroupEntry {
+                    binding: (i * 2) as u32,
+                    resource: wgpu::BindingResource::TextureView(view),
+                });
+                entries.push(wgpu::BindGroupEntry {
+                    binding: (i * 2 + 1) as u32,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                });
+            }
         }
         // If no inputs, still provide a default texture+sampler (shaders expect at least one)
         if inputs.is_empty() {
