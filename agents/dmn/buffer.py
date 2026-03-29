@@ -226,6 +226,11 @@ class DMNBuffer:
 
         return deltas
 
+    def recent_observations(self, n: int = 5) -> list[str]:
+        """Return content strings of the last N observations."""
+        obs = list(self._observations)
+        return [o.content for o in obs[-n:]]
+
     def __len__(self) -> int:
         return len(self._observations)
 

@@ -52,7 +52,7 @@ plugins/gst-temporalfx/target/
 
 # Screenshots / snapshots (generated)
 *.jpeg
-hapax-visual/
+/hapax-visual/
 
 # Temp profiles
 profiles/tmp*

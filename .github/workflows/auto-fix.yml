@@ -24,6 +24,8 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+    branches-ignore:
+      - main
 
 permissions:
   contents: write

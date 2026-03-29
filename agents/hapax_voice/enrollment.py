@@ -16,8 +16,10 @@ Output:
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +31,94 @@ SPEAKER_EMBEDDING_PATH = ENROLLMENT_DIR / "speaker_embedding.npy"
 FACE_EMBEDDING_PATH = ENROLLMENT_DIR / "operator_face.npy"
 SAMPLE_RATE = 16000
 SAMPLE_DURATION_S = 5  # seconds per sample
+ENROLLMENT_REPORT_PATH = ENROLLMENT_DIR / "enrollment_report.json"
+
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity between two vectors, handling zero norms."""
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(np.dot(a, b) / (norm_a * norm_b))
+
+
+def compute_pairwise_similarity(embeddings: list[np.ndarray]) -> dict[str, float]:
+    """Compute pairwise cosine similarity statistics across all embedding pairs.
+
+    Returns dict with keys: min, max, mean, stddev.
+    """
+    sims: list[float] = []
+    n = len(embeddings)
+    for i in range(n):
+        for j in range(i + 1, n):
+            sims.append(_cosine_similarity(embeddings[i], embeddings[j]))
+    arr = np.array(sims)
+    return {
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+        "mean": float(arr.mean()),
+        "stddev": float(arr.std()),
+    }
+
+
+def detect_outliers(embeddings: list[np.ndarray], threshold: float = 0.50) -> list[int]:
+    """Detect outlier embeddings by mean pairwise similarity below threshold.
+
+    Returns list of indices where the embedding's mean similarity to all
+    others falls below the threshold.
+    """
+    n = len(embeddings)
+    outliers: list[int] = []
+    for i in range(n):
+        sims = [_cosine_similarity(embeddings[i], embeddings[j]) for j in range(n) if j != i]
+        if np.mean(sims) < threshold:
+            outliers.append(i)
+    return outliers
+
+
+def threshold_test(
+    embeddings: list[np.ndarray],
+    averaged: np.ndarray,
+    accept_threshold: float = 0.60,
+) -> dict[str, float | int]:
+    """Test each embedding's similarity to the averaged embedding.
+
+    Returns dict with keys: accept_threshold, samples_below_threshold,
+    min_similarity_to_average.
+    """
+    sims = [_cosine_similarity(e, averaged) for e in embeddings]
+    below = sum(1 for s in sims if s < accept_threshold)
+    return {
+        "accept_threshold": accept_threshold,
+        "samples_below_threshold": below,
+        "min_similarity_to_average": float(min(sims)),
+    }
+
+
+def write_stability_report(
+    embeddings: list[np.ndarray],
+    averaged: np.ndarray,
+    report_path: Path | None = None,
+    dropped_count: int = 0,
+) -> None:
+    """Compute and save a JSON enrollment stability report."""
+    if report_path is None:
+        report_path = ENROLLMENT_REPORT_PATH
+
+    pairwise = compute_pairwise_similarity(embeddings)
+    thresh = threshold_test(embeddings, averaged)
+
+    report = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "sample_count": len(embeddings),
+        "dropped_count": dropped_count,
+        "pairwise": pairwise,
+        "threshold": thresh,
+    }
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2))
 
 
 def record_audio(duration_s: float, source: str | None = None) -> np.ndarray:
@@ -211,7 +301,26 @@ def main() -> None:
         print("ERROR: No embeddings extracted. Check pyannote/HF_TOKEN.")
         sys.exit(1)
 
-    # Average embeddings
+    # ── Validation phase ─────────────────────────────────
+    print("── Validation ──────────────────────────────────────")
+    dropped_count = 0
+    outlier_indices = detect_outliers(embeddings, threshold=0.50)
+    if outlier_indices:
+        print(f"  Found {len(outlier_indices)} potential outlier(s):")
+        # Process in reverse so removal doesn't shift indices
+        for idx in sorted(outlier_indices, reverse=True):
+            answer = input(f"  Drop sample {idx + 1}? [y/N] ").strip().lower()
+            if answer == "y":
+                embeddings.pop(idx)
+                dropped_count += 1
+                print(f"  Dropped sample {idx + 1}")
+        print()
+
+    if not embeddings:
+        print("ERROR: All embeddings dropped. Re-run enrollment.")
+        sys.exit(1)
+
+    # Average remaining embeddings
     avg_embedding = np.mean(embeddings, axis=0)
 
     # Normalize
@@ -219,11 +328,35 @@ def main() -> None:
     if norm > 0:
         avg_embedding = avg_embedding / norm
 
+    # Write stability report
+    write_stability_report(embeddings, avg_embedding, dropped_count=dropped_count)
+    print(f"  Stability report: {ENROLLMENT_REPORT_PATH}")
+
+    # Print pairwise stats
+    pairwise = compute_pairwise_similarity(embeddings)
+    print(
+        f"  Pairwise similarity: mean={pairwise['mean']:.3f} "
+        f"stddev={pairwise['stddev']:.3f} "
+        f"min={pairwise['min']:.3f} max={pairwise['max']:.3f}"
+    )
+    if pairwise["mean"] < 0.70:
+        print("  ⚠ WARNING: Mean pairwise similarity < 0.70 — enrollment may be noisy")
+    if pairwise["stddev"] > 0.10:
+        print("  ⚠ WARNING: High stddev > 0.10 — inconsistent samples")
+
+    # Print threshold test
+    thresh = threshold_test(embeddings, avg_embedding, accept_threshold=0.60)
+    print(
+        f"  Threshold test: {thresh['samples_below_threshold']} samples below "
+        f"{thresh['accept_threshold']:.2f}, min similarity={thresh['min_similarity_to_average']:.3f}"
+    )
+    print()
+
     # Save
     np.save(SPEAKER_EMBEDDING_PATH, avg_embedding)
     print("═══════════════════════════════════════════════════")
     print(f"  ✓ Speaker embedding saved: {SPEAKER_EMBEDDING_PATH}")
-    print(f"    Averaged from {len(embeddings)} samples")
+    print(f"    Averaged from {len(embeddings)} samples ({dropped_count} dropped)")
     print(f"    Shape: {avg_embedding.shape}")
     print(f"  ✓ Face embedding: {FACE_EMBEDDING_PATH}")
     print("═══════════════════════════════════════════════════")

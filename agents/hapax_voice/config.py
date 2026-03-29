@@ -69,6 +69,10 @@ class VoiceConfig(BaseModel):
     # Contact microphone (desk vibration sensing via PipeWire)
     contact_mic_source: str = "Contact Microphone"
 
+    # Multi-mic noise reference patterns (substring match against PipeWire source names)
+    noise_ref_room_patterns: list[str] = ["HD Pro Webcam C920", "Logitech BRIO"]
+    noise_ref_structure_patterns: list[str] = ["Contact Microphone"]
+
     # Application-level echo cancellation (speexdsp)
     aec_enabled: bool = True
     aec_tail_ms: int = 500  # 500ms covers typical room reverb (was 200ms)

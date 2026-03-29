@@ -620,6 +620,16 @@ class ConversationPipeline:
                 except Exception:
                     log.debug("%s context fn failed (non-fatal)", label, exc_info=True)
 
+        # Imagination context: current thoughts from imagination bus
+        _imagination_fn = getattr(self, "_imagination_fn", None)
+        if _imagination_fn is not None and not _lockdown:
+            try:
+                section = _imagination_fn()
+                if section:
+                    updated += "\n\n" + section
+            except Exception:
+                log.debug("imagination context fn failed (non-fatal)", exc_info=True)
+
         # Phenomenal context: stimmung-only in experiment mode, disabled in lockdown
         _stimmung_only = self._experiment_flags.get("phenomenal_stimmung_only", False)
         if not _lockdown:

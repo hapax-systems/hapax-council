@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
+pytest.importorskip("playwright", reason="playwright not installed")
+
 from agents.demo_pipeline.timeline import (
     NarratedDemoResult,
     NarratedDemoScript,

@@ -63,7 +63,20 @@ EXPORT_MIMES: dict[str, tuple[str, str]] = {
 }
 
 # MIME categories for tiering
-BINARY_MIME_PREFIXES = ("audio/", "video/", "application/zip", "application/x-")
+BINARY_MIME_PREFIXES = ("audio/", "video/", "image/", "application/zip", "application/x-")
+
+# Folders excluded from sync entirely (not useful for RAG)
+EXCLUDED_FOLDERS = {"Google Photos"}
+
+
+def _is_excluded(folder_path: str) -> bool:
+    """Check if a folder path starts with an excluded folder."""
+    if not folder_path:
+        return False
+    top = folder_path.split("/")[0]
+    return top in EXCLUDED_FOLDERS
+
+
 # Content type inference from MIME
 CONTENT_TYPE_MAP: dict[str, str] = {
     "application/vnd.google-apps.document": "document",
@@ -383,6 +396,9 @@ def _full_scan(service, state: SyncState) -> int:
                 else ""
             )
 
+            if _is_excluded(folder_path):
+                continue
+
             state.files[drive_id] = DriveFile(
                 drive_id=drive_id,
                 name=f["name"],
@@ -464,6 +480,9 @@ def _incremental_sync(service, state: SyncState) -> list[str]:
                 else ""
             )
 
+            if _is_excluded(folder_path):
+                continue
+
             existing = state.files.get(file_id)
             new_md5 = f.get("md5Checksum", "")
 
@@ -504,6 +523,9 @@ def _sync_file(service, f: DriveFile, state: SyncState) -> bool:
 
     Returns True if file was written/updated.
     """
+    if _is_excluded(f.folder_path):
+        return False
+
     tier, _, _ = _classify_file(f.name, f.mime_type, f.size)
 
     if tier == "metadata_only":

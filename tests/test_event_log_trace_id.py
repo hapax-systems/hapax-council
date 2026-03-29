@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("OTEL_SDK_DISABLED") == "true",
+    reason="OTel SDK disabled in CI",
+)
 
 
 @pytest.fixture

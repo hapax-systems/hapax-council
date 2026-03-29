@@ -8,9 +8,6 @@ from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import async_playwright
-
 from agents.demo_models import ScreenshotSpec
 
 log = logging.getLogger(__name__)
@@ -219,6 +216,9 @@ async def capture_screenshots(
     max_retries: int = 2,
 ) -> list[Path]:
     """Capture screenshots for each spec. Returns list of saved file paths."""
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError  # noqa: F811
+    from playwright.async_api import async_playwright
+
     specs = validate_screenshot_specs(specs)
     await _preflight_check(specs)
 

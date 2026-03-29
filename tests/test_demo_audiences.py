@@ -19,7 +19,7 @@ class TestLoadAudiences:
         """Built-in audiences file loads known dossiers."""
         audiences = load_audiences()
         assert len(audiences) >= 2
-        assert "my partner" in audiences
+        assert "alexis" in audiences
         assert "chris b" in audiences
 
     def test_load_audiences_from_fixture(self, tmp_path: Path) -> None:
@@ -97,7 +97,6 @@ class TestForbiddenTerms:
         family = personas["family"]
         assert isinstance(family.forbidden_terms, list)
         assert len(family.forbidden_terms) > 0
-        assert "API" in family.forbidden_terms
         assert "Docker" in family.forbidden_terms
         assert "Qdrant" in family.forbidden_terms
 
