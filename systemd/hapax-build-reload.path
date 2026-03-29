@@ -1,0 +1,16 @@
+[Unit]
+Description=Watch Logos/Reverie binaries for changes
+# Triggers reload of all attendant services when new builds land
+
+[Path]
+# Binaries installed by `just install` (atomic mv)
+PathChanged=%h/.local/bin/hapax-logos
+PathChanged=%h/.local/bin/hapax-imagination
+# Sentinel touched by rebuild script on Python-only changes
+PathChanged=%h/.cache/hapax/rebuild/reload-sentinel
+# debounce: 5s settle before triggering (covers rapid successive installs)
+TriggerLimitIntervalSec=5
+TriggerLimitBurst=1
+
+[Install]
+WantedBy=default.target

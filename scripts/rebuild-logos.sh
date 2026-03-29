@@ -64,6 +64,9 @@ fi
 cd "$CARGO_DIR"
 if just install 2>"$STATE_DIR/build.log"; then
     echo "$CURRENT_SHA" > "$SHA_FILE"
+    # Touch sentinel so hapax-build-reload.path fires even if only Python changed
+    # (binaries won't change for Python-only commits, path unit needs a trigger)
+    touch "$STATE_DIR/reload-sentinel"
     VERSION=$(just version 2>/dev/null | head -1)
     logger -t "$LOG_TAG" "rebuild complete — $VERSION"
     ntfy "Logos rebuild complete" "${CURRENT_SHA:0:8} — $VERSION" "default" "white_check_mark"

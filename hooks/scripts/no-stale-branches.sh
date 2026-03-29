@@ -106,11 +106,25 @@ git fetch origin --quiet --no-tags 2>/dev/null || true
 
 stale_branches=""
 
-# Check local branches (excluding main, HEAD)
+# Build set of branches checked out in OTHER worktrees (not this one).
+# Those branches are another session's responsibility — don't block on them.
+this_wt="$(git rev-parse --show-toplevel 2>/dev/null)"
+other_wt_branches=""
+while IFS= read -r wt_line; do
+    wt_path="${wt_line%% *}"
+    wt_branch="$(echo "$wt_line" | sed -n 's/.*\[\(.*\)\]/\1/p')"
+    [ -z "$wt_branch" ] && continue
+    [ "$wt_path" = "$this_wt" ] && continue
+    other_wt_branches="${other_wt_branches}|${wt_branch}"
+done < <(git worktree list 2>/dev/null)
+
+# Check local branches (excluding main, HEAD, and branches in other worktrees)
 while IFS= read -r branch; do
     [ -z "$branch" ] && continue
     [ "$branch" = "main" ] && continue
     [ "$branch" = "master" ] && continue
+    # Skip branches owned by other worktrees
+    echo "$other_wt_branches" | grep -qF "|${branch}" && continue
     ahead=$(git rev-list --count "main..$branch" 2>/dev/null || echo 0)
     if [ "$ahead" -gt 0 ]; then
         stale_branches="${stale_branches}  ${branch} (${ahead} commits ahead)\n"
