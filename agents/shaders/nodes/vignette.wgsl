@@ -10,11 +10,11 @@ struct FragmentOutput {
 
 var<private> fragColor: vec4<f32>;
 var<private> v_texcoord_1: vec2<f32>;
-@group(1) @binding(0) 
+@group(1) @binding(0)
 var tex: texture_2d<f32>;
-@group(1) @binding(1) 
+@group(1) @binding(1)
 var tex_sampler: sampler;
-@group(2) @binding(0) 
+@group(2) @binding(0)
 var<uniform> global: Params;
 
 fn main_1() {
@@ -24,34 +24,20 @@ fn main_1() {
     let _e10 = v_texcoord_1;
     let _e11 = textureSample(tex, tex_sampler, _e10);
     c = _e11;
-    let _e13 = v_texcoord_1;
-    // Aspect-correct vignette — prevents diagonal cutoff on non-square windows
-    var vig_uv = (_e13 - vec2(0.5f)) * 2f;
-    let vig_size = vec2<f32>(textureDimensions(tex));
-    let vig_aspect = vig_size.x / vig_size.y;
-    if vig_aspect > 1.0 {
-        vig_uv.x = vig_uv.x * vig_aspect;
-    } else {
-        vig_uv.y = vig_uv.y / vig_aspect;
-    }
-    d = length(vig_uv);
-    let _e21 = c;
-    let _e23 = c;
-    let _e26 = global.u_radius;
-    let _e27 = global.u_radius;
-    let _e28 = global.u_softness;
-    let _e30 = d;
-    let _e32 = global.u_strength;
-    let _e35 = (_e23.xyz * (1f - (smoothstep(_e26, (_e27 + _e28), _e30) * _e32)));
-    c.x = _e35.x;
-    c.y = _e35.y;
-    c.z = _e35.z;
-    let _e42 = c;
-    fragColor = _e42;
+
+    // Elliptical vignette: UV 0..1 mapped to centered -1..1 on both axes.
+    // No aspect correction — distance is 1.0 at all four edges, ~1.414 at corners.
+    // This produces uniform edge darkening regardless of aspect ratio.
+    let centered = (v_texcoord_1 - vec2(0.5)) * 2.0;
+    d = length(centered);
+
+    let vig = smoothstep(global.u_radius, global.u_radius + global.u_softness, d) * global.u_strength;
+    let darkened = c.xyz * (1.0 - vig);
+    fragColor = vec4<f32>(darkened, c.w);
     return;
 }
 
-@fragment 
+@fragment
 fn main(@location(0) v_texcoord: vec2<f32>) -> FragmentOutput {
     v_texcoord_1 = v_texcoord;
     main_1();
