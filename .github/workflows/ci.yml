@@ -59,12 +59,14 @@ jobs:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
           OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
         run: |
           # Two hang mitigations:
           # 1. conftest os._exit: kills process after session finishes (socket hang)
           # 2. timeout 900s: kills process if a test itself hangs mid-run (CI OOM)
           printf 'import sys, os\ndef pytest_sessionfinish(session, exitstatus):\n    sys.stdout.flush()\n    sys.stderr.flush()\n    os._exit(exitstatus)\n' > tests/conftest.py
-          timeout --signal=KILL 900 \
+          timeout --signal=KILL 600 \
             uv run pytest tests/ -q \
               --ignore=tests/hapax_voice --ignore=tests/contract \
               --ignore=tests/test_frame_gate.py \
