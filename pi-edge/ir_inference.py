@@ -20,7 +20,10 @@ class YoloDetector:
     """YOLOv8n TFLite person detector."""
 
     def __init__(self, model_path: Path | None = None) -> None:
-        import tflite_runtime.interpreter as tflite
+        try:
+            import tflite_runtime.interpreter as tflite
+        except ImportError:
+            from ai_edge_litert import interpreter as tflite  # Python 3.13+
 
         path = str(model_path or MODEL_PATH)
         self._interpreter = tflite.Interpreter(model_path=path, num_threads=4)
