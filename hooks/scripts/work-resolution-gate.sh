@@ -55,7 +55,12 @@ fi
 
 # --- 6. Feature branch checks (not on main/master) ---
 if [[ "$branch" != "main" && "$branch" != "master" ]]; then
-  ahead="$(git rev-list --count "${default_branch}..HEAD" 2>/dev/null || echo 0)"
+  # Use origin/main if available (worktrees can't update local main ref)
+  compare_ref="origin/${default_branch}"
+  if ! git rev-parse --verify "$compare_ref" &>/dev/null; then
+    compare_ref="$default_branch"
+  fi
+  ahead="$(git rev-list --count "${compare_ref}..HEAD" 2>/dev/null || echo 0)"
   if [[ "$ahead" -gt 0 ]]; then
     pr_json="$(gh pr list --head "$branch" --state open --json number,statusCheckRollup 2>/dev/null || echo "error")"
     if [[ "$pr_json" == "error" ]]; then
