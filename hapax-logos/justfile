@@ -22,6 +22,7 @@ version:
 
 # Build frontend (Vite)
 frontend:
+    pnpm install --frozen-lockfile
     pnpm build
 
 # Build imagination binary
