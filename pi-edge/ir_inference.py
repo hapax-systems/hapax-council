@@ -1,4 +1,8 @@
-"""ir_inference.py — YOLOv8n TFLite + face landmark inference for Pi NoIR."""
+"""ir_inference.py — YOLOv8n person detection + face landmarks for Pi NoIR.
+
+Prefers ONNX Runtime (better precision on NIR, faster on ARM).
+Falls back to TFLite if ONNX model not present.
+"""
 
 from __future__ import annotations
 
@@ -10,27 +14,48 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-MODEL_PATH = Path(__file__).parent / "yolov8n_full_integer_quant.tflite"
+MODEL_ONNX_PATH = Path(__file__).parent / "best.onnx"
+MODEL_TFLITE_PATH = Path(__file__).parent / "yolov8n_full_integer_quant.tflite"
 PERSON_CLASS_ID = 0
-CONFIDENCE_THRESHOLD = 0.10
+CONFIDENCE_THRESHOLD = 0.25
 INPUT_SIZE = 320
 
 
 class YoloDetector:
-    """YOLOv8n TFLite person detector."""
+    """YOLOv8n person detector. Prefers ONNX Runtime, falls back to TFLite."""
 
     def __init__(self, model_path: Path | None = None) -> None:
+        self._use_onnx = False
+        self._ort_session = None
+        self._interpreter = None
+
+        # Try ONNX Runtime first (better precision, faster on ARM)
+        if model_path is None and MODEL_ONNX_PATH.exists():
+            try:
+                import onnxruntime as ort
+
+                self._ort_session = ort.InferenceSession(
+                    str(MODEL_ONNX_PATH), providers=["CPUExecutionProvider"]
+                )
+                self._ort_input_name = self._ort_session.get_inputs()[0].name
+                self._use_onnx = True
+                log.info("YOLO detector loaded (ONNX Runtime) from %s", MODEL_ONNX_PATH)
+                return
+            except (ImportError, Exception) as exc:
+                log.warning("ONNX Runtime failed, falling back to TFLite: %s", exc)
+
+        # Fall back to TFLite
         try:
             import tflite_runtime.interpreter as tflite
         except ImportError:
-            from ai_edge_litert import interpreter as tflite  # Python 3.13+
+            from ai_edge_litert import interpreter as tflite  # type: ignore[no-redef]
 
-        path = str(model_path or MODEL_PATH)
+        path = str(model_path or MODEL_TFLITE_PATH)
         self._interpreter = tflite.Interpreter(model_path=path, num_threads=4)
         self._interpreter.allocate_tensors()
         self._input_details = self._interpreter.get_input_details()
         self._output_details = self._interpreter.get_output_details()
-        log.info("YOLO detector loaded from %s", path)
+        log.info("YOLO detector loaded (TFLite) from %s", path)
 
     def detect_persons(self, frame: np.ndarray) -> list[dict]:
         """Run person detection on a frame (color BGR or greyscale).
@@ -43,39 +68,40 @@ class YoloDetector:
             rgb = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
         else:
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        input_data = np.expand_dims(rgb, axis=0)
 
-        input_detail = self._input_details[0]
-        if input_detail["dtype"] == np.int8:
-            scale, zero_point = input_detail["quantization"]
-            input_data = (input_data.astype(np.float32) / scale + zero_point).astype(np.int8)
-        elif input_detail["dtype"] == np.uint8:
-            pass
+        if self._use_onnx:
+            input_data = np.expand_dims(rgb.transpose(2, 0, 1), axis=0).astype(np.float32) / 255.0
+            output = self._ort_session.run(None, {self._ort_input_name: input_data})[0]
         else:
-            input_data = input_data.astype(np.float32) / 255.0
-
-        self._interpreter.set_tensor(input_detail["index"], input_data)
-        self._interpreter.invoke()
-
-        output = self._interpreter.get_tensor(self._output_details[0]["index"])
-        out_detail = self._output_details[0]
-        if out_detail["dtype"] in (np.int8, np.uint8):
-            scale, zero_point = out_detail["quantization"]
-            output = (output.astype(np.float32) - zero_point) * scale
+            input_data = np.expand_dims(rgb, axis=0)
+            input_detail = self._input_details[0]
+            if input_detail["dtype"] == np.int8:
+                scale, zero_point = input_detail["quantization"]
+                input_data = (input_data.astype(np.float32) / scale + zero_point).astype(np.int8)
+            elif input_detail["dtype"] == np.uint8:
+                pass
+            else:
+                input_data = input_data.astype(np.float32) / 255.0
+            self._interpreter.set_tensor(input_detail["index"], input_data)
+            self._interpreter.invoke()
+            output = self._interpreter.get_tensor(self._output_details[0]["index"])
+            out_detail = self._output_details[0]
+            if out_detail["dtype"] in (np.int8, np.uint8):
+                scale, zero_point = out_detail["quantization"]
+                output = (output.astype(np.float32) - zero_point) * scale
 
         return self._parse_yolo_output(output, h, w)
 
     def _parse_yolo_output(self, output: np.ndarray, orig_h: int, orig_w: int) -> list[dict]:
-        """Parse YOLOv8 TFLite output into person detections."""
+        """Parse YOLOv8 output into person detections."""
         if output.ndim == 3:
             output = output[0]
         if output.shape[0] < output.shape[1]:
             output = output.T
 
         persons = []
-        # Detect if coordinates are normalized (0-1) or pixel-scale
         max_coord = float(np.max(np.abs(output[:, :4]))) if len(output) > 0 else 0
-        coords_normalized = max_coord <= 1.5  # normalized outputs are in [0, 1]
+        coords_normalized = max_coord <= 1.5
 
         for detection in output:
             cx, cy, dw, dh = detection[:4]
@@ -87,13 +113,11 @@ class YoloDetector:
                 continue
 
             if coords_normalized:
-                # Coords are normalized [0, 1] — scale to original image
                 x1 = int((cx - dw / 2) * orig_w)
                 y1 = int((cy - dh / 2) * orig_h)
                 x2 = int((cx + dw / 2) * orig_w)
                 y2 = int((cy + dh / 2) * orig_h)
             else:
-                # Coords are in INPUT_SIZE pixel space — scale to original
                 scale_x = orig_w / INPUT_SIZE
                 scale_y = orig_h / INPUT_SIZE
                 x1 = int((cx - dw / 2) * scale_x)
@@ -152,11 +176,7 @@ class FaceLandmarkDetector:
         return self._available
 
     def detect(self, grey_frame: np.ndarray, person_bbox: list[int]) -> dict | None:
-        """Detect face landmarks within a person bounding box.
-
-        Returns dict with head_pose, gaze_zone, posture, ear_left, ear_right
-        or None if no face found.
-        """
+        """Detect face landmarks within a person bounding box."""
         if not self._available:
             return None
 
