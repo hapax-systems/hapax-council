@@ -25,6 +25,10 @@ export function SurfacePreview() {
     poll();
     return () => {
       active = false;
+      setImgSrc((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
     };
   }, []);
 

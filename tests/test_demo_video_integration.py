@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("PIL", reason="Pillow not installed")
+pytest.importorskip("moviepy", reason="moviepy not installed")
 
 from PIL import Image  # noqa: E402
 

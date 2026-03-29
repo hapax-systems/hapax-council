@@ -6,10 +6,20 @@ import asyncio
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from moviepy import AudioFileClip, ImageClip, VideoFileClip, concatenate_videoclips, vfx
+if TYPE_CHECKING:
+    from moviepy import ImageClip
 
 log = logging.getLogger(__name__)
+
+
+def _moviepy():
+    """Lazy-load moviepy at runtime."""
+    import moviepy
+
+    return moviepy
+
 
 CROSSFADE_DURATION = 0.5
 TITLE_DURATION = 3.0
@@ -23,9 +33,10 @@ def _title_clip(
     audio_path: Path | None = None,
 ) -> ImageClip:
     """Create a clip from a title card image, optionally with narration audio."""
-    clip = ImageClip(str(image_path))
+    mp = _moviepy()
+    clip = mp.ImageClip(str(image_path))
     if audio_path and audio_path.exists():
-        audio = AudioFileClip(str(audio_path))
+        audio = mp.AudioFileClip(str(audio_path))
         return clip.with_duration(audio.duration).with_audio(audio)
     return clip.with_duration(duration)
 
@@ -37,6 +48,7 @@ def _build_scene_clips(
     title_dir: Path | None = None,
 ) -> list[ImageClip]:
     """Build video clips for each scene — image + optional audio."""
+    mp = _moviepy()
     clips = []
     for title, img_path in screenshots.items():
         if not img_path.exists():
@@ -49,31 +61,31 @@ def _build_scene_clips(
 
             title_path = title_dir / f"title-{img_path.stem}.png"
             generate_scene_title(title, title_path)
-            clips.append(ImageClip(str(title_path)).with_duration(SCENE_TITLE_DURATION))
+            clips.append(mp.ImageClip(str(title_path)).with_duration(SCENE_TITLE_DURATION))
 
         # Use VideoFileClip for mp4 screencasts, ImageClip for static images
         if img_path.suffix == ".mp4":
-            clip = VideoFileClip(str(img_path))
+            clip = mp.VideoFileClip(str(img_path))
         else:
-            clip = ImageClip(str(img_path))
+            clip = mp.ImageClip(str(img_path))
 
         # Try to attach audio
         audio_name = img_path.stem  # e.g., "01-dashboard"
         audio_path = audio_dir / f"{audio_name}.wav" if audio_dir else None
 
         if audio_path and audio_path.exists():
-            audio = AudioFileClip(str(audio_path))
+            audio = mp.AudioFileClip(str(audio_path))
             if img_path.suffix == ".mp4":
                 # For video clips: loop if shorter than audio, trim if longer
                 if clip.duration < audio.duration:
-                    clip = clip.with_effects([vfx.Loop(duration=audio.duration)])
+                    clip = clip.with_effects([mp.vfx.Loop(duration=audio.duration)])
                 clip = clip.subclipped(0, audio.duration)
             clip = clip.with_duration(audio.duration).with_audio(audio)
         else:
             # Fall back to duration hint
             target_dur = durations.get(title, 5.0)
             if img_path.suffix == ".mp4" and clip.duration < target_dur:
-                clip = clip.with_effects([vfx.Loop(duration=target_dur)])
+                clip = clip.with_effects([mp.vfx.Loop(duration=target_dur)])
             clip = clip.with_duration(target_dur)
 
         clips.append(clip)
@@ -142,11 +154,12 @@ async def assemble_video(
         progress(f"Concatenating {len(all_clips)} clips with {CROSSFADE_DURATION}s crossfades...")
 
         # Apply crossfade to all clips except the first
+        mp = _moviepy()
         faded_clips = [all_clips[0]]
         for clip in all_clips[1:]:
-            faded_clips.append(clip.with_effects([vfx.CrossFadeIn(CROSSFADE_DURATION)]))
+            faded_clips.append(clip.with_effects([mp.vfx.CrossFadeIn(CROSSFADE_DURATION)]))
 
-        final = concatenate_videoclips(
+        final = mp.concatenate_videoclips(
             faded_clips,
             padding=-CROSSFADE_DURATION,
             method="compose",

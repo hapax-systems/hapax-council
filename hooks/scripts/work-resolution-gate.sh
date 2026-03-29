@@ -97,8 +97,24 @@ cache_key="$(echo "$repo_root" | md5sum | cut -d' ' -f1)"
 cache_file="/tmp/hapax-wr-gate-${cache_key}.json"
 cache_ttl=60
 
-# Collect local branches (excluding default)
+# Collect local branches checked out in THIS worktree only (excluding default).
+# git for-each-ref sees all branches across worktrees (shared refs/heads/).
+# Filter out branches checked out in OTHER worktrees so one session's PR
+# doesn't block another session.
+_other_wt_branches=""
+while IFS= read -r _wt_line; do
+  _wt_path="$(echo "$_wt_line" | awk '{print $1}')"
+  _wt_branch="$(echo "$_wt_line" | sed -n 's/.*\[//;s/\]//p')"
+  if [[ "$_wt_path" != "$repo_root" && -n "$_wt_branch" ]]; then
+    _other_wt_branches="${_other_wt_branches}${_wt_branch}"$'\n'
+  fi
+done < <(git worktree list 2>/dev/null)
+
 local_branches="$(git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null | grep -v "^${default_branch}$" || true)"
+# Remove branches checked out in other worktrees
+if [[ -n "$_other_wt_branches" ]]; then
+  local_branches="$(echo "$local_branches" | grep -v -F -x -f <(echo "$_other_wt_branches") || true)"
+fi
 
 # No local feature branches → nothing to block on
 if [[ -z "$local_branches" ]]; then

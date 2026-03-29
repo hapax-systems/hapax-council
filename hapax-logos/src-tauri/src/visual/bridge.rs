@@ -19,6 +19,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use super::compositor::Compositor;
+use super::content_layer::ContentLayer;
 use super::gpu::GpuContext;
 use super::output::ShmOutput;
 use super::postprocess::PostProcess;
@@ -51,6 +52,7 @@ struct VisualApp<R: Runtime> {
     physarum: Option<PhysarumTechnique>,
     feedback: Option<FeedbackTechnique>,
     compositor: Option<Compositor>,
+    content_layer: Option<ContentLayer>,
     postprocess: Option<PostProcess>,
     shm_output: Option<ShmOutput>,
     state_reader: StateReader,
@@ -73,6 +75,7 @@ impl<R: Runtime> VisualApp<R> {
             physarum: None,
             feedback: None,
             compositor: None,
+            content_layer: None,
             postprocess: None,
             shm_output: None,
             state_reader: StateReader::new(),
@@ -155,15 +158,70 @@ impl<R: Runtime> VisualApp<R> {
         );
         compositor.render(&mut encoder, &frame_bg);
 
-        feedback_tech.capture_frame(&mut encoder, &compositor.composite_texture);
+        // Content layer: decode imagination fragments, modulate with 9 dimensions, screen-blend
+        if let Some(content) = &mut self.content_layer {
+            let new_id = &self.state_reader.imagination.id;
+            if !new_id.is_empty() && *new_id != content.current_fragment_id {
+                let is_continuation = self.state_reader.imagination.continuation;
+                if !is_continuation {
+                    content.fade_out_all();
+                }
+                let content_dir = std::path::Path::new("/dev/shm/hapax-imagination/content");
+                for (i, cref) in self.state_reader.imagination.content_references.iter().enumerate()
+                {
+                    if i >= 4 {
+                        break;
+                    }
+                    let path = match cref.kind.as_str() {
+                        "camera_frame" => std::path::PathBuf::from(format!(
+                            "/dev/shm/hapax-compositor/{}.jpg",
+                            cref.source
+                        )),
+                        "file" => std::path::PathBuf::from(&cref.source),
+                        _ => content_dir.join(format!("{}-{}.jpg", new_id, i)),
+                    };
+                    if path.exists() {
+                        content.upload_to_slot(
+                            gpu,
+                            i,
+                            &path,
+                            cref.salience as f32,
+                            &cref.source,
+                        );
+                    }
+                }
+                content.current_fragment_id = new_id.clone();
+                content.is_continuation = is_continuation;
+            }
+            content.tick_fades(dt);
+            let dims: std::collections::HashMap<String, f32> = self
+                .state_reader
+                .imagination
+                .dimensions
+                .iter()
+                .map(|(k, v)| (k.clone(), *v as f32))
+                .collect();
+            content.update_uniforms(&gpu.queue, &dims, time);
+            content.render(&mut encoder, &compositor.composite_view, &gpu.device);
+        }
+
+        // Determine the final composited view/texture for downstream consumers.
+        // If content layer is active, use its output; otherwise use compositor directly.
+        let (final_view, final_texture) = if let Some(content) = &self.content_layer {
+            (&content.output_view, &content.output_texture)
+        } else {
+            (&compositor.composite_view, &compositor.composite_texture)
+        };
+
+        feedback_tech.capture_frame(&mut encoder, final_texture);
 
         if let Some(shm) = &self.shm_output {
             if self.frame_count % 2 == 0 {
-                shm.copy_to_staging(&mut encoder, &compositor.composite_texture);
+                shm.copy_to_staging(&mut encoder, final_texture);
             }
         }
 
-        postprocess.render(&mut encoder, &surface_view, &compositor.composite_view, &gpu.device);
+        postprocess.render(&mut encoder, &surface_view, final_view, &gpu.device);
 
         gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
@@ -224,6 +282,7 @@ impl<R: Runtime> ApplicationHandler for VisualApp<R> {
         let feedback = FeedbackTechnique::new(&gpu, w, h);
         let compositor = Compositor::new(&gpu, w, h);
         let postprocess = PostProcess::new(&gpu);
+        let content_layer = ContentLayer::new(&gpu, w, h);
         let shm_output = ShmOutput::new(&gpu.device, w, h);
 
         self.window = Some(window.clone());
@@ -235,6 +294,7 @@ impl<R: Runtime> ApplicationHandler for VisualApp<R> {
         self.physarum = Some(physarum);
         self.feedback = Some(feedback);
         self.compositor = Some(compositor);
+        self.content_layer = Some(content_layer);
         self.postprocess = Some(postprocess);
         self.shm_output = Some(shm_output);
 
@@ -286,6 +346,11 @@ impl<R: Runtime> ApplicationHandler for VisualApp<R> {
                 if let Some(compositor) = &mut self.compositor {
                     if let Some(gpu) = &self.gpu {
                         compositor.resize(&gpu.device, w, h);
+                    }
+                }
+                if let Some(content) = &mut self.content_layer {
+                    if let Some(gpu) = &self.gpu {
+                        content.resize(&gpu.device, w, h);
                     }
                 }
                 if let Some(shm) = &mut self.shm_output {

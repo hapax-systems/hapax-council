@@ -1,5 +1,6 @@
 pub mod bridge;
 pub mod compositor;
+pub mod content_layer;
 pub mod control;
 pub mod gpu;
 pub mod http_server;
