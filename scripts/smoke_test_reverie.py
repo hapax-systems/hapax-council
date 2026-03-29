@@ -153,7 +153,7 @@ def stage_1_materialization() -> None:
             ],
             material="water",
         )
-        time.sleep(0.8)
+        time.sleep(2.5)
         capture_frame(f"01-materialization-{salience:.1f}")
 
 
