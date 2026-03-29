@@ -1,3 +1,4 @@
+pub mod content_textures;
 pub mod control;
 pub mod dynamic_pipeline;
 pub mod gpu;
