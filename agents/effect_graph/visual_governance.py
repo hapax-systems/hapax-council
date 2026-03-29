@@ -16,6 +16,8 @@ import math
 import time
 
 from agents.effect_graph.types import PresetFamily
+from shared.capability import SystemContext
+from shared.governance import Candidate, FallbackChain, Veto, VetoChain
 
 # ── Atmospheric Layer ─────────────────────────────────────────────────────────
 
@@ -196,3 +198,55 @@ def compute_idle_escalation(idle_duration_s: float) -> float:
     if idle_duration_s <= 0:
         return 1.0
     return min(3.0, 1.0 + math.log1p(idle_duration_s / 60.0))
+
+
+# ── Governance Composition ───────────────────────────────────────────────────
+
+
+class VisualGovernance:
+    """Governance composition for visual expression.
+
+    Wraps AtmosphericSelector with deny-wins vetoes and priority-ordered
+    fallbacks. Same governance primitives as daimonion's PipelineGovernor.
+    """
+
+    def __init__(self, atmospheric: AtmosphericSelector | None = None) -> None:
+        self._atmospheric = atmospheric or AtmosphericSelector()
+        self._veto_chain: VetoChain[SystemContext] = VetoChain(
+            [
+                Veto(
+                    "consent_pending",
+                    lambda ctx: ctx.consent_state.get("phase") != "consent_pending",
+                    axiom="interpersonal_transparency",
+                ),
+            ]
+        )
+        self._fallback: FallbackChain[SystemContext, str] = FallbackChain(
+            [
+                Candidate(
+                    "critical_health",
+                    lambda ctx: ctx.stimmung_stance == "critical",
+                    "silhouette",
+                ),
+            ],
+            default="atmospheric",
+        )
+
+    def evaluate(
+        self,
+        ctx: SystemContext,
+        stance: str,
+        energy: str,
+        available_presets: list[str],
+        genre: str | None = None,
+    ) -> str | None:
+        """Evaluate visual governance. Returns preset name or None (suppress)."""
+        veto = self._veto_chain.evaluate(ctx)
+        if not veto.allowed:
+            return None
+
+        selected = self._fallback.select(ctx)
+        if selected.action != "atmospheric":
+            return selected.action
+
+        return self._atmospheric.evaluate(stance, energy, set(available_presets), genre or "")
