@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-27 (session 18 — TTS engine swap: Kokoro+Piper → Voxtral API)
+**Last updated:** 2026-03-29 (session 19 — Bayesian validation prep, visual pipeline, infrastructure)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -99,6 +99,8 @@ This project implements Clark & Brennan's (1991) conversational grounding theory
 - stats.py needs BEST implementation before Phase B analysis
 - 13 L8-L9 test failures (wake word debounce) — pre-existing, not from grounding changes
 - Verify Shaikh et al. ACL 2025 citation accuracy (23.23% figure, venue)
+- Phase A stability criterion: need 3 consecutive session means within 20% of phase mean. No sessions since Mar 25 — need fresh evening sessions to evaluate
+- Sprint 0 gate: if DMN contradiction rate >15% or salience r < 0.1, must rescope those measures
 
 ## Operator Action Items (from session 3 research)
 
@@ -393,6 +395,35 @@ Infrastructure-only. No changes to experiment code, grounding theory, or researc
 **Tests:** 17 Piper/Kokoro tests removed, 11 Voxtral tests added. 44 TTS-related tests passing. Conversation pipeline comment change required DEVIATION-021 (comment-only, no functional impact).
 
 **Impact on grounding research:** None. TTS is downstream of all grounding evaluation. Sample rate unchanged (24kHz). Audio output format unchanged (PCM int16 mono). The `.synthesize(text, use_case)` interface is preserved. Latency profile shifts from ~100ms local to ~0.7s API streaming — this affects conversational cadence timing but not grounding mechanics. If API latency proves problematic for experiment conditions, local inference via vLLM-Omni is available as fallback.
+
+## Session 19 (2026-03-29): Bayesian Validation Prep + Visual Pipeline + Rename
+
+Mixed session: visual pipeline completion (R&D), infrastructure, and Bayesian validation prep.
+
+**Bayesian validation R&D schedule created.** 21-day, 3-sprint schedule covering 27 measures across 6 tent-pole models. 7 decision gates with go/no-go criteria. Schedule in `docs/research/bayesian-validation-schedule.md`. Sprint 0 (Days 1-2) = instrumentation + quick analysis. Sprint 1 (Days 3-7) = core experiments. Sprint 2 (Days 8-14) = extended validation. Day 1 starts 2026-03-30.
+
+**Sprint tracker agent deployed (PR #419).** Vault-native automation: reads completion signals from `/dev/shm/hapax-sprint/completed.jsonl`, updates Obsidian vault measure notes, evaluates decision gates, emits nudges. PostToolUse hook detects measure output files. 5-min systemd timer.
+
+**Day 1 prep completed:**
+- Phase A data verified: 431 activation_score + 431 context_anchor_success pairs in Langfuse (well above 50-pair threshold for measure 7.2). Sessions on Mar 21, 24, 25. No sessions since Mar 25 — fresh evening sessions needed for stability criterion.
+- DMN impingement data confirmed: 355 entries in `/dev/shm/hapax-dmn/impingements.jsonl` (3.3MB, Mar 26-29). Ready for measure 4.1.
+- DEVIATION-025 drafted for conversation_pipeline.py observability (3 `hapax_score()` calls: novelty, concern_overlap, dialog_feature_score). Filed at `research/protocols/deviations/DEVIATION-025.md`.
+- Code change pre-planned: line 1161 of conversation_pipeline.py, inside existing `if _bd is not None:` block. `ActivationBreakdown` dataclass already has all 3 fields.
+- Measure 6.2 (modulation_factor): confirmed NO deviation needed — can instrument entirely from non-frozen code (`shared/stimmung.py`, `_perception_state_writer.py`).
+- Measure 6.3 (stimmung thresholds): clear integration point at `StimmungCollector.snapshot()` in `shared/stimmung.py` (not frozen).
+
+**Hapax Reverie visual pipeline (PRs #400-#416).** Dynamic shader pipeline end-to-end: 51 WGSL nodes, content texture pipeline, temporal feedback buffers, 6 rendering techniques, 9-dimensional modulation. Python compiles effect presets into WGSL execution plans, Rust `DynamicPipeline` hot-reloads from `/dev/shm`. Named "Hapax Reverie" (2026-03-29).
+
+**hapax-voice → hapax-daimonion rename (PR #421).** 600-file rename across entire codebase. Runtime migration to new data directories. All tests passing under new name.
+
+**Infrastructure:**
+- Auto-rebuild services for all Python services (PR #418). Path-based change detection, ntfy notifications, 5-min timer.
+- Smoke test script: 55 checks across 5 tiers (PR #416).
+- Fixed ambient classifier: pw-record targeting wrong source (virtual loopback → actual sink), killed 19 zombie processes, switched to Popen with explicit cleanup.
+- Fixed plocate-updatedb: added `/store/data-backup` to PRUNEPATHS.
+- Pi-6 sensor sync gap fixed, Google OAuth refreshed.
+
+**Impact on grounding research:** None. Visual pipeline, infrastructure, and naming changes are all outside experiment code. DEVIATION-025 is observability-only (prepared, not yet executed). Phase A baseline collection continues unaffected.
 
 ## Operator Research Preferences
 

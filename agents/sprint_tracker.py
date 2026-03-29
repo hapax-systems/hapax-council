@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -138,7 +139,6 @@ def _evaluate_gate_condition(
 
     # Extract numeric value from result summary
     # Expected format: "contradiction_rate: 0.08" or "r = 0.35" or just "0.08"
-    import re
 
     numbers = re.findall(r"[-+]?\d*\.?\d+", result_summary)
     if not numbers:
@@ -167,10 +167,15 @@ def _evaluate_gate_condition(
 
 
 def _current_day() -> int:
-    """Compute current schedule day (1-indexed) from start date."""
+    """Compute current schedule day (1-indexed) from start date.
+
+    Returns 0 if the sprint hasn't started yet.
+    """
     now = datetime.now(tz=UTC)
     delta = now - SCHEDULE_START
-    return max(1, delta.days + 1)
+    if delta.total_seconds() < 0:
+        return 0
+    return delta.days + 1
 
 
 def _compute_state(measures: dict, gates: dict) -> dict:

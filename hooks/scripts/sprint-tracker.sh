@@ -68,8 +68,11 @@ for measure_file in "$MEASURES_DIR"/*.md; do
     [ -f "$measure_file" ] || continue
 
     # Extract frontmatter fields with awk (avoid yaml dependency)
-    MEASURE_ID="$(awk '/^---$/{n++; next} n==1 && /^id:/{gsub(/[" ]/, "", $2); print $2; exit}' "$measure_file")"
+    MEASURE_ID="$(awk '/^---$/{n++; next} n==1 && /^id:/{gsub(/["'"'"' ]/, "", $2); print $2; exit}' "$measure_file")"
     STATUS="$(awk '/^---$/{n++; next} n==1 && /^status:/{print $2; exit}' "$measure_file")"
+
+    # Validate extraction
+    [ -z "$MEASURE_ID" ] && continue
 
     # Only match pending or in_progress measures
     case "$STATUS" in
@@ -77,59 +80,37 @@ for measure_file in "$MEASURES_DIR"/*.md; do
         *) continue ;;
     esac
 
-    # Read output_files list from frontmatter
-    IN_OUTPUT_FILES=0
+    # Read output_files and output_docs lists from frontmatter.
+    # State: 0=scanning, 1=in output_files, 2=in output_docs
+    SECTION=0
     while IFS= read -r line; do
-        # Detect frontmatter boundaries
-        [ "$line" = "---" ] && { IN_OUTPUT_FILES=0; continue; }
+        # Frontmatter boundary resets state
+        [ "$line" = "---" ] && { SECTION=0; continue; }
 
-        if echo "$line" | grep -q '^output_files:'; then
-            IN_OUTPUT_FILES=1
-            continue
-        fi
+        # Detect section starts (takes priority over list-item check)
+        case "$line" in
+            output_files:*) SECTION=1; continue ;;
+            output_docs:*)  SECTION=2; continue ;;
+        esac
 
-        # End of list when next key starts (no leading dash/space)
-        if [ "$IN_OUTPUT_FILES" = "1" ]; then
-            if echo "$line" | grep -qP '^\s+-\s+'; then
+        # If inside a list section, process items or detect end
+        if [ "$SECTION" -gt 0 ]; then
+            if echo "$line" | grep -qP '^\s*-\s+'; then
                 PATTERN="$(echo "$line" | sed 's/^\s*-\s*//' | tr -d '"')"
                 [ "$PATTERN" = "null" ] && continue
+                [ -z "$PATTERN" ] && continue
 
-                # Check if any touched file matches this pattern
                 for touched in $TOUCHED_FILES; do
-                    # Simple substring match (glob matching in bash)
                     if echo "$touched" | grep -qF "$PATTERN" 2>/dev/null; then
-                        # Signal completion
                         SIGNAL="{\"measure_id\":\"$MEASURE_ID\",\"timestamp\":\"$NOW\",\"trigger\":\"$TOOL\",\"files\":[\"$touched\"]}"
                         echo "$SIGNAL" >> "$COMPLETED"
                         echo "Sprint: measure $MEASURE_ID matched ($touched)" >&2
                         break 2  # One signal per tool call
                     fi
                 done
-            else
-                IN_OUTPUT_FILES=0
-            fi
-        fi
-
-        # Also check output_docs
-        if echo "$line" | grep -q '^output_docs:'; then
-            IN_OUTPUT_FILES=2
-            continue
-        fi
-        if [ "$IN_OUTPUT_FILES" = "2" ]; then
-            if echo "$line" | grep -qP '^\s+-\s+'; then
-                PATTERN="$(echo "$line" | sed 's/^\s*-\s*//' | tr -d '"')"
-                [ "$PATTERN" = "null" ] && continue
-
-                for touched in $TOUCHED_FILES; do
-                    if echo "$touched" | grep -qF "$PATTERN" 2>/dev/null; then
-                        SIGNAL="{\"measure_id\":\"$MEASURE_ID\",\"timestamp\":\"$NOW\",\"trigger\":\"$TOOL\",\"files\":[\"$touched\"]}"
-                        echo "$SIGNAL" >> "$COMPLETED"
-                        echo "Sprint: measure $MEASURE_ID matched ($touched)" >&2
-                        break 2
-                    fi
-                done
-            else
-                IN_OUTPUT_FILES=0
+            elif echo "$line" | grep -qP '^[a-zA-Z_]'; then
+                # New YAML key started (letter/underscore, not dash) — exit list
+                SECTION=0
             fi
         fi
     done < "$measure_file"

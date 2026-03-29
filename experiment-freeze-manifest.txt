@@ -3,20 +3,20 @@
 # Changes to these paths require a deviation record in
 # research/protocols/deviations/DEVIATION-NNN.md.
 #
-# Prefix match: "agents/hapax_voice/proofs/" freezes everything under it.
+# Prefix match: "agents/hapax_daimonion/proofs/" freezes everything under it.
 
 # ── Inner zone: absolute freeze (experiment-specific code) ──
-agents/hapax_voice/grounding_ledger.py
-agents/hapax_voice/grounding_evaluator.py
-agents/hapax_voice/stats.py
-agents/hapax_voice/experiment_runner.py
-agents/hapax_voice/eval_grounding.py
-agents/hapax_voice/proofs/
+agents/hapax_daimonion/grounding_ledger.py
+agents/hapax_daimonion/grounding_evaluator.py
+agents/hapax_daimonion/stats.py
+agents/hapax_daimonion/experiment_runner.py
+agents/hapax_daimonion/eval_grounding.py
+agents/hapax_daimonion/proofs/
 
 # ── Middle zone: behavioral freeze (shared integration points) ──
-agents/hapax_voice/conversation_pipeline.py
-agents/hapax_voice/persona.py
-agents/hapax_voice/conversational_policy.py
+agents/hapax_daimonion/conversation_pipeline.py
+agents/hapax_daimonion/persona.py
+agents/hapax_daimonion/conversational_policy.py
 
 # ── Experiment config (self-protecting) ──
 experiment-phase.json
