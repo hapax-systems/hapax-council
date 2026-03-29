@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use notify::{Event, EventKind, RecommendedWatcher, Watcher};
 use serde::Deserialize;
+use wgpu::util::DeviceExt;
 
 use crate::output::ShmOutput;
 use crate::state::StateReader;
@@ -20,7 +21,7 @@ const PLAN_FILE: &str = "/dev/shm/hapax-imagination/pipeline/plan.json";
 const UNIFORMS_JSON: &str = "/dev/shm/hapax-imagination/pipeline/uniforms.json";
 const SHARED_UNIFORMS_WGSL: &str = include_str!("shaders/uniforms.wgsl");
 const SHARED_VERTEX_WGSL: &str = include_str!("shaders/fullscreen_quad.wgsl");
-const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 // --- Plan JSON schema ---
 
@@ -69,6 +70,8 @@ struct DynamicPass {
     node_id: String,
     render_pipeline: Option<wgpu::RenderPipeline>,
     compute_pipeline: Option<wgpu::ComputePipeline>,
+    uniform_bind_group: Option<wgpu::BindGroup>,
+    input_bind_group_layout: Option<wgpu::BindGroupLayout>,
     inputs: Vec<String>,
     output: String,
     steps_per_frame: u32,
@@ -93,13 +96,16 @@ pub struct DynamicPipeline {
     input_bind_group_layouts: HashMap<usize, wgpu::BindGroupLayout>,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group_layout: wgpu::BindGroupLayout,
+    params_bind_group: wgpu::BindGroup,
+    #[allow(dead_code)]
+    surface_format: wgpu::TextureFormat,
     width: u32,
     height: u32,
     frame_count: u64,
 }
 
 impl DynamicPipeline {
-    pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, width: u32, height: u32) -> Self {
+    pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, width: u32, height: u32, surface_format: wgpu::TextureFormat) -> Self {
         let uniform_buffer = UniformBuffer::new(device);
         let shm_output = ShmOutput::new(device, width, height);
 
@@ -164,9 +170,9 @@ impl DynamicPipeline {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &blit_shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some("main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: TEXTURE_FORMAT,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -203,6 +209,34 @@ impl DynamicPipeline {
             .watch(&plan_dir, notify::RecursiveMode::NonRecursive)
             .ok();
 
+        // Dummy per-node params UBO (group 2) — 256 bytes of zeros
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("per-node params"),
+            contents: &[0u8; 256],
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let params_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("per-node params layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let params_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("per-node params bg"),
+            layout: &params_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: params_buffer.as_entire_binding(),
+            }],
+        });
+
         let mut pipeline = Self {
             passes: Vec::new(),
             textures: HashMap::new(),
@@ -216,6 +250,8 @@ impl DynamicPipeline {
             input_bind_group_layouts: HashMap::new(),
             blit_pipeline,
             blit_bind_group_layout,
+            params_bind_group,
+            surface_format,
             width,
             height,
             frame_count: 0,
@@ -308,7 +344,7 @@ impl DynamicPipeline {
                         source: wgpu::ShaderSource::Wgsl(compute_source.into()),
                     });
 
-                let input_bgl = self.get_or_create_input_layout(device, input_count, &mut input_layouts);
+                let input_bgl = Self::get_or_create_input_layout(device, input_count, &mut input_layouts);
                 let storage_bgl = Self::create_storage_texture_layout(device);
 
                 let pipeline_layout =
@@ -336,6 +372,8 @@ impl DynamicPipeline {
                     node_id: plan_pass.node_id.clone(),
                     render_pipeline: None,
                     compute_pipeline: Some(compute_pipeline),
+                    uniform_bind_group: None,
+                    input_bind_group_layout: None,
                     inputs: plan_pass.inputs.clone(),
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
@@ -349,18 +387,32 @@ impl DynamicPipeline {
                         source: wgpu::ShaderSource::Wgsl(combined_source.into()),
                     });
 
-                let input_bgl = self.get_or_create_input_layout(device, input_count, &mut input_layouts);
+                let input_bgl = Self::get_or_create_input_layout(device, input_count, &mut input_layouts);
 
+                // Explicit layout: group 0 = uniforms, group 1 = textures, group 2 = per-node params UBO
+                let params_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("per-node params"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
                 let pipeline_layout =
                     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some(&format!("{} layout", plan_pass.node_id)),
                         bind_group_layouts: &[
                             &self.uniform_buffer.bind_group_layout,
                             &input_bgl,
+                            &params_bgl,
                         ],
                         push_constant_ranges: &[],
                     });
-
                 let render_pipeline =
                     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                         label: Some(&plan_pass.node_id),
@@ -373,7 +425,7 @@ impl DynamicPipeline {
                         },
                         fragment: Some(wgpu::FragmentState {
                             module: &fragment_module,
-                            entry_point: Some("fs_main"),
+                            entry_point: Some("main"),
                             targets: &[Some(wgpu::ColorTargetState {
                                 format: TEXTURE_FORMAT,
                                 blend: Some(wgpu::BlendState::REPLACE),
@@ -395,6 +447,8 @@ impl DynamicPipeline {
                     node_id: plan_pass.node_id.clone(),
                     render_pipeline: Some(render_pipeline),
                     compute_pipeline: None,
+                    uniform_bind_group: None,
+                    input_bind_group_layout: None,
                     inputs: plan_pass.inputs.clone(),
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
@@ -434,7 +488,7 @@ impl DynamicPipeline {
                 }
                 for (i, &val) in overrides.custom.iter().enumerate() {
                     if i < 32 {
-                        uniform_data.custom[i] = val;
+                        uniform_data.custom[i / 4][i % 4] = val;
                     }
                 }
             }
@@ -470,7 +524,6 @@ impl DynamicPipeline {
         // Execute each pass
         for pass in &self.passes {
             if let Some(ref render_pipeline) = pass.render_pipeline {
-                // Resolve input texture views
                 let input_bind_group = self.create_input_bind_group(device, &pass.inputs);
 
                 // Resolve output texture view
@@ -496,6 +549,7 @@ impl DynamicPipeline {
                 rpass.set_pipeline(render_pipeline);
                 rpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
                 rpass.set_bind_group(1, &input_bind_group, &[]);
+                rpass.set_bind_group(2, &self.params_bind_group, &[]);
                 rpass.draw(0..3, 0..1);
             } else if let Some(ref compute_pipeline) = pass.compute_pipeline {
                 let input_bind_group = self.create_input_bind_group(device, &pass.inputs);
@@ -623,27 +677,27 @@ impl DynamicPipeline {
     }
 
     fn get_or_create_input_layout(
-        &self,
         device: &wgpu::Device,
         input_count: usize,
         layouts: &mut HashMap<usize, wgpu::BindGroupLayout>,
     ) -> wgpu::BindGroupLayout {
-        if layouts.contains_key(&input_count) {
-            // Layout already cached — create a matching one (wgpu layouts are not Clone)
-            return Self::create_input_layout(device, input_count);
+        if !layouts.contains_key(&input_count) {
+            layouts.insert(input_count, Self::create_input_layout(device, input_count));
         }
-        let layout = Self::create_input_layout(device, input_count);
-        layouts.insert(input_count, Self::create_input_layout(device, input_count));
-        layout
+        // Always create a fresh one to return — wgpu layouts are not Clone,
+        // but two layouts created with the same descriptor are compatible.
+        Self::create_input_layout(device, input_count)
     }
 
     fn create_input_layout(device: &wgpu::Device, input_count: usize) -> wgpu::BindGroupLayout {
         let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
 
-        // One texture per input
-        for i in 0..input_count {
+        // Transpiled shaders use alternating texture/sampler pairs:
+        // binding 0 = texture, binding 1 = sampler, binding 2 = texture, binding 3 = sampler, ...
+        let count = input_count.max(1); // at least 1 texture (from @live/previous pass)
+        for i in 0..count {
             entries.push(wgpu::BindGroupLayoutEntry {
-                binding: i as u32,
+                binding: (i * 2) as u32,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -652,15 +706,13 @@ impl DynamicPipeline {
                 },
                 count: None,
             });
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (i * 2 + 1) as u32,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            });
         }
-
-        // Sampler at the end
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: input_count as u32,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            count: None,
-        });
 
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("dynamic input bgl"),
@@ -690,35 +742,94 @@ impl DynamicPipeline {
         inputs: &[String],
     ) -> wgpu::BindGroup {
         let input_count = inputs.len();
-        let layout = Self::create_input_layout(device, input_count);
+
+        // Use cached layout from reload — fall back to fresh creation if uncached
+        let owned_layout;
+        let layout = match self.input_bind_group_layouts.get(&input_count) {
+            Some(cached) => cached,
+            None => {
+                owned_layout = Self::create_input_layout(device, input_count);
+                &owned_layout
+            }
+        };
 
         let mut entries: Vec<wgpu::BindGroupEntry> = Vec::new();
 
+        // Alternating texture/sampler pairs matching transpiler convention
+        let count = inputs.len().max(1);
         for (i, name) in inputs.iter().enumerate() {
-            if let Some(tex) = self.textures.get(name) {
+            let view = self.textures.get(name)
+                .or_else(|| self.textures.get("final"))
+                .map(|t| &t.view)
+                .unwrap();
+            entries.push(wgpu::BindGroupEntry {
+                binding: (i * 2) as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: (i * 2 + 1) as u32,
+                resource: wgpu::BindingResource::Sampler(&self.sampler),
+            });
+        }
+        // If no inputs, still provide a default texture+sampler (shaders expect at least one)
+        if inputs.is_empty() {
+            if let Some(tex) = self.textures.values().next() {
                 entries.push(wgpu::BindGroupEntry {
-                    binding: i as u32,
+                    binding: 0,
                     resource: wgpu::BindingResource::TextureView(&tex.view),
                 });
-            } else {
-                // Fallback: use "final" texture (always exists)
-                let fallback = self.textures.get("final").unwrap();
                 entries.push(wgpu::BindGroupEntry {
-                    binding: i as u32,
-                    resource: wgpu::BindingResource::TextureView(&fallback.view),
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
                 });
             }
         }
 
-        // Sampler at the end
-        entries.push(wgpu::BindGroupEntry {
-            binding: input_count as u32,
-            resource: wgpu::BindingResource::Sampler(&self.sampler),
-        });
-
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("dynamic input bg"),
-            layout: &layout,
+            layout,
+            entries: &entries,
+        })
+    }
+
+    fn create_input_bind_group_with_layout(
+        &self,
+        device: &wgpu::Device,
+        inputs: &[String],
+        layout: &wgpu::BindGroupLayout,
+    ) -> wgpu::BindGroup {
+        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::new();
+
+        for (i, name) in inputs.iter().enumerate() {
+            let view = self.textures.get(name)
+                .or_else(|| self.textures.get("final"))
+                .map(|t| &t.view)
+                .unwrap();
+            entries.push(wgpu::BindGroupEntry {
+                binding: (i * 2) as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: (i * 2 + 1) as u32,
+                resource: wgpu::BindingResource::Sampler(&self.sampler),
+            });
+        }
+        if inputs.is_empty() {
+            if let Some(tex) = self.textures.values().next() {
+                entries.push(wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&tex.view),
+                });
+                entries.push(wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                });
+            }
+        }
+
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("dynamic input bg (derived)"),
+            layout,
             entries: &entries,
         })
     }
@@ -770,7 +881,7 @@ var source_texture: texture_2d<f32>;
 var source_sampler: sampler;
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn main(in: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(source_texture, source_sampler, in.uv);
 }
 "#;

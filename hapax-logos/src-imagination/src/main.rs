@@ -283,7 +283,7 @@ impl ApplicationHandler for ImaginationApp {
         let w = size.width.max(1);
         let h = size.height.max(1);
 
-        let dynamic_pipeline = DynamicPipeline::new(&gpu.device, &gpu.queue, w, h);
+        let dynamic_pipeline = DynamicPipeline::new(&gpu.device, &gpu.queue, w, h, gpu.format);
 
         self.window = Some(window.clone());
         self.gpu = Some(gpu);

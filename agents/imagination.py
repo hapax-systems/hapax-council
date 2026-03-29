@@ -13,6 +13,7 @@ import random
 import time as time_mod
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -57,7 +58,7 @@ class ImaginationFragment(BaseModel, frozen=True):
     salience: float = Field(ge=0.0, le=1.0)
     continuation: bool
     narrative: str
-    material: str = "water"  # water, fire, earth, air, void
+    material: Literal["water", "fire", "earth", "air", "void"] = "water"
     parent_id: str | None = None
 
 
@@ -176,16 +177,16 @@ def assemble_context(
     stimmung = sensor_snapshot.get("stimmung", {})
     if stimmung:
         stance = stimmung.get("stance", "unknown")
-        stress = stimmung.get("stress", "unknown")
+        stress = stimmung.get("operator_stress", "unknown")
         sections.append(f"- Stimmung: stance={stance}, stress={stress}")
     perception = sensor_snapshot.get("perception", {})
     if perception:
         activity = perception.get("activity", "unknown")
-        flow = perception.get("flow", "unknown")
+        flow = perception.get("flow_score", "unknown")
         sections.append(f"- Perception: activity={activity}, flow={flow}")
     watch = sensor_snapshot.get("watch", {})
     if watch:
-        hr = watch.get("hr", "unknown")
+        hr = watch.get("heart_rate", "unknown")
         sections.append(f"- Watch: HR={hr}")
     weather = sensor_snapshot.get("weather", {})
     if weather:

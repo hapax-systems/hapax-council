@@ -100,13 +100,13 @@ class TestAdaptGlsl:
 
     def test_collects_uniforms_into_ubo(self):
         result = adapt_glsl(MINIMAL_SHADER)
-        assert "layout(set=1, binding=0) uniform Params {" in result
+        assert "layout(set=2, binding=0) uniform Params {" in result
         assert "float u_mix;" in result
 
     def test_splits_sampler2d(self):
         result = adapt_glsl(MINIMAL_SHADER)
-        assert "layout(set=0, binding=0) uniform texture2D tex;" in result
-        assert "layout(set=0, binding=1) uniform sampler tex_sampler;" in result
+        assert "layout(set=1, binding=0) uniform texture2D tex;" in result
+        assert "layout(set=1, binding=1) uniform sampler tex_sampler;" in result
 
     def test_converts_texture2d_calls(self):
         result = adapt_glsl(MINIMAL_SHADER)
@@ -128,16 +128,16 @@ class TestAdaptGlsl:
 
     def test_sampler_only_no_scalar_uniforms(self):
         result = adapt_glsl(SAMPLER_ONLY_SHADER)
-        assert "layout(set=0, binding=0) uniform texture2D tex;" in result
-        assert "layout(set=0, binding=1) uniform sampler tex_sampler;" in result
+        assert "layout(set=1, binding=0) uniform texture2D tex;" in result
+        assert "layout(set=1, binding=1) uniform sampler tex_sampler;" in result
         assert "Params" not in result  # no scalar uniforms → no UBO
 
     def test_two_samplers(self):
         result = adapt_glsl(TWO_SAMPLER_SHADER)
-        assert "layout(set=0, binding=0) uniform texture2D tex;" in result
-        assert "layout(set=0, binding=1) uniform sampler tex_sampler;" in result
-        assert "layout(set=0, binding=2) uniform texture2D tex_b;" in result
-        assert "layout(set=0, binding=3) uniform sampler tex_b_sampler;" in result
+        assert "layout(set=1, binding=0) uniform texture2D tex;" in result
+        assert "layout(set=1, binding=1) uniform sampler tex_sampler;" in result
+        assert "layout(set=1, binding=2) uniform texture2D tex_b;" in result
+        assert "layout(set=1, binding=3) uniform sampler tex_b_sampler;" in result
         assert "texture(sampler2D(tex, tex_sampler)," in result
         assert "texture(sampler2D(tex_b, tex_b_sampler)," in result
 

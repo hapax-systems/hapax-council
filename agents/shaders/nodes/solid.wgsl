@@ -11,7 +11,7 @@ struct FragmentOutput {
 
 var<private> fragColor: vec4<f32>;
 var<private> v_texcoord_1: vec2<f32>;
-@group(1) @binding(0) 
+@group(2) @binding(0) 
 var<uniform> global: Params;
 
 fn main_1() {

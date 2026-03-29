@@ -105,4 +105,7 @@ def test_proactive_gate_rejects_low_salience():
         "last_utterance_time": time.monotonic() - 60.0,
         "tpn_active": False,
     }
-    assert gate.should_speak(frag, state) is False
+    # Sigmoid gate is probabilistic — mock RNG for deterministic test
+    with unittest.mock.patch("agents.proactive_gate.random") as mock_rng:
+        mock_rng.random.return_value = 0.99  # above sigmoid probability for salience 0.5
+        assert gate.should_speak(frag, state) is False

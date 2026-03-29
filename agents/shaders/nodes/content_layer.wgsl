@@ -4,9 +4,9 @@ struct FragmentOutput {
 
 var<private> fragColor: vec4<f32>;
 var<private> v_texcoord_1: vec2<f32>;
-@group(0) @binding(0) 
+@group(1) @binding(0) 
 var tex: texture_2d<f32>;
-@group(0) @binding(1) 
+@group(1) @binding(1) 
 var tex_sampler: sampler;
 
 fn main_1() {

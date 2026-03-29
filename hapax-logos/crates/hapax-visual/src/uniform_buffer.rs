@@ -28,10 +28,13 @@ pub struct UniformData {
     pub degradation: f32,
     pub pitch_displacement: f32,
     pub formant_character: f32,
+    // Padding to align slot_opacities (vec4<f32>) to 16-byte boundary (std140).
+    // formant_character ends at offset 72; next vec4 must start at offset 80.
+    pub _align_pad: [f32; 2],
     // Content layer
     pub slot_opacities: [f32; 4],
-    // Per-node custom params
-    pub custom: [f32; 32],
+    // Per-node custom params (32 floats packed as 8 vec4s for uniform alignment)
+    pub custom: [[f32; 4]; 8],
 }
 
 impl Default for UniformData {
@@ -54,8 +57,9 @@ impl Default for UniformData {
             degradation: 0.0,
             pitch_displacement: 0.0,
             formant_character: 0.0,
+            _align_pad: [0.0; 2],
             slot_opacities: [0.0; 4],
-            custom: [0.0; 32],
+            custom: [[0.0; 4]; 8],
         }
     }
 }
@@ -142,8 +146,9 @@ impl UniformBuffer {
             degradation: *dims.get("degradation").unwrap_or(&0.0) as f32,
             pitch_displacement: *dims.get("pitch_displacement").unwrap_or(&0.0) as f32,
             formant_character: *dims.get("formant_character").unwrap_or(&0.0) as f32,
+            _align_pad: [0.0; 2],
             slot_opacities: [0.0; 4], // Updated by content layer pass
-            custom: [0.0; 32],        // Updated from uniforms.json
+            custom: [[0.0; 4]; 8],        // Updated from uniforms.json
         }
     }
 }

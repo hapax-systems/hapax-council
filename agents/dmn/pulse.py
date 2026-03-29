@@ -57,6 +57,10 @@ Preserve: specific numbers, state changes, trends, anomalies.
 Discard: redundant stable readings, repeated values.
 Never interpret or evaluate. Just compress the facts."""
 
+VISUAL_OBSERVATION_SYSTEM = """You are observing a visual display surface. Describe what you see
+in one concrete sentence: colors, shapes, motion, text fragments, spatial arrangement.
+Do not evaluate quality. Do not describe system health. Only describe visual appearance."""
+
 
 async def _ollama_generate(prompt: str, system: str) -> str:
     """Call Ollama for a short generation. Returns raw text."""
@@ -235,16 +239,21 @@ class DMNPulse:
         self._pending_impingements.clear()
         return pending
 
-    @staticmethod
-    def _write_visual_observation(evaluative_result: str) -> None:
-        """Write visual observation to shm for imagination reverberation loop."""
-        try:
-            VISUAL_OBSERVATION_PATH.parent.mkdir(parents=True, exist_ok=True)
-            tmp = VISUAL_OBSERVATION_PATH.with_suffix(".tmp")
-            tmp.write_text(evaluative_result)
-            tmp.rename(VISUAL_OBSERVATION_PATH)
-        except OSError:
-            pass
+    async def _write_visual_observation(self, snapshot: dict) -> None:
+        """Generate and write a visual observation of the rendered surface."""
+        visual = snapshot.get("visual_surface", {})
+        if not visual or visual.get("stale", True):
+            return
+        prompt = f"Visual frame age: {visual.get('age_s', '?')}s. Imagination: {snapshot.get('imagination', {}).get('narrative', 'none')}."
+        result = await _ollama_generate(prompt, VISUAL_OBSERVATION_SYSTEM)
+        if result:
+            try:
+                VISUAL_OBSERVATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+                tmp = VISUAL_OBSERVATION_PATH.with_suffix(".tmp")
+                tmp.write_text(result)
+                tmp.rename(VISUAL_OBSERVATION_PATH)
+            except OSError:
+                pass
 
     async def _evaluative_tick(self, snapshot: dict) -> None:
         """Assess value trajectory + check absolute thresholds."""
@@ -281,7 +290,7 @@ class DMNPulse:
             log.debug("Evaluative: %s %s", trajectory, concerns)
 
             # Write visual observation for imagination reverberation loop
-            self._write_visual_observation(result)
+            await self._write_visual_observation(snapshot)
 
             # Emit impingement for degrading trajectory
             if trajectory == "degrading":

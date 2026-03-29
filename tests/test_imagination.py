@@ -307,9 +307,9 @@ class TestAssembleContext:
 
     def test_includes_sensor_data(self) -> None:
         sensors = {
-            "stimmung": {"stance": "calm", "stress": "low"},
-            "perception": {"activity": "idle", "flow": "steady"},
-            "watch": {"hr": 72},
+            "stimmung": {"stance": "calm", "operator_stress": "low"},
+            "perception": {"activity": "idle", "flow_score": "steady"},
+            "watch": {"heart_rate": 72},
             "weather": {"temp": "18C"},
         }
         ctx = assemble_context([], [], sensors)
@@ -317,6 +317,19 @@ class TestAssembleContext:
         assert "activity=idle" in ctx
         assert "HR=72" in ctx
         assert "18C" in ctx
+
+    def test_assemble_context_sensor_keys(self) -> None:
+        """Verify context uses the actual sensor key names from dmn/sensor.py."""
+        snapshot = {
+            "stimmung": {"stance": "nominal", "operator_stress": 0.3},
+            "perception": {"activity": "typing", "flow_score": 0.7},
+            "watch": {"heart_rate": 72},
+        }
+        context = assemble_context([], [], snapshot)
+        assert "stress=0.3" in context
+        assert "flow=0.7" in context
+        assert "HR=72" in context
+        assert "unknown" not in context
 
 
 # ---------------------------------------------------------------------------
@@ -375,3 +388,23 @@ class TestImaginationLoop:
         # Very unlikely any escalated, but not impossible — just check it's small
         imps = loop.drain_impingements()
         assert len(imps) <= 2
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Material field validation (I7)
+# ---------------------------------------------------------------------------
+
+
+import pytest
+
+
+def test_material_rejects_invalid_values():
+    with pytest.raises(Exception):
+        ImaginationFragment(
+            content_references=[],
+            dimensions={},
+            salience=0.5,
+            continuation=False,
+            narrative="test",
+            material="stone",
+        )

@@ -85,7 +85,7 @@ class DMNDaemon:
                 snapshot = read_all()
                 await self._imagination.tick(observations, snapshot)
             except Exception:
-                log.debug("Imagination tick failed (non-fatal)", exc_info=True)
+                log.warning("Imagination tick failed", exc_info=True)
 
             interval = self._imagination.cadence.current_interval()
             await asyncio.sleep(interval)
@@ -108,7 +108,7 @@ class DMNDaemon:
                         resolve_references(frag)
                         log.debug("Resolved content for fragment %s", frag_id)
             except Exception:
-                log.debug("Resolver tick failed (non-fatal)", exc_info=True)
+                log.warning("Resolver tick failed", exc_info=True)
 
             await asyncio.sleep(0.5)
 

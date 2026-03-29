@@ -108,15 +108,16 @@ def adapt_glsl(source: str) -> str:
     declarations: list[str] = []
 
     # Emit split texture + sampler for each sampler2D
+    # group 0 = shared Uniforms (prepended at runtime), group 1 = textures, group 2 = per-node params
     binding = 0
     for name in sampler_names:
-        declarations.append(f"layout(set=0, binding={binding}) uniform texture2D {name};")
-        declarations.append(f"layout(set=0, binding={binding + 1}) uniform sampler {name}_sampler;")
+        declarations.append(f"layout(set=1, binding={binding}) uniform texture2D {name};")
+        declarations.append(f"layout(set=1, binding={binding + 1}) uniform sampler {name}_sampler;")
         binding += 2
 
     # Emit UBO for scalar uniforms
     if scalar_uniforms:
-        declarations.append("layout(set=1, binding=0) uniform Params {")
+        declarations.append("layout(set=2, binding=0) uniform Params {")
         for utype, uname in scalar_uniforms:
             declarations.append(f"    {utype} {uname};")
         declarations.append("};")
