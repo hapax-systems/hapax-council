@@ -76,20 +76,20 @@ async function fetchBatch(): Promise<void> {
       const body = part.slice(bodyStart);
       if (body.length < 100) continue;
 
-      // Revoke previous URL for this role
-      const prevUrl = currentUrls.get(role);
-      if (prevUrl) URL.revokeObjectURL(prevUrl);
-
       const blob = new Blob([body], { type: "image/jpeg" });
       const url = URL.createObjectURL(blob);
+      const prevUrl = currentUrls.get(role);
       currentUrls.set(role, url);
 
-      // Notify subscribers
+      // Set new URL on img elements BEFORE revoking old — prevents flicker
       for (const subs of subscribers.values()) {
         for (const s of subs) {
           if (s.role === role) s.callback(url);
         }
       }
+
+      // Safe to revoke now — img.src already points to the new URL
+      if (prevUrl) URL.revokeObjectURL(prevUrl);
     }
   } catch {
     // Network error — skip this cycle
