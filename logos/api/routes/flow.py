@@ -108,11 +108,120 @@ def _engine_status(request: Request) -> dict:
 
 @router.get("/state")
 async def get_flow_state(request: Request) -> dict:
-    """Return unified system flow state for the anatomy visualization."""
+    """Return unified system flow state for the anatomy visualization.
+
+    Dynamically discovers pipeline nodes from agent manifests, derives edges
+    from layer adjacency + gates, and composites with runtime observations.
+    """
+    from logos.api.flow_discovery import (
+        build_declared_edges,
+        composite_edges,
+        discover_pipeline_nodes,
+    )
+    from logos.api.flow_observer import FlowObserver
+
+    # 1. Discover pipeline nodes from manifests
+    nodes = discover_pipeline_nodes()
+
+    # 2. Enrich synthetic nodes (no state file — computed from other sources)
+    _enrich_synthetic_nodes(nodes, request)
+
+    # 3. Build declared edges from layer rules + gates
+    declared = build_declared_edges(nodes)
+
+    # 4. Runtime observation
+    global _observer
+    if _observer is None:
+        _observer = FlowObserver()
+        for node in nodes:
+            sp = node.get("_state_path", "")
+            if sp:
+                _observer.register_reader(node["id"], sp)
+    try:
+        _observer.scan()
+    except Exception:
+        pass
+    observed = _observer.get_observed_edges()
+
+    # 5. Composite edges
+    edges = composite_edges(declared, observed)
+
+    # Strip internal fields
+    for n in nodes:
+        n.pop("_state_path", None)
+
+    return {"nodes": nodes, "edges": edges, "timestamp": time.time()}
+
+
+_observer: FlowObserver | None = None  # type: ignore[name-defined]
+
+
+def _enrich_synthetic_nodes(nodes: list[dict], request: Request) -> None:
+    """Fill in metrics for nodes without state files (synthesized from other sources)."""
+    node_map = {n["id"]: n for n in nodes}
+
+    # Phenomenal context: synthesized from temporal + apperception
+    if "phenomenal_context" in node_map:
+        pc = node_map["phenomenal_context"]
+        temp_m = node_map.get("temporal_bands", {}).get("metrics", {})
+        apper_m = node_map.get("apperception", {}).get("metrics", {})
+        temp_age = node_map.get("temporal_bands", {}).get("age_s", 999)
+        apper_age = node_map.get("apperception", {}).get("age_s", 999)
+        pc["metrics"] = {
+            "bound": temp_age < 30 and apper_age < 30,
+            "coherence": apper_m.get("coherence", 0),
+            "surprise": temp_m.get("max_surprise", 0),
+        }
+        pc["age_s"] = min(temp_age, apper_age)
+        pc["status"] = _status(pc["age_s"])
+
+    # Consent: from perception + Qdrant coverage
+    if "consent" in node_map:
+        cn = node_map["consent"]
+        perc_m = node_map.get("hapax_daimonion", {}).get("metrics", {})
+        cov = _consent_coverage()
+        phase = perc_m.get("consent_phase", "none") if perc_m else "none"
+        cn["metrics"] = {
+            "phase": phase,
+            "coverage_pct": cov.get("coverage_pct", 0),
+            "active_contracts": cov.get("active_contracts", 0),
+        }
+        perc_age = node_map.get("hapax_daimonion", {}).get("age_s", 999)
+        cn["age_s"] = round(perc_age, 1)
+        cn["status"] = "active" if phase != "none" else "offline"
+
+    # Voice pipeline: from perception voice_session
+    if "voice_pipeline" in node_map:
+        vp = node_map["voice_pipeline"]
+        perc_path = node_map.get("hapax_daimonion", {}).get("_state_path", "")
+        perc_data = _read(Path(perc_path)) if perc_path else None
+        voice = (perc_data or {}).get("voice_session", {})
+        vp["metrics"] = {
+            "state": voice.get("state", "off"),
+            "routing_activation": voice.get("routing_activation", 0),
+            "turn_count": voice.get("turn_count", 0),
+        }
+        vp["status"] = "active" if voice.get("active") else "offline"
+        vp["age_s"] = node_map.get("hapax_daimonion", {}).get("age_s", 999)
+
+    # Reactive engine: from in-process engine
+    if "reactive_engine" in node_map:
+        re_node = node_map["reactive_engine"]
+        engine = _engine_status(request)
+        re_node["metrics"] = engine
+        re_node["status"] = "active" if engine.get("uptime_s", 0) > 0 else "offline"
+        re_node["age_s"] = 0 if re_node["status"] == "active" else 999
+
+
+# ── Legacy endpoint kept for backward compatibility ──────────────────────
+
+
+@router.get("/state/legacy")
+async def get_flow_state_legacy(request: Request) -> dict:
+    """Legacy hardcoded flow state — kept for reference."""
     now = time.time()
     nodes = []
 
-    # ── Read all shm files ────────────────────────────────────────
     perception = _read(_PERCEPTION_PATH)
     perc_age = _age(perception)
     p = perception or {}
