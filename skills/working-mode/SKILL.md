@@ -1,6 +1,6 @@
 ---
 name: working-mode
-description: Check or switch working mode (research/rnd). Auto-run when: operator mentions switching modes, session-context shows stale mode (>24h without refresh), or user asks about working mode, timer schedules, or runs /working-mode. Invoke proactively without asking.
+description: "Check or switch working mode (research/rnd). Auto-run when: operator mentions switching modes, session-context shows stale mode (>24h without refresh), or user asks about working mode, timer schedules, or runs /working-mode. Invoke proactively without asking."
 ---
 
 Check or switch the working mode (research/rnd).

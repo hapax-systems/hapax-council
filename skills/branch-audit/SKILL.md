@@ -1,6 +1,6 @@
 ---
 name: branch-audit
-description: Audit branches across all repos and clean up. Auto-run when: session-context reports >3 non-main branches across repos, no-stale-branches hook blocks a branch create, after merging PRs, or user asks about branch cleanup. Invoke proactively without asking.
+description: "Audit branches across all repos and clean up. Auto-run when: session-context reports >3 non-main branches across repos, no-stale-branches hook blocks a branch create, after merging PRs, or user asks about branch cleanup. Invoke proactively without asking."
 ---
 
 Audit all hapax repos for stale branches and clean up.

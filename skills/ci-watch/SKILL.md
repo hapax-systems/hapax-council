@@ -1,6 +1,6 @@
 ---
 name: ci-watch
-description: Background CI monitor for a PR. Auto-run when: PostToolUse detects a PR was just created (suggests it with PR number), user asks to watch CI, or after pushing to a branch with an open PR. Takes PR number as argument. Invoke proactively without asking.
+description: "Background CI monitor for a PR. Auto-run when: PostToolUse detects a PR was just created (suggests it with PR number), user asks to watch CI, or after pushing to a branch with an open PR. Takes PR number as argument. Invoke proactively without asking."
 ---
 
 Monitor CI checks for a PR until they complete. Argument: PR number (e.g., `/ci-watch 42`).

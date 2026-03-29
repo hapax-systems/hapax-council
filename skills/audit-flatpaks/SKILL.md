@@ -1,6 +1,6 @@
 ---
 name: audit-flatpaks
-description: Audit installed flatpak apps and find native alternatives. Auto-run when: storage-audit reveals large flatpak usage, operator mentions app performance issues related to sandboxing, or user asks about flatpaks. Invoke proactively without asking.
+description: "Audit installed flatpak apps and find native alternatives. Auto-run when: storage-audit reveals large flatpak usage, operator mentions app performance issues related to sandboxing, or user asks about flatpaks. Invoke proactively without asking."
 ---
 
 Audit flatpak installations and find native package alternatives.

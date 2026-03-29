@@ -1,6 +1,6 @@
 ---
 name: distro-health
-description: System update and health check. Auto-run when: session-context reports stale package updates (>3 days), failed systemd units are detected, or operator asks about system updates/packages. Invoke proactively without asking.
+description: "System update and health check. Auto-run when: session-context reports stale package updates (>3 days), failed systemd units are detected, or operator asks about system updates/packages. Invoke proactively without asking."
 ---
 
 Full system maintenance check.

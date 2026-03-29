@@ -1,6 +1,6 @@
 ---
 name: storage-audit
-description: Full storage survey across disk, Docker, containers, and project artifacts. Auto-run when: disk-triage reveals container bloat, session-context reports high Docker disk usage, or user asks for a comprehensive storage analysis. Invoke proactively without asking.
+description: "Full storage survey across disk, Docker, containers, and project artifacts. Auto-run when: disk-triage reveals container bloat, session-context reports high Docker disk usage, or user asks for a comprehensive storage analysis. Invoke proactively without asking."
 ---
 
 Comprehensive storage breakdown.

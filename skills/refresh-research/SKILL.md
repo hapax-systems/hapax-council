@@ -1,6 +1,6 @@
 ---
 name: refresh-research
-description: Load research context at session start. Auto-run when: working-mode is research (session-context surfaces it), operator says "refresh research" or "research context", or starting a voice grounding session. Invoke proactively without asking.
+description: "Load research context at session start. Auto-run when: working-mode is research (session-context surfaces it), operator says \"refresh research\" or \"research context\", or starting a voice grounding session. Invoke proactively without asking."
 ---
 
 Load the current research state and context documents.

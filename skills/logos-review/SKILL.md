@@ -1,6 +1,6 @@
 ---
 name: logos-review
-description: Parallel Agent fan-out for Logos code quality review. Auto-run when: preparing a release, before a demo, after large refactors across Logos, or user asks for a code quality review. Invoke proactively without asking.
+description: "Parallel Agent fan-out for Logos code quality review. Auto-run when: preparing a release, before a demo, after large refactors across Logos, or user asks for a code quality review. Invoke proactively without asking."
 ---
 
 Full Logos code quality review using parallel Agent fan-out. Covers all three layers.

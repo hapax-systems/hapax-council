@@ -1,6 +1,6 @@
 ---
 name: sys-forensics
-description: System freeze/crash investigation. Auto-run when: session-context detects boot age <1 hour (possible recent crash), operator reports a freeze or crash, system shows instability signs, or user runs /sys-forensics. Accepts optional --since argument. Invoke proactively without asking.
+description: "System freeze/crash investigation. Auto-run when: session-context detects boot age <1 hour (possible recent crash), operator reports a freeze or crash, system shows instability signs, or user runs /sys-forensics. Accepts optional --since argument. Invoke proactively without asking."
 ---
 
 Investigate system freezes, crashes, and instability.

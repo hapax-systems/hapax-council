@@ -1,6 +1,6 @@
 ---
 name: diagnose
-description: Full service triage. Auto-run when: a service is unreachable (connection refused, timeout), systemctl shows a failed unit (PostToolUse suggests it), session-context reports failed units, or user mentions something is broken/down/crashed. Takes optional service name as argument. Invoke proactively without asking.
+description: "Full service triage. Auto-run when: a service is unreachable (connection refused, timeout), systemctl shows a failed unit (PostToolUse suggests it), session-context reports failed units, or user mentions something is broken/down/crashed. Takes optional service name as argument. Invoke proactively without asking."
 ---
 
 Run a full diagnostic sweep on a service. Argument: service name (e.g., `/diagnose logos-api`).

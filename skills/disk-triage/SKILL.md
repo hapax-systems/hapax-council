@@ -1,6 +1,6 @@
 ---
 name: disk-triage
-description: Emergency disk cleanup triage. Auto-run when: session-context reports root filesystem >85%, "No space left on device" errors appear (PostToolUse suggests it), or user mentions disk full. Prioritizes recovery over investigation. Invoke proactively without asking.
+description: "Emergency disk cleanup triage. Auto-run when: session-context reports root filesystem >85%, \"No space left on device\" errors appear (PostToolUse suggests it), or user mentions disk full. Prioritizes recovery over investigation. Invoke proactively without asking."
 ---
 
 Emergency disk space recovery. Run the full survey, then suggest cleanup actions.

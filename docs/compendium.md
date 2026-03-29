@@ -154,7 +154,7 @@ The system aggregates signals and prepares context for management decisions. LLM
 - VS Code extension (not covered in this compendium)
 
 **Tier 2 — LLM-Driven Agents**
-All routed through LiteLLM gateway at :4000. Model aliases: fast=gemini-flash, balanced=claude-sonnet, reasoning=qwen3.5:27b, coding=qwen3.5:27b, local-fast=qwen3:8b. Agents use pydantic-ai with `output_type` (not `result_type`).
+All routed through LiteLLM gateway at :4000. Model aliases: fast=gemini-flash, balanced=claude-sonnet, reasoning=qwen3:8b, coding=qwen3:8b, local-fast=qwen3:8b. Agents use pydantic-ai with `output_type` (not `result_type`).
 
 **Tier 3 — Deterministic Agents**
 No LLM calls. Health monitor, sync agents, reactive engine rules. These run on timers or inotify events.

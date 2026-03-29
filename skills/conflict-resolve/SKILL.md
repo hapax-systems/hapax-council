@@ -1,6 +1,6 @@
 ---
 name: conflict-resolve
-description: Scan for and resolve merge conflict markers. Auto-run when: conflict-marker-scan PostToolUse hook fires a warning, git merge/rebase/cherry-pick output shows CONFLICT (PostToolUse suggests it), or user asks to fix conflicts. Invoke proactively without asking.
+description: "Scan for and resolve merge conflict markers. Auto-run when: conflict-marker-scan PostToolUse hook fires a warning, git merge/rebase/cherry-pick output shows CONFLICT (PostToolUse suggests it), or user asks to fix conflicts. Invoke proactively without asking."
 ---
 
 Find and resolve all merge conflict markers.

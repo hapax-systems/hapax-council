@@ -1,6 +1,6 @@
 ---
 name: consent-trace
-description: Trace consent provenance. Auto-run when: work touches files containing personal data (profiles/, agents processing person names), after adding new data sources or storage, or user asks about consent or data protection. Invoke proactively without asking.
+description: "Trace consent provenance. Auto-run when: work touches files containing personal data (profiles/, agents processing person names), after adding new data sources or storage, or user asks about consent or data protection. Invoke proactively without asking."
 ---
 
 Check consent coverage across all stored data:

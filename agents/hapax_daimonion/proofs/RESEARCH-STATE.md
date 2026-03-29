@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-29 (session 19 — Bayesian validation prep, visual pipeline, infrastructure)
+**Last updated:** 2026-03-29 (session 19b — daimonion full treatment, VRAM budget resolution)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -127,6 +127,16 @@ This project implements Clark & Brennan's (1991) conversational grounding theory
 | `SYSTEM-CLEANUP-DECISION.md` | ~1K | Strip to research essentials directive |
 | `REPO-OPTIMIZATION-RESEARCH.md` | ~12K | Repository optimization research (140+ sources, 6 streams) |
 | Plan: `shimmering-growing-lollipop.md` | ~3K | Implementation batches 1-4 |
+
+## Session 19b (2026-03-29): Daimonion Full Treatment + VRAM Budget
+
+Mixed R&D and infrastructure. No changes to experiment code or grounding theory.
+
+**Daimonion full treatment (PR #427).** Formal tool capability model bringing tools into the Hapax recruitment meta-structure. `ToolCapability` dataclass with category, resource tier, consent requirements, backend dependencies, confirmation flag, and per-tool timeout. `ToolRegistry` with dynamic context-based filtering (stimmung, consent, backends, working mode). 26 tools migrated. Tool execution re-enabled (DEVIATION-026) with 3s per-tool timeout and bridge phrase coverage. Mode-driven grounding: always on in R&D, flag-controlled in Research. TPN_ACTIVE signaling to DMN via `/dev/shm/hapax-dmn/tpn_active`. 29 new tests. E2E verification script.
+
+**VRAM budget resolution.** qwen3.5:27b (22GB) cannot coexist with daimonion (3GB STT+vision) + imagination (120MB) + DMN qwen3:4b (3.3GB) + embeddings (1GB) on a 24GB GPU. Caused VRAM emergency cycle: timer agents load 27b via LiteLLM → watchdog unloads → repeat every 30s. Fixed by downsizing reasoning/coding alias from qwen3.5:27b to qwen3:8b (5.2GB). Updated shared/config.py, LiteLLM proxy config, health monitor, scout. Total VRAM with all services: ~12.4GB, 12GB headroom.
+
+**Impact on grounding research:** Tool re-enablement is gated by ToolContext — Research mode suppresses all tools unless `experiment_tools_enabled` flag is set. Phase A baseline continues unaffected. Model downsize changes the reasoning tier available to non-experiment agents but does not affect the voice daemon's experiment LLM path (routed through `balanced`/`fast` tiers).
 
 ## Research Infrastructure (added session 3)
 
