@@ -1,0 +1,13 @@
+[Unit]
+Description=Hapax Sprint Tracker — vault-native R&D schedule management
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.sprint_tracker
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+
+[Install]
+WantedBy=default.target

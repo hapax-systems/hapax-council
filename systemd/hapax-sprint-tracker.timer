@@ -1,0 +1,10 @@
+[Unit]
+Description=Sprint Tracker Timer (5 min)
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=5min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
