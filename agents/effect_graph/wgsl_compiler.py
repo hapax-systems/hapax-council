@@ -65,6 +65,16 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, Any]:
 
         output = "final" if is_last else f"layer_{i}"
 
+        # Get param ordering from WGSL Params struct (authoritative for buffer layout)
+        from .wgsl_transpiler import extract_wgsl_param_names
+
+        wgsl_path = DEFAULT_NODES_DIR / f"{step.node_type}.wgsl"
+        if wgsl_path.exists():
+            param_order = extract_wgsl_param_names(wgsl_path)
+        else:
+            node_def = registry.get(step.node_type)
+            param_order = list(node_def.params.keys()) if node_def else []
+
         descriptor: dict[str, Any] = {
             "node_id": step.node_id,
             "shader": f"{step.node_type}.wgsl",
@@ -72,6 +82,7 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, Any]:
             "inputs": inputs,
             "output": output,
             "uniforms": dict(step.params),
+            "param_order": param_order,
         }
 
         if pass_type == "compute":

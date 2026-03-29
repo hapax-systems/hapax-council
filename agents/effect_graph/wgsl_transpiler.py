@@ -229,3 +229,30 @@ def transpile_all_nodes(nodes_dir: Path, output_dir: Path | None = None) -> dict
             logger.warning("FAILED: %s — %s", frag.name, e)
 
     return results
+
+
+def extract_wgsl_param_names(wgsl_path: Path) -> list[str]:
+    """Extract param names from a transpiled WGSL Params struct.
+
+    Reads the WGSL file and parses the Params struct field names,
+    stripping the ``u_`` prefix to match preset uniform keys.
+    Returns empty list if no Params struct found.
+    """
+    text = wgsl_path.read_text()
+    names: list[str] = []
+    in_struct = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("struct Params"):
+            in_struct = True
+            continue
+        if in_struct:
+            if stripped == "}" or stripped.startswith("}"):
+                break
+            # Parse field: "u_threshold: f32," or "u_threshold: f32"
+            if ":" in stripped:
+                field = stripped.split(":")[0].strip().rstrip(",")
+                # Strip u_ prefix to match preset uniform keys
+                name = field[2:] if field.startswith("u_") else field
+                names.append(name)
+    return names
