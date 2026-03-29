@@ -60,16 +60,15 @@ jobs:
           QDRANT_URL: "http://0.0.0.0:1"
           OLLAMA_HOST: "http://0.0.0.0:1"
         run: |
-          # Module-level Agent() creation opens sockets to local services
-          # that don't exist in CI, causing pytest to hang indefinitely after
-          # all tests complete. Force-exit via conftest sessionfinish hook.
-          printf 'import os\ndef pytest_sessionfinish(session, exitstatus):\n    os._exit(exitstatus)\n' > tests/conftest.py
+          # Module-level Agent() creation opens sockets to local services that
+          # don't exist in CI, causing pytest to hang after tests complete.
+          # Force-exit on success; let failures propagate normally.
+          printf 'import sys, os\ndef pytest_sessionfinish(session, exitstatus):\n    if exitstatus == 0:\n        sys.stdout.flush()\n        sys.stderr.flush()\n        os._exit(0)\n' > tests/conftest.py
           uv run pytest tests/ -q \
             --ignore=tests/hapax_voice --ignore=tests/contract \
-            -m "not llm" -p no:cacheprovider
-          EXIT=$?
+            -m "not llm" -p no:cacheprovider || EXIT=$?
           rm -f tests/conftest.py
-          exit $EXIT
+          exit "${EXIT:-0}"
 
   web-build:
     runs-on: ubuntu-latest
