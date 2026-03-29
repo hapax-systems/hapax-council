@@ -72,9 +72,11 @@ cargo build --release -p hapax-imagination 2>"$STATE_DIR/build.log" || {
     fi
     exit 1
 }
-# Tauri build bundles the Vite frontend into the binary — plain cargo doesn't.
+# Build frontend dist, then cargo with custom-protocol to embed it.
+# Using cargo directly (not pnpm tauri build) avoids the bundler which
+# opens a window and produces unwanted .deb/.rpm/.AppImage artifacts.
 pnpm --dir "$CARGO_DIR" build 2>>"$STATE_DIR/build.log" || true
-pnpm --dir "$CARGO_DIR" tauri build 2>>"$STATE_DIR/build.log"
+cargo build --release -p hapax-logos --features tauri/custom-protocol 2>>"$STATE_DIR/build.log"
 if [ $? -eq 0 ] || [ -f "$CARGO_DIR/target/release/hapax-logos" ]; then
     # Stop services before replacing binaries
     systemctl --user stop hapax-imagination.service 2>/dev/null || true
