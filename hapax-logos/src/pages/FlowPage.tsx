@@ -24,15 +24,39 @@ import type { ThemePalette } from "../theme/palettes";
 
 interface NodeMetrics { [key: string]: unknown; }
 interface FlowNode { id: string; label: string; status: string; age_s: number; metrics: NodeMetrics; [key: string]: unknown; }
-interface FlowEdge { source: string; target: string; active: boolean; label: string; }
+interface FlowEdge { source: string; target: string; active: boolean; label: string; edge_type?: "confirmed" | "emergent" | "dormant"; }
 interface SystemFlowState { nodes: FlowNode[]; edges: FlowEdge[]; timestamp: number; }
 
-// ── Layout ──────────────────────────────────────────────────────────
+// ── Dagre Layout ────────────────────────────────────────────────────
 
-const POSITIONS: Record<string, { x: number; y: number }> = {
-  perception: { x: 400, y: 50 }, stimmung: { x: 100, y: 230 }, temporal: { x: 400, y: 230 },
-  consent: { x: 700, y: 230 }, apperception: { x: 200, y: 420 }, phenomenal: { x: 520, y: 420 },
-  voice: { x: 400, y: 610 }, engine: { x: 60, y: 610 }, compositor: { x: 720, y: 610 },
+import Dagre from "@dagrejs/dagre";
+
+const LAYER_RANK: Record<string, number> = { perception: 0, cognition: 1, output: 2 };
+
+function getLayoutedElements(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] } {
+  const g = new Dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: "TB", nodesep: 80, ranksep: 150, marginx: 40, marginy: 40 });
+  nodes.forEach((node) => {
+    const layer = (node.data as FlowNode)?.pipeline_layer as string ?? "cognition";
+    g.setNode(node.id, { width: 220, height: 120, rank: LAYER_RANK[layer] ?? 1 });
+  });
+  edges.forEach((edge) => g.setEdge(edge.source, edge.target));
+  Dagre.layout(g);
+  return {
+    nodes: nodes.map((node) => {
+      const pos = g.node(node.id);
+      return { ...node, position: { x: (pos?.x ?? 0) - 110, y: (pos?.y ?? 0) - 60 } };
+    }),
+    edges,
+  };
+}
+
+// Fallback positions for when dagre is not available
+const FALLBACK_POSITIONS: Record<string, { x: number; y: number }> = {
+  perception: { x: 400, y: 50 }, stimmung_sync: { x: 100, y: 50 }, ir_perception: { x: 700, y: 50 },
+  temporal_bands: { x: 100, y: 230 }, apperception: { x: 300, y: 230 }, dmn: { x: 500, y: 230 },
+  phenomenal_context: { x: 700, y: 230 }, consent: { x: 900, y: 230 }, imagination_resolver: { x: 200, y: 420 },
+  voice_pipeline: { x: 100, y: 610 }, compositor: { x: 400, y: 610 }, reactive_engine: { x: 700, y: 610 }, visual_surface: { x: 900, y: 610 },
 };
 
 // ── Color helpers ───────────────────────────────────────────────────
@@ -80,16 +104,30 @@ function FlowingEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, t
   const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   const d = data as Record<string, unknown>;
   const active = (d?.active as boolean) ?? false, age = (d?.age_s as number) ?? 999;
-  const isGated = (d?.gated as boolean) ?? false, lbl = (d?.label as string) ?? "";
+  const lbl = (d?.label as string) ?? "";
+  const edgeType = (d?.edge_type as string) ?? "confirmed";
   const { palette: ep } = useTheme();
-  const color = edgeColor(age, active, ep);
-  const pc = active ? (age < 5 ? 3 : age < 15 ? 2 : 1) : 0;
+
+  // Style by edge type: confirmed (solid), emergent (dashed amber), dormant (dotted dim)
+  let strokeDash: string | undefined;
+  let color: string;
+  let opacity: number;
+  let width: number;
+  switch (edgeType) {
+    case "emergent":
+      strokeDash = "6 3"; color = ep["yellow-400"]; opacity = 0.8; width = 2; break;
+    case "dormant":
+      strokeDash = "2 4"; color = ep["zinc-600"]; opacity = 0.2; width = 1; break;
+    default: // confirmed
+      strokeDash = undefined; color = edgeColor(age, active, ep); opacity = active ? 0.7 : 0.15; width = active ? 1.5 : 0.8;
+  }
+  const showParticles = (edgeType === "confirmed" || edgeType === "emergent") && active;
+  const pc = showParticles ? (age < 5 ? 3 : age < 15 ? 2 : 1) : 0;
   return (
     <g className="flow-edge-group">
-      <BaseEdge id={id} path={path} style={{ stroke: color, strokeWidth: active ? 1.5 : 0.8, opacity: active ? 0.7 : 0.15, transition: "stroke 1s ease, opacity 1s ease" }} />
-      {isGated && <circle r="4" fill={ep["fuchsia-400"]} opacity="0.8"><animateMotion dur="0.01s" path={path} fill="freeze" keyPoints="0.5" keyTimes="0" /></circle>}
+      <BaseEdge id={id} path={path} style={{ stroke: color, strokeWidth: width, opacity, strokeDasharray: strokeDash, transition: "stroke 1s ease, opacity 1s ease" }} />
       {Array.from({ length: pc }).map((_, i) => <circle key={i} r="2" fill={color} opacity="0.8"><animateMotion dur={age < 5 ? "2s" : age < 15 ? "3.5s" : "5s"} path={path} repeatCount="indefinite" begin={`${i/pc}s`} /></circle>)}
-      {lbl && <text className="flow-edge-label"><textPath href={`#${id}`} startOffset="50%" textAnchor="middle" style={{ fontSize: "9px", fill: active ? ep["text-muted"] : ep["border-muted"], fontFamily: "'JetBrains Mono', monospace" }}>{lbl}</textPath></text>}
+      {lbl && <text className="flow-edge-label"><textPath href={`#${id}`} startOffset="50%" textAnchor="middle" style={{ fontSize: "9px", fill: edgeType === "emergent" ? ep["yellow-400"] : active ? ep["text-muted"] : ep["border-muted"], fontFamily: "'JetBrains Mono', monospace" }}>{edgeType === "emergent" ? `⚡ ${lbl}` : lbl}</textPath></text>}
     </g>
   );
 }
@@ -314,10 +352,27 @@ export function FlowPage() {
 
   useEffect(() => { if (!flowState) return;
     const am: Record<string, number> = {}; for (const n of flowState.nodes) am[n.id] = n.age_s;
-    const cp = flowState.nodes.find(n => n.id === "consent")?.metrics?.phase as string || "none";
-    const ca = cp !== "none" && cp !== "consent_granted";
-    setNodes(flowState.nodes.map(n => ({ id: n.id, type: "system", position: prevPos.current[n.id] || POSITIONS[n.id] || { x: 0, y: 0 }, data: n, draggable: true })));
-    setEdges(flowState.edges.map((e, i) => ({ id: `${e.source}-${e.target}-${i}`, source: e.source, target: e.target, type: "flowing", data: { active: e.active, age_s: am[e.source] || 999, label: e.label, gated: ca && e.label === "consent gate" }, markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(am[e.source] || 999, e.active, p), width: 12, height: 12 } })));
+    // Consent phase available from node metrics (used by edge rendering via edge_type)
+    const rawNodes: Node[] = flowState.nodes.map(n => ({
+      id: n.id, type: "system",
+      position: prevPos.current[n.id] || FALLBACK_POSITIONS[n.id] || { x: 0, y: 0 },
+      data: n, draggable: true,
+    }));
+    const rawEdges: Edge[] = flowState.edges.map((e, i) => ({
+      id: `${e.source}-${e.target}-${i}`, source: e.source, target: e.target, type: "flowing",
+      data: { active: e.active, age_s: am[e.source] || 999, label: e.label, edge_type: e.edge_type || "confirmed" },
+      markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(am[e.source] || 999, e.active, p), width: 12, height: 12 },
+    }));
+    // Use dagre layout if no user-dragged positions
+    const hasDragged = Object.keys(prevPos.current).length > 0;
+    if (hasDragged) {
+      setNodes(rawNodes.map(n => ({ ...n, position: prevPos.current[n.id] || n.position })));
+      setEdges(rawEdges);
+    } else {
+      const layouted = getLayoutedElements(rawNodes, rawEdges);
+      setNodes(layouted.nodes);
+      setEdges(layouted.edges);
+    }
   }, [flowState, setNodes, setEdges]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => { setSelectedNode(node.data as FlowNode); }, []);
