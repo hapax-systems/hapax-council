@@ -590,6 +590,54 @@ impl DynamicPipeline {
             return;
         }
 
+        // If any pass references @live but no external source populates it,
+        // fill it with a procedural gradient so shaders have visible input.
+        // Without this, @live resolves to a black texture and the entire
+        // pipeline produces near-black output.
+        let needs_live = self.passes.iter().any(|p| p.inputs.iter().any(|i| i == "@live"));
+        if needs_live {
+            self.ensure_texture(device, "@live");
+            if let Some(live_tex) = self.textures.get("@live") {
+                let w = self.width as usize;
+                let h = self.height as usize;
+                let mut pixels = vec![0u8; w * h * 4];
+                let t = time;
+                for y in 0..h {
+                    for x in 0..w {
+                        let u = x as f32 / w as f32;
+                        let v = y as f32 / h as f32;
+                        let r = (u * 4.0 + t * 0.1).sin() * 0.5 + 0.5;
+                        let g = (v * 3.0 + t * 0.07).cos() * 0.4 + 0.3;
+                        let b = (u * 3.0 + v * 2.0 + t * 0.13).sin() * 0.5 + 0.5;
+                        let idx = (y * w + x) * 4;
+                        pixels[idx] = (r * 255.0) as u8;
+                        pixels[idx + 1] = (g * 255.0) as u8;
+                        pixels[idx + 2] = (b * 255.0) as u8;
+                        pixels[idx + 3] = 255;
+                    }
+                }
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &live_tex.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &pixels,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some((w * 4) as u32),
+                        rows_per_image: Some(h as u32),
+                    },
+                    wgpu::Extent3d {
+                        width: self.width,
+                        height: self.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+
         // Execute each pass
         for pass in &self.passes {
             let is_temporal = pass.inputs.iter().any(|n| n.starts_with("@accum_"));
@@ -770,6 +818,7 @@ impl DynamicPipeline {
             usage: wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::STORAGE_BINDING,
             view_formats: &[],
         });
