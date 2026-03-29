@@ -215,6 +215,22 @@ if [ -n "$LAST_SWEEP" ]; then
   fi
 fi
 
+# Sprint tracker state
+SPRINT_STATE="/dev/shm/hapax-sprint/state.json"
+if [ -f "$SPRINT_STATE" ]; then
+  SPRINT_LINE="$(jq -r '
+    "Sprint: \(.current_sprint) (Day \(.current_day)) | Completed: \(.measures_completed)/\(.measures_total)" +
+    (if .measures_blocked > 0 then " | Blocked: \(.measures_blocked)" else "" end) +
+    (if .measures_skipped > 0 then " | Skipped: \(.measures_skipped)" else "" end) +
+    "\nGates: \(.gates_passed) passed, \(.gates_failed) failed, \(.gates_pending) pending" +
+    (if .blocking_gate then " | BLOCKING: \(.blocking_gate)" else "" end) +
+    (if .next_block then "\nNext: \(.next_block.measure) \(.next_block.title) (Day \(.next_block.day), \(.next_block.scheduled))" else "" end)
+  ' "$SPRINT_STATE" 2>/dev/null || true)"
+  if [ -n "$SPRINT_LINE" ]; then
+    printf "%s\n" "$SPRINT_LINE"
+  fi
+fi
+
 # ── Skill auto-trigger suggestions ──
 
 # /briefing — first session of the day
