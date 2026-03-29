@@ -1,8 +1,14 @@
 // Content layer — 9-dimensional spatial modulation, screen blend
 //
 // Samples up to 4 content texture slots, modulates their UV coordinates
-// and appearance using 9 vocal-chain dimensions, then screen-blends
+// and appearance using 9 expressive dimensions, then screen-blends
 // onto the compositor output.
+//
+// Bachelardian phenomenology:
+// - Content materializes FROM the procedural field (noise-gated crystallization)
+// - Low salience incubates at periphery, migrates inward with salience
+// - Content arrives from off-screen (intimate immensity)
+// - The rendering IS the reverie, not a report of it
 
 struct ContentUniforms {
     slot_opacities: vec4<f32>,
@@ -60,19 +66,35 @@ fn hash21(p: vec2<f32>) -> f32 {
 // pitch_displacement: slow drift
 // temporal_distortion: breathing oscillation
 
-fn modulate_uv(uv: vec2<f32>, slot_index: u32) -> vec2<f32> {
+fn modulate_uv(uv: vec2<f32>, slot_index: u32, base_opacity: f32) -> vec2<f32> {
     // Scale: mix(0.4, 1.0, intensity) — centered
     let scale = mix(0.4, 1.0, u.intensity);
     var muv = (uv - 0.5) / scale + 0.5;
 
+    // Corner incubation (Bachelard): low salience → peripheral placement
+    // High salience → center. Content migrates inward as it materializes.
+    let center_pull = base_opacity;
+    let corner_offset = (1.0 - center_pull) * 0.3;
+    muv = muv + (muv - 0.5) * corner_offset;
+
+    // Immensity (Bachelard): content arrives from off-screen space
+    // Entry progress tracks materialization; content slides in from beyond viewport
+    let entry_progress = smoothstep(0.0, 0.5, base_opacity);
+    let entry_offset = (1.0 - entry_progress) * 0.4;
+    let slot_f = f32(slot_index);
+    let entry_direction = vec2<f32>(
+        sin(slot_f * 2.1 + u.time * 0.03),
+        cos(slot_f * 1.7 + u.time * 0.02)
+    );
+    muv = muv + entry_direction * entry_offset;
+
     // Depth recession: push outward from center
     let recession = u.depth * 0.15;
-    let center_offset = muv - 0.5;
-    muv = muv + center_offset * recession;
+    let center_offset_depth = muv - 0.5;
+    muv = muv + center_offset_depth * recession;
 
     // Pitch displacement: slow directional drift per slot
-    let slot_f = f32(slot_index);
-    let drift_angle = slot_f * 1.5708 + u.time * 0.1; // 90° offset per slot
+    let drift_angle = slot_f * 1.5708 + u.time * 0.1;
     let drift = u.pitch_displacement * 0.05;
     muv = muv + vec2<f32>(cos(drift_angle), sin(drift_angle)) * drift;
 
@@ -97,15 +119,25 @@ fn content_opacity(uv: vec2<f32>, muv: vec2<f32>, base_opacity: f32) -> f32 {
 
     var alpha = base_opacity;
 
+    // Materialization from substrate (Bachelard): content crystallizes from
+    // the procedural noise field. Where noise is bright, content appears first.
+    // As opacity increases (fragment strengthens), the threshold drops until
+    // all content is visible. The image doesn't appear — it condenses.
+    let mat_noise = hash21(uv * 30.0 + u.time * 0.05);
+    let mat_threshold = 1.0 - base_opacity;
+    let materialization = smoothstep(mat_threshold, mat_threshold + 0.3, mat_noise);
+    alpha = alpha * materialization;
+
     // Tension → feather width (0 = wide soft edge, 1 = hard edge)
     let feather = mix(0.3, 0.02, u.tension);
     let edge_dist = min(min(muv.x, 1.0 - muv.x), min(muv.y, 1.0 - muv.y));
     alpha = alpha * smoothstep(0.0, feather, edge_dist);
 
     // Coherence → dissolution (0 = fully dissolved, 1 = solid)
-    let noise = hash21(uv * 50.0 + u.time * 0.3);
+    // Time-based drift for smooth shimmer, not per-frame flicker
+    let dissolve_noise = hash21(uv * 50.0 + u.time * 0.1 + u.coherence * 10.0);
     let dissolution_threshold = 1.0 - u.coherence;
-    let dissolve = smoothstep(dissolution_threshold - 0.1, dissolution_threshold + 0.1, noise);
+    let dissolve = smoothstep(dissolution_threshold - 0.1, dissolution_threshold + 0.1, dissolve_noise);
     alpha = alpha * mix(dissolve, 1.0, u.coherence * 0.5 + 0.5);
 
     // Depth → darkening (reduce opacity at high depth)
@@ -163,28 +195,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Slot 0
     if u.slot_opacities.x > 0.001 {
-        let muv = modulate_uv(in.uv, 0u);
+        let muv = modulate_uv(in.uv, 0u, u.slot_opacities.x);
         let s = sample_slot(slot0_tex, in.uv, muv, u.slot_opacities.x);
         result = mix(result, blend_screen(result, s.rgb), s.a);
     }
 
     // Slot 1
     if u.slot_opacities.y > 0.001 {
-        let muv = modulate_uv(in.uv, 1u);
+        let muv = modulate_uv(in.uv, 1u, u.slot_opacities.y);
         let s = sample_slot(slot1_tex, in.uv, muv, u.slot_opacities.y);
         result = mix(result, blend_screen(result, s.rgb), s.a);
     }
 
     // Slot 2
     if u.slot_opacities.z > 0.001 {
-        let muv = modulate_uv(in.uv, 2u);
+        let muv = modulate_uv(in.uv, 2u, u.slot_opacities.z);
         let s = sample_slot(slot2_tex, in.uv, muv, u.slot_opacities.z);
         result = mix(result, blend_screen(result, s.rgb), s.a);
     }
 
     // Slot 3
     if u.slot_opacities.w > 0.001 {
-        let muv = modulate_uv(in.uv, 3u);
+        let muv = modulate_uv(in.uv, 3u, u.slot_opacities.w);
         let s = sample_slot(slot3_tex, in.uv, muv, u.slot_opacities.w);
         result = mix(result, blend_screen(result, s.rgb), s.a);
     }
