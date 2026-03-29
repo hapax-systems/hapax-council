@@ -75,13 +75,30 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, Any]:
             node_def = registry.get(step.node_type)
             param_order = list(node_def.params.keys()) if node_def else []
 
+        # Resolve enum/string params to float indices for the GPU uniform buffer.
+        node_def = registry.get(step.node_type)
+        uniforms: dict[str, float] = {}
+        for key, value in step.params.items():
+            if isinstance(value, (int, float)):
+                uniforms[key] = float(value)
+            elif isinstance(value, bool):
+                uniforms[key] = 1.0 if value else 0.0
+            elif isinstance(value, str) and node_def and key in node_def.params:
+                enum_vals = node_def.params[key].enum_values or []
+                uniforms[key] = float(enum_vals.index(value)) if value in enum_vals else 0.0
+            # Skip non-numeric values without a known enum mapping
+
+        # content_layer needs 4 content texture slot inputs for the compositing shader
+        if step.node_type == "content_layer":
+            inputs.extend(f"content_slot_{i}" for i in range(4))
+
         descriptor: dict[str, Any] = {
             "node_id": step.node_id,
             "shader": f"{step.node_type}.wgsl",
             "type": pass_type,
             "inputs": inputs,
             "output": output,
-            "uniforms": dict(step.params),
+            "uniforms": uniforms,
             "param_order": param_order,
         }
 
