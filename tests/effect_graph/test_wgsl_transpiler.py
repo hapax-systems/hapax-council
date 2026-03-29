@@ -141,6 +141,24 @@ class TestAdaptGlsl:
         assert "texture(sampler2D(tex, tex_sampler)," in result
         assert "texture(sampler2D(tex_b, tex_b_sampler)," in result
 
+    def test_multiple_varyings_get_unique_locations(self):
+        shader = """\
+#version 100
+#ifdef GL_ES
+precision mediump float;
+#endif
+varying vec2 v_texcoord;
+varying vec3 v_position;
+varying float v_alpha;
+void main() {
+    gl_FragColor = vec4(v_position, v_alpha);
+}
+"""
+        result = adapt_glsl(shader)
+        assert "layout(location=0) in vec2 v_texcoord;" in result
+        assert "layout(location=1) in vec3 v_position;" in result
+        assert "layout(location=2) in float v_alpha;" in result
+
     def test_multiple_scalar_uniforms(self):
         shader = """\
 #version 100

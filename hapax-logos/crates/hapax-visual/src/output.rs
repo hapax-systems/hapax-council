@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 
 const OUTPUT_DIR: &str = "/dev/shm/hapax-visual";
-const OUTPUT_FILE: &str = "/dev/shm/hapax-visual/frame.bgra";
+const OUTPUT_FILE: &str = "/dev/shm/hapax-visual/frame.rgba";
 const JPEG_FILE: &str = "/dev/shm/hapax-visual/frame.jpg";
 const JPEG_TMP_FILE: &str = "/dev/shm/hapax-visual/frame.jpg.tmp";
 const JPEG_QUALITY: i32 = 80;
@@ -23,7 +23,7 @@ impl ShmOutput {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         fs::create_dir_all(OUTPUT_DIR).ok();
 
-        let bytes_per_row = width * 4; // BGRA = 4 bytes/pixel
+        let bytes_per_row = width * 4; // RGBA = 4 bytes/pixel
         let padded_bytes_per_row = align_up(bytes_per_row, 256);
 
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -129,13 +129,14 @@ impl ShmOutput {
             tx.send(result).ok();
         });
 
-        // Poll device so the map_async callback fires
-        device.poll(wgpu::Maintain::Wait);
+        // Non-blocking poll — avoids stalling the render pipeline.
+        // Wait up to 16ms (one frame at 60fps) for the callback; skip if not ready.
+        device.poll(wgpu::Maintain::Poll);
 
-        match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+        match rx.recv_timeout(std::time::Duration::from_millis(16)) {
             Ok(Ok(())) => {}
             _ => {
-                // Mapping failed, skip this frame
+                // Not ready in 16ms — skip this frame's SHM write
                 return;
             }
         }
@@ -161,7 +162,7 @@ impl ShmOutput {
         drop(data);
         self.staging_buffer.unmap();
 
-        // Write raw BGRA
+        // Write raw RGBA
         if let Ok(mut file) = fs::File::create(OUTPUT_FILE) {
             file.write_all(&clean_data).ok();
         }

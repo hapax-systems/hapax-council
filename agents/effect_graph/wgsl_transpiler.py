@@ -54,6 +54,7 @@ def adapt_glsl(source: str) -> str:
     out_lines: list[str] = []
     in_gl_es_block = False
     version_emitted = False
+    varying_location = 0
 
     for line in lines:
         stripped = line.strip()
@@ -82,7 +83,8 @@ def adapt_glsl(source: str) -> str:
         # varying → layout in
         m = re.match(r"varying\s+(vec[234]|float|int)\s+(\w+)\s*;", stripped)
         if m:
-            out_lines.append(f"layout(location=0) in {m.group(1)} {m.group(2)};")
+            out_lines.append(f"layout(location={varying_location}) in {m.group(1)} {m.group(2)};")
+            varying_location += 1
             continue
 
         # Remove original uniform sampler2D lines (will emit split versions)
