@@ -1,5 +1,7 @@
 """Tests for imagination wiring into DMN daemon."""
 
+import unittest.mock
+
 from agents.dmn.buffer import DMNBuffer
 
 
@@ -42,7 +44,8 @@ def test_daemon_has_imagination_loop():
     assert daemon._imagination is not None
 
 
-def test_daemon_drains_imagination_impingements():
+@unittest.mock.patch("agents.imagination.random.random", return_value=0.0)
+def test_daemon_drains_imagination_impingements(_mock_rng):
     daemon = DMNDaemon()
     frag = ImaginationFragment(
         content_references=[
