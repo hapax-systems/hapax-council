@@ -17,8 +17,9 @@ import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { AmbientShader } from "../components/hapax/AmbientShader";
 import { usePageVisible } from "../hooks/usePageVisible";
 import { api } from "../api/client";
+import { LOGOS_API_URL } from "../config";
 
-const SNAPSHOT_BASE = "http://localhost:8051/api";
+const SNAPSHOT_BASE = LOGOS_API_URL;
 const POLL_FAST_MS = 2000;
 const SNAPSHOT_MS = 200; // camera composite refresh
 const FRAGMENT_CYCLE_MS = 12000; // rotate floating text fragments

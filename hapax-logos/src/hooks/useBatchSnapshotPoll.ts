@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { LOGOS_API_URL } from "../config";
 
 type Subscriber = {
   role: string;
@@ -46,7 +47,7 @@ async function fetchBatch(): Promise<void> {
   polling = true;
   try {
     const resp = await fetch(
-      `http://localhost:8051/api/studio/stream/cameras/batch?roles=${roles.join(",")}&_t=${Date.now()}`,
+      `${LOGOS_API_URL}/studio/stream/cameras/batch?roles=${roles.join(",")}&_t=${Date.now()}`,
     );
     if (!resp.ok) return;
 

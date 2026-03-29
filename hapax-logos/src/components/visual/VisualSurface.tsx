@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { usePageVisible } from "../../hooks/usePageVisible";
+import { FRAME_SERVER_URL } from "../../config";
 
-const FRAME_URL = "http://127.0.0.1:8053/frame";
+const FRAME_URL = `${FRAME_SERVER_URL}/frame`;
 const MIN_FRAME_MS = 33; // ~30fps
 
 /**
