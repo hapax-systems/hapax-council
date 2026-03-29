@@ -64,7 +64,7 @@ export function useSystemFlow() {
         if (mounted) setFlowState(state);
       } catch {
         try {
-          const state = await api.get<SystemFlowState>("/api/flow/state");
+          const state = await api.get<SystemFlowState>("/flow/state");
           if (mounted) setFlowState(state);
         } catch {
           if (mounted && !flowState) setFlowState(staticTopology());

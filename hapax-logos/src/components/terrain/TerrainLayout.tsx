@@ -122,7 +122,7 @@ function StudioParamSync() {
 
     if (presetName) {
       // Activate preset via backend API
-      api.post(`/api/studio/presets/${presetName}/activate`).catch(() => {});
+      api.post(`/studio/presets/${presetName}/activate`).catch(() => {});
     }
     if (source) {
       setEffectSourceId(source);

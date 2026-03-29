@@ -54,5 +54,5 @@ const BACKEND_PRESET_MAP: Record<string, string> = {
 export async function selectEffect(id: string): Promise<void> {
   if (id === "camera") return;
   const name = BACKEND_PRESET_MAP[id] ?? (id.startsWith("fx-") ? id.slice(3) : id);
-  await api.post("/api/studio/effect/select", { preset: name }).catch(() => {});
+  await api.post("/studio/effect/select", { preset: name }).catch(() => {});
 }

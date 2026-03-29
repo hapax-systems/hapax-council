@@ -50,7 +50,7 @@ export function SystemStatus() {
     let mounted = true;
     const poll = async () => {
       try {
-        const data = await api.get<FlowState>("/api/flow/state");
+        const data = await api.get<FlowState>("/flow/state");
         if (mounted) setState(data);
       } catch { /* offline */ }
     };

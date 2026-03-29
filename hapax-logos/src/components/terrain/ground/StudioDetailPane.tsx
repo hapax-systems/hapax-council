@@ -45,7 +45,7 @@ export function StudioDetailPane({
   // Backend presets fetched from API
   const [presets, setPresets] = useState<{ name: string; display_name: string }[]>([]);
   useEffect(() => {
-    api.get<{ presets: { name: string; display_name: string }[] }>("/api/studio/presets")
+    api.get<{ presets: { name: string; display_name: string }[] }>("/studio/presets")
       .then((d) => setPresets(d.presets ?? []))
       .catch(() => {});
   }, []);
@@ -80,7 +80,7 @@ export function StudioDetailPane({
     const fxSource = `fx-${presetName}`;
     setEffectSourceId(fxSource);
     selectEffect(fxSource);
-    api.post(`/api/studio/presets/${presetName}/activate`).catch(() => {});
+    api.post(`/studio/presets/${presetName}/activate`).catch(() => {});
   };
 
   // Consent summary

@@ -346,7 +346,7 @@ export function FlowPage() {
   const ss = useSystemSummary();
 
   useEffect(() => { let m = true;
-    const poll = async () => { try { const st = await invoke<SystemFlowState>("get_system_flow"); if (m) setFlowState(st); } catch { try { const st = await api.get<SystemFlowState>("/api/flow/state"); if (m) setFlowState(st); } catch { if (m && !flowState) setFlowState(staticTopology()); } } };
+    const poll = async () => { try { const st = await invoke<SystemFlowState>("get_system_flow"); if (m) setFlowState(st); } catch { try { const st = await api.get<SystemFlowState>("/flow/state"); if (m) setFlowState(st); } catch { if (m && !flowState) setFlowState(staticTopology()); } } };
     poll(); const iv = setInterval(poll, 3000); return () => { m = false; clearInterval(iv); };
   }, []);
 

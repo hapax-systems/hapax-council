@@ -70,10 +70,10 @@ export function CommandRegistryBridge() {
           const fxSource = `fx-${name}`;
           setEffectSourceId(fxSource);
           selectEffect(fxSource);
-          api.post(`/api/studio/presets/${name}/activate`).catch(() => {});
+          api.post(`/studio/presets/${name}/activate`).catch(() => {});
         },
         cyclePreset: (direction: "next" | "prev") => {
-          api.post(`/api/studio/presets/cycle?direction=${direction}`).catch(
+          api.post(`/studio/presets/cycle?direction=${direction}`).catch(
             () => {},
           );
         },

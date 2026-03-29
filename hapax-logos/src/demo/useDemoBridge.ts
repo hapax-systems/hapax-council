@@ -51,7 +51,7 @@ export function useDemoBridge(): DemoBridge {
     },
     studio: {
       selectPreset: (preset: string) => {
-        api.post("/api/studio/effect/select", { preset }).catch(() => {});
+        api.post("/studio/effect/select", { preset }).catch(() => {});
       },
     },
   };
