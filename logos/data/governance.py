@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from shared.config import PROFILES_DIR
+from logos._config import PROFILES_DIR
 
 log = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ def collect_consent_coverage() -> ConsentCoverage:
 
     # Qdrant coverage
     try:
-        from shared.config import get_qdrant
+        from logos._config import get_qdrant
 
         client = get_qdrant()
         coverage.qdrant_total = client.count(collection_name="documents").count
@@ -182,7 +182,7 @@ def collect_revocation_blast_radius(person_id: str) -> BlastRadius:
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-            from shared.config import get_qdrant
+            from logos._config import get_qdrant
 
             client = get_qdrant()
             count = client.count(

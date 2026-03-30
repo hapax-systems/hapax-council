@@ -270,7 +270,7 @@ def get_knowledge_scheduler() -> QuietWindowScheduler:
 async def _handle_knowledge_maintenance(*, ignore_fn=None) -> str:
     """Run knowledge maintenance after quiet window expires."""
     from agents.knowledge_maint import run_maintenance
-    from shared.config import PROFILES_DIR
+    from logos._config import PROFILES_DIR
 
     # Self-trigger prevention for output files
     if ignore_fn is not None:

@@ -14,7 +14,7 @@ import yaml
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-from shared.config import HAPAXROMANA_DIR, VAULT_PATH
+from logos._config import HAPAXROMANA_DIR, VAULT_PATH
 from shared.vault_utils import parse_frontmatter
 
 KNOWLEDGE_MODEL_PATH = HAPAXROMANA_DIR / "knowledge" / "management-sufficiency.yaml"

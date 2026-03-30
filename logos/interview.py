@@ -20,7 +20,7 @@ _log = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
-from shared.config import get_model
+from logos._config import get_model
 from shared.operator import get_goals, get_patterns, get_system_prompt_fragment
 
 # Import Langfuse OTel config (side-effect: configures exporter)
@@ -715,7 +715,7 @@ def flush_pending_facts() -> str:
     import tempfile
 
     from agents.profiler import flush_interview_facts
-    from shared.config import LOGOS_STATE_DIR
+    from logos._config import LOGOS_STATE_DIR
 
     facts_path = LOGOS_STATE_DIR / "pending-facts.jsonl"
     if not facts_path.exists():

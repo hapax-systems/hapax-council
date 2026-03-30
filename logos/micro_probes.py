@@ -30,7 +30,7 @@ def _probe_cooldown() -> int:
 PROBE_IDLE_THRESHOLD = 300
 PROBE_COOLDOWN = 600
 
-from shared.config import LOGOS_STATE_DIR
+from logos._config import LOGOS_STATE_DIR
 
 _STATE_PATH = LOGOS_STATE_DIR / "probe-state.json"
 

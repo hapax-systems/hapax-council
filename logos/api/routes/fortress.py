@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from agents.fortress.config import BridgeConfig
-from shared.config import PROFILES_DIR
+from logos.api.routes._config import PROFILES_DIR
 
 router = APIRouter(prefix="/api/fortress", tags=["fortress"])
 log = logging.getLogger(__name__)

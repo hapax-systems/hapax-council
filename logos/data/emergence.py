@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from shared.config import VAULT_PATH
+from logos._config import VAULT_PATH
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -25,7 +25,7 @@ from shared.config import VAULT_PATH
 CANDIDATE_MIN_EVENTS = 5
 CANDIDATE_MIN_WEEKS = 2
 CANDIDATE_MIN_KEYWORDS = 3
-from shared.config import LOGOS_STATE_DIR
+from logos._config import LOGOS_STATE_DIR
 
 BUFFER_PATH = LOGOS_STATE_DIR / "undomained-activity.jsonl"
 CANDIDATES_PATH = LOGOS_STATE_DIR / "emergence-candidates.json"

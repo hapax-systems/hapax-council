@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 log = logging.getLogger("logos.decisions")
 
-from shared.config import LOGOS_STATE_DIR
+from logos._config import LOGOS_STATE_DIR
 
 _DECISIONS_PATH = LOGOS_STATE_DIR / "decisions.jsonl"
 

@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 
 from agents.dev_story.query import QueryDeps, create_agent, extract_full_output
-from shared.config import PROFILES_DIR
+from logos._config import PROFILES_DIR
 
 log = logging.getLogger(__name__)
 

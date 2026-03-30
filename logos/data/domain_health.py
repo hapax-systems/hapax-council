@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from shared.config import VAULT_PATH
+from logos._config import VAULT_PATH
 
 
 @dataclass

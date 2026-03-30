@@ -73,7 +73,7 @@ async def engine_audit(request: Request, date: str = "", limit: int = 200):
     import datetime as dt
     import json
 
-    from shared.config import PROFILES_DIR
+    from logos.api.routes._config import PROFILES_DIR
 
     audit_dir = PROFILES_DIR / "engine-audit"
     target_date = date or dt.date.today().isoformat()

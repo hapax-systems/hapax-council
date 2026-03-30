@@ -113,7 +113,7 @@ async def switch_model(session_id: str, req: ModelRequest):
 async def get_models():
     """List available model aliases."""
     try:
-        from shared.config import MODELS
+        from logos.api.routes._config import MODELS
 
         return {"models": list(MODELS.keys())}
     except (ImportError, AttributeError):

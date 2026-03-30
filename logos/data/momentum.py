@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from shared.config import VAULT_PATH
+from logos._config import VAULT_PATH
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -45,7 +45,7 @@ class DomainMomentum:
 # Signal computation
 # ---------------------------------------------------------------------------
 
-from shared.config import LOGOS_STATE_DIR
+from logos._config import LOGOS_STATE_DIR
 
 HISTORY_PATH = LOGOS_STATE_DIR / "momentum-history.jsonl"
 

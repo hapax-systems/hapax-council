@@ -12,7 +12,7 @@ log = logging.getLogger("logos.api.profile")
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
-from shared.config import LOGOS_STATE_DIR
+from logos.api.routes._config import LOGOS_STATE_DIR
 
 PENDING_FACTS_PATH = LOGOS_STATE_DIR / "pending-facts.jsonl"
 

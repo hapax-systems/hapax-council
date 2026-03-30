@@ -222,8 +222,8 @@ async def search_moments(req: MomentSearchRequest):
 def _search_moments_sync(query: str, limit: int) -> list[dict]:
     """Synchronous CLAP search against Qdrant studio_moments."""
     try:
+        from logos.api.routes._config import STUDIO_MOMENTS_COLLECTION, get_qdrant
         from shared.clap import embed_text
-        from shared.config import STUDIO_MOMENTS_COLLECTION, get_qdrant
     except ImportError:
         return []
 
@@ -540,7 +540,7 @@ async def get_ambient_content():
 
     # Profile facts from Qdrant
     try:
-        from shared.config import get_qdrant
+        from logos.api.routes._config import get_qdrant
 
         client = get_qdrant()
         # Scroll random points from profile-facts collection
@@ -560,7 +560,7 @@ async def get_ambient_content():
 
     # Studio moments (recent CLAP classifications)
     try:
-        from shared.config import STUDIO_MOMENTS_COLLECTION, get_qdrant
+        from logos.api.routes._config import STUDIO_MOMENTS_COLLECTION, get_qdrant
 
         client = get_qdrant()
         result = client.scroll(

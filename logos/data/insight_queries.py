@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from shared.config import LOGOS_STATE_DIR
+from logos._config import LOGOS_STATE_DIR
 
 log = logging.getLogger("logos.insight_queries")
 

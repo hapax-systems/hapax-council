@@ -122,7 +122,7 @@ def convert(event: ChangeEvent) -> Impingement:
 
     # Compute embedding for affordance retrieval (non-blocking, best-effort)
     try:
-        from shared.config import embed_safe
+        from logos._config import embed_safe
         from shared.impingement import render_impingement_text
 
         text = render_impingement_text(imp)

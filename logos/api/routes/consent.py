@@ -219,7 +219,7 @@ async def trace_consent(
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-            from shared.config import get_qdrant
+            from logos.api.routes._config import get_qdrant
 
             client = get_qdrant()
             total = 0
@@ -291,7 +291,7 @@ async def consent_coverage() -> dict:
     try:
         from qdrant_client.models import Filter, IsNullCondition
 
-        from shared.config import get_qdrant
+        from logos.api.routes._config import get_qdrant
 
         client = get_qdrant()
 
@@ -334,7 +334,7 @@ async def precedent_timeline(axiom_id: str | None = None) -> dict:
     the axioms themselves.
     """
     try:
-        from shared.config import get_qdrant
+        from logos.api.routes._config import get_qdrant
 
         client = get_qdrant()
 

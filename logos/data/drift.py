@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from shared.config import PROFILES_DIR
+from logos._config import PROFILES_DIR
 
 
 @dataclass

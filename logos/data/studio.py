@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import yaml
 
-from shared.config import (
+from logos._config import (
     AUDIO_ARCHIVE_DIR,
     AUDIO_PROCESSOR_CACHE_DIR,
     AUDIO_RAG_DIR,
