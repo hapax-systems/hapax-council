@@ -80,3 +80,26 @@ cd "$REPO"
 if [ -n "${RESTORE_BRANCH:-}" ]; then
     git checkout "$RESTORE_BRANCH" --quiet 2>/dev/null || true
 fi
+
+# Auto-restart stale services (binary newer than running process)
+for svc in hapax-imagination hapax-logos; do
+    if systemctl --user is-active "$svc" &>/dev/null; then
+        svc_start=$(systemctl --user show "$svc" --property=ActiveEnterTimestamp --value 2>/dev/null)
+        if [[ -n "$svc_start" ]]; then
+            svc_epoch=$(date -d "$svc_start" +%s 2>/dev/null || echo 0)
+            bin_epoch=$(stat -c %Y "$HOME/.local/bin/$svc" 2>/dev/null || echo 0)
+            if [[ "$bin_epoch" -gt "$svc_epoch" ]]; then
+                logger -t "$LOG_TAG" "auto-restarting $svc (binary newer by $((bin_epoch - svc_epoch))s)"
+                systemctl --user restart "$svc"
+            fi
+        fi
+    fi
+done
+
+# Run freshness check and alert on staleness
+FRESHNESS_SCRIPT="$(dirname "$0")/freshness-check.sh"
+if [[ -x "$FRESHNESS_SCRIPT" ]]; then
+    STALE_OUTPUT=$("$FRESHNESS_SCRIPT" 2>&1) || {
+        ntfy "Stale items detected" "$STALE_OUTPUT" "high" "warning"
+    }
+fi

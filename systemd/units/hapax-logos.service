@@ -12,6 +12,7 @@ OnFailure=notify-failure@%n.service
 [Service]
 Type=simple
 ExecStartPre=/usr/bin/mkdir -p /dev/shm/hapax-logos /dev/shm/hapax-visual /dev/shm/hapax-compositor /dev/shm/hapax-stimmung
+ExecStartPre=/home/hapax/projects/hapax-council/scripts/bootstrap-profiles.sh
 ExecStart=/home/hapax/.local/bin/hapax-logos
 Restart=on-failure
 RestartSec=5
