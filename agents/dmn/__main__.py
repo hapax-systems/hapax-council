@@ -218,8 +218,10 @@ class DMNDaemon:
         except OSError:
             pass
 
-        # Write imagination uniforms for visual pipeline
-        write_imagination_uniforms()
+        # NOTE: uniforms.json is now written by the Reverie actuation loop
+        # (agents/reverie/actuation.py), not by write_imagination_uniforms().
+        # The actuation loop merges imagination state + visual chain + stimmung
+        # + trace state into a single coherent uniform set.
 
         # Status for monitoring
         status = {

@@ -19,10 +19,7 @@ from typing import Any
 
 log = logging.getLogger("reverie.actuation")
 
-IMAGINATION_CURRENT = Path("/dev/shm/hapax-imagination/current.json")
-STIMMUNG_STATE = Path("/dev/shm/hapax-stimmung/state.json")
 UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/pipeline/uniforms.json")
-VISUAL_CHAIN_STATE = Path("/dev/shm/hapax-visual/visual-chain-state.json")
 
 MATERIAL_MAP = {"water": 0, "fire": 1, "earth": 2, "air": 3, "void": 4}
 
@@ -44,11 +41,13 @@ class ReverieActuationLoop:
         from agents.effect_graph.capability import ShaderGraphCapability
         from agents.reverie.governance import build_default_veto_chain, guest_reduction_factor
         from agents.visual_chain import VisualChainCapability
+        from shared.context import ContextAssembler
 
         self._shader_cap = ShaderGraphCapability()
         self._visual_chain = VisualChainCapability(decay_rate=0.02)
         self._veto_chain = build_default_veto_chain()
         self._guest_reduction = guest_reduction_factor
+        self._context = ContextAssembler()
         self._last_tick = time.monotonic()
         self._tick_count = 0
         # Trace state (Amendment 2: dwelling and trace)
@@ -73,14 +72,14 @@ class ReverieActuationLoop:
         self._last_tick = now
         self._tick_count += 1
 
-        # 0. Governance gate — check vetoes before any actuation
+        # 0. Assemble shared context (same snapshot for governance + actuation)
         from agents.reverie.governance import read_consent_phase
 
-        stimmung = self._read_stimmung()
+        ctx = self._context.assemble()
         consent_phase = read_consent_phase()
         gov_ctx = {
             "consent_phase": consent_phase,
-            "stance": stimmung.get("stance", "nominal") if stimmung else "nominal",
+            "stance": ctx.stimmung_stance,
         }
         allowed, reason = self._veto_chain.evaluate(gov_ctx)
         if not allowed:
@@ -102,11 +101,11 @@ class ReverieActuationLoop:
         # 2. Decay visual chain dimensions (compressor release)
         self._visual_chain.decay(dt)
 
-        # 3. Read imagination state
-        imagination = self._read_imagination()
+        # 3. Read imagination state from shared context
+        imagination = ctx.imagination_fragments[0] if ctx.imagination_fragments else None
 
-        # 4. Read stimmung state
-        stimmung = self._read_stimmung()
+        # 4. Stimmung from shared context
+        stimmung = ctx.stimmung_raw
 
         # 5. Apply imagination dimensions to visual chain
         if imagination:
@@ -186,23 +185,8 @@ class ReverieActuationLoop:
             strength,
         )
 
-    def _read_imagination(self) -> dict[str, Any] | None:
-        """Read current imagination fragment from SHM."""
-        try:
-            if IMAGINATION_CURRENT.exists():
-                return json.loads(IMAGINATION_CURRENT.read_text())
-        except (OSError, json.JSONDecodeError):
-            pass
-        return None
-
-    def _read_stimmung(self) -> dict[str, Any] | None:
-        """Read stimmung state from SHM."""
-        try:
-            if STIMMUNG_STATE.exists():
-                return json.loads(STIMMUNG_STATE.read_text())
-        except (OSError, json.JSONDecodeError):
-            pass
-        return None
+    # Imagination and stimmung state now read via shared ContextAssembler
+    # in tick(), ensuring both systems see identical context at the same moment.
 
     def _write_uniforms(
         self,
