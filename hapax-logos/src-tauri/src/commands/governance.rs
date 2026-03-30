@@ -20,7 +20,12 @@ pub struct ActionItem {
 
 #[tauri::command]
 pub fn get_briefing() -> Option<BriefingData> {
-    let path = expand_home("~/.hapax/profiles/briefing.md");
+    let primary = expand_home("~/.hapax/profiles/briefing.md");
+    let path = if std::path::Path::new(&primary).exists() {
+        primary
+    } else {
+        expand_home("~/projects/hapax-council/profiles/briefing.md")
+    };
     let content = std::fs::read_to_string(&path).ok()?;
     parse_briefing(&content)
 }

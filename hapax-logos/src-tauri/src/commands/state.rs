@@ -217,8 +217,10 @@ struct GoalRaw {
 
 #[tauri::command]
 pub fn get_goals() -> GoalSnapshot {
-    let path = expand_home("~/.hapax/operator.json");
-    let op: Option<OperatorFile> = read_json(&path);
+    let op: Option<OperatorFile> = read_json_fallback(
+        "~/.hapax/operator.json",
+        "~/projects/hapax-council/profiles/operator-profile.json",
+    );
 
     let goals_section = op.and_then(|o| o.goals);
     let mut goals = Vec::new();
@@ -585,6 +587,10 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Option<T> {
     let p = Path::new(path);
     let data = std::fs::read_to_string(p).ok()?;
     serde_json::from_str(&data).ok()
+}
+
+fn read_json_fallback<T: serde::de::DeserializeOwned>(primary: &str, fallback: &str) -> Option<T> {
+    read_json(&expand_home(primary)).or_else(|| read_json(&expand_home(fallback)))
 }
 
 fn is_goal_stale(status: &str, last_activity: &Option<String>) -> bool {
