@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from pydantic_ai import RunContext  # noqa: TC002
 
 log = logging.getLogger("drift_detector.context_tools")
 
 
-async def lookup_constraints(ctx: RunContext[Any], categories: str = "") -> str:
+async def lookup_constraints(ctx: RunContext[None], categories: str = "") -> str:
     """Look up operator constraints (rules) by category.
 
     Categories: communication, python, node, docker, llm, agents, secrets, git, music.
@@ -40,7 +39,7 @@ async def lookup_constraints(ctx: RunContext[Any], categories: str = "") -> str:
     return "\n".join(lines)
 
 
-async def lookup_patterns(ctx: RunContext[Any], categories: str = "") -> str:
+async def lookup_patterns(ctx: RunContext[None], categories: str = "") -> str:
     """Look up operator behavioral patterns by category.
 
     Categories: decision_making, workflow, development, music_production, communication.
@@ -70,7 +69,7 @@ async def lookup_patterns(ctx: RunContext[Any], categories: str = "") -> str:
     return "\n".join(lines)
 
 
-async def search_profile(ctx: RunContext[Any], query: str, dimension: str = "") -> str:
+async def search_profile(ctx: RunContext[None], query: str, dimension: str = "") -> str:
     """Semantic search over operator profile facts via Qdrant.
 
     Args:
@@ -102,7 +101,7 @@ async def search_profile(ctx: RunContext[Any], query: str, dimension: str = "") 
     return "\n".join(lines)
 
 
-async def get_profile_summary(ctx: RunContext[Any], dimension: str = "") -> str:
+async def get_profile_summary(ctx: RunContext[None], dimension: str = "") -> str:
     """Get pre-computed profile summary, overall or for a specific dimension.
 
     Args:
@@ -145,7 +144,7 @@ async def get_profile_summary(ctx: RunContext[Any], dimension: str = "") -> str:
 
 
 async def lookup_sufficiency_requirements(
-    ctx: RunContext[Any], axiom_id: str = "", level: str = "", domain: str = ""
+    ctx: RunContext[None], axiom_id: str = "", level: str = "", domain: str = ""
 ) -> str:
     """Look up what the system must actively provide to satisfy axiom sufficiency requirements.
 

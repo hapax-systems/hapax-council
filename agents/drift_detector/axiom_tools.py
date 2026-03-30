@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
 
 from pydantic_ai import RunContext  # noqa: TC002
 
@@ -27,7 +26,7 @@ def _log_tool_usage(tool_name: str) -> None:
 
 
 async def check_axiom_compliance(
-    ctx: RunContext[Any],
+    ctx: RunContext[None],
     situation: str,
     axiom_id: str = "",
     domain: str = "",
@@ -67,7 +66,7 @@ async def check_axiom_compliance(
 
 
 async def record_axiom_decision(
-    ctx: RunContext[Any],
+    ctx: RunContext[None],
     axiom_id: str,
     situation: str,
     decision: str,

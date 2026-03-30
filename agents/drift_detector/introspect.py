@@ -21,6 +21,7 @@ from .config import LITELLM_BASE, LLM_STACK_DIR, OLLAMA_URL, PASSWORD_STORE_DIR,
 from .models import (
     ContainerInfo,
     DiskInfo,
+    EdgeNodeInfo,
     GpuInfo,
     InfrastructureManifest,
     LiteLLMRoute,
@@ -427,13 +428,13 @@ async def _generate_manifest_inner() -> InfrastructureManifest:
 
     # Collect edge node heartbeats
     edge_state_dir = Path.home() / "hapax-state" / "edge"
-    edge_nodes: list[dict] = []
+    edge_nodes: list[EdgeNodeInfo] = []
     if edge_state_dir.is_dir():
         for f in sorted(edge_state_dir.glob("*.json")):
             try:
-                edge_nodes.append(json.loads(f.read_text()))
+                edge_nodes.append(EdgeNodeInfo.model_validate(json.loads(f.read_text())))
             except (json.JSONDecodeError, OSError):
-                edge_nodes.append({"hostname": f.stem, "error": "unreadable"})
+                edge_nodes.append(EdgeNodeInfo(hostname=f.stem, error="unreadable"))
 
     return InfrastructureManifest(
         timestamp=datetime.now(UTC).isoformat(),
@@ -519,11 +520,13 @@ def format_summary(m: InfrastructureManifest) -> str:
         lines.append("")
         lines.append(f"Edge Nodes ({len(m.edge_nodes)}):")
         for node in m.edge_nodes:
-            hostname = node.get("hostname", "unknown")
-            role = node.get("role", "?")
-            cpu_temp = node.get("cpu_temp_c", "?")
-            mem_avail = node.get("mem_available_mb", "?")
-            age = time.time() - node.get("last_seen_epoch", 0)
+            hostname = node.hostname or "unknown"
+            role = node.role or "?"
+            cpu_temp: float | str = node.cpu_temp_c if node.cpu_temp_c is not None else "?"
+            mem_avail: float | str = (
+                node.mem_available_mb if node.mem_available_mb is not None else "?"
+            )
+            age = time.time() - node.last_seen_epoch
             status = "online" if age < 300 else f"stale ({age / 60:.0f}m)"
             lines.append(
                 f"  {hostname:15s} ({role:10s}) {status}, CPU {cpu_temp} C, {mem_avail}MB free"

@@ -60,6 +60,17 @@ class DiskInfo(BaseModel):
     use_percent: int = 0
 
 
+class EdgeNodeInfo(BaseModel):
+    """Heartbeat data from a Pi edge node (parsed from ~/hapax-state/edge/*.json)."""
+
+    hostname: str = ""
+    role: str = ""
+    cpu_temp_c: float | None = None
+    mem_available_mb: float | None = None
+    last_seen_epoch: float = 0.0
+    error: str = ""
+
+
 class InfrastructureManifest(BaseModel):
     timestamp: str
     hostname: str
@@ -77,7 +88,7 @@ class InfrastructureManifest(BaseModel):
     pass_entries: list[str] = Field(default_factory=list)
     compose_file: str = ""
     profile_files: list[str] = Field(default_factory=list)
-    edge_nodes: list[dict] = Field(default_factory=list)
+    edge_nodes: list[EdgeNodeInfo] = Field(default_factory=list)
 
 
 # ── Drift detection models ─────────────────────────────────────────────────
