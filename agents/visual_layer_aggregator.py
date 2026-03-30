@@ -23,6 +23,8 @@ from pathlib import Path
 
 import httpx
 
+from agents._episodic_memory import EpisodeBuilder, EpisodeStore
+from agents._stimmung import StimmungCollector, SystemStimmung
 from agents._telemetry import (
     hapax_interaction,
     trace_api_poll,
@@ -68,8 +70,6 @@ from agents.visual_layer_state import (
 from shared.active_correction import CorrectionSeeker
 from shared.apperception_tick import ApperceptionTick
 from shared.correction_memory import CorrectionStore, check_for_corrections
-from shared.episodic_memory import EpisodeBuilder, EpisodeStore
-from shared.stimmung import StimmungCollector, SystemStimmung
 
 log = logging.getLogger("visual_layer_aggregator")
 

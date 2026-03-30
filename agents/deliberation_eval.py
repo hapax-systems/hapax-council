@@ -15,7 +15,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from shared.deliberation_metrics import (
+from agents._deliberation_metrics import (
     DELIBERATIONS_DIR,
     EVAL_FILE,
     extract_batch,

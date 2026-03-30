@@ -21,7 +21,7 @@ def read_stimmung_block() -> str:
             return ""
 
         try:
-            from shared.stimmung import SystemStimmung
+            from agents._stimmung import SystemStimmung
 
             stimmung = SystemStimmung.model_validate(raw)
             return (

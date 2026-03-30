@@ -140,7 +140,7 @@ def _read_stimmung_block() -> str:
         if stance == "nominal":
             return ""
 
-        from shared.stimmung import SystemStimmung
+        from agents._stimmung import SystemStimmung
 
         stimmung = SystemStimmung.model_validate(raw)
         return (

@@ -23,6 +23,7 @@ from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from agents._config import embed, get_qdrant_grpc
+from agents._google_auth import build_service
 from agents.hapax_daimonion.desktop_tools import (
     DESKTOP_TOOL_SCHEMAS,
     handle_confirm_open_app,
@@ -31,7 +32,6 @@ from agents.hapax_daimonion.desktop_tools import (
     handle_open_app,
     handle_switch_workspace,
 )
-from shared.google_auth import build_service
 
 if TYPE_CHECKING:
     from pipecat.services.openai.llm import OpenAILLMService

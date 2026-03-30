@@ -101,7 +101,7 @@ class YouTubeSyncState(BaseModel):
 
 def _get_youtube_service():
     """Build authenticated YouTube Data API service."""
-    from shared.google_auth import build_service
+    from agents._google_auth import build_service
 
     return build_service("youtube", "v3", SCOPES)
 

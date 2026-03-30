@@ -69,7 +69,7 @@ async def search_profile(ctx: RunContext[None], query: str, dimension: str = "")
     """Semantic search over operator profile facts via Qdrant."""
     log.info("context_tool_invoked tool=search_profile query=%s dimension=%s", query, dimension)
     try:
-        from shared.profile_store import ProfileStore
+        from agents._profile_store import ProfileStore
 
         store = ProfileStore()
         results = store.search(
@@ -96,7 +96,7 @@ async def get_profile_summary(ctx: RunContext[None], dimension: str = "") -> str
     """Get pre-computed profile summary, overall or for a specific dimension."""
     log.info("context_tool_invoked tool=get_profile_summary dimension=%s", dimension)
     try:
-        from shared.profile_store import ProfileStore
+        from agents._profile_store import ProfileStore
 
         store = ProfileStore()
         digest = store.get_digest()

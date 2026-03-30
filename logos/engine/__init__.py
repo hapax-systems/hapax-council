@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from logos._config import AI_AGENTS_DIR, PROFILES_DIR, RAG_SOURCES_DIR
+from logos._stimmung import Stance
 from logos._telemetry import hapax_event, hapax_interaction
 from logos._working_mode import WorkingMode, get_working_mode
 from logos.engine.executor import PhasedExecutor
@@ -22,7 +23,6 @@ from logos.engine.models import ActionPlan as ActionPlan
 from logos.engine.models import ChangeEvent
 from logos.engine.rules import RuleRegistry, evaluate_rules
 from logos.engine.watcher import DirectoryWatcher
-from shared.stimmung import Stance
 
 # ── Persistent Event Counters (WS2) ─────────────────────────────────────────
 

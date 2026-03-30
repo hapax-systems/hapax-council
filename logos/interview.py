@@ -309,7 +309,7 @@ async def generate_interview_plan(
     # Try to load digest for richer planner input
     digest = None
     try:
-        from shared.profile_store import ProfileStore
+        from logos._profile_store import ProfileStore
 
         digest = ProfileStore().get_digest()
     except Exception:

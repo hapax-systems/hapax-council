@@ -1817,7 +1817,7 @@ async def run_digest() -> None:
 
 async def run_index_profile() -> None:
     """Index profile facts into Qdrant profile-facts collection."""
-    from shared.profile_store import ProfileStore
+    from agents._profile_store import ProfileStore
 
     profile = load_existing_profile()
     if not profile:
@@ -1964,7 +1964,7 @@ async def run_auto() -> None:
         log.warning("Digest generation failed: %s", e)
 
     try:
-        from shared.profile_store import ProfileStore
+        from agents._profile_store import ProfileStore
 
         store = ProfileStore()
         store.ensure_collection()

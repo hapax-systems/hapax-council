@@ -151,7 +151,7 @@ has_attachments: {str(e.has_attachments).lower()}
 
 def _get_gmail_service():
     """Build authenticated Gmail API service."""
-    from shared.google_auth import build_service
+    from agents._google_auth import build_service
 
     return build_service("gmail", "v1", SCOPES)
 

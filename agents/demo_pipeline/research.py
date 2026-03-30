@@ -957,7 +957,7 @@ def _gather_workflow_patterns(scope: str) -> str:
 def _gather_profile_digest_summary(scope: str) -> str:
     """Load operator-digest.json via ProfileStore and return overall + scope-relevant summaries."""
     try:
-        from shared.profile_store import ProfileStore
+        from agents._profile_store import ProfileStore
 
         store = ProfileStore()
         digest = store.get_digest()

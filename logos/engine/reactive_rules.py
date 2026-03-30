@@ -527,8 +527,8 @@ _consolidation_scheduler = QuietWindowScheduler(quiet_window_s=300)
 
 async def _handle_pattern_consolidation(*, ignore_fn=None) -> str:
     """Run WS3 L3 pattern consolidation after episodes accumulate."""
+    from logos._episodic_memory import EpisodeStore
     from shared.correction_memory import CorrectionStore
-    from shared.episodic_memory import EpisodeStore
     from shared.pattern_consolidation import PatternStore, run_consolidation
 
     _consolidation_scheduler.consume()

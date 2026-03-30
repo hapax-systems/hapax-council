@@ -291,7 +291,7 @@ def _collect_deliberation_health() -> str | None:
     """Collect deliberation health via metrics + sufficiency probes."""
     with _tracer.start_as_current_span("briefing.collect_deliberation_health"):
         try:
-            from shared.deliberation_metrics import read_recent_metrics
+            from agents._deliberation_metrics import read_recent_metrics
 
             metrics = read_recent_metrics(n=6)
             if not metrics:

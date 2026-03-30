@@ -8,7 +8,7 @@ from .sufficiency_probes import SufficiencyProbe
 def _check_deliberation_hoop_tests() -> tuple[bool, str]:
     """Check that multi-round deliberations pass >= 2 of 3 hoop tests."""
     try:
-        from shared.deliberation_metrics import read_recent_metrics
+        from agents._deliberation_metrics import read_recent_metrics
     except ImportError:
         return True, "deliberation_metrics not available (non-critical)"
 
@@ -37,7 +37,7 @@ def _check_deliberation_hoop_tests() -> tuple[bool, str]:
 def _check_deliberation_activation_rate() -> tuple[bool, str]:
     """Check that multi-round deliberation activation rate exceeds 10%."""
     try:
-        from shared.deliberation_metrics import read_recent_metrics
+        from agents._deliberation_metrics import read_recent_metrics
     except ImportError:
         return True, "deliberation_metrics not available (non-critical)"
 
@@ -59,7 +59,7 @@ def _check_deliberation_activation_rate() -> tuple[bool, str]:
 def _check_deliberation_concession_asymmetry() -> tuple[bool, str]:
     """Check that concession asymmetry does not exceed 3.0x."""
     try:
-        from shared.deliberation_metrics import read_recent_metrics
+        from agents._deliberation_metrics import read_recent_metrics
     except ImportError:
         return True, "deliberation_metrics not available (non-critical)"
 
@@ -87,7 +87,7 @@ def _check_deliberation_concession_asymmetry() -> tuple[bool, str]:
 def _check_deliberation_activation_trend() -> tuple[bool, str]:
     """Check activation rate trend is not declining across batches."""
     try:
-        from shared.deliberation_metrics import read_recent_metrics
+        from agents._deliberation_metrics import read_recent_metrics
     except ImportError:
         return True, "deliberation_metrics not available (non-critical)"
 
