@@ -1,44 +1,211 @@
 module: drift_detector
-purpose: "Drift detection agent: compares live infrastructure against documentation, finds discrepancies using LLM semantic analysis."
+purpose: Agent package for drift_detector.
 version: 1
 interface:
   inputs:
-  - name: manifest
-    type: InfrastructureManifest | None
-    description: Pre-collected infrastructure snapshot (generates one if None)
+  - name: name
+    type: str
+  - name: service
+    type: str
+  - name: image
+    type: str
+  - name: state
+    type: str
+  - name: health
+    type: str
+  - name: ports
+    type: list[str]
+  - name: name
+    type: str
+  - name: type
+    type: str
+  - name: active
+    type: str
+  - name: enabled
+    type: str
+  - name: description
+    type: str
+  - name: name
+    type: str
+  - name: points_count
+    type: int
+  - name: vectors_size
+    type: int
+  - name: distance
+    type: str
+  - name: name
+    type: str
+  - name: size_bytes
+    type: int
+  - name: modified_at
+    type: str
+  - name: name
+    type: str
+  - name: driver
+    type: str
+  - name: vram_total_mb
+    type: int
+  - name: vram_used_mb
+    type: int
+  - name: vram_free_mb
+    type: int
+  - name: temperature_c
+    type: int
+  - name: loaded_models
+    type: list[str]
+  - name: model_name
+    type: str
+  - name: litellm_params_model
+    type: str
+  - name: mount
+    type: str
+  - name: size
+    type: str
+  - name: used
+    type: str
+  - name: available
+    type: str
+  - name: use_percent
+    type: int
+  - name: hostname
+    type: str
+  - name: role
+    type: str
+  - name: cpu_temp_c
+    type: float | None
+  - name: mem_available_mb
+    type: float | None
+  - name: last_seen_epoch
+    type: float
+  - name: error
+    type: str
+  - name: timestamp
+    type: str
+  - name: hostname
+    type: str
+  - name: os_info
+    type: str
+  - name: docker_version
+    type: str
+  - name: containers
+    type: list[ContainerInfo]
+  - name: systemd_units
+    type: list[SystemdUnit]
+  - name: systemd_timers
+    type: list[SystemdUnit]
+  - name: qdrant_collections
+    type: list[QdrantCollection]
+  - name: ollama_models
+    type: list[OllamaModel]
+  - name: gpu
+    type: GpuInfo | None
+  - name: litellm_routes
+    type: list[LiteLLMRoute]
+  - name: disk
+    type: list[DiskInfo]
+  - name: listening_ports
+    type: list[str]
+  - name: pass_entries
+    type: list[str]
+  - name: compose_file
+    type: str
+  - name: profile_files
+    type: list[str]
+  - name: edge_nodes
+    type: list[EdgeNodeInfo]
+  - name: severity
+    type: str
+  - name: category
+    type: str
+  - name: doc_file
+    type: str
+  - name: doc_claim
+    type: str
+  - name: reality
+    type: str
+  - name: suggestion
+    type: str
+  - name: doc_file
+    type: str
+  - name: section_title
+    type: str
+  - name: original
+    type: str
+  - name: corrected
+    type: str
+  - name: explanation
+    type: str
+  - name: version
+    type: int | str
+  - name: operator
+    type: dict
   outputs:
-  - name: DriftReport
-    type: DriftReport
-    description: Drift items, docs analyzed, summary
-  - name: FixReport
-    type: FixReport
-    description: Proposed documentation fixes (--fix mode)
-  - name: ApplyResult
-    type: ApplyResult
-    description: Result of applying fixes (--fix --apply mode)
-  side_effects:
-  - target: qdrant
-    collection: drift-snapshots
-    operation: upsert
-  - target: filesystem
-    operation: write
-    description: Writes to ~/.cache/hapax/drift/ and profiles/
+  - name: drift_items
+    type: list[DriftItem]
+  - name: docs_analyzed
+    type: list[str]
+  - name: summary
+    type: str
+  - name: fixes
+    type: list[DocFix]
+  - name: summary
+    type: str
+  - name: applied
+    type: int
+  - name: skipped
+    type: int
+  - name: errors
+    type: list[str]
+  - name: changed_files
+    type: list[str]
 dependencies:
   runtime:
+  - agent
+  - axiom_patterns
+  - axiom_registry
+  - axiom_tools
+  - ci_discovery
+  - cli
+  - collectors
+  - collectors_infra
+  - config
+  - context_tools
+  - docs
+  - document_registry
+  - fix_apply
+  - fix_context
+  - fixes
+  - freshness
+  - introspect
+  - manifest_fmt
+  - models
+  - notify
   - opentelemetry
+  - operator
+  - probes_alerting
+  - probes_boundary
+  - probes_coverage
+  - probes_deliberation
+  - probes_executive
+  - probes_runtime
+  - probes_single_user
+  - probes_skill
+  - prompt_builder
   - pydantic
   - pydantic_ai
+  - registry_awareness
+  - registry_checks
+  - scanners
+  - shm_readers
+  - sufficiency_probes
+  - system_prompt
+  - watershed
   - yaml
-  internal: []
+  internal:
+  - agents
+  - shared
 execution:
   entry: uv run python -m agents.drift_detector
-  flags:
-  - name: --json
-    description: Machine-readable JSON output
-  - name: --fix
-    description: Generate corrected documentation fragments
-  - name: --apply
-    description: Apply fixes directly to files (requires --fix)
 token_budget:
-  self: 39370
-  note: Estimated from 15 source file(s) at 10 tokens/line
+  self: 39570
+  note: Estimated from 39 source file(s) at 10 tokens/line
