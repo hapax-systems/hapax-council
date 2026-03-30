@@ -56,6 +56,7 @@ export function registerTerrainCommands(
     description: "Focus a terrain region, cycle its depth if already focused, or unfocus if null",
     args: {
       region: { type: "string", description: "Region name or null to unfocus" },
+      depth: { type: "string", description: "Optional: set depth directly (surface/stratum/core)" },
     },
     execute(args): CommandResult {
       const region = args.region;
@@ -68,6 +69,16 @@ export function registerTerrainCommands(
 
       if (!isRegion(region)) {
         return { ok: false, error: `Invalid region: ${String(region)}` };
+      }
+
+      // explicit depth provided → focus region and set depth directly
+      if (args.depth !== undefined && args.depth !== null) {
+        if (!isDepth(args.depth)) {
+          return { ok: false, error: `Invalid depth: ${String(args.depth)}` };
+        }
+        actions.setFocusedRegion(region);
+        actions.setDepth(region, args.depth);
+        return { ok: true };
       }
 
       const state = getState();

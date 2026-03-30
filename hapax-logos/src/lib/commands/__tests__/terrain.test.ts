@@ -102,6 +102,22 @@ describe("terrain domain commands", () => {
         expect(result.ok).toBe(true);
       }
     });
+
+    it("accepts explicit depth parameter", async () => {
+      // Focus ground (goes to stratum by cycling)
+      await registry.execute("terrain.focus", { region: "ground" });
+      // Now set depth directly to core
+      const result = await registry.execute("terrain.focus", { region: "ground", depth: "core" });
+      expect(result.ok).toBe(true);
+      expect(stateHolder.current.depths.ground).toBe("core");
+    });
+
+    it("focuses and sets depth in one call for unfocused region", async () => {
+      const result = await registry.execute("terrain.focus", { region: "watershed", depth: "core" });
+      expect(result.ok).toBe(true);
+      expect(stateHolder.current.focusedRegion).toBe("watershed");
+      expect(stateHolder.current.depths.watershed).toBe("core");
+    });
   });
 
   // ── terrain.depth.set ──────────────────────────────────────────────────────
