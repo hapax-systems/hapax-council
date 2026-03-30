@@ -42,10 +42,13 @@ class ReverieActuationLoop:
 
     def __init__(self) -> None:
         from agents.effect_graph.capability import ShaderGraphCapability
+        from agents.reverie.governance import build_default_veto_chain, guest_reduction_factor
         from agents.visual_chain import VisualChainCapability
 
         self._shader_cap = ShaderGraphCapability()
         self._visual_chain = VisualChainCapability(decay_rate=0.02)
+        self._veto_chain = build_default_veto_chain()
+        self._guest_reduction = guest_reduction_factor
         self._last_tick = time.monotonic()
         self._tick_count = 0
 
@@ -63,6 +66,25 @@ class ReverieActuationLoop:
         dt = now - self._last_tick
         self._last_tick = now
         self._tick_count += 1
+
+        # 0. Governance gate — check vetoes before any actuation
+        from agents.reverie.governance import read_consent_phase
+
+        stimmung = self._read_stimmung()
+        consent_phase = read_consent_phase()
+        gov_ctx = {
+            "consent_phase": consent_phase,
+            "stance": stimmung.get("stance", "nominal") if stimmung else "nominal",
+        }
+        allowed, reason = self._veto_chain.evaluate(gov_ctx)
+        if not allowed:
+            if self._tick_count % 30 == 1:  # log once per 30s
+                log.info("Visual actuation vetoed: %s", reason)
+            self._write_uniforms(None, stimmung)  # write minimal uniforms
+            return
+
+        # Guest reduction factor (0.6 when guest present, 1.0 when alone)
+        reduction = self._guest_reduction(consent_phase)
 
         # 1. Consume shader graph impingements
         while self._shader_cap.has_pending():
@@ -93,10 +115,15 @@ class ReverieActuationLoop:
                     if target > current:
                         self._visual_chain._levels[full_name] = target
 
-        # 6. Write visual chain state (for Rust StateReader)
+        # 6. Apply guest reduction to all chain levels
+        if reduction < 1.0:
+            for name in self._visual_chain._levels:
+                self._visual_chain._levels[name] *= reduction
+
+        # 7. Write visual chain state (for Rust StateReader)
         self._visual_chain.write_state()
 
-        # 7. Write merged uniforms
+        # 8. Write merged uniforms
         self._write_uniforms(imagination, stimmung)
 
     def _apply_shader_impingement(self, imp: Any) -> None:
