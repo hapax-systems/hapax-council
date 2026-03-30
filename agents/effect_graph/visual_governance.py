@@ -15,9 +15,9 @@ from __future__ import annotations
 import math
 import time
 
+from agents.effect_graph._governance_primitives import Candidate, FallbackChain, Veto, VetoChain
 from agents.effect_graph.types import PresetFamily
 from shared.capability import SystemContext
-from shared.governance import Candidate, FallbackChain, Veto, VetoChain
 
 # ── Atmospheric Layer ─────────────────────────────────────────────────────────
 

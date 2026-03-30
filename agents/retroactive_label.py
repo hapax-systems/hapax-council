@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 from collections import Counter
 
 try:
@@ -22,7 +23,45 @@ except ImportError:
     pass
 
 from shared.config import get_qdrant
-from shared.governance.person_extract import extract_emails, extract_person_ids
+
+# ── Vendored from shared/governance/person_extract.py ─────────────────────────
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+
+
+def extract_person_ids(
+    content: str,
+    metadata: dict | None = None,
+    known_persons: frozenset[str] = frozenset(),
+) -> frozenset[str]:
+    """Extract person identifiers from content and/or structured metadata."""
+    ids: set[str] = set()
+    if metadata:
+        for key in ("people", "attendees"):
+            val = metadata.get(key)
+            if isinstance(val, list):
+                ids.update(str(v) for v in val if v)
+            elif isinstance(val, str) and val:
+                ids.add(val)
+        for key in ("from", "to", "sender", "organizer"):
+            val = metadata.get(key)
+            if isinstance(val, str) and val:
+                emails = _EMAIL_RE.findall(val)
+                ids.update(emails)
+                if not emails:
+                    ids.add(val)
+    ids.update(_EMAIL_RE.findall(content))
+    if known_persons:
+        content_lower = content.lower()
+        for person in known_persons:
+            if person.lower() in content_lower:
+                ids.add(person)
+    return frozenset(ids)
+
+
+def extract_emails(text: str) -> frozenset[str]:
+    """Extract email addresses from text."""
+    return frozenset(_EMAIL_RE.findall(text))
+
 
 log = logging.getLogger(__name__)
 
