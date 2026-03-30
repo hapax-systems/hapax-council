@@ -91,6 +91,16 @@ class DMNDaemon:
         DMN_STATE_DIR.mkdir(parents=True, exist_ok=True)
         log.info("DMN daemon starting")
 
+        # Bootstrap Reverie's quiescent substrate before entering loops.
+        # Analogous to Daimonion's subsystem init before cognitive loop starts.
+        try:
+            from agents.reverie.bootstrap import write_substrate_plan
+
+            if write_substrate_plan():
+                log.info("Reverie substrate bootstrapped")
+        except Exception:
+            log.warning("Reverie bootstrap failed", exc_info=True)
+
         asyncio.create_task(self._imagination_loop())
         asyncio.create_task(self._resolver_loop())
 
