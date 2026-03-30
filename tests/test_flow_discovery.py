@@ -117,8 +117,16 @@ def test_composite_emergent():
 
 
 def test_composite_dormant():
-    """Declared only = dormant."""
-    declared = [{"source": "a", "target": "b", "active": True, "label": "flow"}]
+    """Declared with stale source = dormant."""
+    declared = [{"source": "a", "target": "b", "active": False, "label": "flow"}]
     observed: set[tuple[str, str]] = set()
     result = composite_edges(declared, observed)
     assert result[0]["edge_type"] == "dormant"
+
+
+def test_composite_active_declared_is_confirmed():
+    """Declared with active source = confirmed even without observation."""
+    declared = [{"source": "a", "target": "b", "active": True, "label": "flow"}]
+    observed: set[tuple[str, str]] = set()
+    result = composite_edges(declared, observed)
+    assert result[0]["edge_type"] == "confirmed"

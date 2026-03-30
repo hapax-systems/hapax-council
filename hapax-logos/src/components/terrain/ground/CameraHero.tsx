@@ -153,7 +153,7 @@ function SecondaryStrip({
   onSelect: (role: string) => void;
 }) {
   return (
-    <div className="z-20 flex gap-[3px] bg-black shrink-0" style={{ height: 36 }}>
+    <div className="z-20 flex gap-[3px] bg-black shrink-0 relative" style={{ height: 56 }}>
       {cameras.map((role) => (
         <SecondaryThumb key={role} role={role} onClick={() => onSelect(role)} />
       ))}
@@ -170,7 +170,7 @@ function SecondaryThumb({ role, onClick }: { role: string; onClick: () => void }
         e.stopPropagation();
         onClick();
       }}
-      className="flex-1 min-w-0 overflow-hidden border border-zinc-700 transition-colors hover:border-zinc-400"
+      className="flex-1 min-w-0 overflow-hidden border border-zinc-700 transition-colors hover:border-zinc-400 cursor-pointer"
       title={role}
     >
       <img ref={imgRef} className="h-full w-full object-cover bg-black" alt={role} />

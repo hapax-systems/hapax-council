@@ -69,8 +69,9 @@ def test_activate_sets_shader(pipeline, compiler):
     pipeline._slots = mocks
     pipeline.activate_plan(plan)
 
-    frag_calls = [c for c in mocks[0].set_property.call_args_list if c[0][0] == "fragment"]
-    assert any("void main()" in c[0][1] for c in frag_calls)
+    # Shader source is stored in pending frag for GL-thread compilation
+    assert pipeline._slot_pending_frag[0] is not None
+    assert "void main()" in pipeline._slot_pending_frag[0]
 
 
 def test_find_slot(pipeline, compiler):

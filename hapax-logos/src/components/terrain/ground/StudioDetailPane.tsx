@@ -52,15 +52,14 @@ export function StudioDetailPane({
       .catch(() => {});
   }, []);
 
-  // Current layer mode
-  const isComposite = effectSourceId.startsWith("fx-") && !smoothMode;
-  const isLive = effectSourceId === "camera" && !smoothMode;
+  // Layers are combinable: preset controls compositor FX, source controls transport
+  const hasPreset = effectSourceId.startsWith("fx-") || !!activePreset;
+  const isLive = !smoothMode;
   const isHls = smoothMode;
 
   const activatePreset = (presetName: string) => {
     setActivePresetCtx(presetName);
     const fxSource = `fx-${presetName}`;
-    setSmoothMode(false);
     setEffectSourceId(fxSource);
     selectEffect(fxSource);
     api.post(`/studio/presets/${presetName}/activate`).catch(() => {});
@@ -68,8 +67,6 @@ export function StudioDetailPane({
 
   const activateLive = () => {
     setSmoothMode(false);
-    setEffectSourceId("camera");
-    selectEffect("camera");
   };
 
   const activateHls = () => {
@@ -150,7 +147,7 @@ export function StudioDetailPane({
         {/* COMPOSITE */}
         <LayerRow
           label="Composite"
-          active={isComposite}
+          active={hasPreset}
           onActivate={() => {
             const preset = activePreset || presets[0]?.name;
             if (preset) activatePreset(preset);
@@ -163,13 +160,13 @@ export function StudioDetailPane({
                 onClick={() => activatePreset(p.name)}
                 title={p.display_name}
                 className={`rounded px-1 py-1 text-left text-[9px] transition-colors ${
-                  isComposite && activePreset === p.name
+                  hasPreset && activePreset === p.name
                     ? "bg-zinc-800 text-zinc-200"
                     : "text-zinc-500 hover:bg-zinc-800/30 hover:text-zinc-400"
                 }`}
                 style={{
                   borderLeft: `2px solid ${
-                    isComposite && activePreset === p.name
+                    hasPreset && activePreset === p.name
                       ? "var(--color-yellow-400)"
                       : "transparent"
                   }`,
@@ -189,7 +186,7 @@ export function StudioDetailPane({
         >
           <PaletteStrip
             presets={presets}
-            activePreset={isLive ? activePreset ?? undefined : undefined}
+            activePreset={activePreset ?? undefined}
             onSelect={activatePreset}
           />
         </LayerRow>
@@ -205,7 +202,7 @@ export function StudioDetailPane({
         >
           <PaletteStrip
             presets={presets}
-            activePreset={isHls ? activePreset ?? undefined : undefined}
+            activePreset={activePreset ?? undefined}
             onSelect={activatePreset}
           />
         </LayerRow>

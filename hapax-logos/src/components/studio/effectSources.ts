@@ -1,5 +1,6 @@
 /** Available sources for live/smooth layer selection. */
 import { api } from "../../api/client";
+import { LOGOS_API_URL } from "../../config";
 
 export interface EffectSource {
   id: string;
@@ -35,7 +36,7 @@ export const EFFECT_SOURCES: EffectSource[] = [
  */
 export function sourceUrl(id: string): string | undefined {
   if (id === "camera") return undefined;
-  return "/api/studio/stream/fx";
+  return `${LOGOS_API_URL}/studio/stream/fx`;
 }
 
 /** Map frontend source IDs to backend preset names.

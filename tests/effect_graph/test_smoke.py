@@ -1046,6 +1046,8 @@ class TestPresetParsing:
 
     def test_all_presets_have_layer_source(self, preset_files: list[Path]):
         for p in preset_files:
+            if p.stem.startswith("reverie_"):
+                continue  # Reverie presets are generative (noise_gen root, no @live)
             raw = json.loads(p.read_text())
             g = EffectGraph(**raw)
             has_layer = any(e[0].startswith("@") for e in g.edges)
@@ -1061,7 +1063,8 @@ class TestPresetCompilation:
             g = EffectGraph(**raw)
             plan = compiler.compile(g)
             assert len(plan.steps) >= 2, f"{p.stem} compiled to fewer than 2 steps"
-            assert plan.layer_sources, f"{p.stem} has no layer sources"
+            if not p.stem.startswith("reverie_"):
+                assert plan.layer_sources, f"{p.stem} has no layer sources"
 
     def test_all_preset_node_types_exist(self, registry: ShaderRegistry):
         """Every node type used in presets must exist in the registry."""

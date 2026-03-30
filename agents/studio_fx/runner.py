@@ -16,9 +16,9 @@ from agents.studio_fx.perception import PerceptionReader, PerceptionSnapshot
 log = logging.getLogger(__name__)
 
 SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
-# Read the RAW compositor output, not the GL-effected one.
-# fx-snapshot.jpg has the old GStreamer shader chain applied;
-# snapshot.jpg is the clean composited multi-camera tile.
+# Read the clean (pre-FX) compositor output.
+# snapshot.jpg is written before the inline GL effects chain.
+# fx-snapshot.jpg carries the effected output (same as v4l2sink/HLS).
 INPUT_PATH = SNAPSHOT_DIR / "snapshot.jpg"
 FX_REQUEST_PATH = SNAPSHOT_DIR / "fx-request.txt"
 

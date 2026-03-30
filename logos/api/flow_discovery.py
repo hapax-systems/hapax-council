@@ -152,7 +152,11 @@ def composite_edges(
 ) -> list[dict]:
     """Merge declared and observed edges, classify each.
 
-    ``edge_type``: confirmed (declared+observed), emergent (observed only), dormant (declared only).
+    ``edge_type``:
+    - confirmed: declared edge whose source node has fresh state data (active=True),
+      OR explicitly observed in SHM flow
+    - emergent: observed in SHM but not declared (unexpected data flow)
+    - dormant: declared but source node is stale/offline
     """
     result: list[dict] = []
     declared_pairs: set[tuple[str, str]] = set()
@@ -160,7 +164,10 @@ def composite_edges(
     for edge in declared:
         pair = (edge["source"], edge["target"])
         declared_pairs.add(pair)
-        edge_type = "confirmed" if pair in observed else "dormant"
+        if pair in observed or edge.get("active", False):
+            edge_type = "confirmed"
+        else:
+            edge_type = "dormant"
         result.append({**edge, "edge_type": edge_type})
 
     for src, tgt in observed:

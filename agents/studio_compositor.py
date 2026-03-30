@@ -696,7 +696,9 @@ class StudioCompositor:
                 continue
             self._add_camera_branch(pipeline, compositor, cam, tile, fps)
 
-        # Output chain: compositor -> cudadownload -> BGRA -> cairooverlay -> tee
+        # Output chain: compositor -> cudadownload -> BGRA -> cairooverlay -> pre_fx_tee
+        # Pre-FX tee splits: clean snapshot (for studio_fx) AND inline FX chain
+        # FX chain feeds output_tee which carries effected frames to all display outputs
         download = Gst.ElementFactory.make("cudadownload", "download")
         convert_bgra = Gst.ElementFactory.make("videoconvert", "convert-bgra")
         bgra_caps = Gst.ElementFactory.make("capsfilter", "bgra-caps")
@@ -712,23 +714,44 @@ class StudioCompositor:
         overlay.connect("draw", self._on_draw)
         overlay.connect("caps-changed", self._on_overlay_caps_changed)
 
-        # Tee after overlay for v4l2sink + HLS + snapshot branches
-        output_tee = Gst.ElementFactory.make("tee", "output-tee")
+        # Pre-FX tee: clean snapshot branch + FX chain
+        pre_fx_tee = Gst.ElementFactory.make("tee", "pre-fx-tee")
 
-        elements_pre = [download, convert_bgra, bgra_caps, overlay, output_tee]
+        elements_pre = [download, convert_bgra, bgra_caps, overlay, pre_fx_tee]
         for el in elements_pre:
             if el is None:
                 raise RuntimeError("Failed to create GStreamer element")
             pipeline.add(el)
 
-        # Link compositor -> download -> convert_bgra -> bgra_caps -> overlay -> tee
+        # Link compositor -> download -> convert_bgra -> bgra_caps -> overlay -> pre_fx_tee
         prev = compositor
         for el in elements_pre:
             if not prev.link(el):
                 raise RuntimeError(f"Failed to link {prev.get_name()} -> {el.get_name()}")
             prev = el
 
-        # v4l2sink branch via tee
+        # Clean snapshot branch (pre-FX, for studio_fx/runner.py)
+        self._add_snapshot_branch(pipeline, pre_fx_tee)
+
+        # Post-FX output tee — all display outputs branch from here
+        output_tee = Gst.ElementFactory.make("tee", "output-tee")
+        pipeline.add(output_tee)
+
+        # Build inline FX chain: pre_fx_tee → [GL effects] → output_tee
+        fx_ok = self._build_inline_fx_chain(pipeline, pre_fx_tee, output_tee, fps)
+        if not fx_ok:
+            # Fallback: bypass FX, link pre_fx_tee directly to output_tee
+            log.warning("FX chain failed to initialize — bypassing effects")
+            bypass_queue = Gst.ElementFactory.make("queue", "queue-fx-bypass")
+            bypass_queue.set_property("leaky", 2)
+            bypass_queue.set_property("max-size-buffers", 2)
+            pipeline.add(bypass_queue)
+            bypass_queue.link(output_tee)
+            tee_pad = pre_fx_tee.request_pad(pre_fx_tee.get_pad_template("src_%u"), None, None)
+            queue_sink = bypass_queue.get_static_pad("sink")
+            tee_pad.link(queue_sink)
+
+        # v4l2sink branch (now receives effected frames)
         queue_v4l2 = Gst.ElementFactory.make("queue", "queue-v4l2")
         queue_v4l2.set_property("leaky", 1)  # upstream
         queue_v4l2.set_property("max-size-buffers", 2)
@@ -758,17 +781,14 @@ class StudioCompositor:
         queue_sink_pad = queue_v4l2.get_static_pad("sink")
         tee_pad.link(queue_sink_pad)
 
-        # HLS branch
+        # HLS branch (effected frames)
         if self.config.hls.enabled:
             self._add_hls_branch(pipeline, output_tee, fps)
 
-        # Snapshot branch
-        self._add_snapshot_branch(pipeline, output_tee)
+        # FX snapshot branch (effected frames → fx-snapshot.jpg)
+        self._add_fx_snapshot_branch(pipeline, output_tee)
 
-        # GPU effects branch
-        self._add_effects_branch(pipeline, output_tee)
-
-        # Smooth delay branch (@smooth layer source)
+        # Smooth delay branch (@smooth layer source, effected frames)
         self._add_smooth_delay_branch(pipeline, output_tee)
 
         return pipeline
@@ -791,10 +811,10 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", "snapshot-rate-caps")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=20/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=10/1"),
         )
         encoder = Gst.ElementFactory.make("jpegenc", "snapshot-jpeg")
-        encoder.set_property("quality", 92)
+        encoder.set_property("quality", 85)
         appsink = Gst.ElementFactory.make("appsink", "snapshot-sink")
         appsink.set_property("sync", False)
         appsink.set_property("async", False)
@@ -968,13 +988,17 @@ class StudioCompositor:
         self._fx_smooth_delay = smooth_delay
         log.info("Smooth delay branch: 5.0s delay → smooth-snapshot.jpg")
 
-    def _add_effects_branch(self, pipeline: Any, tee: Any) -> None:
-        """Add GPU-accelerated visual effects branch.
+    def _build_inline_fx_chain(
+        self, pipeline: Any, pre_fx_tee: Any, output_tee: Any, fps: int
+    ) -> bool:
+        """Build GPU-accelerated effects chain inline between pre_fx_tee and output_tee.
 
-        Pipeline: tee → queue → videoconvert(RGBA) → glupload → glcolorconvert →
-                  [8 slot pipeline glshaders] → gleffects → temporalfx →
-                  glshader(post_process) → glcolorconvert → gldownload →
-                  videoconvert → videoscale → videorate → jpegenc → appsink
+        Pipeline: pre_fx_tee → queue → stutter → videoconvert(RGBA) → glupload →
+                  glcolorconvert → [8 slot pipeline glshaders] → gleffects →
+                  temporalfx → crossfade → glshader(post_process) → glcolorconvert →
+                  gldownload → videoconvert → output_tee
+
+        Returns True if chain was built, False if GL elements unavailable.
         """
         Gst = self._Gst
 
@@ -1037,26 +1061,112 @@ class StudioCompositor:
         glcolorconvert_out = Gst.ElementFactory.make("glcolorconvert", "fx-glcc-out")
         gldownload = Gst.ElementFactory.make("gldownload", "fx-gldownload")
 
-        # Scale + rate + JPEG encode for snapshot output
+        # Convert back to CPU after GL download
         fx_convert = Gst.ElementFactory.make("videoconvert", "fx-out-convert")
-        fx_scale = Gst.ElementFactory.make("videoscale", "fx-scale")
-        fx_scale_caps = Gst.ElementFactory.make("capsfilter", "fx-scale-caps")
-        fx_scale_caps.set_property(
-            "caps", Gst.Caps.from_string("video/x-raw,width=1920,height=1080")
-        )
 
-        fx_rate = Gst.ElementFactory.make("videorate", "fx-rate")
-        fx_rate_caps = Gst.ElementFactory.make("capsfilter", "fx-rate-caps")
-        fx_rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=20/1"))
+        # Check all required GL elements exist
+        required = [
+            queue,
+            stutter_el,
+            convert_rgba,
+            rgba_caps,
+            glupload,
+            glcolorconvert_in,
+            glow_effect,
+            post_proc,
+            glcolorconvert_out,
+            gldownload,
+            fx_convert,
+        ]
+        for el in required:
+            if el is None:
+                log.error("Failed to create required FX element — effects disabled")
+                return False
 
-        fx_jpeg = Gst.ElementFactory.make("jpegenc", "fx-jpeg")
-        fx_jpeg.set_property("quality", 92)
+        for el in required:
+            pipeline.add(el)
 
-        fx_sink = Gst.ElementFactory.make("appsink", "fx-snapshot-sink")
-        fx_sink.set_property("sync", False)
-        fx_sink.set_property("async", False)
-        fx_sink.set_property("drop", True)
-        fx_sink.set_property("max-buffers", 1)
+        # Link: queue → stutter → convert_rgba → rgba_caps → glupload → glcolorconvert_in
+        queue.link(stutter_el)
+        stutter_el.link(convert_rgba)
+        convert_rgba.link(rgba_caps)
+        rgba_caps.link(glupload)
+        glupload.link(glcolorconvert_in)
+
+        # Build 8 slot pipeline elements between glcolorconvert_in and glow_effect
+        self._slot_pipeline.build_chain(pipeline, Gst, glcolorconvert_in, glow_effect)
+
+        # Temporal feedback + crossfade (optional plugins)
+        temporal_fx = Gst.ElementFactory.make("temporalfx", "fx-temporal")
+        crossfade_fx = Gst.ElementFactory.make("crossfade", "fx-crossfade")
+
+        prev = glow_effect
+        if temporal_fx is not None:
+            pipeline.add(temporal_fx)
+            temporal_fx.set_property("feedback-amount", 0.0)
+            prev.link(temporal_fx)
+            prev = temporal_fx
+        else:
+            log.error("temporalfx plugin not found! Install libgsttemporalfx.so")
+
+        if crossfade_fx is not None:
+            pipeline.add(crossfade_fx)
+            crossfade_fx.set_property("transition-ms", 500)
+            prev.link(crossfade_fx)
+            prev = crossfade_fx
+        else:
+            log.warning("crossfade plugin not found — preset transitions will be instant")
+
+        # Complete chain: → post_proc → glcc_out → gldownload → fx_convert → output_tee
+        prev.link(post_proc)
+        post_proc.link(glcolorconvert_out)
+        glcolorconvert_out.link(gldownload)
+        gldownload.link(fx_convert)
+        fx_convert.link(output_tee)
+
+        # Link pre_fx_tee → queue (entry point)
+        tee_pad = pre_fx_tee.request_pad(pre_fx_tee.get_pad_template("src_%u"), None, None)
+        queue_sink = queue.get_static_pad("sink")
+        tee_pad.link(queue_sink)
+
+        # Store references for runtime preset switching
+        self._fx_temporal = temporal_fx
+        self._fx_crossfade = crossfade_fx
+        self._fx_stutter = stutter_el
+        self._fx_glow_effect = glow_effect
+        self._fx_post_proc = post_proc
+        self._fx_active_preset = initial_preset.name
+        self._fx_graph_mode = False
+        self._fx_tick = 0
+        log.info("FX chain: inline GL effects before all display outputs")
+        return True
+
+    def _add_fx_snapshot_branch(self, pipeline: Any, tee: Any) -> None:
+        """Add effected frame snapshot: tee → queue → scale → rate → jpeg → appsink.
+
+        Writes effected frames to fx-snapshot.jpg for MJPEG streaming endpoint.
+        """
+        Gst = self._Gst
+
+        queue = Gst.ElementFactory.make("queue", "queue-fx-snap")
+        queue.set_property("leaky", 2)
+        queue.set_property("max-size-buffers", 1)
+        convert = Gst.ElementFactory.make("videoconvert", "fx-snap-convert")
+        scale = Gst.ElementFactory.make("videoscale", "fx-snap-scale")
+        scale_caps = Gst.ElementFactory.make("capsfilter", "fx-snap-scale-caps")
+        scale_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=1920,height=1080"))
+        rate = Gst.ElementFactory.make("videorate", "fx-snap-rate")
+        rate_caps = Gst.ElementFactory.make("capsfilter", "fx-snap-rate-caps")
+        rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=12/1"))
+
+        jpeg = Gst.ElementFactory.make("jpegenc", "fx-snap-jpeg")
+        jpeg.set_property("quality", 85)
+
+        appsink = Gst.ElementFactory.make("appsink", "fx-snapshot-sink")
+        appsink.set_property("sync", False)
+        appsink.set_property("async", False)
+        appsink.set_property("drop", True)
+        appsink.set_property("max-buffers", 1)
 
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1084,100 +1194,27 @@ class StudioCompositor:
                     buf.unmap(mapinfo)
             return 0
 
-        fx_sink.set_property("emit-signals", True)
-        fx_sink.connect("new-sample", _on_fx_sample)
+        appsink.set_property("emit-signals", True)
+        appsink.connect("new-sample", _on_fx_sample)
 
-        # Add all elements to pipeline
-        elements = [
-            queue,
-            stutter_el,
-            convert_rgba,
-            rgba_caps,
-            glupload,
-            glcolorconvert_in,
-            # slot pipeline elements are added by build_chain() below
-            glow_effect,
-            post_proc,
-            glcolorconvert_out,
-            gldownload,
-            fx_convert,
-            fx_scale,
-            fx_scale_caps,
-            fx_rate,
-            fx_rate_caps,
-            fx_jpeg,
-            fx_sink,
-        ]
+        elements = [queue, convert, scale, scale_caps, rate, rate_caps, jpeg, appsink]
         for el in elements:
             if el is None:
-                log.error("Failed to create FX pipeline element")
+                log.error("Failed to create FX snapshot element")
                 return
             pipeline.add(el)
 
-        # Link chain
-        convert_rgba.link(rgba_caps)
-        rgba_caps.link(glupload)
-        glupload.link(glcolorconvert_in)
+        queue.link(convert)
+        convert.link(scale)
+        scale.link(scale_caps)
+        scale_caps.link(rate)
+        rate.link(rate_caps)
+        rate_caps.link(jpeg)
+        jpeg.link(appsink)
 
-        # Build 8 slot pipeline elements between glcolorconvert_in and glow_effect
-        self._slot_pipeline.build_chain(pipeline, Gst, glcolorconvert_in, glow_effect)
-        # Temporal feedback via custom Rust GstGLFilter plugin (FBO ping-pong)
-        #
-        # Single element replaces the entire multi-tap trail system.
-        # Maintains a persistent accumulation texture — each frame blends
-        # with the decayed previous output, creating true compounding trails.
-        temporal_fx = Gst.ElementFactory.make("temporalfx", "fx-temporal")
-        crossfade_fx = Gst.ElementFactory.make("crossfade", "fx-crossfade")
-
-        # Chain: glow_effect → temporalfx → crossfade → post_proc
-        prev = glow_effect
-        if temporal_fx is not None:
-            pipeline.add(temporal_fx)
-            temporal_fx.set_property("feedback-amount", 0.0)
-            prev.link(temporal_fx)
-            prev = temporal_fx
-        else:
-            log.error("temporalfx plugin not found! Install libgsttemporalfx.so")
-
-        if crossfade_fx is not None:
-            pipeline.add(crossfade_fx)
-            crossfade_fx.set_property("transition-ms", 500)
-            prev.link(crossfade_fx)
-            prev = crossfade_fx
-        else:
-            log.warning("crossfade plugin not found — preset transitions will be instant")
-
-        prev.link(post_proc)
-        post_proc.link(glcolorconvert_out)
-        glcolorconvert_out.link(gldownload)
-        gldownload.link(fx_convert)
-        fx_convert.link(fx_scale)
-        fx_scale.link(fx_scale_caps)
-        fx_scale_caps.link(fx_rate)
-        fx_rate.link(fx_rate_caps)
-        fx_rate_caps.link(fx_jpeg)
-        fx_jpeg.link(fx_sink)
-
-        # Link queue to convert (first in chain after queue)
-        queue.link(stutter_el)
-        stutter_el.link(convert_rgba)
-
-        # Explicit tee → queue pad link
         tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
         queue_sink = queue.get_static_pad("sink")
         tee_pad.link(queue_sink)
-
-        # Store references for runtime preset switching
-        self._fx_temporal = temporal_fx
-        self._fx_crossfade = crossfade_fx
-        self._fx_stutter = stutter_el
-        self._fx_glow_effect = glow_effect
-        self._fx_post_proc = post_proc
-        self._fx_active_preset = initial_preset.name
-        self._fx_graph_mode = False
-        self._fx_tick = 0
-
-        log.info("FX branch: glshader pipeline → /dev/shm/hapax-compositor/fx-snapshot.jpg")
 
     def _switch_fx_preset(self, preset_name: str) -> None:
         """Switch the active visual effect preset at runtime.
@@ -1285,7 +1322,7 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=15/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=5/1"),
         )
         scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
         scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
@@ -2008,24 +2045,29 @@ class StudioCompositor:
                 for (node_id, param), value in updates.items():
                     self._on_graph_params_changed(node_id, {param: value})
 
-        # --- Graph mode: push time/resolution to active slots that declare these uniforms ---
-        # Only push uniforms the shader actually declares — pushing undeclared uniforms
-        # via GstStructure corrupts the GL shader state and produces black frames.
+        # --- Graph mode: push time/resolution to active slots ---
+        # Merge time/resolution into each slot's base params so the full uniform set
+        # is pushed every tick. GStreamer glshader replaces ALL uniforms on each set.
         if self._fx_graph_mode and self._slot_pipeline:
             time_uniforms = {"time": t, "width": 1920.0, "height": 1080.0}
             for i, node_type in enumerate(self._slot_pipeline.slot_assignments):
                 if node_type is None:
                     continue
-                # Check which uniforms the node type actually declares
                 defn = (
                     self._slot_pipeline._registry.get(node_type)
                     if self._slot_pipeline._registry
                     else None
                 )
-                if defn and defn.params:
-                    declared = {k: v for k, v in time_uniforms.items() if k in defn.params}
-                    if declared:
-                        self._slot_pipeline._set_uniforms(i, declared)
+                if defn and defn.glsl_source:
+                    implicit = {
+                        k: v for k, v in time_uniforms.items() if f"u_{k}" in defn.glsl_source
+                    }
+                    if implicit:
+                        # Merge INTO base params so modulator updates also carry them
+                        self._slot_pipeline._slot_base_params[i].update(implicit)
+                        self._slot_pipeline._set_uniforms(
+                            i, self._slot_pipeline._slot_base_params[i]
+                        )
 
         return True  # keep timer running
 

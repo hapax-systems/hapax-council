@@ -19,24 +19,73 @@ uniform sampler2D tex;
 void main() { gl_FragColor = texture2D(tex, v_texcoord); }
 """
 
+GL_FRAGMENT_SHADER = 0x8B30
+
 
 class SlotPipeline:
-    """Manages a fixed chain of N glshader slots with runtime shader hot-swap."""
+    """Manages a fixed chain of N glshader slots with runtime shader hot-swap.
+
+    Uses the ``create-shader`` signal to compile shaders on the GL thread,
+    which is the only way to hot-swap shaders on a PLAYING pipeline.
+    ``set_property("fragment", ...)`` is ignored after pipeline start.
+    """
 
     def __init__(self, registry: ShaderRegistry, num_slots: int = 8) -> None:
         self._registry = registry
         self._num_slots = num_slots
         self._slots: list[Any] = []
         self._slot_assignments: list[str | None] = [None] * num_slots
+        self._slot_base_params: list[dict[str, Any]] = [{} for _ in range(num_slots)]
+        self._slot_pending_frag: list[str | None] = [None] * num_slots
 
     def create_slots(self, Gst: Any) -> list[Any]:
-        """Create N glshader slot elements. Call before adding to pipeline."""
+        """Create N glshader slot elements with create-shader callbacks."""
         self._slots = []
+        self._slot_base_params = [{} for _ in range(self._num_slots)]
+        self._slot_pending_frag = [None] * self._num_slots
+
         for i in range(self._num_slots):
             slot = Gst.ElementFactory.make("glshader", f"effect-slot-{i}")
             slot.set_property("fragment", PASSTHROUGH_SHADER)
+            slot.connect("create-shader", self._on_create_shader, i)
             self._slots.append(slot)
         return list(self._slots)
+
+    def _on_create_shader(self, element: Any, slot_idx: int) -> Any:
+        """GL-thread callback: compile pending fragment shader for a slot."""
+        frag = self._slot_pending_frag[slot_idx]
+        if frag is None:
+            return None  # use default
+
+        try:
+            import gi
+
+            gi.require_version("GstGL", "1.0")
+            from gi.repository import GstGL
+
+            ctx = element.get_property("context")
+            if ctx is None:
+                log.error("No GL context for slot %d", slot_idx)
+                return None
+
+            shader = GstGL.GLShader.new(ctx)
+            vert_stage = GstGL.GLSLStage.new_default_vertex(ctx)
+            frag_stage = GstGL.GLSLStage.new_with_string(
+                ctx,
+                GL_FRAGMENT_SHADER,
+                GstGL.GLSLVersion.NONE,
+                GstGL.GLSLProfile.ES | GstGL.GLSLProfile.COMPATIBILITY,
+                frag,
+            )
+            shader.compile_attach_stage(vert_stage)
+            shader.compile_attach_stage(frag_stage)
+            shader.link()
+            node = self._slot_assignments[slot_idx] or "?"
+            log.info("GL compiled shader for slot %d (%s)", slot_idx, node)
+            return shader
+        except Exception:
+            log.exception("Failed to compile shader for slot %d", slot_idx)
+            return None
 
     def link_chain(self, upstream: Any, downstream: Any) -> None:
         """Link slots between upstream and downstream. Call after pipeline.add()."""
@@ -63,12 +112,12 @@ class SlotPipeline:
             return
 
         self._slot_assignments = [None] * self._num_slots
-        for slot in self._slots:
-            try:
-                slot.set_property("fragment", PASSTHROUGH_SHADER)
-                slot.set_property("update-shader", True)
-            except Exception:
-                pass
+        self._slot_base_params = [{} for _ in range(self._num_slots)]
+
+        # Reset unused slots to passthrough
+        for i in range(self._num_slots):
+            self._slot_pending_frag[i] = PASSTHROUGH_SHADER
+            self._slots[i].set_property("update-shader", True)
 
         slot_idx = 0
         for step in plan.steps:
@@ -78,13 +127,11 @@ class SlotPipeline:
                 log.warning("More nodes than slots (%d) — truncating", self._num_slots)
                 break
             if step.shader_source:
-                try:
-                    self._slots[slot_idx].set_property("fragment", step.shader_source)
-                    self._slots[slot_idx].set_property("update-shader", True)
-                except Exception:
-                    log.exception("Failed to set shader for slot %d (%s)", slot_idx, step.node_type)
-                self._set_uniforms(slot_idx, step.params)
+                self._slot_pending_frag[slot_idx] = step.shader_source
                 self._slot_assignments[slot_idx] = step.node_type
+                self._slot_base_params[slot_idx] = dict(step.params)
+                self._slots[slot_idx].set_property("update-shader", True)
+                self._set_uniforms(slot_idx, step.params)
                 slot_idx += 1
 
         log.info("Activated plan '%s': %d/%d slots used", plan.name, slot_idx, self._num_slots)
@@ -97,10 +144,14 @@ class SlotPipeline:
         return None
 
     def update_node_uniforms(self, node_type: str, params: dict[str, Any]) -> None:
-        """Update uniforms for a node by finding its slot."""
+        """Update uniforms for a node by finding its slot.
+
+        Merges into base params so subsequent _set_uniforms calls include everything.
+        """
         slot_idx = self.find_slot_for_node(node_type)
         if slot_idx is not None:
-            self._set_uniforms(slot_idx, params)
+            self._slot_base_params[slot_idx].update(params)
+            self._set_uniforms(slot_idx, self._slot_base_params[slot_idx])
 
     def _set_uniforms(self, slot_idx: int, params: dict[str, Any]) -> None:
         """Build uniform string from params and set on slot element."""
@@ -118,8 +169,6 @@ class SlotPipeline:
                     parts.append(f"u_{key}=(float){float(idx)}")
         if not parts:
             return
-        # Only set uniforms via GstStructure if we have real GStreamer elements
-        # (not mocks in test environment)
         slot = self._slots[slot_idx]
         if hasattr(slot, "_mock_name") or not hasattr(slot, "get_factory"):
             return
@@ -133,7 +182,6 @@ class SlotPipeline:
             result = Gst.Structure.from_string(uniform_str)
             if result and result[0]:
                 slot.set_property("uniforms", result[0])
-                log.debug("Set uniforms on slot %d: %s", slot_idx, uniform_str)
             else:
                 log.warning("Failed to parse uniform string: %s", uniform_str)
         except (ImportError, ValueError):
