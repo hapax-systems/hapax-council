@@ -356,8 +356,8 @@ def format_digest_human(digest: Digest) -> str:
 
 def send_notification(digest: Digest) -> None:
     """Send digest notification via ntfy + desktop (shared.notify)."""
-    from shared.notify import obsidian_uri
-    from shared.notify import send_notification as _notify
+    from agents._notify import obsidian_uri
+    from agents._notify import send_notification as _notify
 
     body_parts = [digest.headline]
     s = digest.stats

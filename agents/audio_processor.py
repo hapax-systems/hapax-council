@@ -1579,7 +1579,7 @@ def _archive_file(raw_path: Path, info: ProcessedFileInfo) -> Path | None:
 
 def _process_new_files(state: AudioProcessorState) -> dict[str, int]:
     """Find and process all unprocessed raw FLAC files."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     files = _find_unprocessed_files(RAW_DIR, state)
@@ -1700,7 +1700,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="audio-processor", level="DEBUG" if args.verbose else None)
 

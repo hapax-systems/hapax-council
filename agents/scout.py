@@ -637,7 +637,7 @@ def send_notification(report: ScoutReport) -> None:
     summary = f"Scout: {len(actionable)} component(s) need attention"
     body = "\n".join(f"- {r.component}: {r.tier}" for r in actionable[:3])
 
-    from shared.notify import send_notification as _notify
+    from agents._notify import send_notification as _notify
 
     _notify("Horizon Scan", f"{summary}\n{body}", priority="default", tags=["telescope"])
 
@@ -663,7 +663,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="scout")
 

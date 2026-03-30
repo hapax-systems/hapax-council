@@ -903,8 +903,8 @@ def format_briefing_human(briefing: Briefing) -> str:
 
 def send_notification(briefing: Briefing) -> None:
     """Send briefing notification via ntfy + desktop (shared.notify)."""
-    from shared.notify import briefing_uri
-    from shared.notify import send_notification as _notify
+    from agents._notify import briefing_uri
+    from agents._notify import send_notification as _notify
 
     summary = briefing.headline
     body_parts = [summary]

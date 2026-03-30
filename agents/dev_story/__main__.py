@@ -139,7 +139,7 @@ def main() -> None:
     parser.add_argument("--correlations", action="store_true", help="Show correlation quality")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="dev-story")
 

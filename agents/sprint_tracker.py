@@ -380,7 +380,7 @@ def _emit_gate_nudge(gate_fm: dict) -> None:
 
     # Desktop/ntfy notification
     try:
-        from shared.notify import send_notification
+        from agents._notify import send_notification
 
         send_notification(
             title=f"Sprint Gate {gate_fm['id']} FAILED",

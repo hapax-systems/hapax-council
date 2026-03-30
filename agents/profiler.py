@@ -1835,7 +1835,7 @@ async def run_auto() -> None:
     Designed for systemd timer / cron invocation. Exits quickly (no LLM calls)
     when nothing has changed. Logs to stderr for journal compatibility.
     """
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="profiler")
 

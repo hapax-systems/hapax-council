@@ -769,7 +769,7 @@ def _correlate_window(
 
 def _run_correlation(state: CorrelatorState) -> dict[str, int]:
     """Run the full correlation pipeline."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     log.info("Discovering audio sidecars...")
     audio_sidecars = _discover_audio_sidecars()
@@ -1024,7 +1024,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="av-correlator", level="DEBUG" if args.verbose else None)
 

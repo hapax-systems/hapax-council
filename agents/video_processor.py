@@ -914,7 +914,7 @@ def _process_segment(
 
 def _process_new_segments(state: VideoProcessorState) -> dict[str, int]:
     """Find and process all unprocessed video segments."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     segments = _find_unprocessed_segments(state)
 
@@ -1065,7 +1065,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="video-processor", level="DEBUG" if args.verbose else None)
 

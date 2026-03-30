@@ -578,7 +578,7 @@ def _print_stats(state: GitSyncState) -> None:
 
 def run_full_sync() -> None:
     """Full sync of all repos within the rolling window."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     state = _load_state()
     results = _full_sync(state)
@@ -610,7 +610,7 @@ def run_full_sync() -> None:
 
 def run_auto() -> None:
     """Incremental git sync."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     state = _load_state()
 
@@ -672,7 +672,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="git-sync", level="DEBUG" if args.verbose else None)
 

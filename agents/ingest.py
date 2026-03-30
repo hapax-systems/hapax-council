@@ -31,7 +31,7 @@ RAG_SOURCES_DIR = _HAPAX_HOME / "documents" / "rag-sources"
 RAG_INGEST_STATE_DIR = _HAPAX_HOME / ".cache" / "rag-ingest"
 HAPAX_PROJECTS_DIR = _HAPAX_HOME / "projects"
 
-from shared.log_setup import configure_logging
+from agents._log_setup import configure_logging
 
 configure_logging(agent="ingest")
 log = logging.getLogger("rag-ingest")

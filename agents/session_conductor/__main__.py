@@ -45,7 +45,7 @@ def _sock_path(role: str) -> Path:
 
 
 def cmd_start(args: argparse.Namespace) -> None:
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent=f"session-conductor-{args.role}")
 

@@ -267,7 +267,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="demo-eval", level="WARNING")
     # Only show our own messages

@@ -555,7 +555,7 @@ def format_report_md(report: MaintenanceReport) -> str:
 
 def send_notification(report: MaintenanceReport) -> None:
     """Send notification if maintenance did work or has warnings."""
-    from shared.notify import send_notification as _notify
+    from agents._notify import send_notification as _notify
 
     work_done = report.total_pruned + report.total_merged
     has_warnings = bool(report.warnings)

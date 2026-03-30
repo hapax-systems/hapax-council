@@ -438,7 +438,7 @@ def main() -> None:
     parser.add_argument("--output", choices=["json", "markdown"], default="json")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="sdlc-metrics")
 

@@ -580,7 +580,7 @@ def run_auth() -> None:
 
 def run_full_sync() -> None:
     """Full calendar sync."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     service = _get_calendar_service()
     state = _load_state()
@@ -602,7 +602,7 @@ def run_full_sync() -> None:
 
 def run_auto() -> None:
     """Incremental sync."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     service = _get_calendar_service()
     state = _load_state()
@@ -651,7 +651,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="gcalendar-sync", level="DEBUG" if args.verbose else None)
 

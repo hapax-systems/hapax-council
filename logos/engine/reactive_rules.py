@@ -56,8 +56,8 @@ async def _handle_config_changed(*, path: str) -> str:
 
 async def _handle_sdlc_event(*, path: str) -> str:
     """Send notification and refresh slow cache for SDLC events."""
+    from logos._notify import send_notification
     from logos.api.cache import cache
-    from shared.notify import send_notification
 
     await asyncio.to_thread(
         send_notification,
@@ -720,7 +720,7 @@ async def _handle_consent_transition(*, from_phase: str, to_phase: str) -> str:
     _log.info("CONSENT transition: %s → %s", from_phase, to_phase)
 
     if to_phase == "consent_pending":
-        from shared.notify import send_notification
+        from logos._notify import send_notification
 
         await asyncio.to_thread(
             send_notification,
@@ -729,7 +729,7 @@ async def _handle_consent_transition(*, from_phase: str, to_phase: str) -> str:
             priority="high",
         )
     elif to_phase == "no_guest" and from_phase in ("consent_pending", "consent_refused"):
-        from shared.notify import send_notification
+        from logos._notify import send_notification
 
         await asyncio.to_thread(
             send_notification,

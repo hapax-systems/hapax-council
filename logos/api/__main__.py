@@ -24,7 +24,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from logos._log_setup import configure_logging
 
     configure_logging(agent="logos", level="DEBUG" if args.verbose else None)
 

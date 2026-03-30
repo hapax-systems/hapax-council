@@ -529,7 +529,7 @@ def _print_stats(state: ChromeSyncState) -> None:
 
 def run_full_sync() -> None:
     """Full sync of Chrome history and bookmarks."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     state = _load_state()
     domains_written, bookmarks_updated = _full_sync(state)
@@ -552,7 +552,7 @@ def run_full_sync() -> None:
 
 def run_auto() -> None:
     """Incremental Chrome sync."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     state = _load_state()
 
@@ -601,7 +601,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="chrome-sync", level="DEBUG" if args.verbose else None)
 

@@ -819,7 +819,7 @@ def run_auth() -> None:
 
 def run_full_scan() -> None:
     """Full scan + sync all files."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     service = _get_drive_service()
     state = _load_state()
@@ -859,7 +859,7 @@ def run_full_scan() -> None:
 
 def run_auto() -> None:
     """Incremental sync — changes since last run."""
-    from shared.notify import send_notification
+    from agents._notify import send_notification
 
     service = _get_drive_service()
     state = _load_state()
@@ -939,7 +939,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="gdrive-sync", level="DEBUG" if args.verbose else None)
 
