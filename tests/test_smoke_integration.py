@@ -29,7 +29,7 @@ from shared.capability_adapters import PerceptionBackendAdapter
 from shared.context import ContextAssembler, EnrichmentContext
 from shared.expression import (
     ExpressionCoordinator,
-    map_fragment_to_preset,
+    map_fragment_to_material_uniform,
     map_fragment_to_visual,
 )
 from shared.governance import FallbackChain, Veto, VetoChain
@@ -473,12 +473,12 @@ class TestExpressionCoordinatorCrossModal(unittest.TestCase):
         assert result["noise.scale"] == 0.5
         assert result["color.temperature"] == 0.3
 
-    def test_material_to_preset_mapping(self):
-        assert map_fragment_to_preset({"material": "water"}) == "voronoi_crystal"
-        assert map_fragment_to_preset({"material": "Fire"}) == "feedback_preset"
-        assert map_fragment_to_preset({"material": "void"}) == "silhouette"
-        assert map_fragment_to_preset({"material": "unknown"}) is None
-        assert map_fragment_to_preset({}) is None
+    def test_material_to_uniform_mapping(self):
+        assert map_fragment_to_material_uniform({"material": "water"}) == 0.0
+        assert map_fragment_to_material_uniform({"material": "Fire"}) == 1.0
+        assert map_fragment_to_material_uniform({"material": "void"}) == 4.0
+        assert map_fragment_to_material_uniform({"material": "unknown"}) == 0.0
+        assert map_fragment_to_material_uniform({}) == 0.0
 
 
 if __name__ == "__main__":

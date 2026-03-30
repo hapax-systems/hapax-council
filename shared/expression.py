@@ -88,12 +88,15 @@ FRAGMENT_TO_SHADER: dict[str, str] = {
     "opacity": "master.alpha",
 }
 
-MATERIAL_TO_PRESET: dict[str, str] = {
-    "water": "voronoi_crystal",
-    "fire": "feedback_preset",
-    "earth": "dither",
-    "air": "kaleidodream",
-    "void": "silhouette",
+# Material is a shader UNIFORM in content_layer.wgsl, NOT a preset selector.
+# The substrate graph stays constant; material controls how content interacts
+# with the procedural field (water=flowing, fire=consuming, etc.)
+MATERIAL_TO_UNIFORM: dict[str, float] = {
+    "water": 0.0,
+    "fire": 1.0,
+    "earth": 2.0,
+    "air": 3.0,
+    "void": 4.0,
 }
 
 
@@ -110,12 +113,12 @@ def map_fragment_to_visual(fragment: dict) -> dict[str, float]:
     return result
 
 
-def map_fragment_to_preset(fragment: dict) -> str | None:
-    """Map ImaginationFragment material to a preset name."""
-    material = fragment.get("material")
-    if material and isinstance(material, str):
-        return MATERIAL_TO_PRESET.get(material.lower())
-    return None
+def map_fragment_to_material_uniform(fragment: dict) -> float:
+    """Map ImaginationFragment material to its shader uniform value."""
+    material = fragment.get("material", "water")
+    if isinstance(material, str):
+        return MATERIAL_TO_UNIFORM.get(material.lower(), 0.0)
+    return 0.0
 
 
 def _infer_modality(name: str, cap: Any) -> str:

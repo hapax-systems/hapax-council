@@ -197,6 +197,19 @@ class DMNDaemon:
             except OSError:
                 pass
 
+            # Feed impingements to Reverie's capabilities for visual expression
+            if self._reverie is not None:
+                for imp in impingements:
+                    shader_cap = self._reverie.shader_capability
+                    visual_chain = self._reverie.visual_chain
+                    # ShaderGraphCapability: all imagination-sourced impingements
+                    if imp.source == "imagination":
+                        shader_cap.activate(imp, imp.strength)
+                    # VisualChainCapability: stimmung + evaluative impingements
+                    score = visual_chain.can_resolve(imp)
+                    if score > 0:
+                        visual_chain.activate(imp, score)
+
         # Read TPN active flag (anti-correlation signal from voice daemon)
         try:
             if TPN_ACTIVE_FILE.exists():
