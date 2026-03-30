@@ -23,11 +23,10 @@ from pathlib import Path
 
 log = logging.getLogger("drift_detector")
 
-from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from shared.config import (
+from .config import (
     AI_AGENTS_DIR,
     CLAUDE_CONFIG_DIR,
     HAPAX_HOME,
@@ -36,11 +35,20 @@ from shared.config import (
     HAPAXROMANA_DIR,
     LOGOS_WEB_DIR,
     OBSIDIAN_HAPAX_DIR,
+    PROFILES_DIR,
     get_model,
 )
-from shared.operator import get_system_prompt_fragment
+from .models import (
+    ApplyResult,
+    DocFix,
+    DriftItem,
+    DriftReport,
+    FixReport,
+    InfrastructureManifest,
+)
+from .operator import get_system_prompt_fragment
 
-# Import Langfuse OTel config (side-effect: configures exporter)
+# OTel tracing (langfuse exporter configured by environment if available)
 try:
     from shared import langfuse_config  # noqa: F401
 except ImportError:
@@ -50,30 +58,9 @@ from opentelemetry import trace
 
 _tracer = trace.get_tracer(__name__)
 
-from agents.introspect import InfrastructureManifest, generate_manifest
+from .introspect import generate_manifest
 
-# ── Schemas ──────────────────────────────────────────────────────────────────
-
-
-class DriftItem(BaseModel):
-    """A single discrepancy between documentation and reality."""
-
-    severity: str = Field(description="high, medium, or low")
-    category: str = Field(
-        description="Category: missing_service, extra_service, wrong_port, wrong_version, stale_reference, missing_doc, config_mismatch, goal-gap, axiom-violation, axiom-sufficiency-gap, stale_doc"
-    )
-    doc_file: str = Field(description="Which documentation file contains the drift")
-    doc_claim: str = Field(description="What the documentation says")
-    reality: str = Field(description="What the actual system state is")
-    suggestion: str = Field(description="Suggested fix — either a doc edit or a system change")
-
-
-class DriftReport(BaseModel):
-    """Complete drift analysis."""
-
-    drift_items: list[DriftItem] = Field(default_factory=list)
-    docs_analyzed: list[str] = Field(default_factory=list)
-    summary: str = Field(description="One-paragraph summary of overall drift state")
+# Models are imported from .models
 
 
 # ── Documentation sources ────────────────────────────────────────────────────
@@ -179,14 +166,14 @@ drift_agent = Agent(
 )
 
 # Register on-demand operator context tools
-from shared.context_tools import get_context_tools
+from .context_tools import get_context_tools
 
 for _tool_fn in get_context_tools():
     drift_agent.tool(_tool_fn)
 
 from datetime import UTC
 
-from shared.axiom_tools import get_axiom_tools
+from .axiom_tools import get_axiom_tools
 
 for _tool_fn in get_axiom_tools():
     drift_agent.tool(_tool_fn)
@@ -200,7 +187,7 @@ def scan_axiom_violations() -> list[DriftItem]:
     Patterns loaded from shared/axiom_patterns.txt (not inline).
     """
     with _tracer.start_as_current_span("drift.scan_axiom_violations"):
-        from shared.axiom_patterns import load_t0_patterns, scan_directory
+        from .axiom_patterns import load_t0_patterns, scan_directory
 
         patterns = load_t0_patterns()
         if not patterns:
@@ -234,7 +221,7 @@ def scan_sufficiency_gaps() -> list[DriftItem]:
     """Run sufficiency probes and convert failures to DriftItems."""
     with _tracer.start_as_current_span("drift.scan_sufficiency_gaps"):
         try:
-            from shared.sufficiency_probes import run_probes
+            from .sufficiency_probes import run_probes
         except ImportError:
             return []
 
@@ -277,7 +264,7 @@ def scan_sufficiency_gaps() -> list[DriftItem]:
 
 def _get_implication_tier(impl_id: str) -> str:
     """Look up the tier for an implication ID."""
-    from shared.axiom_registry import load_implications
+    from .axiom_registry import load_implications
 
     if impl_id.startswith("ex-"):
         axiom_id = "executive_function"
@@ -566,7 +553,7 @@ async def detect_drift(manifest: InfrastructureManifest | None = None) -> DriftR
         memory_drift = check_project_memory()
 
         # Run document registry checks (coverage gaps, section validation, mutual awareness)
-        from shared.registry_checks import check_document_registry
+        from .registry_checks import check_document_registry
 
         registry_drift = check_document_registry()
 
@@ -589,7 +576,7 @@ async def detect_drift(manifest: InfrastructureManifest | None = None) -> DriftR
             doc_sections.append(f"### {path}\n```\n{content}\n```")
 
         # Build goals context for goal-capability gap detection
-        from shared.operator import get_goals
+        from .operator import get_goals
 
         goals = get_goals()[:5]
         goals_section = ""
@@ -603,7 +590,7 @@ async def detect_drift(manifest: InfrastructureManifest | None = None) -> DriftR
         # Build axiom compliance section
         axiom_section = ""
         try:
-            from shared.axiom_registry import load_axioms, load_implications
+            from .axiom_registry import load_axioms, load_implications
 
             active_axioms = load_axioms()
             if active_axioms:
@@ -742,25 +729,6 @@ def format_human(report: DriftReport) -> str:
 # ── Fix mode ────────────────────────────────────────────────────────────────
 
 
-class DocFix(BaseModel):
-    """A corrected section of a documentation file."""
-
-    doc_file: str = Field(description="Which documentation file this fix applies to")
-    section_title: str = Field(description="The section or table being corrected")
-    original: str = Field(
-        description="The original text that needs changing (exact match from the doc)"
-    )
-    corrected: str = Field(description="The corrected replacement text")
-    explanation: str = Field(description="Brief explanation of what changed and why")
-
-
-class FixReport(BaseModel):
-    """Collection of documentation fixes."""
-
-    fixes: list[DocFix] = Field(default_factory=list)
-    summary: str = Field(description="One-line summary of all changes")
-
-
 FIX_SYSTEM_PROMPT = """\
 You are a documentation editor for a multi-repo infrastructure system. Given a
 documentation file and a list of discrepancies (drift items), produce precise
@@ -849,7 +817,7 @@ def _build_fix_context(
     if registry is None:
         # Lazy-load registry to avoid import at module level
         try:
-            from shared.document_registry import load_registry
+            from .document_registry import load_registry
 
             registry = load_registry(path=HAPAXROMANA_DIR / "docs" / "document-registry.yaml")
         except Exception:
@@ -986,15 +954,6 @@ def format_fixes(fix_report: FixReport) -> str:
 # ── Apply mode ───────────────────────────────────────────────────────────────
 
 
-class ApplyResult(BaseModel):
-    """Result of applying fixes to documentation files."""
-
-    applied: int = 0
-    skipped: int = 0
-    errors: list[str] = Field(default_factory=list)
-    changed_files: list[str] = Field(default_factory=list)
-
-
 def _resolve_doc_path(doc_file: str) -> Path | None:
     """Resolve a doc_file reference (may use ~) to an absolute Path."""
     expanded = Path(doc_file.replace("~", str(HAPAX_HOME)))
@@ -1125,7 +1084,7 @@ def _git_commit_fixes(changed_files: list[str], fix_count: int) -> bool:
 def _notify_fixes(apply_result: ApplyResult, committed: bool) -> None:
     """Send notification about applied drift fixes."""
     try:
-        from shared.notify import send_notification
+        from .notify import send_notification
     except ImportError:
         log.debug("shared.notify not available, skipping notification")
         return
@@ -1229,8 +1188,6 @@ async def _main_impl() -> None:
                 print("Re-scanning after fixes...", file=sys.stderr)
                 report = await detect_drift(manifest)
                 # Save updated report (same as drift-watchdog)
-                from shared.config import PROFILES_DIR
-
                 report_path = PROFILES_DIR / "drift-report.json"
                 report_path.write_text(report.model_dump_json(indent=2))
                 print(

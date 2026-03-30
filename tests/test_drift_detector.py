@@ -440,7 +440,7 @@ class TestGenerateFixes:
         )
         docs = {"a.md": "content A", "b.md": "content B"}
 
-        with patch("agents.drift_detector.fix_agent") as mock_agent:
+        with patch("agents.drift_detector.agent.fix_agent") as mock_agent:
             mock_agent.run = AsyncMock(return_value=mock_result)
             result = await generate_fixes(report, docs)
 
@@ -478,7 +478,7 @@ class TestGenerateFixes:
             summary="mixed",
         )
 
-        with patch("agents.drift_detector.fix_agent") as mock_agent:
+        with patch("agents.drift_detector.agent.fix_agent") as mock_agent:
             mock_agent.run = AsyncMock(return_value=mock_result)
             await generate_fixes(report, {"a.md": "content"})
 
@@ -533,7 +533,11 @@ class TestBuildFixContext:
 
     def test_returns_context_for_registry_categories(self):
         """Registry categories trigger context generation with archetype details."""
-        from shared.document_registry import Archetype, DocumentRegistry, RepoDeclaration
+        from agents.drift_detector.document_registry import (
+            Archetype,
+            DocumentRegistry,
+            RepoDeclaration,
+        )
 
         items = [
             DriftItem(
@@ -571,7 +575,11 @@ class TestBuildFixContext:
 
     def test_single_purpose_archetype(self):
         """Non-composite archetypes are described as single-purpose."""
-        from shared.document_registry import Archetype, DocumentRegistry, RepoDeclaration
+        from agents.drift_detector.document_registry import (
+            Archetype,
+            DocumentRegistry,
+            RepoDeclaration,
+        )
 
         items = [
             DriftItem(
@@ -605,7 +613,7 @@ class TestBuildFixContext:
 
     def test_coverage_gap_includes_rule_context(self):
         """Coverage-gap items get coverage rule details in context."""
-        from shared.document_registry import CoverageRule, DocumentRegistry
+        from agents.drift_detector.document_registry import CoverageRule, DocumentRegistry
 
         items = [
             DriftItem(
@@ -640,7 +648,7 @@ class TestBuildFixContext:
 
     def test_no_coverage_context_for_non_coverage_items(self):
         """Non-coverage-gap registry items don't get coverage rule details."""
-        from shared.document_registry import CoverageRule, DocumentRegistry
+        from agents.drift_detector.document_registry import CoverageRule, DocumentRegistry
 
         items = [
             DriftItem(
@@ -704,9 +712,9 @@ class TestBuildFixContext:
         )
 
         with (
-            patch("agents.drift_detector.fix_agent") as mock_agent,
+            patch("agents.drift_detector.agent.fix_agent") as mock_agent,
             patch(
-                "agents.drift_detector._build_fix_context",
+                "agents.drift_detector.agent._build_fix_context",
                 return_value="## Document context\n- Archetype: project-context",
             ),
         ):
@@ -725,7 +733,7 @@ class TestDetectDrift:
     @pytest.mark.asyncio
     async def test_no_docs_returns_empty(self):
         """If no documentation files found, returns empty report."""
-        with patch("agents.drift_detector.load_docs", return_value={}):
+        with patch("agents.drift_detector.agent.load_docs", return_value={}):
             report = await detect_drift(manifest=MagicMock())
         assert report.drift_items == []
         assert "No documentation" in report.summary
@@ -741,8 +749,8 @@ class TestDetectDrift:
 
         docs = {"~/CLAUDE.md": "# Some documentation content"}
         with (
-            patch("agents.drift_detector.load_docs", return_value=docs),
-            patch("agents.drift_detector.drift_agent") as mock_agent,
+            patch("agents.drift_detector.agent.load_docs", return_value=docs),
+            patch("agents.drift_detector.agent.drift_agent") as mock_agent,
         ):
             mock_agent.run = AsyncMock(return_value=mock_result)
             report = await detect_drift(manifest=mock_manifest)
@@ -764,8 +772,8 @@ class TestDetectDrift:
 
         long_doc = "x" * 10000
         with (
-            patch("agents.drift_detector.load_docs", return_value={"big.md": long_doc}),
-            patch("agents.drift_detector.drift_agent") as mock_agent,
+            patch("agents.drift_detector.agent.load_docs", return_value={"big.md": long_doc}),
+            patch("agents.drift_detector.agent.drift_agent") as mock_agent,
         ):
             mock_agent.run = AsyncMock(return_value=mock_result)
             await detect_drift(manifest=mock_manifest)
@@ -783,10 +791,10 @@ class TestDetectDrift:
         mock_result.output = DriftReport(drift_items=[], docs_analyzed=[], summary="ok")
 
         with (
-            patch("agents.drift_detector.load_docs", return_value={"a.md": "test"}),
-            patch("agents.drift_detector.drift_agent") as mock_agent,
+            patch("agents.drift_detector.agent.load_docs", return_value={"a.md": "test"}),
+            patch("agents.drift_detector.agent.drift_agent") as mock_agent,
             patch(
-                "agents.drift_detector.generate_manifest",
+                "agents.drift_detector.agent.generate_manifest",
                 new_callable=AsyncMock,
                 return_value=mock_manifest,
             ),

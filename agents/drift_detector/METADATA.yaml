@@ -1,0 +1,44 @@
+module: drift_detector
+purpose: "Drift detection agent: compares live infrastructure against documentation, finds discrepancies using LLM semantic analysis."
+version: 1
+interface:
+  inputs:
+  - name: manifest
+    type: InfrastructureManifest | None
+    description: Pre-collected infrastructure snapshot (generates one if None)
+  outputs:
+  - name: DriftReport
+    type: DriftReport
+    description: Drift items, docs analyzed, summary
+  - name: FixReport
+    type: FixReport
+    description: Proposed documentation fixes (--fix mode)
+  - name: ApplyResult
+    type: ApplyResult
+    description: Result of applying fixes (--fix --apply mode)
+  side_effects:
+  - target: qdrant
+    collection: drift-snapshots
+    operation: upsert
+  - target: filesystem
+    operation: write
+    description: Writes to ~/.cache/hapax/drift/ and profiles/
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - pydantic_ai
+  - yaml
+  internal: []
+execution:
+  entry: uv run python -m agents.drift_detector
+  flags:
+  - name: --json
+    description: Machine-readable JSON output
+  - name: --fix
+    description: Generate corrected documentation fragments
+  - name: --apply
+    description: Apply fixes directly to files (requires --fix)
+token_budget:
+  self: 39370
+  note: Estimated from 15 source file(s) at 10 tokens/line
