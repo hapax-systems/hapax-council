@@ -1,0 +1,72 @@
+{
+    "name": "Reverie Substrate",
+    "description": "Quiescent idle state — self-generated visual field from procedural noise. Reverie's equivalent of Daimonion's mutual silence.",
+    "transition_ms": 2000,
+    "nodes": {
+        "noise": {
+            "type": "noise_gen",
+            "params": {
+                "frequency_x": 3.0,
+                "frequency_y": 2.0,
+                "octaves": 4,
+                "amplitude": 0.5,
+                "speed": 0.15
+            }
+        },
+        "color": {
+            "type": "colorgrade",
+            "params": {
+                "brightness": 0.3,
+                "saturation": 0.3,
+                "contrast": 0.7,
+                "sepia": 0.0,
+                "hue_rotate": 0.0
+            }
+        },
+        "drift": {
+            "type": "drift",
+            "params": {
+                "speed": 0.15,
+                "amplitude": 3,
+                "frequency": 0.8,
+                "coherence": 0.6
+            }
+        },
+        "breath": {
+            "type": "breathing",
+            "params": {
+                "rate": 0.08,
+                "amplitude": 0.02
+            }
+        },
+        "content": {
+            "type": "content_layer",
+            "params": {
+                "salience": 0.0,
+                "intensity": 0.0,
+                "material": 0
+            }
+        },
+        "post": {
+            "type": "postprocess",
+            "params": {
+                "vignette_strength": 0.4,
+                "sediment_strength": 0.05
+            }
+        },
+        "out": {
+            "type": "output",
+            "params": {}
+        }
+    },
+    "edges": [
+        ["noise", "color"],
+        ["color", "drift"],
+        ["drift", "breath"],
+        ["breath", "content"],
+        ["content", "post"],
+        ["post", "out"]
+    ],
+    "modulations": [],
+    "layer_palettes": {}
+}
