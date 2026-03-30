@@ -29,9 +29,12 @@ Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
 # __NV_DISABLE_EXPLICIT_SYNC keeps GPU accel; WEBKIT_DISABLE_DMABUF_RENDERER is software fallback
 # See docs/issues/tauri-wayland-protocol-error.md
 Environment=__NV_DISABLE_EXPLICIT_SYNC=1
-# Force XWayland — native Wayland still triggers SIGKILL via webkit2gtk syncobj
-# bug even with explicit sync disabled. XWayland trades minor overhead for stability.
-Environment=GDK_BACKEND=x11
+# Disable DMA-BUF renderer — native Wayland with NVIDIA triggers SIGKILL via
+# webkit2gtk syncobj bug (gtk#8056). GDK_BACKEND=x11 avoids the crash but GBM
+# buffer creation fails under XWayland, producing a black webview.
+# WEBKIT_DISABLE_DMABUF_RENDERER forces software compositing for the webview
+# while keeping native Wayland for window management.
+Environment=WEBKIT_DISABLE_DMABUF_RENDERER=1
 MemoryMax=4G
 SyslogIdentifier=hapax-logos
 
