@@ -1,0 +1,70 @@
+module: briefing
+purpose: Daily system briefing generator.
+version: 1
+interface:
+  inputs:
+  - name: source
+    type: str
+  - name: age_s
+    type: float | None
+  - name: stale
+    type: bool
+  - name: llm_calls
+    type: int
+  - name: llm_cost
+    type: float
+  - name: llm_errors
+    type: int
+  - name: health_uptime_pct
+    type: float
+  - name: health_current
+    type: str
+  - name: drift_items
+    type: int
+  - name: service_events
+    type: int
+  - name: top_model
+    type: str
+  - name: priority
+    type: str
+  - name: action
+    type: str
+  - name: reason
+    type: str
+  - name: command
+    type: str
+  - name: generated_at
+    type: str
+  - name: hours
+    type: int
+  - name: headline
+    type: str
+  - name: body
+    type: str
+  - name: action_items
+    type: list[ActionItem]
+  - name: stats
+    type: BriefingStats
+  - name: source_freshness
+    type: list[SourceFreshness]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - pydantic_ai
+  - qdrant_client
+  - scripts
+  internal:
+  - agents
+  - logos
+  - shared
+execution:
+  entry: uv run python -m agents.briefing
+  flags:
+  - name: --json
+  - name: --save
+  - name: --hours
+  - name: --notify
+token_budget:
+  self: 7810
+  note: Estimated from 1 source file(s) at 10 tokens/line

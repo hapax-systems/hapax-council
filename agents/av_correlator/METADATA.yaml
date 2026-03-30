@@ -1,0 +1,128 @@
+module: av_correlator
+purpose: Cross-modal audio/video correlation agent.
+version: 1
+interface:
+  inputs:
+  - name: filename
+    type: str
+  - name: path
+    type: Path
+  - name: value_score
+    type: float
+  - name: dominant_classification
+    type: str
+  - name: speech_seconds
+    type: float
+  - name: music_seconds
+    type: float
+  - name: silence_seconds
+    type: float
+  - name: segment_count
+    type: int
+  - name: speaker_count
+    type: int
+  - name: sample_sessions
+    type: int
+  - name: vocal_notes
+    type: int
+  - name: conversations
+    type: int
+  - name: listening_logs
+    type: int
+  - name: timestamp
+    type: datetime
+  - name: filename
+    type: str
+  - name: path
+    type: Path
+  - name: role
+    type: str
+  - name: category
+    type: str
+  - name: value_score
+    type: float
+  - name: people_count
+    type: int
+  - name: max_people
+    type: int
+  - name: motion_score
+    type: float
+  - name: scene_change
+    type: bool
+  - name: ssim
+    type: float
+  - name: disposition
+    type: str
+  - name: timestamp
+    type: datetime
+  - name: window_id
+    type: str
+  - name: window_start
+    type: datetime
+  - name: window_end
+    type: datetime
+  - name: audio_file
+    type: str
+  - name: audio_sidecar_path
+    type: str
+  - name: video_files
+    type: dict[str, str]
+  - name: audio_classification
+    type: str
+  - name: audio_score
+    type: float
+  - name: video_classifications
+    type: dict[str, str]
+  - name: video_scores
+    type: dict[str, float]
+  - name: video_people
+    type: dict[str, int]
+  - name: video_motion
+    type: dict[str, float]
+  - name: joint_category
+    type: str
+  - name: joint_score
+    type: float
+  - name: boosted_audio_score
+    type: float
+  - name: boosted_video_scores
+    type: dict[str, float]
+  - name: speech_seconds
+    type: float
+  - name: music_seconds
+    type: float
+  - name: transcript_snippet
+    type: str
+  - name: speaker_count
+    type: int
+  - name: max_people
+    type: dict[str, int]
+  - name: scene_changes
+    type: dict[str, bool]
+  - name: correlated_at
+    type: float
+  - name: processed_windows
+    type: dict[str, CorrelationWindow]
+  - name: last_run
+    type: float
+  - name: stats
+    type: dict[str, int]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - qdrant_client
+  - yaml
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.av_correlator
+  flags:
+  - name: --correlate
+  - name: --stats
+  - name: --search
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 7980
+  note: Estimated from 1 source file(s) at 10 tokens/line

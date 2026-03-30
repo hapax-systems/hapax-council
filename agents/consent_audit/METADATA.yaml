@@ -1,0 +1,19 @@
+module: consent_audit
+purpose: Historical consent audit — scan for pre-gate person-adjacent data.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - yaml
+  internal: []
+execution:
+  entry: uv run python -m agents.consent_audit
+  flags:
+  - name: --scan
+  - name: --purge
+  - name: --dry-run
+  - name: --confirm
+  - name: --report
+token_budget:
+  self: 1510
+  note: Estimated from 1 source file(s) at 10 tokens/line

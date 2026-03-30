@@ -1,0 +1,20 @@
+module: studio_person_detector
+purpose: Studio Person Detector — lightweight YOLOv8n person detection on camera snapshots.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - ultralytics
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.studio_person_detector
+  flags:
+  - name: --fps
+  - name: --confidence
+  - name: --device
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 960
+  note: Estimated from 1 source file(s) at 10 tokens/line

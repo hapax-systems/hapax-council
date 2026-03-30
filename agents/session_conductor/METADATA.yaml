@@ -1,0 +1,16 @@
+module: session_conductor
+purpose: Session Conductor — deterministic sidecar for Claude Code session automation.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - fnmatch
+  - yaml
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.session_conductor
+token_budget:
+  self: 14020
+  note: Estimated from 12 source file(s) at 10 tokens/line

@@ -1,0 +1,55 @@
+module: scout
+purpose: Horizon scanner for external fitness evaluation.
+version: 1
+interface:
+  inputs:
+  - name: name
+    type: str
+  - name: description
+    type: str
+  - name: url
+    type: str
+  - name: component
+    type: str
+  - name: current
+    type: str
+  - name: tier
+    type: str
+  - name: summary
+    type: str
+  - name: findings
+    type: list[Finding]
+  - name: migration_effort
+    type: str
+  - name: confidence
+    type: str
+  outputs:
+  - name: generated_at
+    type: str
+  - name: components_scanned
+    type: int
+  - name: recommendations
+    type: list[Recommendation]
+  - name: errors
+    type: list[str]
+  - name: skipped
+    type: list[str]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - pydantic_ai
+  - yaml
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.scout
+  flags:
+  - name: --json
+  - name: --save
+  - name: --component
+  - name: --dry-run
+  - name: --notify
+token_budget:
+  self: 5210
+  note: Estimated from 1 source file(s) at 10 tokens/line

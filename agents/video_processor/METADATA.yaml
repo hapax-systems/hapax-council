@@ -1,0 +1,78 @@
+module: video_processor
+purpose: Video segment classification and retention pipeline.
+version: 1
+interface:
+  inputs:
+  - name: frame_index
+    type: int
+  - name: people_count
+    type: int
+  - name: face_count
+    type: int
+  - name: body_count
+    type: int
+  - name: category
+    type: str
+  - name: value_score
+    type: float
+  - name: people_count
+    type: int
+  - name: max_people
+    type: int
+  - name: motion_score
+    type: float
+  - name: scene_change
+    type: bool
+  - name: ssim
+    type: float
+  - name: frame_analyses
+    type: list[FrameAnalysis]
+  - name: filename
+    type: str
+  - name: role
+    type: str
+  - name: processed_at
+    type: float
+  - name: category
+    type: str
+  - name: value_score
+    type: float
+  - name: people_count
+    type: int
+  - name: motion_score
+    type: float
+  - name: scene_change
+    type: bool
+  - name: disposition
+    type: str
+  - name: uploaded
+    type: bool
+  - name: upload_path
+    type: str
+  - name: error
+    type: str
+  - name: processed_files
+    type: dict[str, ProcessedSegmentInfo]
+  - name: last_run
+    type: float
+  - name: stats
+    type: dict[str, float]
+dependencies:
+  runtime:
+  - cv2
+  - numpy
+  - opentelemetry
+  - pydantic
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.video_processor
+  flags:
+  - name: --process
+  - name: --stats
+  - name: --reprocess
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 8600
+  note: Estimated from 1 source file(s) at 10 tokens/line

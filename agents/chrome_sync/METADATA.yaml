@@ -1,0 +1,53 @@
+module: chrome_sync
+purpose: Chrome RAG sync — browsing history and bookmarks.
+version: 1
+interface:
+  inputs:
+  - name: url
+    type: str
+  - name: title
+    type: str
+  - name: domain
+    type: str
+  - name: visit_count
+    type: int
+  - name: last_visit
+    type: datetime | None
+  - name: first_visit
+    type: datetime | None
+  - name: url
+    type: str
+  - name: title
+    type: str
+  - name: folder
+    type: str
+  - name: added_at
+    type: datetime | None
+  - name: last_visit_time
+    type: int
+  - name: domains
+    type: dict[str, int]
+  - name: bookmark_hash
+    type: str
+  - name: last_sync
+    type: float
+  - name: stats
+    type: dict[str, int]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - sqlite3
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.chrome_sync
+  flags:
+  - name: --full-sync
+  - name: --auto
+  - name: --stats
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 4530
+  note: Estimated from 1 source file(s) at 10 tokens/line

@@ -1,0 +1,23 @@
+module: ingest
+purpose: RAG document ingestion pipeline.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - docling
+  - ollama
+  - opentelemetry
+  - qdrant_client
+  - watchdog
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.ingest
+  flags:
+  - name: --bulk-only
+  - name: --watch-only
+  - name: --retry-status
+  - name: --force
+token_budget:
+  self: 6020
+  note: Estimated from 1 source file(s) at 10 tokens/line

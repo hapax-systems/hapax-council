@@ -1,0 +1,99 @@
+module: demo_pipeline
+purpose: Demo generation pipeline — screenshots, slides, voice, video, title cards.
+version: 1
+interface:
+  inputs:
+  - name: score
+    type: float
+  - name: passed
+    type: bool
+  - name: issues
+    type: list[str]
+  - name: evidence
+    type: str | None
+  - name: narration
+    type: str
+  - name: recipe
+    type: str
+  - name: title
+    type: str
+  - name: extra_padding
+    type: float
+  - name: scene_type
+    type: Literal['screencast', 'screenshot']
+  - name: title
+    type: str
+  - name: subtitle
+    type: str
+  - name: intro_narration
+    type: str
+  - name: scenes
+    type: list[NarrationScene]
+  - name: outro_narration
+    type: str
+  outputs:
+  - name: voice_consistency
+    type: DimScore
+  - name: audience_calibration
+    type: DimScore
+  - name: duration_feasibility
+    type: DimScore
+  - name: key_points_quality
+    type: DimScore
+  - name: narrative_coherence
+    type: DimScore
+  - name: visual_clarity
+    type: DimScore
+  - name: visual_variety
+    type: DimScore
+  - name: theme_compliance
+    type: DimScore
+  - name: visual_narration_alignment
+    type: DimScore
+  - name: root_causes
+    type: list[str]
+  - name: planning_overrides
+    type: str
+  - name: adjustments_summary
+    type: list[str]
+  - name: jargon_replacements
+    type: dict[str, str]
+  - name: mp4_path
+    type: str
+  - name: duration_seconds
+    type: float
+  - name: chapter_markers
+    type: list[tuple[str, float, float]]
+  - name: scene_count
+    type: int
+dependencies:
+  runtime:
+  - PIL
+  - base64
+  - concurrent
+  - copy
+  - google
+  - httpx
+  - imageio_ffmpeg
+  - jinja2
+  - matplotlib
+  - mistralai
+  - moviepy
+  - networkx
+  - numpy
+  - opentelemetry
+  - playwright
+  - pydantic
+  - pydantic_ai
+  - qdrant_client
+  - typing_extensions
+  - wave
+  - yaml
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.demo_pipeline
+token_budget:
+  self: 73570
+  note: Estimated from 26 source file(s) at 10 tokens/line

@@ -1,0 +1,42 @@
+module: digest
+purpose: Content digest generator.
+version: 1
+interface:
+  inputs:
+  - name: title
+    type: str
+  - name: source
+    type: str
+  - name: relevance
+    type: str
+  - name: new_documents
+    type: int
+  - name: collection_sizes
+    type: dict[str, int]
+  - name: generated_at
+    type: str
+  - name: hours
+    type: int
+  - name: headline
+    type: str
+  - name: summary
+    type: str
+  - name: notable_items
+    type: list[NotableItem]
+  - name: suggested_actions
+    type: list[str]
+  - name: stats
+    type: DigestStats
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - pydantic_ai
+  - qdrant_client
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.digest
+token_budget:
+  self: 3280
+  note: Estimated from 1 source file(s) at 10 tokens/line

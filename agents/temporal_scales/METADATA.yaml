@@ -1,0 +1,76 @@
+module: temporal_scales
+purpose: Multi-scale temporal hierarchy — minute/session/day summaries.
+version: 1
+interface:
+  inputs:
+  - name: timestamp
+    type: float
+  - name: activity
+    type: str
+  - name: flow_state
+    type: str
+  - name: flow_mean
+    type: float
+  - name: audio_mean
+    type: float
+  - name: hr_mean
+    type: float
+  - name: snapshot_count
+    type: int
+  - name: voice_active
+    type: bool
+  - name: operator_present
+    type: bool
+  - name: person_count_max
+    type: int
+  - name: consent_phase
+    type: str
+  - name: stress_elevated
+    type: bool
+  - name: start_ts
+    type: float
+  - name: end_ts
+    type: float
+  - name: duration_s
+    type: float
+  - name: activity
+    type: str
+  - name: flow_state
+    type: str
+  - name: flow_peak
+    type: float
+  - name: flow_mean
+    type: float
+  - name: minute_count
+    type: int
+  - name: voice_turns
+    type: int
+  - name: session_count
+    type: int
+  - name: total_minutes
+    type: int
+  - name: dominant_activity
+    type: str
+  - name: total_flow_minutes
+    type: int
+  - name: total_voice_minutes
+    type: int
+  - name: activities
+    type: dict[str, int]
+  - name: recent_minutes
+    type: list[MinuteSummary]
+  - name: current_session
+    type: SessionSummary | None
+  - name: recent_sessions
+    type: list[SessionSummary]
+  - name: day
+    type: DaySummary
+dependencies:
+  runtime:
+  - pydantic
+  internal: []
+execution:
+  entry: uv run python -m agents.temporal_scales
+token_budget:
+  self: 3090
+  note: Estimated from 1 source file(s) at 10 tokens/line

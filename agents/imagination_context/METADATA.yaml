@@ -1,0 +1,13 @@
+module: imagination_context
+purpose: Imagination context formatter — salience-graded Current Thoughts for conversation
+  LLM.
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal: []
+execution:
+  entry: uv run python -m agents.imagination_context
+token_budget:
+  self: 580
+  note: Estimated from 1 source file(s) at 10 tokens/line

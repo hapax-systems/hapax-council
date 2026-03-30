@@ -1,0 +1,15 @@
+module: dmn
+purpose: Module dmn
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - httpx
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.dmn
+token_budget:
+  self: 7770
+  note: Estimated from 5 source file(s) at 10 tokens/line

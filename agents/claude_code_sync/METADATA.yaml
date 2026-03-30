@@ -1,0 +1,44 @@
+module: claude_code_sync
+purpose: Claude Code transcript sync — JSONL transcript parsing for RAG.
+version: 1
+interface:
+  inputs:
+  - name: session_id
+    type: str
+  - name: project_path
+    type: str
+  - name: project_name
+    type: str
+  - name: message_count
+    type: int
+  - name: first_message_at
+    type: str
+  - name: last_message_at
+    type: str
+  - name: file_size
+    type: int
+  - name: file_mtime
+    type: float
+  - name: sessions
+    type: dict[str, TranscriptMetadata]
+  - name: last_sync
+    type: float
+  - name: stats
+    type: dict[str, int]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.claude_code_sync
+  flags:
+  - name: --full-sync
+  - name: --auto
+  - name: --stats
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 4580
+  note: Estimated from 1 source file(s) at 10 tokens/line

@@ -1,0 +1,14 @@
+module: stimmung_sync
+purpose: Stimmung sync — persist system self-state history to RAG.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - yaml
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.stimmung_sync
+token_budget:
+  self: 1530
+  note: Estimated from 1 source file(s) at 10 tokens/line

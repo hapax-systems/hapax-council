@@ -1,0 +1,13 @@
+module: visual_chain
+purpose: Visual chain capability — semantic visual affordances for wgpu shader modulation.
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.visual_chain
+token_budget:
+  self: 2870
+  note: Estimated from 1 source file(s) at 10 tokens/line

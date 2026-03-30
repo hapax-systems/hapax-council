@@ -1,0 +1,60 @@
+module: knowledge_maint
+purpose: Knowledge base maintenance agent.
+version: 1
+interface:
+  inputs:
+  - name: name
+    type: str
+  - name: points_before
+    type: int
+  - name: points_after
+    type: int
+  - name: dimensions
+    type: int
+  - name: stale_pruned
+    type: int
+  - name: duplicates_merged
+    type: int
+  - name: warnings
+    type: list[str]
+  outputs:
+  - name: generated_at
+    type: str
+  - name: duration_ms
+    type: int
+  - name: dry_run
+    type: bool
+  - name: collections
+    type: list[CollectionStats]
+  - name: total_pruned
+    type: int
+  - name: total_merged
+    type: int
+  - name: errors_encountered
+    type: int
+  - name: warnings
+    type: list[str]
+  - name: summary
+    type: str
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - pydantic_ai
+  - qdrant_client
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.knowledge_maint
+  flags:
+  - name: --dry-run
+  - name: --apply
+  - name: --collection
+  - name: --json
+  - name: --save
+  - name: --summarize
+  - name: --notify
+  - name: --score-threshold
+token_budget:
+  self: 4920
+  note: Estimated from 1 source file(s) at 10 tokens/line

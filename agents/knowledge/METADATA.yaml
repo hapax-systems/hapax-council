@@ -1,0 +1,14 @@
+module: knowledge
+purpose: Knowledge & Context — semantic search and knowledge artifact query agent.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - pydantic_ai
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.knowledge
+token_budget:
+  self: 1260
+  note: Estimated from 2 source file(s) at 10 tokens/line

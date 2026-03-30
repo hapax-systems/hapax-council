@@ -1,0 +1,12 @@
+module: studio_effects
+purpose: Studio visual effects — GPU-accelerated effect chain for compositor output.
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal: []
+execution:
+  entry: uv run python -m agents.studio_effects
+token_budget:
+  self: 3400
+  note: Estimated from 1 source file(s) at 10 tokens/line

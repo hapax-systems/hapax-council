@@ -1,0 +1,43 @@
+module: imagination
+purpose: Imagination bus — fragment publishing and escalation to impingement cascade.
+version: 1
+interface:
+  inputs:
+  - name: kind
+    type: str
+  - name: source
+    type: str
+  - name: query
+    type: str | None
+  - name: salience
+    type: float
+  - name: id
+    type: str
+  - name: timestamp
+    type: float
+  - name: content_references
+    type: list[ContentReference]
+  - name: dimensions
+    type: dict[str, float]
+  - name: salience
+    type: float
+  - name: continuation
+    type: bool
+  - name: narrative
+    type: str
+  - name: material
+    type: Literal['water', 'fire', 'earth', 'air', 'void']
+  - name: parent_id
+    type: str | None
+dependencies:
+  runtime:
+  - pydantic
+  - pydantic_ai
+  - random
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.imagination
+token_budget:
+  self: 3120
+  note: Estimated from 1 source file(s) at 10 tokens/line

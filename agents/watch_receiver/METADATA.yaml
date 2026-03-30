@@ -1,0 +1,109 @@
+module: watch_receiver
+purpose: FastAPI sensor receiver — writes atomic JSON files to filesystem-as-bus.
+version: 1
+interface:
+  inputs:
+  - name: type
+    type: str
+  - name: ts
+    type: str
+  - name: bpm
+    type: float | None
+  - name: confidence
+    type: str | None
+  - name: rmssd_ms
+    type: float | None
+  - name: eda_value
+    type: float | None
+  - name: eda_event
+    type: bool | None
+  - name: duration_seconds
+    type: float | None
+  - name: temp_c
+    type: float | None
+  - name: state
+    type: str | None
+  - name: value
+    type: float | None
+  - name: ts
+    type: int
+  - name: device_id
+    type: str
+  - name: readings
+    type: list[SensorReading]
+  - name: battery_pct
+    type: int | None
+  - name: device_id
+    type: str
+  - name: date
+    type: str
+  - name: resting_hr
+    type: float | None
+  - name: hr_min
+    type: float | None
+  - name: hr_max
+    type: float | None
+  - name: hr_mean
+    type: float | None
+  - name: hrv_mean_ms
+    type: float | None
+  - name: steps
+    type: int | None
+  - name: active_minutes
+    type: int | None
+  - name: sleep_start
+    type: str | None
+  - name: sleep_end
+    type: str | None
+  - name: sleep_duration_min
+    type: int | None
+  - name: deep_min
+    type: int | None
+  - name: rem_min
+    type: int | None
+  - name: spo2_mean
+    type: float | None
+  - name: skin_temp_deviation_c
+    type: float | None
+  - name: eda_events
+    type: int | None
+  - name: device_id
+    type: str
+  - name: device_id
+    type: str
+  - name: gesture
+    type: str
+  - name: timestamp
+    type: str
+  - name: device_id
+    type: str
+  - name: ts
+    type: int
+  - name: activity_type
+    type: str
+  - name: activity_confidence
+    type: float
+  - name: screen_on
+    type: bool
+  - name: ringer_mode
+    type: str
+  - name: battery_pct
+    type: int
+  - name: charging
+    type: bool
+  - name: network_type
+    type: str
+dependencies:
+  runtime:
+  - fastapi
+  - opentelemetry
+  - pydantic
+  - uvicorn
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.watch_receiver
+token_budget:
+  self: 3480
+  note: Estimated from 1 source file(s) at 10 tokens/line

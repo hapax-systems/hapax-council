@@ -1,0 +1,15 @@
+module: studio_stutter
+purpose: StutterElement — GStreamer element that implements freeze/replay temporal
+  disruption.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - gi
+  - random
+  internal: []
+execution:
+  entry: uv run python -m agents.studio_stutter
+token_budget:
+  self: 1210
+  note: Estimated from 1 source file(s) at 10 tokens/line

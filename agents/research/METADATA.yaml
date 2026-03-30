@@ -1,0 +1,16 @@
+module: research
+purpose: RAG-enabled research agent using Pydantic AI + LiteLLM + Qdrant.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic_ai
+  - qdrant_client
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.research
+token_budget:
+  self: 1340
+  note: Estimated from 1 source file(s) at 10 tokens/line

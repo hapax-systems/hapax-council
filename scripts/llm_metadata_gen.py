@@ -422,8 +422,19 @@ def main() -> None:
         if args.write:
             paths = _module_to_paths(module_name)
             if paths:
-                # Write to the directory containing the module
-                target_dir = paths[0].parent
+                first = paths[0]
+                # For single-file modules (agents/foo.py), create a dedicated
+                # subdirectory agents/foo/ so METADATA.yaml lives at
+                # agents/foo/METADATA.yaml rather than agents/METADATA.yaml.
+                # Check if this is a single-file agent (not a package directory)
+                is_package = any(p.name == "__init__.py" for p in paths)
+                if not is_package and first.suffix == ".py":
+                    # Single-file agent: place METADATA in a same-named subdirectory
+                    # e.g. agents/foo.py → agents/foo/METADATA.yaml
+                    target_dir = first.parent / first.stem
+                    target_dir.mkdir(exist_ok=True)
+                else:
+                    target_dir = first.parent
                 out_path = target_dir / "METADATA.yaml"
                 out_path.write_text(yaml.dump(metadata, sort_keys=False, allow_unicode=True))
                 print(f"Written: {out_path}")

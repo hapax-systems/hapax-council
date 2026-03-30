@@ -1,0 +1,118 @@
+module: introspect
+purpose: Live infrastructure manifest generator.
+version: 1
+interface:
+  inputs:
+  - name: name
+    type: str
+  - name: service
+    type: str
+  - name: image
+    type: str
+  - name: state
+    type: str
+  - name: health
+    type: str
+  - name: ports
+    type: list[str]
+  - name: name
+    type: str
+  - name: type
+    type: str
+  - name: active
+    type: str
+  - name: enabled
+    type: str
+  - name: description
+    type: str
+  - name: name
+    type: str
+  - name: points_count
+    type: int
+  - name: vectors_size
+    type: int
+  - name: distance
+    type: str
+  - name: name
+    type: str
+  - name: size_bytes
+    type: int
+  - name: modified_at
+    type: str
+  - name: name
+    type: str
+  - name: driver
+    type: str
+  - name: vram_total_mb
+    type: int
+  - name: vram_used_mb
+    type: int
+  - name: vram_free_mb
+    type: int
+  - name: temperature_c
+    type: int
+  - name: loaded_models
+    type: list[str]
+  - name: model_name
+    type: str
+  - name: litellm_params_model
+    type: str
+  - name: mount
+    type: str
+  - name: size
+    type: str
+  - name: used
+    type: str
+  - name: available
+    type: str
+  - name: use_percent
+    type: int
+  - name: timestamp
+    type: str
+  - name: hostname
+    type: str
+  - name: os_info
+    type: str
+  - name: docker_version
+    type: str
+  - name: containers
+    type: list[ContainerInfo]
+  - name: systemd_units
+    type: list[SystemdUnit]
+  - name: systemd_timers
+    type: list[SystemdUnit]
+  - name: qdrant_collections
+    type: list[QdrantCollection]
+  - name: ollama_models
+    type: list[OllamaModel]
+  - name: gpu
+    type: GpuInfo | None
+  - name: litellm_routes
+    type: list[LiteLLMRoute]
+  - name: disk
+    type: list[DiskInfo]
+  - name: listening_ports
+    type: list[str]
+  - name: pass_entries
+    type: list[str]
+  - name: compose_file
+    type: str
+  - name: profile_files
+    type: list[str]
+  - name: edge_nodes
+    type: list[dict]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.introspect
+  flags:
+  - name: --json
+  - name: --save
+token_budget:
+  self: 4860
+  note: Estimated from 1 source file(s) at 10 tokens/line

@@ -1,0 +1,13 @@
+module: flow_journal
+purpose: Flow journal — persist flow state transitions to RAG for behavioral profiling.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - yaml
+  internal: []
+execution:
+  entry: uv run python -m agents.flow_journal
+token_budget:
+  self: 1440
+  note: Estimated from 1 source file(s) at 10 tokens/line

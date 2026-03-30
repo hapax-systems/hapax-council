@@ -1,0 +1,16 @@
+module: imagination_resolver
+purpose: Imagination content resolver — rasterizes slow content references to JPEG.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - PIL
+  - httpx
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.imagination_resolver
+token_budget:
+  self: 1970
+  note: Estimated from 1 source file(s) at 10 tokens/line

@@ -1,0 +1,117 @@
+module: content_scheduler
+purpose: Content scheduler — weighted softmax sampler for ambient content decisions.
+version: 1
+interface:
+  inputs:
+  - name: min_elements
+    type: int
+  - name: max_elements
+    type: int
+  - name: temperature
+    type: float
+  - name: inject_probability
+    type: float
+  - name: tick_interval_s
+    type: float
+  - name: source
+    type: ContentSource
+  - name: base_weight
+    type: float
+  - name: half_life_s
+    type: float
+  - name: min_dwell_s
+    type: float
+  - name: max_dwell_s
+    type: float
+  - name: notification_level
+    type: str
+  - name: activity
+    type: str
+  - name: flow_score
+    type: float
+  - name: audio_energy
+    type: float
+  - name: stress_elevated
+    type: bool
+  - name: heart_rate
+    type: int
+  - name: sleep_quality
+    type: float
+  - name: voice_active
+    type: bool
+  - name: display_state
+    type: str
+  - name: hour
+    type: int
+  - name: signal_count
+    type: int
+  - name: trend_flow
+    type: float
+  - name: trend_audio
+    type: float
+  - name: perception_age_s
+    type: float
+  - name: stimmung_stance
+    type: str
+  - name: gaze_direction
+    type: str
+  - name: emotion
+    type: str
+  - name: posture
+    type: str
+  - name: recent_transition
+    type: bool
+  - name: facts
+    type: list[str]
+  - name: moments
+    type: list[str]
+  - name: nudge_titles
+    type: list[str]
+  - name: camera_roles
+    type: list[str]
+  - name: camera_filters
+    type: list[str]
+  - name: pool_age_s
+    type: float
+  - name: speed_mult
+    type: float
+  - name: turbulence_mult
+    type: float
+  - name: warmth_offset
+    type: float
+  - name: brightness_offset
+    type: float
+  - name: source
+    type: ContentSource
+  - name: content
+    type: str
+  - name: dwell_s
+    type: float
+  - name: notification_level
+    type: str
+  - name: camera_role
+    type: str
+  - name: camera_filter
+    type: str
+  - name: camera_x
+    type: float
+  - name: camera_y
+    type: float
+  - name: camera_w
+    type: float
+  - name: camera_h
+    type: float
+  - name: camera_opacity
+    type: float
+  - name: shader_nudge
+    type: ShaderNudge
+dependencies:
+  runtime:
+  - pydantic
+  - random
+  internal: []
+execution:
+  entry: uv run python -m agents.content_scheduler
+token_budget:
+  self: 5950
+  note: Estimated from 1 source file(s) at 10 tokens/line

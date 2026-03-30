@@ -1,0 +1,21 @@
+module: models
+purpose: Model wrappers for the temporal classification pipeline.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - PIL
+  - cv2
+  - movinets
+  - numpy
+  - open_clip
+  - panns_inference
+  - torch
+  - torchaudio
+  - transformers
+  internal: []
+execution:
+  entry: uv run python -m agents.models
+token_budget:
+  self: 7610
+  note: Estimated from 7 source file(s) at 10 tokens/line

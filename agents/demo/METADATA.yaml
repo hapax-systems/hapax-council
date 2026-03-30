@@ -1,0 +1,26 @@
+module: demo
+purpose: Demo generator agent — produces audience-tailored demos from natural language
+  requests.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic_ai
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.demo
+  flags:
+  - name: --audience
+  - name: --format
+  - name: --duration
+  - name: --voice
+  - name: --json
+  - name: --persona-file
+  - name: --gather-dossier
+  - name: --list
+token_budget:
+  self: 13690
+  note: Estimated from 1 source file(s) at 10 tokens/line

@@ -1,0 +1,13 @@
+module: screen_context
+purpose: Screen context sync — capture active window context for behavioral profiling.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - yaml
+  internal: []
+execution:
+  entry: uv run python -m agents.screen_context
+token_budget:
+  self: 2040
+  note: Estimated from 1 source file(s) at 10 tokens/line

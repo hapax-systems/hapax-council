@@ -1,0 +1,267 @@
+module: hapax_daimonion
+purpose: Hapax Daimonion — persistent voice interaction daemon.
+version: 1
+interface:
+  inputs:
+  - name: silence_timeout_s
+    type: int
+  - name: wake_phrases
+    type: list[str]
+  - name: hotkey_socket
+    type: str
+  - name: presence_window_minutes
+    type: int
+  - name: presence_vad_threshold
+    type: float
+  - name: context_gate_volume_threshold
+    type: float
+  - name: context_gate_ambient_classification
+    type: bool
+  - name: context_gate_ambient_block_threshold
+    type: float
+  - name: audio_input_source
+    type: str
+  - name: contact_mic_source
+    type: str
+  - name: noise_ref_room_patterns
+    type: list[str]
+  - name: noise_ref_structure_patterns
+    type: list[str]
+  - name: aec_enabled
+    type: bool
+  - name: aec_tail_ms
+    type: int
+  - name: backend
+    type: str
+  - name: llm_model
+    type: str
+  - name: gemini_model
+    type: str
+  - name: local_stt_model
+    type: str
+  - name: voxtral_voice_id
+    type: str
+  - name: voxtral_ref_audio
+    type: str
+  - name: consent_debounce_s
+    type: float
+  - name: consent_absence_clear_s
+    type: float
+  - name: consent_session_timeout_s
+    type: float
+  - name: notification_priority_ttls
+    type: dict[str, int]
+  - name: screen_monitor_enabled
+    type: bool
+  - name: screen_poll_interval_s
+    type: float
+  - name: screen_capture_cooldown_s
+    type: float
+  - name: screen_proactive_min_confidence
+    type: float
+  - name: screen_proactive_cooldown_s
+    type: float
+  - name: screen_recapture_idle_s
+    type: float
+  - name: webcam_enabled
+    type: bool
+  - name: webcam_brio_device
+    type: str
+  - name: webcam_c920_device
+    type: str
+  - name: webcam_ir_device
+    type: str
+  - name: webcam_capture_width
+    type: int
+  - name: webcam_capture_height
+    type: int
+  - name: presence_face_detection
+    type: bool
+  - name: presence_face_interval_s
+    type: float
+  - name: presence_face_decay_s
+    type: float
+  - name: presence_face_min_confidence
+    type: float
+  - name: presence_ir_fallback
+    type: bool
+  - name: workspace_analysis_cadence_s
+    type: float
+  - name: workspace_hardware_cadence_s
+    type: float
+  - name: workspace_multi_image
+    type: bool
+  - name: timelapse_enabled
+    type: bool
+  - name: timelapse_interval_s
+    type: float
+  - name: timelapse_retention_days
+    type: int
+  - name: timelapse_path
+    type: str
+  - name: input_idle_threshold_s
+    type: float
+  - name: presence_bayesian_enabled
+    type: bool
+  - name: presence_prior
+    type: float
+  - name: presence_enter_threshold
+    type: float
+  - name: presence_exit_threshold
+    type: float
+  - name: presence_exit_ticks
+    type: int
+  - name: presence_enter_ticks
+    type: int
+  - name: presence_signal_weights
+    type: dict[str, tuple[float, float]]
+  - name: perception_tier
+    type: PerceptionTier
+  - name: perception_fast_tick_s
+    type: float
+  - name: perception_slow_tick_s
+    type: float
+  - name: conversation_debounce_s
+    type: float
+  - name: gaze_resume_clear_s
+    type: float
+  - name: environment_clear_resume_s
+    type: float
+  - name: operator_absent_withdraw_s
+    type: float
+  - name: observability_events_enabled
+    type: bool
+  - name: observability_langfuse_enabled
+    type: bool
+  - name: observability_events_retention_days
+    type: int
+  - name: tools_enabled
+    type: bool
+  - name: sms_gateway_host
+    type: str
+  - name: sms_gateway_user
+    type: str
+  - name: sms_gateway_pass_key
+    type: str
+  - name: sms_contacts
+    type: dict[str, str]
+  - name: vision_spontaneous
+    type: bool
+  - name: vision_refresh_interval
+    type: int
+  - name: wake_word_engine
+    type: str
+  - name: porcupine_sensitivity
+    type: float
+  - name: chime_enabled
+    type: bool
+  - name: chime_volume
+    type: float
+  - name: chime_dir
+    type: str
+  - name: mc_enabled
+    type: bool
+  - name: mc_sample_dir
+    type: str
+  - name: mc_sample_rate
+    type: int
+  - name: actuation_tick_ms
+    type: int
+  - name: midi_port_name
+    type: str
+  - name: midi_beats_per_bar
+    type: int
+  - name: midi_output_port
+    type: str
+  - name: midi_evil_pet_channel
+    type: int
+  - name: midi_s4_channel
+    type: int
+  - name: obs_enabled
+    type: bool
+  - name: obs_host
+    type: str
+  - name: obs_port
+    type: int
+  - name: salience_enabled
+    type: bool
+  - name: salience_model
+    type: str
+  - name: salience_thresholds
+    type: dict[str, float]
+  - name: salience_weights
+    type: dict[str, float]
+  - name: salience_concern_refresh_cadence_s
+    type: float
+  - name: active_silence_enabled
+    type: bool
+  - name: silence_notification_threshold_s
+    type: float
+  - name: silence_winddown_threshold_s
+    type: float
+  - name: tts_bar_aligned
+    type: bool
+  - name: tts_lookahead_bars
+    type: int
+dependencies:
+  runtime:
+  - PIL
+  - asteroid
+  - base64
+  - bisect
+  - bleak
+  - concurrent
+  - ctypes
+  - cv2
+  - faster_whisper
+  - funasr
+  - gc
+  - gi
+  - glob
+  - google
+  - hsemotion_onnx
+  - httpx
+  - insightface
+  - litellm
+  - mediapipe
+  - mido
+  - mistralai
+  - model2vec
+  - numpy
+  - obsws_python
+  - ollama
+  - open_clip
+  - openai
+  - opentelemetry
+  - openwakeword
+  - panns_inference
+  - pedalboard
+  - pipecat
+  - pvporcupine
+  - pyannote
+  - pyaudio
+  - pydantic
+  - pyudev
+  - qdrant_client
+  - queue
+  - random
+  - scipy
+  - silero_vad
+  - soundfile
+  - speechbrain
+  - struct
+  - torch
+  - ultralytics
+  - uvloop
+  - watch_signals
+  - wave
+  - yaml
+  internal:
+  - agents
+  - logos
+  - shared
+execution:
+  entry: uv run python -m agents.hapax_daimonion
+token_budget:
+  self: 268070
+  note: Estimated from 138 source file(s) at 10 tokens/line

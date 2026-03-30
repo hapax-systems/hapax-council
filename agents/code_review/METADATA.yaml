@@ -1,0 +1,18 @@
+module: code_review
+purpose: LLM-powered code review agent.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic_ai
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.code_review
+  flags:
+  - name: --diff
+  - name: --model
+token_budget:
+  self: 1100
+  note: Estimated from 1 source file(s) at 10 tokens/line

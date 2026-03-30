@@ -1,0 +1,25 @@
+module: predictive_cache
+purpose: Predictive pre-computation cache for visual layer transitions.
+version: 1
+interface:
+  inputs:
+  - name: prediction
+    type: TransitionPrediction
+  - name: ambient_params
+    type: AmbientParams
+  - name: display_state_hint
+    type: str
+  - name: created_at
+    type: float
+  - name: ttl_s
+    type: float
+dependencies:
+  runtime:
+  - pydantic
+  internal:
+  - agents
+execution:
+  entry: uv run python -m agents.predictive_cache
+token_budget:
+  self: 1450
+  note: Estimated from 1 source file(s) at 10 tokens/line

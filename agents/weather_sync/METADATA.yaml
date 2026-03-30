@@ -1,0 +1,14 @@
+module: weather_sync
+purpose: Weather sync — local weather conditions for energy/mood correlation.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - yaml
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.weather_sync
+token_budget:
+  self: 1440
+  note: Estimated from 1 source file(s) at 10 tokens/line

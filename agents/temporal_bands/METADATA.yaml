@@ -1,0 +1,55 @@
+module: temporal_bands
+purpose: Temporal band formatter — retention/impression/protention for LLM context.
+version: 1
+interface:
+  inputs:
+  - name: timestamp
+    type: float
+  - name: age_s
+    type: float
+  - name: flow_state
+    type: str
+  - name: activity
+    type: str
+  - name: audio_energy
+    type: float
+  - name: heart_rate
+    type: int
+  - name: presence
+    type: str
+  - name: summary
+    type: str
+  - name: predicted_state
+    type: str
+  - name: confidence
+    type: float
+  - name: basis
+    type: str
+  - name: field
+    type: str
+  - name: observed
+    type: str
+  - name: expected
+    type: str
+  - name: surprise
+    type: float
+  - name: note
+    type: str
+  - name: retention
+    type: list[RetentionEntry]
+  - name: impression
+    type: dict[str, Any]
+  - name: protention
+    type: list[ProtentionEntry]
+  - name: surprises
+    type: list[SurpriseField]
+dependencies:
+  runtime:
+  - pydantic
+  internal:
+  - agents
+execution:
+  entry: uv run python -m agents.temporal_bands
+token_budget:
+  self: 4150
+  note: Estimated from 1 source file(s) at 10 tokens/line

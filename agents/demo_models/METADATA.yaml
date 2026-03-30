@@ -1,0 +1,182 @@
+module: demo_models
+purpose: Data models for the demo generator agent.
+version: 1
+interface:
+  inputs:
+  - name: action
+    type: Literal['click', 'type', 'wait', 'scroll', 'press']
+  - name: target
+    type: str
+  - name: value
+    type: str
+  - name: url
+    type: str
+  - name: viewport_width
+    type: int
+  - name: viewport_height
+    type: int
+  - name: steps
+    type: list[InteractionStep]
+  - name: recipe
+    type: str | None
+  - name: max_duration
+    type: float
+  - name: prompt
+    type: str
+  - name: style
+    type: str
+  - name: negative_prompt
+    type: str
+  - name: aspect_ratio
+    type: str
+  - name: url
+    type: str
+  - name: viewport_width
+    type: int
+  - name: viewport_height
+    type: int
+  - name: actions
+    type: list[str]
+  - name: wait_for
+    type: str | None
+  - name: capture
+    type: str
+  - name: title
+    type: str
+  - name: narration
+    type: str
+  - name: duration_hint
+    type: float
+  - name: key_points
+    type: list[str]
+  - name: screenshot
+    type: ScreenshotSpec | None
+  - name: visual_type
+    type: Literal['screenshot', 'diagram', 'chart', 'screencast', 'illustration']
+  - name: diagram_spec
+    type: str | None
+  - name: interaction
+    type: InteractionSpec | None
+  - name: illustration
+    type: IllustrationSpec | None
+  - name: slide_table
+    type: list[list[str]] | None
+  - name: research_notes
+    type: str | None
+  - name: name
+    type: str
+  - name: passed
+    type: bool
+  - name: severity
+    type: Literal['critical', 'important', 'minor'] | None
+  - name: issues
+    type: list[str]
+  - name: name
+    type: str
+  - name: category
+    type: Literal['text', 'visual', 'structural']
+  - name: passed
+    type: bool
+  - name: score
+    type: float
+  - name: issues
+    type: list[str]
+  - name: evidence
+    type: str | None
+  - name: title
+    type: str
+  - name: facts
+    type: list[str]
+  - name: data_citations
+    type: list[str]
+  - name: visual_type
+    type: Literal['screenshot', 'diagram', 'chart', 'screencast', 'illustration']
+  - name: visual_brief
+    type: str
+  - name: screenshot
+    type: ScreenshotSpec | None
+  - name: diagram_spec
+    type: str | None
+  - name: interaction
+    type: InteractionSpec | None
+  - name: illustration
+    type: IllustrationSpec | None
+  - name: design_rationale
+    type: str | None
+  - name: limitation_or_tradeoff
+    type: str | None
+  - name: title
+    type: str
+  - name: audience
+    type: str
+  - name: intro_points
+    type: list[str]
+  - name: scenes
+    type: list[SceneSkeleton]
+  - name: outro_points
+    type: list[str]
+  - name: title
+    type: str
+  - name: audience
+    type: str
+  - name: scenes
+    type: list[DemoScene]
+  - name: intro_narration
+    type: str
+  - name: outro_narration
+    type: str
+  - name: description
+    type: str
+  - name: tone
+    type: str
+  - name: vocabulary
+    type: str
+  - name: show
+    type: list[str]
+  - name: skip
+    type: list[str]
+  - name: forbidden_terms
+    type: list[str]
+  - name: max_scenes
+    type: int
+  outputs:
+  - name: dimensions
+    type: list[QualityDimension]
+  - name: overall_pass
+    type: bool
+  - name: revision_notes
+    type: str | None
+  - name: dimensions
+    type: list[DemoEvalDimension]
+  - name: overall_pass
+    type: bool
+  - name: overall_score
+    type: float
+  - name: iteration
+    type: int
+  - name: adjustments_applied
+    type: list[str]
+  - name: scenario
+    type: str
+  - name: passed
+    type: bool
+  - name: iterations
+    type: int
+  - name: final_report
+    type: DemoEvalReport
+  - name: history
+    type: list[DemoEvalReport]
+  - name: demo_dir
+    type: str
+  - name: total_duration_seconds
+    type: float
+dependencies:
+  runtime:
+  - pydantic
+  - yaml
+  internal: []
+execution:
+  entry: uv run python -m agents.demo_models
+token_budget:
+  self: 2450
+  note: Estimated from 1 source file(s) at 10 tokens/line

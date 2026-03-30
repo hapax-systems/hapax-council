@@ -1,0 +1,166 @@
+module: activity_analyzer
+purpose: System activity observation via universal telemetry.
+version: 1
+interface:
+  inputs:
+  - name: model_group
+    type: str
+  - name: call_count
+    type: int
+  - name: total_input_tokens
+    type: int
+  - name: total_output_tokens
+    type: int
+  - name: total_cost
+    type: float
+  - name: avg_latency_ms
+    type: float
+  - name: error_count
+    type: int
+  - name: this_week
+    type: float
+  - name: last_week
+    type: float
+  - name: wow_change_pct
+    type: float
+  - name: cost_spike
+    type: bool
+  - name: top_agent
+    type: str
+  - name: top_agent_cost
+    type: float
+  - name: total_traces
+    type: int
+  - name: total_generations
+    type: int
+  - name: total_input_tokens
+    type: int
+  - name: total_output_tokens
+    type: int
+  - name: total_cost
+    type: float
+  - name: models
+    type: list[ModelUsage]
+  - name: error_count
+    type: int
+  - name: unique_trace_names
+    type: list[str]
+  - name: cost_trend
+    type: CostTrendSummary | None
+  - name: total_runs
+    type: int
+  - name: healthy_runs
+    type: int
+  - name: degraded_runs
+    type: int
+  - name: failed_runs
+    type: int
+  - name: uptime_pct
+    type: float
+  - name: recurring_issues
+    type: list[str]
+  - name: recently_resolved
+    type: list[str]
+  - name: avg_duration_ms
+    type: float
+  - name: reports_count
+    type: int
+  - name: latest_drift_count
+    type: int
+  - name: latest_summary
+    type: str
+  - name: unit
+    type: str
+  - name: event
+    type: str
+  - name: timestamp
+    type: str
+  - name: reports_count
+    type: int
+  - name: latest_headline
+    type: str
+  - name: latest_new_documents
+    type: int
+  - name: reports_count
+    type: int
+  - name: latest_pruned
+    type: int
+  - name: latest_merged
+    type: int
+  - name: latest_warnings
+    type: int
+  - name: total_events
+    type: int
+  - name: by_stage
+    type: dict[str, int]
+  - name: triage_types
+    type: dict[str, int]
+  - name: triage_complexities
+    type: dict[str, int]
+  - name: triage_reject_rate
+    type: float
+  - name: review_approve_rate
+    type: float
+  - name: gate_pass_rate
+    type: float
+  - name: avg_duration_ms
+    type: float
+  - name: axiom_violations_by_tier
+    type: dict[str, int]
+  - name: top_violated_axioms
+    type: dict[str, int]
+  - name: triage_reject_reasons
+    type: dict[str, int]
+  - name: langfuse_available
+    type: bool
+  - name: health_history_found
+    type: bool
+  - name: drift_report_found
+    type: bool
+  - name: manifest_age
+    type: str
+  - name: sdlc_events_found
+    type: bool
+  outputs:
+  - name: window_start
+    type: str
+  - name: window_end
+    type: str
+  - name: hours
+    type: int
+  - name: langfuse
+    type: LangfuseActivity
+  - name: health
+    type: HealthTrend
+  - name: drift
+    type: DriftTrend
+  - name: digest
+    type: DigestTrend
+  - name: knowledge_maint
+    type: KnowledgeMaintTrend
+  - name: sdlc
+    type: SdlcTrend
+  - name: service_events
+    type: list[ServiceEvent]
+  - name: data_sources
+    type: DataSourceStatus
+  - name: synthesis
+    type: str
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - pydantic_ai
+  internal:
+  - agents
+  - logos
+  - shared
+execution:
+  entry: uv run python -m agents.activity_analyzer
+  flags:
+  - name: --json
+  - name: --hours
+  - name: --synthesize
+token_budget:
+  self: 7350
+  note: Estimated from 1 source file(s) at 10 tokens/line

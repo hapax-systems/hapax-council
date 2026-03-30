@@ -1,0 +1,22 @@
+module: query
+purpose: CLI tool for testing RAG retrieval against Qdrant.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - ollama
+  - opentelemetry
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.query
+  flags:
+  - name: -c
+  - name: --collection
+  - name: -n
+  - name: --limit
+  - name: --stats
+  - name: --json
+token_budget:
+  self: 1050
+  note: Estimated from 1 source file(s) at 10 tokens/line

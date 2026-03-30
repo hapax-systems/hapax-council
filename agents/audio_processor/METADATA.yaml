@@ -1,0 +1,98 @@
+module: audio_processor
+purpose: Ambient audio processing for RAG pipeline.
+version: 1
+interface:
+  inputs:
+  - name: start
+    type: float
+  - name: end
+    type: float
+  - name: music_prob
+    type: float
+  - name: speech_prob
+    type: float
+  - name: instruments
+    type: dict[str, float]
+  - name: top_label
+    type: str
+  - name: top_confidence
+    type: float
+  - name: start
+    type: float
+  - name: end
+    type: float
+  - name: instruments
+    type: dict[str, float]
+  - name: start
+    type: float
+  - name: end
+    type: float
+  - name: transcript
+    type: str
+  - name: speakers
+    type: list[str]
+  - name: near_music
+    type: bool
+  - name: during_music
+    type: bool
+  - name: nearby_instruments
+    type: dict[str, float]
+  - name: filename
+    type: str
+  - name: processed_at
+    type: float
+  - name: speech_seconds
+    type: float
+  - name: music_seconds
+    type: float
+  - name: silence_seconds
+    type: float
+  - name: segment_count
+    type: int
+  - name: speaker_count
+    type: int
+  - name: sample_sessions
+    type: int
+  - name: vocal_notes
+    type: int
+  - name: conversations
+    type: int
+  - name: listening_logs
+    type: int
+  - name: error
+    type: str
+  - name: source
+    type: str
+  - name: processed_files
+    type: dict[str, ProcessedFileInfo]
+  - name: last_run
+    type: float
+  - name: stats
+    type: dict[str, float]
+dependencies:
+  runtime:
+  - faster_whisper
+  - numpy
+  - opentelemetry
+  - panns_inference
+  - pyannote
+  - pydantic
+  - qdrant_client
+  - silero_vad
+  - soundfile
+  - torch
+  - torchaudio
+  - yaml
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.audio_processor
+  flags:
+  - name: --process
+  - name: --stats
+  - name: --reprocess
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 13460
+  note: Estimated from 1 source file(s) at 10 tokens/line

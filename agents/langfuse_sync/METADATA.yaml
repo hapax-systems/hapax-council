@@ -1,0 +1,61 @@
+module: langfuse_sync
+purpose: Langfuse RAG sync — LLM trace summaries and cost tracking.
+version: 1
+interface:
+  inputs:
+  - name: trace_id
+    type: str
+  - name: name
+    type: str
+  - name: timestamp
+    type: str
+  - name: model
+    type: str
+  - name: input_preview
+    type: str
+  - name: output_preview
+    type: str
+  - name: total_cost
+    type: float
+  - name: latency_ms
+    type: float
+  - name: status
+    type: str
+  - name: tags
+    type: list[str]
+  - name: metadata
+    type: dict
+  - name: last_trace_timestamp
+    type: str
+  - name: total_traces_synced
+    type: int
+  - name: last_sync
+    type: float
+  - name: models_seen
+    type: dict[str, int]
+  - name: daily_costs
+    type: dict[str, float]
+  - name: trace_names
+    type: dict[str, int]
+  - name: error_count
+    type: int
+  - name: stats
+    type: dict[str, int]
+dependencies:
+  runtime:
+  - base64
+  - opentelemetry
+  - pydantic
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.langfuse_sync
+  flags:
+  - name: --full-sync
+  - name: --auto
+  - name: --stats
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 7110
+  note: Estimated from 1 source file(s) at 10 tokens/line

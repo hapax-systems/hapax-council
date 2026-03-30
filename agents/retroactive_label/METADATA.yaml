@@ -1,0 +1,18 @@
+module: retroactive_label
+purpose: Retroactive person labeling — batch scan Qdrant docs and tag with person_ids.
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.retroactive_label
+  flags:
+  - name: --dry-run
+  - name: --limit
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 1560
+  note: Estimated from 1 source file(s) at 10 tokens/line

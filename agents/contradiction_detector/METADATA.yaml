@@ -1,0 +1,13 @@
+module: contradiction_detector
+purpose: Cross-domain contradiction detection — carrier dynamics in practice.
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal:
+  - agents
+execution:
+  entry: uv run python -m agents.contradiction_detector
+token_budget:
+  self: 1960
+  note: Estimated from 1 source file(s) at 10 tokens/line

@@ -1,0 +1,99 @@
+module: profiler
+purpose: User profile extraction agent.
+version: 1
+interface:
+  inputs:
+  - name: dimension
+    type: str
+  - name: key
+    type: str
+  - name: value
+    type: str
+  - name: confidence
+    type: float
+  - name: source
+    type: str
+  - name: evidence
+    type: str
+  - name: facts
+    type: list[ProfileFact]
+  - name: name
+    type: str
+  - name: summary
+    type: str
+  - name: facts
+    type: list[ProfileFact]
+  - name: name
+    type: str
+  - name: email
+    type: str | None
+  - name: summary
+    type: str
+  - name: dimensions
+    type: list[ProfileDimension]
+  - name: sources_processed
+    type: list[str]
+  - name: version
+    type: int
+  - name: updated_at
+    type: str
+  - name: goal_updates
+    type: dict[str, str]
+  - name: new_patterns
+    type: list[str]
+  - name: summary
+    type: str
+  - name: neurocognitive_updates
+    type: dict[str, list[str]]
+  - name: action
+    type: Literal['merge', 'delete', 'update', 'flag']
+  - name: keys
+    type: list[str]
+  - name: reason
+    type: str
+  - name: new_key
+    type: str | None
+  - name: new_value
+    type: str | None
+  - name: new_confidence
+    type: float | None
+  - name: gap_type
+    type: str | None
+  - name: dimension
+    type: str
+  - name: operations
+    type: list[CurationOp]
+  - name: health_score
+    type: float
+  outputs:
+  - name: name
+    type: str
+  - name: email
+    type: str | None
+  - name: summary
+    type: str
+  - name: dimension_summaries
+    type: dict[str, str]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - pydantic_ai
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.profiler
+  flags:
+  - name: --source
+  - name: --generate-prompts
+  - name: --ingest
+  - name: --show
+  - name: --full
+  - name: --auto
+  - name: --curate
+  - name: --digest
+  - name: --index-profile
+token_budget:
+  self: 15570
+  note: Estimated from 1 source file(s) at 10 tokens/line

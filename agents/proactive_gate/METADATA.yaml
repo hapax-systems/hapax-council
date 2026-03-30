@@ -1,0 +1,14 @@
+module: proactive_gate
+purpose: Proactive gate — conditions for system-initiated speech.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - random
+  internal:
+  - agents
+execution:
+  entry: uv run python -m agents.proactive_gate
+token_budget:
+  self: 400
+  note: Estimated from 1 source file(s) at 10 tokens/line

@@ -1,0 +1,108 @@
+module: effect_graph
+purpose: Effect node graph — composable GPU shader pipeline.
+version: 1
+interface:
+  inputs:
+  - name: type
+    type: str
+  - name: default
+    type: Any
+  - name: min
+    type: float | None
+  - name: max
+    type: float | None
+  - name: enum_values
+    type: list[str] | None
+  - name: description
+    type: str
+  - name: node_type
+    type: str
+  - name: glsl_fragment
+    type: str
+  - name: inputs
+    type: dict[str, PortType]
+  - name: outputs
+    type: dict[str, PortType]
+  - name: params
+    type: dict[str, ParamDef]
+  - name: temporal
+    type: bool
+  - name: temporal_buffers
+    type: int
+  - name: compute
+    type: bool
+  - name: type
+    type: str
+  - name: params
+    type: dict[str, Any]
+  - name: source_node
+    type: str
+  - name: source_port
+    type: str
+  - name: target_node
+    type: str
+  - name: target_port
+    type: str
+  - name: node
+    type: str
+  - name: param
+    type: str
+  - name: source
+    type: str
+  - name: scale
+    type: float
+  - name: offset
+    type: float
+  - name: smoothing
+    type: float
+  - name: saturation
+    type: float
+  - name: brightness
+    type: float
+  - name: contrast
+    type: float
+  - name: sepia
+    type: float
+  - name: hue_rotate
+    type: float
+  - name: name
+    type: str
+  - name: description
+    type: str
+  - name: transition_ms
+    type: int
+  - name: nodes
+    type: dict[str, NodeInstance]
+  - name: edges
+    type: list[list[str]]
+  - name: modulations
+    type: list[ModulationBinding]
+  - name: layer_palettes
+    type: dict[str, LayerPalette]
+  - name: add_nodes
+    type: dict[str, NodeInstance]
+  - name: remove_nodes
+    type: list[str]
+  - name: add_edges
+    type: list[list[str]]
+  - name: remove_edges
+    type: list[list[str]]
+  - name: presets
+    type: tuple[str, ...]
+dependencies:
+  runtime:
+  - compiler
+  - copy
+  - gi
+  - modulator
+  - pydantic
+  - registry
+  - wgsl_transpiler
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.effect_graph
+token_budget:
+  self: 11600
+  note: Estimated from 11 source file(s) at 10 tokens/line

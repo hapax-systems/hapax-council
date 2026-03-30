@@ -1,0 +1,47 @@
+module: obsidian_sync
+purpose: Obsidian vault RAG sync — scan vault, write changed notes with metadata.
+version: 1
+interface:
+  inputs:
+  - name: relative_path
+    type: str
+  - name: title
+    type: str
+  - name: folder
+    type: str
+  - name: content_hash
+    type: str
+  - name: size
+    type: int
+  - name: mtime
+    type: float
+  - name: has_frontmatter
+    type: bool
+  - name: tags
+    type: list[str]
+  - name: links
+    type: list[str]
+  - name: notes
+    type: dict[str, VaultNote]
+  - name: last_sync
+    type: float
+  - name: stats
+    type: dict[str, int]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - yaml
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.obsidian_sync
+  flags:
+  - name: --full-sync
+  - name: --auto
+  - name: --stats
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 4810
+  note: Estimated from 1 source file(s) at 10 tokens/line

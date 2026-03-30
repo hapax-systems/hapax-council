@@ -1,0 +1,16 @@
+module: sprint_tracker
+purpose: Sprint tracker agent — vault-native R&D schedule management.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - yaml
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.sprint_tracker
+  environment:
+    SYSTEMD_TIMER: hapax-sprint-tracker.timer
+token_budget:
+  self: 4360
+  note: Estimated from 1 source file(s) at 10 tokens/line

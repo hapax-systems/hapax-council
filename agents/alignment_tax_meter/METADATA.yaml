@@ -1,0 +1,16 @@
+module: alignment_tax_meter
+purpose: Alignment tax measurement — governance overhead as percentage of total cost.
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.alignment_tax_meter
+  flags:
+  - name: --days
+  - name: --save
+token_budget:
+  self: 2380
+  note: Estimated from 1 source file(s) at 10 tokens/line

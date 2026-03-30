@@ -1,0 +1,30 @@
+module: protention_engine
+purpose: Protention engine — statistical transition probability model.
+version: 1
+interface:
+  inputs:
+  - name: dimension
+    type: str
+  - name: predicted_value
+    type: str
+  - name: probability
+    type: float
+  - name: expected_in_s
+    type: float
+  - name: basis
+    type: str
+  - name: predictions
+    type: list[TransitionPrediction]
+  - name: timestamp
+    type: float
+  - name: observation_count
+    type: int
+dependencies:
+  runtime:
+  - pydantic
+  internal: []
+execution:
+  entry: uv run python -m agents.protention_engine
+token_budget:
+  self: 3350
+  note: Estimated from 1 source file(s) at 10 tokens/line

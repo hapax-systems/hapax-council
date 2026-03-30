@@ -1,0 +1,17 @@
+module: studio_fx
+purpose: Studio FX — independent Python visual effects pipeline.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - cv2
+  - numpy
+  - pyvirtualcam
+  - supervision
+  internal:
+  - agents
+execution:
+  entry: uv run python -m agents.studio_fx
+token_budget:
+  self: 18120
+  note: Estimated from 23 source file(s) at 10 tokens/line

@@ -1,0 +1,64 @@
+module: storage_arbiter
+purpose: Orchestrates audio archive value assessment and lifecycle.
+version: 1
+interface:
+  inputs:
+  - name: filename
+    type: str
+  - name: archive_path
+    type: Path
+  - name: sidecar_path
+    type: Path
+  - name: value_score
+    type: float
+  - name: disposition
+    type: str
+  - name: dominant_classification
+    type: str
+  - name: processed_at
+    type: str
+  - name: speech_seconds
+    type: float
+  - name: music_seconds
+    type: float
+  - name: segment_count
+    type: int
+  - name: sample_sessions
+    type: int
+  - name: listening_logs
+    type: int
+  outputs:
+  - name: timestamp
+    type: str
+  - name: total_files
+    type: int
+  - name: total_size_mb
+    type: float
+  - name: files_assessed
+    type: int
+  - name: files_below_threshold
+    type: int
+  - name: files_protected
+    type: int
+  - name: files_eligible_for_reap
+    type: int
+  - name: top_value_files
+    type: list[str]
+  - name: lowest_value_files
+    type: list[str]
+dependencies:
+  runtime:
+  - pydantic
+  - yaml
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.storage_arbiter
+  flags:
+  - name: --run
+  - name: --report
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 2460
+  note: Estimated from 1 source file(s) at 10 tokens/line

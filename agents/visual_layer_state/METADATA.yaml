@@ -1,0 +1,272 @@
+module: visual_layer_state
+purpose: Visual communication layer — data models and display state machine.
+version: 1
+interface:
+  inputs:
+  - name: x
+    type: float
+  - name: y
+    type: float
+  - name: w
+    type: float
+  - name: h
+    type: float
+  - name: category
+    type: SignalCategory
+  - name: severity
+    type: float
+  - name: title
+    type: str
+  - name: detail
+    type: str
+  - name: source_id
+    type: str
+  - name: category
+    type: SignalCategory
+  - name: severity
+    type: float
+  - name: title
+    type: str
+  - name: detail
+    type: str
+  - name: emitted_at
+    type: float
+  - name: ttl_s
+    type: float
+  - name: speed
+    type: float
+  - name: turbulence
+    type: float
+  - name: color_warmth
+    type: float
+  - name: brightness
+    type: float
+  - name: audio_energy
+    type: float
+  - name: noise_variant
+    type: str
+  - name: hue_shift
+    type: float
+  - name: chroma_scale
+    type: float
+  - name: lightness_bias
+    type: float
+  - name: source
+    type: str
+  - name: from_state
+    type: str
+  - name: to_state
+    type: str
+  - name: started_at
+    type: float
+  - name: duration_s
+    type: float
+  - name: style
+    type: str
+  - name: role
+    type: str
+  - name: x
+    type: float
+  - name: y
+    type: float
+  - name: w
+    type: float
+  - name: h
+    type: float
+  - name: opacity
+    type: float
+  - name: css_filter
+    type: str
+  - name: duration_s
+    type: float
+  - name: injected_at
+    type: float
+  - name: active
+    type: bool
+  - name: state
+    type: str
+  - name: turn_count
+    type: int
+  - name: last_utterance
+    type: str
+  - name: last_response
+    type: str
+  - name: active_tool
+    type: str | None
+  - name: barge_in
+    type: bool
+  - name: routing_tier
+    type: str
+  - name: routing_reason
+    type: str
+  - name: routing_activation
+    type: float
+  - name: context_anchor_success
+    type: float
+  - name: frustration_score
+    type: float
+  - name: frustration_rolling_avg
+    type: float
+  - name: acceptance_type
+    type: str
+  - name: spoken_words
+    type: int
+  - name: word_limit
+    type: int
+  - name: content_type
+    type: str
+  - name: title
+    type: str
+  - name: body
+    type: str
+  - name: image_path
+    type: str
+  - name: timestamp
+    type: float
+  - name: heart_rate_bpm
+    type: int
+  - name: stress_elevated
+    type: bool
+  - name: physiological_load
+    type: float
+  - name: sleep_quality
+    type: float
+  - name: watch_activity
+    type: str
+  - name: phone_battery_pct
+    type: int
+  - name: phone_connected
+    type: bool
+  - name: trend_flow
+    type: float
+  - name: trend_audio
+    type: float
+  - name: trend_hr
+    type: float
+  - name: perception_age_s
+    type: float
+  - name: ring_depth
+    type: int
+  - name: perception_s
+    type: float
+  - name: health_s
+    type: float
+  - name: gpu_s
+    type: float
+  - name: nudges_s
+    type: float
+  - name: briefing_s
+    type: float
+  - name: entity_id
+    type: str
+  - name: label
+    type: str
+  - name: camera
+    type: str
+  - name: box
+    type: tuple[float, float, float, float]
+  - name: confidence
+    type: float
+  - name: mobility
+    type: str
+  - name: novelty
+    type: float
+  - name: consent_suppressed
+    type: bool
+  - name: gaze_direction
+    type: str | None
+  - name: emotion
+    type: str | None
+  - name: posture
+    type: str | None
+  - name: gesture
+    type: str | None
+  - name: action
+    type: str | None
+  - name: depth
+    type: str | None
+  - name: mobility_score
+    type: float | None
+  - name: first_seen_age_s
+    type: float | None
+  - name: camera_count
+    type: int | None
+  - name: sightings
+    type: list[tuple[float, float, float, float]] | None
+  - name: velocity
+    type: float | None
+  - name: direction_deg
+    type: float | None
+  - name: confidence_stability
+    type: float | None
+  - name: dwell_s
+    type: float | None
+  - name: is_entering
+    type: bool
+  - name: is_exiting
+    type: bool
+  - name: display_state
+    type: DisplayState
+  - name: zone_opacities
+    type: dict[str, float]
+  - name: signals
+    type: dict[str, list[SignalEntry]]
+  - name: ambient_params
+    type: AmbientParams
+  - name: voice_session
+    type: VoiceSessionState
+  - name: voice_content
+    type: list[SupplementaryContent]
+  - name: biometrics
+    type: BiometricState
+  - name: injected_feeds
+    type: list[InjectedFeed]
+  - name: ambient_text
+    type: str
+  - name: secondary_ambient_text
+    type: str
+  - name: activity_label
+    type: str
+  - name: activity_detail
+    type: str
+  - name: display_density
+    type: str
+  - name: scheduler_source
+    type: str
+  - name: temporal_context
+    type: TemporalContext
+  - name: signal_staleness
+    type: SignalStaleness
+  - name: stimmung_stance
+    type: str
+  - name: readiness
+    type: str
+  - name: classification_detections
+    type: list[ClassificationDetection]
+  - name: classification_directives
+    type: dict[str, str]
+  - name: recent_change_points
+    type: list[dict]
+  - name: watershed_events
+    type: list[WatershedEvent]
+  - name: environmental_color
+    type: EnvironmentalColor
+  - name: transition
+    type: TransitionMeta
+  - name: operator_x
+    type: float
+  - name: operator_y
+    type: float
+  - name: timestamp
+    type: float
+  - name: epoch
+    type: int
+dependencies:
+  runtime:
+  - pydantic
+  internal: []
+execution:
+  entry: uv run python -m agents.visual_layer_state
+token_budget:
+  self: 4500
+  note: Estimated from 1 source file(s) at 10 tokens/line

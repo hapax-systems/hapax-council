@@ -1,0 +1,63 @@
+module: gmail_sync
+purpose: Gmail RAG sync — email metadata indexing and behavioral tracking.
+version: 1
+interface:
+  inputs:
+  - name: message_id
+    type: str
+  - name: thread_id
+    type: str
+  - name: subject
+    type: str
+  - name: sender
+    type: str
+  - name: timestamp
+    type: str
+  - name: recipients
+    type: list[str]
+  - name: labels
+    type: list[str]
+  - name: is_unread
+    type: bool
+  - name: is_starred
+    type: bool
+  - name: thread_length
+    type: int
+  - name: has_attachments
+    type: bool
+  - name: snippet
+    type: str
+  - name: body_extracted
+    type: bool
+  - name: local_path
+    type: str
+  - name: synced_at
+    type: float
+  - name: history_id
+    type: str
+  - name: messages
+    type: dict[str, EmailMetadata]
+  - name: last_full_sync
+    type: float
+  - name: last_sync
+    type: float
+  - name: stats
+    type: dict[str, int]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.gmail_sync
+  flags:
+  - name: --auth
+  - name: --full-sync
+  - name: --auto
+  - name: --stats
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 5070
+  note: Estimated from 1 source file(s) at 10 tokens/line

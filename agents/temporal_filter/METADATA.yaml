@@ -1,0 +1,12 @@
+module: temporal_filter
+purpose: Temporal stability filter — hysteresis to prevent flickering classifications.
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal: []
+execution:
+  entry: uv run python -m agents.temporal_filter
+token_budget:
+  self: 790
+  note: Estimated from 1 source file(s) at 10 tokens/line

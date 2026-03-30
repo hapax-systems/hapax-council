@@ -1,0 +1,63 @@
+module: gcalendar_sync
+purpose: Google Calendar RAG sync — event indexing and behavioral tracking.
+version: 1
+interface:
+  inputs:
+  - name: event_id
+    type: str
+  - name: summary
+    type: str
+  - name: start
+    type: str
+  - name: end
+    type: str
+  - name: all_day
+    type: bool
+  - name: location
+    type: str
+  - name: description
+    type: str
+  - name: attendees
+    type: list[str]
+  - name: organizer
+    type: str
+  - name: recurring
+    type: bool
+  - name: recurrence_rule
+    type: str
+  - name: status
+    type: str
+  - name: calendar_id
+    type: str
+  - name: synced_at
+    type: float
+  - name: local_path
+    type: str
+  - name: sync_token
+    type: str
+  - name: events
+    type: dict[str, CalendarEvent]
+  - name: last_full_sync
+    type: float
+  - name: last_sync
+    type: float
+  - name: stats
+    type: dict[str, int]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.gcalendar_sync
+  flags:
+  - name: --auth
+  - name: --full-sync
+  - name: --auto
+  - name: --stats
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 5230
+  note: Estimated from 1 source file(s) at 10 tokens/line

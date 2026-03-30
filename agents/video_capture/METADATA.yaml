@@ -1,0 +1,35 @@
+module: video_capture
+purpose: Multi-camera video capture service.
+version: 1
+interface:
+  inputs:
+  - name: camera_role
+    type: str
+  - name: device_path
+    type: str
+  - name: width
+    type: int
+  - name: height
+    type: int
+  - name: fps
+    type: int
+  - name: segment_seconds
+    type: int
+  - name: output_dir
+    type: Path
+dependencies:
+  runtime:
+  - pydantic
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.video_capture
+  flags:
+  - name: --camera
+  - name: --list
+  - name: --device
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 2010
+  note: Estimated from 1 source file(s) at 10 tokens/line

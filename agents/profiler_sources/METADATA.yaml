@@ -1,0 +1,14 @@
+module: profiler_sources
+purpose: Data source discovery, reading, and chunking for the profiler agent.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - qdrant_client
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.profiler_sources
+token_budget:
+  self: 10560
+  note: Estimated from 1 source file(s) at 10 tokens/line

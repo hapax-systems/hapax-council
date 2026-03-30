@@ -1,0 +1,12 @@
+module: temporal_delta
+purpose: Temporal delta correlator — derive motion signals from sightings history.
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal: []
+execution:
+  entry: uv run python -m agents.temporal_delta
+token_budget:
+  self: 1240
+  note: Estimated from 1 source file(s) at 10 tokens/line

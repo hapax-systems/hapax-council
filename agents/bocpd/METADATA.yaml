@@ -1,0 +1,12 @@
+module: bocpd
+purpose: Bayesian Online Change Point Detection (Adams & MacKay, 2007).
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal: []
+execution:
+  entry: uv run python -m agents.bocpd
+token_budget:
+  self: 2130
+  note: Estimated from 1 source file(s) at 10 tokens/line

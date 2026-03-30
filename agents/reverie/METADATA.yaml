@@ -1,0 +1,14 @@
+module: reverie
+purpose: Hapax Reverie — visual actuation daemon.
+version: 1
+interface: {}
+dependencies:
+  runtime: []
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.reverie
+token_budget:
+  self: 2840
+  note: Estimated from 4 source file(s) at 10 tokens/line

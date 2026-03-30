@@ -1,0 +1,22 @@
+module: demo_eval
+purpose: Demo evaluation agent — generates, evaluates, and iteratively improves demos.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - opentelemetry
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.demo_eval
+  flags:
+  - name: --scenario
+  - name: --format
+  - name: --duration
+  - name: --max-iterations
+  - name: --pass-threshold
+  - name: --eval-only
+token_budget:
+  self: 2620
+  note: Estimated from 1 source file(s) at 10 tokens/line

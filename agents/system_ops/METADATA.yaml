@@ -1,0 +1,15 @@
+module: system_ops
+purpose: System Operations — infrastructure health and operational analytics agent.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - pydantic_ai
+  - sqlite3
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.system_ops
+token_budget:
+  self: 1140
+  note: Estimated from 2 source file(s) at 10 tokens/line

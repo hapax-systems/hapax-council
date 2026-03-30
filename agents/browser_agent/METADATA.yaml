@@ -1,0 +1,19 @@
+module: browser_agent
+purpose: agents/browser_agent.py — Agent for web content interaction.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - httpx
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.browser_agent
+  flags:
+  - name: --task
+  - name: --url
+  - name: --verbose
+  - name: -v
+token_budget:
+  self: 1140
+  note: Estimated from 1 source file(s) at 10 tokens/line

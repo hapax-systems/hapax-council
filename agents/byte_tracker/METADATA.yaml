@@ -1,0 +1,13 @@
+module: byte_tracker
+purpose: ByteTrack multi-object tracker — proper association across frames.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - numpy
+  internal: []
+execution:
+  entry: uv run python -m agents.byte_tracker
+token_budget:
+  self: 1760
+  note: Estimated from 1 source file(s) at 10 tokens/line

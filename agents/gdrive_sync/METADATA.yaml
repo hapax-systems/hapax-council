@@ -1,0 +1,63 @@
+module: gdrive_sync
+purpose: Google Drive RAG sync — smart tiered strategy.
+version: 1
+interface:
+  inputs:
+  - name: drive_id
+    type: str
+  - name: name
+    type: str
+  - name: mime_type
+    type: str
+  - name: size
+    type: int
+  - name: modified_time
+    type: str
+  - name: parents
+    type: list[str]
+  - name: folder_path
+    type: str
+  - name: web_view_link
+    type: str
+  - name: local_path
+    type: str
+  - name: is_metadata_only
+    type: bool
+  - name: synced_at
+    type: float
+  - name: md5
+    type: str
+  - name: start_page_token
+    type: str
+  - name: files
+    type: dict[str, DriveFile]
+  - name: folder_names
+    type: dict[str, str]
+  - name: folder_parents
+    type: dict[str, str]
+  - name: last_full_scan
+    type: float
+  - name: last_sync
+    type: float
+  - name: stats
+    type: dict[str, int]
+dependencies:
+  runtime:
+  - googleapiclient
+  - opentelemetry
+  - pydantic
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.gdrive_sync
+  flags:
+  - name: --auth
+  - name: --full-scan
+  - name: --auto
+  - name: --fetch
+  - name: --stats
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 7540
+  note: Estimated from 1 source file(s) at 10 tokens/line

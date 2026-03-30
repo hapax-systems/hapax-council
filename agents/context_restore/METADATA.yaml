@@ -1,0 +1,15 @@
+module: context_restore
+purpose: Context restoration — proactive cognitive state recovery after interruption.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - yaml
+  internal:
+  - logos
+  - shared
+execution:
+  entry: uv run python -m agents.context_restore
+token_budget:
+  self: 4960
+  note: Estimated from 1 source file(s) at 10 tokens/line

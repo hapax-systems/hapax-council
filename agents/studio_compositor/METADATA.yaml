@@ -1,0 +1,179 @@
+module: studio_compositor
+purpose: Studio Compositor — GStreamer pipeline that tiles camera feeds into a single
+  1080p output.
+version: 1
+interface:
+  inputs:
+  - name: gain
+    type: int | None
+  - name: exposure
+    type: int | None
+  - name: brightness
+    type: int | None
+  - name: contrast
+    type: int | None
+  - name: saturation
+    type: int | None
+  - name: sharpness
+    type: int | None
+  - name: white_balance_temperature
+    type: int | None
+  - name: focus_absolute
+    type: int | None
+  - name: name
+    type: str
+  - name: schedule
+    type: str | None
+  - name: condition
+    type: str | None
+  - name: priority
+    type: int
+  - name: cameras
+    type: dict[str, CameraV4L2]
+  - name: role
+    type: str
+  - name: device
+    type: str
+  - name: width
+    type: int
+  - name: height
+    type: int
+  - name: input_format
+    type: str
+  - name: pixel_format
+    type: str | None
+  - name: hero
+    type: bool
+  - name: enabled
+    type: bool
+  - name: output_dir
+    type: str
+  - name: segment_seconds
+    type: int
+  - name: qp
+    type: int
+  - name: enabled
+    type: bool
+  - name: target_duration
+    type: int
+  - name: playlist_length
+    type: int
+  - name: max_files
+    type: int
+  - name: output_dir
+    type: str
+  - name: bitrate
+    type: int
+  - name: cameras
+    type: list[CameraSpec]
+  - name: output_device
+    type: str
+  - name: output_width
+    type: int
+  - name: output_height
+    type: int
+  - name: framerate
+    type: int
+  - name: bitrate
+    type: int
+  - name: watchdog_timeout_ms
+    type: int
+  - name: status_interval_s
+    type: float
+  - name: overlay_enabled
+    type: bool
+  - name: recording
+    type: RecordingConfig
+  - name: hls
+    type: HlsConfig
+  - name: camera_profiles
+    type: list[CameraProfile]
+  - name: x
+    type: int
+  - name: y
+    type: int
+  - name: w
+    type: int
+  - name: h
+    type: int
+  - name: production_activity
+    type: str
+  - name: desk_activity
+    type: str
+  - name: overhead_hand_zones
+    type: str
+  - name: detected_action
+    type: str
+  - name: music_genre
+    type: str
+  - name: flow_state
+    type: str
+  - name: flow_score
+    type: float
+  - name: emotion_valence
+    type: float
+  - name: emotion_arousal
+    type: float
+  - name: audio_energy_rms
+    type: float
+  - name: active_contracts
+    type: list[str]
+  - name: persistence_allowed
+    type: bool
+  - name: guest_present
+    type: bool
+  - name: consent_phase
+    type: str
+  - name: timestamp
+    type: float
+  - name: mixer_energy
+    type: float
+  - name: mixer_beat
+    type: float
+  - name: mixer_bass
+    type: float
+  - name: mixer_mid
+    type: float
+  - name: mixer_high
+    type: float
+  - name: mixer_active
+    type: bool
+  - name: beat_position
+    type: float
+  - name: bar_position
+    type: float
+  - name: desk_energy
+    type: float
+  - name: desk_onset_rate
+    type: float
+  - name: desk_spectral_centroid
+    type: float
+  - name: heart_rate_bpm
+    type: float
+  - name: stress_elevated
+    type: bool
+dependencies:
+  runtime:
+  - cairo
+  - gi
+  - pydantic
+  - random
+  - yaml
+  internal:
+  - agents
+  - logos
+  - shared
+execution:
+  entry: uv run python -m agents.studio_compositor
+  flags:
+  - name: --config
+  - name: --default-config
+  - name: --no-overlay
+  - name: --record-dir
+  - name: --no-record
+  - name: --no-hls
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 21350
+  note: Estimated from 1 source file(s) at 10 tokens/line

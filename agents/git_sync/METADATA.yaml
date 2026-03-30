@@ -1,0 +1,48 @@
+module: git_sync
+purpose: Git commit history RAG sync — local repository commit extraction.
+version: 1
+interface:
+  inputs:
+  - name: hash
+    type: str
+  - name: author
+    type: str
+  - name: date
+    type: str
+  - name: subject
+    type: str
+  - name: body
+    type: str
+  - name: files_changed
+    type: list[str]
+  - name: stats
+    type: str
+  - name: diff_hunks
+    type: str
+  - name: last_commit_sha
+    type: str
+  - name: commit_count
+    type: int
+  - name: repos
+    type: dict[str, RepoState]
+  - name: last_sync
+    type: float
+  - name: stats
+    type: dict[str, int]
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.git_sync
+  flags:
+  - name: --full-sync
+  - name: --auto
+  - name: --stats
+  - name: -v
+  - name: --verbose
+token_budget:
+  self: 5110
+  note: Estimated from 1 source file(s) at 10 tokens/line

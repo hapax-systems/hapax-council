@@ -1,0 +1,276 @@
+module: fortress
+purpose: Fortress governance agent — Dwarf Fortress forcing function.
+version: 1
+interface:
+  inputs:
+  - name: name
+    type: str
+  - name: level
+    type: int
+  - name: id
+    type: int
+  - name: name
+    type: str
+  - name: profession
+    type: str
+  - name: skills
+    type: tuple[DwarfSkill, ...]
+  - name: stress
+    type: int
+  - name: mood
+    type: str
+  - name: current_job
+    type: str
+  - name: military_squad_id
+    type: int | None
+  - name: id
+    type: int
+  - name: name
+    type: str
+  - name: member_ids
+    type: tuple[int, ...]
+  - name: equipment_quality
+    type: float
+  - name: training_level
+    type: float
+  - name: food
+    type: int
+  - name: drink
+    type: int
+  - name: wood
+    type: int
+  - name: stone
+    type: int
+  - name: metal_bars
+    type: int
+  - name: cloth
+    type: int
+  - name: thread
+    type: int
+  - name: weapons
+    type: int
+  - name: armor
+    type: int
+  - name: ammo
+    type: int
+  - name: mechanisms
+    type: int
+  - name: seeds
+    type: int
+  - name: gems
+    type: int
+  - name: leather
+    type: int
+  - name: bones
+    type: int
+  - name: shells
+    type: int
+  - name: crafts
+    type: int
+  - name: furniture
+    type: int
+  - name: type
+    type: str
+  - name: x
+    type: int
+  - name: y
+    type: int
+  - name: z
+    type: int
+  - name: is_active
+    type: bool
+  - name: current_job
+    type: str
+  - name: doors
+    type: int
+  - name: beds
+    type: int
+  - name: tables
+    type: int
+  - name: chairs
+    type: int
+  - name: statues
+    type: int
+  - name: armor_stands
+    type: int
+  - name: weapon_racks
+    type: int
+  - name: coffins
+    type: int
+  - name: trade_depot
+    type: int
+  - name: created
+    type: int
+  - name: exported
+    type: int
+  - name: imported
+    type: int
+  - name: z_levels_explored
+    type: int
+  - name: cavern_layers_breached
+    type: int
+  - name: has_magma_access
+    type: bool
+  - name: has_water_source
+    type: bool
+  - name: aquifer_present
+    type: bool
+  - name: position
+    type: str
+  - name: holder_id
+    type: int | None
+  - name: demands
+    type: tuple[str, ...]
+  - name: unit_id
+    type: int
+  - name: mood_type
+    type: str
+  - name: claimed_workshop
+    type: str | None
+  - name: materials_needed
+    type: tuple[str, ...]
+  - name: type
+    type: Literal['siege']
+  - name: attacker_civ
+    type: str
+  - name: force_size
+    type: int
+  - name: type
+    type: Literal['migrant']
+  - name: count
+    type: int
+  - name: type
+    type: Literal['death']
+  - name: unit_id
+    type: int
+  - name: unit_name
+    type: str
+  - name: cause
+    type: str
+  - name: type
+    type: Literal['mood']
+  - name: unit_id
+    type: int
+  - name: mood_type
+    type: str
+  - name: type
+    type: Literal['caravan']
+  - name: civ
+    type: str
+  - name: goods_value
+    type: int
+  - name: type
+    type: Literal['season_change']
+  - name: new_season
+    type: int
+  - name: new_year
+    type: int
+  - name: type
+    type: Literal['cave_in']
+  - name: z_level
+    type: int
+  - name: type
+    type: Literal['mandate']
+  - name: noble
+    type: str
+  - name: item_type
+    type: str
+  - name: quantity
+    type: int
+  - name: type
+    type: Literal['megabeast']
+  - name: creature_type
+    type: str
+  - name: id
+    type: int
+  - name: type
+    type: str
+  - name: x1
+    type: int
+  - name: y1
+    type: int
+  - name: x2
+    type: int
+  - name: y2
+    type: int
+  - name: z
+    type: int
+  - name: is_room
+    type: bool
+  - name: room_description
+    type: str
+  - name: name
+    type: str
+  - name: id
+    type: int
+  - name: type
+    type: str
+  - name: x1
+    type: int
+  - name: y1
+    type: int
+  - name: x2
+    type: int
+  - name: y2
+    type: int
+  - name: z
+    type: int
+  - name: name
+    type: str
+  - name: timestamp
+    type: float
+  - name: game_tick
+    type: int
+  - name: year
+    type: int
+  - name: season
+    type: int
+  - name: month
+    type: int
+  - name: day
+    type: int
+  - name: fortress_name
+    type: str
+  - name: paused
+    type: bool
+  - name: population
+    type: int
+  - name: food_count
+    type: int
+  - name: drink_count
+    type: int
+  - name: active_threats
+    type: int
+  - name: job_queue_length
+    type: int
+  - name: idle_dwarf_count
+    type: int
+  - name: most_stressed_value
+    type: int
+  - name: pending_events
+    type: tuple[FortressEvent, ...]
+  - name: tick
+    type: int
+  - name: day
+    type: int
+  - name: month
+    type: int
+  - name: season
+    type: int
+  - name: year
+    type: int
+  - name: era
+    type: str
+dependencies:
+  runtime:
+  - csv
+  - litellm
+  - pydantic
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.fortress
+token_budget:
+  self: 44590
+  note: Estimated from 38 source file(s) at 10 tokens/line

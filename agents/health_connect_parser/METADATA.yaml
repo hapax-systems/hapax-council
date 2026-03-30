@@ -1,0 +1,19 @@
+module: health_connect_parser
+purpose: Health Connect SQLite parser — extracts daily summaries from backup ZIPs.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - sqlite3
+  - zipfile
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.health_connect_parser
+  flags:
+  - name: --parse
+  - name: --watch
+  - name: --force
+token_budget:
+  self: 2230
+  note: Estimated from 1 source file(s) at 10 tokens/line

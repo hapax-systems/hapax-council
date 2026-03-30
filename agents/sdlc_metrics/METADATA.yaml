@@ -1,0 +1,87 @@
+module: sdlc_metrics
+purpose: SDLC pipeline health metrics — deterministic aggregation.
+version: 1
+interface:
+  inputs:
+  - name: events_total
+    type: int
+  - name: events_per_day
+    type: float
+  - name: by_stage
+    type: dict[str, int]
+  - name: triage_types
+    type: dict[str, int]
+  - name: triage_complexities
+    type: dict[str, int]
+  - name: triage_reject_rate
+    type: float
+  - name: review_approve_rate
+    type: float
+  - name: axiom_gate_pass_rate
+    type: float
+  - name: review_round_distribution
+    type: dict[str, int]
+  - name: axiom_violations_by_tier
+    type: dict[str, int]
+  - name: top_violated_axioms
+    type: dict[str, int]
+  - name: avg_duration_ms
+    type: float
+  - name: by_stage_avg_ms
+    type: dict[str, float]
+  - name: by_stage_max_ms
+    type: dict[str, int]
+  - name: current_period_events
+    type: int
+  - name: prior_period_events
+    type: int
+  - name: velocity_change_pct
+    type: float | None
+  - name: direction
+    type: str
+  - name: metric
+    type: str
+  - name: description
+    type: str
+  - name: value
+    type: float
+  - name: threshold
+    type: float
+  - name: sdlc_log_exists
+    type: bool
+  - name: sdlc_log_lines
+    type: int
+  - name: github_reachable
+    type: bool
+  outputs:
+  - name: generated_at
+    type: str
+  - name: window_days
+    type: int
+  - name: velocity
+    type: VelocityMetrics
+  - name: quality
+    type: QualityMetrics
+  - name: latency
+    type: LatencyMetrics
+  - name: trends
+    type: TrendComparison
+  - name: anomalies
+    type: list[Anomaly]
+  - name: data_sources
+    type: DataSourceInfo
+dependencies:
+  runtime:
+  - opentelemetry
+  - pydantic
+  - statistics
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.sdlc_metrics
+  flags:
+  - name: --days
+  - name: --output
+token_budget:
+  self: 3620
+  note: Estimated from 1 source file(s) at 10 tokens/line

@@ -1,0 +1,170 @@
+module: dev_story
+purpose: Dev Story — development archaeology agent.
+version: 1
+interface:
+  inputs:
+  - name: id
+    type: str
+  - name: project_path
+    type: str
+  - name: project_name
+    type: str
+  - name: started_at
+    type: str
+  - name: ended_at
+    type: str | None
+  - name: git_branch
+    type: str | None
+  - name: message_count
+    type: int
+  - name: total_tokens_in
+    type: int
+  - name: total_tokens_out
+    type: int
+  - name: total_cost_estimate
+    type: float
+  - name: model_primary
+    type: str | None
+  - name: id
+    type: str
+  - name: session_id
+    type: str
+  - name: role
+    type: str
+  - name: timestamp
+    type: str
+  - name: content_text
+    type: str
+  - name: parent_id
+    type: str | None
+  - name: model
+    type: str | None
+  - name: tokens_in
+    type: int
+  - name: tokens_out
+    type: int
+  - name: message_id
+    type: str
+  - name: tool_name
+    type: str
+  - name: sequence_position
+    type: int
+  - name: arguments_summary
+    type: str | None
+  - name: duration_ms
+    type: int | None
+  - name: success
+    type: bool
+  - name: message_id
+    type: str
+  - name: file_path
+    type: str
+  - name: version
+    type: int
+  - name: change_type
+    type: str
+  - name: timestamp
+    type: str
+  - name: hash
+    type: str
+  - name: author_date
+    type: str
+  - name: message
+    type: str
+  - name: branch
+    type: str | None
+  - name: files_changed
+    type: int
+  - name: insertions
+    type: int
+  - name: deletions
+    type: int
+  - name: source_repo
+    type: str | None
+  - name: commit_hash
+    type: str
+  - name: file_path
+    type: str
+  - name: operation
+    type: str
+  - name: source_repo
+    type: str | None
+  - name: message_id
+    type: str
+  - name: commit_hash
+    type: str
+  - name: confidence
+    type: float
+  - name: method
+    type: str
+  - name: session_id
+    type: str
+  - name: tool_call_count
+    type: int
+  - name: tool_diversity
+    type: int
+  - name: edit_count
+    type: int
+  - name: bash_count
+    type: int
+  - name: agent_dispatch_count
+    type: int
+  - name: avg_response_time_ms
+    type: float
+  - name: user_steering_ratio
+    type: float
+  - name: phase_sequence
+    type: str | None
+  - name: session_id
+    type: str
+  - name: dimension
+    type: str
+  - name: value
+    type: str
+  - name: confidence
+    type: float
+  - name: moment_type
+    type: str
+  - name: severity
+    type: float
+  - name: session_id
+    type: str
+  - name: description
+    type: str
+  - name: message_id
+    type: str | None
+  - name: commit_hash
+    type: str | None
+  - name: evidence
+    type: str | None
+  - name: file_path
+    type: str
+  - name: change_frequency
+    type: int
+  - name: session_count
+    type: int
+  - name: churn_rate
+    type: float
+  - name: file_path
+    type: str
+  - name: introduced_by_commit
+    type: str
+  - name: survived_days
+    type: float
+  - name: introduced_by_session
+    type: str | None
+  - name: replacement_commit
+    type: str | None
+dependencies:
+  runtime:
+  - pydantic
+  - pydantic_ai
+  - sqlite3
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.dev_story
+token_budget:
+  self: 19540
+  note: Estimated from 12 source file(s) at 10 tokens/line

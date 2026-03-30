@@ -1,0 +1,20 @@
+module: deliberation_eval
+purpose: CLI for deliberation metric extraction and probe evaluation.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - opentelemetry
+  internal:
+  - shared
+execution:
+  entry: uv run python -m agents.deliberation_eval
+  flags:
+  - name: --pattern
+  - name: --dir
+  - name: --output
+  - name: --probes-only
+  - name: --dry-run
+token_budget:
+  self: 980
+  note: Estimated from 1 source file(s) at 10 tokens/line

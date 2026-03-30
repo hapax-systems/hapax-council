@@ -1,0 +1,15 @@
+module: visual_layer_aggregator
+purpose: Visual layer signal aggregator — polls logos API and perception state.
+version: 1
+interface: {}
+dependencies:
+  runtime:
+  - httpx
+  internal:
+  - agents
+  - shared
+execution:
+  entry: uv run python -m agents.visual_layer_aggregator
+token_budget:
+  self: 18320
+  note: Estimated from 1 source file(s) at 10 tokens/line
