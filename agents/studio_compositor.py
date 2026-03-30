@@ -811,10 +811,10 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", "snapshot-rate-caps")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=20/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=10/1"),
         )
         encoder = Gst.ElementFactory.make("jpegenc", "snapshot-jpeg")
-        encoder.set_property("quality", 92)
+        encoder.set_property("quality", 85)
         appsink = Gst.ElementFactory.make("appsink", "snapshot-sink")
         appsink.set_property("sync", False)
         appsink.set_property("async", False)
@@ -1157,10 +1157,10 @@ class StudioCompositor:
         scale_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=1920,height=1080"))
         rate = Gst.ElementFactory.make("videorate", "fx-snap-rate")
         rate_caps = Gst.ElementFactory.make("capsfilter", "fx-snap-rate-caps")
-        rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=20/1"))
+        rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=12/1"))
 
         jpeg = Gst.ElementFactory.make("jpegenc", "fx-snap-jpeg")
-        jpeg.set_property("quality", 92)
+        jpeg.set_property("quality", 85)
 
         appsink = Gst.ElementFactory.make("appsink", "fx-snapshot-sink")
         appsink.set_property("sync", False)
@@ -1322,7 +1322,7 @@ class StudioCompositor:
         rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
         rate_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-raw,framerate=15/1"),
+            Gst.Caps.from_string("video/x-raw,framerate=5/1"),
         )
         scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
         scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
