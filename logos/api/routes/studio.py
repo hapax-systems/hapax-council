@@ -226,8 +226,8 @@ async def search_moments(req: MomentSearchRequest):
 def _search_moments_sync(query: str, limit: int) -> list[dict]:
     """Synchronous CLAP search against Qdrant studio_moments."""
     try:
+        from logos._clap import embed_text
         from logos.api.routes._config import STUDIO_MOMENTS_COLLECTION, get_qdrant
-        from shared.clap import embed_text
     except ImportError:
         return []
 

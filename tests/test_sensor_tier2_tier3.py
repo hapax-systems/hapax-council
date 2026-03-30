@@ -39,14 +39,14 @@ def test_gmail_full_sync_writes_sensor_state(tmp_path: Path, monkeypatch):
     sensor_writes: list[tuple[str, dict]] = []
     impingement_emits: list[tuple] = []
     monkeypatch.setattr(
-        "shared.sensor_protocol.write_sensor_state",
+        "agents._sensor_protocol.write_sensor_state",
         lambda name, data: sensor_writes.append((name, data)),
     )
     monkeypatch.setattr(
-        "shared.sensor_protocol.emit_sensor_impingement",
+        "agents._sensor_protocol.emit_sensor_impingement",
         lambda *args, **kwargs: impingement_emits.append(args),
     )
-    monkeypatch.setattr("shared.notify.send_notification", lambda *a, **kw: None)
+    monkeypatch.setattr("agents._notify.send_notification", lambda *a, **kw: None)
 
     mod.run_full_sync()
 
@@ -87,14 +87,14 @@ def test_gdrive_auto_writes_sensor_state(tmp_path: Path, monkeypatch):
 
     sensor_writes: list[tuple[str, dict]] = []
     monkeypatch.setattr(
-        "shared.sensor_protocol.write_sensor_state",
+        "agents._sensor_protocol.write_sensor_state",
         lambda name, data: sensor_writes.append((name, data)),
     )
     monkeypatch.setattr(
-        "shared.sensor_protocol.emit_sensor_impingement",
+        "agents._sensor_protocol.emit_sensor_impingement",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr("shared.notify.send_notification", lambda *a, **kw: None)
+    monkeypatch.setattr("agents._notify.send_notification", lambda *a, **kw: None)
 
     mod.run_auto()
 
@@ -117,11 +117,11 @@ def test_watch_receiver_sensor_protocol():
 
     with patch.object(mod, "WATCH_STATE_DIR", Path("/tmp/test-watch-state")):
         with patch(
-            "shared.sensor_protocol.write_sensor_state",
+            "agents._sensor_protocol.write_sensor_state",
             lambda name, data: sensor_writes.append((name, data)),
         ):
             with patch(
-                "shared.sensor_protocol.emit_sensor_impingement",
+                "agents._sensor_protocol.emit_sensor_impingement",
                 lambda *args, **kwargs: impingement_emits.append(args),
             ):
                 client = TestClient(mod.app)
@@ -167,11 +167,11 @@ def test_weather_sync_writes_sensor_state(tmp_path: Path, monkeypatch):
     sensor_writes: list[tuple[str, dict]] = []
     impingement_emits: list[tuple] = []
     monkeypatch.setattr(
-        "shared.sensor_protocol.write_sensor_state",
+        "agents._sensor_protocol.write_sensor_state",
         lambda name, data: sensor_writes.append((name, data)),
     )
     monkeypatch.setattr(
-        "shared.sensor_protocol.emit_sensor_impingement",
+        "agents._sensor_protocol.emit_sensor_impingement",
         lambda *args, **kwargs: impingement_emits.append(args),
     )
 

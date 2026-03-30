@@ -6,7 +6,7 @@ Each probe checks a specific sufficiency implication by inspecting real
 infrastructure state (files, services, code patterns). No LLM calls.
 
 Usage:
-    from shared.sufficiency_probes import run_probes
+    from agents._sufficiency_probes import run_probes
 
     results = run_probes()
     for r in results:

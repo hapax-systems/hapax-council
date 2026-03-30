@@ -17,9 +17,9 @@ import logging
 import types
 from dataclasses import dataclass, field
 
-from agents.hapax_daimonion.primitives import Stamped
-from shared.governance import (
+from agents._governance import (
     Candidate,
+    ConsentLabel,
     FallbackChain,
     GatedResult,
     Selected,
@@ -27,7 +27,7 @@ from shared.governance import (
     VetoChain,
     VetoResult,
 )
-from shared.governance.consent_label import ConsentLabel
+from agents.hapax_daimonion.primitives import Stamped
 
 log = logging.getLogger(__name__)
 

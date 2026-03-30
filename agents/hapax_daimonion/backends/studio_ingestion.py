@@ -231,7 +231,7 @@ class StudioIngestionBackend:
 
     def available(self) -> bool:
         try:
-            import shared.clap  # noqa: F401
+            import agents._clap  # noqa: F401
 
             return True
         except ImportError:
@@ -301,7 +301,7 @@ class StudioIngestionBackend:
             return
 
         try:
-            from shared.clap import classify_zero_shot
+            from agents._clap import classify_zero_shot
 
             activity_scores = classify_zero_shot(waveform, _ACTIVITY_LABELS, sr=48000)
             top_activity_label = max(activity_scores, key=activity_scores.get)

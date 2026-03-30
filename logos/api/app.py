@@ -10,7 +10,7 @@ import logging
 from contextlib import asynccontextmanager
 
 try:
-    from shared import langfuse_config  # noqa: F401
+    from logos import _langfuse_config  # noqa: F401
 except Exception:
     pass  # langfuse optional
 
@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
         app.state.engine = engine
 
         # Wire revocation propagator to carrier registry
-        from shared.governance.revocation_wiring import get_revocation_propagator
+        from logos._revocation_wiring import get_revocation_propagator
 
         app.state.revocation_propagator = get_revocation_propagator()
     except Exception:

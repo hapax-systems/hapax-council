@@ -186,9 +186,7 @@ def measure_label_operations(iterations: int = 10000) -> dict:
     Measures join, can_flow_to, and governor check_input latency.
     Returns times in microseconds.
     """
-    from shared.governance.consent_label import ConsentLabel
-    from shared.governance.governor import GovernorWrapper, consent_input_policy
-    from shared.governance.labeled import Labeled
+    from agents._governance import ConsentLabel, GovernorWrapper, Labeled, consent_input_policy
 
     # Build labels of varying complexity
     small = ConsentLabel(frozenset({("alice", frozenset({"bob"}))}))

@@ -283,7 +283,7 @@ async def test_gather_research_source_failure_graceful():
 def test_gather_component_registry(component_registry_yaml: Path):
     """Verify component registry formats names and descriptions."""
     # _gather_component_registry imports PROFILES_DIR inside the function body
-    with patch("shared.config.PROFILES_DIR", component_registry_yaml.parent):
+    with patch("agents._config.PROFILES_DIR", component_registry_yaml.parent):
         result = _gather_component_registry()
 
     assert "vector-database" in result
@@ -478,7 +478,7 @@ def test_gather_component_registry_rich(tmp_path: Path):
     p = tmp_path / "component-registry.yaml"
     p.write_text(yaml.dump(data))
 
-    with patch("shared.config.PROFILES_DIR", tmp_path):
+    with patch("agents._config.PROFILES_DIR", tmp_path):
         result = _gather_component_registry_rich()
 
     assert "### vector-database" in result
@@ -494,7 +494,7 @@ def test_gather_briefing_stats(tmp_path: Path):
     briefing_content = "# Daily Briefing\n\nHealth: all green\nTraces: 1,234"
     (tmp_path / "briefing.md").write_text(briefing_content)
 
-    with patch("shared.config.PROFILES_DIR", tmp_path):
+    with patch("agents._config.PROFILES_DIR", tmp_path):
         result = _gather_briefing_stats()
 
     assert "Daily Briefing" in result
@@ -503,7 +503,7 @@ def test_gather_briefing_stats(tmp_path: Path):
 
 def test_gather_briefing_stats_missing_file(tmp_path: Path):
     """Returns empty string when briefing.md is missing."""
-    with patch("shared.config.PROFILES_DIR", tmp_path):
+    with patch("agents._config.PROFILES_DIR", tmp_path):
         result = _gather_briefing_stats()
 
     assert result == ""
@@ -559,7 +559,7 @@ def test_gather_scout_summary(tmp_path: Path):
     }
     (tmp_path / "scout-report.json").write_text(json.dumps(scout_data))
 
-    with patch("shared.config.PROFILES_DIR", tmp_path):
+    with patch("agents._config.PROFILES_DIR", tmp_path):
         result = _gather_scout_summary()
 
     assert "**Qdrant**: keep" in result
@@ -606,8 +606,8 @@ def test_gather_profile_facts_rich_deduplicates():
     mock_client.query_points = mock_query_points
 
     with (
-        patch("shared.config.embed", side_effect=mock_embed),
-        patch("shared.config.get_qdrant", return_value=mock_client),
+        patch("agents._config.embed", side_effect=mock_embed),
+        patch("agents._config.get_qdrant", return_value=mock_client),
     ):
         result = _gather_profile_facts_rich("agent architecture")
 
@@ -853,8 +853,8 @@ def test_gather_architecture_rag_filters_by_source():
     mock_client.query_points = mock_query_points
 
     with (
-        patch("shared.config.embed", return_value=[0.1] * 768),
-        patch("shared.config.get_qdrant", return_value=mock_client),
+        patch("agents._config.embed", return_value=[0.1] * 768),
+        patch("agents._config.get_qdrant", return_value=mock_client),
     ):
         result = _gather_architecture_rag("agent architecture")
 

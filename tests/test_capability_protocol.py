@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from shared.capability import (
+from agents._capability import (
     Capability,
     CapabilityCategory,
     CapabilityRegistry,

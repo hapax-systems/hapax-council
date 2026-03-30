@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 def test_read_correction_facts_empty_when_no_qdrant():
     """Graceful degradation when Qdrant is unavailable."""
-    with patch("shared.config.get_qdrant", side_effect=Exception("no qdrant")):
+    with patch("agents._config.get_qdrant", side_effect=Exception("no qdrant")):
         from agents.profiler_sources import read_correction_facts
 
         assert read_correction_facts() == []
@@ -18,7 +18,7 @@ def test_read_correction_facts_empty_when_no_results():
     mock_client = MagicMock()
     mock_client.scroll.return_value = ([], None)
 
-    with patch("shared.config.get_qdrant", return_value=mock_client):
+    with patch("agents._config.get_qdrant", return_value=mock_client):
         from agents.profiler_sources import read_correction_facts
 
         assert read_correction_facts() == []
@@ -36,7 +36,7 @@ def test_read_correction_facts_filters_below_threshold():
     mock_client = MagicMock()
     mock_client.scroll.return_value = ([mock_point], None)
 
-    with patch("shared.config.get_qdrant", return_value=mock_client):
+    with patch("agents._config.get_qdrant", return_value=mock_client):
         from agents.profiler_sources import read_correction_facts
 
         facts = read_correction_facts()
@@ -59,7 +59,7 @@ def test_read_correction_facts_produces_facts_above_threshold():
     mock_client = MagicMock()
     mock_client.scroll.return_value = (points, None)
 
-    with patch("shared.config.get_qdrant", return_value=mock_client):
+    with patch("agents._config.get_qdrant", return_value=mock_client):
         from agents.profiler_sources import read_correction_facts
 
         facts = read_correction_facts()
@@ -87,7 +87,7 @@ def test_read_correction_facts_multiple_dimensions():
     mock_client = MagicMock()
     mock_client.scroll.return_value = (points, None)
 
-    with patch("shared.config.get_qdrant", return_value=mock_client):
+    with patch("agents._config.get_qdrant", return_value=mock_client):
         from agents.profiler_sources import read_correction_facts
 
         facts = read_correction_facts()

@@ -46,7 +46,7 @@ def _contract(person: str, scope: frozenset[str], active: bool = True) -> Consen
 class TestGovernanceHeartbeat(unittest.TestCase):
     def test_heartbeat_returns_score(self):
         with (
-            patch("shared.governance.consent.load_contracts", return_value=_registry()),
+            patch("logos._governance.load_contracts", return_value=_registry()),
             patch("logos.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
         ):
             hb = collect_governance_heartbeat()
@@ -58,7 +58,7 @@ class TestGovernanceHeartbeat(unittest.TestCase):
     def test_heartbeat_with_active_contracts_is_green(self):
         reg = _registry(_contract("wife", frozenset({"audio"})))
         with (
-            patch("shared.governance.consent.load_contracts", return_value=reg),
+            patch("logos._governance.load_contracts", return_value=reg),
             patch("logos.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
         ):
             hb = collect_governance_heartbeat()
@@ -77,7 +77,7 @@ class TestGovernanceHeartbeat(unittest.TestCase):
 
         try:
             with (
-                patch("shared.governance.consent.load_contracts", return_value=reg),
+                patch("logos._governance.load_contracts", return_value=reg),
                 patch("logos.data.governance.CONSENT_AUDIT", audit_path),
             ):
                 hb = collect_governance_heartbeat()
@@ -88,7 +88,7 @@ class TestGovernanceHeartbeat(unittest.TestCase):
 
     def test_heartbeat_components_present(self):
         with (
-            patch("shared.governance.consent.load_contracts", return_value=_registry()),
+            patch("logos._governance.load_contracts", return_value=_registry()),
             patch("logos.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
         ):
             hb = collect_governance_heartbeat()
@@ -100,14 +100,14 @@ class TestGovernanceHeartbeat(unittest.TestCase):
 
 class TestConsentCoverage(unittest.TestCase):
     def test_no_contracts_returns_zero(self):
-        with patch("shared.governance.consent.load_contracts", return_value=_registry()):
+        with patch("logos._governance.load_contracts", return_value=_registry()):
             cov = collect_consent_coverage()
             assert cov.active_contracts == 0
             assert cov.persons_covered == []
 
     def test_active_contract_counted(self):
         reg = _registry(_contract("wife", frozenset({"audio", "video"})))
-        with patch("shared.governance.consent.load_contracts", return_value=reg):
+        with patch("logos._governance.load_contracts", return_value=reg):
             cov = collect_consent_coverage()
             assert cov.active_contracts == 1
             assert "wife" in cov.persons_covered
@@ -116,7 +116,7 @@ class TestConsentCoverage(unittest.TestCase):
 
     def test_revoked_contract_not_in_coverage(self):
         reg = _registry(_contract("wife", frozenset({"audio"}), active=False))
-        with patch("shared.governance.consent.load_contracts", return_value=reg):
+        with patch("logos._governance.load_contracts", return_value=reg):
             cov = collect_consent_coverage()
             assert cov.active_contracts == 0
             assert cov.persons_covered == []
@@ -180,7 +180,7 @@ class TestGovernanceHeartbeatProperties(unittest.TestCase):
 
         try:
             with (
-                patch("shared.governance.consent.load_contracts", return_value=reg),
+                patch("logos._governance.load_contracts", return_value=reg),
                 patch("logos.data.governance.CONSENT_AUDIT", audit_path),
             ):
                 hb = collect_governance_heartbeat()
@@ -199,7 +199,7 @@ class TestGovernanceHeartbeatProperties(unittest.TestCase):
         reg = _registry(*contracts)
 
         with (
-            patch("shared.governance.consent.load_contracts", return_value=reg),
+            patch("logos._governance.load_contracts", return_value=reg),
             patch("logos.data.governance.CONSENT_AUDIT", Path("/nonexistent")),
         ):
             hb = collect_governance_heartbeat()
@@ -226,7 +226,7 @@ class TestGovernanceHeartbeatProperties(unittest.TestCase):
 
         try:
             with (
-                patch("shared.governance.consent.load_contracts", return_value=_registry()),
+                patch("logos._governance.load_contracts", return_value=_registry()),
                 patch("logos.data.governance.CONSENT_AUDIT", audit_path),
             ):
                 hb = collect_governance_heartbeat()

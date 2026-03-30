@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from agents.health_monitor import http_get, run_cmd
 
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 from opentelemetry import trace

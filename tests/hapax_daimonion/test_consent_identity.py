@@ -31,7 +31,7 @@ class TestResolveGuestIdentity(unittest.TestCase):
         assert identity.has_contract
 
     def test_unknown_speaker_no_contract(self):
-        with patch("shared.governance.consent.load_contracts") as mock:
+        with patch("agents._governance.load_contracts") as mock:
             mock_reg = MagicMock()
             mock_reg.get_contract_for.return_value = None
             mock.return_value = mock_reg
@@ -41,7 +41,7 @@ class TestResolveGuestIdentity(unittest.TestCase):
             assert not identity.has_contract
 
     def test_known_guest_with_contract(self):
-        with patch("shared.governance.consent.load_contracts") as mock:
+        with patch("agents._governance.load_contracts") as mock:
             mock_reg = MagicMock()
             mock_contract = MagicMock()
             mock_contract.active = True
@@ -55,7 +55,7 @@ class TestResolveGuestIdentity(unittest.TestCase):
             assert "audio" in identity.contract_scope
 
     def test_known_guest_revoked_contract(self):
-        with patch("shared.governance.consent.load_contracts") as mock:
+        with patch("agents._governance.load_contracts") as mock:
             mock_reg = MagicMock()
             mock_contract = MagicMock()
             mock_contract.active = False

@@ -9,8 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from shared.governance.consent_label import ConsentLabel
-from shared.governance.labeled import Labeled
+from logos._governance import ConsentLabel, Labeled
 
 
 def parse_frontmatter(path_or_text: Path | str) -> tuple[dict, str]:

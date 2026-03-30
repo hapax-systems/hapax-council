@@ -6,7 +6,7 @@ Provides two tools that LLM agents call during reasoning:
   - record_axiom_decision: Record a new axiom-application decision
 
 Usage:
-    from shared.axiom_tools import get_axiom_tools
+    from logos._axiom_tools import get_axiom_tools
 
     for tool_fn in get_axiom_tools():
         agent.tool(tool_fn)

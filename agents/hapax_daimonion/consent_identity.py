@@ -124,7 +124,7 @@ def resolve_guest_identity(
     person_id = speaker_label if speaker_label not in ("not_operator", "uncertain") else "unknown"
 
     try:
-        from shared.governance.consent import load_contracts
+        from agents._governance import load_contracts
 
         registry = load_contracts()
         contract = registry.get_contract_for(person_id)

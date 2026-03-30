@@ -19,7 +19,7 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
-from shared.governance.revocation_wiring import get_revocation_propagator
+from logos._revocation_wiring import get_revocation_propagator
 
 _log = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ async def create_consent(req: ConsentCreateRequest) -> dict:
     Called when a guest grants consent via any channel. Writes contract
     to axioms/contracts/ and registers in memory.
     """
-    from shared.governance.consent import load_contracts
+    from logos._governance import load_contracts
 
     registry = load_contracts()
     contract = registry.create_contract(
@@ -78,7 +78,7 @@ async def consent_channels(
     incapabilities: str = "",
 ) -> dict:
     """Available consent channels for a guest, friction-sorted."""
-    from shared.governance.consent_channels import GuestContext, build_channel_menu
+    from logos._consent_channels import GuestContext, build_channel_menu
 
     incap_set = frozenset(i.strip() for i in incapabilities.split(",") if i.strip())
     guest = GuestContext(
@@ -176,7 +176,7 @@ async def trace_consent(
     # Look up contracts from provenance
     contracts = []
     try:
-        from shared.governance.consent import load_contracts
+        from logos._governance import load_contracts
 
         registry = load_contracts()
         for contract_id in provenance_data:
@@ -260,7 +260,7 @@ async def trace_consent(
 async def list_contracts() -> dict:
     """List all consent contracts (active and revoked)."""
     try:
-        from shared.governance.consent import load_contracts
+        from logos._governance import load_contracts
 
         registry = load_contracts()
         contracts = []

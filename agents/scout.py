@@ -70,7 +70,7 @@ def get_model(alias_or_id: str = "balanced"):
 
 # Import Langfuse OTel config (side-effect: configures exporter)
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 

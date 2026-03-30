@@ -4,7 +4,7 @@ Checks LLM-generated text against output enforcement patterns defined in
 axioms/enforcement-patterns.yaml. Sub-millisecond regex matching, no LLM calls.
 
 Usage:
-    from shared.axiom_pattern_checker import check_output, load_patterns
+    from agents._axiom_pattern_checker import check_output, load_patterns
 
     violations = check_output("suggest feedback for Alex on communication")
     for v in violations:

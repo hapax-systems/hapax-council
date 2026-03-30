@@ -295,7 +295,7 @@ def test_collect_collection_stats_partial_failure(mock_qdrant):
 # ── Notification tests ───────────────────────────────────────────────────────
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_calls_shared_notify(mock_notify):
     d = _sample_digest()
     send_notification(d)
@@ -304,7 +304,7 @@ def test_send_notification_calls_shared_notify(mock_notify):
     assert kwargs[0][0] == "Content Digest"
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_includes_doc_count(mock_notify):
     d = _sample_digest()
     send_notification(d)
@@ -312,7 +312,7 @@ def test_send_notification_includes_doc_count(mock_notify):
     assert "5 new document" in message
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_no_vault_items_when_zero(mock_notify):
     d = Digest(
         generated_at="2026-03-01T06:45:00Z",

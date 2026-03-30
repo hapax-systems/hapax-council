@@ -60,7 +60,7 @@ class TestRecordConsentDecision(unittest.TestCase):
         state = ConsentSessionState()
         tracker = MagicMock()
 
-        with patch("shared.governance.consent.load_contracts") as mock_load:
+        with patch("agents._governance.load_contracts") as mock_load:
             mock_registry = MagicMock()
             mock_contract = MagicMock()
             mock_contract.id = "contract-guest-test"
@@ -110,7 +110,7 @@ class TestRecordConsentDecision(unittest.TestCase):
     def test_grant_with_partial_scope(self):
         state = ConsentSessionState()
 
-        with patch("shared.governance.consent.load_contracts") as mock_load:
+        with patch("agents._governance.load_contracts") as mock_load:
             mock_registry = MagicMock()
             mock_contract = MagicMock()
             mock_contract.id = "c-partial"
@@ -129,7 +129,7 @@ class TestRecordConsentDecision(unittest.TestCase):
     def test_grant_default_scope_is_full(self):
         state = ConsentSessionState()
 
-        with patch("shared.governance.consent.load_contracts") as mock_load:
+        with patch("agents._governance.load_contracts") as mock_load:
             mock_registry = MagicMock()
             mock_contract = MagicMock()
             mock_contract.id = "c-full"

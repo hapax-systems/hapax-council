@@ -1,78 +1,72 @@
 module: health_monitor
-purpose: Deterministic stack health check suite.
-version: 1
+purpose: >
+  Deterministic stack health check suite. Zero LLM calls. Runs parallel async
+  checks against 22 groups: Docker, GPU, systemd, Qdrant, profiles, endpoints,
+  credentials, disk, models, auth, connectivity, latency, secrets, queues,
+  budget, capacity, axioms, voice, skills, traces, backup, and sync.
+version: 2
+structure:
+  package: agents/health_monitor/
+  modules:
+    - __init__.py        # Backward-compatible re-exports
+    - __main__.py        # CLI entry point
+    - models.py          # CheckResult, GroupResult, HealthReport, Status
+    - utils.py           # run_cmd(), http_get(), _timed()
+    - constants.py       # Paths, URLs, thresholds
+    - registry.py        # CHECK_REGISTRY, @check_group decorator
+    - runner.py          # Parallel check runner, quick_check
+    - output.py          # format_human, run_fixes, history
+    - snapshot.py        # Infrastructure snapshot for logos-api
+  checks:
+    - docker.py          # Docker daemon, compose, containers
+    - gpu.py             # GPU availability, VRAM, temperature
+    - systemd.py         # Service/timer status, unit drift
+    - qdrant.py          # Qdrant health, collection validation
+    - profiles.py        # Profile file validity, staleness
+    - endpoints.py       # HTTP endpoint reachability
+    - credentials.py     # Password store, GPG entries
+    - disk.py            # Disk space
+    - models_ollama.py   # Ollama model availability
+    - auth.py            # LiteLLM/Langfuse auth validation
+    - connectivity.py    # Tailscale, ntfy, n8n, Obsidian, GDrive, Watch, Phone
+    - edge.py            # Raspberry Pi fleet heartbeats
+    - latency.py         # HTTP/TCP latency thresholds
+    - secrets.py         # Environment/pass secret validation
+    - queues.py          # RAG retry queue, n8n executions
+    - budget.py          # LiteLLM daily spend tracking
+    - capacity.py        # Resource exhaustion forecasts
+    - axioms.py          # Axiom registry, precedents, implications, supremacy
+    - axioms_ef.py       # EF compliance: settings, zero-config, timers, ntfy
+    - voice.py           # Daimonion daemon, PipeWire, socket, VRAM lock
+    - skills.py          # Claude Code skill syntax validation
+    - traces.py          # Langfuse error spike correlation
+    - backup.py          # Restic backup freshness
+    - sync.py            # Sync agent state freshness
 interface:
   outputs:
-  - name: name
-    type: str
-  - name: group
-    type: str
-  - name: status
-    type: Status
-  - name: message
-    type: str
-  - name: detail
-    type: str | None
-  - name: remediation
-    type: str | None
-  - name: duration_ms
-    type: int
-  - name: tier
-    type: int
-  - name: group
-    type: str
-  - name: status
-    type: Status
-  - name: checks
-    type: list[CheckResult]
-  - name: healthy_count
-    type: int
-  - name: degraded_count
-    type: int
-  - name: failed_count
-    type: int
-  - name: timestamp
-    type: str
-  - name: hostname
-    type: str
-  - name: overall_status
-    type: Status
-  - name: groups
-    type: list[GroupResult]
-  - name: total_checks
-    type: int
-  - name: healthy_count
-    type: int
-  - name: degraded_count
-    type: int
-  - name: failed_count
-    type: int
-  - name: duration_ms
-    type: int
-  - name: summary
-    type: str
+    - CheckResult
+    - GroupResult
+    - HealthReport
+    - Status
 dependencies:
   runtime:
-  - base64
-  - httpx
-  - opentelemetry
-  - pydantic
-  - shlex
+    - httpx
+    - opentelemetry
+    - pydantic
   internal:
-  - shared
+    - agents._service_tiers
+    - agents._config
+    - agents._axiom_registry
+    - agents._agent_registry
+    - shared.fix_capabilities
 execution:
   entry: uv run python -m agents.health_monitor
   flags:
-  - name: --json
-  - name: --check
-  - name: --fix
-  - name: --yes
-  - name: -y
-  - name: --apply
-  - name: --dry-run
-  - name: --verbose
-  - name: -v
-  - name: --history
-token_budget:
-  self: 32950
-  note: Estimated from 1 source file(s) at 10 tokens/line
+    - --json
+    - --check GROUPS
+    - --fix
+    - --yes
+    - --apply
+    - --dry-run
+    - --verbose
+    - --history N

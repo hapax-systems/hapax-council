@@ -29,7 +29,7 @@ HAPAX_HOME: Path = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
 log = logging.getLogger(__name__)
 
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 from opentelemetry import trace

@@ -116,7 +116,7 @@ def collect_consent_coverage() -> ConsentCoverage:
 
     # Load contracts from disk
     try:
-        from shared.governance.consent import load_contracts
+        from logos._governance import load_contracts
 
         registry = load_contracts()
         coverage.total_contracts = len(registry._contracts)
@@ -165,7 +165,7 @@ def collect_revocation_blast_radius(person_id: str) -> BlastRadius:
     blast = BlastRadius(person_id=person_id)
 
     try:
-        from shared.governance.consent import load_contracts
+        from logos._governance import load_contracts
 
         registry = load_contracts()
         contracts = [
@@ -241,7 +241,7 @@ def collect_consent_lifecycle() -> ConsentLifecycle:
 
     # Stale contracts (active but created > 30 days ago with no recent gate activity)
     try:
-        from shared.governance.consent import load_contracts
+        from logos._governance import load_contracts
 
         registry = load_contracts()
         now = datetime.now(UTC)

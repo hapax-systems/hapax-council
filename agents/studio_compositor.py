@@ -2590,8 +2590,8 @@ class StudioCompositor:
 
         # Register video recording purge handler with RevocationPropagator
         try:
-            import shared.governance.revocation as _rev_mod
-            from shared.governance.revocation import RevocationPropagator  # noqa: F811
+            import agents._revocation as _rev_mod
+            from agents._revocation import RevocationPropagator  # noqa: F811
 
             for attr in dir(_rev_mod):
                 obj = getattr(_rev_mod, attr, None)

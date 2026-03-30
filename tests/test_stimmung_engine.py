@@ -126,7 +126,7 @@ class TestEngineCodeIntegrity:
 
         source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"
         text = source.read_text()
-        assert "from shared.stimmung import Stance" in text
+        assert "from logos._stimmung import Stance" in text
 
     def test_engine_has_read_stimmung_method(self):
         source = Path(__file__).parent.parent / "logos" / "engine" / "__init__.py"

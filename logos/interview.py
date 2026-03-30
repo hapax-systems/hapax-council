@@ -25,7 +25,7 @@ from logos._operator import get_goals, get_patterns, get_system_prompt_fragment
 
 # Import Langfuse OTel config (side-effect: configures exporter)
 try:
-    from shared import langfuse_config  # noqa: F401
+    from logos import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 

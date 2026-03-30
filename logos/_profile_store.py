@@ -5,7 +5,7 @@ access to pre-computed profile digests. Used by context tools to give
 agents on-demand access to profile data without bloating system prompts.
 
 Usage:
-    from shared.profile_store import ProfileStore
+    from logos._profile_store import ProfileStore
 
     store = ProfileStore()
     store.ensure_collection()

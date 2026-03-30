@@ -13,7 +13,7 @@ from pathlib import Path
 from agents.demo_models import DemoEvalDimension, DemoEvalReport, DemoEvalResult
 
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 from opentelemetry import trace

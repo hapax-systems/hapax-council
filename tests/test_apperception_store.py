@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from shared.apperception import Apperception, ApperceptionStore
+from agents._apperception import Apperception, ApperceptionStore
 
 
 def _make_apperception(
@@ -51,7 +51,7 @@ class TestApperceptionStore:
         store.add(_make_apperception())
         store.add(_make_apperception(text="second"))
 
-        with patch("shared.config.embed_batch_safe", return_value=None):
+        with patch("agents._config.embed_batch_safe", return_value=None):
             flushed = store.flush()
 
         assert flushed == 0
@@ -70,8 +70,8 @@ class TestApperceptionStore:
         fake_vectors = [[0.1] * 768]
 
         with (
-            patch("shared.config.embed_batch_safe", return_value=fake_vectors),
-            patch("shared.config.get_qdrant", return_value=mock_qdrant),
+            patch("agents._config.embed_batch_safe", return_value=fake_vectors),
+            patch("agents._config.get_qdrant", return_value=mock_qdrant),
         ):
             flushed = store.flush()
 
@@ -94,8 +94,8 @@ class TestApperceptionStore:
         fake_vectors = [[0.1] * 768 for _ in range(3)]
 
         with (
-            patch("shared.config.embed_batch_safe", return_value=fake_vectors),
-            patch("shared.config.get_qdrant", return_value=mock_qdrant),
+            patch("agents._config.embed_batch_safe", return_value=fake_vectors),
+            patch("agents._config.get_qdrant", return_value=mock_qdrant),
         ):
             flushed = store.flush()
 
@@ -111,8 +111,8 @@ class TestApperceptionStore:
         fake_vectors = [[0.1] * 768]
 
         with (
-            patch("shared.config.embed_batch_safe", return_value=fake_vectors),
-            patch("shared.config.get_qdrant", return_value=mock_qdrant),
+            patch("agents._config.embed_batch_safe", return_value=fake_vectors),
+            patch("agents._config.get_qdrant", return_value=mock_qdrant),
         ):
             flushed = store.flush()
 
@@ -127,10 +127,11 @@ class TestApperceptionStore:
 
         mock_qdrant = MagicMock()
         mock_qdrant.search.return_value = [mock_result]
+        mock_qdrant.query_points.return_value = MagicMock(points=[mock_result])
 
         with (
-            patch("shared.config.embed_safe", return_value=[0.1] * 768),
-            patch("shared.config.get_qdrant", return_value=mock_qdrant),
+            patch("agents._config.embed_safe", return_value=[0.1] * 768),
+            patch("agents._config.get_qdrant", return_value=mock_qdrant),
         ):
             results = store.search("accuracy issues")
 
@@ -140,7 +141,7 @@ class TestApperceptionStore:
     def test_search_embedding_failure_returns_empty(self):
         """Search returns empty list when embedding fails."""
         store = ApperceptionStore()
-        with patch("shared.config.embed_safe", return_value=None):
+        with patch("agents._config.embed_safe", return_value=None):
             results = store.search("anything")
         assert results == []
 
@@ -151,7 +152,7 @@ class TestApperceptionStore:
         mock_collection.name = "other-collection"
         mock_qdrant.get_collections.return_value.collections = [mock_collection]
 
-        with patch("shared.config.get_qdrant", return_value=mock_qdrant):
+        with patch("agents._config.get_qdrant", return_value=mock_qdrant):
             store = ApperceptionStore()
             store.ensure_collection()
 
@@ -164,7 +165,7 @@ class TestApperceptionStore:
         mock_collection.name = "hapax-apperceptions"
         mock_qdrant.get_collections.return_value.collections = [mock_collection]
 
-        with patch("shared.config.get_qdrant", return_value=mock_qdrant):
+        with patch("agents._config.get_qdrant", return_value=mock_qdrant):
             store = ApperceptionStore()
             store.ensure_collection()
 

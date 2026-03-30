@@ -15,8 +15,8 @@ from __future__ import annotations
 import types
 from dataclasses import dataclass, field
 
+from agents._governance import ConsentLabel
 from agents.hapax_daimonion.governance import VetoResult
-from shared.governance.consent_label import ConsentLabel
 
 
 @dataclass(frozen=True)

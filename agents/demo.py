@@ -16,7 +16,7 @@ from opentelemetry.trace import get_current_span, get_tracer
 from pydantic_ai import Agent
 
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 

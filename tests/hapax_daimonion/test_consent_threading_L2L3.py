@@ -11,6 +11,7 @@ import unittest
 
 from hypothesis import given
 
+from agents._governance import ConsentLabel
 from agents.hapax_daimonion.combinator import with_latest_from
 from agents.hapax_daimonion.governance import (
     FusedContext,
@@ -19,7 +20,6 @@ from agents.hapax_daimonion.governance import (
     consent_veto,
 )
 from agents.hapax_daimonion.primitives import Behavior, Event, Stamped
-from shared.governance.consent_label import ConsentLabel
 from tests.consent_strategies import st_consent_label
 
 # ── L2: FusedContext consent_label ───────────────────────────────────

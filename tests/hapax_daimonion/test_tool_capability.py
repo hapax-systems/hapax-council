@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import unittest
 
+from agents._capability import ResourceTier, SystemContext
 from agents.hapax_daimonion.tool_capability import (
     ToolCapability,
     ToolCategory,
     ToolRegistry,
 )
-from shared.capability import ResourceTier, SystemContext
 
 
 def _make_ctx(**overrides) -> SystemContext:

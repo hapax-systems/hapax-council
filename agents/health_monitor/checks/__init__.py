@@ -1,0 +1,28 @@
+"""Health check modules. Importing this package registers all check groups."""
+
+from . import (  # noqa: F401
+    auth,
+    axioms,
+    axioms_ef,
+    backup,
+    budget,
+    capacity,
+    connectivity,
+    credentials,
+    disk,
+    docker,
+    edge,
+    endpoints,
+    gpu,
+    latency,
+    models_ollama,
+    profiles,
+    qdrant,
+    queues,
+    secrets,
+    skills,
+    sync,
+    systemd,
+    traces,
+    voice,
+)

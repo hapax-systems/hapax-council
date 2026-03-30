@@ -14,12 +14,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from agents._governance import ConsentRegistry
     from agents.hapax_daimonion.consent_state import ConsentStateTracker
     from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
     from agents.hapax_daimonion.perception import PerceptionEngine
     from agents.hapax_daimonion.perception_ring import PerceptionRing
     from agents.hapax_daimonion.session import VoiceLifecycle
-    from shared.governance.consent import ConsentRegistry
 
 log = logging.getLogger(__name__)
 

@@ -349,14 +349,14 @@ def test_format_report_md_has_totals():
 # ── Notification tests ───────────────────────────────────────────────────────
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_silent_when_nothing(mock_notify):
     r = MaintenanceReport(generated_at="2026-03-01T04:30:00Z")
     send_notification(r)
     mock_notify.assert_not_called()
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_fires_when_pruned(mock_notify):
     r = MaintenanceReport(
         generated_at="2026-03-01T04:30:00Z",
@@ -369,7 +369,7 @@ def test_send_notification_fires_when_pruned(mock_notify):
     assert "3 stale" in message.lower() or "pruned" in message.lower()
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_fires_when_merged(mock_notify):
     r = MaintenanceReport(
         generated_at="2026-03-01T04:30:00Z",
@@ -380,7 +380,7 @@ def test_send_notification_fires_when_merged(mock_notify):
     mock_notify.assert_called_once()
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_dry_run_label(mock_notify):
     r = MaintenanceReport(
         generated_at="2026-03-01T04:30:00Z",

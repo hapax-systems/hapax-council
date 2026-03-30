@@ -13,7 +13,7 @@ from __future__ import annotations
 import types
 from dataclasses import dataclass, field
 
-from shared.governance.consent_label import ConsentLabel
+from agents._governance import ConsentLabel
 
 
 @dataclass(frozen=True)

@@ -146,7 +146,7 @@ class TestDockerChecks:
     async def test_docker_daemon_healthy(self):
         from agents.health_monitor import check_docker_daemon
 
-        with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "27.5.0", "")
             results = await check_docker_daemon()
         assert len(results) == 1
@@ -157,7 +157,7 @@ class TestDockerChecks:
     async def test_docker_daemon_failed(self):
         from agents.health_monitor import check_docker_daemon
 
-        with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (1, "", "Cannot connect to Docker daemon")
             results = await check_docker_daemon()
         assert results[0].status == Status.FAILED
@@ -167,7 +167,7 @@ class TestDockerChecks:
     async def test_compose_file_exists(self):
         from agents.health_monitor import check_compose_file
 
-        with patch("agents.health_monitor.COMPOSE_FILE") as mock_path:
+        with patch("agents.health_monitor.constants.COMPOSE_FILE") as mock_path:
             mock_path.is_file.return_value = True
             mock_path.__str__ = lambda self: "/home/test/llm-stack/docker-compose.yml"
             results = await check_compose_file()
@@ -188,7 +188,7 @@ class TestDockerChecks:
                 json.dumps({"Name": "n8n", "Service": "n8n", "State": "exited", "Health": ""}),
             ]
         )
-        with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, ndjson, "")
             results = await check_docker_containers()
 
@@ -213,7 +213,7 @@ class TestDockerChecks:
                 "Health": "",
             }
         )
-        with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, ndjson, "")
             results = await check_docker_containers()
         assert results[0].status == Status.FAILED
@@ -224,7 +224,7 @@ class TestGpuChecks:
     async def test_gpu_available(self):
         from agents.health_monitor import check_gpu_available
 
-        with patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.checks.gpu._nvidia_smi", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "570.86.16, NVIDIA GeForce RTX 3090", "")
             results = await check_gpu_available()
         assert results[0].status == Status.HEALTHY
@@ -235,8 +235,10 @@ class TestGpuChecks:
         from agents.health_monitor import check_gpu_vram
 
         with (
-            patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock_smi,
-            patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock_http,
+            patch(
+                "agents.health_monitor.checks.gpu._nvidia_smi", new_callable=AsyncMock
+            ) as mock_smi,
+            patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock_http,
         ):
             mock_smi.return_value = (0, "4000, 24576, 20576", "")
             mock_http.return_value = (200, '{"models": []}')
@@ -249,8 +251,10 @@ class TestGpuChecks:
         from agents.health_monitor import check_gpu_vram
 
         with (
-            patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock_smi,
-            patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock_http,
+            patch(
+                "agents.health_monitor.checks.gpu._nvidia_smi", new_callable=AsyncMock
+            ) as mock_smi,
+            patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock_http,
         ):
             mock_smi.return_value = (0, "23500, 24576, 1076", "")
             mock_http.return_value = (200, '{"models": [{"name": "qwen3:30b"}]}')
@@ -263,7 +267,7 @@ class TestGpuChecks:
     async def test_gpu_temp_healthy(self):
         from agents.health_monitor import check_gpu_temperature
 
-        with patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.checks.gpu._nvidia_smi", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "45", "")
             results = await check_gpu_temperature()
         assert results[0].status == Status.HEALTHY
@@ -273,7 +277,7 @@ class TestGpuChecks:
     async def test_gpu_temp_hot(self):
         from agents.health_monitor import check_gpu_temperature
 
-        with patch("agents.health_monitor._nvidia_smi", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.checks.gpu._nvidia_smi", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "85", "")
             results = await check_gpu_temperature()
         assert results[0].status == Status.DEGRADED
@@ -284,7 +288,7 @@ class TestSystemdChecks:
     async def test_systemd_services_healthy(self):
         from agents.health_monitor import check_systemd_services
 
-        with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock:
 
             async def side_effect(cmd, **kwargs):
                 unit = cmd[-1] if cmd else ""
@@ -317,7 +321,7 @@ class TestQdrantChecks:
     async def test_qdrant_healthy(self):
         from agents.health_monitor import check_qdrant_health
 
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, "ok")
             results = await check_qdrant_health()
         assert results[0].status == Status.HEALTHY
@@ -353,7 +357,7 @@ class TestQdrantChecks:
                 }
             )
 
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
                 if "/collections/" in url:
@@ -371,7 +375,7 @@ class TestQdrantChecks:
         from agents.health_monitor import check_qdrant_collections
 
         collections_resp = json.dumps({"result": {"collections": [{"name": "documents"}]}})
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
                 if "/collections/" in url and "documents" in url:
@@ -405,7 +409,7 @@ class TestProfileChecks:
     async def test_profile_files_all_present(self):
         from agents.health_monitor import check_profile_files
 
-        with patch("agents.health_monitor.PROFILES_DIR") as mock_dir:
+        with patch("agents.health_monitor.constants.PROFILES_DIR") as mock_dir:
 
             def mock_path(name):
                 p = MagicMock()
@@ -427,7 +431,7 @@ class TestProfileChecks:
         mock_path.is_file.return_value = True
         mock_path.read_text.return_value = state
 
-        with patch("agents.health_monitor.PROFILES_DIR") as mock_dir:
+        with patch("agents.health_monitor.constants.PROFILES_DIR") as mock_dir:
             mock_dir.__truediv__ = lambda self, name: mock_path
             results = await check_profile_staleness()
         assert results[0].status == Status.HEALTHY
@@ -442,7 +446,7 @@ class TestProfileChecks:
         mock_path.is_file.return_value = True
         mock_path.read_text.return_value = state
 
-        with patch("agents.health_monitor.PROFILES_DIR") as mock_dir:
+        with patch("agents.health_monitor.constants.PROFILES_DIR") as mock_dir:
             mock_dir.__truediv__ = lambda self, name: mock_path
             results = await check_profile_staleness()
         assert results[0].status == Status.FAILED
@@ -453,7 +457,7 @@ class TestEndpointChecks:
     async def test_all_endpoints_up(self):
         from agents.health_monitor import check_service_endpoints
 
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, "ok")
             results = await check_service_endpoints()
         assert all(r.status == Status.HEALTHY for r in results)
@@ -463,7 +467,7 @@ class TestEndpointChecks:
     async def test_core_endpoint_down_is_failed(self):
         from agents.health_monitor import check_service_endpoints
 
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
                 if "liveliness" in url:
@@ -479,7 +483,7 @@ class TestEndpointChecks:
     async def test_optional_endpoint_down_is_degraded(self):
         from agents.health_monitor import check_service_endpoints
 
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
                 if "3000" in url:
@@ -497,7 +501,7 @@ class TestCredentialChecks:
     async def test_pass_store_exists(self):
         from agents.health_monitor import check_pass_store
 
-        with patch("agents.health_monitor.PASSWORD_STORE") as mock_path:
+        with patch("agents.health_monitor.constants.PASSWORD_STORE") as mock_path:
             mock_path.is_dir.return_value = True
             mock_path.__str__ = lambda self: "/home/test/.password-store"
             results = await check_pass_store()
@@ -509,7 +513,7 @@ class TestCredentialChecks:
 
         existing = {"api/anthropic", "api/google", "litellm/master-key"}
 
-        with patch("agents.health_monitor.PASSWORD_STORE") as mock_store:
+        with patch("agents.health_monitor.constants.PASSWORD_STORE") as mock_store:
 
             def mock_div(self, entry):
                 p = MagicMock()
@@ -531,7 +535,7 @@ class TestDiskChecks:
     async def test_disk_healthy(self):
         from agents.health_monitor import check_disk_usage
 
-        with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "Use%\n 42%", "")
             results = await check_disk_usage()
         assert results[0].status == Status.HEALTHY
@@ -541,7 +545,7 @@ class TestDiskChecks:
     async def test_disk_degraded(self):
         from agents.health_monitor import check_disk_usage
 
-        with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock:
             mock.return_value = (0, "Use%\n 90%", "")
             results = await check_disk_usage()
         assert results[0].status == Status.DEGRADED
@@ -556,11 +560,11 @@ class TestRunner:
         """Verify run_checks returns a valid report with all groups."""
         # Mock all external calls
         with (
-            patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock_cmd,
-            patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock_http,
-            patch("agents.health_monitor.COMPOSE_FILE") as mock_compose,
-            patch("agents.health_monitor.PROFILES_DIR") as mock_profiles,
-            patch("agents.health_monitor.PASSWORD_STORE") as mock_pass,
+            patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock_cmd,
+            patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock_http,
+            patch("agents.health_monitor.constants.COMPOSE_FILE") as mock_compose,
+            patch("agents.health_monitor.constants.PROFILES_DIR") as mock_profiles,
+            patch("agents.health_monitor.constants.PASSWORD_STORE") as mock_pass,
         ):
             mock_compose.is_file.return_value = True
             mock_compose.__str__ = lambda self: "/test/docker-compose.yml"
@@ -632,7 +636,7 @@ class TestRunner:
     @pytest.mark.asyncio
     async def test_run_checks_specific_group(self):
         """Verify run_checks with specific group filter."""
-        with patch("agents.health_monitor.run_cmd", new_callable=AsyncMock) as mock_cmd:
+        with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock_cmd:
             mock_cmd.return_value = (0, "Use%\n 42%", "")
             report = await run_checks(groups=["disk"])
 
@@ -646,7 +650,7 @@ class TestRunner:
 class TestQuickCheck:
     @pytest.mark.asyncio
     async def test_quick_check_all_ok(self):
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, "ok")
             ok, results = await quick_check()
         assert ok is True
@@ -654,7 +658,7 @@ class TestQuickCheck:
 
     @pytest.mark.asyncio
     async def test_quick_check_one_down(self):
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
                 if "liveliness" in url:
@@ -667,7 +671,7 @@ class TestQuickCheck:
 
     @pytest.mark.asyncio
     async def test_quick_check_custom_services(self):
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, "ok")
             ok, results = await quick_check(["ollama", "langfuse"])
         assert ok is True
@@ -758,7 +762,7 @@ class TestModelChecks:
                 ]
             }
         )
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, tags_resp)
             results = await check_ollama_models()
         assert all(r.status == Status.HEALTHY for r in results)
@@ -768,7 +772,7 @@ class TestModelChecks:
         from agents.health_monitor import check_ollama_models
 
         tags_resp = json.dumps({"models": [{"name": "qwen2.5:7b"}]})
-        with patch("agents.health_monitor.http_get", new_callable=AsyncMock) as mock:
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, tags_resp)
             results = await check_ollama_models()
         missing = [r for r in results if r.status == Status.DEGRADED]
@@ -783,7 +787,7 @@ class TestAuthChecks:
 
         with (
             patch.dict("os.environ", {"LITELLM_API_KEY": ""}, clear=False),
-            patch("agents.health_monitor._pass_show", return_value=""),
+            patch("agents.health_monitor.checks.secrets._pass_show", return_value=""),
         ):
             results = await check_litellm_auth()
         assert results[0].status == Status.DEGRADED
@@ -796,7 +800,7 @@ class TestAuthChecks:
             patch.dict(
                 "os.environ", {"LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": ""}, clear=False
             ),
-            patch("agents.health_monitor._pass_show", return_value=""),
+            patch("agents.health_monitor.checks.secrets._pass_show", return_value=""),
         ):
             results = await check_langfuse_auth()
         assert results[0].status == Status.DEGRADED
@@ -842,41 +846,41 @@ class TestRegistry:
 
 class TestRotateHistory:
     def test_rotate_noop_when_missing(self, tmp_path, monkeypatch):
-        import agents.health_monitor as hm
+        import agents.health_monitor.output as hm_out
 
-        monkeypatch.setattr(hm, "HISTORY_FILE", tmp_path / "missing.jsonl")
-        hm.rotate_history()
+        monkeypatch.setattr(hm_out, "HISTORY_FILE", tmp_path / "missing.jsonl")
+        hm_out.rotate_history()
 
     def test_rotate_noop_when_under_limit(self, tmp_path, monkeypatch):
-        import agents.health_monitor as hm
+        import agents.health_monitor.output as hm_out
 
         hist = tmp_path / "history.jsonl"
         hist.write_text("\n".join(f"line{i}" for i in range(100)) + "\n")
-        monkeypatch.setattr(hm, "HISTORY_FILE", hist)
-        hm.rotate_history()
+        monkeypatch.setattr(hm_out, "HISTORY_FILE", hist)
+        hm_out.rotate_history()
         assert len(hist.read_text().strip().splitlines()) == 100
 
     def test_rotate_truncates_when_over_limit(self, tmp_path, monkeypatch):
-        import agents.health_monitor as hm
+        import agents.health_monitor.output as hm_out
 
         hist = tmp_path / "history.jsonl"
         lines = [f'{{"line": {i}}}' for i in range(12_000)]
         hist.write_text("\n".join(lines) + "\n")
-        monkeypatch.setattr(hm, "HISTORY_FILE", hist)
-        hm.rotate_history()
+        monkeypatch.setattr(hm_out, "HISTORY_FILE", hist)
+        hm_out.rotate_history()
         result_lines = hist.read_text().strip().splitlines()
-        assert len(result_lines) == hm.KEEP_HISTORY_LINES
+        assert len(result_lines) == hm_out.KEEP_HISTORY_LINES
         assert '{"line": 11999}' in result_lines[-1]
 
     def test_rotate_at_boundary(self, tmp_path, monkeypatch):
-        import agents.health_monitor as hm
+        import agents.health_monitor.output as hm_out
 
         hist = tmp_path / "history.jsonl"
-        lines = [f"line{i}" for i in range(hm.MAX_HISTORY_LINES)]
+        lines = [f"line{i}" for i in range(hm_out.MAX_HISTORY_LINES)]
         hist.write_text("\n".join(lines) + "\n")
-        monkeypatch.setattr(hm, "HISTORY_FILE", hist)
-        hm.rotate_history()
-        assert len(hist.read_text().strip().splitlines()) == hm.MAX_HISTORY_LINES
+        monkeypatch.setattr(hm_out, "HISTORY_FILE", hist)
+        hm_out.rotate_history()
+        assert len(hist.read_text().strip().splitlines()) == hm_out.MAX_HISTORY_LINES
 
 
 # ── Latency checks ──────────────────────────────────────────────────────────
@@ -890,7 +894,9 @@ class TestLatencyChecks:
         async def fast_latency(url, timeout=3.0):
             return 2.0  # 2ms — healthy
 
-        with patch("agents.health_monitor._http_latency_ms", side_effect=fast_latency):
+        with patch(
+            "agents.health_monitor.checks.latency._http_latency_ms", side_effect=fast_latency
+        ):
             results = await check_service_latency()
         assert all(r.status == Status.HEALTHY for r in results)
         assert len(results) == 3  # litellm, qdrant, ollama
@@ -902,7 +908,9 @@ class TestLatencyChecks:
         async def fail_latency(url, timeout=3.0):
             return None  # unreachable
 
-        with patch("agents.health_monitor._http_latency_ms", side_effect=fail_latency):
+        with patch(
+            "agents.health_monitor.checks.latency._http_latency_ms", side_effect=fail_latency
+        ):
             results = await check_service_latency()
         assert all(r.status == Status.FAILED for r in results)
 
@@ -913,7 +921,9 @@ class TestLatencyChecks:
         async def fast_connect(host, port, timeout=3.0):
             return 5.0  # 5ms
 
-        with patch("agents.health_monitor._tcp_connect_ms", side_effect=fast_connect):
+        with patch(
+            "agents.health_monitor.checks.latency._tcp_connect_ms", side_effect=fast_connect
+        ):
             results = await check_postgres_latency()
         assert results[0].status == Status.HEALTHY
 
@@ -924,7 +934,9 @@ class TestLatencyChecks:
         async def fail_connect(host, port, timeout=3.0):
             return None
 
-        with patch("agents.health_monitor._tcp_connect_ms", side_effect=fail_connect):
+        with patch(
+            "agents.health_monitor.checks.latency._tcp_connect_ms", side_effect=fail_connect
+        ):
             results = await check_postgres_latency()
         assert results[0].status == Status.FAILED
 
@@ -948,7 +960,7 @@ class TestSecretChecks:
 
         with (
             patch.dict("os.environ", {"LITELLM_API_KEY": ""}, clear=False),
-            patch("agents.health_monitor._pass_show", return_value=""),
+            patch("agents.health_monitor.checks.secrets._pass_show", return_value=""),
         ):
             results = await check_env_secrets()
         litellm = [r for r in results if "litellm_api_key" in r.name]
@@ -972,7 +984,7 @@ class TestQueueChecks:
     async def test_no_retry_queue(self, tmp_path, monkeypatch):
         from agents.health_monitor import check_rag_retry_queue
 
-        monkeypatch.setattr("agents.health_monitor.PROFILES_DIR", tmp_path)
+        monkeypatch.setattr("agents.health_monitor.constants.PROFILES_DIR", tmp_path)
         results = await check_rag_retry_queue()
         assert results[0].status == Status.HEALTHY
 
@@ -980,7 +992,7 @@ class TestQueueChecks:
     async def test_large_retry_queue(self, tmp_path, monkeypatch):
         from agents.health_monitor import check_rag_retry_queue
 
-        monkeypatch.setattr("agents.health_monitor.RAG_INGEST_STATE_DIR", tmp_path)
+        monkeypatch.setattr("agents.health_monitor.constants.RAG_INGEST_STATE_DIR", tmp_path)
         queue = tmp_path / "retry-queue.jsonl"
         queue.write_text("\n".join(f'{{"file": "f{i}"}}' for i in range(60)))
         results = await check_rag_retry_queue()
@@ -993,7 +1005,7 @@ class TestQueueChecks:
         async def ok_get(url, timeout=3.0):
             return (200, "ok")
 
-        with patch("agents.health_monitor.http_get", side_effect=ok_get):
+        with patch("agents.health_monitor.utils.http_get", side_effect=ok_get):
             results = await check_n8n_executions()
         assert results[0].status == Status.HEALTHY
 
@@ -1009,7 +1021,7 @@ class TestBudgetChecks:
         async def spend_get(url, timeout=5.0):
             return (200, json.dumps([{"spend": 1.50}]))
 
-        with patch("agents.health_monitor.http_get", side_effect=spend_get):
+        with patch("agents.health_monitor.utils.http_get", side_effect=spend_get):
             results = await check_daily_spend()
         assert results[0].status == Status.HEALTHY
         assert "$1.50" in results[0].message
@@ -1021,7 +1033,7 @@ class TestBudgetChecks:
         async def spend_get(url, timeout=5.0):
             return (200, json.dumps([{"spend": 3.00}, {"spend": 4.00}]))
 
-        with patch("agents.health_monitor.http_get", side_effect=spend_get):
+        with patch("agents.health_monitor.utils.http_get", side_effect=spend_get):
             results = await check_daily_spend()
         assert results[0].status == Status.DEGRADED
 
@@ -1032,6 +1044,6 @@ class TestBudgetChecks:
         async def fail_get(url, timeout=5.0):
             return (404, "not found")
 
-        with patch("agents.health_monitor.http_get", side_effect=fail_get):
+        with patch("agents.health_monitor.utils.http_get", side_effect=fail_get):
             results = await check_daily_spend()
         assert results[0].status == Status.HEALTHY  # non-blocking

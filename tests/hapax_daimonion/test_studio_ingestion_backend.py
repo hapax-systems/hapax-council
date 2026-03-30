@@ -152,7 +152,7 @@ class TestStudioIngestionBackend:
         assert backend.tier == PerceptionTier.SLOW
 
     def test_available_when_clap_importable(self):
-        with patch.dict("sys.modules", {"shared.clap": MagicMock()}):
+        with patch.dict("sys.modules", {"agents._clap": MagicMock()}):
             backend = StudioIngestionBackend()
             assert backend.available() is True
 
@@ -257,7 +257,7 @@ class TestStudioIngestionBackend:
                 return_value=audio,
             ),
             patch(
-                "shared.clap.classify_zero_shot",
+                "agents._clap.classify_zero_shot",
                 mock_classify,
             ),
         ):

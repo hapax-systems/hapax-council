@@ -3,12 +3,12 @@
 import json
 from pathlib import Path
 
-from shared.sensor_protocol import SensorTier, emit_sensor_impingement, write_sensor_state
+from agents._sensor_protocol import SensorTier, emit_sensor_impingement, write_sensor_state
 
 
 def test_write_sensor_state(tmp_path: Path, monkeypatch):
     """write_sensor_state creates atomic JSON snapshot."""
-    monkeypatch.setattr("shared.sensor_protocol.SENSOR_SHM_DIR", tmp_path)
+    monkeypatch.setattr("agents._sensor_protocol.SENSOR_SHM_DIR", tmp_path)
     write_sensor_state("gmail", {"message_count": 42, "unread": 3})
     path = tmp_path / "gmail.json"
     assert path.exists()
@@ -19,7 +19,7 @@ def test_write_sensor_state(tmp_path: Path, monkeypatch):
 
 def test_write_sensor_state_overwrites(tmp_path: Path, monkeypatch):
     """Subsequent writes overwrite previous state."""
-    monkeypatch.setattr("shared.sensor_protocol.SENSOR_SHM_DIR", tmp_path)
+    monkeypatch.setattr("agents._sensor_protocol.SENSOR_SHM_DIR", tmp_path)
     write_sensor_state("gmail", {"message_count": 10})
     write_sensor_state("gmail", {"message_count": 20})
     data = json.loads((tmp_path / "gmail.json").read_text())
@@ -29,7 +29,7 @@ def test_write_sensor_state_overwrites(tmp_path: Path, monkeypatch):
 def test_emit_sensor_impingement(tmp_path: Path, monkeypatch):
     """emit_sensor_impingement appends to JSONL file."""
     jsonl_path = tmp_path / "impingements.jsonl"
-    monkeypatch.setattr("shared.sensor_protocol.IMPINGEMENTS_FILE", jsonl_path)
+    monkeypatch.setattr("agents._sensor_protocol.IMPINGEMENTS_FILE", jsonl_path)
     emit_sensor_impingement("gmail", "communication_patterns", ["email_volume"])
     assert jsonl_path.exists()
     lines = jsonl_path.read_text().strip().split("\n")
@@ -43,7 +43,7 @@ def test_emit_sensor_impingement(tmp_path: Path, monkeypatch):
 def test_emit_multiple_impingements(tmp_path: Path, monkeypatch):
     """Multiple emissions append to same file."""
     jsonl_path = tmp_path / "impingements.jsonl"
-    monkeypatch.setattr("shared.sensor_protocol.IMPINGEMENTS_FILE", jsonl_path)
+    monkeypatch.setattr("agents._sensor_protocol.IMPINGEMENTS_FILE", jsonl_path)
     emit_sensor_impingement("gmail", "communication_patterns", ["volume"])
     emit_sensor_impingement("chrome", "information_seeking", ["domains"])
     lines = jsonl_path.read_text().strip().split("\n")
@@ -121,12 +121,12 @@ def test_stimmung_sync_writes_sensor_state(tmp_path: Path, monkeypatch):
 
     sensor_writes: list[tuple[str, dict]] = []
     monkeypatch.setattr(
-        "shared.sensor_protocol.write_sensor_state",
+        "agents._sensor_protocol.write_sensor_state",
         lambda name, data: sensor_writes.append((name, data)),
     )
     impingement_emits: list[tuple] = []
     monkeypatch.setattr(
-        "shared.sensor_protocol.emit_sensor_impingement",
+        "agents._sensor_protocol.emit_sensor_impingement",
         lambda *args, **kwargs: impingement_emits.append(args),
     )
 
@@ -157,12 +157,12 @@ def test_stimmung_sync_no_impingement_on_same_stance(tmp_path: Path, monkeypatch
 
     sensor_writes: list = []
     monkeypatch.setattr(
-        "shared.sensor_protocol.write_sensor_state",
+        "agents._sensor_protocol.write_sensor_state",
         lambda name, data: sensor_writes.append((name, data)),
     )
     impingement_emits: list = []
     monkeypatch.setattr(
-        "shared.sensor_protocol.emit_sensor_impingement",
+        "agents._sensor_protocol.emit_sensor_impingement",
         lambda *args, **kwargs: impingement_emits.append(args),
     )
 

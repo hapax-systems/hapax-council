@@ -27,7 +27,7 @@ class TestWatchConnectivityCheck:
                 }
             )
         )
-        with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
+        with patch("agents.health_monitor.constants.WATCH_STATE_DIR", tmp_path):
             results = await check_watch_connected()
         assert len(results) == 1
         assert results[0].status == Status.HEALTHY
@@ -46,7 +46,7 @@ class TestWatchConnectivityCheck:
                 }
             )
         )
-        with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
+        with patch("agents.health_monitor.constants.WATCH_STATE_DIR", tmp_path):
             results = await check_watch_connected()
         assert results[0].status == Status.DEGRADED
         assert "last seen" in results[0].message
@@ -55,7 +55,7 @@ class TestWatchConnectivityCheck:
     async def test_skip_when_not_configured(self, tmp_path):
         from agents.health_monitor import check_watch_connected
 
-        with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
+        with patch("agents.health_monitor.constants.WATCH_STATE_DIR", tmp_path):
             results = await check_watch_connected()
         assert results[0].status == Status.HEALTHY
         assert "not configured" in results[0].message
@@ -77,7 +77,7 @@ class TestPhoneConnectivityCheck:
                 }
             )
         )
-        with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
+        with patch("agents.health_monitor.constants.WATCH_STATE_DIR", tmp_path):
             results = await check_phone_connected()
         assert len(results) == 1
         assert results[0].status == Status.HEALTHY
@@ -96,7 +96,7 @@ class TestPhoneConnectivityCheck:
                 }
             )
         )
-        with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
+        with patch("agents.health_monitor.constants.WATCH_STATE_DIR", tmp_path):
             results = await check_phone_connected()
         assert results[0].status == Status.DEGRADED
         assert "last seen" in results[0].message
@@ -105,7 +105,7 @@ class TestPhoneConnectivityCheck:
     async def test_not_configured_when_no_file(self, tmp_path):
         from agents.health_monitor import check_phone_connected
 
-        with patch("agents.health_monitor.WATCH_STATE_DIR", tmp_path):
+        with patch("agents.health_monitor.constants.WATCH_STATE_DIR", tmp_path):
             results = await check_phone_connected()
         assert results[0].status == Status.HEALTHY
         assert "not configured" in results[0].message

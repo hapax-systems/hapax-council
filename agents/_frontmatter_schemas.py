@@ -4,7 +4,7 @@ Validates frontmatter at write boundaries. Each schema defines the required fiel
 for a document type flowing through the reactive engine or into the Obsidian vault.
 
 Usage:
-    from shared.frontmatter_schemas import validate_frontmatter, BriefingFrontmatter
+    from agents._frontmatter_schemas import validate_frontmatter, BriefingFrontmatter
 
     validate_frontmatter({"type": "briefing", "date": "2026-03-23", ...}, BriefingFrontmatter)
 """

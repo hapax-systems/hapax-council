@@ -18,7 +18,7 @@ import re
 from collections import Counter
 
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 

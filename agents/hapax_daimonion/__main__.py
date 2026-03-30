@@ -39,7 +39,7 @@ from agents.hapax_daimonion.session import SessionManager
 from agents.hapax_daimonion.tts import TTSManager
 
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 from agents.hapax_daimonion.wake_word import WakeWordDetector
@@ -173,14 +173,14 @@ class VoiceDaemon:
         self.workspace_monitor.set_presence(self.presence)
 
         # Consent registry (loads from axioms/contracts/, empty = conservative default)
-        from shared.governance.consent import ConsentRegistry
+        from agents._governance import ConsentRegistry
 
         self.consent_registry = ConsentRegistry()
         _consent_count = self.consent_registry.load()
         log.info("Loaded %d consent contracts", _consent_count)
 
         # Operator principal — sovereign, single-user axiom
-        from shared.governance.principal import Principal, PrincipalKind
+        from agents._governance import Principal, PrincipalKind
 
         self._operator_principal = Principal(
             id="operator",
@@ -926,7 +926,7 @@ class VoiceDaemon:
         # Consent reader (stable, reloads contracts on session start)
         self._precomputed_consent_reader = None
         try:
-            from shared.governance.consent_reader import ConsentGatedReader
+            from agents._consent_reader import ConsentGatedReader
 
             self._precomputed_consent_reader = ConsentGatedReader.create()
         except Exception:
@@ -961,13 +961,13 @@ class VoiceDaemon:
         self._dmn_fn = render_dmn
 
         # Shared context assembler
+        from agents._context import ContextAssembler
         from agents.hapax_daimonion.context_enrichment import (
             _collect_goals,
             _collect_health,
             _collect_nudges,
             set_assembler,
         )
-        from shared.context import ContextAssembler
 
         self._context_assembler = ContextAssembler(
             goals_fn=_collect_goals,
@@ -997,8 +997,8 @@ class VoiceDaemon:
         self._dmn_impingement_cursor = 0
 
         # Affordance pipeline: index speech capability and register interrupt tokens
-        from shared.affordance import CapabilityRecord, OperationalProperties
-        from shared.affordance_pipeline import AffordancePipeline
+        from agents._affordance import CapabilityRecord, OperationalProperties
+        from agents._affordance_pipeline import AffordancePipeline
 
         self._affordance_pipeline = AffordancePipeline()
         self._affordance_pipeline.index_capability(
@@ -1133,7 +1133,7 @@ class VoiceDaemon:
         _exp = self._experiment_flags
 
         # R&D mode: grounding always on (research mode respects flag)
-        from shared.working_mode import get_working_mode
+        from agents._working_mode import get_working_mode
 
         if get_working_mode().value == "rnd":
             _exp["enable_grounding"] = True
@@ -1167,7 +1167,7 @@ class VoiceDaemon:
                 prompt += f"\n\n## Recent Conversations\n{recent_memory}"
 
         # Dynamic tool filtering via ToolRegistry + SystemContext
-        from shared.capability import SystemContext
+        from agents._capability import SystemContext
 
         _stimmung_stance = "nominal"
         try:
@@ -1523,8 +1523,8 @@ class VoiceDaemon:
 
             from qdrant_client.models import PointStruct
 
-            from shared.config import embed
-            from shared.episodic_memory import Episode, EpisodeStore
+            from agents._config import embed
+            from agents._episodic_memory import Episode, EpisodeStore
 
             store = EpisodeStore()
             store.ensure_collection()
@@ -1589,8 +1589,8 @@ class VoiceDaemon:
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue
 
+            from agents._episodic_memory import EpisodeStore
             from agents.hapax_daimonion.conversation_pipeline import ThreadEntry
-            from shared.episodic_memory import EpisodeStore
 
             store = EpisodeStore()
             points, _offset = store.client.scroll(
@@ -1680,7 +1680,7 @@ class VoiceDaemon:
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-            from shared.episodic_memory import EpisodeStore
+            from agents._episodic_memory import EpisodeStore
 
             store = EpisodeStore()
             points, _offset = store.client.scroll(
@@ -1886,7 +1886,7 @@ class VoiceDaemon:
         """Poll DMN impingements and route through affordance pipeline."""
         from pathlib import Path
 
-        from shared.impingement import Impingement
+        from agents._impingement import Impingement
 
         imp_path = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 
@@ -2301,7 +2301,7 @@ class VoiceDaemon:
 
     async def run(self) -> None:
         """Main daemon loop."""
-        from shared.governance.consent_context import consent_scope
+        from agents._consent_context import consent_scope
 
         with consent_scope(self.consent_registry, self._operator_principal):
             await self._run_inner()
@@ -2341,7 +2341,7 @@ class VoiceDaemon:
         # Pin embedding model at startup — first embed() call downloads/loads the model,
         # so do it here to avoid latency on first cross-session memory lookup.
         try:
-            from shared.config import embed
+            from agents._config import embed
 
             embed("warmup", prefix="search_query")
             log.info("Embedding model warmed up")
@@ -2452,7 +2452,7 @@ class VoiceDaemon:
                 self._wav_sweep_counter += 1
                 if self._wav_sweep_counter >= 60:
                     self._wav_sweep_counter = 0
-                    from shared.tmp_wav import cleanup_stale_wavs
+                    from agents._tmp_wav import cleanup_stale_wavs
 
                     cleanup_stale_wavs()
 
@@ -2564,7 +2564,7 @@ def main() -> None:
     parser.add_argument("--check", action="store_true", help="Verify config and exit")
     args = parser.parse_args()
 
-    from shared.log_setup import configure_logging
+    from agents._log_setup import configure_logging
 
     configure_logging(agent="hapax-daimonion")
 
@@ -2576,7 +2576,7 @@ def main() -> None:
     _enforce_single_instance()
 
     # Clean up orphan temp wav files from prior unclean shutdown (SIGKILL/OOM)
-    from shared.tmp_wav import cleanup_all_wavs
+    from agents._tmp_wav import cleanup_all_wavs
 
     cleanup_all_wavs()
     # Also sweep /tmp for legacy orphans from before the managed directory

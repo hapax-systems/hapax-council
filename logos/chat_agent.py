@@ -30,7 +30,7 @@ log = logging.getLogger("logos.chat_agent")
 
 # Import Langfuse OTel config (side-effect: configures exporter)
 try:
-    from shared import langfuse_config  # noqa: F401
+    from logos import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 

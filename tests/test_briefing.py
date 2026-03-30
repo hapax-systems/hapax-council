@@ -186,7 +186,7 @@ def test_format_briefing_md_no_errors_line_when_zero():
 # ── Notification tests ───────────────────────────────────────────────────────
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_calls_shared_notify(mock_notify):
     b = _sample_briefing()
     send_notification(b)
@@ -195,7 +195,7 @@ def test_send_notification_calls_shared_notify(mock_notify):
     assert kwargs[0][0] == "System Briefing"  # title
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_includes_high_priority_count(mock_notify):
     b = _sample_briefing()
     send_notification(b)
@@ -203,7 +203,7 @@ def test_send_notification_includes_high_priority_count(mock_notify):
     assert "1 high-priority" in message
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_no_body_when_no_high_actions(mock_notify):
     b = Briefing(
         generated_at="2026-03-01T07:00:00Z",
@@ -217,7 +217,7 @@ def test_send_notification_no_body_when_no_high_actions(mock_notify):
     assert "high-priority" not in message
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_handles_failure(mock_notify):
     mock_notify.side_effect = Exception("boom")
     b = _sample_briefing()

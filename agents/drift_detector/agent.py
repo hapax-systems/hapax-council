@@ -24,7 +24,7 @@ from .system_prompt import get_system_prompt_fragment
 
 log = logging.getLogger("drift_detector")
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 _tracer = trace.get_tracer(__name__)

@@ -6,7 +6,7 @@ axioms directory. Used by enforcement modules to access axiom text, weights,
 and concrete implications.
 
 Usage:
-    from shared.axiom_registry import load_axioms, get_axiom, load_implications, validate_supremacy
+    from logos._axiom_registry import load_axioms, get_axiom, load_implications, validate_supremacy
 
     axioms = load_axioms()  # All active axioms
     axiom = get_axiom("single_user")

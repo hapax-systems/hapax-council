@@ -5,7 +5,7 @@ operator constraints, patterns, and profile data on demand — replacing
 static prompt injection.
 
 Usage:
-    from shared.context_tools import get_context_tools
+    from agents._context_tools import get_context_tools
 
     agent = Agent(get_model(), ...)
     for tool_fn in get_context_tools():

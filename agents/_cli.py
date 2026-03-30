@@ -4,7 +4,7 @@ Reduces per-agent argparse/output/notification boilerplate from
 20-65 lines to 3-5 lines.
 
 Usage:
-    from shared.cli import add_common_args, handle_output
+    from agents._cli import add_common_args, handle_output
 
     parser = argparse.ArgumentParser(prog="python -m agents.briefing")
     add_common_args(parser, save=True, hours=True, notify=True)

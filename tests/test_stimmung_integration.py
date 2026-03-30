@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from agents._stimmung import DimensionReading, StimmungCollector, SystemStimmung
 from agents.visual_layer_aggregator import (
     VisualLayerAggregator,
     map_stimmung,
 )
 from agents.visual_layer_state import SignalCategory
-from shared.stimmung import DimensionReading, StimmungCollector, SystemStimmung
 
 
 class TestMapStimmung:

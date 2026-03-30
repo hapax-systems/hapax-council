@@ -40,7 +40,7 @@ except ImportError:
     torchaudio = None  # type: ignore
 
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 from opentelemetry import trace
@@ -1282,44 +1282,50 @@ def _process_file(
                     s for s in all_speakers if s not in ("SPEAKER_00", "operator", "operator")
                 }
                 if non_operator:
-                    from shared.governance.consent_gate import ConsentGatedWriter
-                    from shared.governance.consent_label import ConsentLabel
-                    from shared.governance.labeled import Labeled
+                    try:
+                        from agents._consent_gate import ConsentGatedWriter
+                        from agents._governance import ConsentLabel, Labeled
 
-                    gate = ConsentGatedWriter.create(
-                        agent_id="audio-processor",
-                        audit_path=AUDIO_RAG_DIR.parent.parent
-                        / "profiles"
-                        / ".consent-audit.jsonl",
-                    )
-                    labeled_data = Labeled(
-                        value=md, label=ConsentLabel.bottom(), provenance=frozenset()
-                    )
-                    decision = gate.check(
-                        labeled_data,
-                        person_ids=tuple(sorted(non_operator)),
-                        data_category="audio",
-                    )
-                    if not decision.allowed:
-                        log.info(
-                            "Consent gate CURTAILED conversation %s: %s",
-                            out_name,
-                            decision.reason,
+                        _consent_gate_available = True
+                    except ImportError:
+                        _consent_gate_available = False
+                        log.debug("ConsentGatedWriter unavailable; skipping consent gate for audio")
+
+                    if _consent_gate_available:
+                        gate = ConsentGatedWriter.create(
+                            agent_id="audio-processor",
+                            audit_path=AUDIO_RAG_DIR.parent.parent
+                            / "profiles"
+                            / ".consent-audit.jsonl",
                         )
-                        # Notify operator about curtailed content
-                        try:
-                            from shared.governance.guest_detection import (
-                                check_guest_consent,
-                                notify_guest_detected,
+                        labeled_data = Labeled(
+                            value=md, label=ConsentLabel.bottom(), provenance=frozenset()
+                        )
+                        decision = gate.check(
+                            labeled_data,
+                            person_ids=tuple(sorted(non_operator)),
+                            data_category="audio",
+                        )
+                        if not decision.allowed:
+                            log.info(
+                                "Consent gate CURTAILED conversation %s: %s",
+                                out_name,
+                                decision.reason,
                             )
+                            # Notify operator about curtailed content
+                            try:
+                                from agents._guest_detection import (
+                                    check_guest_consent,
+                                    notify_guest_detected,
+                                )
 
-                            for person in sorted(non_operator):
-                                event = check_guest_consent(person, "audio")
-                                if not event.has_consent:
-                                    notify_guest_detected(event, person_label=person)
-                        except Exception:
-                            pass
-                        continue  # Skip writing — data curtailed
+                                for person in sorted(non_operator):
+                                    event = check_guest_consent(person, "audio")
+                                    if not event.has_consent:
+                                        notify_guest_detected(event, person_label=person)
+                            except Exception:
+                                pass
+                            continue  # Skip writing — data curtailed
 
             target_path.write_text(md, encoding="utf-8")
             conversations += 1
@@ -1404,8 +1410,8 @@ def _clap_enrich(
     Gracefully degrades — logs warning and returns on any failure.
     """
     try:
+        from agents._clap import classify_zero_shot, embed_audio
         from agents._config import STUDIO_MOMENTS_COLLECTION, ensure_studio_moments_collection
-        from shared.clap import classify_zero_shot, embed_audio
     except ImportError:
         log.debug("CLAP not available, skipping enrichment")
         return

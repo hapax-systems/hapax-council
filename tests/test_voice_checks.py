@@ -31,7 +31,7 @@ def test_voice_group_registered():
 class TestCheckVoiceServices:
     @pytest.mark.asyncio
     @patch("httpx.get", side_effect=Exception("no process-compose"))
-    @patch("agents.health_monitor.run_cmd", new_callable=AsyncMock)
+    @patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock)
     async def test_all_active(self, mock_cmd, _mock_httpx):
         mock_cmd.return_value = (0, "active", "")
         results = await check_voice_services()
@@ -41,7 +41,7 @@ class TestCheckVoiceServices:
 
     @pytest.mark.asyncio
     @patch("httpx.get", side_effect=Exception("no process-compose"))
-    @patch("agents.health_monitor.run_cmd", new_callable=AsyncMock)
+    @patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock)
     async def test_voice_service_down(self, mock_cmd, _mock_httpx):
         async def side_effect(cmd, **kwargs):
             unit = cmd[-1]
@@ -57,7 +57,7 @@ class TestCheckVoiceServices:
 
     @pytest.mark.asyncio
     @patch("httpx.get", side_effect=Exception("no process-compose"))
-    @patch("agents.health_monitor.run_cmd", new_callable=AsyncMock)
+    @patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock)
     async def test_bt_keepalive_down_is_degraded(self, mock_cmd, _mock_httpx):
         async def side_effect(cmd, **kwargs):
             unit = cmd[-1]
@@ -77,7 +77,7 @@ class TestCheckVoiceServices:
 
 class TestCheckVoiceSocket:
     @pytest.mark.asyncio
-    @patch("agents.health_monitor._voice_socket_path")
+    @patch("agents.health_monitor.checks.voice._voice_socket_path")
     async def test_socket_exists(self, mock_path, tmp_path):
         sock = tmp_path / "hapax-daimonion.sock"
         sock.touch()
@@ -87,7 +87,7 @@ class TestCheckVoiceSocket:
         assert "socket exists" in results[0].message
 
     @pytest.mark.asyncio
-    @patch("agents.health_monitor._voice_socket_path")
+    @patch("agents.health_monitor.checks.voice._voice_socket_path")
     async def test_socket_missing(self, mock_path, tmp_path):
         mock_path.return_value = str(tmp_path / "nonexistent.sock")
         results = await check_voice_socket()
@@ -96,7 +96,7 @@ class TestCheckVoiceSocket:
         assert results[0].remediation is not None
 
     @pytest.mark.asyncio
-    @patch("agents.health_monitor._voice_socket_path")
+    @patch("agents.health_monitor.checks.voice._voice_socket_path")
     async def test_socket_name(self, mock_path, tmp_path):
         mock_path.return_value = str(tmp_path / "hapax-daimonion.sock")
         results = await check_voice_socket()
@@ -111,7 +111,7 @@ class TestCheckVoiceVramLock:
     @pytest.mark.asyncio
     async def test_no_lock_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "agents.health_monitor.VOICE_VRAM_LOCK",
+            "agents.health_monitor.constants.VOICE_VRAM_LOCK",
             tmp_path / "nonexistent.lock",
         )
         results = await check_voice_vram_lock()
@@ -124,7 +124,7 @@ class TestCheckVoiceVramLock:
 
         lock = tmp_path / "vram.lock"
         lock.write_text(str(os.getpid()))  # current process is alive
-        monkeypatch.setattr("agents.health_monitor.VOICE_VRAM_LOCK", lock)
+        monkeypatch.setattr("agents.health_monitor.constants.VOICE_VRAM_LOCK", lock)
         results = await check_voice_vram_lock()
         assert results[0].status == Status.HEALTHY
         assert "alive" in results[0].message
@@ -133,7 +133,7 @@ class TestCheckVoiceVramLock:
     async def test_stale_lock(self, tmp_path, monkeypatch):
         lock = tmp_path / "vram.lock"
         lock.write_text("999999999")  # PID that almost certainly doesn't exist
-        monkeypatch.setattr("agents.health_monitor.VOICE_VRAM_LOCK", lock)
+        monkeypatch.setattr("agents.health_monitor.constants.VOICE_VRAM_LOCK", lock)
         results = await check_voice_vram_lock()
         assert results[0].status == Status.DEGRADED
         assert "stale" in results[0].message
@@ -144,7 +144,7 @@ class TestCheckVoiceVramLock:
     async def test_corrupt_lock_content(self, tmp_path, monkeypatch):
         lock = tmp_path / "vram.lock"
         lock.write_text("not-a-number")
-        monkeypatch.setattr("agents.health_monitor.VOICE_VRAM_LOCK", lock)
+        monkeypatch.setattr("agents.health_monitor.constants.VOICE_VRAM_LOCK", lock)
         results = await check_voice_vram_lock()
         assert results[0].status == Status.DEGRADED
         assert "stale" in results[0].message
@@ -152,7 +152,7 @@ class TestCheckVoiceVramLock:
     @pytest.mark.asyncio
     async def test_lock_name_and_group(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "agents.health_monitor.VOICE_VRAM_LOCK",
+            "agents.health_monitor.constants.VOICE_VRAM_LOCK",
             tmp_path / "nonexistent.lock",
         )
         results = await check_voice_vram_lock()

@@ -6,7 +6,7 @@ blocks (T0) or logs (T1/T2) depending on tier and enforcement mode.
 Reads enforcement-exceptions.yaml to skip enforcement for approved paths.
 
 Usage:
-    from shared.axiom_enforcer import enforce_output, EnforcementResult
+    from agents._axiom_enforcer import enforce_output, EnforcementResult
 
     result = enforce_output(text, agent_id="briefing", output_path=briefing_file)
     if result.allowed:

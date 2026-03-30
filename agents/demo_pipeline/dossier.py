@@ -185,7 +185,7 @@ def record_relationship_facts(
 ) -> int:
     """Persist relationship facts to Qdrant profile-facts collection.
 
-    Uses embed_batch from shared.config with UUID5 keying for deterministic IDs.
+    Uses embed_batch from agents._config with UUID5 keying for deterministic IDs.
     Returns number of facts indexed.
     Catches exceptions internally (best-effort).
     """

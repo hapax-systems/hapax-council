@@ -28,7 +28,7 @@ except ImportError:
 
 
 try:
-    from shared import langfuse_config  # noqa: F401
+    from agents import _langfuse_config  # noqa: F401
 except ImportError:
     pass
 from opentelemetry import trace

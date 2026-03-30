@@ -1095,8 +1095,8 @@ async def handle_check_consent_status(params) -> None:
     """Check consent status for a specific person."""
     person_id = params.arguments.get("person_id", "")
     try:
-        from shared.governance.consent import load_contracts
-        from shared.governance.consent_channels import GuestContext, build_channel_menu
+        from agents._consent_channels import GuestContext, build_channel_menu
+        from agents._governance import load_contracts
 
         registry = load_contracts()
         contract = registry.get_contract_for(person_id)
@@ -1147,7 +1147,7 @@ async def handle_check_consent_status(params) -> None:
 async def handle_describe_consent_flow(params) -> None:
     """Describe the consent detection and offering flow."""
     try:
-        from shared.governance.consent_channels import build_channel_menu, check_channel_sufficiency
+        from agents._consent_channels import build_channel_menu, check_channel_sufficiency
 
         sufficient, uncovered = check_channel_sufficiency()
         menu = build_channel_menu()

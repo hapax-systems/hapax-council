@@ -20,10 +20,10 @@ import asyncio
 import logging
 import time
 
+from logos._carrier import CarrierRegistry
 from logos._telemetry import hapax_event
 from logos.engine.models import Action, ChangeEvent
 from logos.engine.rules import Rule
-from shared.governance.carrier import CarrierRegistry
 
 _log = logging.getLogger(__name__)
 
@@ -353,7 +353,7 @@ def get_carrier_registry() -> CarrierRegistry:
     """Get or create the module-level CarrierRegistry."""
     global _carrier_registry  # noqa: PLW0603
     if _carrier_registry is None:
-        from shared.governance.carrier import CarrierRegistry as _CR
+        from logos._carrier import CarrierRegistry as _CR
 
         _carrier_registry = _CR()
     return _carrier_registry
@@ -370,8 +370,8 @@ async def _handle_carrier_intake(*, path: str, principal_id: str) -> str:
     import asyncio
     from pathlib import Path as _Path
 
-    from shared.governance.agent_governor import create_agent_governor
-    from shared.governance.carrier_intake import intake_carrier_fact
+    from logos._agent_governor import create_agent_governor
+    from logos._carrier_intake import intake_carrier_fact
 
     registry = get_carrier_registry()
 

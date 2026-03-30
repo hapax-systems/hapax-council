@@ -61,9 +61,9 @@ class TestRunFixesV2:
         )
 
         with (
-            patch("shared.fix_capabilities.load_builtin_capabilities") as mock_load,
+            patch("agents._fix_capabilities.load_builtin_capabilities") as mock_load,
             patch(
-                "shared.fix_capabilities.pipeline.run_fix_pipeline",
+                "agents._fix_capabilities.run_fix_pipeline",
                 new_callable=AsyncMock,
                 return_value=pipeline_result,
             ) as mock_pipeline,
@@ -93,9 +93,9 @@ class TestRunFixesV2:
         )
 
         with (
-            patch("shared.fix_capabilities.load_builtin_capabilities"),
+            patch("agents._fix_capabilities.load_builtin_capabilities"),
             patch(
-                "shared.fix_capabilities.pipeline.run_fix_pipeline",
+                "agents._fix_capabilities.run_fix_pipeline",
                 new_callable=AsyncMock,
                 return_value=pipeline_result,
             ) as mock_pipeline,
@@ -111,9 +111,9 @@ class TestRunFixesV2:
         pipeline_result = PipelineResult(total=0, outcomes=[])
 
         with (
-            patch("shared.fix_capabilities.load_builtin_capabilities"),
+            patch("agents._fix_capabilities.load_builtin_capabilities"),
             patch(
-                "shared.fix_capabilities.pipeline.run_fix_pipeline",
+                "agents._fix_capabilities.run_fix_pipeline",
                 new_callable=AsyncMock,
                 return_value=pipeline_result,
             ),
@@ -143,9 +143,9 @@ class TestRunFixesV2:
         )
 
         with (
-            patch("shared.fix_capabilities.load_builtin_capabilities"),
+            patch("agents._fix_capabilities.load_builtin_capabilities"),
             patch(
-                "shared.fix_capabilities.pipeline.run_fix_pipeline",
+                "agents._fix_capabilities.run_fix_pipeline",
                 new_callable=AsyncMock,
                 return_value=pipeline_result,
             ),
@@ -168,9 +168,9 @@ class TestRunFixesV2:
         )
 
         with (
-            patch("shared.fix_capabilities.load_builtin_capabilities"),
+            patch("agents._fix_capabilities.load_builtin_capabilities"),
             patch(
-                "shared.fix_capabilities.pipeline.run_fix_pipeline",
+                "agents._fix_capabilities.run_fix_pipeline",
                 new_callable=AsyncMock,
                 return_value=pipeline_result,
             ),
@@ -203,9 +203,9 @@ class TestRunFixesV2:
         )
 
         with (
-            patch("shared.fix_capabilities.load_builtin_capabilities"),
+            patch("agents._fix_capabilities.load_builtin_capabilities"),
             patch(
-                "shared.fix_capabilities.pipeline.run_fix_pipeline",
+                "agents._fix_capabilities.run_fix_pipeline",
                 new_callable=AsyncMock,
                 return_value=pipeline_result,
             ),
