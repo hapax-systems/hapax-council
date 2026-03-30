@@ -95,7 +95,7 @@ def _make_operator_data(primary=None, secondary=None):
     }
 
 
-@patch("shared.operator._load_operator")
+@patch("logos._operator._load_operator")
 def test_collect_goals_basic(mock_load):
     recent = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     mock_load.return_value = _make_operator_data(
@@ -118,7 +118,7 @@ def test_collect_goals_basic(mock_load):
     assert snap.stale_count == 0
 
 
-@patch("shared.operator._load_operator")
+@patch("logos._operator._load_operator")
 def test_collect_goals_stale_primary(mock_load):
     old = (datetime.now(UTC) - timedelta(days=10)).isoformat()
     mock_load.return_value = _make_operator_data(
@@ -137,7 +137,7 @@ def test_collect_goals_stale_primary(mock_load):
     assert snap.goals[0].stale is True
 
 
-@patch("shared.operator._load_operator")
+@patch("logos._operator._load_operator")
 def test_collect_goals_null_activity(mock_load):
     mock_load.return_value = _make_operator_data(
         secondary=[
@@ -154,7 +154,7 @@ def test_collect_goals_null_activity(mock_load):
     assert snap.goals[0].last_activity_h is None
 
 
-@patch("shared.operator._load_operator")
+@patch("logos._operator._load_operator")
 def test_collect_goals_empty(mock_load):
     mock_load.return_value = {"goals": {}}
     snap = collect_goals()
@@ -162,7 +162,7 @@ def test_collect_goals_empty(mock_load):
     assert snap.active_count == 0
 
 
-@patch("shared.operator._load_operator")
+@patch("logos._operator._load_operator")
 def test_collect_goals_mixed_categories(mock_load):
     recent = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     mock_load.return_value = _make_operator_data(
@@ -190,7 +190,7 @@ def test_collect_goals_mixed_categories(mock_load):
     assert "secondary" in categories
 
 
-@patch("shared.operator._load_operator")
+@patch("logos._operator._load_operator")
 def test_collect_goals_exception_returns_empty(mock_load):
     mock_load.side_effect = RuntimeError("broken")
     snap = collect_goals()
@@ -198,7 +198,7 @@ def test_collect_goals_exception_returns_empty(mock_load):
     assert snap.active_count == 0
 
 
-@patch("shared.operator._load_operator")
+@patch("logos._operator._load_operator")
 def test_collect_goals_planned_not_stale(mock_load):
     mock_load.return_value = _make_operator_data(
         primary=[

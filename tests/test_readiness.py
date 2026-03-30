@@ -164,7 +164,7 @@ def test_interview_facts_exception(mock_load):
 # ── Priorities validation ───────────────────────────────────────────────────
 
 
-@patch("shared.operator.get_goals")
+@patch("logos._operator.get_goals")
 def test_priorities_validated_some_goals_covered(mock_goals):
     mock_goals.return_value = [
         {"id": "g1", "name": "Goal 1"},
@@ -174,7 +174,7 @@ def test_priorities_validated_some_goals_covered(mock_goals):
     assert _check_priorities_validated(analysis) is True
 
 
-@patch("shared.operator.get_goals")
+@patch("logos._operator.get_goals")
 def test_priorities_not_validated_all_goals_gaps(mock_goals):
     mock_goals.return_value = [
         {"id": "g1", "name": "Goal 1"},
@@ -183,7 +183,7 @@ def test_priorities_not_validated_all_goals_gaps(mock_goals):
     assert _check_priorities_validated(analysis) is False
 
 
-@patch("shared.operator.get_goals")
+@patch("logos._operator.get_goals")
 def test_priorities_no_goals_defined(mock_goals):
     mock_goals.return_value = []
     analysis = _mock_analysis()

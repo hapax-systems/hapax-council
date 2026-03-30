@@ -529,7 +529,7 @@ def test_gather_operator_philosophy():
         },
     }
 
-    with patch("shared.operator.get_operator", return_value=mock_data):
+    with patch("agents._operator.get_operator", return_value=mock_data):
         result = _gather_operator_philosophy()
 
     assert "### Axioms" in result

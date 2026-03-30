@@ -307,7 +307,7 @@ def _make_agent_mock(result=None):
 @patch("agents.briefing.briefing_agent")
 @patch("agents.briefing.SCOUT_REPORT")
 @patch("agents.briefing.DIGEST_REPORT")
-@patch("shared.operator.get_goals", return_value=[])
+@patch("agents._operator.get_goals", return_value=[])
 async def test_generate_briefing_pipeline(
     mock_goals,
     mock_digest_path,
@@ -342,7 +342,7 @@ async def test_generate_briefing_pipeline(
 @patch("agents.briefing.briefing_agent")
 @patch("agents.briefing.SCOUT_REPORT")
 @patch("agents.briefing.DIGEST_REPORT")
-@patch("shared.operator.get_goals", return_value=[])
+@patch("agents._operator.get_goals", return_value=[])
 async def test_generate_briefing_with_scout_report(
     mock_goals,
     mock_digest_path,
@@ -388,7 +388,7 @@ async def test_generate_briefing_with_scout_report(
 @patch("agents.briefing.briefing_agent")
 @patch("agents.briefing.SCOUT_REPORT")
 @patch("agents.briefing.DIGEST_REPORT")
-@patch("shared.operator.get_goals", return_value=[])
+@patch("agents._operator.get_goals", return_value=[])
 async def test_generate_briefing_with_digest(
     mock_goals,
     mock_digest_path,
@@ -430,7 +430,7 @@ async def test_generate_briefing_with_digest(
 @patch("agents.briefing.briefing_agent")
 @patch("agents.briefing.SCOUT_REPORT")
 @patch("agents.briefing.DIGEST_REPORT")
-@patch("shared.operator.get_goals", return_value=[])
+@patch("agents._operator.get_goals", return_value=[])
 async def test_generate_briefing_llm_failure_graceful(
     mock_goals,
     mock_digest_path,
@@ -461,7 +461,7 @@ async def test_generate_briefing_llm_failure_graceful(
 @patch("agents.briefing.briefing_agent")
 @patch("agents.briefing.SCOUT_REPORT")
 @patch("agents.briefing.DIGEST_REPORT")
-@patch("shared.operator.get_goals")
+@patch("agents._operator.get_goals")
 async def test_generate_briefing_includes_goals(
     mock_goals,
     mock_digest_path,
