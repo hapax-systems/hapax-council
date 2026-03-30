@@ -440,7 +440,7 @@ class TestGenerateFixes:
         )
         docs = {"a.md": "content A", "b.md": "content B"}
 
-        with patch("agents.drift_detector.agent.fix_agent") as mock_agent:
+        with patch("agents.drift_detector.fixes.fix_agent") as mock_agent:
             mock_agent.run = AsyncMock(return_value=mock_result)
             result = await generate_fixes(report, docs)
 
@@ -478,7 +478,7 @@ class TestGenerateFixes:
             summary="mixed",
         )
 
-        with patch("agents.drift_detector.agent.fix_agent") as mock_agent:
+        with patch("agents.drift_detector.fixes.fix_agent") as mock_agent:
             mock_agent.run = AsyncMock(return_value=mock_result)
             await generate_fixes(report, {"a.md": "content"})
 
@@ -712,9 +712,9 @@ class TestBuildFixContext:
         )
 
         with (
-            patch("agents.drift_detector.agent.fix_agent") as mock_agent,
+            patch("agents.drift_detector.fixes.fix_agent") as mock_agent,
             patch(
-                "agents.drift_detector.agent._build_fix_context",
+                "agents.drift_detector.fixes._build_fix_context",
                 return_value="## Document context\n- Archetype: project-context",
             ),
         ):

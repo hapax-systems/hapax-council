@@ -1,21 +1,22 @@
 """Agent package for drift_detector."""
 
 from .agent import (  # noqa: F401
-    FIX_SYSTEM_PROMPT,
+    detect_drift,
+    format_human,
+)
+from .docs import (  # noqa: F401
     HAPAX_REPO_DIRS,
+    load_docs,
+)
+from .fix_context import (  # noqa: F401
     REGISTRY_CATEGORIES,
     _build_fix_context,
-    check_doc_freshness,
-    check_project_memory,
-    check_screen_context_drift,
-    detect_drift,
+)
+from .fixes import (  # noqa: F401
+    FIX_SYSTEM_PROMPT,
     fix_agent,
     format_fixes,
-    format_human,
     generate_fixes,
-    load_docs,
-    scan_axiom_violations,
-    scan_sufficiency_gaps,
 )
 from .models import (  # noqa: F401
     ApplyResult,
@@ -31,4 +32,11 @@ from .models import (  # noqa: F401
     OllamaModel,
     QdrantCollection,
     SystemdUnit,
+)
+from .scanners import (  # noqa: F401
+    check_doc_freshness,
+    check_project_memory,
+    check_screen_context_drift,
+    scan_axiom_violations,
+    scan_sufficiency_gaps,
 )

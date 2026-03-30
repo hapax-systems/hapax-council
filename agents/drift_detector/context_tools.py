@@ -1,4 +1,4 @@
-"""Vendored from shared/context_tools.py — on-demand operator context tools."""
+"""On-demand operator context tools for LLM agents."""
 
 from __future__ import annotations
 
@@ -10,9 +10,7 @@ log = logging.getLogger("drift_detector.context_tools")
 
 
 async def lookup_constraints(ctx: RunContext[None], categories: str = "") -> str:
-    """Look up operator constraints (rules) by category.
-
-    Categories: communication, python, node, docker, llm, agents, secrets, git, music.
+    """Look up operator constraints by category (communication, python, docker, etc).
 
     Args:
         categories: Comma-separated constraint categories to look up.
@@ -42,8 +40,6 @@ async def lookup_constraints(ctx: RunContext[None], categories: str = "") -> str
 async def lookup_patterns(ctx: RunContext[None], categories: str = "") -> str:
     """Look up operator behavioral patterns by category.
 
-    Categories: decision_making, workflow, development, music_production, communication.
-
     Args:
         categories: Comma-separated pattern categories to look up.
     """
@@ -70,12 +66,7 @@ async def lookup_patterns(ctx: RunContext[None], categories: str = "") -> str:
 
 
 async def search_profile(ctx: RunContext[None], query: str, dimension: str = "") -> str:
-    """Semantic search over operator profile facts via Qdrant.
-
-    Args:
-        query: Natural language search query.
-        dimension: Optional dimension filter.
-    """
+    """Semantic search over operator profile facts via Qdrant."""
     log.info("context_tool_invoked tool=search_profile query=%s dimension=%s", query, dimension)
     try:
         from shared.profile_store import ProfileStore
@@ -102,11 +93,7 @@ async def search_profile(ctx: RunContext[None], query: str, dimension: str = "")
 
 
 async def get_profile_summary(ctx: RunContext[None], dimension: str = "") -> str:
-    """Get pre-computed profile summary, overall or for a specific dimension.
-
-    Args:
-        dimension: Profile dimension name. Empty for overall.
-    """
+    """Get pre-computed profile summary, overall or for a specific dimension."""
     log.info("context_tool_invoked tool=get_profile_summary dimension=%s", dimension)
     try:
         from shared.profile_store import ProfileStore
@@ -146,13 +133,7 @@ async def get_profile_summary(ctx: RunContext[None], dimension: str = "") -> str
 async def lookup_sufficiency_requirements(
     ctx: RunContext[None], axiom_id: str = "", level: str = "", domain: str = ""
 ) -> str:
-    """Look up what the system must actively provide to satisfy axiom sufficiency requirements.
-
-    Args:
-        axiom_id: Specific axiom. Empty for all.
-        level: Filter by level: "component", "subsystem", or "system". Empty for all.
-        domain: Include domain axioms for this domain.
-    """
+    """Look up axiom sufficiency requirements the system must actively provide."""
     log.info(
         "context_tool_invoked tool=lookup_sufficiency_requirements axiom_id=%s level=%s domain=%s",
         axiom_id,

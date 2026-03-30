@@ -2,6 +2,6 @@
 
 import asyncio
 
-from .agent import main
+from .cli import main
 
 asyncio.run(main())
