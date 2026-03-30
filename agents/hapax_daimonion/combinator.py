@@ -12,9 +12,9 @@ Behaviors are treated as bottom (public) for the join computation.
 
 from __future__ import annotations
 
+from agents._governance import ConsentLabel
 from agents.hapax_daimonion.governance import FusedContext
 from agents.hapax_daimonion.primitives import Behavior, Event
-from shared.governance.consent_label import ConsentLabel
 
 
 def with_latest_from(

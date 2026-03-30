@@ -1282,9 +1282,8 @@ def _process_file(
                     s for s in all_speakers if s not in ("SPEAKER_00", "operator", "operator")
                 }
                 if non_operator:
+                    from agents._governance import ConsentLabel, Labeled
                     from shared.governance.consent_gate import ConsentGatedWriter
-                    from shared.governance.consent_label import ConsentLabel
-                    from shared.governance.labeled import Labeled
 
                     gate = ConsentGatedWriter.create(
                         agent_id="audio-processor",

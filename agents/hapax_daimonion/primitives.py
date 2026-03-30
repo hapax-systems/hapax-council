@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from shared.governance.consent_label import ConsentLabel
+from agents._governance import ConsentLabel
 
 log = logging.getLogger(__name__)
 

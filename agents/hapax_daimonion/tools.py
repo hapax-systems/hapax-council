@@ -1095,7 +1095,7 @@ async def handle_check_consent_status(params) -> None:
     """Check consent status for a specific person."""
     person_id = params.arguments.get("person_id", "")
     try:
-        from shared.governance.consent import load_contracts
+        from agents._governance import load_contracts
         from shared.governance.consent_channels import GuestContext, build_channel_menu
 
         registry = load_contracts()

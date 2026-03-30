@@ -814,8 +814,8 @@ class ConversationPipeline:
         # is resolved from consent_context (set at daemon boundary) or
         # falls back to operator (single-user axiom).
         try:
+            from agents._governance import Says
             from shared.governance.consent_context import maybe_principal
-            from shared.governance.says import Says
 
             speaker_principal = maybe_principal()
             if speaker_principal is not None:

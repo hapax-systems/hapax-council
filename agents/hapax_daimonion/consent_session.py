@@ -170,7 +170,7 @@ def handle_record_consent_decision(
             else frozenset({"audio", "video", "transcription", "presence"})
         )
         try:
-            from shared.governance.consent import load_contracts
+            from agents._governance import load_contracts
 
             registry = load_contracts()
             contract = registry.create_contract(

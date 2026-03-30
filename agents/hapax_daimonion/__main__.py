@@ -173,14 +173,14 @@ class VoiceDaemon:
         self.workspace_monitor.set_presence(self.presence)
 
         # Consent registry (loads from axioms/contracts/, empty = conservative default)
-        from shared.governance.consent import ConsentRegistry
+        from agents._governance import ConsentRegistry
 
         self.consent_registry = ConsentRegistry()
         _consent_count = self.consent_registry.load()
         log.info("Loaded %d consent contracts", _consent_count)
 
         # Operator principal — sovereign, single-user axiom
-        from shared.governance.principal import Principal, PrincipalKind
+        from agents._governance import Principal, PrincipalKind
 
         self._operator_principal = Principal(
             id="operator",
