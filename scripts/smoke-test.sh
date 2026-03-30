@@ -310,6 +310,196 @@ else
     warn "ntfy: ($ntfy_code)"
 fi
 
+# --- T6: Frustration Regression ---
+# Tests derived from operator frustrations on 2026-03-29.
+# Each test targets a specific failure mode that burned the operator.
+echo ""
+echo "=== T6: Frustration Regression ==="
+
+echo "[Binary provenance — 'changes never making it to the build']"
+# Frustration: multiple sessions committed code but the running binary was stale.
+# Verify the installed binary matches the repo HEAD.
+if [[ -f "$HOME/.local/bin/hapax-imagination" ]]; then
+    bin_sha=$(strings "$HOME/.local/bin/hapax-imagination" 2>/dev/null | grep -oP 'VERGEN_GIT_SHA.\K[a-f0-9]{9}' | head -1)
+    repo_sha=$(git -C "$HOME/projects/hapax-council" rev-parse --short=9 HEAD 2>/dev/null)
+    if [[ -z "$bin_sha" ]]; then
+        warn "provenance: cannot extract SHA from imagination binary"
+    elif [[ "$bin_sha" == "$repo_sha" ]]; then
+        pass "provenance: imagination binary matches HEAD ($bin_sha)"
+    else
+        fail "provenance: imagination binary ($bin_sha) != HEAD ($repo_sha) — STALE BUILD"
+    fi
+else
+    fail "provenance: hapax-imagination not installed"
+fi
+
+echo "[Service lifecycle coupling — 'only tauri launched not reverie']"
+# Frustration: starting logos didn't start imagination. They should be coupled.
+if systemctl --user is-active hapax-logos.service &>/dev/null; then
+    if systemctl --user is-active hapax-imagination.service &>/dev/null; then
+        pass "lifecycle: logos running → imagination also running"
+    else
+        fail "lifecycle: logos running but imagination is NOT — coupling broken"
+    fi
+
+    # Verify ports that depend on logos
+    if ss -tlnp 2>/dev/null | grep -q ':8052 '; then
+        pass "lifecycle: command relay port 8052 listening"
+    else
+        fail "lifecycle: port 8052 (command relay) not listening"
+    fi
+    if ss -tlnp 2>/dev/null | grep -q ':8053 '; then
+        pass "lifecycle: frame server port 8053 listening"
+    else
+        fail "lifecycle: port 8053 (frame server) not listening"
+    fi
+else
+    skip "lifecycle coupling (logos not running)"
+fi
+
+echo "[Service stability — 'logos kept crashing']"
+# Frustration: logos crashed every 1-5 minutes due to Wayland bug.
+# Verify it's been running for at least 2 minutes without restart.
+if systemctl --user is-active hapax-logos.service &>/dev/null; then
+    uptime_us=$(systemctl --user show hapax-logos.service --property=ActiveEnterTimestampMonotonic --value 2>/dev/null)
+    now_us=$(cat /proc/uptime | awk '{printf "%.0f", $1 * 1000000}')
+    if [[ -n "$uptime_us" && "$uptime_us" -gt 0 ]]; then
+        alive_s=$(( (now_us - uptime_us) / 1000000 ))
+        if [[ "$alive_s" -ge 120 ]]; then
+            pass "stability: logos alive for ${alive_s}s (>2min)"
+        else
+            warn "stability: logos only alive ${alive_s}s — too fresh to confirm stable"
+        fi
+    else
+        warn "stability: cannot determine logos uptime"
+    fi
+else
+    skip "stability (logos not running)"
+fi
+
+echo "[Frame liveness — 'video feeds going insane / black']"
+# Frustration: visual pipeline producing black or frozen output.
+# Verify frames are changing (not all identical) over a 2-second window.
+if [[ -f /dev/shm/hapax-visual/frame.jpg ]]; then
+    size1=$(stat -c %s /dev/shm/hapax-visual/frame.jpg)
+    hash1=$(md5sum /dev/shm/hapax-visual/frame.jpg 2>/dev/null | cut -d' ' -f1)
+    sleep 2
+    size2=$(stat -c %s /dev/shm/hapax-visual/frame.jpg)
+    hash2=$(md5sum /dev/shm/hapax-visual/frame.jpg 2>/dev/null | cut -d' ' -f1)
+    if [[ "$hash1" != "$hash2" ]]; then
+        pass "liveness: frames changing (${size1}B → ${size2}B)"
+    elif [[ "$size1" -lt 2000 ]]; then
+        fail "liveness: frames tiny and static (${size1}B) — likely black"
+    else
+        warn "liveness: frames identical over 2s (may be frozen — ${size1}B)"
+    fi
+else
+    fail "liveness: frame.jpg missing"
+fi
+
+echo "[Pipeline param correctness — 'animations frozen at t=0']"
+# Frustration: GLSL-compiled shaders had ghost u_time in Params → always 0.0.
+# Verify no ghost system uniforms in current pipeline param_order.
+if [[ -f /dev/shm/hapax-imagination/pipeline/plan.json ]]; then
+    ghosts=$(python3 -c "
+import json
+plan = json.load(open('/dev/shm/hapax-imagination/pipeline/plan.json'))
+ghost_count = 0
+for p in plan['passes']:
+    for name in p.get('param_order', []):
+        if name in ('time', 'width', 'height'):
+            ghost_count += 1
+            print(f'  ghost: {p[\"node_id\"]}.{name}')
+print(ghost_count)
+" 2>/dev/null | tail -1)
+    ghosts=${ghosts:-0}
+    if [[ "$ghosts" == "0" ]]; then
+        pass "params: no ghost system uniforms in pipeline"
+    else
+        fail "params: $ghosts ghost system uniform(s) — animations will be frozen"
+    fi
+else
+    skip "param correctness (no plan.json)"
+fi
+
+echo "[Shader source correctness — 'global.u_time should not exist']"
+# Verify no deployed shaders reference the old ghost uniform pattern.
+ghost_refs=0
+for wgsl in /dev/shm/hapax-imagination/pipeline/*.wgsl; do
+    [[ -f "$wgsl" ]] || continue
+    count=$(grep -c 'global\.u_time\|global\.u_width\|global\.u_height' "$wgsl" 2>/dev/null || true)
+    count=${count:-0}
+    if [[ "$count" -gt 0 ]]; then
+        ((ghost_refs += count))
+        printf "    %s: %d ghost reference(s)\n" "$(basename "$wgsl")" "$count"
+    fi
+done
+if [[ "$ghost_refs" -eq 0 ]]; then
+    pass "shaders: no ghost global.u_time/width/height in deployed shaders"
+else
+    fail "shaders: $ghost_refs ghost reference(s) in deployed shaders"
+fi
+
+echo "[Recording endpoints — 'recording UI was dead']"
+# Frustration: recording toggle did nothing because endpoints didn't exist.
+rec_enable=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 -X POST "$API/studio/recording/enable" 2>/dev/null) || rec_enable="000"
+rec_disable=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 -X POST "$API/studio/recording/disable" 2>/dev/null) || rec_disable="000"
+if [[ "$rec_enable" == "200" && "$rec_disable" == "200" ]]; then
+    pass "recording: enable/disable endpoints respond 200"
+else
+    fail "recording: enable=$rec_enable disable=$rec_disable (expected 200)"
+fi
+
+echo "[Preset availability — 'no presets no nothing']"
+# Frustration: ground panel showed empty preset list.
+preset_count=$(curl -s --connect-timeout 3 "$API/studio/presets" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d, list) else len(d.get('presets', d.get('built_in', []))))" 2>/dev/null || echo "0")
+preset_count=${preset_count:-0}
+if [[ "$preset_count" -gt 10 ]]; then
+    pass "presets: $preset_count presets available"
+elif [[ "$preset_count" -gt 0 ]]; then
+    warn "presets: only $preset_count preset(s) — expected 20+"
+else
+    fail "presets: no presets returned from API"
+fi
+
+echo "[Build-reload no-window guarantee — 'builds keep popping up windows']"
+# Verify the reload script does NOT auto-start windowed services that aren't running.
+# (We can't test the actual window behavior, but we verify the script logic.)
+if [[ -f scripts/reload-after-build.sh ]]; then
+    # The script should only restart imagination/logos if "is-active" passes
+    if grep -q 'is-active hapax-imagination' scripts/reload-after-build.sh &&
+       ! grep -q 'is-enabled hapax-imagination.*restart' scripts/reload-after-build.sh; then
+        pass "reload: imagination restart gated on is-active (not is-enabled)"
+    else
+        fail "reload: imagination may auto-start (should only restart if running)"
+    fi
+else
+    warn "reload: scripts/reload-after-build.sh not found"
+fi
+
+echo "[Systemd unit provenance — 'deployed units match repo']"
+# Verify key deployed units haven't drifted from repo source.
+units_ok=true
+for unit in hapax-logos.service hapax-imagination.service; do
+    repo_file=""
+    if [[ -f "systemd/units/$unit" ]]; then
+        repo_file="systemd/units/$unit"
+    elif [[ -f "systemd/$unit" ]]; then
+        repo_file="systemd/$unit"
+    fi
+    deployed="$HOME/.config/systemd/user/$unit"
+    if [[ -n "$repo_file" && -f "$deployed" ]]; then
+        if diff -q "$repo_file" "$deployed" &>/dev/null; then
+            pass "unit: $unit deployed matches repo"
+        else
+            fail "unit: $unit deployed DIFFERS from repo"
+            units_ok=false
+        fi
+    else
+        warn "unit: $unit — repo or deployed file missing"
+    fi
+done
+
 # --- Summary ---
 echo ""
 echo "========================================"
