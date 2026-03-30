@@ -1,1366 +1,515 @@
 {
-  "generated": "2026-03-30T13:35:36.786963",
+  "generated": "2026-03-30T18:19:54.398247",
   "packages": {
     "agents/activity_analyzer": {
       "module": "activity_analyzer",
       "purpose": "System activity observation via universal telemetry.",
       "token_budget": 7350,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.activity_analyzer",
-        "flags": [
-          {
-            "name": "--json"
-          },
-          {
-            "name": "--hours"
-          },
-          {
-            "name": "--synthesize"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/alignment_tax_meter": {
       "module": "alignment_tax_meter",
       "purpose": "Alignment tax measurement \u2014 governance overhead as percentage of total cost.",
       "token_budget": 2380,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.alignment_tax_meter",
-        "flags": [
-          {
-            "name": "--days"
-          },
-          {
-            "name": "--save"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/audio_processor": {
       "module": "audio_processor",
       "purpose": "Ambient audio processing for RAG pipeline.",
       "token_budget": 13460,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.audio_processor",
-        "flags": [
-          {
-            "name": "--process"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "--reprocess"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/av_correlator": {
       "module": "av_correlator",
       "purpose": "Cross-modal audio/video correlation agent.",
       "token_budget": 7980,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.av_correlator",
-        "flags": [
-          {
-            "name": "--correlate"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "--search"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/bocpd": {
       "module": "bocpd",
       "purpose": "Bayesian Online Change Point Detection (Adams & MacKay, 2007).",
       "token_budget": 2130,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.bocpd"
-      }
+      "self_contained": true
     },
     "agents/briefing": {
       "module": "briefing",
       "purpose": "Daily system briefing generator.",
       "token_budget": 7810,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.briefing",
-        "flags": [
-          {
-            "name": "--json"
-          },
-          {
-            "name": "--save"
-          },
-          {
-            "name": "--hours"
-          },
-          {
-            "name": "--notify"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/browser_agent": {
       "module": "browser_agent",
       "purpose": "agents/browser_agent.py \u2014 Agent for web content interaction.",
       "token_budget": 1140,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.browser_agent",
-        "flags": [
-          {
-            "name": "--task"
-          },
-          {
-            "name": "--url"
-          },
-          {
-            "name": "--verbose"
-          },
-          {
-            "name": "-v"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/byte_tracker": {
       "module": "byte_tracker",
       "purpose": "ByteTrack multi-object tracker \u2014 proper association across frames.",
       "token_budget": 1760,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.byte_tracker"
-      }
+      "self_contained": true
     },
     "agents/chrome_sync": {
       "module": "chrome_sync",
       "purpose": "Chrome RAG sync \u2014 browsing history and bookmarks.",
       "token_budget": 4530,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.chrome_sync",
-        "flags": [
-          {
-            "name": "--full-sync"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/claude_code_sync": {
       "module": "claude_code_sync",
       "purpose": "Claude Code transcript sync \u2014 JSONL transcript parsing for RAG.",
       "token_budget": 4580,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.claude_code_sync",
-        "flags": [
-          {
-            "name": "--full-sync"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/code_review": {
       "module": "code_review",
       "purpose": "LLM-powered code review agent.",
       "token_budget": 1100,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.code_review",
-        "flags": [
-          {
-            "name": "--diff"
-          },
-          {
-            "name": "--model"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/consent_audit": {
       "module": "consent_audit",
       "purpose": "Historical consent audit \u2014 scan for pre-gate person-adjacent data.",
       "token_budget": 1510,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.consent_audit",
-        "flags": [
-          {
-            "name": "--scan"
-          },
-          {
-            "name": "--purge"
-          },
-          {
-            "name": "--dry-run"
-          },
-          {
-            "name": "--confirm"
-          },
-          {
-            "name": "--report"
-          }
-        ]
-      }
+      "self_contained": true
     },
     "agents/content_scheduler": {
       "module": "content_scheduler",
       "purpose": "Content scheduler \u2014 weighted softmax sampler for ambient content decisions.",
       "token_budget": 5950,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.content_scheduler"
-      }
+      "self_contained": true
     },
     "agents/context_restore": {
       "module": "context_restore",
       "purpose": "Context restoration \u2014 proactive cognitive state recovery after interruption.",
       "token_budget": 4960,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.context_restore"
-      }
+      "self_contained": false
     },
     "agents/contradiction_detector": {
       "module": "contradiction_detector",
       "purpose": "Cross-domain contradiction detection \u2014 carrier dynamics in practice.",
       "token_budget": 1960,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.contradiction_detector"
-      }
+      "self_contained": false
     },
     "agents/deliberation_eval": {
       "module": "deliberation_eval",
       "purpose": "CLI for deliberation metric extraction and probe evaluation.",
       "token_budget": 980,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.deliberation_eval",
-        "flags": [
-          {
-            "name": "--pattern"
-          },
-          {
-            "name": "--dir"
-          },
-          {
-            "name": "--output"
-          },
-          {
-            "name": "--probes-only"
-          },
-          {
-            "name": "--dry-run"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/demo": {
       "module": "demo",
       "purpose": "Demo generator agent \u2014 produces audience-tailored demos from natural language requests.",
       "token_budget": 13690,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.demo",
-        "flags": [
-          {
-            "name": "--audience"
-          },
-          {
-            "name": "--format"
-          },
-          {
-            "name": "--duration"
-          },
-          {
-            "name": "--voice"
-          },
-          {
-            "name": "--json"
-          },
-          {
-            "name": "--persona-file"
-          },
-          {
-            "name": "--gather-dossier"
-          },
-          {
-            "name": "--list"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/demo_eval": {
       "module": "demo_eval",
       "purpose": "Demo evaluation agent \u2014 generates, evaluates, and iteratively improves demos.",
       "token_budget": 2620,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.demo_eval",
-        "flags": [
-          {
-            "name": "--scenario"
-          },
-          {
-            "name": "--format"
-          },
-          {
-            "name": "--duration"
-          },
-          {
-            "name": "--max-iterations"
-          },
-          {
-            "name": "--pass-threshold"
-          },
-          {
-            "name": "--eval-only"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/demo_models": {
       "module": "demo_models",
       "purpose": "Data models for the demo generator agent.",
       "token_budget": 2450,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.demo_models"
-      }
+      "self_contained": true
     },
     "agents/demo_pipeline": {
       "module": "demo_pipeline",
       "purpose": "Demo generation pipeline \u2014 screenshots, slides, voice, video, title cards.",
       "token_budget": 73570,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.demo_pipeline"
-      }
+      "self_contained": false
     },
     "agents/dev_story": {
       "module": "dev_story",
       "purpose": "Dev Story \u2014 development archaeology agent.",
       "token_budget": 19540,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.dev_story"
-      }
+      "self_contained": false
     },
     "agents/digest": {
       "module": "digest",
       "purpose": "Content digest generator.",
       "token_budget": 3280,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.digest"
-      }
+      "self_contained": false
     },
     "agents/dmn": {
       "module": "dmn",
       "purpose": "Module dmn",
       "token_budget": 7770,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.dmn"
-      }
+      "self_contained": false
     },
     "agents/drift_detector": {
       "module": "drift_detector",
       "purpose": "Agent package for drift_detector.",
       "token_budget": 39570,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.drift_detector"
-      }
+      "self_contained": false
     },
     "agents/effect_graph": {
       "module": "effect_graph",
       "purpose": "Effect node graph \u2014 composable GPU shader pipeline.",
       "token_budget": 11600,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.effect_graph"
-      }
+      "self_contained": false
     },
     "agents/flow_journal": {
       "module": "flow_journal",
       "purpose": "Flow journal \u2014 persist flow state transitions to RAG for behavioral profiling.",
       "token_budget": 1440,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.flow_journal"
-      }
+      "self_contained": true
     },
     "agents/fortress": {
       "module": "fortress",
       "purpose": "Fortress governance agent \u2014 Dwarf Fortress forcing function.",
       "token_budget": 44590,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.fortress"
-      }
+      "self_contained": false
     },
     "agents/gcalendar_sync": {
       "module": "gcalendar_sync",
       "purpose": "Google Calendar RAG sync \u2014 event indexing and behavioral tracking.",
       "token_budget": 5230,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.gcalendar_sync",
-        "flags": [
-          {
-            "name": "--auth"
-          },
-          {
-            "name": "--full-sync"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/gdrive_sync": {
       "module": "gdrive_sync",
       "purpose": "Google Drive RAG sync \u2014 smart tiered strategy.",
       "token_budget": 7540,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.gdrive_sync",
-        "flags": [
-          {
-            "name": "--auth"
-          },
-          {
-            "name": "--full-scan"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--fetch"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/git_sync": {
       "module": "git_sync",
       "purpose": "Git commit history RAG sync \u2014 local repository commit extraction.",
       "token_budget": 5110,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.git_sync",
-        "flags": [
-          {
-            "name": "--full-sync"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/gmail_sync": {
       "module": "gmail_sync",
       "purpose": "Gmail RAG sync \u2014 email metadata indexing and behavioral tracking.",
       "token_budget": 5070,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.gmail_sync",
-        "flags": [
-          {
-            "name": "--auth"
-          },
-          {
-            "name": "--full-sync"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/hapax_daimonion": {
       "module": "hapax_daimonion",
       "purpose": "Hapax Daimonion \u2014 persistent voice interaction daemon.",
       "token_budget": 268070,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.hapax_daimonion"
-      }
+      "self_contained": false
     },
     "agents/health_connect_parser": {
       "module": "health_connect_parser",
       "purpose": "Health Connect SQLite parser \u2014 extracts daily summaries from backup ZIPs.",
       "token_budget": 2230,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.health_connect_parser",
-        "flags": [
-          {
-            "name": "--parse"
-          },
-          {
-            "name": "--watch"
-          },
-          {
-            "name": "--force"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/health_monitor": {
       "module": "health_monitor",
-      "purpose": "Deterministic stack health check suite.",
-      "token_budget": 32950,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.health_monitor",
-        "flags": [
-          {
-            "name": "--json"
-          },
-          {
-            "name": "--check"
-          },
-          {
-            "name": "--fix"
-          },
-          {
-            "name": "--yes"
-          },
-          {
-            "name": "-y"
-          },
-          {
-            "name": "--apply"
-          },
-          {
-            "name": "--dry-run"
-          },
-          {
-            "name": "--verbose"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--history"
-          }
-        ]
-      }
+      "purpose": "Deterministic stack health check suite. Zero LLM calls. Runs parallel async checks against 22 groups: Docker, GPU, systemd, Qdrant, profiles, endpoints, credentials, disk, models, auth, connectivity, ",
+      "token_budget": 0,
+      "self_contained": false
     },
     "agents/imagination": {
       "module": "imagination",
       "purpose": "Imagination bus \u2014 fragment publishing and escalation to impingement cascade.",
       "token_budget": 3120,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.imagination"
-      }
+      "self_contained": false
     },
     "agents/imagination_context": {
       "module": "imagination_context",
       "purpose": "Imagination context formatter \u2014 salience-graded Current Thoughts for conversation LLM.",
       "token_budget": 580,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.imagination_context"
-      }
+      "self_contained": true
     },
     "agents/imagination_resolver": {
       "module": "imagination_resolver",
       "purpose": "Imagination content resolver \u2014 rasterizes slow content references to JPEG.",
       "token_budget": 1970,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.imagination_resolver"
-      }
+      "self_contained": false
     },
     "agents/ingest": {
       "module": "ingest",
       "purpose": "RAG document ingestion pipeline.",
       "token_budget": 6020,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.ingest",
-        "flags": [
-          {
-            "name": "--bulk-only"
-          },
-          {
-            "name": "--watch-only"
-          },
-          {
-            "name": "--retry-status"
-          },
-          {
-            "name": "--force"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/introspect": {
       "module": "introspect",
       "purpose": "Live infrastructure manifest generator.",
       "token_budget": 4860,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.introspect",
-        "flags": [
-          {
-            "name": "--json"
-          },
-          {
-            "name": "--save"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/knowledge": {
       "module": "knowledge",
       "purpose": "Knowledge & Context \u2014 semantic search and knowledge artifact query agent.",
       "token_budget": 1260,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.knowledge"
-      }
+      "self_contained": false
     },
     "agents/knowledge_maint": {
       "module": "knowledge_maint",
       "purpose": "Knowledge base maintenance agent.",
       "token_budget": 4920,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.knowledge_maint",
-        "flags": [
-          {
-            "name": "--dry-run"
-          },
-          {
-            "name": "--apply"
-          },
-          {
-            "name": "--collection"
-          },
-          {
-            "name": "--json"
-          },
-          {
-            "name": "--save"
-          },
-          {
-            "name": "--summarize"
-          },
-          {
-            "name": "--notify"
-          },
-          {
-            "name": "--score-threshold"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/langfuse_sync": {
       "module": "langfuse_sync",
       "purpose": "Langfuse RAG sync \u2014 LLM trace summaries and cost tracking.",
       "token_budget": 7110,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.langfuse_sync",
-        "flags": [
-          {
-            "name": "--full-sync"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/models": {
       "module": "models",
       "purpose": "Model wrappers for the temporal classification pipeline.",
       "token_budget": 7610,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.models"
-      }
+      "self_contained": true
     },
     "agents/obsidian_sync": {
       "module": "obsidian_sync",
       "purpose": "Obsidian vault RAG sync \u2014 scan vault, write changed notes with metadata.",
       "token_budget": 4810,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.obsidian_sync",
-        "flags": [
-          {
-            "name": "--full-sync"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/predictive_cache": {
       "module": "predictive_cache",
       "purpose": "Predictive pre-computation cache for visual layer transitions.",
       "token_budget": 1450,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.predictive_cache"
-      }
+      "self_contained": false
     },
     "agents/proactive_gate": {
       "module": "proactive_gate",
       "purpose": "Proactive gate \u2014 conditions for system-initiated speech.",
       "token_budget": 400,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.proactive_gate"
-      }
+      "self_contained": false
     },
     "agents/profiler": {
       "module": "profiler",
       "purpose": "User profile extraction agent.",
       "token_budget": 15570,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.profiler",
-        "flags": [
-          {
-            "name": "--source"
-          },
-          {
-            "name": "--generate-prompts"
-          },
-          {
-            "name": "--ingest"
-          },
-          {
-            "name": "--show"
-          },
-          {
-            "name": "--full"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--curate"
-          },
-          {
-            "name": "--digest"
-          },
-          {
-            "name": "--index-profile"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/profiler_sources": {
       "module": "profiler_sources",
       "purpose": "Data source discovery, reading, and chunking for the profiler agent.",
       "token_budget": 10560,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.profiler_sources"
-      }
+      "self_contained": false
     },
     "agents/protention_engine": {
       "module": "protention_engine",
       "purpose": "Protention engine \u2014 statistical transition probability model.",
       "token_budget": 3350,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.protention_engine"
-      }
+      "self_contained": true
     },
     "agents/query": {
       "module": "query",
       "purpose": "CLI tool for testing RAG retrieval against Qdrant.",
       "token_budget": 1050,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.query",
-        "flags": [
-          {
-            "name": "-c"
-          },
-          {
-            "name": "--collection"
-          },
-          {
-            "name": "-n"
-          },
-          {
-            "name": "--limit"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "--json"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/research": {
       "module": "research",
       "purpose": "RAG-enabled research agent using Pydantic AI + LiteLLM + Qdrant.",
       "token_budget": 1340,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.research"
-      }
+      "self_contained": false
     },
     "agents/retroactive_label": {
       "module": "retroactive_label",
       "purpose": "Retroactive person labeling \u2014 batch scan Qdrant docs and tag with person_ids.",
       "token_budget": 1560,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.retroactive_label",
-        "flags": [
-          {
-            "name": "--dry-run"
-          },
-          {
-            "name": "--limit"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/reverie": {
       "module": "reverie",
       "purpose": "Hapax Reverie \u2014 visual actuation daemon.",
       "token_budget": 2840,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.reverie"
-      }
+      "self_contained": false
     },
     "agents/scout": {
       "module": "scout",
       "purpose": "Horizon scanner for external fitness evaluation.",
       "token_budget": 5210,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.scout",
-        "flags": [
-          {
-            "name": "--json"
-          },
-          {
-            "name": "--save"
-          },
-          {
-            "name": "--component"
-          },
-          {
-            "name": "--dry-run"
-          },
-          {
-            "name": "--notify"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/screen_context": {
       "module": "screen_context",
       "purpose": "Screen context sync \u2014 capture active window context for behavioral profiling.",
       "token_budget": 2040,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.screen_context"
-      }
+      "self_contained": true
     },
     "agents/sdlc_metrics": {
       "module": "sdlc_metrics",
       "purpose": "SDLC pipeline health metrics \u2014 deterministic aggregation.",
       "token_budget": 3620,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.sdlc_metrics",
-        "flags": [
-          {
-            "name": "--days"
-          },
-          {
-            "name": "--output"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/session_conductor": {
       "module": "session_conductor",
       "purpose": "Session Conductor \u2014 deterministic sidecar for Claude Code session automation.",
       "token_budget": 14020,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.session_conductor"
-      }
+      "self_contained": false
     },
     "agents/sprint_tracker": {
       "module": "sprint_tracker",
       "purpose": "Sprint tracker agent \u2014 vault-native R&D schedule management.",
       "token_budget": 4360,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.sprint_tracker",
-        "environment": {
-          "SYSTEMD_TIMER": "hapax-sprint-tracker.timer"
-        }
-      }
+      "self_contained": false
     },
     "agents/stimmung_sync": {
       "module": "stimmung_sync",
       "purpose": "Stimmung sync \u2014 persist system self-state history to RAG.",
       "token_budget": 1530,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.stimmung_sync"
-      }
+      "self_contained": false
     },
     "agents/storage_arbiter": {
       "module": "storage_arbiter",
       "purpose": "Orchestrates audio archive value assessment and lifecycle.",
       "token_budget": 2460,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.storage_arbiter",
-        "flags": [
-          {
-            "name": "--run"
-          },
-          {
-            "name": "--report"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/studio_compositor": {
       "module": "studio_compositor",
       "purpose": "Studio Compositor \u2014 GStreamer pipeline that tiles camera feeds into a single 1080p output.",
       "token_budget": 21350,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.studio_compositor",
-        "flags": [
-          {
-            "name": "--config"
-          },
-          {
-            "name": "--default-config"
-          },
-          {
-            "name": "--no-overlay"
-          },
-          {
-            "name": "--record-dir"
-          },
-          {
-            "name": "--no-record"
-          },
-          {
-            "name": "--no-hls"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/studio_effects": {
       "module": "studio_effects",
       "purpose": "Studio visual effects \u2014 GPU-accelerated effect chain for compositor output.",
       "token_budget": 3400,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.studio_effects"
-      }
+      "self_contained": true
     },
     "agents/studio_fx": {
       "module": "studio_fx",
       "purpose": "Studio FX \u2014 independent Python visual effects pipeline.",
       "token_budget": 18120,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.studio_fx"
-      }
+      "self_contained": false
     },
     "agents/studio_person_detector": {
       "module": "studio_person_detector",
       "purpose": "Studio Person Detector \u2014 lightweight YOLOv8n person detection on camera snapshots.",
       "token_budget": 960,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.studio_person_detector",
-        "flags": [
-          {
-            "name": "--fps"
-          },
-          {
-            "name": "--confidence"
-          },
-          {
-            "name": "--device"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/studio_stutter": {
       "module": "studio_stutter",
       "purpose": "StutterElement \u2014 GStreamer element that implements freeze/replay temporal disruption.",
       "token_budget": 1210,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.studio_stutter"
-      }
+      "self_contained": true
     },
     "agents/system_ops": {
       "module": "system_ops",
       "purpose": "System Operations \u2014 infrastructure health and operational analytics agent.",
       "token_budget": 1140,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.system_ops"
-      }
+      "self_contained": false
     },
     "agents/temporal_bands": {
       "module": "temporal_bands",
       "purpose": "Temporal band formatter \u2014 retention/impression/protention for LLM context.",
       "token_budget": 4150,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.temporal_bands"
-      }
+      "self_contained": false
     },
     "agents/temporal_delta": {
       "module": "temporal_delta",
       "purpose": "Temporal delta correlator \u2014 derive motion signals from sightings history.",
       "token_budget": 1240,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.temporal_delta"
-      }
+      "self_contained": true
     },
     "agents/temporal_filter": {
       "module": "temporal_filter",
       "purpose": "Temporal stability filter \u2014 hysteresis to prevent flickering classifications.",
       "token_budget": 790,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.temporal_filter"
-      }
+      "self_contained": true
     },
     "agents/temporal_scales": {
       "module": "temporal_scales",
       "purpose": "Multi-scale temporal hierarchy \u2014 minute/session/day summaries.",
       "token_budget": 3090,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.temporal_scales"
-      }
+      "self_contained": true
     },
     "agents/video_capture": {
       "module": "video_capture",
       "purpose": "Multi-camera video capture service.",
       "token_budget": 2010,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.video_capture",
-        "flags": [
-          {
-            "name": "--camera"
-          },
-          {
-            "name": "--list"
-          },
-          {
-            "name": "--device"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/video_processor": {
       "module": "video_processor",
       "purpose": "Video segment classification and retention pipeline.",
       "token_budget": 8600,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.video_processor",
-        "flags": [
-          {
-            "name": "--process"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "--reprocess"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "agents/visual_chain": {
       "module": "visual_chain",
       "purpose": "Visual chain capability \u2014 semantic visual affordances for wgpu shader modulation.",
       "token_budget": 2870,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.visual_chain"
-      }
+      "self_contained": false
     },
     "agents/visual_layer_aggregator": {
       "module": "visual_layer_aggregator",
       "purpose": "Visual layer signal aggregator \u2014 polls logos API and perception state.",
       "token_budget": 18320,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.visual_layer_aggregator"
-      }
+      "self_contained": false
     },
     "agents/visual_layer_state": {
       "module": "visual_layer_state",
       "purpose": "Visual communication layer \u2014 data models and display state machine.",
       "token_budget": 4500,
-      "self_contained": true,
-      "execution": {
-        "entry": "uv run python -m agents.visual_layer_state"
-      }
+      "self_contained": true
     },
     "agents/watch_receiver": {
       "module": "watch_receiver",
       "purpose": "FastAPI sensor receiver \u2014 writes atomic JSON files to filesystem-as-bus.",
       "token_budget": 3480,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.watch_receiver"
-      }
+      "self_contained": false
     },
     "agents/weather_sync": {
       "module": "weather_sync",
       "purpose": "Weather sync \u2014 local weather conditions for energy/mood correlation.",
       "token_budget": 1440,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.weather_sync"
-      }
+      "self_contained": false
     },
     "agents/youtube_sync": {
       "module": "youtube_sync",
       "purpose": "YouTube RAG sync \u2014 subscriptions, likes, and playlists.",
       "token_budget": 4830,
-      "self_contained": false,
-      "execution": {
-        "entry": "uv run python -m agents.youtube_sync",
-        "flags": [
-          {
-            "name": "--auth"
-          },
-          {
-            "name": "--full-sync"
-          },
-          {
-            "name": "--auto"
-          },
-          {
-            "name": "--stats"
-          },
-          {
-            "name": "-v"
-          },
-          {
-            "name": "--verbose"
-          }
-        ]
-      }
+      "self_contained": false
     },
     "hapax-logos/src/components/chat": {
       "module": "chat",
       "purpose": "Chat message display, input, streaming, and conversation management for assistant/user/tool message types.",
       "token_budget": 9712,
-      "self_contained": false,
-      "execution": {}
+      "self_contained": false
     },
     "hapax-logos/src/components/dashboard": {
       "module": "dashboard",
       "purpose": "System dashboard with agent grid, health status, nudge list, copilot banner, and output pane.",
       "token_budget": 5368,
-      "self_contained": false,
-      "execution": {}
+      "self_contained": false
     },
     "hapax-logos/src/components/demos": {
       "module": "demos",
       "purpose": "Demo listing and detail view for browsing, viewing, and deleting recorded demos.",
       "token_budget": 1440,
-      "self_contained": true,
-      "execution": {}
+      "self_contained": true
     },
     "hapax-logos/src/components/hapax": {
       "module": "hapax",
       "purpose": "WebGL ambient generative shader background for the Hapax Corpora surface, self-throttled with FPS control.",
       "token_budget": 2224,
-      "self_contained": true,
-      "execution": {}
+      "self_contained": true
     },
     "hapax-logos/src/components/perception": {
       "module": "perception",
       "purpose": "Camera zone perception display with canvas rendering, zone overlays, channel strip, and sidebar meter for live visual signals.",
       "token_budget": 6656,
-      "self_contained": false,
-      "execution": {}
+      "self_contained": false
     },
     "hapax-logos/src/components/sidebar": {
       "module": "sidebar",
       "purpose": "Sidebar panel system with 22 specialized panels covering briefing, health, profile, governance, costs, VRAM, scout, drift, goals, and more.",
       "token_budget": 9048,
-      "self_contained": false,
-      "execution": {}
+      "self_contained": false
     },
     "hapax-logos/src/components/visual": {
       "module": "visual",
       "purpose": "Visual surface rendering with WebGL frame streaming, layer controls, state readout, and surface preview for the perception pipeline.",
       "token_budget": 2368,
-      "self_contained": true,
-      "execution": {}
+      "self_contained": true
     }
   }
 }
