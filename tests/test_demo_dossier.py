@@ -192,8 +192,8 @@ class TestSaveDossier:
 class TestRecordRelationshipFacts:
     """Tests for Qdrant fact indexing."""
 
-    @patch("shared.config.get_qdrant")
-    @patch("shared.config.embed_batch")
+    @patch("agents._config.get_qdrant")
+    @patch("agents._config.embed_batch")
     def test_indexes_facts(self, mock_embed, mock_get_qdrant):
         """Indexes facts to Qdrant with deterministic IDs."""
         mock_embed.return_value = [[0.1] * 768, [0.2] * 768, [0.3] * 768]
@@ -209,8 +209,8 @@ class TestRecordRelationshipFacts:
         mock_embed.assert_called_once()
         mock_client.upsert.assert_called_once()
 
-    @patch("shared.config.get_qdrant")
-    @patch("shared.config.embed_batch", side_effect=Exception("connection refused"))
+    @patch("agents._config.get_qdrant")
+    @patch("agents._config.embed_batch", side_effect=Exception("connection refused"))
     def test_failure_graceful(self, mock_embed, mock_get_qdrant):
         """Qdrant error returns 0, no raise."""
         dossier = _make_dossier()

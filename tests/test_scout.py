@@ -237,8 +237,8 @@ def test_search_component_no_results(mock_search, mock_sleep):
 # ── Usage map tests ─────────────────────────────────────────────────────────
 
 
-@patch("shared.langfuse_client.is_available", return_value=True)
-@patch("shared.langfuse_client.langfuse_get")
+@patch("agents._langfuse_client.is_available", return_value=True)
+@patch("agents._langfuse_client.langfuse_get")
 def test_build_usage_map_with_data(mock_get, mock_avail):
     mock_get.return_value = {
         "data": [
@@ -254,7 +254,7 @@ def test_build_usage_map_with_data(mock_get, mock_avail):
     assert "100" in usage["litellm"]
 
 
-@patch("shared.langfuse_client.is_available", return_value=False)
+@patch("agents._langfuse_client.is_available", return_value=False)
 def test_build_usage_map_langfuse_unavailable(mock_avail):
     usage = _build_usage_map()
     assert usage == {}
@@ -363,7 +363,7 @@ def test_format_report_md_errors_section():
 # ── Notification tests ──────────────────────────────────────────────────────
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_called_with_actionable(mock_notify):
     report = _sample_report()
     send_notification(report)
@@ -371,7 +371,7 @@ def test_send_notification_called_with_actionable(mock_notify):
     assert "Scout" in mock_notify.call_args[0][0] or "Scout" in str(mock_notify.call_args)
 
 
-@patch("shared.notify.send_notification")
+@patch("agents._notify.send_notification")
 def test_send_notification_skipped_when_no_actionable(mock_notify):
     report = ScoutReport(
         generated_at="2026-03-01T10:00:00Z",

@@ -149,7 +149,7 @@ def test_flush_pending_facts_no_file(tmp_path):
     """Flush with no file returns empty message."""
     from logos.interview import flush_pending_facts as _flush_pending_facts
 
-    with patch("shared.config.LOGOS_STATE_DIR", tmp_path):
+    with patch("logos._config.LOGOS_STATE_DIR", tmp_path):
         result = _flush_pending_facts()
     assert "no pending facts" in result
 
@@ -160,7 +160,7 @@ def test_flush_pending_facts_empty_file(tmp_path):
 
     facts_path = tmp_path / "pending-facts.jsonl"
     facts_path.write_text("")
-    with patch("shared.config.LOGOS_STATE_DIR", tmp_path):
+    with patch("logos._config.LOGOS_STATE_DIR", tmp_path):
         result = _flush_pending_facts()
     assert "no pending facts" in result
 
@@ -179,7 +179,7 @@ def test_flush_pending_facts_with_data(tmp_path):
     }
     facts_path.write_text(json.dumps(entry) + "\n")
 
-    with patch("shared.config.LOGOS_STATE_DIR", tmp_path):
+    with patch("logos._config.LOGOS_STATE_DIR", tmp_path):
         with patch(
             "agents.profiler.flush_interview_facts", return_value="merged 1 fact"
         ) as mock_flush:
@@ -201,7 +201,7 @@ def test_flush_clears_file_after_success(tmp_path):
     }
     facts_path.write_text(json.dumps(entry) + "\n")
 
-    with patch("shared.config.LOGOS_STATE_DIR", tmp_path):
+    with patch("logos._config.LOGOS_STATE_DIR", tmp_path):
         with patch("logos.interview.flush_pending_facts") as mock:
             mock.return_value = "Flushed 1 facts."
             result = mock()

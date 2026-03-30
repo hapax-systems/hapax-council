@@ -139,7 +139,7 @@ class TestMeasureTokenCostOverhead(unittest.TestCase):
             ]
         }
 
-        with patch("shared.langfuse_client.langfuse_get", return_value=mock_data):
+        with patch("agents._langfuse_client.langfuse_get", return_value=mock_data):
             result = measure_token_cost_overhead(lookback_days=1)
             assert result["available"]
             assert result["governance_calls"] == 2

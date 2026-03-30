@@ -67,7 +67,7 @@ class TestRenderHealth:
                 }
             )
         )
-        with patch("shared.config.PROFILES_DIR", tmp_path):
+        with patch("agents._config.PROFILES_DIR", tmp_path):
             result = render_health()
             assert result == ""
 
@@ -87,13 +87,13 @@ class TestRenderHealth:
                 }
             )
         )
-        with patch("shared.config.PROFILES_DIR", tmp_path):
+        with patch("agents._config.PROFILES_DIR", tmp_path):
             result = render_health()
             assert "degraded" in result
             assert "redis" in result
 
     def test_missing_file_returns_empty(self):
-        with patch("shared.config.PROFILES_DIR", Path("/nonexistent")):
+        with patch("agents._config.PROFILES_DIR", Path("/nonexistent")):
             assert render_health() == ""
 
 

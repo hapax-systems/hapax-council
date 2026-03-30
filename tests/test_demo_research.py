@@ -870,8 +870,8 @@ def test_gather_architecture_rag_filters_by_source():
 def test_gather_architecture_rag_graceful_on_failure():
     """Returns empty string when Qdrant is unreachable."""
     with (
-        patch("shared.config.embed", side_effect=ConnectionError("down")),
-        patch("shared.config.get_qdrant", side_effect=ConnectionError("down")),
+        patch("agents._config.embed", side_effect=ConnectionError("down")),
+        patch("agents._config.get_qdrant", side_effect=ConnectionError("down")),
     ):
         result = _gather_architecture_rag("test")
     assert result == ""
@@ -962,7 +962,7 @@ async def test_gather_live_system_state_graceful():
     """Returns empty string when introspect and Qdrant both fail."""
     with (
         patch("agents.introspect.generate_manifest", side_effect=ConnectionError("down")),
-        patch("shared.config.get_qdrant", side_effect=ConnectionError("down")),
+        patch("agents._config.get_qdrant", side_effect=ConnectionError("down")),
     ):
         from agents.demo_pipeline.research import _gather_live_system_state
 

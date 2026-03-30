@@ -93,7 +93,7 @@ class TestEmptyStateLLM:
             shutil.copy2(EMPTY_DEV_STORY_DB, self._db_copy)
         # Patch PROFILES_DIR in both modules
         self._patches = [
-            patch("shared.config.PROFILES_DIR", EMPTY_PROFILES),
+            patch("logos._config.PROFILES_DIR", EMPTY_PROFILES),
             patch("logos.query_dispatch.PROFILES_DIR", EMPTY_PROFILES),
         ]
         for p in self._patches:
