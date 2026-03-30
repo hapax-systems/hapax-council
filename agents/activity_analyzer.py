@@ -789,7 +789,7 @@ LLM infrastructure stack, produce a concise 3-5 sentence briefing for the
 operator. Focus on: what happened, what's notable, what needs attention.
 Be specific with numbers. Don't explain what the system is — the operator knows.""",
     )
-    from shared.axiom_tools import get_axiom_tools
+    from agents._axiom_tools import get_axiom_tools
 
     for _tool_fn in get_axiom_tools():
         agent.tool(_tool_fn)

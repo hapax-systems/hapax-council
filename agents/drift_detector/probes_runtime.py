@@ -62,7 +62,7 @@ def _check_sync_fresh() -> tuple[bool, str]:
     from pathlib import Path
 
     try:
-        from shared.agent_registry import AgentCategory, get_registry
+        from agents._agent_registry import AgentCategory, get_registry
 
         registry = get_registry()
         sync_agents = registry.agents_by_category(AgentCategory.SYNC)

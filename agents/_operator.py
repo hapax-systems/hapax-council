@@ -264,7 +264,7 @@ def get_system_prompt_fragment(agent_name: str) -> str:
 
     axioms = data.get("axioms", {})
     try:
-        from shared.axiom_registry import load_axioms as _load_axioms
+        from agents._axiom_registry import load_axioms as _load_axioms
 
         registry_axioms = _load_axioms()
         if registry_axioms:

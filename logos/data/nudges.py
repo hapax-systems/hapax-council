@@ -467,7 +467,7 @@ def _collect_knowledge_sufficiency_nudges(nudges: list[Nudge]) -> None:
 def _collect_precedent_nudges(nudges: list[Nudge]) -> None:
     """Generate nudges for agent precedents awaiting operator review."""
     try:
-        from shared.axiom_precedents import PrecedentStore
+        from logos._axiom_precedents import PrecedentStore
 
         store = PrecedentStore()
         pending = store.get_pending_review()

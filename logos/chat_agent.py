@@ -100,7 +100,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
     for tool_fn in get_context_tools():
         agent.tool(tool_fn)
 
-    from shared.axiom_tools import get_axiom_tools
+    from logos._axiom_tools import get_axiom_tools
 
     for tool_fn in get_axiom_tools():
         agent.tool(tool_fn)
@@ -656,7 +656,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
     @agent.tool
     async def review_pending_precedents(ctx: RunContext[ChatDeps]) -> str:
         """Show axiom precedents created by agents that await operator review."""
-        from shared.axiom_precedents import PrecedentStore
+        from logos._axiom_precedents import PrecedentStore
 
         try:
             store = PrecedentStore()
@@ -687,7 +687,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         Args:
             precedent_id: The precedent ID to confirm (e.g., PRE-20260303-abc123).
         """
-        from shared.axiom_precedents import PrecedentStore
+        from logos._axiom_precedents import PrecedentStore
 
         try:
             store = PrecedentStore()
@@ -708,7 +708,7 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             precedent_id: The precedent ID to reject.
             correction: The operator's corrected reasoning for this situation.
         """
-        from shared.axiom_precedents import Precedent, PrecedentStore
+        from logos._axiom_precedents import Precedent, PrecedentStore
 
         try:
             store = PrecedentStore()

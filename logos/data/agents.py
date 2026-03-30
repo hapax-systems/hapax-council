@@ -29,7 +29,7 @@ class AgentInfo:
 
 def get_agent_registry() -> list[AgentInfo]:
     """Derive AgentInfo list from the manifest registry."""
-    from shared.agent_registry import get_registry
+    from agents._agent_registry import get_registry
 
     registry = get_registry()
     result = []

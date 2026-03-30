@@ -264,7 +264,7 @@ def collect_authority_utilization() -> list[AuthorityUtilization]:
     agents: list[AuthorityUtilization] = []
 
     try:
-        from shared.agent_registry import get_registry
+        from agents._agent_registry import get_registry
 
         registry = get_registry()
 

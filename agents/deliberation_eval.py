@@ -49,7 +49,7 @@ def _escalate_pseudo_deliberations() -> None:
         return
 
     try:
-        from shared.axiom_precedents import Precedent, PrecedentStore
+        from agents._axiom_precedents import Precedent, PrecedentStore
 
         ids = ", ".join(m.deliberation_id for m in pseudo[:5])
         store = PrecedentStore()

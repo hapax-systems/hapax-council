@@ -2154,7 +2154,7 @@ async def check_axiom_registry() -> list[CheckResult]:
 
     # Check registry exists and is parseable
     try:
-        from shared.axiom_registry import AXIOMS_PATH, load_axioms
+        from agents._axiom_registry import AXIOMS_PATH, load_axioms
 
         registry_file = AXIOMS_PATH / "registry.yaml"
         if registry_file.exists():
@@ -2228,7 +2228,7 @@ async def check_axiom_registry() -> list[CheckResult]:
                     group="axioms",
                     status=Status.DEGRADED,
                     message="axiom-precedents collection not found in Qdrant",
-                    remediation="cd ~/projects/hapax-council && uv run python -c 'from shared.axiom_precedents import PrecedentStore; PrecedentStore().ensure_collection()'",
+                    remediation="cd ~/projects/hapax-council && uv run python -c 'from agents._axiom_precedents import PrecedentStore; PrecedentStore().ensure_collection()'",
                     duration_ms=_timed(t2),
                 )
             )
@@ -2247,8 +2247,8 @@ async def check_axiom_registry() -> list[CheckResult]:
     # Check implications exist for active axioms
     t3 = time.monotonic()
     try:
-        from shared.axiom_registry import load_axioms as _load_axioms
-        from shared.axiom_registry import load_implications
+        from agents._axiom_registry import load_axioms as _load_axioms
+        from agents._axiom_registry import load_implications
 
         active = _load_axioms()
         if active:
@@ -2289,7 +2289,7 @@ async def check_axiom_registry() -> list[CheckResult]:
     # Check supremacy — domain T0 blocks vs constitutional T0 blocks
     t4 = time.monotonic()
     try:
-        from shared.axiom_registry import validate_supremacy
+        from agents._axiom_registry import validate_supremacy
 
         tensions = validate_supremacy()
         if not tensions:
@@ -2511,7 +2511,7 @@ async def check_axiom_ef_zero_config() -> list[CheckResult]:
 
     # Agents that should be runnable with no required args
     # research takes a positional query arg (acceptable — it's the input, not config)
-    from shared.agent_registry import get_registry
+    from agents._agent_registry import get_registry
 
     zero_config_agents = [a.id for a in get_registry().zero_config_agents()]
 
@@ -3007,7 +3007,7 @@ def _get_sync_agents() -> dict[str, Path]:
     Falls back to hardcoded list if registry is unavailable.
     """
     try:
-        from shared.agent_registry import AgentCategory, get_registry
+        from agents._agent_registry import AgentCategory, get_registry
 
         registry = get_registry()
         sync_agents = registry.agents_by_category(AgentCategory.SYNC)

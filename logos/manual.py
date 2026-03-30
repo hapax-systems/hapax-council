@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agents._agent_registry import get_registry
 from logos._config import PROFILES_DIR
 from logos.data.agents import AgentFlag, AgentInfo, get_agent_registry
-from shared.agent_registry import get_registry
 
 
 def _format_flag(f: AgentFlag) -> str:

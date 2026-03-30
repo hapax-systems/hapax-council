@@ -273,7 +273,7 @@ def embed_batch_safe(
 @functools.lru_cache(maxsize=1)
 def load_expected_timers() -> dict[str, str]:
     """Load the expected systemd timer manifest (cached)."""
-    from shared.agent_registry import get_registry
+    from agents._agent_registry import get_registry
 
     return get_registry().expected_timers()
 

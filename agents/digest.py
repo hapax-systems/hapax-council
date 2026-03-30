@@ -189,7 +189,7 @@ for _tool_fn in get_context_tools():
     digest_agent.tool(_tool_fn)
 
 # Register axiom compliance tools
-from shared.axiom_tools import get_axiom_tools
+from agents._axiom_tools import get_axiom_tools
 
 for _tool_fn in get_axiom_tools():
     digest_agent.tool(_tool_fn)

@@ -88,7 +88,7 @@ async def record_axiom_decision(
     """
     _log_tool_usage("record_axiom_decision")
     try:
-        from shared.axiom_precedents import Precedent, PrecedentStore
+        from agents._axiom_precedents import Precedent, PrecedentStore
 
         try:
             facts = json.loads(distinguishing_facts)

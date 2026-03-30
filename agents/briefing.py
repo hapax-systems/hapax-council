@@ -234,7 +234,7 @@ from agents._context_tools import get_context_tools
 for _tool_fn in get_context_tools():
     briefing_agent.tool(_tool_fn)
 
-from shared.axiom_tools import get_axiom_tools
+from agents._axiom_tools import get_axiom_tools
 
 for _tool_fn in get_axiom_tools():
     briefing_agent.tool(_tool_fn)
@@ -363,7 +363,7 @@ def _collect_axiom_status() -> dict:
         except Exception:
             pass
         try:
-            from shared.axiom_precedents import PrecedentStore
+            from agents._axiom_precedents import PrecedentStore
 
             store = PrecedentStore()
             pending = store.get_pending_review(limit=50)

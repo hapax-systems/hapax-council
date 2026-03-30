@@ -468,7 +468,7 @@ async def add_summary(report: MaintenanceReport) -> MaintenanceReport:
         system_prompt=get_system_prompt_fragment("knowledge-maint")
         + "\n\nSummarize this knowledge base maintenance report in 2-3 sentences. Be specific about numbers.",
     )
-    from shared.axiom_tools import get_axiom_tools
+    from agents._axiom_tools import get_axiom_tools
 
     for _tool_fn in get_axiom_tools():
         agent.tool(_tool_fn)
