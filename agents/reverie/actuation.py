@@ -85,7 +85,7 @@ class ReverieActuationLoop:
         if not allowed:
             if self._tick_count % 30 == 1:  # log once per 30s
                 log.info("Visual actuation vetoed: %s", reason)
-            self._write_uniforms(None, stimmung)  # write minimal uniforms
+            self._write_uniforms(None, ctx.stimmung_raw)  # write minimal uniforms
             return
 
         # Guest reduction factor (0.6 when guest present, 1.0 when alone)
