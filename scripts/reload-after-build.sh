@@ -46,11 +46,15 @@ else
     log "hapax-imagination not running — skipping (new binary will be used on next launch)"
 fi
 
-# hapax-logos — only if already running (don't pop unsolicited windows)
+# hapax-logos — restart if running, start if enabled but dead
 if systemctl --user is-active hapax-logos.service &>/dev/null; then
     log "restarting hapax-logos (was running)"
     systemctl --user restart hapax-logos.service
     RESTARTED+=("logos")
+elif systemctl --user is-enabled hapax-logos.service &>/dev/null; then
+    log "starting hapax-logos (was enabled but dead)"
+    systemctl --user start hapax-logos.service
+    RESTARTED+=("logos(started)")
 fi
 
 # Report
