@@ -1,6 +1,6 @@
 {
-    "name": "Reverie Substrate",
-    "description": "Quiescent idle state — self-generated visual field from procedural noise. Reverie's equivalent of Daimonion's mutual silence.",
+    "name": "Reverie Vocabulary",
+    "description": "Permanent visual vocabulary — the shader graph that Reverie always runs. Params driven by imagination fragments. There is no idle state.",
     "transition_ms": 2000,
     "nodes": {
         "noise": {

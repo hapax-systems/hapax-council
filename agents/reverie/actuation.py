@@ -107,18 +107,11 @@ class ReverieActuationLoop:
         # 4. Stimmung from shared context
         stimmung = ctx.stimmung_raw
 
-        # 5. Apply imagination dimensions to visual chain
-        if imagination:
-            dims = imagination.get("dimensions", {})
-            for dim_name, level in dims.items():
-                full_name = f"visual_chain.{dim_name}"
-                if full_name in self._visual_chain._levels:
-                    # Imagination dimensions set a floor — don't override higher impingement levels
-                    current = self._visual_chain.get_dimension_level(full_name)
-                    salience = imagination.get("salience", 0.0)
-                    target = level * salience  # scale by fragment salience
-                    if target > current:
-                        self._visual_chain._levels[full_name] = target
+        # 5. Imagination's 9 expressive dimensions are handled by the Rust
+        # StateReader (reads current.json directly, lerps at 60fps with 2s
+        # time constant). The actuation loop does NOT override these — it
+        # handles what StateReader doesn't: material, salience, trace, and
+        # impingement-driven visual chain activations.
 
         # 6. Apply guest reduction to all chain levels
         if reduction < 1.0:

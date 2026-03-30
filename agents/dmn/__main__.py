@@ -93,15 +93,15 @@ class DMNDaemon:
         DMN_STATE_DIR.mkdir(parents=True, exist_ok=True)
         log.info("DMN daemon starting")
 
-        # Bootstrap Reverie's quiescent substrate before entering loops.
-        # Analogous to Daimonion's subsystem init before cognitive loop starts.
+        # Write the permanent visual vocabulary (graph structure never changes).
+        # There is no idle state — params are driven by imagination fragments.
         try:
-            from agents.reverie.bootstrap import write_substrate_plan
+            from agents.reverie.bootstrap import write_vocabulary_plan
 
-            if write_substrate_plan():
-                log.info("Reverie substrate bootstrapped")
+            if write_vocabulary_plan():
+                log.info("Reverie vocabulary written")
         except Exception:
-            log.warning("Reverie bootstrap failed", exc_info=True)
+            log.warning("Reverie vocabulary write failed", exc_info=True)
 
         # Initialize Reverie actuation loop — visual peer of Daimonion
         try:
@@ -114,6 +114,18 @@ class DMNDaemon:
 
         asyncio.create_task(self._imagination_loop())
         asyncio.create_task(self._resolver_loop())
+
+        # Fire first imagination tick immediately — Reverie should reflect
+        # DMN state from the very first frame, not wait for cadence timer.
+        try:
+            from agents.dmn.sensor import read_all
+
+            observations = self._buffer.recent_observations(5)
+            snapshot = read_all()
+            await self._imagination.tick(observations, snapshot)
+            log.info("First imagination tick fired")
+        except Exception:
+            log.warning("First imagination tick failed", exc_info=True)
 
         while self._running:
             try:
