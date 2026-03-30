@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 
 from shared.expression import (
     FRAGMENT_TO_SHADER,
-    MATERIAL_TO_PRESET,
+    MATERIAL_TO_UNIFORM,
     ExpressionCoordinator,
-    map_fragment_to_preset,
+    map_fragment_to_material_uniform,
     map_fragment_to_visual,
 )
 
@@ -95,22 +95,22 @@ class TestFragmentToVisual(unittest.TestCase):
         assert len(result) == len(FRAGMENT_TO_SHADER)
 
 
-class TestFragmentToPreset(unittest.TestCase):
+class TestFragmentToMaterialUniform(unittest.TestCase):
     def test_water_maps(self):
-        assert map_fragment_to_preset({"material": "water"}) == "voronoi_crystal"
+        assert map_fragment_to_material_uniform({"material": "water"}) == 0.0
 
     def test_fire_maps(self):
-        assert map_fragment_to_preset({"material": "fire"}) == "feedback_preset"
+        assert map_fragment_to_material_uniform({"material": "fire"}) == 1.0
 
-    def test_unknown_returns_none(self):
-        assert map_fragment_to_preset({"material": "plasma"}) is None
+    def test_unknown_returns_zero(self):
+        assert map_fragment_to_material_uniform({"material": "plasma"}) == 0.0
 
-    def test_no_material_returns_none(self):
-        assert map_fragment_to_preset({}) is None
+    def test_no_material_defaults_water(self):
+        assert map_fragment_to_material_uniform({}) == 0.0
 
     def test_case_insensitive(self):
-        assert map_fragment_to_preset({"material": "EARTH"}) == "dither"
+        assert map_fragment_to_material_uniform({"material": "EARTH"}) == 2.0
 
     def test_all_materials_mapped(self):
-        for material, preset in MATERIAL_TO_PRESET.items():
-            assert map_fragment_to_preset({"material": material}) == preset
+        for material, value in MATERIAL_TO_UNIFORM.items():
+            assert map_fragment_to_material_uniform({"material": material}) == value
