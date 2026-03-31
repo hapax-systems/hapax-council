@@ -124,10 +124,7 @@ class ReverieActuationLoop:
         # handles what StateReader doesn't: material, salience, trace, and
         # impingement-driven visual chain activations.
 
-        # 6. Apply guest reduction to all chain levels
-        if reduction < 1.0:
-            for name in self._visual_chain._levels:
-                self._visual_chain._levels[name] *= reduction
+        # 6. Guest reduction applied at output time (see _write_uniforms)
 
         # 7. Update trace state (Amendment 2: dwelling and trace)
         self._update_trace(imagination, dt)
@@ -136,7 +133,7 @@ class ReverieActuationLoop:
         self._visual_chain.write_state()
 
         # 9. Write merged uniforms
-        self._write_uniforms(imagination, stimmung)
+        self._write_uniforms(imagination, stimmung, reduction)
 
     # Per-slot approximate centers (matches content_layer.wgsl immensity_entry directions)
     _SLOT_CENTERS = {0: (0.4, 0.4), 1: (0.6, 0.4), 2: (0.4, 0.6), 3: (0.6, 0.6)}
@@ -159,7 +156,7 @@ class ReverieActuationLoop:
             if imagination:
                 refs = imagination.get("content_references", [])
                 if isinstance(refs, list) and len(refs) > 0:
-                    slot_idx = min(len(refs) - 1, 3)
+                    slot_idx = 0  # primary (highest-salience) slot
             self._trace_center = self._SLOT_CENTERS.get(slot_idx, (0.5, 0.5))
 
             log.info(
@@ -200,12 +197,33 @@ class ReverieActuationLoop:
         )
 
     # Imagination and stimmung state now read via shared ContextAssembler
+
+    @staticmethod
+    def _build_slot_opacities(
+        imagination: dict[str, object] | None, fallback_salience: float
+    ) -> list[float]:
+        """Build slot opacities from content references or fallback to single-slot."""
+        opacities = [0.0, 0.0, 0.0, 0.0]
+        if not imagination:
+            return opacities
+        refs = imagination.get("content_references", [])
+        if isinstance(refs, list) and refs:
+            for i, ref in enumerate(refs[:4]):
+                if isinstance(ref, dict):
+                    opacities[i] = float(ref.get("salience", fallback_salience))
+                else:
+                    opacities[i] = fallback_salience
+        elif fallback_salience > 0:
+            opacities[0] = fallback_salience
+        return opacities
+
     # in tick(), ensuring both systems see identical context at the same moment.
 
     def _write_uniforms(
         self,
         imagination: dict[str, object] | None,
         stimmung: dict[str, object] | None,
+        reduction: float = 1.0,
     ) -> None:
         """Compute and write merged uniforms to pipeline/uniforms.json."""
         material = "water"
@@ -222,12 +240,12 @@ class ReverieActuationLoop:
         # Build uniforms dict consumed by Rust DynamicPipeline
         uniforms: dict[str, object] = {
             "custom": [material_val],
-            "slot_opacities": [salience, 0.0, 0.0, 0.0],
+            "slot_opacities": self._build_slot_opacities(imagination, salience),
         }
 
-        # Add chain-derived params as node.param overrides
+        # Add chain-derived params as node.param overrides (with guest reduction)
         for key, value in chain_params.items():
-            uniforms[key] = value
+            uniforms[key] = value * reduction if isinstance(value, (int, float)) else value
 
         # Add trace state for feedback shader (Amendment 2: dwelling)
         if self._trace_strength > 0:

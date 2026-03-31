@@ -235,8 +235,9 @@ def maybe_escalate(fragment: ImaginationFragment) -> Impingement | None:
             "content_references": [ref.model_dump() for ref in fragment.content_references],
             "continuation": fragment.continuation,
             "material": fragment.material,
+            "dimensions": fragment.dimensions,
         },
-        context={"dimensions": fragment.dimensions},
+        context={},
     )
 
 
