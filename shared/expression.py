@@ -132,4 +132,10 @@ def _infer_modality(name: str, cap: Any) -> str:
             if "shader" in name or "visual" in name:
                 return "visual"
             return "expression"
+
+    # Name-based fallback when category is unavailable or non-EXPRESSION
+    if "speech" in name or "voice" in name:
+        return "speech"
+    if "shader" in name or "visual" in name:
+        return "visual"
     return "unknown"
