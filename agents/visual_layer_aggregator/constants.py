@@ -44,6 +44,17 @@ LOGOS_BASE: str = os.environ.get("COCKPIT_BASE_URL", "http://localhost:8051/api"
 # ── Camera roles and experimental filters ────────────────────────────────────
 
 
+CAMERA_ROLES = [
+    "operator",
+    "desk",
+    "operator",
+    "room",
+    "operator",
+    "overhead",
+    "room-brio",
+    "synths-brio",
+]
+
 CAMERA_FILTERS = [
     "sepia(0.8) contrast(1.3) brightness(0.7)",
     "hue-rotate(30deg) saturate(1.8) brightness(0.6)",
