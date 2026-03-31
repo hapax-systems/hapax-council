@@ -76,13 +76,13 @@ def evaluate_rules(event: ChangeEvent, registry: RuleRegistry) -> ActionPlan:
         try:
             if not rule.trigger_filter(event):
                 continue
-        except (ValueError, KeyError, TypeError, OSError):
+        except Exception:
             _log.exception("Exception in trigger_filter for rule %s", rule.name)
             continue
 
         try:
             actions = rule.produce(event)
-        except (ValueError, KeyError, TypeError, OSError):
+        except Exception:
             _log.exception("Exception in produce for rule %s", rule.name)
             # Update cooldown even on failure to prevent unbounded retry
             with rule._lock:

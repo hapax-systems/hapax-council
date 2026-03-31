@@ -25,26 +25,32 @@ def test_fortress_description_exists():
 
 
 def test_rule_description_generation():
-    from unittest.mock import MagicMock
-
     from logos.engine.rule_capability import generate_rule_description
+    from logos.engine.rules import Rule
 
-    rule = MagicMock()
-    rule.subdirectories = ["profiles", "axioms"]
-    rule.phase = 0
+    rule = Rule(
+        name="test-rule",
+        description="Refresh cache on profiles/ and axioms/ changes",
+        trigger_filter=lambda e: True,
+        produce=lambda e: [],
+        phase=0,
+    )
     desc = generate_rule_description(rule)
     assert "profiles" in desc
     assert "Deterministic" in desc
 
 
 def test_rule_description_phase_2():
-    from unittest.mock import MagicMock
-
     from logos.engine.rule_capability import generate_rule_description
+    from logos.engine.rules import Rule
 
-    rule = MagicMock()
-    rule.subdirectories = []
-    rule.phase = 2
+    rule = Rule(
+        name="cloud-rule",
+        description="Run maintenance after quiet window",
+        trigger_filter=lambda e: True,
+        produce=lambda e: [],
+        phase=2,
+    )
     desc = generate_rule_description(rule)
     assert "Cloud LLM" in desc
 

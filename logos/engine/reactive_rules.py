@@ -67,7 +67,9 @@ ALL_RULES: list[Rule] = [
     CONFIG_CHANGED_RULE,
     SDLC_EVENT_RULE,
     RAG_SOURCE_RULE,
-    AUDIO_ARCHIVE_SIDECAR_RULE,
+    # AUDIO_ARCHIVE_SIDECAR_RULE — removed: archival pipeline disabled, handler is
+    # a no-op, and ~/audio-recording/archive/ is not in the engine's watch paths.
+    # Re-add with a real handler when the archival pipeline is re-enabled.
     AUDIO_CLAP_INDEXED_RULE,
     CARRIER_INTAKE_RULE,
     KNOWLEDGE_MAINT_RULE,

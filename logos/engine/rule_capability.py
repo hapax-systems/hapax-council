@@ -35,11 +35,14 @@ _PHASE_LABEL: dict[int, str] = {
 
 
 def generate_rule_description(rule: Rule) -> str:
-    """Auto-generate a function-free description for a rule capability."""
-    subdirs = ", ".join(rule.subdirectories) if rule.subdirectories else "any directory"
+    """Auto-generate a function-free description for a rule capability.
+
+    Uses the rule's human-authored description as the semantic anchor
+    for vector indexing in the affordance pipeline.
+    """
     phase_label = _PHASE_LABEL.get(rule.phase, "Unknown phase")
     return (
-        f"Reactive rule that triggers on filesystem changes in {subdirs}. "
+        f"Reactive rule: {rule.description}. "
         f"{phase_label}. "
         f"Produces downstream actions when trigger conditions are met."
     )

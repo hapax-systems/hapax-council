@@ -84,9 +84,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     def test_carrier_file_triggers_rule_and_registers_fact(self):
         """A carrier-flagged file matches the rule and produces an action."""
-        from logos.engine.reactive_rules import (
-            ALL_RULES,
-        )
+        from logos.engine.reactive_rules import ALL_RULES
         from logos.engine.rules import RuleRegistry, evaluate_rules
 
         path = _make_carrier_file()
@@ -110,7 +108,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     async def test_handler_registers_carrier_fact(self):
         """The carrier-intake handler parses the file and registers the fact."""
-        from logos.engine.reactive_rules import (
+        from logos.engine.rules_phase0 import (
             _handle_carrier_intake,
             set_carrier_registry,
         )
@@ -138,7 +136,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     async def test_handler_with_governor_allows_public_data(self):
         """Governor with interpersonal_transparency enforcer allows public data."""
-        from logos.engine.reactive_rules import (
+        from logos.engine.rules_phase0 import (
             _handle_carrier_intake,
             set_carrier_registry,
         )
@@ -157,7 +155,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     async def test_full_chain_intake_then_revoke(self):
         """End-to-end: intake a carrier fact, then revoke consent and verify purge."""
-        from logos.engine.reactive_rules import (
+        from logos.engine.rules_phase0 import (
             _handle_carrier_intake,
             set_carrier_registry,
         )
@@ -204,7 +202,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
 
     async def test_revocation_leaves_unrelated_facts(self):
         """Revoking alice doesn't purge bob's carrier facts."""
-        from logos.engine.reactive_rules import (
+        from logos.engine.rules_phase0 import (
             _handle_carrier_intake,
             set_carrier_registry,
         )
@@ -253,11 +251,9 @@ class TestReactivePipelineE2E(unittest.TestCase):
     async def test_executor_runs_carrier_intake_action(self):
         """PhasedExecutor successfully runs a carrier-intake action."""
         from logos.engine.executor import PhasedExecutor
-        from logos.engine.reactive_rules import (
-            ALL_RULES,
-            set_carrier_registry,
-        )
+        from logos.engine.reactive_rules import ALL_RULES
         from logos.engine.rules import RuleRegistry, evaluate_rules
+        from logos.engine.rules_phase0 import set_carrier_registry
 
         carrier_reg = CarrierRegistry()
         set_carrier_registry(carrier_reg)

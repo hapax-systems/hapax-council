@@ -238,7 +238,13 @@ async def _handle_presence_transition(*, from_state: str, to_state: str) -> str:
     return f"presence:{from_state}->{to_state}"
 
 
+# Stashed perception data to eliminate TOCTOU between filter and produce.
+# Filter reads the file once and stashes; produce consumes the stash.
+_stashed_perception_data: dict | None = None
+
+
 def _presence_transition_filter(event: ChangeEvent) -> bool:
+    global _stashed_perception_data  # noqa: PLW0603
     if event.path.name != "perception-state.json":
         return False
     try:
@@ -247,14 +253,17 @@ def _presence_transition_filter(event: ChangeEvent) -> bool:
         return False
     current = data.get("presence_state", "")
     with _transition_lock:
-        return bool(current and current != _last_presence_state)
+        changed = bool(current and current != _last_presence_state)
+    if changed:
+        _stashed_perception_data = data
+    return changed
 
 
 def _presence_transition_produce(event: ChangeEvent) -> list[Action]:
-    global _last_presence_state  # noqa: PLW0603
-    try:
-        data = json.loads(event.path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    global _last_presence_state, _stashed_perception_data  # noqa: PLW0603
+    data = _stashed_perception_data
+    _stashed_perception_data = None
+    if data is None:
         return []
     current = data.get("presence_state", "")
     with _transition_lock:
@@ -314,7 +323,12 @@ async def _handle_consent_transition(*, from_phase: str, to_phase: str) -> str:
     return f"consent:{from_phase}->{to_phase}"
 
 
+# Stashed consent data (same TOCTOU fix as presence above).
+_stashed_consent_data: dict | None = None
+
+
 def _consent_transition_filter(event: ChangeEvent) -> bool:
+    global _stashed_consent_data  # noqa: PLW0603
     if event.path.name != "perception-state.json":
         return False
     try:
@@ -323,14 +337,17 @@ def _consent_transition_filter(event: ChangeEvent) -> bool:
         return False
     current = data.get("consent_phase", "no_guest")
     with _transition_lock:
-        return current != _last_consent_phase
+        changed = current != _last_consent_phase
+    if changed:
+        _stashed_consent_data = data
+    return changed
 
 
 def _consent_transition_produce(event: ChangeEvent) -> list[Action]:
-    global _last_consent_phase  # noqa: PLW0603
-    try:
-        data = json.loads(event.path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    global _last_consent_phase, _stashed_consent_data  # noqa: PLW0603
+    data = _stashed_consent_data
+    _stashed_consent_data = None
+    if data is None:
         return []
     current = data.get("consent_phase", "no_guest")
     with _transition_lock:
@@ -362,6 +379,7 @@ CONSENT_TRANSITION_RULE = Rule(
 # ── Biometric state cascade ─────────────────────────────────────────────────
 
 _BIOMETRIC_FILES = {"heartrate.json", "hrv.json", "activity.json", "eda.json"}
+_biometric_lock = threading.Lock()
 _last_stress_elevated: bool = False
 
 
@@ -372,14 +390,17 @@ async def _handle_biometric_state_change(*, path: str) -> str:
 
     global _last_stress_elevated  # noqa: PLW0603
     stress_now = is_stress_elevated(WATCH_STATE_DIR)
-    if stress_now != _last_stress_elevated:
+    with _biometric_lock:
+        changed = stress_now != _last_stress_elevated
+        if changed:
+            _last_stress_elevated = stress_now
+    if changed:
         _log.info("Stress transition: %s -> %s", _last_stress_elevated, stress_now)
         hapax_event(
             "biometric",
             "stress_transition",
             metadata={"from": _last_stress_elevated, "to": stress_now},
         )
-        _last_stress_elevated = stress_now
     _log.debug("Biometric state change processed: %s", path)
     return f"biometric-update:{_Path(path).name}"
 
@@ -414,8 +435,23 @@ BIOMETRIC_STATE_RULE = Rule(
 
 
 async def _handle_phone_health_summary(*, path: str) -> str:
+    from pathlib import Path as _Path
+
     _log.info("Phone health summary received: %s", path)
-    hapax_event("biometric", "health_summary_received", metadata={"path": path})
+
+    # Wire profiler bridge: extract health facts and push to profile store
+    try:
+        from agents.profiler_sources import read_phone_health_summary
+
+        facts = read_phone_health_summary(_Path(path).parent)
+        hapax_event(
+            "biometric",
+            "health_summary_received",
+            metadata={"path": path, "facts": len(facts)},
+        )
+    except (ImportError, OSError):
+        hapax_event("biometric", "health_summary_received", metadata={"path": path})
+
     return f"phone-health:{path}"
 
 
@@ -437,7 +473,7 @@ def _phone_health_produce(event: ChangeEvent) -> list[Action]:
 
 PHONE_HEALTH_SUMMARY_RULE = Rule(
     name="phone-health-summary",
-    description="Process daily phone health summary into profiler bridge facts",
+    description="Extract health facts from phone summary and emit telemetry",
     trigger_filter=_phone_health_filter,
     produce=_phone_health_produce,
     phase=0,

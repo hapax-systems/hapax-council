@@ -95,10 +95,13 @@ async def _handle_knowledge_maintenance(*, ignore_fn=None) -> str:
     if ignore_fn is not None:
         ignore_fn(PROFILES_DIR / "knowledge-maint-report.json")
 
-    paths = _knowledge_scheduler.consume()
+    # Snapshot dirty paths but don't consume yet — if maintenance fails,
+    # paths remain for retry on the next qualifying event.
+    paths = _knowledge_scheduler.dirty_paths
     _log.info("Knowledge maintenance triggered by %d dirty paths", len(paths))
 
     report = await run_maintenance(dry_run=False)
+    _knowledge_scheduler.consume()  # consume only after success
     _log.info(
         "Knowledge maintenance complete: pruned=%d merged=%d",
         report.total_pruned,
@@ -159,14 +162,13 @@ async def _handle_pattern_consolidation(*, ignore_fn=None) -> str:
     from logos._episodic_memory import EpisodeStore
     from logos._pattern_consolidation import PatternStore, run_consolidation
 
-    _consolidation_scheduler.consume()
-
     episode_store = EpisodeStore()
     correction_store = CorrectionStore()
     pattern_store = PatternStore()
     pattern_store.ensure_collection()
 
     result = await run_consolidation(episode_store, correction_store, pattern_store)
+    _consolidation_scheduler.consume()  # consume only after success
     _log.info(
         "Pattern consolidation: %d new patterns, summary: %s",
         len(result.patterns),
@@ -212,14 +214,17 @@ _correction_synthesis_scheduler = QuietWindowScheduler(quiet_window_s=600)
 async def _handle_correction_synthesis(*, ignore_fn=None) -> str:
     from logos._correction_synthesis import run_correction_synthesis
 
-    _correction_synthesis_scheduler.consume()
     result = await run_correction_synthesis()
+    _correction_synthesis_scheduler.consume()  # consume only after success
     _log.info("Correction synthesis: %s", result[:120])
     return f"correction-synthesis:{result[:80]}"
 
 
 def _correction_synthesis_filter(event: ChangeEvent) -> bool:
-    if event.path.name != "activity-correction.json":
+    # Sentinel written to PROFILES_DIR by the studio activity-correction endpoint.
+    # The original activity-correction.json lives in /dev/shm/ which the engine
+    # doesn't watch; this sentinel bridges the gap.
+    if event.path.name != "correction-pending.json":
         return False
     _correction_synthesis_scheduler.record(str(event.path))
     return _correction_synthesis_scheduler.should_fire()

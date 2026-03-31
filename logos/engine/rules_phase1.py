@@ -113,7 +113,11 @@ AUDIO_ARCHIVE_SIDECAR_RULE = Rule(
 async def _handle_audio_clap_indexed(*, path: str) -> str:
     from pathlib import Path as _Path
 
-    from agents.ingest import ingest_file
+    try:
+        from agents.ingest import ingest_file
+    except (ImportError, ModuleNotFoundError) as exc:
+        _log.debug("Skipping CLAP audio ingest (docling not in this venv): %s", exc)
+        return f"skipped:{_Path(path).name}"
 
     file_path = _Path(path)
     success, error = await asyncio.to_thread(ingest_file, file_path)

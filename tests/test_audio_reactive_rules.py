@@ -108,12 +108,16 @@ def test_audio_clap_indexed_filter_rejects_modified():
 
 
 def test_audio_rules_registered():
-    """Both audio rules are present in ALL_RULES."""
+    """Audio CLAP indexed rule is present in ALL_RULES.
+
+    audio-archive-sidecar was removed (archival pipeline disabled,
+    handler was a no-op, watch path not covered).
+    """
     from logos.engine.reactive_rules import ALL_RULES
 
     rule_names = {r.name for r in ALL_RULES}
-    assert "audio-archive-sidecar" in rule_names
     assert "audio-clap-indexed" in rule_names
+    assert "audio-archive-sidecar" not in rule_names
 
 
 def test_audio_archive_sidecar_produce_phase0():

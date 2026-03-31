@@ -640,9 +640,12 @@ async def correct_activity(req: ActivityCorrectionRequest):
     correction_path = Path("/dev/shm/hapax-compositor/activity-correction.json")
     try:
         correction_path.write_text(_json.dumps(correction))
-        return {"status": "corrected", "label": req.label}
     except OSError:
         return JSONResponse({"error": "write failed"}, status_code=503)
+    from logos.api.routes._correction_sentinel import write_correction_sentinel
+
+    write_correction_sentinel(correction)
+    return {"status": "corrected", "label": req.label}
 
 
 # --- Effect Node Graph API ---

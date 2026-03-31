@@ -367,12 +367,15 @@ class ReactiveEngine:
             self._watcher.ignore_fn(path)
 
     def _read_stimmung_stance(self) -> str:
-        """Read current stimmung stance from /dev/shm. Returns 'nominal' on error."""
+        """Read current stimmung stance from /dev/shm. Returns 'nominal' on error or stale data."""
         import json
 
         stimmung_path = Path("/dev/shm/hapax-stimmung/state.json")
         try:
             data = json.loads(stimmung_path.read_text(encoding="utf-8"))
+            ts = data.get("timestamp", 0)
+            if ts > 0 and (time.time() - ts) > 300:
+                return "nominal"
             return data.get("overall_stance", "nominal")
         except (OSError, json.JSONDecodeError):
             return "nominal"
@@ -496,6 +499,14 @@ class ReactiveEngine:
                     )
                 if not plan.actions:
                     return
+
+            # Inject ignore_fn into handlers that accept it (phase-2 self-trigger prevention)
+            import inspect
+
+            for action in plan.actions:
+                sig = inspect.signature(action.handler)
+                if "ignore_fn" in sig.parameters and "ignore_fn" not in action.args:
+                    action.args["ignore_fn"] = self.ignore_fn
 
             _log.info(
                 "Matched %d action(s): %s",

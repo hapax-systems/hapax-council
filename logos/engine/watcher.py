@@ -223,7 +223,10 @@ class DirectoryWatcher:
         )
 
         if self._loop is not None and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._callback(event), self._loop)
+            try:
+                asyncio.run_coroutine_threadsafe(self._callback(event), self._loop)
+            except RuntimeError:
+                _log.debug("Loop stopped before event could be dispatched: %s", path)
 
     def ignore_fn(self, path: Path) -> None:
         """Register a path as an own-write to prevent self-triggering.
