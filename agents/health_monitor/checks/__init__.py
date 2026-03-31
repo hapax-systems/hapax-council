@@ -1,6 +1,7 @@
 """Health check modules. Importing this package registers all check groups."""
 
 from . import (  # noqa: F401
+    apperception,
     auth,
     axioms,
     axioms_ef,
