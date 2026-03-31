@@ -70,7 +70,7 @@ VISUAL_DIMENSIONS: dict[str, VisualDimension] = {
         "visual_chain.tension",
         "Constricts visual patterns — tighter, sharper, angular energy.",
         [
-            _PM("rd", "f_delta", [(0.0, 0.0), (0.5, 0.005), (1.0, 0.015)]),
+            _PM("rd", "u_feed_rate", [(0.0, 0.0), (0.5, 0.005), (1.0, 0.015)]),
             _PM("noise", "turbulence", [(0.0, 0.0), (0.5, -0.03), (1.0, -0.06)]),
         ],
     ),
@@ -79,7 +79,7 @@ VISUAL_DIMENSIONS: dict[str, VisualDimension] = {
         "Scatters visual output — ambient, sourceless, environmental.",
         [
             _PM("physarum", "sensor_dist", [(0.0, 0.0), (0.5, 4.0), (1.0, 12.0)]),
-            _PM("rd", "da_delta", [(0.0, 0.0), (0.5, 0.05), (1.0, 0.2)]),
+            _PM("rd", "u_diffusion_a", [(0.0, 0.0), (0.5, 0.05), (1.0, 0.2)]),
         ],
     ),
     "visual_chain.degradation": VisualDimension(
@@ -125,7 +125,7 @@ VISUAL_DIMENSIONS: dict[str, VisualDimension] = {
         "Controls pattern regularity — structured to dissolved.",
         [
             _PM("noise", "turbulence", _STD),
-            _PM("rd", "f_delta", [(0.0, 0.0), (0.5, -0.005), (1.0, -0.015)]),
+            _PM("rd", "u_feed_rate", [(0.0, 0.0), (0.5, -0.005), (1.0, -0.015)]),
             _PM("physarum", "turn_speed", [(0.0, 0.0), (0.5, 0.15), (1.0, 0.5)]),
         ],
     ),
