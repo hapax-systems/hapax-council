@@ -1,6 +1,6 @@
 """IR presence perception backend — multi-Pi NoIR fusion.
 
-FAST tier backend that reads Pi NoIR state files and contributes 13 signals.
+FAST tier backend that reads Pi NoIR state files and contributes 14 signals.
 Fuses reports from up to 3 Pis (desk, room, overhead) with role-based priority:
   - Person detection: any() across Pis
   - Gaze/posture/biometrics: prefer desk Pi (+0.1 confidence bonus), fall back by confidence
@@ -37,6 +37,7 @@ _SIGNALS: frozenset[str] = frozenset(
         "ir_heart_rate_bpm",
         "ir_heart_rate_conf",
         "ir_brightness",
+        "ir_hand_zone",
     }
 )
 
@@ -44,7 +45,7 @@ _DESK_CONFIDENCE_BONUS = 0.1
 
 
 class IrPresenceBackend:
-    """PerceptionBackend that fuses Pi NoIR state files into 13 signals."""
+    """PerceptionBackend that fuses Pi NoIR state files into 14 signals."""
 
     def __init__(self, state_dir: Path | None = None) -> None:
         self._state_dir = state_dir
@@ -62,6 +63,7 @@ class IrPresenceBackend:
             "ir_heart_rate_bpm": Behavior(0),
             "ir_heart_rate_conf": Behavior(0.0),
             "ir_brightness": Behavior(0.0),
+            "ir_hand_zone": Behavior("none"),
         }
 
     @property
@@ -102,6 +104,7 @@ class IrPresenceBackend:
             self._behaviors["ir_head_pose_yaw"].update(0.0, now)
             self._behaviors["ir_posture"].update("unknown", now)
             self._behaviors["ir_hand_activity"].update("none", now)
+            self._behaviors["ir_hand_zone"].update("none", now)
             self._behaviors["ir_screen_looking"].update(False, now)
             self._behaviors["ir_drowsiness_score"].update(0.0, now)
             self._behaviors["ir_blink_rate"].update(0.0, now)
@@ -155,6 +158,8 @@ class IrPresenceBackend:
         # --- Hand activity: prefer overhead, fall back to first available ---
         hand_activity = self._pick_hand_activity(reports)
         self._behaviors["ir_hand_activity"].update(hand_activity, now)
+        hand_zone = self._pick_hand_zone(reports)
+        self._behaviors["ir_hand_zone"].update(hand_zone, now)
 
         # --- Biometrics from best person's report (desk preferred) ---
         bio = best_report.get("biometrics", {}) if best_report else {}
@@ -200,4 +205,17 @@ class IrPresenceBackend:
             if hands and isinstance(hands[0], dict):
                 return str(hands[0].get("activity", "none"))
 
+        return "none"
+
+    def _pick_hand_zone(self, reports: dict[str, dict[str, object]]) -> str:
+        """Pick hand zone, preferring overhead Pi."""
+        if "overhead" in reports:
+            overhead = reports["overhead"]
+            hands = list(overhead.get("hands", [])) if isinstance(overhead, dict) else []
+            if hands and isinstance(hands[0], dict):
+                return str(hands[0].get("zone", "none"))
+        for report in reports.values():
+            hands = list(report.get("hands", [])) if isinstance(report, dict) else []
+            if hands and isinstance(hands[0], dict):
+                return str(hands[0].get("zone", "none"))
         return "none"
