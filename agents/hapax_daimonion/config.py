@@ -82,7 +82,7 @@ class DaimonionConfig(BaseModel):
     llm_model: str = "gemini-flash"
     gemini_model: str = "gemini-2.5-flash-preview-native-audio"
     local_stt_model: str = "distil-large-v3"
-    voxtral_voice_id: str = "jessica"
+    voxtral_voice_id: str = "gb_jane_neutral"
     voxtral_ref_audio: str = "~/.local/share/hapax-daimonion/formant-refs/reed-24k.wav"  # eSpeak-NG Reed (Klatt mode 6) — formant carrier for hardware chain
 
     # Consent

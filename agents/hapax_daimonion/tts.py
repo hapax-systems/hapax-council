@@ -44,7 +44,7 @@ class TTSManager:
 
     def __init__(
         self,
-        voice_id: str = "jessica",
+        voice_id: str = "gb_jane_neutral",
         ref_audio_path: str | None = None,
     ) -> None:
         self.voice_id = voice_id
@@ -92,6 +92,10 @@ class TTSManager:
         """Stream TTS from Mistral Voxtral API, returning PCM int16 bytes."""
         client = self._get_client()
 
+        # Voxtral drops very short utterances (especially with ref_audio voice
+        # cloning). Fall back to voice_id preset for texts under 3 words.
+        use_ref = self._ref_audio_b64 is not None and len(text.split()) >= 3
+
         # Build request kwargs — voice_id and ref_audio are mutually exclusive
         kwargs: dict = {
             "model": "voxtral-mini-tts-2603",
@@ -99,7 +103,7 @@ class TTSManager:
             "response_format": "pcm",
             "stream": True,
         }
-        if self._ref_audio_b64 is not None:
+        if use_ref:
             kwargs["ref_audio"] = self._ref_audio_b64
         else:
             kwargs["voice_id"] = self.voice_id

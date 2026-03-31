@@ -143,7 +143,7 @@ def build_pipeline_task(
     *,
     stt_model: str = "large-v3",
     llm_model: str = "claude-sonnet",
-    voxtral_voice: str = "jessica",
+    voxtral_voice: str = "gb_jane_neutral",
     guest_mode: bool = False,
     config=None,
     webcam_capturer=None,

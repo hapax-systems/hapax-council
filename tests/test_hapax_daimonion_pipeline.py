@@ -107,7 +107,7 @@ class TestBuildPipelineTask:
             task, transport = build_pipeline_task(
                 stt_model="base",
                 llm_model="test-model",
-                voxtral_voice="jessica",
+                voxtral_voice="gb_jane_neutral",
                 guest_mode=False,
             )
 
@@ -115,7 +115,7 @@ class TestBuildPipelineTask:
         assert transport == mock_transport_inst
         mock_stt.assert_called_once_with("base")
         mock_llm.assert_called_once()
-        mock_tts.assert_called_once_with("jessica")
+        mock_tts.assert_called_once_with("gb_jane_neutral")
 
     @patch("agents.hapax_daimonion.pipeline._build_transport")
     @patch("agents.hapax_daimonion.pipeline._build_stt")

@@ -43,7 +43,7 @@ class TestPipelineWiring:
         build_pipeline_task(
             stt_model="base",
             llm_model="test",
-            voxtral_voice="jessica",
+            voxtral_voice="gb_jane_neutral",
         )
 
         call_kwargs = mock_pipeline_cls.call_args.kwargs

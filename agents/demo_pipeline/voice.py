@@ -18,7 +18,7 @@ TTS_URL = "http://localhost:4123"
 MAX_TTS_WORKERS = 1  # Sequential to avoid GPU VRAM contention on long demos
 VOICE_SAMPLE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "voice-sample.wav"
 
-VOXTRAL_VOICE_ID = "jessica"
+VOXTRAL_VOICE_ID = "gb_jane_neutral"
 VOXTRAL_SAMPLE_RATE = 24000
 
 

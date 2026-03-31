@@ -99,7 +99,7 @@ def test_tts_manager_default_voice() -> None:
     """Default voice_id is 'jessica'."""
     with patch.dict("os.environ", {"MISTRAL_API_KEY": "test-key"}):
         mgr = TTSManager()
-    assert mgr.voice_id == "jessica"
+    assert mgr.voice_id == "gb_jane_neutral"
 
 
 def test_tts_manager_ref_audio(tmp_path) -> None:
@@ -131,7 +131,7 @@ def _make_stream_events(pcm_f32_samples: list[float]) -> list:
 
 def _make_manager_with_client(
     mock_client: MagicMock,
-    voice_id: str = "jessica",
+    voice_id: str = "gb_jane_neutral",
     ref_audio_path: str | None = None,
 ) -> TTSManager:
     """Create a TTSManager with mock client pre-injected (bypasses lazy init)."""
@@ -191,7 +191,7 @@ def test_voxtral_uses_ref_audio_when_set(tmp_path) -> None:
     mock_client.audio.speech.complete.return_value = mock_stream
 
     mgr = _make_manager_with_client(mock_client, ref_audio_path=str(audio_file))
-    mgr.synthesize("hello")
+    mgr.synthesize("hello there my friend")  # >=3 words to trigger ref_audio path
 
     call_kwargs = mock_client.audio.speech.complete.call_args.kwargs
     assert "ref_audio" in call_kwargs
@@ -201,7 +201,7 @@ def test_voxtral_uses_ref_audio_when_set(tmp_path) -> None:
 def test_voxtral_missing_api_key() -> None:
     """RuntimeError when MISTRAL_API_KEY not set."""
     with patch.dict("os.environ", {"MISTRAL_API_KEY": ""}):
-        mgr = TTSManager(voice_id="jessica")
+        mgr = TTSManager(voice_id="gb_jane_neutral")
         with pytest.raises(RuntimeError, match="MISTRAL_API_KEY"):
             mgr._get_client()
 

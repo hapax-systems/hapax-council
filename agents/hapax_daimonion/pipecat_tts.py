@@ -29,7 +29,7 @@ class VoxtralTTSService(TTSService):
     def __init__(
         self,
         *,
-        voice_id: str = "jessica",
+        voice_id: str = "gb_jane_neutral",
         ref_audio_path: str | None = None,
         tts_manager: TTSManager | None = None,
         **kwargs,
