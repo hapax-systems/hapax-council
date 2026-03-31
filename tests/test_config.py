@@ -46,9 +46,14 @@ def test_get_model_alias_fallthrough():
     assert model.model_name == "anthropic/claude-opus-4"
 
 
-def test_get_qdrant_returns_client():
+def test_get_qdrant_returns_client(_mock_qdrant_if_unavailable):
     from qdrant_client import QdrantClient
 
+    # Skip when Qdrant is mocked (CI) — the mock returns MagicMock, not QdrantClient
+    from conftest import _QDRANT_UP
+
+    if not _QDRANT_UP:
+        pytest.skip("Qdrant not available")
     client = get_qdrant()
     assert isinstance(client, QdrantClient)
 
