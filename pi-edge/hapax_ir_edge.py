@@ -15,6 +15,7 @@ import signal
 import sys
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import cv2
 import httpx
@@ -22,7 +23,7 @@ import numpy as np  # noqa: TC002 — Pi-side code
 from ir_biometrics import BiometricTracker
 from ir_hands import detect_hands_nir, detect_screens_nir
 from ir_inference import FaceLandmarkDetector, YoloDetector
-from ir_models import IrBiometrics, IrDetectionReport, IrHand, IrPerson, IrScreen
+from ir_report import build_report
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +47,7 @@ class IrEdgeDaemon:
         role: str,
         hostname: str,
         workstation_url: str = DEFAULT_WORKSTATION,
+        save_frame_interval: int = 0,
     ) -> None:
         self._role = role
         self._hostname = hostname
@@ -53,6 +55,12 @@ class IrEdgeDaemon:
         self._running = False
         self._prev_frame: np.ndarray | None = None
         self._last_detection_time: float = 0.0
+        self._save_debug_frame = False
+        self._save_interval = save_frame_interval
+        self._frame_count = 0
+        self._captures_dir = Path.home() / "hapax-edge" / "captures"
+        if self._save_interval > 0:
+            self._captures_dir.mkdir(parents=True, exist_ok=True)
 
         self._yolo = YoloDetector()
         self._face = FaceLandmarkDetector()
@@ -63,6 +71,11 @@ class IrEdgeDaemon:
             timeout=httpx.Timeout(10.0, connect=5.0),
             limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
         )
+
+    def request_debug_frame(self) -> None:
+        """Flag the daemon to save the next frame for debugging."""
+        self._save_debug_frame = True
+        log.info("Debug frame capture requested")
 
     def start(self) -> None:
         """Start the capture + inference loop."""
@@ -122,6 +135,7 @@ class IrEdgeDaemon:
 
             color, grey = await asyncio.get_event_loop().run_in_executor(None, self._capture_frame)
 
+            self._handle_frame_saves(grey)
             motion_delta = self._compute_motion(grey)
 
             time_since_detection = time.monotonic() - self._last_detection_time
@@ -156,17 +170,8 @@ class IrEdgeDaemon:
 
                 inference_ms = int((time.monotonic() - t_infer) * 1000)
 
-            # rPPG: update intensity from forehead ROI
-            if persons:
-                best = max(persons, key=lambda p: p.get("confidence", 0))
-                bbox = best["bbox"]
-                fy1 = bbox[1]
-                fy2 = bbox[1] + int((bbox[3] - bbox[1]) * 0.3)
-                fx1, fx2 = bbox[0], bbox[2]
-                if fy2 > fy1 and fx2 > fx1:
-                    forehead = grey[fy1:fy2, fx1:fx2]
-                    if forehead.size > 0:
-                        self._biometrics.update_rppg_intensity(float(np.mean(forehead)))
+            # rPPG: only update when face landmarks produced head_pose data
+            self._update_rppg(persons, grey)
 
             now = time.monotonic()
             if now - last_post >= POST_INTERVAL_S:
@@ -190,52 +195,45 @@ class IrEdgeDaemon:
         self._prev_frame = grey.copy()
         return float(np.mean(diff)) / 255.0
 
-    def _build_report(
-        self,
-        motion_delta: float,
-        persons: list[dict],
-        hands: list[dict],
-        screens: list[dict],
-        grey: np.ndarray,
-        inference_ms: int,
-    ) -> IrDetectionReport:
-        """Build detection report from inference results."""
-        bio = self._biometrics.snapshot()
+    def _handle_frame_saves(self, grey: np.ndarray) -> None:
+        if self._save_debug_frame:
+            cv2.imwrite(f"/tmp/ir_debug_{self._role}.jpg", grey)
+            log.info("Debug frame saved to /tmp/ir_debug_%s.jpg", self._role)
+            self._save_debug_frame = False
+        self._frame_count += 1
+        if self._save_interval > 0 and self._frame_count % self._save_interval == 0:
+            ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+            cv2.imwrite(str(self._captures_dir / f"{self._role}_{ts}.jpg"), grey)
 
-        return IrDetectionReport(
-            pi=self._hostname,
-            role=self._role,
-            ts=datetime.now(UTC).isoformat(),
-            motion_delta=round(motion_delta, 4),
-            persons=[
-                IrPerson(
-                    confidence=p.get("confidence", 0),
-                    bbox=p.get("bbox", []),
-                    head_pose=p.get("head_pose", {}),
-                    gaze_zone=p.get("gaze_zone", "unknown"),
-                    posture=p.get("posture", "unknown"),
-                    ear_left=p.get("ear_left", 0.0),
-                    ear_right=p.get("ear_right", 0.0),
-                )
-                for p in persons
-            ],
-            hands=[
-                IrHand(
-                    zone=h.get("zone", ""),
-                    bbox=h.get("bbox", []),
-                    activity=h.get("activity", "idle"),
-                )
-                for h in hands
-            ],
-            screens=[
-                IrScreen(bbox=s.get("bbox", []), area_pct=s.get("area_pct", 0)) for s in screens
-            ],
-            ir_brightness=int(np.mean(grey)),
-            inference_ms=inference_ms,
-            biometrics=IrBiometrics(**bio),
+    def _update_rppg(self, persons: list[dict], grey: np.ndarray) -> None:
+        if not persons:
+            return
+        best = max(persons, key=lambda p: p.get("confidence", 0))
+        head_pose = best.get("head_pose", {})
+        if not (head_pose and head_pose.get("yaw") is not None):
+            return
+        bbox = best["bbox"]
+        fy1, fy2 = bbox[1], bbox[1] + int((bbox[3] - bbox[1]) * 0.3)
+        fx1, fx2 = bbox[0], bbox[2]
+        if fy2 > fy1 and fx2 > fx1:
+            forehead = grey[fy1:fy2, fx1:fx2]
+            if forehead.size > 0:
+                self._biometrics.update_rppg_intensity(float(np.mean(forehead)))
+
+    def _build_report(self, motion_delta, persons, hands, screens, grey, inference_ms):
+        return build_report(
+            self._hostname,
+            self._role,
+            motion_delta,
+            persons,
+            hands,
+            screens,
+            grey,
+            inference_ms,
+            self._biometrics.snapshot(),
         )
 
-    async def _post_report(self, report: IrDetectionReport) -> None:
+    async def _post_report(self, report) -> None:
         """POST detection report to workstation."""
         try:
             resp = await self._client.post(
@@ -261,23 +259,27 @@ def main() -> None:
     parser.add_argument("--role", required=True, choices=["desk", "room", "overhead"])
     parser.add_argument("--hostname", default=None)
     parser.add_argument("--workstation", default=DEFAULT_WORKSTATION)
+    parser.add_argument("--save-frames", type=int, default=0, help="Save every Nth frame")
     args = parser.parse_args()
 
     hostname = args.hostname or f"hapax-{args.role}"
-
     daemon = IrEdgeDaemon(
         role=args.role,
         hostname=hostname,
         workstation_url=args.workstation,
+        save_frame_interval=args.save_frames,
     )
 
     def _sigterm(signum, frame):  # noqa: ANN001
         log.info("Received signal %d, shutting down", signum)
         daemon.stop()
 
+    def _sigusr1(signum, frame):  # noqa: ANN001
+        daemon.request_debug_frame()
+
     signal.signal(signal.SIGTERM, _sigterm)
     signal.signal(signal.SIGINT, _sigterm)
-
+    signal.signal(signal.SIGUSR1, _sigusr1)
     daemon.start()
 
 
