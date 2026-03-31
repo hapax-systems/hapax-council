@@ -45,7 +45,7 @@ function spawnDot(edgeId: string, color: string) {
       if (filtered.length === 0) activeDots.delete(edgeId);
       else activeDots.set(edgeId, filtered);
     }
-  }, 1000);
+  }, 2500);
 }
 
 // ── Dagre Layout ────────────────────────────────────────────────────
@@ -166,9 +166,9 @@ function FlowingEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, t
     <g className="flow-edge-group">
       <BaseEdge id={id} path={path} style={{ stroke: color, strokeWidth: width, opacity, strokeDasharray: strokeDash, transition: "stroke 1s ease, opacity 1s ease" }} />
       {dots.map(dot => (
-        <circle key={dot.id} r="3" fill={dot.color}>
-          <animateMotion dur="0.8s" path={path} fill="freeze" />
-          <animate attributeName="opacity" from="1" to="0" begin="0.6s" dur="0.2s" fill="freeze" />
+        <circle key={dot.id} r="4" fill={dot.color} filter="url(#dot-glow)" opacity="0">
+          <animateMotion dur="2s" path={path} fill="freeze" calcMode="spline" keySplines="0.4 0 0.2 1" keyTimes="0;1" />
+          <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.75;1" dur="2s" fill="freeze" />
         </circle>
       ))}
       {lbl && <text className="flow-edge-label"><textPath href={`#${id}`} startOffset="50%" textAnchor="middle" style={{ fontSize: "9px", fill: edgeType === "emergent" ? ep["yellow-400"] : active ? ep["text-muted"] : ep["border-muted"], fontFamily: "'JetBrains Mono', monospace" }}>{edgeType === "emergent" ? `⚡ ${lbl}` : lbl}</textPath></text>}
@@ -503,6 +503,7 @@ export function FlowPage() {
         .flow-edge-group:hover .flow-edge-label { opacity: 1; }
       `}</style>
       <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onNodeDragStop={onNodeDragStop} nodeTypes={nodeTypes} edgeTypes={edgeTypes} fitView fitViewOptions={{ padding: 0.25 }} proOptions={{ hideAttribution: true }} minZoom={0.3} maxZoom={2.5}>
+        <svg style={{ position: "absolute", width: 0, height: 0 }}><defs><filter id="dot-glow"><feGaussianBlur stdDeviation="2.5" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs></svg>
         <Background color={p["border-muted"]} gap={32} size={1} /><Controls showInteractive={false} />
       </ReactFlow>
       <DetailPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
