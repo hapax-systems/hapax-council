@@ -121,3 +121,36 @@ def test_reverie_veto_chain_denies_critical_health():
     result = chain.evaluate(ctx)
     assert not result.allowed
     assert "health_critical" in result.denied_by
+
+
+def test_consent_gate_fails_closed_on_exception():
+    """Consent gate should block (not allow) when consent infra raises."""
+    from unittest.mock import MagicMock, patch
+
+    from shared.capability_registry import CapabilityRegistry
+
+    cap = MagicMock()
+    cap.name = "test_cap"
+    cap.affordance_signature = {"test"}
+    cap.activation_cost = 0.1
+    cap.activation_level = 0.0
+    cap.consent_required = True
+    cap.priority_floor = False
+    cap.can_resolve.return_value = 0.8
+
+    registry = CapabilityRegistry()
+    registry.register(cap)
+
+    imp = MagicMock()
+    imp.source = "test"
+    imp.strength = 0.5
+    imp.content = {"key": "value"}
+
+    with patch(
+        "shared.governance.consent.load_contracts",
+        side_effect=ImportError("consent infra missing"),
+    ):
+        matches = registry.broadcast(imp)
+
+    # Should be empty — consent gate failed, capability blocked
+    assert len(matches) == 0
