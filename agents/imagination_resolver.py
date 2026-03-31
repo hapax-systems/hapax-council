@@ -35,12 +35,18 @@ MAX_SLOTS = 4
 # Font loading
 # ---------------------------------------------------------------------------
 
-_FONT_PATH = Path("/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf")
+_FONT_CANDIDATES = [
+    Path("/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf"),
+    Path("/usr/share/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+    Path("/usr/share/fonts/liberation/LiberationMono-Regular.ttf"),
+]
+_FONT_PATH: Path | None = next((p for p in _FONT_CANDIDATES if p.exists()), None)
 
 
 def _load_font(size: int = 36) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Load a monospace font with fallback to Pillow default."""
-    if _FONT_PATH.exists():
+    if _FONT_PATH is not None and _FONT_PATH.exists():
         return ImageFont.truetype(str(_FONT_PATH), size)
     return ImageFont.load_default(size=size)
 
@@ -94,7 +100,11 @@ def resolve_text(
         draw.text((x, y), line, fill=(255, 255, 255), font=font)
 
     out_path = d / f"{fragment_id}-{index}.jpg"
-    img.save(out_path, "JPEG", quality=85)
+    try:
+        img.save(out_path, "JPEG", quality=85)
+    except (OSError, ValueError) as exc:
+        log.warning("Failed to save text JPEG %s: %s", out_path, exc)
+        return None
     log.debug("Resolved text → %s", out_path)
     return out_path
 
@@ -222,8 +232,11 @@ def _resolve_qdrant(
             return None
         text_ref = ContentReference(kind="text", source=text, query=None, salience=ref.salience)
         return resolve_text(text_ref, content_dir, fragment_id, index)
+    except (ImportError, ConnectionError, OSError, ValueError, KeyError) as exc:
+        log.warning("Qdrant resolve failed: %s", exc)
+        return None
     except Exception:
-        log.warning("Qdrant resolve failed", exc_info=True)
+        log.error("Unexpected error in Qdrant resolve", exc_info=True)
         return None
 
 
@@ -245,8 +258,12 @@ def _resolve_url(
         resp = httpx.get(ref.source, timeout=5.0)
         resp.raise_for_status()
 
-        src = Image.open(io.BytesIO(resp.content)).convert("RGB")
-        # Resize to fit within render dimensions, preserving aspect ratio
+        try:
+            src = Image.open(io.BytesIO(resp.content)).convert("RGB")
+        except (OSError, ValueError) as exc:
+            log.warning("Failed to decode image from %s: %s", ref.source, exc)
+            return None
+
         src.thumbnail((RENDER_WIDTH, RENDER_HEIGHT), Image.LANCZOS)
 
         canvas = Image.new("RGB", (RENDER_WIDTH, RENDER_HEIGHT), color=(0, 0, 0))
@@ -255,9 +272,16 @@ def _resolve_url(
         canvas.paste(src, (paste_x, paste_y))
 
         out_path = d / f"{fragment_id}-{index}.jpg"
-        canvas.save(out_path, "JPEG", quality=85)
+        try:
+            canvas.save(out_path, "JPEG", quality=85)
+        except (OSError, ValueError) as exc:
+            log.warning("Failed to save URL JPEG %s: %s", out_path, exc)
+            return None
         log.debug("Resolved URL → %s", out_path)
         return out_path
+    except (ImportError, ConnectionError, OSError) as exc:
+        log.warning("URL resolve failed for %s: %s", ref.source, exc)
+        return None
     except Exception:
-        log.warning("URL resolve failed for %s", ref.source, exc_info=True)
+        log.error("Unexpected error resolving URL %s", ref.source, exc_info=True)
         return None

@@ -60,3 +60,23 @@ def test_daemon_drains_imagination_impingements(_mock_rng):
     imps = daemon._imagination.drain_impingements()
     assert len(imps) == 1
     assert imps[0].source == "imagination"
+
+
+def test_resolver_degraded_impingement_after_3_failures(tmp_path):
+    """DMN emits an impingement to JSONL after 3 consecutive resolver failures."""
+    import json
+
+    daemon = DMNDaemon()
+    impingements_file = tmp_path / "impingements.jsonl"
+
+    with unittest.mock.patch("agents.dmn.__main__.IMPINGEMENTS_FILE", impingements_file):
+        # Simulate 3 consecutive failures
+        daemon._resolver_consecutive_failures = 2
+        daemon._resolver_consecutive_failures += 1
+        daemon._emit_resolver_degraded()
+
+    assert impingements_file.exists()
+    data = json.loads(impingements_file.read_text().strip())
+    assert data["source"] == "dmn.resolver"
+    assert data["type"] == "absolute_threshold"
+    assert data["content"]["metric"] == "resolver_consecutive_failures"

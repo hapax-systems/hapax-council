@@ -88,7 +88,6 @@ def _read_recent_fragments(path: Path) -> list[dict]:
         try:
             fragments.append(json.loads(line))
         except (json.JSONDecodeError, ValueError):
-            # Silently skip malformed lines
-            pass
+            log.debug("Skipped malformed JSON in imagination stream: %.50s", line)
 
     return fragments
