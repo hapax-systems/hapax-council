@@ -42,6 +42,7 @@ class DMNPulse:
         self._ollama_breaker = CircuitBreaker("ollama", failure_threshold=5, cooldown_s=30.0)
         self._degradation_emitted = False
         self._starvation_last_emitted: dict[str, float] = {}
+        self._fortress_acted_on: dict[str, float] = {}
 
     def set_tpn_active(self, active: bool) -> None:
         self._tpn_active = active
@@ -96,12 +97,15 @@ class DMNPulse:
         else:
             self._buffer.add_observation(prompt[:100], deltas, raw_sensor=prompt)
 
+    def _recently_acted(self, metric: str) -> bool:
+        return time.time() - self._fortress_acted_on.get(metric, 0.0) <= 300
+
     def _check_absolute_thresholds(self, snapshot: dict) -> None:
         fortress = snapshot.get("fortress")
         if fortress:
             pop = fortress.get("population", 0)
             drink = fortress.get("drink", 0)
-            if pop > 0 and drink < pop * 2:
+            if pop > 0 and drink < pop * 2 and not self._recently_acted("drink_per_capita"):
                 self._pending_impingements.append(
                     Impingement(
                         timestamp=time.time(),
@@ -116,7 +120,7 @@ class DMNPulse:
                         context={"fortress": fortress.get("fortress_name", ""), "population": pop},
                     )
                 )
-            if pop > 0 and pop < 3:
+            if pop > 0 and pop < 3 and not self._recently_acted("extinction_risk"):
                 self._pending_impingements.append(
                     Impingement(
                         timestamp=time.time(),
@@ -129,7 +133,7 @@ class DMNPulse:
                     )
                 )
         stimmung = snapshot.get("stimmung", {})
-        if stimmung.get("stance") == "critical":
+        if stimmung.get("stance") == "critical" and not self._recently_acted("stimmung_critical"):
             self._pending_impingements.append(
                 Impingement(
                     timestamp=time.time(),
@@ -177,6 +181,14 @@ class DMNPulse:
                         )
                     )
                     self._starvation_last_emitted[sensor_name] = time.time()
+
+    def consume_fortress_feedback(self, impingements: list[Impingement]) -> None:
+        """Record fortress action timestamps to suppress re-emission."""
+        for imp in impingements:
+            if imp.source == "fortress.action_taken":
+                metric = imp.content.get("trigger_metric", "")
+                if metric:
+                    self._fortress_acted_on[metric] = time.time()
 
     def drain_impingements(self) -> list[Impingement]:
         pending = self._pending_impingements[:]

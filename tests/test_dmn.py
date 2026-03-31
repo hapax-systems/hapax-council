@@ -274,6 +274,21 @@ class TestTPNActiveStaleness:
         assert _read_tpn_active(tmp_path / "nonexistent") is False
 
 
+class TestFortressFeedback:
+    def test_threshold_suppressed_after_fortress_action(self):
+        buf = DMNBuffer()
+        pulse = DMNPulse(buf)
+        pulse._fortress_acted_on = {"drink_per_capita": time.time()}
+        snapshot = {
+            "fortress": {"population": 10, "drink": 5, "fortress_name": "test"},
+            "stimmung": {"stance": "nominal"},
+        }
+        pulse._check_absolute_thresholds(snapshot)
+        impingements = pulse.drain_impingements()
+        drink_imps = [i for i in impingements if i.content.get("metric") == "drink_per_capita"]
+        assert len(drink_imps) == 0
+
+
 class TestSensorStarvation:
     async def test_starvation_impingement_emitted(self):
         buf = DMNBuffer()

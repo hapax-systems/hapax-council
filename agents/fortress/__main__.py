@@ -397,10 +397,48 @@ class FortressDaemon:
                     self._bridge.send_command(act, **params)
                     log.info("  Deliberation action: %s %s", act, params)
 
+                if actions:
+                    self._emit_fortress_feedback(actions, recent_events, state)
+
             except Exception as exc:
                 log.error("Deliberation failed: %s", exc)
 
             self._prev_state = state
+
+    def _emit_fortress_feedback(
+        self,
+        actions: list[dict],
+        recent_events: list[str],
+        state: FastFortressState | None,
+    ) -> None:
+        """Emit feedback impingement to DMN so it suppresses re-emission."""
+        try:
+            from shared.impingement import Impingement as FeedbackImpingement
+            from shared.impingement import ImpingementType as FBType
+
+            trigger_metric = ""
+            for evt in recent_events:
+                if "[IMPINGEMENT]" in evt:
+                    trigger_metric = evt.split("[IMPINGEMENT]")[1].strip().split("(")[0].strip()
+                    break
+
+            feedback = FeedbackImpingement(
+                timestamp=time.time(),
+                source="fortress.action_taken",
+                type=FBType.ABSOLUTE_THRESHOLD,
+                strength=0.3,
+                content={
+                    "action_type": actions[0].get("action", "unknown"),
+                    "trigger_metric": trigger_metric,
+                    "fortress": state.fortress_name if state else "",
+                },
+            )
+            dmn_jsonl = Path("/dev/shm/hapax-dmn/impingements.jsonl")
+            if dmn_jsonl.parent.exists():
+                with dmn_jsonl.open("a", encoding="utf-8") as f:
+                    f.write(feedback.model_dump_json() + "\n")
+        except Exception:
+            log.debug("Failed to emit fortress feedback impingement", exc_info=True)
 
     async def _maintenance_loop(self) -> None:
         """Slow loop: goal timeouts, spatial memory maintenance, cooldown pruning."""
