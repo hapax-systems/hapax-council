@@ -97,6 +97,9 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
     except Exception:
         log.debug("GQI read failed", exc_info=True)
 
+    # 6b. DMN health
+    update_dmn_health(agg._stimmung_collector)
+
     # 7. Snapshot
     prev_stance = agg._stimmung.overall_stance.value if agg._stimmung else "nominal"
     agg._stimmung = agg._stimmung_collector.snapshot()
@@ -112,6 +115,29 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
         llm_cost=agg._stimmung.llm_cost_pressure.value,
         prev_stance=prev_stance,
     )
+
+
+def update_dmn_health(
+    collector,
+    status_path: Path | None = None,
+) -> None:
+    """Read DMN status and feed health signal into stimmung.
+
+    Degrades health when:
+    - DMN hasn't ticked in >30s (stale)
+    - DMN has 0 buffer entries after >60s uptime (empty buffer)
+    """
+    if status_path is None:
+        status_path = Path("/dev/shm/hapax-dmn/status.json")
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+        age = time.time() - data.get("timestamp", 0)
+        if age > 30:
+            collector.update_health(0, 1, failed_checks=["dmn_stale"])
+        elif data.get("buffer_entries", 0) == 0 and data.get("uptime_s", 0) > 60:
+            collector.update_health(0, 1, failed_checks=["dmn_empty_buffer"])
+    except (OSError, json.JSONDecodeError, KeyError):
+        pass  # DMN not running — not an error
 
 
 def update_biometrics(agg: VisualLayerAggregator) -> None:

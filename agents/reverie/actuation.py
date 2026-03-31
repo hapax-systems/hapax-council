@@ -72,7 +72,6 @@ class ReverieActuationLoop:
         for n, d in [
             ("shader_graph", "Activate shader graph effects from imagination"),
             ("visual_chain", "Modulate visual chain from stimmung/evaluative"),
-            ("fortress_visual_response", "Visual pipeline for fortress crises"),
         ]:
             p.index_capability(CapabilityRecord(name=n, description=d, daemon="reverie"))
         return p

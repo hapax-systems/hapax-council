@@ -140,9 +140,30 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
     for record in VOCAL_CHAIN_RECORDS:
         daemon._affordance_pipeline.index_capability(record)
 
+    # System awareness: surface DMN degradation to operator
+    from agents.hapax_daimonion.system_awareness import (
+        SYSTEM_AWARENESS_DESCRIPTION,
+        SystemAwarenessCapability,
+    )
+
+    daemon._system_awareness = SystemAwarenessCapability()
+    daemon._affordance_pipeline.index_capability(
+        CapabilityRecord(
+            name="system_awareness",
+            description=SYSTEM_AWARENESS_DESCRIPTION,
+            daemon="hapax_daimonion",
+        )
+    )
+    daemon._affordance_pipeline.register_interrupt(
+        "system_critical", "system_awareness", "hapax_daimonion"
+    )
+
     # Cross-modal expression coordinator
     from agents._expression import ExpressionCoordinator
 
     daemon._expression_coordinator = ExpressionCoordinator()
 
-    log.info("Pipeline dependencies precomputed (affordance pipeline: speech + 9 vocal chain dims)")
+    log.info(
+        "Pipeline dependencies precomputed"
+        " (affordance pipeline: speech + 9 vocal chain dims + system_awareness)"
+    )

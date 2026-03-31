@@ -227,11 +227,6 @@ class DMNDaemon:
                             score = self._reverie.visual_chain.can_resolve(imp)
                             if score > 0:
                                 self._reverie.visual_chain.activate(imp, score)
-                        elif c.capability_name == "fortress_visual_response":
-                            s = imp.strength
-                            vc = self._reverie.visual_chain
-                            vc.activate_dimension("visual_chain.tension", imp, s * 0.8)
-                            vc.activate_dimension("visual_chain.degradation", imp, s * 0.6)
 
         # Read TPN active flag (anti-correlation signal from voice daemon)
         self._pulse.set_tpn_active(_read_tpn_active())
