@@ -24,23 +24,14 @@ log = logging.getLogger(__name__)
 _PHONE_MAC = "B0:D5:FB:A5:86:E8"
 
 
-def _read_sms_via_script() -> list[dict]:
-    """Read SMS inbox via a helper script that uses gi (system Python)."""
-    try:
-        result = subprocess.run(
-            [
-                "/usr/bin/python3",
-                "-c",
-                """
-import json
+_SMS_SCRIPT = """import json, sys
 from gi.repository import Gio, GLib
+mac = sys.argv[1]
 bus = Gio.bus_get_sync(Gio.BusType.SESSION)
 try:
     r = bus.call_sync('org.bluez.obex', '/org/bluez/obex',
         'org.bluez.obex.Client1', 'CreateSession',
-        GLib.Variant('(sa{sv})', ('"""
-                + _PHONE_MAC
-                + """', {'Target': GLib.Variant('s', 'map')})),
+        GLib.Variant('(sa{sv})', (mac, {'Target': GLib.Variant('s', 'map')})),
         GLib.VariantType('(o)'), Gio.DBusCallFlags.NONE, 10000, None)
     mp = r.unpack()[0]
     bus.call_sync('org.bluez.obex', mp, 'org.bluez.obex.MessageAccess1',
@@ -51,12 +42,22 @@ try:
         GLib.VariantType('(a{oa{sv}})'), Gio.DBusCallFlags.NONE, 10000, None)
     msgs = []
     for p, props in r2.unpack()[0].items():
-        msgs.append({'sender': str(props.get('Sender','')), 'subject': str(props.get('Subject','')),'read': bool(props.get('Read', True))})
+        msgs.append({
+            'sender': str(props.get('Sender', '')),
+            'subject': str(props.get('Subject', '')),
+            'read': bool(props.get('Read', True)),
+        })
     print(json.dumps(msgs))
-except Exception as e:
+except Exception:
     print(json.dumps([]))
-""",
-            ],
+"""
+
+
+def _read_sms_via_script() -> list[dict]:
+    """Read SMS inbox via a helper script that uses gi (system Python)."""
+    try:
+        result = subprocess.run(
+            ["/usr/bin/python3", "-c", _SMS_SCRIPT, _PHONE_MAC],
             capture_output=True,
             text=True,
             timeout=15,
