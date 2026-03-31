@@ -148,7 +148,7 @@ When multiple governance chains produce Commands that claim the same physical re
 
 Each CadenceGroup has its own `tick_event: Event[float]`. Governance chains wire to the tick event of the cadence group that matches their temporal requirements. The MC chain wires to MIDI clock ticks. The OBS chain wires to perception fast ticks. Each chain fires at the rate it needs, sampling all other signals at their current values via `with_latest_from`.
 
-Eight backends in `backends/`: PipeWire (audio energy, emotion), Hyprland (window/workspace), watch (heart rate, HRV), health (CPU, RAM, GPU), circadian (rhythm alignment), MIDI clock (ticks, transport, tempo), stream health (OBS bitrate, lag, drops).
+Twenty-three backends in `backends/`: attention, Bluetooth presence, circadian (rhythm alignment), clipboard, contact mic, devices, health (CPU, RAM, GPU), Hyprland (window/workspace), input activity, IR presence (Pi fleet), local LLM, MIDI clock (ticks, transport, tempo), mixer input, phone awareness, phone calls, phone contacts, phone media, phone messages, PipeWire (audio energy, emotion), speech emotion, stream health (OBS bitrate, lag, drops), studio ingestion, vision (facial landmarks), and watch (heart rate, HRV).
 
 ### Multi-Source Wiring
 
@@ -166,7 +166,7 @@ Eight backends in `backends/`: PipeWire (audio energy, emotion), Hyprland (windo
 
 ## Daemon Lifecycle
 
-`VoiceDaemon` (`__main__.py`, ~1000 lines) orchestrates all subsystems. Five concurrent async loops handle audio distribution (30ms frames to wake word, VAD, and Gemini Live), perception (fast/slow tick polling), actuation (ScheduleQueue draining), wake word processing, and proactive notification delivery. Backends are registered with availability gating — missing hardware degrades gracefully, never crashes. Pipeline backends support local processing (Pipecat: STT → LLM → TTS) or cloud (Gemini Live speech-to-speech).
+`VoiceDaemon` (`__main__.py`, ~1000 lines) orchestrates all subsystems. Nine concurrent async loops handle audio distribution (30ms frames to wake word, VAD, and Gemini Live), perception (fast/slow tick polling), actuation (ScheduleQueue draining), wake word processing, proactive notification delivery, ambient classification, impingement consumption, ntfy subscription, and workspace monitoring. Backends are registered with availability gating — missing hardware degrades gracefully, never crashes. Pipeline backends support local processing (Pipecat: STT → LLM → TTS) or cloud (Gemini Live speech-to-speech).
 
 ## Package Structure
 
@@ -192,6 +192,17 @@ agents/hapax_daimonion/
 ├── musical_position.py     MusicalPosition (hierarchical beat decomposition)
 ├── actuation_event.py      ActuationEvent (immutable actuation record)
 ├── __main__.py             VoiceDaemon (wiring and lifecycle)
-├── backends/               8 perception backends (PipeWire, Hyprland, MIDI, etc.)
-└── ... (63 .py files total)
+├── backends/               23 perception backends
+└── ... (155 .py files total)
+```
+
+## Known Limitations
+
+- **Grounding acts**: The system classifies operator acceptance and generates strategy directives encoding Traum's responsive acts, but compliance depends on the LLM following the directive — which RLHF actively suppresses (Shaikh et al. 2025). See `EPISTEMIC-AUDIT-conversational-continuity.md` for vocabulary mismatch analysis.
+
+- **Grounding features**: R&D-default, Research-gated. In R&D mode all features enabled. In Research mode each feature individually controlled by experiment flags for Bayesian SCED testing.
+
+- **Acceptance classification**: Keyword-based heuristic in `grounding_evaluator.py`. Cannot distinguish "yeah" (agreement) from "yeah, but..." (concession).
+
+- **Cognitive loop**: Tick-driven at 150ms intervals, not continuous processing.
 ```
