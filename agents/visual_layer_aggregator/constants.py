@@ -55,8 +55,10 @@ CAMERA_ROLES = [
     "synths-brio",
 ]
 
-# Re-export SHORT_TO_ROLE as _ROLE_MAP for signal_mappers.py
+# Re-exports from agents._cameras (moved during monolith decomposition)
 from agents._cameras import SHORT_TO_ROLE as _ROLE_MAP  # noqa: F401, E402
+from agents._cameras import can_enrich_persons  # noqa: F401, E402
+from agents._cameras import resolution as cam_resolution  # noqa: F401, E402
 
 CAMERA_FILTERS = [
     "sepia(0.8) contrast(1.3) brightness(0.7)",
