@@ -190,7 +190,6 @@ pub fn get_system_flow() -> SystemFlowState {
             if let Some(d) = dim.as_object() {
                 apper_dims.insert(name.clone(), serde_json::json!({
                     "confidence": d.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                    "assessment": d.get("current_assessment").and_then(|v| v.as_str()).unwrap_or("").chars().take(60).collect::<String>(),
                     "affirming": d.get("affirming_count").and_then(|v| v.as_u64()).unwrap_or(0),
                     "problematizing": d.get("problematizing_count").and_then(|v| v.as_u64()).unwrap_or(0),
                 }));

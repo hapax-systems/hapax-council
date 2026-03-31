@@ -76,7 +76,6 @@ class SelfDimension(BaseModel):
 
     name: str
     confidence: float = Field(ge=0.05, le=0.95, default=0.5)
-    current_assessment: str = ""
     affirming_count: int = 0
     problematizing_count: int = 0
     last_shift_time: float = Field(default_factory=time.time)
@@ -160,7 +159,6 @@ class SelfModel(BaseModel):
                 name: {
                     "name": d.name,
                     "confidence": d.confidence,
-                    "current_assessment": d.current_assessment,
                     "affirming_count": d.affirming_count,
                     "problematizing_count": d.problematizing_count,
                     "last_shift_time": d.last_shift_time,
@@ -176,8 +174,16 @@ class SelfModel(BaseModel):
     def from_dict(cls, data: dict) -> SelfModel:
         """Deserialize from JSON storage."""
         model = cls()
+        known_fields = {
+            "name",
+            "confidence",
+            "affirming_count",
+            "problematizing_count",
+            "last_shift_time",
+        }
         for name, d in data.get("dimensions", {}).items():
-            model.dimensions[name] = SelfDimension(**d)
+            filtered = {k: v for k, v in d.items() if k in known_fields}
+            model.dimensions[name] = SelfDimension(**filtered)
         for obs in data.get("recent_observations", []):
             model.recent_observations.append(obs)
         for ref in data.get("recent_reflections", []):
