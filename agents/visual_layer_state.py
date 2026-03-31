@@ -591,6 +591,7 @@ class DisplayStateMachine:
             turbulence=round(turbulence, 3),
             color_warmth=round(warmth, 3),
             brightness=round(brightness, 3),
+            audio_energy=round(min(1.0, audio_energy), 3),
         )
 
 

@@ -613,14 +613,12 @@ class VisualLayerAggregator:
     def _update_stimmung(self) -> None:
         """Collect stimmung readings from all available data sources."""
         from .stimmung_methods import (
-            update_biometrics,
             update_stimmung_sources,
             write_stimmung,
             write_temporal_bands,
         )
 
-        update_stimmung_sources(self)
-        update_biometrics(self)
+        update_stimmung_sources(self)  # calls update_biometrics internally
         write_stimmung(self)
         write_temporal_bands(self)
 
