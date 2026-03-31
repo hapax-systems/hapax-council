@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-03-31 (session 20 — daimonion gap closure, responsive grounding acts)
+**Last updated:** 2026-03-31 (session 21 — temporal bands deep audit + intent gap closure)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -177,6 +177,33 @@ Mixed R&D and research infrastructure. Changes to grounding directive text (DEVI
 **Impact on grounding research:** Gap 2 changes directive text in grounding_ledger.py (frozen experiment file). DEVIATION-032 filed. State machine logic unchanged. DVs unchanged. The new directive text will be active in Phase B (treatment) only when `grounding_directive` flag is true. Phase A baseline unaffected. Gap 1 makes grounding features default in R&D mode (non-experiment voice sessions) — this does not affect experiment sessions which use explicit config.
 
 **Open question added:** Cycle 3 contingency: if Cycle 2 shows RLHF non-compliance with Traum act directives, approach B (structural act injection via prefilled assistant content or bridge phrases) becomes the next research direction.
+
+## Session 21 (2026-03-31): Temporal Bands Deep Audit + Intent Gap Closure
+
+R&D work on temporal subsystem (non-frozen paths). No changes to experiment code, grounding theory, or frozen files.
+
+**Deep audit of temporal bands subsystem** (3-agent fan-out × 3 facets: structure, coverage, integration). Audited code quality AND design intent (WS1 spec) simultaneously. Findings: 80 tests passing, B+ quality, but biggest gap was the ProtentionEngine — instantiated and saved but `observe()` never called. Markov chain, flow timing model, and circadian model were always empty.
+
+**PR #479 MERGED: Temporal bands audit fixes** (-312 net lines).
+- Split 517-line `temporal_bands.py` into 4 modules (models, surprise, trend, formatter) for 300-line file size gate
+- Wired `ProtentionEngine.observe()` into VLA perception tick — engine now learns from every 2.5s snapshot
+- Added Pydantic field validators (confidence, surprise, age bounds), crash guards, NaN trend guards
+- Narrowed 9x bare `except Exception` to specific types in apperception_tick
+- Consolidated 3x `_read_temporal_block()` into `shared/temporal_shm.py`
+- Deleted vendored `agents/_apperception_tick.py` (redirect to shared/)
+
+**PR #480 MERGED: Multi-scale temporal + surprise ordering + A/B harness** (+923 lines).
+- Multi-scale integration: `TemporalBandFormatter.format()` now accepts `MultiScaleContext`. XML output gains `<retention scale="minute">`, `<session_context>`, `<circadian>` sections alongside tick-level retention
+- Surprise-weighted impression ordering: impression fields sorted by surprise ascending so high-surprise fields render last, exploiting RoPE's natural recency-attention boost (WS1 §2.1)
+- Extracted `format_xml` to `agents/temporal_xml.py` (file size gate)
+- A/B validation harness (Measure 3.1): 50 synthetic perception snapshots, 4-task battery, LLM-as-judge scoring on relevance/specificity/temporal_awareness/actionability, automated effect size + gate condition
+
+**Intent gaps remaining (from WS1 spec):**
+- Decay function comparison (3.4): exponential/power-law/stepped. Research design complete, pluggable `DecayStrategy` ABC defined, implementation ~1 session. Scheduled Day 9.
+- Multi-scale retention not yet rendered by downstream consumers (phenomenal_context.py reads tick-level only). Low priority.
+- A/B validation not yet executed (harness ready, run `uv run pytest tests/research/test_temporal_contrast.py -m llm -v`). Scheduled Day 3-4.
+
+**Impact on grounding research:** None. All changes are on non-frozen temporal paths (`agents/temporal_*.py`, `shared/temporal_shm.py`, `shared/apperception_tick.py`). Temporal bands are upstream of phenomenal context (Layer 3-5) but do not affect grounding experiment variables or DVs. The protention engine now trains from live perception, which enriches temporal context quality for voice grounding — but this flows through `phenomenal_context.py` rendering, not through frozen experiment paths.
 
 ## Research Infrastructure (added session 3)
 

@@ -375,6 +375,19 @@ Replace flat Qdrant profile facts with a bi-temporal knowledge graph following Z
 
 This is the most architecturally significant change and enables genuine temporal reasoning about the operator's patterns over days and weeks.
 
+### Implementation Status (updated 2026-03-31)
+
+| Feature | Spec § | Status | PR | Notes |
+|---------|--------|--------|----|-------|
+| **4.1 Retention ring buffer** | 4.1 | DONE | — | `PerceptionRing` in `agents/hapax_daimonion/perception_ring.py` (20 snapshots, 50s) |
+| **4.2 Temporal band formatting** | 4.2 | DONE | #479, #480 | `TemporalBandFormatter` in `agents/temporal_bands.py`. Split into 5 modules for file-size gate. XML output with retention/impression/protention/surprise sections |
+| **4.3 Protention engine** | 4.3 | DONE (newly wired) | #479 | `ProtentionEngine` in `agents/protention_engine.py`. Markov chain + flow timing + circadian. `observe()` now called on every 2.5s perception tick (was never called before PR #479) |
+| **4.4 Multi-scale hierarchy** | 4.4 | DONE | #480 | `MultiScaleAggregator` feeds minute/session/day context into formatter. XML output gains `<retention scale="minute">`, `<session_context>`, `<circadian>` |
+| **4.5 Surprise-weighted impression** | 4.5 | PARTIAL | #479, #480 | Surprise computed, XML-marked. Impression fields reordered by surprise score (RoPE exploit). Full re-rendering (Option B/C) deferred pending A/B validation |
+| **4.6 Zep-style temporal facts** | 4.6 | NOT STARTED | — | Architectural change, no active driver |
+| **A/B validation (Measure 3.1)** | 5.1 | HARNESS READY | #480 | `tests/research/test_temporal_contrast.py`. Run with `-m llm`. Scheduled Day 3 |
+| **Decay function comparison (3.4)** | 5.2 | DESIGN COMPLETE | — | Research design done. Pluggable `DecayStrategy` ABC. Scheduled Day 9 |
+
 **Cost**: New module (~800 lines), Qdrant schema changes, migration of existing facts. Could use Zep/Graphiti directly as a dependency instead of building from scratch.
 
 ---

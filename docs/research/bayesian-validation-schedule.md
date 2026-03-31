@@ -101,12 +101,12 @@ All measures on non-frozen code can proceed freely in R&D mode:
 |-------|-------|---------|--------|
 | 0800-1200 | 4.0 | **4.2** | Crisis detection benchmark. (1) Verify hapax-dmn.service running. (2) Seed fortress with marginal resources: pop=5, drink=8 (below 5×2=10 threshold). (3) Monitor impingement stream — time from resource deficit → ABSOLUTE_THRESHOLD impingement → fortress deliberation → governor action. (4) Disable DMN pulse, repeat measurement. (5) Compare latencies. Record in `docs/research/dmn-crisis-benchmark.md`. |
 | 1200-1300 | 1.0 | — | Break + voice session |
-| 1300-1700 | 4.0 | **3.1 prep** | Temporal band A/B test harness. Build `tests/research/test_temporal_contrast.py`. (1) Collect 50 perception snapshots from recent /dev/shm data or synthetic. (2) Format each as flat JSON and as three-band temporal. (3) Define task battery: "What just changed?", "What is likely to happen next?", "Should the system escalate?", "Summarize the current situation." (4) Scoring rubric: 1-5 scale per response on relevance, specificity, temporal awareness, actionability. |
-| 1700-2000 | 3.0 | **3.1 run** | Execute A/B test. Send 50 × 2 = 100 prompts to Claude (use LiteLLM gateway). Collect responses. Score first 20 pairs to calibrate rubric. If effect is obvious (>1 point mean difference), record early. If ambiguous, score all 50. Compute effect size and 95% CI. |
+| 1300-1700 | 4.0 | **3.1 prep** | ~~Temporal band A/B test harness.~~ **DONE (Day 2, PR #480).** Harness at `tests/research/test_temporal_contrast.py`. 50 synthetic snapshots, 4-task battery, LLM-as-judge scoring, automated effect size computation. Additionally: multi-scale temporal integration shipped (minute/session/day in XML), surprise-weighted impression ordering (RoPE exploit), ProtentionEngine training wired. |
+| 1700-2000 | 3.0 | **3.1 run** | Execute A/B test. Run `uv run pytest tests/research/test_temporal_contrast.py -m llm -v`. 20 pairs × 4 tasks × 2 conditions = 160 LLM calls. Gate: temporal_awareness effect ≥ 0.5 points. Analysis: `uv run python tests/research/analysis.py`. |
 
 **Day 3 deliverables:**
 - [ ] DMN crisis detection benchmark complete (latency with/without DMN)
-- [ ] Temporal band A/B test result (effect size + CI)
+- [ ] Temporal band A/B test result (effect size + CI) — harness ready, just run
 
 #### Day 4 (2026-04-02, Wed) — 12 hr
 
