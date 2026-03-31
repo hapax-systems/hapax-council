@@ -2,7 +2,27 @@
 
 import time
 
+import pytest
+
 from agents.dmn.buffer import DMNBuffer, Observation
+from shared.expression import normalize_dimension_activation
+
+
+class TestNormalizeDimensionActivation:
+    def test_strength_weighted(self):
+        dims = {"intensity": 0.8, "tension": 0.6}
+        result = normalize_dimension_activation(0.5, dims)
+        assert result["intensity"] == pytest.approx(0.4)
+        assert result["tension"] == pytest.approx(0.3)
+
+    def test_clamped_to_unit_range(self):
+        dims = {"intensity": 1.5}
+        result = normalize_dimension_activation(1.0, dims)
+        assert result["intensity"] == 1.0
+
+    def test_empty_dims(self):
+        result = normalize_dimension_activation(0.8, {})
+        assert result == {}
 
 
 class TestDMNBuffer:
