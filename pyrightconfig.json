@@ -1,8 +1,9 @@
 {
-    "include": ["agents", "shared", "logos"],
-    "exclude": ["tests", "**/__pycache__"],
+    "include": ["agents", "logos"],
+    "exclude": ["tests", "shared", "**/__pycache__"],
     "pythonVersion": "3.12",
     "typeCheckingMode": "basic",
+    "reportExplicitAny": "warning",
     "reportMissingImports": false,
     "reportMissingTypeStubs": false,
     "reportOptionalMemberAccess": false,
