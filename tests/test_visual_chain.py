@@ -260,3 +260,56 @@ def test_full_activation_cycle(tmp_path: Path):
     cap.write_state(out_path)
     data3 = json.loads(out_path.read_text())
     assert len(data3["levels"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 3: R-D param name alignment tests
+# ---------------------------------------------------------------------------
+
+
+def test_tension_produces_rd_feed_rate():
+    """Tension dimension should produce rd.u_feed_rate override."""
+    cap = VisualChainCapability()
+    imp = Impingement(
+        source="test",
+        timestamp=0.0,
+        type=ImpingementType.SALIENCE_INTEGRATION,
+        strength=0.8,
+        content={"metric": "visual_modulation"},
+    )
+    cap.activate_dimension("visual_chain.tension", imp, 0.7)
+    deltas = cap.compute_param_deltas()
+    assert "rd.u_feed_rate" in deltas
+    assert deltas["rd.u_feed_rate"] > 0.0
+
+
+def test_diffusion_produces_rd_diffusion_a():
+    """Diffusion dimension should produce rd.u_diffusion_a override."""
+    cap = VisualChainCapability()
+    imp = Impingement(
+        source="test",
+        timestamp=0.0,
+        type=ImpingementType.SALIENCE_INTEGRATION,
+        strength=0.8,
+        content={"metric": "visual_modulation"},
+    )
+    cap.activate_dimension("visual_chain.diffusion", imp, 0.5)
+    deltas = cap.compute_param_deltas()
+    assert "rd.u_diffusion_a" in deltas
+    assert deltas["rd.u_diffusion_a"] > 0.0
+
+
+def test_coherence_produces_rd_feed_rate_negative():
+    """Coherence dimension should produce negative rd.u_feed_rate (reduces reaction)."""
+    cap = VisualChainCapability()
+    imp = Impingement(
+        source="test",
+        timestamp=0.0,
+        type=ImpingementType.SALIENCE_INTEGRATION,
+        strength=0.8,
+        content={"metric": "visual_modulation"},
+    )
+    cap.activate_dimension("visual_chain.coherence", imp, 0.8)
+    deltas = cap.compute_param_deltas()
+    assert "rd.u_feed_rate" in deltas
+    assert deltas["rd.u_feed_rate"] < 0.0

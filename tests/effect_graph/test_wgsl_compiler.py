@@ -100,6 +100,53 @@ class TestCompileToWgslPlan:
         assert plan["passes"][0].get("temporal") is True
         assert "@accum_fs" in plan["passes"][0]["inputs"]
 
+    def test_reaction_diffusion_is_temporal(self):
+        """reaction_diffusion should compile as a temporal render pass with @accum_ input."""
+        graph = EffectGraph(
+            name="test-rd",
+            nodes={
+                "rd": {
+                    "type": "reaction_diffusion",
+                    "params": {"feed_rate": 0.055, "kill_rate": 0.062},
+                },
+                "out": {"type": "output"},
+            },
+            edges=[["@live", "rd"], ["rd", "out"]],
+        )
+        plan = compile_to_wgsl_plan(graph)
+        assert len(plan["passes"]) == 1
+        p = plan["passes"][0]
+        assert p["node_id"] == "rd"
+        assert p["shader"] == "reaction_diffusion.wgsl"
+        assert p["type"] == "render"
+        assert p.get("temporal") is True
+        assert "@accum_rd" in p["inputs"]
+
+    def test_reaction_diffusion_params(self):
+        """R-D pass should include feed_rate and kill_rate in uniforms."""
+        graph = EffectGraph(
+            name="test-rd-params",
+            nodes={
+                "rd": {
+                    "type": "reaction_diffusion",
+                    "params": {
+                        "feed_rate": 0.04,
+                        "kill_rate": 0.06,
+                        "diffusion_a": 1.0,
+                        "diffusion_b": 0.5,
+                        "speed": 1.5,
+                    },
+                },
+                "out": {"type": "output"},
+            },
+            edges=[["@live", "rd"], ["rd", "out"]],
+        )
+        plan = compile_to_wgsl_plan(graph)
+        u = plan["passes"][0]["uniforms"]
+        assert u["feed_rate"] == 0.04
+        assert u["kill_rate"] == 0.06
+        assert u["speed"] == 1.5
+
 
 # ---------------------------------------------------------------------------
 # write_wgsl_pipeline

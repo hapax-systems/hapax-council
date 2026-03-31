@@ -13,6 +13,16 @@
                 "speed": 0.15
             }
         },
+        "rd": {
+            "type": "reaction_diffusion",
+            "params": {
+                "feed_rate": 0.055,
+                "kill_rate": 0.062,
+                "diffusion_a": 1.0,
+                "diffusion_b": 0.5,
+                "speed": 1.0
+            }
+        },
         "color": {
             "type": "colorgrade",
             "params": {
@@ -74,7 +84,8 @@
         }
     },
     "edges": [
-        ["noise", "color"],
+        ["noise", "rd"],
+        ["rd", "color"],
         ["color", "drift"],
         ["drift", "breath"],
         ["breath", "fb"],
