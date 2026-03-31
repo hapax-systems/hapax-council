@@ -16,6 +16,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from agents.imagination import ContentReference, ImaginationFragment
+from agents.imagination_source_protocol import SOURCES_DIR, write_source_protocol
+
+__all__ = ["write_source_protocol"]
 
 log = logging.getLogger(__name__)
 
@@ -191,6 +194,7 @@ def resolve_references_staged(
 
     resolved = resolve_references(fragment, content_dir=staging)
     write_slot_manifest(fragment, resolved, staging / "slots.json")
+    write_source_protocol(fragment, resolved, sources_dir=SOURCES_DIR)
 
     old = active.with_name("old")
     if active.exists():
