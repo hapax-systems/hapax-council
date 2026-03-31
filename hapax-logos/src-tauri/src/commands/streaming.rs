@@ -91,6 +91,71 @@ pub async fn cancel_stream(app: AppHandle, stream_id: u64) -> Result<(), String>
     Ok(())
 }
 
+/// Subscribe to the real-time flow-event SSE stream and re-emit each event
+/// as a Tauri `flow-event` event. Runs in the background and returns immediately.
+#[tauri::command]
+pub async fn subscribe_flow_events(app: AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = run_flow_event_stream(&app_handle).await {
+            log::warn!("flow-event SSE stream ended: {}", e);
+        }
+    });
+    Ok(())
+}
+
+/// Internal: connect to /api/events/stream SSE and emit each data payload as "flow-event".
+async fn run_flow_event_stream(app: &AppHandle) -> Result<(), String> {
+    let url = format!("{}/events/stream", LOGOS_BASE);
+    let client = app.state::<super::proxy::HttpClient>().0.clone();
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("flow-event SSE connect: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("flow-event SSE {}: {}", status, text));
+    }
+
+    let mut byte_stream = resp.bytes_stream();
+    let mut buffer = String::new();
+    let mut data_lines: Vec<String> = Vec::new();
+
+    while let Some(chunk) = byte_stream.next().await {
+        match chunk {
+            Err(e) => return Err(format!("flow-event SSE read: {}", e)),
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                buffer.push_str(&text);
+
+                while let Some(newline_pos) = buffer.find('\n') {
+                    let line = buffer[..newline_pos].to_string();
+                    buffer = buffer[newline_pos + 1..].to_string();
+                    let line = line.trim_end_matches('\r');
+
+                    if line.is_empty() {
+                        if !data_lines.is_empty() {
+                            let data = data_lines.join("\n");
+                            let _ = app.emit("flow-event", data);
+                            data_lines.clear();
+                        }
+                    } else if let Some(rest) = line.strip_prefix("data: ") {
+                        data_lines.push(rest.to_string());
+                    } else if let Some(rest) = line.strip_prefix("data:") {
+                        data_lines.push(rest.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Cancel a running stream AND tell the server to abort the current agent run.
 #[tauri::command]
 pub async fn cancel_stream_and_server(app: AppHandle, stream_id: u64) -> Result<(), String> {
