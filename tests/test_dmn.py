@@ -168,7 +168,9 @@ class TestDMNSensor:
 
 
 import json as _json
+from unittest.mock import AsyncMock, patch
 
+from agents.dmn.pulse import DMNPulse
 from agents.dmn.sensor import SensorConfig, read_all
 
 
@@ -187,3 +189,22 @@ class TestSensorConfig:
         snapshot = read_all(config)
         assert snapshot["stimmung"]["stance"] == "nominal"
         assert snapshot["fortress"] is None
+
+
+class TestOllamaFailureTracking:
+    async def test_degradation_impingement_after_threshold(self):
+        buf = DMNBuffer()
+        pulse = DMNPulse(buf)
+        with patch("agents.dmn.pulse._ollama_generate", new_callable=AsyncMock, return_value=""):
+            for _ in range(6):
+                snapshot = {
+                    "perception": {"activity": "coding", "flow_score": 0.5},
+                    "stimmung": {"stance": "nominal", "operator_stress": 0.1},
+                    "fortress": None,
+                    "watch": {"heart_rate": 0},
+                }
+                await pulse._sensory_tick(snapshot)
+        impingements = pulse.drain_impingements()
+        degraded = [i for i in impingements if i.source == "dmn.ollama_degraded"]
+        assert len(degraded) >= 1
+        assert degraded[0].content["metric"] == "ollama_degraded"
