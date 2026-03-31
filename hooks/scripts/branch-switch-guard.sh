@@ -27,6 +27,8 @@ CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)" || exi
 #   git checkout -- <file>          (file restore)
 #   git checkout HEAD -- <file>     (file restore)
 #   git checkout <ref> -- <file>    (file restore — the '--' separates ref from paths)
+#   git checkout main               (return to main — recovery from stuck branch)
+#   git checkout -B main ...        (force-reset to main — recovery)
 #   git restore ...                 (different command entirely)
 
 is_branch_op=false
@@ -38,6 +40,10 @@ if echo "$CMD" | grep -qE '^\s*git\s+checkout(\s|$)'; then
     fi
     # Allow: git checkout -- <file> (-- immediately after checkout)
     if echo "$CMD" | grep -qE '^\s*git\s+checkout\s+--\s'; then
+        exit 0
+    fi
+    # Allow: git checkout main / git checkout -B main (recovery to main branch)
+    if echo "$CMD" | grep -qE '^\s*git\s+checkout\s+(-B\s+)?main(\s|$)'; then
         exit 0
     fi
     is_branch_op=true
