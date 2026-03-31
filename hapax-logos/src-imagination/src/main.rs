@@ -213,7 +213,15 @@ impl ImaginationApp {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         if let Some(pipeline) = &mut self.dynamic_pipeline {
-            let opacities = self.content_textures.as_ref().map(|ct| ct.slot_opacities()).unwrap_or([0.0; 4]);
+            let legacy_opacities = self.content_textures.as_ref()
+                .map(|ct| ct.slot_opacities()).unwrap_or([0.0; 4]);
+            let source_opacities = self.content_source_mgr.as_ref()
+                .map(|cs| cs.slot_opacities()).unwrap_or([0.0; 4]);
+            let opacities = if source_opacities.iter().any(|&o| o > 0.001) {
+                source_opacities
+            } else {
+                legacy_opacities
+            };
             pipeline.render(
                 &gpu.device,
                 &gpu.queue,
@@ -224,6 +232,7 @@ impl ImaginationApp {
                 time,
                 opacities,
                 self.content_textures.as_ref(),
+                self.content_source_mgr.as_ref(),
             );
         }
 

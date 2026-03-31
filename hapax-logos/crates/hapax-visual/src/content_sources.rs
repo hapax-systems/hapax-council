@@ -270,4 +270,30 @@ impl ContentSourceManager {
     pub fn source_count(&self) -> usize {
         self.sources.len()
     }
+
+    /// Get texture view for a content slot (maps active sources to slot indices by z_order).
+    pub fn slot_view(&self, index: usize) -> &wgpu::TextureView {
+        let mut sorted: Vec<&ContentSource> = self.sources.values()
+            .filter(|s| s.current_opacity > 0.001)
+            .collect();
+        sorted.sort_by_key(|s| s.manifest.z_order);
+        if let Some(source) = sorted.get(index) {
+            &source.view
+        } else {
+            &self.placeholder_view
+        }
+    }
+
+    /// Get opacities for up to 4 content slots.
+    pub fn slot_opacities(&self) -> [f32; 4] {
+        let mut sorted: Vec<&ContentSource> = self.sources.values()
+            .filter(|s| s.current_opacity > 0.001)
+            .collect();
+        sorted.sort_by_key(|s| s.manifest.z_order);
+        let mut opacities = [0.0f32; 4];
+        for (i, source) in sorted.iter().take(4).enumerate() {
+            opacities[i] = source.current_opacity;
+        }
+        opacities
+    }
 }
