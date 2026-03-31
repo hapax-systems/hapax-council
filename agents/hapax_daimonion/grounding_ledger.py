@@ -55,34 +55,15 @@ class EffortDecision:
     level_name: str  # EFFICIENT/BASELINE/ELABORATIVE
 
 
-# Strategy directives injected into VOLATILE band
+# Strategy directives injected into VOLATILE band (Traum 1994 responsive grounding acts)
 _STRATEGY_DIRECTIVES: dict[str, str] = {
-    "advance": (
-        "The operator accepted your previous point. Advance to new content. "
-        "Do not repeat or over-explain what was already understood."
-    ),
-    "rephrase": (
-        "The operator needs clarification. Rephrase your previous point "
-        "using different words. Do not introduce new information yet."
-    ),
-    "elaborate": (
-        "The operator still needs help understanding. Give a concrete example "
-        "or analogy. Keep it brief but clear."
-    ),
-    "present_reasoning": (
-        "The operator disagreed. Present your reasoning without retracting. "
-        "Do not apologize or cave. Explain why you said what you said."
-    ),
-    "move_on": (
-        "Previous point was not grounded after multiple attempts. Move on. "
-        "Do not reference the ungrounded content as established."
-    ),
-    "neutral": ("No prior context to repair. Respond naturally to the operator's input."),
-    "ungrounded_caution": (
-        "The operator did not engage with your previous point. "
-        "Do not build on it or reference it as established. "
-        "Respond to what the operator actually said."
-    ),
+    "advance": "The operator accepted your previous point. Advance to new content. Do not repeat or revisit what was already understood.",
+    "rephrase": "The operator asked for clarification. First, acknowledge their question (e.g. 'Good question' or 'Let me put that differently'). Then rephrase your previous point using different words. Do not introduce new information yet.",
+    "elaborate": "Understanding has not been established after rephrasing. Ask the operator what specifically isn't clear before continuing. Keep your question short and specific.",
+    "present_reasoning": "The operator disagreed. Acknowledge their position first (e.g. 'I hear you' or 'That's a fair point'). Then present your reasoning without retracting. Do not apologize or cave.",
+    "move_on": "Previous point was not grounded after multiple attempts. Move on. Do not reference the ungrounded content as established. Start fresh with the operator's current interest.",
+    "neutral": "No prior context to repair. Respond naturally to the operator's input. After responding, briefly check understanding (e.g. 'Does that make sense?' or 'What do you think?').",
+    "ungrounded_caution": "The operator did not engage with your previous point. Do not build on it or reference it as established. Respond to what the operator actually said.",
 }
 
 
@@ -278,8 +259,7 @@ class GroundingLedger:
     def grounding_directive(self) -> str:
         """Generate the grounding directive for VOLATILE band injection.
 
-        Returns a formatted string for the system prompt that tells the LLM
-        what strategy to use based on the grounding state of the last DU.
+        Encodes Traum (1994) responsive grounding acts as directive text.
         """
         if not self._units:
             return ""
@@ -299,6 +279,8 @@ class GroundingLedger:
             strategy = "move_on"
         elif du.state == DUState.UNGROUNDED:
             strategy = "ungrounded_caution"
+        elif du.state == DUState.PENDING and len(self._units) >= 2:
+            strategy = "neutral"  # neutral includes check-understanding act
 
         directive = _STRATEGY_DIRECTIVES.get(strategy, _STRATEGY_DIRECTIVES["neutral"])
         return f"## Grounding Directive\n{directive}"

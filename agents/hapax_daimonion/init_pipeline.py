@@ -141,4 +141,9 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
     for record in VOCAL_CHAIN_RECORDS:
         daemon._affordance_pipeline.index_capability(record)
 
+    # Cross-modal expression coordinator
+    from agents._expression import ExpressionCoordinator
+
+    daemon._expression_coordinator = ExpressionCoordinator()
+
     log.info("Pipeline dependencies precomputed (affordance pipeline: speech + 9 vocal chain dims)")

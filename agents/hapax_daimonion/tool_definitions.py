@@ -213,6 +213,19 @@ def build_registry(
             False,
             1.0,
         ),
+        # Phone tools
+        "find_phone": (ToolCategory.ACTION, ResourceTier.LIGHT, [], ["phone"], False, 3.0),
+        "lock_phone": (ToolCategory.ACTION, ResourceTier.LIGHT, [], ["phone"], False, 3.0),
+        "send_to_phone": (ToolCategory.ACTION, ResourceTier.LIGHT, [], ["phone"], False, 3.0),
+        "media_control": (ToolCategory.ACTION, ResourceTier.LIGHT, [], ["phone"], False, 3.0),
+        "phone_notifications": (
+            ToolCategory.INFORMATION,
+            ResourceTier.LIGHT,
+            [],
+            ["phone"],
+            False,
+            3.0,
+        ),
     }
 
     registry = ToolRegistry(capability_registry)

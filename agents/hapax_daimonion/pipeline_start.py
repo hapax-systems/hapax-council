@@ -13,6 +13,26 @@ if TYPE_CHECKING:
 log = logging.getLogger("hapax_daimonion")
 
 
+def _apply_mode_grounding_defaults(flags: dict) -> None:
+    """Set grounding flags based on working mode.
+
+    R&D mode: enable all grounding features by default.
+    Research mode: leave flags as-is (controlled by experiment config).
+    If experiment_mode is explicitly set, never override.
+    """
+    from agents._working_mode import get_working_mode
+
+    if flags.get("experiment_mode", False):
+        return
+
+    if get_working_mode().value == "rnd":
+        flags.setdefault("grounding_directive", True)
+        flags.setdefault("effort_modulation", True)
+        flags.setdefault("cross_session", True)
+        flags.setdefault("stable_frame", True)
+        flags.setdefault("message_drop", True)
+
+
 async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
     """Start the lightweight conversation pipeline.
 
@@ -43,10 +63,7 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
 
     _exp = daemon._experiment_flags
 
-    from agents._working_mode import get_working_mode
-
-    if get_working_mode().value == "rnd":
-        _exp["enable_grounding"] = True
+    _apply_mode_grounding_defaults(_exp)
 
     _experiment_mode = _exp.get("experiment_mode", False)
 

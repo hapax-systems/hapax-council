@@ -142,6 +142,38 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                         imp.content.get("metric", imp.source),
                                         c.combined,
                                     )
+                            # Vocal chain: modulate voice character via MIDI
+                            if hasattr(daemon, "_vocal_chain") and daemon._vocal_chain is not None:
+                                vc_score = daemon._vocal_chain.can_resolve(imp)
+                                if vc_score > 0.0:
+                                    daemon._vocal_chain.activate_from_impingement(imp)
+                                    log.debug(
+                                        "Vocal chain activated: %s (score=%.2f)",
+                                        imp.content.get("metric", imp.source),
+                                        vc_score,
+                                    )
+                            # Cross-modal coordination
+                            if len(candidates) > 1 and hasattr(daemon, "_expression_coordinator"):
+                                recruited_pairs = [
+                                    (
+                                        c.capability_name,
+                                        getattr(daemon, f"_{c.capability_name}", None),
+                                    )
+                                    for c in candidates
+                                ]
+                                recruited_pairs = [
+                                    (n, cap) for n, cap in recruited_pairs if cap is not None
+                                ]
+                                if len(recruited_pairs) > 1:
+                                    activations = daemon._expression_coordinator.coordinate(
+                                        imp.content, recruited_pairs
+                                    )
+                                    if activations:
+                                        log.info(
+                                            "Cross-modal coordination: %d modalities for %s",
+                                            len(activations),
+                                            imp.content.get("narrative", "")[:40],
+                                        )
                             # Proactive utterance
                             if imp.source == "imagination" and imp.strength >= 0.65:
                                 _handle_proactive_impingement(daemon, imp)
