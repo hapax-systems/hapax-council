@@ -97,7 +97,7 @@ ConsentLabel (DLM join-semilattice), Labeled[T] (LIO functor), Says monad (Abadi
 
 ### Phenomenological perception
 
-Husserlian temporal bands (retention/impression/protention/surprise), Bayesian presence engine (8-signal fusion), apperception cascade (7-step, 6 safeguards), SystemStimmung (6 dimensions).
+Husserlian temporal bands (retention/impression/protention/surprise), Bayesian presence engine (8-signal fusion), apperception cascade (7-step, 6 safeguards, 7/7 event sources wired), ApperceptionStore (Qdrant persistence, 768-dim cosine), SystemStimmung (6 dimensions).
 
 ## Computational Requirements
 
@@ -116,7 +116,7 @@ Husserlian temporal bands (retention/impression/protention/surprise), Bayesian p
 | Says monad laws | **Proven** | 3 laws + functor + authority |
 | Provenance semiring laws | **Proven** | 10 Hypothesis properties |
 | Perception type system (L0-L9) | **Proven** | 192 matrix tests + 62 Hypothesis |
-| Apperception cascade safeguards | **Proven** | 113 tests |
+| Apperception cascade safeguards | **Proven** | 253 tests (119 cascade + 28 I/O + 66 health + 40 events) |
 | Grounding ledger DU state machine | **Built** | 76 tests (Batches 1-4) |
 | Turn-pair coherence metric | **Built** | Embedding-based, replaces word overlap |
 | Conversational grounding (Cycle 1) | **Pilot** | 37 sessions, BF=3.66 (inconclusive) |
