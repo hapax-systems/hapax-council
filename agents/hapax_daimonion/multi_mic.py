@@ -262,6 +262,7 @@ class NoiseReference:
         """
         kind = "structure" if is_structure else "room"
         chunk_bytes = _FFT_SIZE * 2  # int16 = 2 bytes per sample
+        retry_count = 0
 
         while self._running:
             proc: subprocess.Popen | None = None  # type: ignore[type-arg]
@@ -283,6 +284,7 @@ class NoiseReference:
                     stderr=subprocess.DEVNULL,
                 )
                 self._processes.append(proc)
+                retry_count = 0
                 log.info("Noise reference capturing from %s source: %s", kind, source)
 
                 while self._running and proc.poll() is None:
@@ -328,5 +330,13 @@ class NoiseReference:
                         self._processes.remove(proc)
 
             if self._running:
-                log.warning("pw-record died for %s source %s — restarting in 2s", kind, source)
-                time.sleep(2)
+                backoff = min(30, 2 ** min(retry_count, 4))
+                retry_count += 1
+                log.warning(
+                    "pw-record died for %s source %s — restarting in %ds (attempt %d)",
+                    kind,
+                    source,
+                    backoff,
+                    retry_count,
+                )
+                time.sleep(backoff)
