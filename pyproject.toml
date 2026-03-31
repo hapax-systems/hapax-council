@@ -28,7 +28,6 @@ dependencies = [
     "opentelemetry-instrumentation-httpx>=0.50b0",
     "opentelemetry-instrumentation-logging>=0.50b0",
     "python-json-logger>=3.3.0",
-    "hapax-sdlc @ git+https://github.com/ryanklee/hapax-constitution.git@cbdf204756fc6f0583d3056669e2c8643ca15d21",
     "openwakeword>=0.4.0",
     "litellm>=1.82.2",
     "mistralai>=2.1.0",

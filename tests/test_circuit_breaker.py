@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from shared.circuit_breaker import CircuitBreaker
+from sdlc.circuit_breaker import CircuitBreaker
 
 
 class TestCircuitBreaker:

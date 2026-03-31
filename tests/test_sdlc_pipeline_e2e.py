@@ -24,7 +24,7 @@ class TestDryRunOutputFormats:
 
     @patch("scripts.sdlc_triage.fetch_issue")
     def test_triage_output_format(self, mock_fetch):
-        from shared.sdlc_github import Issue
+        from sdlc.github import Issue
 
         mock_fetch.return_value = Issue(
             number=1,
@@ -41,7 +41,7 @@ class TestDryRunOutputFormats:
     @patch("scripts.sdlc_plan.fetch_issue")
     @patch("scripts.sdlc_plan.post_issue_comment")
     def test_plan_output_format(self, mock_comment, mock_fetch):
-        from shared.sdlc_github import Issue
+        from sdlc.github import Issue
 
         mock_fetch.return_value = Issue(
             number=1,
@@ -85,7 +85,7 @@ class TestSimilarClosedIssues:
 
     @patch("scripts.sdlc_triage.fetch_issue")
     def test_triage_with_skip_similar(self, mock_fetch):
-        from shared.sdlc_github import Issue
+        from sdlc.github import Issue
 
         mock_fetch.return_value = Issue(number=1, title="Fix typo", body="Typo in README")
         result = run_triage(1, dry_run=True, skip_similar=True)
@@ -99,7 +99,7 @@ class TestDryRunPipelineSequence:
     @patch("scripts.sdlc_plan.fetch_issue")
     @patch("scripts.sdlc_plan.post_issue_comment")
     def test_triage_then_plan(self, mock_comment, mock_plan_fetch, mock_triage_fetch):
-        from shared.sdlc_github import Issue
+        from sdlc.github import Issue
 
         issue = Issue(number=1, title="Fix typo", body="Fix the typo in scout.py")
         mock_triage_fetch.return_value = issue
