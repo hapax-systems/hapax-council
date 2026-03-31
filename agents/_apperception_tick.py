@@ -65,7 +65,7 @@ class ApperceptionTick:
         try:
             self._store.ensure_collection()
         except Exception:
-            log.debug("Failed to ensure apperception collection", exc_info=True)
+            log.warning("Failed to ensure apperception collection", exc_info=True)
 
     def tick(self) -> None:
         """Run one apperception cycle. Call this every 3-5 seconds."""
@@ -88,7 +88,7 @@ class ApperceptionTick:
             try:
                 self._store.flush()
             except Exception:
-                log.debug("Failed to flush apperception store", exc_info=True)
+                log.warning("Failed to flush apperception store", exc_info=True)
             self._last_flush = now
 
         if now - self._last_save >= 300.0:
@@ -100,7 +100,7 @@ class ApperceptionTick:
         try:
             self._store.flush()
         except Exception:
-            log.debug("Failed to flush store on save", exc_info=True)
+            log.warning("Failed to flush store on save", exc_info=True)
         try:
             APPERCEPTION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
             data = self._cascade.model.to_dict()

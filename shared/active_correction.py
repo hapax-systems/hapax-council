@@ -167,7 +167,9 @@ class CorrectionSeeker:
                     matches = correction_store.search_for_dimension("activity", activity, limit=3)
                     similar_corrections = len(matches)
                 except Exception:
-                    pass
+                    log.warning(
+                        "Correction search failed during uncertainty estimation", exc_info=True
+                    )
 
             # More prior corrections → more reason to ask
             urgency = "often" if similar_corrections >= 2 else "sometimes"

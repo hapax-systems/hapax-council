@@ -78,6 +78,9 @@ class CorrectionStore:
 
             client = get_qdrant()
         self.client = client
+        from agents._circuit_breaker import CircuitBreaker
+
+        self._breaker = CircuitBreaker("correction_qdrant", failure_threshold=3, cooldown_s=60.0)
 
     def ensure_collection(self) -> None:
         """Create the operator-corrections collection if it doesn't exist."""
@@ -93,6 +96,10 @@ class CorrectionStore:
 
     def record(self, correction: Correction) -> str:
         """Store a correction. Returns the correction ID."""
+        if not self._breaker.allow_request():
+            log.warning("Correction memory circuit breaker open, skipping record")
+            return correction.id or ""
+
         from qdrant_client.models import PointStruct
 
         from agents._config import embed
@@ -105,16 +112,23 @@ class CorrectionStore:
         vec = embed(correction.correction_text, prefix="search_document")
         point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"correction-{correction.id}"))
 
-        self.client.upsert(
-            COLLECTION,
-            [
-                PointStruct(
-                    id=point_id,
-                    vector=vec,
-                    payload=correction.model_dump(),
-                )
-            ],
-        )
+        try:
+            self.ensure_collection()
+            self.client.upsert(
+                COLLECTION,
+                [
+                    PointStruct(
+                        id=point_id,
+                        vector=vec,
+                        payload=correction.model_dump(),
+                    )
+                ],
+            )
+            self._breaker.record_success()
+        except Exception:
+            self._breaker.record_failure()
+            log.warning("Failed to record correction %s", correction.id, exc_info=True)
+            return correction.id
         log.info(
             "Recorded correction: %s → %s (%s)",
             correction.original_value,
@@ -132,6 +146,10 @@ class CorrectionStore:
         min_score: float = 0.3,
     ) -> list[CorrectionMatch]:
         """Semantic search for corrections similar to a situation."""
+        if not self._breaker.allow_request():
+            log.warning("Correction memory circuit breaker open, skipping search")
+            return []
+
         from agents._config import embed
 
         query_vec = embed(query, prefix="search_query")
@@ -144,12 +162,19 @@ class CorrectionStore:
                 must=[FieldCondition(key="dimension", match=MatchValue(value=dimension))]
             )
 
-        results = self.client.query_points(
-            COLLECTION,
-            query=query_vec,
-            query_filter=query_filter,
-            limit=limit,
-        )
+        try:
+            self.ensure_collection()
+            results = self.client.query_points(
+                COLLECTION,
+                query=query_vec,
+                query_filter=query_filter,
+                limit=limit,
+            )
+            self._breaker.record_success()
+        except Exception:
+            self._breaker.record_failure()
+            log.warning("Failed to search corrections", exc_info=True)
+            return []
 
         matches = []
         for point in results.points:
@@ -222,7 +247,7 @@ def check_for_corrections(
     try:
         store.record(correction)
     except Exception:
-        log.debug("Failed to record correction", exc_info=True)
+        log.warning("Failed to record correction", exc_info=True)
         return None
 
     return correction

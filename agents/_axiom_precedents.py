@@ -67,6 +67,9 @@ class Precedent:
 class PrecedentStore:
     def __init__(self):
         self.client = get_qdrant()
+        from agents._circuit_breaker import CircuitBreaker
+
+        self._breaker = CircuitBreaker("precedent_qdrant", failure_threshold=3, cooldown_s=60.0)
 
     def ensure_collection(self) -> None:
         """Create the axiom-precedents collection if it doesn't exist."""
@@ -132,6 +135,10 @@ class PrecedentStore:
         limit: int = 5,
     ) -> list[Precedent]:
         """Semantic search for precedents relevant to a situation."""
+        if not self._breaker.allow_request():
+            log.warning("Precedent store circuit breaker open, skipping search")
+            return []
+
         with _rag_tracer.start_as_current_span("rag.search") as span:
             span.set_attribute("rag.query", situation[:200])
             span.set_attribute("rag.collection", COLLECTION)
@@ -150,12 +157,19 @@ class PrecedentStore:
                 ]
             )
 
-            results = self.client.query_points(
-                COLLECTION,
-                query=query_vec,
-                query_filter=query_filter,
-                limit=limit,
-            )
+            try:
+                self.ensure_collection()
+                results = self.client.query_points(
+                    COLLECTION,
+                    query=query_vec,
+                    query_filter=query_filter,
+                    limit=limit,
+                )
+                self._breaker.record_success()
+            except Exception:
+                self._breaker.record_failure()
+                log.warning("Failed to search precedents", exc_info=True)
+                return []
 
             precedents = [self._from_payload(p.id, p.payload) for p in results.points]
             span.set_attribute("rag.result_count", len(precedents))
@@ -166,6 +180,10 @@ class PrecedentStore:
 
     def record(self, precedent: Precedent) -> str:
         """Record a new precedent. Returns the precedent ID."""
+        if not self._breaker.allow_request():
+            log.warning("Precedent store circuit breaker open, skipping record")
+            return precedent.id or ""
+
         with _rag_tracer.start_as_current_span("rag.index") as span:
             from qdrant_client.models import PointStruct
 
@@ -179,10 +197,17 @@ class PrecedentStore:
             vec = embed(precedent.situation, prefix="search_document")
             point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"axiom-precedent-{precedent.id}"))
 
-            self.client.upsert(
-                COLLECTION,
-                [PointStruct(id=point_id, vector=vec, payload=self._to_payload(precedent))],
-            )
+            try:
+                self.ensure_collection()
+                self.client.upsert(
+                    COLLECTION,
+                    [PointStruct(id=point_id, vector=vec, payload=self._to_payload(precedent))],
+                )
+                self._breaker.record_success()
+            except Exception:
+                self._breaker.record_failure()
+                log.warning("Failed to record precedent %s", precedent.id, exc_info=True)
+                return precedent.id
 
             span.set_attribute("rag.index.count", 1)
 

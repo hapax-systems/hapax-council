@@ -250,6 +250,9 @@ class EpisodeStore:
 
             client = get_qdrant()
         self.client = client
+        from agents._circuit_breaker import CircuitBreaker
+
+        self._breaker = CircuitBreaker("episodic_qdrant", failure_threshold=3, cooldown_s=60.0)
 
     def ensure_collection(self) -> None:
         """Create the operator-episodes collection if it doesn't exist."""
@@ -265,6 +268,10 @@ class EpisodeStore:
 
     def record(self, episode: Episode) -> str:
         """Store an episode. Returns the episode ID."""
+        if not self._breaker.allow_request():
+            log.warning("Episodic memory circuit breaker open, skipping record")
+            return episode.id or ""
+
         from qdrant_client.models import PointStruct
 
         from agents._config import embed
@@ -277,10 +284,17 @@ class EpisodeStore:
             uuid.uuid5(uuid.NAMESPACE_DNS, f"episode-{episode.start_ts:.0f}-{episode.activity}")
         )
 
-        self.client.upsert(
-            COLLECTION,
-            [PointStruct(id=point_id, vector=vec, payload=episode.model_dump())],
-        )
+        try:
+            self.ensure_collection()
+            self.client.upsert(
+                COLLECTION,
+                [PointStruct(id=point_id, vector=vec, payload=episode.model_dump())],
+            )
+            self._breaker.record_success()
+        except Exception:
+            self._breaker.record_failure()
+            log.warning("Failed to record episode %s", episode.id, exc_info=True)
+            return episode.id
         log.debug(
             "Recorded episode: %s (%s, %.0fs)", episode.id, episode.activity, episode.duration_s
         )
@@ -296,6 +310,10 @@ class EpisodeStore:
         min_score: float = 0.3,
     ) -> list[EpisodeMatch]:
         """Semantic search for similar episodes."""
+        if not self._breaker.allow_request():
+            log.warning("Episodic memory circuit breaker open, skipping search")
+            return []
+
         from agents._config import embed
 
         query_vec = embed(query, prefix="search_query")
@@ -316,12 +334,19 @@ class EpisodeStore:
 
             query_filter = Filter(must=conditions)
 
-        results = self.client.query_points(
-            COLLECTION,
-            query=query_vec,
-            query_filter=query_filter,
-            limit=limit,
-        )
+        try:
+            self.ensure_collection()
+            results = self.client.query_points(
+                COLLECTION,
+                query=query_vec,
+                query_filter=query_filter,
+                limit=limit,
+            )
+            self._breaker.record_success()
+        except Exception:
+            self._breaker.record_failure()
+            log.warning("Failed to search episodes", exc_info=True)
+            return []
 
         matches = []
         for point in results.points:
