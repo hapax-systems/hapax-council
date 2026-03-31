@@ -1,18 +1,36 @@
 """Tests for hapax-daimonion OTel tracing module."""
 
-from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory import InMemorySpanExporter
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 
 
-def _setup_test_tracer():
-    """Create an in-memory OTel tracer for testing."""
-    exporter = InMemorySpanExporter()
+class _ListSpanExporter(SpanExporter):
+    """Minimal in-memory exporter for tests (replaces removed InMemorySpanExporter)."""
+
+    def __init__(self) -> None:
+        self.spans: list = []
+
+    def export(self, spans):
+        self.spans.extend(spans)
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        pass
+
+    def clear(self) -> None:
+        self.spans.clear()
+
+    def get_finished_spans(self) -> list:
+        return list(self.spans)
+
+
+def _make_tracer(name: str = "test"):
+    """Create a fresh provider+exporter+tracer triple (no global mutation)."""
+    exporter = _ListSpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
-    return exporter
+    tracer = provider.get_tracer(name)
+    return exporter, provider, tracer
 
 
 def test_tracer_module_exports_tracer():
@@ -25,11 +43,8 @@ def test_tracer_module_exports_tracer():
 
 def test_tracer_creates_spans():
     """Spans created via the module tracer are recorded."""
-    exporter = _setup_test_tracer()
+    exporter, _provider, t = _make_tracer("hapax_daimonion.test")
 
-    # The module-level get_tracer() already ran, but the provider is global
-    # so we use a fresh tracer from the new provider to verify the pattern.
-    t = trace.get_tracer("hapax_daimonion.test")
     with t.start_as_current_span("test_span", attributes={"agent.name": "hapax-daimonion"}):
         pass
 
@@ -41,8 +56,7 @@ def test_tracer_creates_spans():
 
 def test_workspace_analysis_span_attributes():
     """Verify the workspace_analysis span pattern used in workspace_monitor."""
-    exporter = _setup_test_tracer()
-    t = trace.get_tracer("hapax_daimonion.workspace_monitor")
+    exporter, _provider, t = _make_tracer("hapax_daimonion.workspace_monitor")
 
     with t.start_as_current_span(
         "workspace_analysis",

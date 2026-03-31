@@ -5,30 +5,51 @@ by design — if no TracerProvider is configured, get_tracer() returns
 a no-op tracer that silently drops spans.
 """
 
-from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory import InMemorySpanExporter
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+
+
+class _ListSpanExporter(SpanExporter):
+    """Minimal in-memory exporter for tests (replaces removed InMemorySpanExporter)."""
+
+    def __init__(self) -> None:
+        self.spans: list = []
+
+    def export(self, spans):
+        self.spans.extend(spans)
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        pass
+
+    def clear(self) -> None:
+        self.spans.clear()
+
+    def get_finished_spans(self) -> list:
+        return list(self.spans)
+
+
+def _make_tracer(name: str = "test"):
+    """Create a fresh provider+exporter+tracer triple (no global mutation)."""
+    exporter = _ListSpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer(name)
+    return exporter, provider, tracer
 
 
 def test_noop_tracer_does_not_crash():
     """Without a configured provider, spans are silently dropped."""
-    # Reset to default (no-op) provider
-    trace.set_tracer_provider(TracerProvider())
-
-    t = trace.get_tracer("hapax_daimonion.noop_test")
+    provider = TracerProvider()
+    t = provider.get_tracer("hapax_daimonion.noop_test")
     with t.start_as_current_span("should_not_crash"):
         pass  # no error
 
 
 def test_span_with_exception_in_body():
     """Exceptions inside a span propagate normally (not swallowed)."""
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
+    exporter, _provider, t = _make_tracer("hapax_daimonion.exception_test")
 
-    t = trace.get_tracer("hapax_daimonion.exception_test")
     try:
         with t.start_as_current_span("failing_span"):
             raise ValueError("user error")
@@ -47,12 +68,8 @@ def test_span_with_exception_in_body():
 
 def test_nested_spans():
     """Nested spans are correctly parented."""
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
+    exporter, _provider, t = _make_tracer("hapax_daimonion.nesting_test")
 
-    t = trace.get_tracer("hapax_daimonion.nesting_test")
     with t.start_as_current_span("parent"):
         with t.start_as_current_span("child"):
             pass
@@ -67,12 +84,8 @@ def test_nested_spans():
 
 def test_attributes_are_recorded():
     """Span attributes round-trip correctly."""
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
+    exporter, _provider, t = _make_tracer("hapax_daimonion.attrs_test")
 
-    t = trace.get_tracer("hapax_daimonion.attrs_test")
     with t.start_as_current_span(
         "attr_span",
         attributes={

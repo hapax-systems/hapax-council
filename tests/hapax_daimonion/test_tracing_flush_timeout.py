@@ -4,20 +4,37 @@ Replaces the old VoiceTracer.flush() timeout tests — flush is now
 handled by the OTel SDK's TracerProvider.force_flush().
 """
 
-from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory import InMemorySpanExporter
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+
+
+class _ListSpanExporter(SpanExporter):
+    """Minimal in-memory exporter for tests (replaces removed InMemorySpanExporter)."""
+
+    def __init__(self) -> None:
+        self.spans: list = []
+
+    def export(self, spans):
+        self.spans.extend(spans)
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        pass
+
+    def clear(self) -> None:
+        self.spans.clear()
+
+    def get_finished_spans(self) -> list:
+        return list(self.spans)
 
 
 def test_force_flush_completes():
     """TracerProvider.force_flush() completes without error."""
-    exporter = InMemorySpanExporter()
+    exporter = _ListSpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
 
-    t = trace.get_tracer("hapax_daimonion.test_flush")
+    t = provider.get_tracer("hapax_daimonion.test_flush")
     with t.start_as_current_span("flush_test"):
         pass
 
@@ -36,8 +53,5 @@ def test_force_flush_on_empty_provider():
 def test_shutdown_pattern():
     """Verify the shutdown pattern used in __main__.py works."""
     provider = TracerProvider()
-    trace.set_tracer_provider(provider)
-
-    retrieved = trace.get_tracer_provider()
-    assert hasattr(retrieved, "force_flush")
-    retrieved.force_flush(timeout_millis=5000)
+    assert hasattr(provider, "force_flush")
+    provider.force_flush(timeout_millis=5000)
