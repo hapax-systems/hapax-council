@@ -39,7 +39,8 @@ def test_backend_protocol():
     assert backend.available()
     assert "ir_person_detected" in backend.provides
     assert "ir_drowsiness_score" in backend.provides
-    assert len(backend.provides) == 13
+    assert len(backend.provides) == 14
+    assert "ir_hand_zone" in backend.provides
 
 
 def test_no_state_files(tmp_path):
@@ -127,3 +128,23 @@ def test_fusion_any_pi_presence(tmp_path):
     behaviors: dict[str, Behavior] = {}
     backend.contribute(behaviors)
     assert behaviors["ir_person_detected"].value is True
+
+
+def test_hand_zone_from_overhead(tmp_path):
+    _write_report(
+        tmp_path,
+        "overhead",
+        hands=[{"zone": "mpc-pads", "bbox": [200, 300, 350, 420], "activity": "tapping"}],
+    )
+    backend = IrPresenceBackend(state_dir=tmp_path)
+    behaviors: dict[str, Behavior] = {}
+    backend.contribute(behaviors)
+    assert behaviors["ir_hand_zone"].value == "mpc-pads"
+
+
+def test_hand_zone_empty_when_no_hands(tmp_path):
+    _write_report(tmp_path, "desk")
+    backend = IrPresenceBackend(state_dir=tmp_path)
+    behaviors: dict[str, Behavior] = {}
+    backend.contribute(behaviors)
+    assert behaviors["ir_hand_zone"].value == "none"

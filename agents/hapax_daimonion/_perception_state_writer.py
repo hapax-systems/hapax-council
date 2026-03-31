@@ -432,6 +432,12 @@ def write_perception_state(
             "ir_blink_rate": _safe_float(_bval("ir_blink_rate", 0.0)),
             "ir_heart_rate_bpm": _safe_int(_bval("ir_heart_rate_bpm", 0)),
             "ir_brightness": _safe_float(_bval("ir_brightness", 0.0)),
+            "ir_person_count": _safe_int(_bval("ir_person_count", 0)),
+            "ir_motion_delta": _safe_float(_bval("ir_motion_delta", 0.0)),
+            "ir_head_pose_yaw": _safe_float(_bval("ir_head_pose_yaw", 0.0)),
+            "ir_posture": str(_bval("ir_posture", "unknown")),
+            "ir_heart_rate_conf": _safe_float(_bval("ir_heart_rate_conf", 0.0)),
+            "ir_hand_zone": str(_bval("ir_hand_zone", "none")),
             # Voice session (Batch A)
             "voice_session": _snapshot_voice_session(session, pipeline),
             # Supplementary content (Batch B)
