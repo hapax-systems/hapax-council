@@ -15,37 +15,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def format_tick_log(
-    posterior: float,
-    state: str,
-    signals: dict[str, bool | None],
-    signal_weights: dict[str, tuple[float, float]],
-) -> str:
-    """Format a single tick for structured logging.
-
-    Returns a compact string showing posterior, state, and per-signal
-    contribution (likelihood ratio, direction).
-    """
-    parts = [f"PRESENCE state={state} posterior={posterior:.3f}"]
-    contributions = []
-    for sig_name, observed in signals.items():
-        if observed is None:
-            continue
-        weights = signal_weights.get(sig_name)
-        if weights is None:
-            continue
-        p_present, p_absent = weights
-        if observed:
-            lr = p_present / p_absent
-            direction = "+"
-        else:
-            lr = (1 - p_present) / (1 - p_absent)
-            direction = "-"
-        contributions.append(f"{sig_name}={observed}({direction}{lr:.1f}x)")
-    parts.append(" ".join(contributions))
-    return " | ".join(parts)
-
-
 def build_presence_snapshot(engine: PresenceEngine) -> dict[str, object]:
     """Build a JSON-serializable snapshot of the presence engine state.
 

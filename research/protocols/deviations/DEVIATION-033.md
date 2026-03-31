@@ -1,18 +1,21 @@
-# DEVIATION-033: RESEARCH-STATE.md update for session 20
+# Deviation Record: DEVIATION-033
 
 **Date:** 2026-03-31
-**Filed by:** alpha session (Claude Opus 4.6)
-**Frozen path:** `agents/hapax_daimonion/proofs/RESEARCH-STATE.md`
-**Phase:** baseline
+**Phase at time of change:** baseline
+**Author:** Claude Code (gap closure plan)
 
-## Change
+## What Changed
 
-Appended session 20 entry documenting daimonion gap closure work. Added open questions about Cycle 3 contingency (approach B structural act injection).
+Removed unused `_repair_threshold()` method from `agents/hapax_daimonion/grounding_ledger.py` (lines 159-172). Dead code — never called from any code path.
 
-## Validity impact
+## Why
 
-**None.** RESEARCH-STATE.md is a research log, not experiment code. It does not affect any DV, the state machine, prompt construction, or analysis infrastructure. The session entry documents infrastructure changes and their non-impact on the experiment.
+Dead code removal as part of daimonion gap closure. The method was defined but never invoked by any caller in the codebase (verified via grep).
 
-## Justification
+## Impact on Experiment Validity
 
-Research convention requires updating RESEARCH-STATE.md after every session with research-relevant decisions (per file header). This session made decisions about responsive grounding acts that affect the Cycle 2 treatment design.
+None. The method was never called during any experiment phase. Removing it has zero effect on runtime behavior.
+
+## Mitigation
+
+Grep confirmed no callers exist. No behavioral change.

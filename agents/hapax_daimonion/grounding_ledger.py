@@ -156,21 +156,6 @@ class GroundingLedger:
 
         return "neutral"
 
-    def _repair_threshold(self, concern_overlap: float, gqi: float) -> float:
-        """Dynamic threshold: Clark's 'sufficient for current purposes'.
-
-        High concern + low GQI → require explicit ACCEPT (tight criterion).
-        Low concern + high GQI → IGNORE is sufficient (loose criterion).
-        """
-        concern_weight = min(1.0, concern_overlap * 2.0)
-        if concern_weight > 0.7 and gqi < 0.4:
-            return 0.9  # HIGH concern + LOW GQI: require ACCEPT only
-        if concern_weight > 0.7:
-            return 0.65  # HIGH concern + moderate GQI: ACCEPT or CLARIFY
-        if concern_weight < 0.3 and gqi > 0.7:
-            return 0.3  # LOW concern + HIGH GQI: IGNORE is fine
-        return 0.5  # Default
-
     def compute_gqi(self) -> float:
         """Grounding Quality Index: composite of acceptance and engagement signals.
 
