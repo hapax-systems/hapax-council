@@ -139,16 +139,41 @@ impl ContentSourceManager {
             seen.push(source_id);
         }
 
+        // Expire sources not seen or past TTL, clean up shm directories
         let now = Instant::now();
+        let sources_dir = self.sources_dir.clone();
         self.sources.retain(|id, src| {
-            if !seen.contains(id) {
-                return false;
+            let keep = seen.contains(id)
+                && now.duration_since(src.last_refresh).as_millis() <= src.manifest.ttl_ms as u128;
+            if !keep {
+                let dir = sources_dir.join(id);
+                if dir.exists() {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
             }
-            if now.duration_since(src.last_refresh).as_millis() > src.manifest.ttl_ms as u128 {
-                return false;
-            }
-            true
+            keep
         });
+
+        // Also clean up orphaned directories not tracked by the manager
+        // (e.g., from previous runs or sources that expired before being loaded)
+        for id in &seen {
+            if !self.sources.contains_key(id.as_str()) {
+                let manifest_path = self.sources_dir.join(id).join("manifest.json");
+                if let Some(manifest) = Self::read_manifest(&manifest_path) {
+                    if manifest.ttl_ms > 0 {
+                        // Check file age as proxy for staleness
+                        if let Ok(metadata) = std::fs::metadata(&manifest_path) {
+                            if let Ok(modified) = metadata.modified() {
+                                if modified.elapsed().unwrap_or_default().as_millis() > manifest.ttl_ms as u128 {
+                                    let dir = self.sources_dir.join(id);
+                                    let _ = std::fs::remove_dir_all(&dir);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn read_manifest(path: &Path) -> Option<SourceManifest> {

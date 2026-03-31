@@ -16,8 +16,8 @@ def test_observer_detects_write(tmp_path: Path):
     obs.scan()
 
     writers = obs.get_writers()
-    assert "hapax-stimmung" in writers
-    assert "state.json" in writers["hapax-stimmung"]
+    assert "stimmung" in writers
+    assert "state.json" in writers["stimmung"]
 
 
 def test_observer_builds_observed_edges(tmp_path: Path):
@@ -33,7 +33,7 @@ def test_observer_builds_observed_edges(tmp_path: Path):
     obs.scan()
 
     edges = obs.get_observed_edges()
-    assert ("hapax-stimmung", "perception") in edges
+    assert ("stimmung", "perception") in edges
 
 
 def test_observer_decays_stale_edges(tmp_path: Path):

@@ -237,7 +237,7 @@ class TestFlowObserverEmit:
         events = bus.recent()
         assert len(events) == 1
         assert events[0].kind == "shm.write"
-        assert events[0].source == "hapax-stimmung"
+        assert events[0].source == "stimmung"
         assert events[0].target == "reader-agent"
         assert events[0].label == "state.json"
 
