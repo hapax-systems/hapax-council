@@ -66,7 +66,7 @@ class ApperceptionTick:
         self._store = ApperceptionStore()
         try:
             self._store.ensure_collection()
-        except Exception:
+        except (OSError, RuntimeError):
             log.debug("Failed to ensure apperception collection", exc_info=True)
 
     def tick(self) -> None:
@@ -89,7 +89,7 @@ class ApperceptionTick:
         if now - self._last_flush >= 60.0:
             try:
                 self._store.flush()
-            except Exception:
+            except (OSError, RuntimeError):
                 log.debug("Failed to flush apperception store", exc_info=True)
             self._last_flush = now
 
@@ -101,7 +101,7 @@ class ApperceptionTick:
         """Persist self-model to cache. Call on shutdown."""
         try:
             self._store.flush()
-        except Exception:
+        except (OSError, RuntimeError):
             log.debug("Failed to flush store on save", exc_info=True)
         try:
             APPERCEPTION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,7 +125,7 @@ class ApperceptionTick:
         temporal_data = None
         try:
             temporal_data = json.loads(TEMPORAL_FILE.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             pass
 
         # 1. Surprise from temporal bands
@@ -156,7 +156,7 @@ class ApperceptionTick:
                         magnitude=0.7,
                     )
                 )
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             pass
 
         # 3. Stimmung transition
@@ -232,7 +232,7 @@ class ApperceptionTick:
                             magnitude=score,
                         )
                     )
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             pass
 
         # 7. Pattern shifts
@@ -253,7 +253,7 @@ class ApperceptionTick:
                             },
                         )
                     )
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             pass
 
         return events
@@ -265,7 +265,7 @@ class ApperceptionTick:
         try:
             raw = json.loads(STIMMUNG_FILE.read_text(encoding="utf-8"))
             return raw.get("overall_stance", "nominal"), raw
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return "nominal", None
 
     def _write_shm(self, pending_actions: list[str], event_count: int = 0) -> None:
@@ -291,6 +291,6 @@ class ApperceptionTick:
                 data = json.loads(APPERCEPTION_CACHE_FILE.read_text(encoding="utf-8"))
                 model = SelfModel.from_dict(data)
                 log.info("Loaded self-model from cache (%d dimensions)", len(model.dimensions))
-        except Exception:
+        except (OSError, json.JSONDecodeError, KeyError):
             log.debug("Failed to load self-model cache, starting fresh", exc_info=True)
         return ApperceptionCascade(self_model=model)

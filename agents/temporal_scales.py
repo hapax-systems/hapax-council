@@ -196,6 +196,11 @@ class SessionBuffer:
         return list(self._sessions)
 
     @property
+    def current_minutes(self) -> list[MinuteSummary]:
+        """Minutes accumulated in the current (open) session."""
+        return list(self._current_minutes)
+
+    @property
     def latest(self) -> SessionSummary | None:
         return self._sessions[-1] if self._sessions else None
 
@@ -318,8 +323,8 @@ class MultiScaleAggregator:
 
         # Current session: what we're accumulating now
         current = None
-        if self._session_buffer._current_minutes:
-            mins = self._session_buffer._current_minutes
+        if self._session_buffer.current_minutes:
+            mins = self._session_buffer.current_minutes
             if mins:
                 flow_means = [m.flow_mean for m in mins]
                 flow_mean = sum(flow_means) / len(flow_means)

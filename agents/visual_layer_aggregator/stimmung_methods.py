@@ -214,6 +214,7 @@ def write_temporal_bands(agg: VisualLayerAggregator) -> None:
             "retention_count": len(bands.retention),
             "protention_count": len(bands.protention),
             "surprise_count": len(bands.surprises),
+            "impression": bands.impression,
             "timestamp": time.time(),
         }
         _c.TEMPORAL_DIR.mkdir(parents=True, exist_ok=True)

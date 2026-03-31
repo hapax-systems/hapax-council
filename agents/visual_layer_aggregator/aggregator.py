@@ -16,7 +16,6 @@ from pathlib import Path
 import httpx
 
 from agents._active_correction import CorrectionSeeker
-from agents._apperception_tick import ApperceptionTick
 from agents._correction_memory import CorrectionStore
 from agents._episodic_memory import EpisodeBuilder, EpisodeStore
 from agents._stimmung import StimmungCollector, SystemStimmung
@@ -55,6 +54,7 @@ from agents.visual_layer_state import (
     VoiceSessionState,
     WatershedEvent,
 )
+from shared.apperception_tick import ApperceptionTick
 
 from .constants import (
     AMBIENT_CONTENT_INTERVAL_S,
@@ -283,6 +283,12 @@ class VisualLayerAggregator:
             self._ts_perception = time.monotonic()
             self._last_perception_data = data
             self._local_ring.push(data)
+            # Feed protention engine for statistical learning
+            self._protention.observe(
+                activity=data.get("production_activity", ""),
+                flow_score=data.get("flow_score", 0.0),
+                hour=datetime.now().hour,
+            )
 
             voice_signals, voice_state = map_voice_session(data)
             self._voice_signals = voice_signals
