@@ -138,6 +138,9 @@ async def get_flow_state(request: Request) -> dict:
             sp = node.get("_state_path", "")
             if sp:
                 _observer.register_reader(node["id"], sp)
+    # Update declared edge targets for event routing
+    edge_tuples = [(e["source"], e["target"]) for e in declared]
+    _observer.set_declared_edges(edge_tuples)
     try:
         _observer.scan()
     except Exception:
