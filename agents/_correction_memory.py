@@ -223,7 +223,7 @@ def check_for_corrections(
     try:
         store.record(correction)
     except Exception:
-        log.debug("Failed to record correction", exc_info=True)
+        log.warning("Failed to record correction", exc_info=True)
         return None
 
     return correction

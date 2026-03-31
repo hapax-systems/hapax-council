@@ -16,12 +16,15 @@ not defended (Weil), no suppression pathway, context-adaptive noise.
 from __future__ import annotations
 
 import hashlib
+import logging
 import random
 import time
 from collections import deque
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+log = logging.getLogger(__name__)
 
 # ── Source Types ─────────────────────────────────────────────────────────────
 
@@ -692,6 +695,7 @@ class ApperceptionStore:
             client.upsert(collection_name=self.COLLECTION_NAME, points=points)
             return len(points)
         except Exception:
+            log.warning("Apperception flush failed", exc_info=True)
             return 0
 
     def search(self, query: str, limit: int = 5) -> list[dict]:
@@ -714,4 +718,5 @@ class ApperceptionStore:
             ).points
             return [r.payload for r in results if r.payload]
         except Exception:
+            log.warning("Apperception search failed", exc_info=True)
             return []
