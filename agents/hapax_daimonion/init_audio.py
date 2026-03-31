@@ -67,7 +67,7 @@ def init_salience(daemon: VoiceDaemon) -> None:
     daemon._salience_embedder = None
     daemon._salience_concern_graph = None
     daemon._salience_diagnostics = None
-    daemon._context_distillation: str = ""
+    daemon._context_distillation = ""
     if not daemon.cfg.salience_enabled:
         return
     try:

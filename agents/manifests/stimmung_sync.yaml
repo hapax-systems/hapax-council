@@ -5,6 +5,7 @@ purpose: Aggregate environmental and operator signals into a unified stance stat
 schedule:
   type: timer
   interval: 15m
+  systemd_unit: stimmung-sync.timer
 
 pipeline_role: processor
 pipeline_layer: perception

@@ -76,7 +76,9 @@ def push_supplementary_content(
 def _get_live_content() -> list[dict[str, object]]:
     """Return non-expired supplementary content items."""
     now = time.time()
-    return [c for c in _supplementary_content if now - c.get("ts", 0) < c.get("ttl", 300)]
+    return [
+        c for c in _supplementary_content if now - float(c.get("ts", 0)) < float(c.get("ttl", 300))
+    ]
 
 
 # ── Voice session snapshot ────────────────────────────────────────────────

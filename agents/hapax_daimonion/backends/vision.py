@@ -100,21 +100,21 @@ def _infer_cross_modal_activity(
     # Autocorrelation-based scratch detection is unreliable at high contact mic
     # gain (turntable motor vibration dominates), so the camera is primary.
     # Specific match first: both modalities agree → highest confidence.
-    if "turntable" in hand_zones and desk_activity == "scratching":
+    if "turntable" in str(hand_zones) and desk_activity == "scratching":
         return ("scratching", 0.95)  # both agree — highest confidence
-    if "turntable" in hand_zones and desk_activity not in ("idle", ""):
+    if "turntable" in str(hand_zones) and desk_activity not in ("idle", ""):
         return ("scratching", 0.85)
 
     # Pad zones: MPC Live II + two SP-404 MKIIs
     pad_zones = ("mpc", "sp404_left", "sp404_right", "pads")
-    if any(z in hand_zones for z in pad_zones) and desk_activity in ("drumming", "tapping"):
+    if any(z in str(hand_zones) for z in pad_zones) and desk_activity in ("drumming", "tapping"):
         return ("playing_pads", 0.90)
-    if any(z in hand_zones for z in pad_zones) and desk_activity not in ("idle", ""):
+    if any(z in str(hand_zones) for z in pad_zones) and desk_activity not in ("idle", ""):
         return ("playing_pads", 0.80)  # camera sees pads, some desk activity
 
-    if "keyboard" in hand_zones and desk_activity == "typing":
+    if "keyboard" in str(hand_zones) and desk_activity == "typing":
         return ("coding", 0.90)
-    if "mixer" in hand_zones and desk_activity == "tapping":
+    if "mixer" in str(hand_zones) and desk_activity == "tapping":
         return ("mixing", 0.85)
 
     # IR hand activity as supplementary signal (works when RGB overhead fails)
@@ -134,7 +134,7 @@ def _infer_cross_modal_activity(
             if obj_str.strip():
                 all_objects.add(obj_str.strip())
 
-    person_present = any(b.get("person_count", 0) > 0 for b in per_camera_behaviors.values())
+    person_present = any(int(b.get("person_count", 0)) > 0 for b in per_camera_behaviors.values())
 
     # Music production: audio music + person + equipment visible
     if audio_activity == "production" and person_present:
@@ -249,11 +249,11 @@ class _VisionCache:
         # ── Person presence: majority vote ──────────────────────────────
         person_votes: list[bool] = []
         for behaviors in self._per_camera_behaviors.values():
-            if now - behaviors.get("ts", 0) < stale_threshold:
-                person_votes.append(behaviors.get("person_count", 0) > 0)
+            if now - float(behaviors.get("ts", 0)) < stale_threshold:
+                person_votes.append(int(behaviors.get("person_count", 0)) > 0)
         person_present = sum(person_votes) >= max(1, len(person_votes) // 2)
         person_count = (
-            max(b.get("person_count", 0) for b in self._per_camera_behaviors.values())
+            max(int(b.get("person_count", 0)) for b in self._per_camera_behaviors.values())
             if self._per_camera_behaviors
             else 0
         )
@@ -299,7 +299,7 @@ class _VisionCache:
         scene_type_votes: dict[str, int] = {}
         per_camera_scenes: dict[str, str] = {}
         for role, behaviors in self._per_camera_behaviors.items():
-            if now - behaviors.get("ts", 0) < stale_threshold:
+            if now - float(behaviors.get("ts", 0)) < stale_threshold:
                 st = self._per_camera_scene_types.get(role, "unknown")
                 if st and st != "unknown":
                     scene_type_votes[st] = scene_type_votes.get(st, 0) + 1
@@ -727,7 +727,7 @@ class VisionBackend:
         overhead = self._cache._per_camera_behaviors.get("overhead", {})
         hand_zones = overhead.get("hand_zones", "")
         hand_zones_ts = overhead.get("hand_zones_ts", 0.0)
-        if now - hand_zones_ts > 30.0:  # 30s staleness (2 overhead cycles)
+        if now - float(hand_zones_ts) > 30.0:  # 30s staleness (2 overhead cycles)
             hand_zones = ""
         self._b_hand_zones.update(hand_zones, now)
 
