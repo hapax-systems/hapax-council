@@ -67,6 +67,9 @@ class VoiceDaemon:
 
     def _init_core_subsystems(self) -> None:
         """Initialize session, presence, gate, hotkey, wake word, TTS, chime."""
+        from agents.hapax_daimonion.error_strategy import DegradationRegistry
+
+        self.degradation_registry = DegradationRegistry()
         self.session = SessionManager(silence_timeout_s=self.cfg.silence_timeout_s)
         self.presence = PresenceDetector(
             window_minutes=self.cfg.presence_window_minutes,

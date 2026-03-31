@@ -18,42 +18,44 @@ def register_perception_backends(daemon: VoiceDaemon) -> None:
 
         daemon.perception.register_backend(PipeWireBackend())
     except Exception:
-        log.info("PipeWireBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "PipeWireBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.hyprland import HyprlandBackend
 
         daemon.perception.register_backend(HyprlandBackend())
     except Exception:
-        log.info("HyprlandBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "HyprlandBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.watch import WatchBackend
 
         daemon.perception.register_backend(WatchBackend())
     except Exception:
-        log.info("WatchBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "WatchBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.health import HealthBackend
 
         daemon.perception.register_backend(HealthBackend())
     except Exception:
-        log.info("HealthBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "HealthBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.circadian import CircadianBackend
 
         daemon.perception.register_backend(CircadianBackend())
     except Exception:
-        log.info("CircadianBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "CircadianBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.studio_ingestion import StudioIngestionBackend
 
         daemon.perception.register_backend(StudioIngestionBackend())
     except Exception:
-        log.info("StudioIngestionBackend not available, skipping")
+        daemon.degradation_registry.record(
+            "backends", "StudioIngestionBackend", "info", "not available"
+        )
 
     try:
         from agents.hapax_daimonion.backends.vision import VisionBackend
@@ -62,14 +64,16 @@ def register_perception_backends(daemon: VoiceDaemon) -> None:
         if webcam is not None:
             daemon.perception.register_backend(VisionBackend(webcam_capturer=webcam))
     except Exception:
-        log.info("VisionBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "VisionBackend", "warning", "not available")
 
     try:
         from agents.hapax_daimonion.backends.devices import DeviceStateBackend
 
         daemon.perception.register_backend(DeviceStateBackend())
     except Exception:
-        log.info("DeviceStateBackend not available, skipping")
+        daemon.degradation_registry.record(
+            "backends", "DeviceStateBackend", "info", "not available"
+        )
 
     try:
         from agents.hapax_daimonion.backends.local_llm import LocalLLMBackend
@@ -78,7 +82,7 @@ def register_perception_backends(daemon: VoiceDaemon) -> None:
         daemon.perception.register_backend(daemon._local_llm_backend)
     except Exception:
         daemon._local_llm_backend = None
-        log.info("LocalLLMBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "LocalLLMBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.midi_clock import MidiClockBackend
@@ -90,7 +94,7 @@ def register_perception_backends(daemon: VoiceDaemon) -> None:
             )
         )
     except Exception:
-        log.info("MidiClockBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "MidiClockBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.input_activity import InputActivityBackend
@@ -99,7 +103,9 @@ def register_perception_backends(daemon: VoiceDaemon) -> None:
             InputActivityBackend(idle_threshold_s=daemon.cfg.input_idle_threshold_s)
         )
     except Exception:
-        log.info("InputActivityBackend not available, skipping")
+        daemon.degradation_registry.record(
+            "backends", "InputActivityBackend", "info", "not available"
+        )
 
     try:
         from agents.hapax_daimonion.backends.contact_mic import ContactMicBackend
@@ -108,56 +114,60 @@ def register_perception_backends(daemon: VoiceDaemon) -> None:
             ContactMicBackend(source_name=daemon.cfg.contact_mic_source)
         )
     except Exception:
-        log.info("ContactMicBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "ContactMicBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.mixer_input import MixerInputBackend
 
         daemon.perception.register_backend(MixerInputBackend())
     except Exception:
-        log.info("MixerInputBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "MixerInputBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.ir_presence import IrPresenceBackend
 
         daemon.perception.register_backend(IrPresenceBackend())
     except Exception:
-        log.info("IrPresenceBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "IrPresenceBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.bt_presence import BTPresenceBackend
 
         daemon.perception.register_backend(BTPresenceBackend())
     except Exception:
-        log.info("BTPresenceBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "BTPresenceBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.phone_media import PhoneMediaBackend
 
         daemon.perception.register_backend(PhoneMediaBackend())
     except Exception:
-        log.info("PhoneMediaBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "PhoneMediaBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.phone_messages import PhoneMessagesBackend
 
         daemon.perception.register_backend(PhoneMessagesBackend())
     except Exception:
-        log.info("PhoneMessagesBackend not available, skipping")
+        daemon.degradation_registry.record(
+            "backends", "PhoneMessagesBackend", "info", "not available"
+        )
 
     try:
         from agents.hapax_daimonion.backends.phone_calls import PhoneCallsBackend
 
         daemon.perception.register_backend(PhoneCallsBackend())
     except Exception:
-        log.info("PhoneCallsBackend not available, skipping")
+        daemon.degradation_registry.record("backends", "PhoneCallsBackend", "info", "not available")
 
     try:
         from agents.hapax_daimonion.backends.phone_awareness import PhoneAwarenessBackend
 
         daemon.perception.register_backend(PhoneAwarenessBackend())
     except Exception:
-        log.info("PhoneAwarenessBackend not available, skipping")
+        daemon.degradation_registry.record(
+            "backends", "PhoneAwarenessBackend", "info", "not available"
+        )
 
     # Bayesian presence engine (fuses all signals into presence probability)
     if daemon.cfg.presence_bayesian_enabled:
@@ -175,6 +185,16 @@ def register_perception_backends(daemon: VoiceDaemon) -> None:
             daemon.perception.register_backend(daemon._presence_engine)
         except Exception:
             daemon._presence_engine = None
-            log.warning("PresenceEngine not available, skipping", exc_info=True)
+            daemon.degradation_registry.record(
+                "backends", "PresenceEngine", "warning", "not available"
+            )
     else:
         daemon._presence_engine = None
+
+    counts = daemon.degradation_registry.count_by_severity()
+    if counts:
+        log.info(
+            "Backend registration complete: %d degraded (%s)",
+            sum(counts.values()),
+            ", ".join(f"{k}={v}" for k, v in counts.items()),
+        )
