@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from agents._axiom_registry import load_axioms
 from sdlc.github import (
     add_pr_labels,
     fetch_pr_changed_files,
@@ -31,8 +32,6 @@ from sdlc.github import (
     post_pr_comment,
 )
 from sdlc.trace_export import TraceContext, is_file_export
-
-from agents._axiom_registry import load_axioms
 
 # ---------------------------------------------------------------------------
 # Structured output

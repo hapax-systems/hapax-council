@@ -25,6 +25,8 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from agents._axiom_enforcement import check_full
+from agents._axiom_registry import load_axioms, load_implications
 from sdlc.github import (
     add_pr_labels,
     fetch_pr,
@@ -33,9 +35,6 @@ from sdlc.github import (
     post_pr_comment,
 )
 from sdlc.trace_export import TraceContext, is_file_export
-
-from agents._axiom_enforcement import check_full
-from agents._axiom_registry import load_axioms, load_implications
 
 # ---------------------------------------------------------------------------
 # Structured output

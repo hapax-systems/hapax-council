@@ -44,6 +44,22 @@ LOGOS_BASE: str = os.environ.get("COCKPIT_BASE_URL", "http://localhost:8051/api"
 # ── Camera roles and experimental filters ────────────────────────────────────
 
 
+CAMERA_ROLES = [
+    "operator",
+    "desk",
+    "operator",
+    "room",
+    "operator",
+    "overhead",
+    "room-brio",
+    "synths-brio",
+]
+
+# Re-exports from agents._cameras (moved during monolith decomposition)
+from agents._cameras import SHORT_TO_ROLE as _ROLE_MAP  # noqa: F401, E402
+from agents._cameras import can_enrich_persons  # noqa: F401, E402
+from agents._cameras import resolution as cam_resolution  # noqa: F401, E402
+
 CAMERA_FILTERS = [
     "sepia(0.8) contrast(1.3) brightness(0.7)",
     "hue-rotate(30deg) saturate(1.8) brightness(0.6)",

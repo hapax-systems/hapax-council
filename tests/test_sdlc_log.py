@@ -1,14 +1,10 @@
-"""Tests for shared.sdlc_log — SDLC decision event persistence."""
+"""Tests for sdlc.log — SDLC decision event persistence."""
 
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from shared.sdlc_log import log_sdlc_event, read_sdlc_events, rotate_sdlc_log
+from sdlc.log import log_sdlc_event, read_sdlc_events, rotate_sdlc_log
 
 
 class TestLogSdlcEvent:

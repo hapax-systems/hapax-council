@@ -4,7 +4,7 @@ Re-exports consent channel types during shared/ dissolution.
 Will be replaced with vendored code when shared/ is deleted (phase 3.8).
 """
 
-from shared.governance.consent_channels import (  # noqa: F401
+from agents._governance.consent_channels import (  # noqa: F401
     CAPABILITY_DIMENSIONS,
     ChannelMenu,
     ChannelOffer,

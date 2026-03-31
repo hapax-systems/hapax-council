@@ -26,10 +26,9 @@ from pydantic import BaseModel
 # Ensure project root is importable.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from agents._axiom_registry import load_axioms
 from sdlc.github import fetch_issue
 from sdlc.trace_export import TraceContext, is_file_export
-
-from agents._axiom_registry import load_axioms
 
 # ---------------------------------------------------------------------------
 # Structured output model

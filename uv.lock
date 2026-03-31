@@ -1629,7 +1629,6 @@ name = "hapax-council"
 version = "0.3.7"
 source = { editable = "." }
 dependencies = [
-    { name = "hapax-sdlc" },
     { name = "httpx" },
     { name = "litellm" },
     { name = "llmlingua" },
@@ -1764,7 +1763,6 @@ requires-dist = [
     { name = "hapax-council", extras = ["logos-api"], marker = "extra == 'ci'" },
     { name = "hapax-council", extras = ["studio"], marker = "extra == 'host'" },
     { name = "hapax-council", extras = ["sync-pipeline"], marker = "extra == 'ci'" },
-    { name = "hapax-sdlc", git = "https://github.com/ryanklee/hapax-constitution.git?rev=cbdf204756fc6f0583d3056669e2c8643ca15d21" },
     { name = "hsemotion-onnx", marker = "extra == 'audio'", specifier = ">=0.3" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "jinja2", marker = "extra == 'logos-api'", specifier = ">=3.1" },
@@ -1826,15 +1824,6 @@ dev = [
     { name = "pytest-cov", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.15.0" },
     { name = "schemathesis", specifier = ">=4.7" },
-]
-
-[[package]]
-name = "hapax-sdlc"
-version = "0.2.0"
-source = { git = "https://github.com/ryanklee/hapax-constitution.git?rev=cbdf204756fc6f0583d3056669e2c8643ca15d21#cbdf204756fc6f0583d3056669e2c8643ca15d21" }
-dependencies = [
-    { name = "pydantic" },
-    { name = "pyyaml" },
 ]
 
 [[package]]
