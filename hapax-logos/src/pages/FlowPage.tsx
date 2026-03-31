@@ -23,7 +23,7 @@ import type { ThemePalette } from "../theme/palettes";
 // ── Types ───────────────────────────────────────────────────────────
 
 interface NodeMetrics { [key: string]: unknown; }
-interface FlowNode { id: string; label: string; status: string; age_s: number; metrics: NodeMetrics; [key: string]: unknown; }
+interface FlowNode { id: string; label: string; status: string; age_s: number; metrics: NodeMetrics; _stance?: string; [key: string]: unknown; }
 interface FlowEdge { source: string; target: string; active: boolean; label: string; edge_type?: "confirmed" | "emergent" | "dormant"; }
 interface SystemFlowState { nodes: FlowNode[]; edges: FlowEdge[]; timestamp: number; }
 
@@ -63,14 +63,17 @@ const FALLBACK_POSITIONS: Record<string, { x: number; y: number }> = {
 
 function flowColors(p: ThemePalette) {
   return {
-    active: { bg: `color-mix(in srgb, ${p["green-400"]} 10%, transparent)`, border: p["green-400"], glow: `color-mix(in srgb, ${p["green-400"]} 25%, transparent)` },
-    stale: { bg: `color-mix(in srgb, ${p["orange-400"]} 10%, transparent)`, border: p["orange-400"], glow: `color-mix(in srgb, ${p["orange-400"]} 15%, transparent)` },
-    offline: { bg: `color-mix(in srgb, ${p["zinc-600"]} 6%, transparent)`, border: p["zinc-600"], glow: "transparent" },
+    active: { bg: `color-mix(in srgb, ${p["green-400"]} 10%, transparent)`, border: p["green-400"] },
+    stale: { bg: `color-mix(in srgb, ${p["yellow-400"]} 10%, transparent)`, border: p["yellow-400"] },
+    offline: { bg: `color-mix(in srgb, ${p["zinc-600"]} 6%, transparent)`, border: p["zinc-600"] },
   };
 }
 
-function edgeColor(age_s: number, active: boolean, p: ThemePalette): string {
-  if (!active) return p["zinc-700"]; if (age_s < 5) return p["green-400"]; if (age_s < 15) return p["yellow-400"]; return p["orange-400"];
+function statusEdgeColor(sourceStatus: string, active: boolean, p: ThemePalette): string {
+  if (!active) return p["zinc-700"];
+  if (sourceStatus === "active") return p["green-400"];
+  if (sourceStatus === "stale") return p["yellow-400"];
+  return p["zinc-700"];
 }
 function sevColor(v: number, p: ThemePalette) { return v > 0.7 ? p["red-400"] : v > 0.4 ? p["orange-400"] : v > 0.2 ? p["yellow-400"] : p["green-400"]; }
 function stColor(s: string, p: ThemePalette) { return s === "nominal" ? p["green-400"] : s === "cautious" ? p["yellow-400"] : s === "degraded" ? p["orange-400"] : s === "critical" ? p["red-400"] : p["zinc-500"]; }
@@ -78,8 +81,14 @@ function stColor(s: string, p: ThemePalette) { return s === "nominal" ? p["green
 const SIG_CAT: Record<string, string> = { context_time: "blue-400", governance: "fuchsia-400", work_tasks: "orange-400", health_infra: "red-400", profile_state: "green-400", ambient_sensor: "emerald-400", voice_session: "yellow-400", system_state: "zinc-600" };
 const VOICE_COL: Record<string, string> = { listening: "green-400", transcribing: "green-400", thinking: "yellow-400", speaking: "blue-400" };
 
-function breathDur(age: number, st: string) { if (st !== "active") return "0s"; if (age < 3) return "1.5s"; if (age < 10) return "2.5s"; if (age < 20) return "4s"; return "6s"; }
-function nodeOp(age: number, st: string) { if (st === "offline") return 0.5; if (age < 5) return 1.0; if (age < 15) return 0.95; if (age < 30) return 0.85; return 0.7; }
+function stimmungBreath(stance: string, status: string): { dur: string; glow: string; scale: number } {
+  if (status === "offline") return { dur: "0s", glow: "none", scale: 1 };
+  switch (stance) {
+    case "critical": return { dur: "2s", glow: "inset 0 0 12px", scale: 1.15 };
+    case "degraded": return { dur: "6s", glow: "inset 0 0 8px", scale: 1 };
+    default: return { dur: "0s", glow: "none", scale: 1 };
+  }
+}
 
 // ── Micro-components ────────────────────────────────────────────────
 
@@ -103,12 +112,12 @@ function ArcGauge({ value, color, size = 16 }: { value: number; color: string; s
 function FlowingEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps) {
   const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   const d = data as Record<string, unknown>;
-  const active = (d?.active as boolean) ?? false, age = (d?.age_s as number) ?? 999;
+  const active = (d?.active as boolean) ?? false;
+  const sourceStatus = (d?.source_status as string) ?? "offline";
   const lbl = (d?.label as string) ?? "";
   const edgeType = (d?.edge_type as string) ?? "confirmed";
   const { palette: ep } = useTheme();
 
-  // Style by edge type: confirmed (solid), emergent (dashed amber), dormant (dotted dim)
   let strokeDash: string | undefined;
   let color: string;
   let opacity: number;
@@ -118,15 +127,12 @@ function FlowingEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, t
       strokeDash = "6 3"; color = ep["yellow-400"]; opacity = 0.8; width = 2; break;
     case "dormant":
       strokeDash = "2 4"; color = ep["zinc-600"]; opacity = 0.2; width = 1; break;
-    default: // confirmed
-      strokeDash = undefined; color = edgeColor(age, active, ep); opacity = active ? 0.7 : 0.15; width = active ? 1.5 : 0.8;
+    default:
+      strokeDash = undefined; color = statusEdgeColor(sourceStatus, active, ep); opacity = active ? 0.7 : 0.15; width = active ? 1.5 : 0.8;
   }
-  const showParticles = (edgeType === "confirmed" || edgeType === "emergent") && active;
-  const pc = showParticles ? (age < 5 ? 3 : age < 15 ? 2 : 1) : 0;
   return (
     <g className="flow-edge-group">
       <BaseEdge id={id} path={path} style={{ stroke: color, strokeWidth: width, opacity, strokeDasharray: strokeDash, transition: "stroke 1s ease, opacity 1s ease" }} />
-      {Array.from({ length: pc }).map((_, i) => <circle key={i} r="2" fill={color} opacity="0.8"><animateMotion dur={age < 5 ? "2s" : age < 15 ? "3.5s" : "5s"} path={path} repeatCount="indefinite" begin={`${i/pc}s`} /></circle>)}
       {lbl && <text className="flow-edge-label"><textPath href={`#${id}`} startOffset="50%" textAnchor="middle" style={{ fontSize: "9px", fill: edgeType === "emergent" ? ep["yellow-400"] : active ? ep["text-muted"] : ep["border-muted"], fontFamily: "'JetBrains Mono', monospace" }}>{edgeType === "emergent" ? `⚡ ${lbl}` : lbl}</textPath></text>}
     </g>
   );
@@ -247,8 +253,23 @@ function PhenomenalBody({ m, p }: { m: NodeMetrics; p: ThemePalette }) {
 function SystemNode({ data }: { data: FlowNode }) {
   const { palette: p } = useTheme();
   const fc = flowColors(p), colors = fc[data.status as keyof typeof fc] || fc.offline;
-  const m = data.metrics || {}, br = breathDur(data.age_s, data.status), op = nodeOp(data.age_s, data.status);
+  const m = data.metrics || {};
+  const stance = data._stance || "unknown";
+  const breath = stimmungBreath(stance, data.status);
+  const op = data.status === "offline" ? 0.5 : 1.0;
   const sk = SP_METRIC[data.id]; if (sk && m[sk] !== undefined) pushSp(data.id, m[sk] as number);
+
+  // Stimmung node gets stance-specific border opacity per design language §3.4
+  const stimmungBorderAlpha = data.id === "stimmung"
+    ? stance === "critical" ? 0.35 : stance === "degraded" ? 0.25 : stance === "cautious" ? 0.15 : 1
+    : 1;
+  const borderColor = stimmungBorderAlpha < 1
+    ? `color-mix(in srgb, ${colors.border} ${(stimmungBorderAlpha * 100).toFixed(0)}%, transparent)`
+    : colors.border;
+
+  const glowColor = `color-mix(in srgb, ${colors.border} ${stance === "critical" ? "8%" : "6%"}, transparent)`;
+  const glowMin = breath.glow !== "none" ? `${breath.glow} ${glowColor}` : "none";
+  const glowMax = breath.glow !== "none" ? `${breath.glow} color-mix(in srgb, ${colors.border} ${stance === "critical" ? "16%" : "12%"}, transparent)` : "none";
 
   const body = () => { switch (data.id) {
     case "perception": return <PerceptionBody m={m} p={p} />;
@@ -264,16 +285,34 @@ function SystemNode({ data }: { data: FlowNode }) {
   }};
 
   return (
-    <div style={{ background: colors.bg, border: `1.5px solid ${colors.border}`, borderRadius: 12, padding: "10px 14px", minWidth: 150, maxWidth: 220, opacity: op, transition: "opacity 2s ease, box-shadow 1s ease", fontFamily: "'JetBrains Mono', monospace", animation: br !== "0s" ? `breathe ${br} ease-in-out infinite` : "none" }}>
+    <div style={{
+      background: colors.bg,
+      border: `1.5px solid ${borderColor}`,
+      borderRadius: 12,
+      padding: "10px 14px",
+      minWidth: 150,
+      maxWidth: 220,
+      opacity: op,
+      transition: "opacity 1s ease, transform 0.3s ease",
+      fontFamily: "'JetBrains Mono', monospace",
+      animation: breath.dur !== "0s"
+        ? breath.scale !== 1
+          ? `breathe ${breath.dur} ease-in-out infinite, breathe-pulse ${breath.dur} ease-in-out infinite`
+          : `breathe ${breath.dur} ease-in-out infinite`
+        : "none",
+      '--breathe-glow-min': glowMin,
+      '--breathe-glow-max': glowMax,
+      '--breathe-scale': String(breath.scale),
+    } as React.CSSProperties}>
       <Handle type="target" position={Position.Top} style={{ background: colors.border, width: 6, height: 6 }} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
         <span style={{ color: p["text-emphasis"], fontSize: 12, fontWeight: 600, letterSpacing: "0.02em" }}>{data.label}</span>
-        <span style={{ width: 6, height: 6, borderRadius: "50%", background: colors.border, boxShadow: data.status === "active" ? `0 0 6px ${colors.border}` : "none" }} />
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: colors.border }} />
       </div>
       <div style={{ fontSize: 10, lineHeight: "1.6" }}>
         {body()}
         {SP_METRIC[data.id] && <Sparkline nodeId={data.id} color={colors.border} />}
-        {data.status !== "offline" && <div style={{ color: p["border-muted"], marginTop: 3, fontSize: 9, textAlign: "right" }}>{data.age_s < 1 ? "now" : `${data.age_s.toFixed(0)}s`}</div>}
+        {data.status !== "offline" && <div style={{ color: p["text-muted"], marginTop: 3, fontSize: 9, textAlign: "right" }}>{data.age_s < 1 ? "now" : `${data.age_s.toFixed(0)}s`}</div>}
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: colors.border, width: 6, height: 6 }} />
     </div>
@@ -303,7 +342,7 @@ function DetailPanel({ node, onClose }: { node: FlowNode | null; onClose: () => 
   }};
 
   return (
-    <div style={{ position: "absolute", right: 16, top: 16, width: 320, background: `color-mix(in srgb, ${p.surface} 95%, transparent)`, border: `1px solid ${colors.border}`, borderRadius: 12, padding: 16, zIndex: 100, fontFamily: "'JetBrains Mono', monospace", boxShadow: `0 8px 32px rgba(0,0,0,0.5), 0 0 20px ${colors.glow}`, backdropFilter: "blur(8px)" }}>
+    <div style={{ position: "absolute", right: 16, top: 16, width: 320, background: `color-mix(in srgb, ${p.surface} 95%, transparent)`, border: `1px solid ${colors.border}`, borderRadius: 12, padding: 16, zIndex: 100, fontFamily: "'JetBrains Mono', monospace", boxShadow: `0 8px 32px rgba(0,0,0,0.5), 0 0 20px color-mix(in srgb, ${colors.border} 15%, transparent)`, backdropFilter: "blur(8px)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}><h3 style={{ color: p["text-emphasis"], margin: 0, fontSize: 14 }}>{node.label}</h3><button onClick={onClose} style={{ background: "none", border: "none", color: p["text-muted"], cursor: "pointer", fontSize: 16 }}>x</button></div>
       <div style={{ color: p["text-secondary"], fontSize: 11, marginBottom: 8 }}><span style={{ color: colors.border }}>*</span> {node.status} — {node.age_s.toFixed(1)}s ago</div>
       {detail()}
@@ -351,18 +390,23 @@ export function FlowPage() {
   }, []);
 
   useEffect(() => { if (!flowState) return;
-    const am: Record<string, number> = {}; for (const n of flowState.nodes) am[n.id] = n.age_s;
+    const stimmungNode = flowState.nodes.find(n => n.id === "stimmung");
+    const stance = (stimmungNode?.metrics?.stance as string) || "unknown";
     // Consent phase available from node metrics (used by edge rendering via edge_type)
     const rawNodes: Node[] = flowState.nodes.map(n => ({
       id: n.id, type: "system",
       position: prevPos.current[n.id] || FALLBACK_POSITIONS[n.id] || { x: 0, y: 0 },
-      data: n, draggable: true,
+      data: { ...n, _stance: stance }, draggable: true,
     }));
-    const rawEdges: Edge[] = flowState.edges.map((e, i) => ({
-      id: `${e.source}-${e.target}-${i}`, source: e.source, target: e.target, type: "flowing",
-      data: { active: e.active, age_s: am[e.source] || 999, label: e.label, edge_type: e.edge_type || "confirmed" },
-      markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(am[e.source] || 999, e.active, p), width: 12, height: 12 },
-    }));
+    const rawEdges: Edge[] = flowState.edges.map((e, i) => {
+      const sourceNode = flowState.nodes.find(n => n.id === e.source);
+      const sourceStatus = sourceNode?.status || "offline";
+      return {
+        id: `${e.source}-${e.target}-${i}`, source: e.source, target: e.target, type: "flowing",
+        data: { active: e.active, source_status: sourceStatus, label: e.label, edge_type: e.edge_type || "confirmed" },
+        markerEnd: { type: MarkerType.ArrowClosed, color: statusEdgeColor(sourceStatus, e.active, p), width: 12, height: 12 },
+      };
+    });
     // Use dagre layout if no user-dragged positions
     const hasDragged = Object.keys(prevPos.current).length > 0;
     if (hasDragged) {
@@ -382,7 +426,8 @@ export function FlowPage() {
   return (
     <div style={{ width: "100%", height: "100%", background: p.bg, position: "relative" }}>
       <style>{`
-        @keyframes breathe { 0%, 100% { box-shadow: 0 0 12px var(--glow-color, rgba(16,185,129,0.25)); } 50% { box-shadow: 0 0 24px var(--glow-color, rgba(16,185,129,0.4)); } }
+        @keyframes breathe { 0%, 100% { box-shadow: var(--breathe-glow-min, none); opacity: 1; } 50% { box-shadow: var(--breathe-glow-max, none); opacity: 0.92; } }
+        @keyframes breathe-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(var(--breathe-scale, 1)); } }
         .react-flow__edge-path { transition: stroke 1s ease, opacity 1s ease; }
         .react-flow__handle { border: none !important; }
         .react-flow__controls { border-radius: 8px; overflow: hidden; }
