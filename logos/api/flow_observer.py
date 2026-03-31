@@ -14,6 +14,18 @@ log = logging.getLogger(__name__)
 
 DEFAULT_SHM_ROOT = Path("/dev/shm")
 
+# Verified consumption map: producer_node_id → [consumer_node_ids]
+# Derived from codebase audit — each entry is a proven code-level read
+# of one agent's SHM state file by another agent's source code.
+_VERIFIED_CONSUMERS: dict[str, list[str]] = {
+    "stimmung_sync": ["hapax_daimonion", "reactive_engine", "studio_compositor"],
+    "temporal_bands": ["hapax_daimonion", "studio_compositor"],
+    "apperception": ["hapax_daimonion"],
+    "studio_compositor": ["hapax_daimonion"],
+    "dmn": ["hapax_daimonion", "studio_compositor"],
+    "hapax_daimonion": ["studio_compositor"],
+}
+
 
 class FlowObserver:
     """Observes SHM directories to discover actual data flows.
@@ -47,20 +59,11 @@ class FlowObserver:
         """Register an agent as a reader of a specific state file."""
         self._readers[agent_id] = state_path
         # Build reverse mapping: SHM dir name -> node ID
-        # Path like /dev/shm/hapax-compositor/... means dir "compositor" -> agent_id
-        if "/dev/shm/hapax-" in state_path:
-            shm_dir = state_path.split("/dev/shm/hapax-")[1].split("/")[0]
-            self._writer_node_map[shm_dir] = agent_id
-
-    def set_declared_edges(self, edges: list[tuple[str, str]]) -> None:
-        """Set declared topology edges for event routing.
-
-        Each edge is (source_node_id, target_node_id). When a SHM write is
-        detected from source, events are emitted to all declared targets.
-        """
-        self._declared_targets: dict[str, list[str]] = {}
-        for src, tgt in edges:
-            self._declared_targets.setdefault(src, []).append(tgt)
+        # Path like .../hapax-compositor/... means dir "compositor" -> agent_id
+        for part in Path(state_path).parts:
+            if part.startswith("hapax-"):
+                self._writer_node_map[part.removeprefix("hapax-")] = agent_id
+                break
 
     def scan(self) -> None:
         """Scan SHM directories for recent writes and correlate with readers."""
@@ -88,8 +91,8 @@ class FlowObserver:
                 if prev is not None and mtime != prev and self._event_bus:
                     from logos.event_bus import FlowEvent
 
-                    # Route to all declared edge targets from this source node
-                    targets = getattr(self, "_declared_targets", {}).get(source_node, [])
+                    # Route only to verified consumers (code-level reads)
+                    targets = _VERIFIED_CONSUMERS.get(source_node, [])
                     for target_id in targets:
                         self._event_bus.emit(
                             FlowEvent(

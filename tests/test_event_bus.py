@@ -220,7 +220,8 @@ class TestFlowObserverEmit:
         state_file.write_text("{}")
 
         obs = FlowObserver(shm_root=shm_root, event_bus=bus)
-        obs.register_reader("reader-agent", str(state_file))
+        # Register so writer_node_map maps "stimmung" → "stimmung_sync"
+        obs.register_reader("stimmung_sync", str(state_file))
 
         # First scan — populates prev_mtimes, no event yet
         obs.scan()
@@ -232,14 +233,15 @@ class TestFlowObserverEmit:
         orig_mtime = state_file.stat().st_mtime
         os.utime(state_file, (orig_mtime + 1, orig_mtime + 1))
 
-        # Second scan — mtime changed → should emit
+        # Second scan — mtime changed → emits to verified consumers only
+        # stimmung_sync → hapax_daimonion, reactive_engine, studio_compositor
         obs.scan()
         events = bus.recent()
-        assert len(events) == 1
-        assert events[0].kind == "shm.write"
-        assert events[0].source == "stimmung"
-        assert events[0].target == "reader-agent"
-        assert events[0].label == "state.json"
+        assert len(events) == 3
+        assert all(e.kind == "shm.write" for e in events)
+        assert all(e.source == "stimmung_sync" for e in events)
+        targets = {e.target for e in events}
+        assert targets == {"hapax_daimonion", "reactive_engine", "studio_compositor"}
 
     def test_no_emit_without_event_bus(self, tmp_path: Path):
         from logos.api.flow_observer import FlowObserver
