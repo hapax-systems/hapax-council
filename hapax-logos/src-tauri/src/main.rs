@@ -121,6 +121,7 @@ fn main() {
             commands::streaming::start_stream,
             commands::streaming::cancel_stream,
             commands::streaming::cancel_stream_and_server,
+            commands::streaming::subscribe_flow_events,
         ])
         .manage(commands::streaming::StreamRegistry::new())
         .manage(commands::proxy::HttpClient(reqwest::Client::new()))

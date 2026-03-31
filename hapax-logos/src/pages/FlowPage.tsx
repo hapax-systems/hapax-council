@@ -26,6 +26,27 @@ interface NodeMetrics { [key: string]: unknown; }
 interface FlowNode { id: string; label: string; status: string; age_s: number; metrics: NodeMetrics; _stance?: string; [key: string]: unknown; }
 interface FlowEdge { source: string; target: string; active: boolean; label: string; edge_type?: "confirmed" | "emergent" | "dormant"; }
 interface SystemFlowState { nodes: FlowNode[]; edges: FlowEdge[]; timestamp: number; }
+interface FlowEventData { ts: number; kind: string; source: string; target: string; label: string; duration_ms: number | null; }
+
+// ── Active dots for one-shot edge traversal animation ──────────────
+
+const activeDots: Map<string, { id: number; color: string }[]> = new Map();
+let dotCounter = 0;
+
+function spawnDot(edgeId: string, color: string) {
+  const id = ++dotCounter;
+  const dots = activeDots.get(edgeId) || [];
+  dots.push({ id, color });
+  activeDots.set(edgeId, dots);
+  setTimeout(() => {
+    const current = activeDots.get(edgeId);
+    if (current) {
+      const filtered = current.filter(d => d.id !== id);
+      if (filtered.length === 0) activeDots.delete(edgeId);
+      else activeDots.set(edgeId, filtered);
+    }
+  }, 1000);
+}
 
 // ── Dagre Layout ────────────────────────────────────────────────────
 
@@ -118,6 +139,17 @@ function FlowingEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, t
   const edgeType = (d?.edge_type as string) ?? "confirmed";
   const { palette: ep } = useTheme();
 
+  // Dot animation: poll for active dots on this edge
+  const [tick, setTick] = useState(0);
+  const dots = activeDots.get(id) || [];
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const current = activeDots.get(id) || [];
+      if (current.length > 0 || tick > 0) setTick(t => t + 1);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [id, tick]);
+
   let strokeDash: string | undefined;
   let color: string;
   let opacity: number;
@@ -133,6 +165,12 @@ function FlowingEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, t
   return (
     <g className="flow-edge-group">
       <BaseEdge id={id} path={path} style={{ stroke: color, strokeWidth: width, opacity, strokeDasharray: strokeDash, transition: "stroke 1s ease, opacity 1s ease" }} />
+      {dots.map(dot => (
+        <circle key={dot.id} r="3" fill={dot.color}>
+          <animateMotion dur="0.8s" path={path} fill="freeze" />
+          <animate attributeName="opacity" from="1" to="0" begin="0.6s" dur="0.2s" fill="freeze" />
+        </circle>
+      ))}
       {lbl && <text className="flow-edge-label"><textPath href={`#${id}`} startOffset="50%" textAnchor="middle" style={{ fontSize: "9px", fill: edgeType === "emergent" ? ep["yellow-400"] : active ? ep["text-muted"] : ep["border-muted"], fontFamily: "'JetBrains Mono', monospace" }}>{edgeType === "emergent" ? `⚡ ${lbl}` : lbl}</textPath></text>}
     </g>
   );
@@ -419,6 +457,26 @@ export function FlowPage() {
       setEdges(layouted.edges);
     }
   }, [flowState, setNodes, setEdges]);
+
+  // Subscribe to real-time flow events from Tauri SSE bridge
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    invoke("subscribe_flow_events").catch(() => {});
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<string>("flow-event", (event) => {
+        try {
+          const data: FlowEventData = JSON.parse(event.payload);
+          const edgeId = edges.find(e => e.source === data.source && e.target === data.target)?.id;
+          if (!edgeId) return;
+          const sourceNode = flowState?.nodes.find(n => n.id === data.source);
+          const st = sourceNode?.status || "offline";
+          const dotColor = st === "active" ? p["green-400"] : st === "stale" ? p["yellow-400"] : p["zinc-600"];
+          spawnDot(edgeId, dotColor);
+        } catch { /* malformed event */ }
+      }).then(fn => { unlisten = fn; });
+    }).catch(() => { /* Not in Tauri environment */ });
+    return () => { unlisten?.(); };
+  }, [edges, flowState, p]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => { setSelectedNode(node.data as FlowNode); }, []);
   const onNodeDragStop = useCallback((_: unknown, node: Node) => { prevPos.current[node.id] = node.position; }, []);
