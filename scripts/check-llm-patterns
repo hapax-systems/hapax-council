@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# check-llm-patterns — pre-commit hook
+#
+# Enforces LLM-optimized code patterns at commit time:
+# 1. Any types in diff (advisory warning)
+# 2. File size >300 LOC (blocks commit)
+# 3. METADATA.yaml presence for new packages (advisory warning)
+set -euo pipefail
+
+errors=0
+warnings=0
+
+# --- 1. Any types in diff (advisory) ---
+any_count="$(git diff --cached --diff-filter=AM -U0 -- '*.py' | grep -c '^\+.*\bAny\b' 2>/dev/null || echo 0)"
+if [ "$any_count" -gt 0 ]; then
+  echo "WARNING: ${any_count} added line(s) contain explicit 'Any' type. Consider using concrete types." >&2
+  warnings=$((warnings + 1))
+fi
+
+# --- 2. File size (blocks) ---
+oversized=""
+while IFS= read -r file; do
+  [ -f "$file" ] || continue
+  # Skip tests, vendored shims, shared/
+  case "$file" in
+    tests/*|*/tests/*|*/test_*) continue ;;
+    shared/*|*/shared/*) continue ;;
+  esac
+  basename="$(basename "$file")"
+  case "$basename" in
+    _*.py|*.generated.py) continue ;;
+  esac
+
+  lines="$(wc -l < "$file")"
+  if [ "$lines" -gt 300 ]; then
+    oversized="${oversized}  ${file} (${lines} lines)\n"
+  fi
+done < <(git diff --cached --name-only --diff-filter=AM -- '*.py')
+
+if [ -n "$oversized" ]; then
+  echo "BLOCKED: Python files over 300 LOC:" >&2
+  printf '%b' "$oversized" >&2
+  errors=$((errors + 1))
+fi
+
+# --- 3. METADATA.yaml presence (advisory) ---
+while IFS= read -r init_file; do
+  dir="$(dirname "$init_file")"
+  if [ ! -f "${dir}/METADATA.yaml" ]; then
+    pkg="$(basename "$dir")"
+    echo "WARNING: agents/${pkg}/ has no METADATA.yaml. Generate: uv run python scripts/llm_metadata_gen.py agents.${pkg} --write" >&2
+    warnings=$((warnings + 1))
+  fi
+done < <(git diff --cached --name-only --diff-filter=A -- 'agents/*/__init__.py' 2>/dev/null || true)
+
+if [ "$errors" -gt 0 ]; then
+  echo "LLM patterns check: ${errors} error(s), ${warnings} warning(s). Commit blocked." >&2
+  exit 1
+fi
+
+if [ "$warnings" -gt 0 ]; then
+  echo "LLM patterns check: ${warnings} warning(s). Commit allowed." >&2
+fi
+
+exit 0
