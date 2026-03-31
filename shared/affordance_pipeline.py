@@ -75,6 +75,12 @@ class AffordancePipeline:
         self._context_associations: dict[tuple[str, str], float] = {}
         self._dismissal_log: list[dict[str, Any]] = []
         self._metrics = AffordanceMetrics()
+        from shared.circuit_breaker import CircuitBreaker
+
+        self._retrieve_breaker = CircuitBreaker(
+            "qdrant_retrieve", failure_threshold=3, cooldown_s=60.0
+        )
+        self._index_breaker = CircuitBreaker("qdrant_index", failure_threshold=5, cooldown_s=60.0)
 
     def index_capability(self, record: CapabilityRecord) -> bool:
         from shared.config import embed_safe, get_qdrant
@@ -82,6 +88,8 @@ class AffordancePipeline:
         embedding = embed_safe(record.description, prefix="search_document")
         if embedding is None:
             log.warning("Cannot embed capability '%s'", record.name)
+            return False
+        if not self._index_breaker.allow_request():
             return False
         try:
             from qdrant_client.models import PointStruct
@@ -107,7 +115,9 @@ class AffordancePipeline:
                     )
                 ],
             )
+            self._index_breaker.record_success()
         except Exception:
+            self._index_breaker.record_failure()
             log.warning("Failed to index '%s' in Qdrant", record.name, exc_info=True)
             return False
         if record.name not in self._activation:
@@ -363,6 +373,8 @@ class AffordancePipeline:
         return embedding
 
     def _retrieve(self, embedding: list[float], top_k: int) -> list[SelectionCandidate]:
+        if not self._retrieve_breaker.allow_request():
+            return []
         try:
             from shared.config import get_qdrant
 
@@ -373,7 +385,9 @@ class AffordancePipeline:
                 limit=top_k,
                 query_filter={"must": [{"key": "available", "match": {"value": True}}]},
             ).points
+            self._retrieve_breaker.record_success()
         except Exception:
+            self._retrieve_breaker.record_failure()
             log.debug("Qdrant retrieval failed", exc_info=True)
             return []
         return [
