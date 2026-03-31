@@ -74,6 +74,8 @@ export function SystemStatus() {
   const flowScore = (perception?.metrics?.flow_score as number) ?? 0;
   const presence = (perception?.metrics?.presence_probability as number) ?? 0;
   const coherence = (apperception?.metrics?.coherence as number) ?? 0;
+  const dimCount = Object.keys((apperception?.metrics?.dimensions as Record<string, unknown>) ?? {}).length;
+  const apperceptionAge = apperception?.age_s ?? 999;
   const voiceActive = (voice?.metrics?.active as boolean) ?? false;
   const voiceTier = (voice?.metrics?.tier as string) || "";
 
@@ -138,6 +140,18 @@ export function SystemStatus() {
           <span className="text-zinc-600">coherence</span>
           <span className="text-zinc-400">{coherence.toFixed(2)}</span>
         </div>
+        {dimCount > 0 && (
+          <div className="flex justify-between">
+            <span className="text-zinc-600">dimensions</span>
+            <span className="text-zinc-400">{dimCount}</span>
+          </div>
+        )}
+        {apperceptionAge > 30 && (
+          <div className="flex justify-between col-span-2">
+            <span className="text-zinc-600">apperception</span>
+            <span className="text-yellow-400">{apperceptionAge.toFixed(0)}s stale</span>
+          </div>
+        )}
         {voiceActive && (
           <div className="flex justify-between col-span-2">
             <span className="text-zinc-600">voice</span>

@@ -299,13 +299,51 @@ function DetailPanel({ node, onClose }: { node: FlowNode | null; onClose: () => 
       <div style={{ color: p["text-secondary"] }}>frustration: <span style={{ color: p["text-primary"] }}>{((m.frustration_score as number) ?? 0).toFixed(2)}</span></div>
       {(m.last_utterance as string) && <div style={{ color: p["text-muted"], fontSize: 9, maxHeight: 60, overflow: "auto" }}>"{m.last_utterance as string}"</div>}
     </div>;
+    case "apperception": {
+      const coh = (m.coherence as number) ?? 0;
+      const dims = (m.dimensions as Record<string, { confidence: number; affirming: number; problematizing: number }>) || {};
+      const obs = (m.recent_observations as string[]) || [];
+      const refs = (m.recent_reflections as string[]) || [];
+      const acts = (m.pending_actions as string[]) || [];
+      const floorGuard = coh <= 0.2;
+      return <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <ArcGauge value={coh} color={sevColor(1 - coh, p)} size={20} />
+          <span style={{ color: p["text-primary"] }}>coherence {coh.toFixed(3)}</span>
+          {floorGuard && <span style={{ color: p["red-400"], fontSize: 9 }}>floor guard active</span>}
+        </div>
+        {Object.keys(dims).length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {Object.entries(dims).map(([n, d]) => <div key={n} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ color: p["text-secondary"], fontSize: 9, width: 80 }}>{n.replace(/_/g, " ")}</span>
+            <HBar value={d.confidence} color={d.confidence > 0.6 ? p["green-400"] : d.confidence > 0.3 ? p["yellow-400"] : p["red-400"]} width={60} height={3} />
+            <span style={{ color: p["text-muted"], fontSize: 9 }}>{d.affirming > 0 ? `+${d.affirming}` : ""}{d.problematizing > 0 ? ` -${d.problematizing}` : ""}</span>
+          </div>)}
+        </div>}
+        {obs.length > 0 && <div><div style={{ color: p["text-muted"], fontSize: 9, marginBottom: 2 }}>observations</div>
+          {obs.map((o, i) => <div key={i} style={{ color: p["text-secondary"], fontSize: 9, paddingLeft: 8 }}>· {String(o)}</div>)}
+        </div>}
+        {refs.length > 0 && <div><div style={{ color: p["text-muted"], fontSize: 9, marginBottom: 2 }}>reflections</div>
+          {refs.map((r, i) => <div key={i} style={{ color: p["yellow-400"], fontSize: 9, fontStyle: "italic", paddingLeft: 8 }}>· {String(r)}</div>)}
+        </div>}
+        {acts.length > 0 && <div><div style={{ color: p["text-muted"], fontSize: 9, marginBottom: 2 }}>pending actions</div>
+          {acts.map((a, i) => <div key={i} style={{ color: p["orange-400"], fontSize: 9, paddingLeft: 8 }}>· {String(a)}</div>)}
+        </div>}
+      </div>;
+    }
     default: return <pre style={{ background: `color-mix(in srgb, ${p.bg} 80%, transparent)`, padding: 10, borderRadius: 8, overflow: "auto", maxHeight: 350, fontSize: 10, color: p["text-primary"], lineHeight: "1.5" }}>{JSON.stringify(m, null, 2)}</pre>;
   }};
 
+  // Task 4: staleness age display
+  const ageLabel = node.age_s < 10 ? "live" : `${node.age_s.toFixed(0)}s ago`;
+  const ageColor = node.status === "active" ? p["green-400"] : node.status === "stale" ? p["yellow-400"] : p["red-400"];
+
   return (
     <div style={{ position: "absolute", right: 16, top: 16, width: 320, background: `color-mix(in srgb, ${p.surface} 95%, transparent)`, border: `1px solid ${colors.border}`, borderRadius: 12, padding: 16, zIndex: 100, fontFamily: "'JetBrains Mono', monospace", boxShadow: `0 8px 32px rgba(0,0,0,0.5), 0 0 20px ${colors.glow}`, backdropFilter: "blur(8px)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}><h3 style={{ color: p["text-emphasis"], margin: 0, fontSize: 14 }}>{node.label}</h3><button onClick={onClose} style={{ background: "none", border: "none", color: p["text-muted"], cursor: "pointer", fontSize: 16 }}>x</button></div>
-      <div style={{ color: p["text-secondary"], fontSize: 11, marginBottom: 8 }}><span style={{ color: colors.border }}>*</span> {node.status} — {node.age_s.toFixed(1)}s ago</div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}><h3 style={{ color: p["text-emphasis"], margin: 0, fontSize: 14 }}>{node.label}</h3><button onClick={onClose} style={{ background: "none", border: "none", color: p["text-muted"], cursor: "pointer", fontSize: 16 }}>x</button></div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+        <span style={{ color: p["text-secondary"], fontSize: 11 }}><span style={{ color: colors.border }}>*</span> {node.status}</span>
+        <span style={{ color: ageColor, fontSize: 10 }}>{ageLabel}</span>
+      </div>
       {detail()}
     </div>
   );
