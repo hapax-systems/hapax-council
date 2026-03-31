@@ -157,17 +157,17 @@ class TemporalBandFormatter:
         for target_age in targets:
             target_ts = now - target_age
             # Find closest snapshot to target timestamp
-            best = min(history, key=lambda s: abs(s.get("ts", 0) - target_ts))
-            age = now - best.get("ts", now)
+            best = min(history, key=lambda s: abs(float(s.get("ts", 0)) - target_ts))
+            age = now - float(best.get("ts", now))
 
             # Skip if too close to another entry we already added
             if entries and abs(age - entries[-1].age_s) < 2.0:
                 continue
 
             flow_score = best.get("flow_score", 0.0)
-            if flow_score >= 0.6:
+            if float(flow_score) >= 0.6:
                 flow_state = "active"
-            elif flow_score >= 0.3:
+            elif float(flow_score) >= 0.3:
                 flow_state = "warming"
             else:
                 flow_state = "idle"
@@ -179,7 +179,9 @@ class TemporalBandFormatter:
             # Presence from Bayesian engine
             pp = best.get("presence_probability", None)
             if pp is not None:
-                presence = "present" if pp >= 0.7 else ("uncertain" if pp >= 0.3 else "away")
+                presence = (
+                    "present" if float(pp) >= 0.7 else ("uncertain" if float(pp) >= 0.3 else "away")
+                )
             else:
                 presence = ""
 
@@ -203,9 +205,9 @@ class TemporalBandFormatter:
     def _build_impression(self, current: dict[str, object]) -> dict[str, object]:
         """Extract key fields from the current snapshot."""
         flow_score = current.get("flow_score", 0.0)
-        if flow_score >= 0.6:
+        if float(flow_score) >= 0.6:
             flow_state = "active"
-        elif flow_score >= 0.3:
+        elif float(flow_score) >= 0.3:
             flow_state = "warming"
         else:
             flow_state = "idle"
@@ -213,9 +215,9 @@ class TemporalBandFormatter:
         # Presence from Bayesian engine
         presence_prob = current.get("presence_probability")
         if presence_prob is not None:
-            if presence_prob >= 0.7:
+            if float(presence_prob) >= 0.7:
                 presence = "present"
-            elif presence_prob >= 0.3:
+            elif float(presence_prob) >= 0.3:
                 presence = "uncertain"
             else:
                 presence = "away"
@@ -252,7 +254,11 @@ class TemporalBandFormatter:
         surprises: list[SurpriseField] = []
 
         flow_score = current.get("flow_score", 0.0)
-        flow_state = "active" if flow_score >= 0.6 else ("warming" if flow_score >= 0.3 else "idle")
+        flow_state = (
+            "active"
+            if float(flow_score) >= 0.6
+            else ("warming" if float(flow_score) >= 0.3 else "idle")
+        )
         activity = current.get("production_activity", "")
 
         for pred in last_protention:
@@ -292,7 +298,7 @@ class TemporalBandFormatter:
                 )
             elif pred.predicted_state == "stress_rising":
                 hr = current.get("heart_rate_bpm", 0)
-                observed_matches = hr > 85
+                observed_matches = int(hr) > 85
                 surprises.append(
                     SurpriseField(
                         field="heart_rate",
@@ -315,11 +321,11 @@ class TemporalBandFormatter:
                 )
             elif pred.predicted_state == "operator_departing":
                 pp = current.get("presence_probability", 1.0)
-                observed_matches = pp < 0.3  # actually departed
+                observed_matches = float(pp) < 0.3  # actually departed
                 surprises.append(
                     SurpriseField(
                         field="presence",
-                        observed=f"p={pp:.2f}" if pp is not None else "unknown",
+                        observed=f"p={float(pp):.2f}" if pp is not None else "unknown",
                         expected="departing",
                         surprise=0.0 if observed_matches else pred.confidence,
                         note="" if observed_matches else "operator stayed",
@@ -327,7 +333,7 @@ class TemporalBandFormatter:
                 )
             elif pred.predicted_state == "operator_returning":
                 pp = current.get("presence_probability", 0.0)
-                observed_matches = pp >= 0.7  # actually returned
+                observed_matches = float(pp) >= 0.7  # actually returned
                 surprises.append(
                     SurpriseField(
                         field="presence",
@@ -498,13 +504,13 @@ class TemporalBandFormatter:
             parts.append(genre)
 
         hr = snapshot.get("heart_rate_bpm", 0)
-        if hr > 0:
+        if int(hr) > 0:
             parts.append(f"{hr}bpm")
 
         pp = snapshot.get("presence_probability")
-        if pp is not None and pp < 0.3:
+        if pp is not None and float(pp) < 0.3:
             parts.append("away")
-        elif pp is not None and pp < 0.7:
+        elif pp is not None and float(pp) < 0.7:
             parts.append("uncertain")
 
         return ", ".join(parts) if parts else "quiet"

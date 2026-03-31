@@ -40,8 +40,8 @@ class PerceptionRing:
         """All snapshots within the last `seconds` from the most recent."""
         if not self._buffer:
             return []
-        cutoff = self._buffer[-1]["ts"] - seconds
-        return [s for s in self._buffer if s["ts"] >= cutoff]
+        cutoff = float(self._buffer[-1]["ts"]) - seconds
+        return [s for s in self._buffer if float(s["ts"]) >= cutoff]
 
     def delta(self, key: str) -> float:
         """Change in `key` between the two most recent snapshots. 0.0 if unavailable."""

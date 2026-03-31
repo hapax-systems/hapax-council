@@ -191,12 +191,12 @@ class IrPresenceBackend:
         if "overhead" in reports:
             hands = reports["overhead"].get("hands", [])
             if hands:
-                return hands[0].get("activity", "none")
+                return hands[0].get("activity", "none") if isinstance(hands[0], dict) else "none"
 
         # Fall back to first available
         for report in reports.values():
             hands = report.get("hands", [])
             if hands:
-                return hands[0].get("activity", "none")
+                return hands[0].get("activity", "none") if isinstance(hands[0], dict) else "none"
 
         return "none"

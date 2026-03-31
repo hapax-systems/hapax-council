@@ -178,7 +178,7 @@ def add_camera_branch(
     add_camera_snapshot_branch(compositor, pipeline, camera_tee, cam)
 
     if not hasattr(compositor, "_camera_elements"):
-        compositor._camera_elements: dict[str, dict[str, Any]] = {}
-        compositor._camera_specs: dict[str, CameraSpec] = {}
+        compositor._camera_elements = {}
+        compositor._camera_specs = {}
     compositor._camera_elements[cam.role] = {"src": src, "tee": camera_tee}
     compositor._camera_specs[cam.role] = cam
