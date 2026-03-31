@@ -12,7 +12,6 @@ Self-contained, asyncio_mode="auto", unittest.mock only.
 from __future__ import annotations
 
 import tempfile
-import unittest
 from datetime import datetime
 from pathlib import Path
 
@@ -79,7 +78,7 @@ def _make_consent_registry(contract_id: str, person_id: str) -> ConsentRegistry:
     return reg
 
 
-class TestReactivePipelineE2E(unittest.TestCase):
+class TestReactivePipelineE2E:
     """Full chain: file → rule → carrier intake → governor → registry."""
 
     def test_carrier_file_triggers_rule_and_registers_fact(self):
@@ -313,7 +312,7 @@ class TestReactivePipelineE2E(unittest.TestCase):
         assert len(plan.actions) == 0
 
 
-class TestGovernorInPipeline(unittest.TestCase):
+class TestGovernorInPipeline:
     """Governor enforcement at the carrier intake boundary."""
 
     async def test_governor_denies_restricted_data_without_consent(self):
@@ -348,7 +347,7 @@ class TestGovernorInPipeline(unittest.TestCase):
             path.unlink()
 
 
-class TestPipelineHypothesis(unittest.TestCase):
+class TestPipelineHypothesis:
     """Property-based tests for the integrated pipeline."""
 
     @given(
