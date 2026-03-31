@@ -55,14 +55,35 @@ class GraphCompiler:
         )
 
     def _validate(self, graph: EffectGraph, edges: list[EdgeDef]) -> None:
-        if not any(n.type == "output" for n in graph.nodes.values()):
-            raise GraphValidationError("Graph must have exactly one output node")
+        output_count = sum(1 for n in graph.nodes.values() if n.type == "output")
+        if output_count != 1:
+            raise GraphValidationError(
+                f"Graph must have exactly one output node, got {output_count}"
+            )
         for nid, n in graph.nodes.items():
             if n.type != "output" and not self._registry.get(n.type):
                 raise GraphValidationError(f"Unknown node type '{n.type}' for node '{nid}'")
         for e in edges:
             if e.source_node.startswith("@") and e.source_node not in VALID_LAYER_SOURCES:
                 raise GraphValidationError(f"Invalid layer source '{e.source_node}'")
+            # Validate port existence on non-layer edges
+            if not e.is_layer_source:
+                src_node = graph.nodes.get(e.source_node)
+                if src_node and src_node.type != "output":
+                    src_def = self._registry.get(src_node.type)
+                    if src_def and e.source_port not in src_def.outputs:
+                        raise GraphValidationError(
+                            f"Node '{e.source_node}' ({src_node.type}) has no output port "
+                            f"'{e.source_port}', available: {list(src_def.outputs)}"
+                        )
+            tgt_node = graph.nodes.get(e.target_node)
+            if tgt_node and tgt_node.type != "output":
+                tgt_def = self._registry.get(tgt_node.type)
+                if tgt_def and e.target_port not in tgt_def.inputs:
+                    raise GraphValidationError(
+                        f"Node '{e.target_node}' ({tgt_node.type}) has no input port "
+                        f"'{e.target_port}', available: {list(tgt_def.inputs)}"
+                    )
         connected = set()
         for e in edges:
             if not e.is_layer_source:

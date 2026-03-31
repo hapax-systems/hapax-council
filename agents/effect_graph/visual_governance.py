@@ -215,7 +215,7 @@ class VisualGovernance:
         self._veto_chain: VetoChain[SystemContext] = VetoChain(
             [
                 Veto(
-                    "consent_pending",
+                    "block_consent_pending",
                     lambda ctx: ctx.consent_state.get("phase") != "consent_pending",
                     axiom="interpersonal_transparency",
                 ),

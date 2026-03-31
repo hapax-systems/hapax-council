@@ -33,7 +33,7 @@ class ShaderRegistry:
                 try:
                     self._load(p)
                 except Exception:
-                    log.exception("Failed to load %s", p)
+                    log.warning("Failed to load node type from %s", p, exc_info=True)
 
     def _load(self, path: Path) -> None:
         raw = json.loads(path.read_text())

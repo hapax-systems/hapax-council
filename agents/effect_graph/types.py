@@ -22,17 +22,6 @@ class ParamDef(BaseModel):
     description: str = ""
 
 
-class ShaderDef(BaseModel):
-    node_type: str
-    glsl_fragment: str
-    inputs: dict[str, PortType]
-    outputs: dict[str, PortType]
-    params: dict[str, ParamDef]
-    temporal: bool = False
-    temporal_buffers: int = 0
-    compute: bool = False
-
-
 class NodeInstance(BaseModel):
     type: str
     params: dict[str, object] = Field(default_factory=dict)

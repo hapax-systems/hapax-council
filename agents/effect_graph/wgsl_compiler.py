@@ -78,6 +78,8 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, object]:
     compiler = GraphCompiler(registry)
     plan: ExecutionPlan = compiler.compile(graph)
 
+    from .wgsl_transpiler import extract_wgsl_param_names
+
     passes: list[dict[str, object]] = []
     steps = [s for s in plan.steps if s.node_type != "output"]
 
@@ -101,8 +103,6 @@ def compile_to_wgsl_plan(graph: EffectGraph) -> dict[str, object]:
         output = "final" if is_last else f"layer_{i}"
 
         # Get param ordering from WGSL Params struct (authoritative for buffer layout)
-        from .wgsl_transpiler import extract_wgsl_param_names
-
         wgsl_path = DEFAULT_NODES_DIR / f"{step.node_type}.wgsl"
         if wgsl_path.exists():
             param_order = extract_wgsl_param_names(wgsl_path)
