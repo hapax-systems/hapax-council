@@ -26,6 +26,7 @@ async def perception_loop(daemon: VoiceDaemon) -> None:
         refresh_context_distillation,
     )
 
+    log.info("Perception loop started (tick=%.1fs)", daemon.cfg.perception_fast_tick_s)
     while daemon._running:
         try:
             await asyncio.sleep(daemon.cfg.perception_fast_tick_s)

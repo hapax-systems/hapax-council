@@ -131,7 +131,9 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                             continue
                         try:
                             imp = Impingement.model_validate_json(line)
-                            candidates = daemon._affordance_pipeline.select(imp)
+                            candidates = await asyncio.to_thread(
+                                daemon._affordance_pipeline.select, imp
+                            )
                             for c in candidates:
                                 if c.capability_name == "speech_production":
                                     daemon._speech_capability.activate(imp, c.combined)
