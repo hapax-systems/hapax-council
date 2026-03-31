@@ -176,7 +176,9 @@ class ReactiveEngine:
         action_timeout_s: float | None = None,
         quiet_window_s: float | None = None,
         cooldown_default_s: float | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
+        self._event_bus = event_bus
         mode = get_working_mode()
         default_debounce = 1500 if mode == WorkingMode.RESEARCH else 500
 
@@ -250,6 +252,15 @@ class ReactiveEngine:
         from logos._frequency_window import FrequencyWindow
 
         self._frequency_window = FrequencyWindow(window_s=3600.0)  # 1 hour window
+
+    @staticmethod
+    def _agent_from_path(path: str) -> str:
+        from pathlib import PurePosixPath
+
+        for p in PurePosixPath(path).parts:
+            if p.startswith("hapax-"):
+                return p.removeprefix("hapax-")
+        return "unknown"
 
     @property
     def registry(self) -> RuleRegistry:
@@ -526,6 +537,19 @@ class ReactiveEngine:
                 await self._executor.execute(plan)
             self._actions_executed += len(plan.results)
             self._error_count += len(plan.errors)
+
+            if self._event_bus:
+                for action_name in plan.results:
+                    from logos.event_bus import FlowEvent
+
+                    self._event_bus.emit(
+                        FlowEvent(
+                            kind="engine.action",
+                            source=self._agent_from_path(str(event.path)),
+                            target=action_name,
+                            label=action_name,
+                        )
+                    )
 
             # Score the engine trace
             hapax_score(_engine_trace, "actions_completed", float(len(plan.results)))

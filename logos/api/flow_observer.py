@@ -5,6 +5,10 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from logos.event_bus import EventBus
 
 log = logging.getLogger(__name__)
 
@@ -22,12 +26,15 @@ class FlowObserver:
         self,
         shm_root: Path = DEFAULT_SHM_ROOT,
         decay_seconds: float = 60.0,
+        event_bus: EventBus | None = None,
     ):
         self._shm_root = shm_root
         self._decay_seconds = decay_seconds
         self._writers: dict[str, dict[str, float]] = {}
         self._readers: dict[str, str] = {}
         self._observed: dict[tuple[str, str], float] = {}
+        self._event_bus = event_bus
+        self._prev_mtimes: dict[str, float] = {}
 
     def register_reader(self, agent_id: str, state_path: str) -> None:
         """Register an agent as a reader of a specific state file."""
@@ -50,7 +57,24 @@ class FlowObserver:
                     continue
                 self._writers.setdefault(writer_name, {})[f.name] = mtime
 
+                # Emit shm.write events when mtime changes
                 full_path = str(f)
+                prev = self._prev_mtimes.get(full_path)
+                if prev is not None and mtime != prev and self._event_bus:
+                    from logos.event_bus import FlowEvent
+
+                    for reader_id, reader_path in self._readers.items():
+                        if reader_path == full_path:
+                            self._event_bus.emit(
+                                FlowEvent(
+                                    kind="shm.write",
+                                    source=writer_name,
+                                    target=reader_id,
+                                    label=f.name,
+                                )
+                            )
+                self._prev_mtimes[full_path] = mtime
+
                 for reader_id, reader_path in self._readers.items():
                     if reader_path == full_path:
                         if now - mtime < 30:

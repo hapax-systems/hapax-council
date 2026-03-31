@@ -25,7 +25,9 @@ _RATE_LIMIT_S = 1.0
 
 
 @router.post("/{role}/ir")
-async def receive_ir_detection(role: str, report: IrDetectionReport) -> JSONResponse:
+async def receive_ir_detection(
+    role: str, report: IrDetectionReport, request: Request
+) -> JSONResponse:
     """Receive IR detection report from a Pi NoIR edge daemon."""
     if role not in _VALID_ROLES:
         raise HTTPException(
@@ -49,6 +51,16 @@ async def receive_ir_detection(role: str, report: IrDetectionReport) -> JSONResp
     except OSError as exc:
         log.warning("Failed to write IR state for role=%s", role, exc_info=True)
         raise HTTPException(status_code=500, detail="State file write failed") from exc
+
+    bus = getattr(request.app.state, "event_bus", None)
+    if bus:
+        from logos.event_bus import FlowEvent
+
+        bus.emit(
+            FlowEvent(
+                kind="pi.detection", source=f"pi-{role}", target="perception", label=f"ir/{role}"
+            )
+        )
 
     return JSONResponse({"status": "ok", "role": role})
 

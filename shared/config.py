@@ -188,6 +188,46 @@ def get_qdrant_grpc() -> QdrantClient:
     return QdrantClient(QDRANT_URL, prefer_grpc=True, grpc_port=6334)
 
 
+class InstrumentedQdrantClient:
+    """Wrapper that emits flow events on Qdrant operations."""
+
+    def __init__(
+        self, client: QdrantClient, event_bus: "EventBus", agent_name: str = "unknown"
+    ) -> None:
+        self._client = client
+        self._bus = event_bus
+        self._agent = agent_name
+
+    def __getattr__(self, name: str):
+        return getattr(self._client, name)
+
+    def search(self, collection_name: str, **kwargs):
+        from logos.event_bus import FlowEvent
+
+        self._bus.emit(
+            FlowEvent(
+                kind="qdrant.op",
+                source=self._agent,
+                target="qdrant",
+                label=f"search/{collection_name}",
+            )
+        )
+        return self._client.search(collection_name=collection_name, **kwargs)
+
+    def upsert(self, collection_name: str, **kwargs):
+        from logos.event_bus import FlowEvent
+
+        self._bus.emit(
+            FlowEvent(
+                kind="qdrant.op",
+                source=self._agent,
+                target="qdrant",
+                label=f"upsert/{collection_name}",
+            )
+        )
+        return self._client.upsert(collection_name=collection_name, **kwargs)
+
+
 _log = logging.getLogger("shared.config")
 _rag_tracer = trace.get_tracer("hapax.rag")
 
