@@ -63,6 +63,14 @@ class TTSExecutor:
     def _play_pcm(self, pcm_data: bytes, rate: int, channels: int) -> None:
         """Play PCM buffer through PyAudio. Runs in a background thread."""
         try:
+            # Write acoustic impulse for Reverie cross-modal coupling
+            from agents.hapax_daimonion.acoustic_impulse import write_acoustic_impulse
+
+            write_acoustic_impulse(pcm_data, sample_rate=rate, channels=channels)
+        except Exception:
+            pass  # cross-modal signal is best-effort
+
+        try:
             stream = self._pa.open(
                 format=8,  # pyaudio.paInt16 = 8
                 channels=channels,
