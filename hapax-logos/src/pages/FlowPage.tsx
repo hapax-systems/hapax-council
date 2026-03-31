@@ -302,6 +302,7 @@ function SystemNode({ data }: { data: FlowNode }) {
         : "none",
       '--breathe-glow-min': glowMin,
       '--breathe-glow-max': glowMax,
+      '--breathe-scale': String(breath.scale),
     } as React.CSSProperties}>
       <Handle type="target" position={Position.Top} style={{ background: colors.border, width: 6, height: 6 }} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
@@ -426,7 +427,7 @@ export function FlowPage() {
     <div style={{ width: "100%", height: "100%", background: p.bg, position: "relative" }}>
       <style>{`
         @keyframes breathe { 0%, 100% { box-shadow: var(--breathe-glow-min, none); opacity: 1; } 50% { box-shadow: var(--breathe-glow-max, none); opacity: 0.92; } }
-        @keyframes breathe-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+        @keyframes breathe-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(var(--breathe-scale, 1)); } }
         .react-flow__edge-path { transition: stroke 1s ease, opacity 1s ease; }
         .react-flow__handle { border: none !important; }
         .react-flow__controls { border-radius: 8px; overflow: hidden; }
