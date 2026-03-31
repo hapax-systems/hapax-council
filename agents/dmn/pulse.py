@@ -6,11 +6,16 @@ import logging
 import time
 from pathlib import Path
 
-import httpx
-
 from agents._circuit_breaker import CircuitBreaker
 from agents._impingement import Impingement, ImpingementType
 from agents.dmn.buffer import DMNBuffer
+from agents.dmn.ollama import (
+    CONSOLIDATION_SYSTEM,
+    EVALUATIVE_SYSTEM,
+    SENSORY_SYSTEM,
+    _format_sensor_prompt,
+    _ollama_generate,
+)
 from agents.dmn.sensor import read_all
 from agents.dmn.vision import _generate_visual_observation
 
@@ -21,71 +26,6 @@ log = logging.getLogger("dmn.pulse")
 SENSORY_TICK_S = 5.0
 EVALUATIVE_TICK_S = 30.0
 CONSOLIDATION_TICK_S = 180.0
-
-OLLAMA_URL = "http://localhost:11434/api/generate"
-DMN_MODEL = "qwen3.5:4b"
-
-SENSORY_SYSTEM = (
-    "You are a continuous situation monitor. Report WHAT is happening in one sentence. "
-    "Never explain WHY. Never evaluate quality. Never use abstract language. "
-    "Format: one concrete sentence describing the current state."
-)
-EVALUATIVE_SYSTEM = (
-    "You are a value trajectory assessor. Given the current state and what changed, "
-    "report whether the situation is IMPROVING, DEGRADING, or STABLE. "
-    "If degrading, state the specific concern in concrete terms (what is wrong, not why). "
-    'Format: "Trajectory: [improving|degrading|stable]. Concern: [specific issue or none]" '
-    "Never evaluate your own performance. Never use abstract language."
-)
-CONSOLIDATION_SYSTEM = (
-    "Compress the following observations into one paragraph. "
-    "Preserve: specific numbers, state changes, trends, anomalies. "
-    "Discard: redundant stable readings, repeated values. "
-    "Never interpret or evaluate. Just compress the facts."
-)
-
-
-async def _ollama_generate(prompt: str, system: str) -> str:
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                OLLAMA_URL,
-                json={
-                    "model": DMN_MODEL,
-                    "prompt": prompt,
-                    "system": system,
-                    "stream": False,
-                    "options": {"num_predict": 100, "temperature": 0.3},
-                },
-            )
-            if resp.status_code == 200:
-                return resp.json().get("response", "").strip()
-            log.warning("Ollama returned %d", resp.status_code)
-            return ""
-    except Exception as exc:
-        log.debug("Ollama call failed: %s", exc)
-        return ""
-
-
-def _format_sensor_prompt(snapshot: dict, deltas: list[str]) -> str:
-    parts = []
-    p = snapshot.get("perception", {})
-    parts.append(f"Activity: {p.get('activity', '?')}. Flow: {p.get('flow_score', 0):.1f}.")
-    s = snapshot.get("stimmung", {})
-    parts.append(f"Stimmung: {s.get('stance', '?')}. Stress: {s.get('operator_stress', 0):.2f}.")
-    f = snapshot.get("fortress")
-    if f:
-        parts.append(
-            f"Fortress {f.get('fortress_name', '?')}: pop={f.get('population')}, "
-            f"food={f.get('food')}, drink={f.get('drink')}, "
-            f"threats={f.get('threats')}, idle={f.get('idle')}."
-        )
-    w = snapshot.get("watch", {})
-    if w.get("heart_rate", 0) > 0:
-        parts.append(f"Heart rate: {w['heart_rate']} bpm.")
-    if deltas:
-        parts.append("Changes: " + "; ".join(deltas) + ".")
-    return " ".join(parts)
 
 
 class DMNPulse:
@@ -101,6 +41,7 @@ class DMNPulse:
         self._pending_impingements: list[Impingement] = []
         self._ollama_breaker = CircuitBreaker("ollama", failure_threshold=5, cooldown_s=30.0)
         self._degradation_emitted = False
+        self._starvation_last_emitted: dict[str, float] = {}
 
     def set_tpn_active(self, active: bool) -> None:
         self._tpn_active = active
@@ -110,6 +51,7 @@ class DMNPulse:
         sensory_rate = SENSORY_TICK_S * (2.0 if self._tpn_active else 1.0)
         evaluative_rate = EVALUATIVE_TICK_S * (2.0 if self._tpn_active else 1.0)
         snapshot = read_all()
+        self._check_sensor_starvation(snapshot)
 
         if now - self._last_sensory >= sensory_rate:
             await self._sensory_tick(snapshot)
@@ -206,6 +148,28 @@ class DMNPulse:
             )
             self._degradation_emitted = True
             log.error("Ollama degraded: %d consecutive failures", failures)
+
+    def _check_sensor_starvation(self, snapshot: dict) -> None:
+        """Emit impingement for sensors that are stale >60s or missing."""
+        for sensor_name in ("perception", "stimmung", "fortress", "watch"):
+            data = snapshot.get(sensor_name)
+            if isinstance(data, dict):
+                age = data.get("age_s", float("inf"))
+            else:
+                age = float("inf")
+            if age > 60.0:
+                last = self._starvation_last_emitted.get(sensor_name, 0.0)
+                if time.time() - last > 300.0:
+                    self._pending_impingements.append(
+                        Impingement(
+                            timestamp=time.time(),
+                            source="dmn.sensor_starvation",
+                            type=ImpingementType.ABSOLUTE_THRESHOLD,
+                            strength=0.5,
+                            content={"sensor": sensor_name, "age_s": age},
+                        )
+                    )
+                    self._starvation_last_emitted[sensor_name] = time.time()
 
     def drain_impingements(self) -> list[Impingement]:
         pending = self._pending_impingements[:]

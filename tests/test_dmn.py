@@ -236,3 +236,40 @@ class TestTPNActiveStaleness:
         from agents.dmn.__main__ import _read_tpn_active
 
         assert _read_tpn_active(tmp_path / "nonexistent") is False
+
+
+class TestSensorStarvation:
+    async def test_starvation_impingement_emitted(self):
+        buf = DMNBuffer()
+        pulse = DMNPulse(buf)
+        snapshot = {
+            "perception": {"source": "perception", "age_s": 90.0, "stale": True},
+            "stimmung": {"source": "stimmung", "age_s": 5.0, "stance": "nominal"},
+            "fortress": None,
+            "watch": {"source": "watch", "age_s": 700.0},
+        }
+        pulse._check_sensor_starvation(snapshot)
+        impingements = pulse.drain_impingements()
+        starved = [i for i in impingements if i.source == "dmn.sensor_starvation"]
+        assert len(starved) >= 1
+        sensors_starved = {i.content["sensor"] for i in starved}
+        assert "perception" in sensors_starved
+
+    async def test_starvation_deduplicated(self):
+        buf = DMNBuffer()
+        pulse = DMNPulse(buf)
+        snapshot = {
+            "perception": {"source": "perception", "age_s": 90.0, "stale": True},
+            "stimmung": {"source": "stimmung", "age_s": 5.0, "stance": "nominal"},
+            "fortress": None,
+            "watch": {"source": "watch", "age_s": 5.0},
+        }
+        pulse._check_sensor_starvation(snapshot)
+        pulse._check_sensor_starvation(snapshot)
+        impingements = pulse.drain_impingements()
+        perception_starved = [
+            i
+            for i in impingements
+            if i.source == "dmn.sensor_starvation" and i.content["sensor"] == "perception"
+        ]
+        assert len(perception_starved) == 1
