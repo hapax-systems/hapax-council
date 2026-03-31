@@ -55,6 +55,9 @@ CAMERA_ROLES = [
     "synths-brio",
 ]
 
+# Re-export SHORT_TO_ROLE as _ROLE_MAP for signal_mappers.py
+from agents._cameras import SHORT_TO_ROLE as _ROLE_MAP  # noqa: F401, E402
+
 CAMERA_FILTERS = [
     "sepia(0.8) contrast(1.3) brightness(0.7)",
     "hue-rotate(30deg) saturate(1.8) brightness(0.6)",
