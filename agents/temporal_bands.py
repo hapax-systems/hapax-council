@@ -164,10 +164,10 @@ class TemporalBandFormatter:
             if entries and abs(age - entries[-1].age_s) < 2.0:
                 continue
 
-            flow_score = best.get("flow_score", 0.0)
-            if float(flow_score) >= 0.6:
+            flow_score = float(best.get("flow_score", 0.0))
+            if flow_score >= 0.6:
                 flow_state = "active"
-            elif float(flow_score) >= 0.3:
+            elif flow_score >= 0.3:
                 flow_state = "warming"
             else:
                 flow_state = "idle"
@@ -204,10 +204,10 @@ class TemporalBandFormatter:
 
     def _build_impression(self, current: dict[str, object]) -> dict[str, object]:
         """Extract key fields from the current snapshot."""
-        flow_score = current.get("flow_score", 0.0)
-        if float(flow_score) >= 0.6:
+        flow_score = float(current.get("flow_score", 0.0))
+        if flow_score >= 0.6:
             flow_state = "active"
-        elif float(flow_score) >= 0.3:
+        elif flow_score >= 0.3:
             flow_state = "warming"
         else:
             flow_state = "idle"
@@ -228,7 +228,7 @@ class TemporalBandFormatter:
             "flow_state": flow_state,
             "flow_score": round(flow_score, 2),
             "activity": current.get("production_activity", ""),
-            "audio_energy": round(current.get("audio_energy_rms", 0.0), 3),
+            "audio_energy": round(float(current.get("audio_energy_rms", 0.0)), 3),
             "music_genre": current.get("music_genre", ""),
             "heart_rate": int(current.get("heart_rate_bpm", 0)),
             "consent_phase": current.get("consent_phase", "no_guest"),
@@ -253,12 +253,8 @@ class TemporalBandFormatter:
 
         surprises: list[SurpriseField] = []
 
-        flow_score = current.get("flow_score", 0.0)
-        flow_state = (
-            "active"
-            if float(flow_score) >= 0.6
-            else ("warming" if float(flow_score) >= 0.3 else "idle")
-        )
+        flow_score = float(current.get("flow_score", 0.0))
+        flow_state = "active" if flow_score >= 0.6 else ("warming" if flow_score >= 0.3 else "idle")
         activity = current.get("production_activity", "")
 
         for pred in last_protention:
@@ -297,8 +293,8 @@ class TemporalBandFormatter:
                     )
                 )
             elif pred.predicted_state == "stress_rising":
-                hr = current.get("heart_rate_bpm", 0)
-                observed_matches = int(hr) > 85
+                hr = int(current.get("heart_rate_bpm", 0))
+                observed_matches = hr > 85
                 surprises.append(
                     SurpriseField(
                         field="heart_rate",
@@ -320,8 +316,8 @@ class TemporalBandFormatter:
                     )
                 )
             elif pred.predicted_state == "operator_departing":
-                pp = current.get("presence_probability", 1.0)
-                observed_matches = float(pp) < 0.3  # actually departed
+                pp = float(current.get("presence_probability", 1.0))
+                observed_matches = pp < 0.3  # actually departed
                 surprises.append(
                     SurpriseField(
                         field="presence",
@@ -332,8 +328,8 @@ class TemporalBandFormatter:
                     )
                 )
             elif pred.predicted_state == "operator_returning":
-                pp = current.get("presence_probability", 0.0)
-                observed_matches = float(pp) >= 0.7  # actually returned
+                pp = float(current.get("presence_probability", 0.0))
+                observed_matches = pp >= 0.7  # actually returned
                 surprises.append(
                     SurpriseField(
                         field="presence",
@@ -503,14 +499,18 @@ class TemporalBandFormatter:
         if genre:
             parts.append(genre)
 
-        hr = snapshot.get("heart_rate_bpm", 0)
-        if int(hr) > 0:
+        hr = int(snapshot.get("heart_rate_bpm", 0))
+        if hr > 0:
             parts.append(f"{hr}bpm")
 
-        pp = snapshot.get("presence_probability")
-        if pp is not None and float(pp) < 0.3:
+        pp = (
+            float(snapshot.get("presence_probability", 0.0))
+            if snapshot.get("presence_probability") is not None
+            else None
+        )
+        if pp is not None and pp < 0.3:
             parts.append("away")
-        elif pp is not None and float(pp) < 0.7:
+        elif pp is not None and pp < 0.7:
             parts.append("uncertain")
 
         return ", ".join(parts) if parts else "quiet"

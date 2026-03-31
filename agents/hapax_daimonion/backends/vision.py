@@ -94,7 +94,7 @@ def _infer_cross_modal_activity(
     """
     # ── Overhead zone + desk activity fusion (highest specificity) ─────
     overhead = per_camera_behaviors.get("overhead", {})
-    hand_zones = overhead.get("hand_zones", "")
+    hand_zones = str(overhead.get("hand_zones", ""))
 
     # Camera-primary scratch detection: turntable zone + any non-idle energy.
     # Autocorrelation-based scratch detection is unreliable at high contact mic

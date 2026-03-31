@@ -61,6 +61,25 @@ class ReverieActuationLoop:
         self._trace_strength = 0.0
         self._trace_decay_rate = 0.15  # strength decays ~7s to zero
         self._last_salience = 0.0
+        self._pipeline = self._init_pipeline()
+
+    @staticmethod
+    def _init_pipeline():  # -> AffordancePipeline
+        from agents._affordance import CapabilityRecord
+        from agents._affordance_pipeline import AffordancePipeline
+
+        p = AffordancePipeline()
+        for n, d in [
+            ("shader_graph", "Activate shader graph effects from imagination"),
+            ("visual_chain", "Modulate visual chain from stimmung/evaluative"),
+            ("fortress_visual_response", "Visual pipeline for fortress crises"),
+        ]:
+            p.index_capability(CapabilityRecord(name=n, description=d, daemon="reverie"))
+        return p
+
+    @property
+    def pipeline(self):  # -> AffordancePipeline
+        return self._pipeline
 
     @property
     def shader_capability(self) -> ShaderGraphCapability:
@@ -190,13 +209,7 @@ class ReverieActuationLoop:
             self._visual_chain.activate_dimension("visual_chain.intensity", imp, strength * 0.6)
             self._visual_chain.activate_dimension("visual_chain.coherence", imp, strength * 0.4)
 
-        log.info(
-            "Applied shader impingement: source=%s strength=%.2f",
-            imp.source,
-            strength,
-        )
-
-    # Imagination and stimmung state now read via shared ContextAssembler
+        log.info("Applied shader impingement: source=%s strength=%.2f", imp.source, strength)
 
     @staticmethod
     def _build_slot_opacities(

@@ -79,6 +79,7 @@ class DMNBuffer:
         self._retentional_summary: str = ""
         self._tick_counter: int = 0
         self._last_consolidation: float = 0.0
+        self._imagination_context: str = ""
 
     @property
     def tick(self) -> int:
@@ -121,6 +122,13 @@ class DMNBuffer:
         self._retentional_summary = summary
         self._last_consolidation = time.time()
 
+    def set_imagination_context(self, salience: float, material: str, narrative: str) -> None:
+        """Set imagination context for TPN consumption."""
+        self._imagination_context = (
+            f'<imagination_context salience="{salience:.2f}" material="{material}">'
+            f"{narrative[:120]}</imagination_context>"
+        )
+
     def needs_consolidation(self) -> bool:
         """Check if buffer has enough entries to warrant consolidation."""
         if len(self._observations) < CONSOLIDATION_THRESHOLD:
@@ -162,27 +170,32 @@ class DMNBuffer:
           [PRIMACY] Retentional summary
           [MIDDLE]  Older observations (deprioritized naturally)
           [RECENCY] Latest observations + latest evaluation
+
+        Middle-zone observations are trimmed oldest-first to stay within
+        MAX_BUFFER_TOKENS (estimated as len/4).
         """
-        parts = []
-
-        # Primacy zone: consolidated summary
+        primacy = ""
         if self._retentional_summary:
-            parts.append(f"<retentional_summary>{self._retentional_summary}</retentional_summary>")
+            primacy = f"<retentional_summary>{self._retentional_summary}</retentional_summary>"
 
-        # Middle zone: older observations
+        imagination = self._imagination_context if self._imagination_context else ""
+
         obs_list = list(self._observations)
-        if len(obs_list) > 6:
-            for obs in obs_list[:-6]:
-                parts.append(obs.format())
-
-        # Recency zone: latest observations + evaluation
-        recent = obs_list[-6:] if len(obs_list) > 6 else obs_list
-        for obs in recent:
-            parts.append(obs.format())
-
+        middle = [obs.format() for obs in obs_list[:-6]] if len(obs_list) > 6 else []
+        recent_obs = obs_list[-6:] if len(obs_list) > 6 else obs_list
+        recency = [obs.format() for obs in recent_obs]
         if self._evaluations:
-            parts.append(self._evaluations[-1].format())
+            recency.append(self._evaluations[-1].format())
 
+        # Trim middle zone to stay within token budget
+        while middle:
+            parts = [p for p in [primacy, imagination] + middle + recency if p]
+            text = "\n".join(parts)
+            if len(text) // 4 <= MAX_BUFFER_TOKENS:
+                return text
+            middle.pop(0)
+
+        parts = [p for p in [primacy, imagination] + recency if p]
         return "\n".join(parts)
 
     def format_delta_context(

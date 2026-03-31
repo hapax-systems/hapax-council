@@ -38,46 +38,25 @@ STATUS_FILE = DMN_STATE_DIR / "status.json"
 IMPINGEMENTS_FILE = DMN_STATE_DIR / "impingements.jsonl"
 TPN_ACTIVE_FILE = DMN_STATE_DIR / "tpn_active"
 
-MATERIAL_MAP = {"water": 0, "fire": 1, "earth": 2, "air": 3, "void": 4}
-UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/pipeline/uniforms.json")
-
 # Main loop tick rate (fastest possible — individual ticks have their own cadence)
 LOOP_TICK_S = 1.0
 
 
-def write_imagination_uniforms(
-    imagination_path: Path | None = None,
-    uniforms_path: Path | None = None,
-) -> None:
-    """Write imagination state to uniforms.json for the Rust visual pipeline."""
-    if imagination_path is None:
-        imagination_path = CURRENT_PATH
-    if uniforms_path is None:
-        uniforms_path = UNIFORMS_FILE
+def _read_tpn_active(path: Path = TPN_ACTIVE_FILE, stale_s: float = 5.0) -> bool:
+    """Read TPN active signal with staleness check.
 
+    Format: "1:{timestamp}" or "0:{timestamp}" (new) or bare "1"/"0" (legacy).
+    """
     try:
-        if not imagination_path.exists():
-            return
-        data = json.loads(imagination_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return
-
-    material = data.get("material", "water")
-    material_val = float(MATERIAL_MAP.get(material, 0))
-    salience = float(data.get("salience", 0.0))
-
-    uniforms = {
-        "custom": [material_val],
-        "slot_opacities": [salience, 0.0, 0.0, 0.0],
-    }
-
-    try:
-        uniforms_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = uniforms_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(uniforms))
-        tmp.rename(uniforms_path)
-    except OSError:
-        pass
+        raw = path.read_text().strip()
+        if ":" in raw:
+            value, ts = raw.split(":", 1)
+            if time.time() - float(ts) > stale_s:
+                return False
+            return value == "1"
+        return raw == "1"
+    except (OSError, ValueError):
+        return False
 
 
 class DMNDaemon:
@@ -90,6 +69,8 @@ class DMNDaemon:
         self._running = True
         self._start_time = time.monotonic()
         self._reverie: ReverieActuationLoop | None = None  # initialized in run()
+        self._resolver_failures: dict[str, int] = {}
+        self._resolver_skip_until: dict[str, float] = {}
 
     async def run(self) -> None:
         """Main loop — never stops unless signalled."""
@@ -152,13 +133,7 @@ class DMNDaemon:
         log.info("Imagination loop starting")
         while self._running:
             try:
-                try:
-                    if TPN_ACTIVE_FILE.exists():
-                        active = TPN_ACTIVE_FILE.read_text().strip() == "1"
-                        self._imagination.set_tpn_active(active)
-                except OSError:
-                    pass
-
+                self._imagination.set_tpn_active(_read_tpn_active())
                 observations = self._buffer.recent_observations(5)
                 snapshot = read_all()
                 await self._imagination.tick(observations, snapshot)
@@ -180,10 +155,30 @@ class DMNDaemon:
                     data = json.loads(CURRENT_PATH.read_text())
                     frag_id = data.get("id", "")
                     if frag_id and frag_id != last_fragment_id:
-                        last_fragment_id = frag_id
-                        frag = ImaginationFragment.model_validate(data)
-                        resolve_references_staged(frag)
-                        log.debug("Resolved content for fragment %s", frag_id)
+                        skip_until = self._resolver_skip_until.get(frag_id)
+                        if skip_until and time.time() < skip_until:
+                            pass
+                        else:
+                            if skip_until:
+                                del self._resolver_skip_until[frag_id]
+                            last_fragment_id = frag_id
+                            try:
+                                frag = ImaginationFragment.model_validate(data)
+                                resolve_references_staged(frag)
+                                self._resolver_failures.pop(frag_id, None)
+                                log.debug("Resolved content for fragment %s", frag_id)
+                            except Exception:
+                                count = self._resolver_failures.get(frag_id, 0) + 1
+                                self._resolver_failures[frag_id] = count
+                                if count >= 5:
+                                    self._resolver_skip_until[frag_id] = time.time() + 60.0
+                                    log.warning(
+                                        "Resolver: skipping fragment %s after %d failures",
+                                        frag_id,
+                                        count,
+                                    )
+                                else:
+                                    log.debug("Resolver tick failed for %s (%d/5)", frag_id, count)
             except Exception:
                 log.warning("Resolver tick failed", exc_info=True)
 
@@ -212,31 +207,25 @@ class DMNDaemon:
             except OSError:
                 pass
 
-            # Feed impingements to Reverie's capabilities for visual expression
+            # Feed impingements to Reverie via affordance pipeline
             if self._reverie is not None:
                 for imp in impingements:
-                    shader_cap = self._reverie.shader_capability
-                    visual_chain = self._reverie.visual_chain
-                    # ShaderGraphCapability: all imagination-sourced impingements
-                    if imp.source == "imagination":
-                        shader_cap.activate(imp, imp.strength)
-                    # VisualChainCapability: stimmung + evaluative impingements
-                    score = visual_chain.can_resolve(imp)
-                    if score > 0:
-                        visual_chain.activate(imp, score)
+                    candidates = self._reverie.pipeline.select(imp)
+                    for c in candidates:
+                        if c.capability_name == "shader_graph":
+                            self._reverie.shader_capability.activate(imp, imp.strength)
+                        elif c.capability_name == "visual_chain":
+                            score = self._reverie.visual_chain.can_resolve(imp)
+                            if score > 0:
+                                self._reverie.visual_chain.activate(imp, score)
+                        elif c.capability_name == "fortress_visual_response":
+                            s = imp.strength
+                            vc = self._reverie.visual_chain
+                            vc.activate_dimension("visual_chain.tension", imp, s * 0.8)
+                            vc.activate_dimension("visual_chain.degradation", imp, s * 0.6)
 
         # Read TPN active flag (anti-correlation signal from voice daemon)
-        try:
-            if TPN_ACTIVE_FILE.exists():
-                active = TPN_ACTIVE_FILE.read_text().strip() == "1"
-                self._pulse.set_tpn_active(active)
-        except OSError:
-            pass
-
-        # NOTE: uniforms.json is now written by the Reverie actuation loop
-        # (agents/reverie/actuation.py), not by write_imagination_uniforms().
-        # The actuation loop merges imagination state + visual chain + stimmung
-        # + trace state into a single coherent uniform set.
+        self._pulse.set_tpn_active(_read_tpn_active())
 
         # Status for monitoring
         status = {

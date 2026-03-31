@@ -2,7 +2,27 @@
 
 import time
 
+import pytest
+
 from agents.dmn.buffer import DMNBuffer, Observation
+from shared.expression import normalize_dimension_activation
+
+
+class TestNormalizeDimensionActivation:
+    def test_strength_weighted(self):
+        dims = {"intensity": 0.8, "tension": 0.6}
+        result = normalize_dimension_activation(0.5, dims)
+        assert result["intensity"] == pytest.approx(0.4)
+        assert result["tension"] == pytest.approx(0.3)
+
+    def test_clamped_to_unit_range(self):
+        dims = {"intensity": 1.5}
+        result = normalize_dimension_activation(1.0, dims)
+        assert result["intensity"] == 1.0
+
+    def test_empty_dims(self):
+        result = normalize_dimension_activation(0.8, {})
+        assert result == {}
 
 
 class TestDMNBuffer:
@@ -122,6 +142,37 @@ class TestDMNBuffer:
         deltas = buf.format_delta_context(snapshot, snapshot)
         assert deltas == []
 
+    def test_format_for_tpn_respects_token_budget(self):
+        """Middle-zone observations are trimmed when buffer exceeds token budget."""
+        buf = DMNBuffer()
+        buf.set_retentional_summary("Summary of prior observations.")
+        for i in range(18):
+            buf.add_observation(
+                f"Observation {i}: " + "detailed sensor reading " * 10,
+                raw_sensor=f"raw {i}",
+            )
+        result = buf.format_for_tpn()
+        estimated_tokens = len(result) // 4
+        assert estimated_tokens <= 1500, f"Buffer exceeded token budget: {estimated_tokens} tokens"
+        assert "Summary of prior observations" in result
+        assert "Observation 17" in result
+
+
+class TestImaginationContext:
+    def test_imagination_context_in_buffer(self):
+        buf = DMNBuffer()
+        buf.set_retentional_summary("Prior context summary.")
+        buf.set_imagination_context(0.8, "water", "flowing river visual")
+        for i in range(8):
+            buf.add_observation(f"observation {i}")
+        result = buf.format_for_tpn()
+        assert "imagination_context" in result
+        assert 'salience="0.80"' in result
+        assert 'material="water"' in result
+        summary_pos = result.index("retentional_summary")
+        imagination_pos = result.index("imagination_context")
+        assert imagination_pos > summary_pos
+
 
 class TestDMNSensor:
     """Test sensor reading functions."""
@@ -150,3 +201,126 @@ class TestDMNSensor:
         result = read_stimmung()
         assert "source" in result
         assert "stance" in result
+
+
+import json as _json
+from unittest.mock import AsyncMock, patch
+
+from agents.dmn.pulse import DMNPulse
+from agents.dmn.sensor import SensorConfig, read_all
+
+
+class TestSensorConfig:
+    def test_read_all_with_custom_config(self, tmp_path):
+        stimmung_path = tmp_path / "stimmung.json"
+        stimmung_path.write_text(_json.dumps({"overall_stance": "nominal"}))
+        config = SensorConfig(
+            stimmung_state=stimmung_path,
+            fortress_state=tmp_path / "nonexistent.json",
+            watch_dir=tmp_path / "watch",
+            voice_perception=tmp_path / "perception.json",
+            visual_frame=tmp_path / "frame.jpg",
+            imagination_current=tmp_path / "imagination.json",
+        )
+        snapshot = read_all(config)
+        assert snapshot["stimmung"]["stance"] == "nominal"
+        assert snapshot["fortress"] is None
+
+
+class TestOllamaFailureTracking:
+    async def test_degradation_impingement_after_threshold(self):
+        buf = DMNBuffer()
+        pulse = DMNPulse(buf)
+        with patch("agents.dmn.pulse._ollama_generate", new_callable=AsyncMock, return_value=""):
+            for _ in range(6):
+                snapshot = {
+                    "perception": {"activity": "coding", "flow_score": 0.5},
+                    "stimmung": {"stance": "nominal", "operator_stress": 0.1},
+                    "fortress": None,
+                    "watch": {"heart_rate": 0},
+                }
+                await pulse._sensory_tick(snapshot)
+        impingements = pulse.drain_impingements()
+        degraded = [i for i in impingements if i.source == "dmn.ollama_degraded"]
+        assert len(degraded) >= 1
+        assert degraded[0].content["metric"] == "ollama_degraded"
+
+
+class TestTPNActiveStaleness:
+    def test_stale_signal_returns_false(self, tmp_path):
+        from agents.dmn.__main__ import _read_tpn_active
+
+        path = tmp_path / "tpn_active"
+        path.write_text(f"1:{time.time() - 10:.3f}")
+        assert _read_tpn_active(path) is False
+
+    def test_fresh_signal_returns_true(self, tmp_path):
+        from agents.dmn.__main__ import _read_tpn_active
+
+        path = tmp_path / "tpn_active"
+        path.write_text(f"1:{time.time():.3f}")
+        assert _read_tpn_active(path) is True
+
+    def test_legacy_format_still_works(self, tmp_path):
+        from agents.dmn.__main__ import _read_tpn_active
+
+        path = tmp_path / "tpn_active"
+        path.write_text("1")
+        assert _read_tpn_active(path) is True
+
+    def test_missing_file_returns_false(self, tmp_path):
+        from agents.dmn.__main__ import _read_tpn_active
+
+        assert _read_tpn_active(tmp_path / "nonexistent") is False
+
+
+class TestFortressFeedback:
+    def test_threshold_suppressed_after_fortress_action(self):
+        buf = DMNBuffer()
+        pulse = DMNPulse(buf)
+        pulse._fortress_acted_on = {"drink_per_capita": time.time()}
+        snapshot = {
+            "fortress": {"population": 10, "drink": 5, "fortress_name": "test"},
+            "stimmung": {"stance": "nominal"},
+        }
+        pulse._check_absolute_thresholds(snapshot)
+        impingements = pulse.drain_impingements()
+        drink_imps = [i for i in impingements if i.content.get("metric") == "drink_per_capita"]
+        assert len(drink_imps) == 0
+
+
+class TestSensorStarvation:
+    async def test_starvation_impingement_emitted(self):
+        buf = DMNBuffer()
+        pulse = DMNPulse(buf)
+        snapshot = {
+            "perception": {"source": "perception", "age_s": 90.0, "stale": True},
+            "stimmung": {"source": "stimmung", "age_s": 5.0, "stance": "nominal"},
+            "fortress": None,
+            "watch": {"source": "watch", "age_s": 700.0},
+        }
+        pulse._check_sensor_starvation(snapshot)
+        impingements = pulse.drain_impingements()
+        starved = [i for i in impingements if i.source == "dmn.sensor_starvation"]
+        assert len(starved) >= 1
+        sensors_starved = {i.content["sensor"] for i in starved}
+        assert "perception" in sensors_starved
+
+    async def test_starvation_deduplicated(self):
+        buf = DMNBuffer()
+        pulse = DMNPulse(buf)
+        snapshot = {
+            "perception": {"source": "perception", "age_s": 90.0, "stale": True},
+            "stimmung": {"source": "stimmung", "age_s": 5.0, "stance": "nominal"},
+            "fortress": None,
+            "watch": {"source": "watch", "age_s": 5.0},
+        }
+        pulse._check_sensor_starvation(snapshot)
+        pulse._check_sensor_starvation(snapshot)
+        impingements = pulse.drain_impingements()
+        perception_starved = [
+            i
+            for i in impingements
+            if i.source == "dmn.sensor_starvation" and i.content["sensor"] == "perception"
+        ]
+        assert len(perception_starved) == 1

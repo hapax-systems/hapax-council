@@ -147,7 +147,7 @@ def update_biometrics(agg: VisualLayerAggregator) -> None:
     if summary is not None:
         sleep_min = summary.get("sleep_duration_min")
         if sleep_min is not None:
-            sleep_quality = max(0.0, min(1.0, sleep_min / 480.0))
+            sleep_quality = max(0.0, min(1.0, float(sleep_min) / 480.0))
 
     activity_level = 0.0
     activity_data = read_watch_signal(_c.WATCH_STATE_DIR / "activity.json")

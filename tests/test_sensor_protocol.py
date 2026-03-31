@@ -8,7 +8,7 @@ from agents._sensor_protocol import SensorTier, emit_sensor_impingement, write_s
 
 def test_write_sensor_state(tmp_path: Path, monkeypatch):
     """write_sensor_state creates atomic JSON snapshot."""
-    monkeypatch.setattr("agents._sensor_protocol.SENSOR_SHM_DIR", tmp_path)
+    monkeypatch.setattr("shared.sensor_protocol.SENSOR_SHM_DIR", tmp_path)
     write_sensor_state("gmail", {"message_count": 42, "unread": 3})
     path = tmp_path / "gmail.json"
     assert path.exists()
@@ -19,7 +19,7 @@ def test_write_sensor_state(tmp_path: Path, monkeypatch):
 
 def test_write_sensor_state_overwrites(tmp_path: Path, monkeypatch):
     """Subsequent writes overwrite previous state."""
-    monkeypatch.setattr("agents._sensor_protocol.SENSOR_SHM_DIR", tmp_path)
+    monkeypatch.setattr("shared.sensor_protocol.SENSOR_SHM_DIR", tmp_path)
     write_sensor_state("gmail", {"message_count": 10})
     write_sensor_state("gmail", {"message_count": 20})
     data = json.loads((tmp_path / "gmail.json").read_text())
@@ -29,7 +29,7 @@ def test_write_sensor_state_overwrites(tmp_path: Path, monkeypatch):
 def test_emit_sensor_impingement(tmp_path: Path, monkeypatch):
     """emit_sensor_impingement appends to JSONL file."""
     jsonl_path = tmp_path / "impingements.jsonl"
-    monkeypatch.setattr("agents._sensor_protocol.IMPINGEMENTS_FILE", jsonl_path)
+    monkeypatch.setattr("shared.sensor_protocol.IMPINGEMENTS_FILE", jsonl_path)
     emit_sensor_impingement("gmail", "communication_patterns", ["email_volume"])
     assert jsonl_path.exists()
     lines = jsonl_path.read_text().strip().split("\n")
@@ -43,7 +43,7 @@ def test_emit_sensor_impingement(tmp_path: Path, monkeypatch):
 def test_emit_multiple_impingements(tmp_path: Path, monkeypatch):
     """Multiple emissions append to same file."""
     jsonl_path = tmp_path / "impingements.jsonl"
-    monkeypatch.setattr("agents._sensor_protocol.IMPINGEMENTS_FILE", jsonl_path)
+    monkeypatch.setattr("shared.sensor_protocol.IMPINGEMENTS_FILE", jsonl_path)
     emit_sensor_impingement("gmail", "communication_patterns", ["volume"])
     emit_sensor_impingement("chrome", "information_seeking", ["domains"])
     lines = jsonl_path.read_text().strip().split("\n")

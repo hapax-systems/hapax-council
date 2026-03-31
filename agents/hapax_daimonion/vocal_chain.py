@@ -233,7 +233,9 @@ class VocalChainCapability:
 
         Accepts bare names ("intensity") or fully-qualified ("vocal_chain.intensity").
         """
-        dims = impingement.context.get("dimensions", {})
+        dims = impingement.content.get("dimensions", {}) or impingement.context.get(
+            "dimensions", {}
+        )
         activated: list[str] = []
         for raw, level in dims.items():
             if not isinstance(level, (int, float)):

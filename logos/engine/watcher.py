@@ -135,10 +135,10 @@ class DirectoryWatcher:
         # Runtime
         self._queue: asyncio.Queue | None = None
         self._consumer_task: asyncio.Task | None = None
-        self._observer: Observer | PollingObserver | None = None
+        self._observer: Observer | PollingObserver | None = None  # type: ignore
         self._handler: _EventHandler | None = None
 
-    def _create_observer(self) -> Observer | PollingObserver:
+    def _create_observer(self) -> Observer | PollingObserver:  # type: ignore
         if os.environ.get("ENGINE_POLLING_OBSERVER") == "1":
             return PollingObserver()
         return Observer()

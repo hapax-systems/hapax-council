@@ -199,7 +199,7 @@ def analyze_profile() -> ProfileAnalysis:
 
     # Neurocognitive gap — check if dimension is sparse AND operator.json section empty
     neuro_stats = analysis.dimension_stats.get("neurocognitive_profile", {"count": 0})
-    if neuro_stats.get("count", 0) < 5:
+    if int(neuro_stats.get("count", 0)) < 5:
         try:
             from logos._operator import get_neurocognitive_profile
 
@@ -299,8 +299,8 @@ async def generate_interview_plan(
     well_covered: list[str] = []
     for dim, stats in analysis.dimension_stats.items():
         if (
-            stats["count"] >= WELL_COVERED_THRESHOLD_FACTS
-            and stats["avg_confidence"] >= WELL_COVERED_THRESHOLD_CONFIDENCE
+            int(stats["count"]) >= WELL_COVERED_THRESHOLD_FACTS
+            and float(stats["avg_confidence"]) >= WELL_COVERED_THRESHOLD_CONFIDENCE
         ):
             well_covered.append(
                 f"  - {dim}: {stats['count']} facts, avg confidence {stats['avg_confidence']} [WELL-COVERED]"
@@ -336,8 +336,8 @@ async def generate_interview_plan(
         marker = (
             " [WELL-COVERED]"
             if (
-                stats["count"] >= WELL_COVERED_THRESHOLD_FACTS
-                and stats["avg_confidence"] >= WELL_COVERED_THRESHOLD_CONFIDENCE
+                int(stats["count"]) >= WELL_COVERED_THRESHOLD_FACTS
+                and float(stats["avg_confidence"]) >= WELL_COVERED_THRESHOLD_CONFIDENCE
             )
             else ""
         )
@@ -388,8 +388,8 @@ async def generate_interview_plan(
     well_covered_dims = {
         dim
         for dim, stats in analysis.dimension_stats.items()
-        if stats["count"] >= WELL_COVERED_THRESHOLD_FACTS
-        and stats["avg_confidence"] >= WELL_COVERED_THRESHOLD_CONFIDENCE
+        if int(stats["count"]) >= WELL_COVERED_THRESHOLD_FACTS
+        and float(stats["avg_confidence"]) >= WELL_COVERED_THRESHOLD_CONFIDENCE
     }
     if well_covered_dims:
         filtered: list[InterviewTopic] = []

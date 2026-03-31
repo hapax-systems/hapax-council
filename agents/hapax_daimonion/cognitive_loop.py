@@ -47,7 +47,8 @@ def write_tpn_active(active: bool, path: Path = TPN_ACTIVE_FILE) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text("1" if active else "0")
+        value = "1" if active else "0"
+        tmp.write_text(f"{value}:{time.time():.3f}")
         tmp.rename(path)
     except OSError:
         pass

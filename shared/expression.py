@@ -140,3 +140,13 @@ def _infer_modality(name: str, cap: Any) -> str:
     if "shader" in name or "visual" in name:
         return "visual"
     return "unknown"
+
+
+def normalize_dimension_activation(
+    strength: float, dimensions: dict[str, float]
+) -> dict[str, float]:
+    """Strength-weighted normalization for dimension activations.
+
+    Both visual and vocal chains must use this to ensure parity.
+    """
+    return {name: max(0.0, min(1.0, level * strength)) for name, level in dimensions.items()}
