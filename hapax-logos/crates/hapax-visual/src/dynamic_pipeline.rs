@@ -554,7 +554,7 @@ impl DynamicPipeline {
                             "temporal_distortion" => uniform_data.temporal_distortion = v,
                             "degradation" => uniform_data.degradation = v,
                             "pitch_displacement" => uniform_data.pitch_displacement = v,
-                            "formant_character" => uniform_data.formant_character = v,
+                            "diffusion" => uniform_data.diffusion = v,
                             _ => {}
                         }
                     }
