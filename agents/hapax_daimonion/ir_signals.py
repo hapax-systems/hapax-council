@@ -19,7 +19,7 @@ IR_STATE_DIR: Path = HAPAX_HOME / "hapax-state" / "pi-noir"
 IR_ROLES: tuple[str, ...] = ("desk", "room", "overhead")
 
 
-def read_ir_signal(path: Path, max_age_seconds: float = 15.0) -> dict[str, object] | None:
+def read_ir_signal(path: Path, max_age_seconds: float = 10.0) -> dict[str, object] | None:
     """Read a Pi NoIR JSON state file, returning None if missing or stale."""
     if not path.exists():
         return None
@@ -33,7 +33,7 @@ def read_ir_signal(path: Path, max_age_seconds: float = 15.0) -> dict[str, objec
 
 
 def read_all_ir_reports(
-    state_dir: Path | None = None, max_age_seconds: float = 15.0
+    state_dir: Path | None = None, max_age_seconds: float = 10.0
 ) -> dict[str, dict[str, object]]:
     """Read all Pi NoIR state files, keyed by role.
 

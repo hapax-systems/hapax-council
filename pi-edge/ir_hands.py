@@ -6,7 +6,9 @@ import cv2
 import numpy as np  # noqa: TC002 — Pi-side code, no TYPE_CHECKING guard needed
 
 
-def detect_hands_nir(grey_frame: np.ndarray, min_area: int = 2000) -> list[dict]:
+def detect_hands_nir(
+    grey_frame: np.ndarray, min_area: int = 2000, max_area_pct: float = 0.25
+) -> list[dict]:
     """Detect hands on instrument surfaces using NIR skin/plastic contrast.
 
     In NIR, skin has lower reflectance than most plastics. Adaptive
@@ -24,10 +26,13 @@ def detect_hands_nir(grey_frame: np.ndarray, min_area: int = 2000) -> list[dict]
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     h, w = grey_frame.shape[:2]
+    frame_area = h * w
     hands = []
     for contour in contours:
         area = cv2.contourArea(contour)
         if area < min_area:
+            continue
+        if area > max_area_pct * frame_area:
             continue
 
         x, y, cw, ch = cv2.boundingRect(contour)
@@ -76,14 +81,18 @@ def _classify_activity(contour: np.ndarray, area: int) -> str:
 
 
 def detect_screens_nir(grey_frame: np.ndarray, min_area_pct: float = 0.02) -> list[dict]:
-    """Detect screens as near-zero NIR intensity rectangles.
+    """Detect screens as low-NIR-intensity rectangles.
 
-    LCD/OLED screens emit no NIR, appearing as dark rectangles.
+    LCD/OLED screens emit no NIR, appearing as dark rectangles relative
+    to the IR-illuminated scene. Threshold adapts to scene brightness.
     """
     h, w = grey_frame.shape[:2]
     total_area = h * w
 
-    _, dark_mask = cv2.threshold(grey_frame, 15, 255, cv2.THRESH_BINARY_INV)
+    mean_brightness = float(np.mean(grey_frame))
+    dark_threshold = max(10, int(mean_brightness * 0.3))
+
+    _, dark_mask = cv2.threshold(grey_frame, dark_threshold, 255, cv2.THRESH_BINARY_INV)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
     dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel, iterations=2)

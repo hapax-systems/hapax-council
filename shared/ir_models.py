@@ -36,6 +36,7 @@ class IrBiometrics(BaseModel):
     blink_rate: float = 0.0
     drowsiness_score: float = 0.0
     pupil_detected: bool = False
+    face_detected: bool = False
 
 
 class IrDetectionReport(BaseModel):

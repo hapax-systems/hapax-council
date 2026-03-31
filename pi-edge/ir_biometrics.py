@@ -28,6 +28,7 @@ class BiometricTracker:
 
     def __init__(self, fps: float = 30.0) -> None:
         self._fps = fps
+        self.face_detected: bool = False
         self._ear_history: collections.deque[tuple[float, float]] = collections.deque(
             maxlen=int(PERCLOS_WINDOW_S * fps)
         )
@@ -132,4 +133,5 @@ class BiometricTracker:
             "blink_rate": round(self.blink_rate, 1),
             "drowsiness_score": round(self.drowsiness_score, 3),
             "pupil_detected": False,
+            "face_detected": self.face_detected,
         }
