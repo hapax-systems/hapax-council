@@ -189,14 +189,15 @@ class IrPresenceBackend:
         """Pick hand activity, preferring overhead Pi."""
         # Prefer overhead
         if "overhead" in reports:
-            hands = reports["overhead"].get("hands", [])
-            if hands:
-                return hands[0].get("activity", "none") if isinstance(hands[0], dict) else "none"
+            overhead = reports["overhead"]
+            hands = list(overhead.get("hands", [])) if isinstance(overhead, dict) else []
+            if hands and isinstance(hands[0], dict):
+                return str(hands[0].get("activity", "none"))
 
         # Fall back to first available
         for report in reports.values():
-            hands = report.get("hands", [])
-            if hands:
-                return hands[0].get("activity", "none") if isinstance(hands[0], dict) else "none"
+            hands = list(report.get("hands", [])) if isinstance(report, dict) else []
+            if hands and isinstance(hands[0], dict):
+                return str(hands[0].get("activity", "none"))
 
         return "none"
