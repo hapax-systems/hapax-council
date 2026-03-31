@@ -43,8 +43,10 @@ This directory contains the formal types and enforcement infrastructure that the
 
 | Concept | Reference | Source | Tests |
 |---------|-----------|--------|-------|
-| ApperceptionCascade (7-step) | Kohut, ACT, Merleau-Ponty | [`apperception.py`](apperception.py) | 113 cascade matrix tests (step × source × stimmung) + 6 safeguard tests |
-| ApperceptionTick (standalone) | — | [`apperception_tick.py`](apperception_tick.py) | Event wiring tests |
+| ApperceptionCascade (7-step) | Kohut, ACT, Merleau-Ponty | [`apperception.py`](apperception.py) | 119 cascade matrix tests (step × source × stimmung) + 6 safeguard tests |
+| ApperceptionTick (7/7 sources) | — | [`apperception_tick.py`](apperception_tick.py) | 19 I/O tests + 9 event source tests |
+| ApperceptionStore (Qdrant) | — | [`apperception.py`](apperception.py) | Batch persistence (60s flush), 768-dim cosine search |
+| ApperceptionSHM (prompt injection) | — | [`apperception_shm.py`](apperception_shm.py) | Canonical SHM reader (stdlib only, zero config coupling) |
 | Phenomenal context renderer | Husserl, Dreyfus, Gibson | [`../agents/hapax_daimonion/phenomenal_context.py`](../agents/hapax_daimonion/phenomenal_context.py) | 18 progressive fidelity tests |
 
 ### Carrier dynamics (Paper B)

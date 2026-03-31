@@ -10,3 +10,21 @@ pipeline_layer: cognition
 pipeline_state:
   path: "/dev/shm/hapax-apperception/self-band.json"
   metrics: [coherence, system_awareness, continuity]
+
+event_sources:
+  - prediction_error    # temporal bands surprise > 0.3
+  - correction          # operator activity corrections
+  - stimmung_event      # stance transitions
+  - absence             # perception staleness > 30s
+  - performance         # stimmung dimension deltas vs baselines
+  - cross_resonance     # audio-video classification agreement
+  - pattern_shift       # BOCPD + pattern store confirmation/contradiction
+
+persistence:
+  qdrant_collection: hapax-apperceptions
+  embedding_dimensions: 768
+  flush_cadence_s: 60
+
+health_checks:
+  - apperception_tick     # tick liveness (30s/120s thresholds)
+  - apperception_coherence  # coherence floor guard (0.15/0.3 thresholds)
