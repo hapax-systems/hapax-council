@@ -653,8 +653,6 @@ class ApperceptionStore:
         if not self._pending:
             return 0
 
-        self.ensure_collection()
-
         from shared.config import embed_batch_safe, get_qdrant
 
         batch = list(self._pending)
@@ -665,6 +663,8 @@ class ApperceptionStore:
         vectors = embed_batch_safe(texts, prefix="search_document")
         if vectors is None:
             return 0
+
+        self.ensure_collection()
 
         # Build Qdrant points
         import uuid
