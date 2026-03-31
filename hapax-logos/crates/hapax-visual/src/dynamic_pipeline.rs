@@ -336,6 +336,13 @@ impl DynamicPipeline {
             self.ensure_texture(device, name);
         }
 
+        // Ensure temporal textures for feedback nodes (@accum_ inputs)
+        for pass in &plan.passes {
+            if pass.inputs.iter().any(|n| n.starts_with("@accum_")) {
+                self.ensure_temporal_texture(device, &pass.node_id);
+            }
+        }
+
         // Build passes
         let mut new_passes = Vec::new();
         let mut input_layouts = HashMap::new();
