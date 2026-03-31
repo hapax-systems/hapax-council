@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
         from logos.engine import ReactiveEngine
         from logos.engine.reactive_rules import register_rules
 
-        engine = ReactiveEngine()
+        engine = ReactiveEngine(event_bus=event_bus)
         register_rules(engine.registry)
         await engine.start()
         app.state.engine = engine

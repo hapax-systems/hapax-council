@@ -23,6 +23,7 @@ from logos.engine.executor import PhasedExecutor
 from logos.engine.models import ActionPlan as ActionPlan
 from logos.engine.models import ChangeEvent
 from logos.engine.rules import RuleRegistry, evaluate_rules
+from logos.event_bus import EventBus
 
 if TYPE_CHECKING:
     from logos.engine.watcher import DirectoryWatcher
@@ -176,6 +177,7 @@ class ReactiveEngine:
         action_timeout_s: float | None = None,
         quiet_window_s: float | None = None,
         cooldown_default_s: float | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         mode = get_working_mode()
         default_debounce = 1500 if mode == WorkingMode.RESEARCH else 500
@@ -225,6 +227,8 @@ class ReactiveEngine:
         self._affordance_pipeline = AffordancePipeline()
         self._cascade_initialized = False
         self._rule_capability_record_class = CapabilityRecord
+
+        self._event_bus = event_bus
 
         # Counters
         self._events_processed = 0
@@ -360,6 +364,15 @@ class ReactiveEngine:
         """Resume rule evaluation."""
         self._paused = False
         _log.info("Engine resumed")
+
+    @staticmethod
+    def _agent_from_path(path: str) -> str:
+        """Extract agent name from SHM path like /dev/shm/hapax-stimmung/state.json."""
+        parts = Path(path).parts
+        for part in parts:
+            if part.startswith("hapax-"):
+                return part.removeprefix("hapax-")
+        return Path(path).stem
 
     def ignore_fn(self, path: Path) -> None:
         """Register a path as own-write (passthrough to watcher)."""
@@ -526,6 +539,21 @@ class ReactiveEngine:
                 await self._executor.execute(plan)
             self._actions_executed += len(plan.results)
             self._error_count += len(plan.errors)
+
+            # Emit engine.action events for completed actions
+            if self._event_bus is not None:
+                from logos.event_bus import FlowEvent
+
+                source_agent = self._agent_from_path(str(event.path))
+                for action_name in plan.results:
+                    self._event_bus.emit(
+                        FlowEvent(
+                            kind="engine.action",
+                            source="reactive-engine",
+                            target=source_agent,
+                            label=action_name,
+                        )
+                    )
 
             # Score the engine trace
             hapax_score(_engine_trace, "actions_completed", float(len(plan.results)))

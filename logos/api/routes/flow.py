@@ -132,7 +132,8 @@ async def get_flow_state(request: Request) -> dict:
     # 4. Runtime observation
     global _observer
     if _observer is None:
-        _observer = FlowObserver()
+        event_bus = getattr(request.app.state, "event_bus", None)
+        _observer = FlowObserver(event_bus=event_bus)
         for node in nodes:
             sp = node.get("_state_path", "")
             if sp:

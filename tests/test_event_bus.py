@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
@@ -253,3 +254,126 @@ async def test_sse_generator_emits_events() -> None:
     assert data["kind"] == "shm.write"
     assert data["source"] == "a"
     await gen.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Task 3: FlowObserver emits shm.write events on mtime change
+# ---------------------------------------------------------------------------
+
+
+def test_flow_observer_emits_shm_write_on_mtime_change(tmp_path: Path) -> None:
+    """FlowObserver emits shm.write events when a watched file's mtime changes."""
+    from logos.api.flow_observer import FlowObserver
+
+    bus = EventBus()
+    shm_root = tmp_path / "shm"
+    agent_dir = shm_root / "hapax-stimmung"
+    agent_dir.mkdir(parents=True)
+    state_file = agent_dir / "state.json"
+    state_file.write_text("{}")
+
+    observer = FlowObserver(shm_root=shm_root, event_bus=bus)
+    observer.register_reader("perception", str(state_file))
+
+    # First scan — populates prev_mtimes, no events yet
+    observer.scan()
+    assert len(bus.recent()) == 0
+
+    # Touch the file to change mtime
+    import os
+
+    orig_mtime = state_file.stat().st_mtime
+    os.utime(state_file, (orig_mtime + 1, orig_mtime + 1))
+
+    # Second scan — mtime changed, should emit
+    observer.scan()
+    events = bus.recent()
+    assert len(events) == 1
+    assert events[0].kind == "shm.write"
+    assert events[0].source == "stimmung"
+    assert events[0].target == "perception"
+
+
+def test_flow_observer_no_event_without_bus(tmp_path: Path) -> None:
+    """FlowObserver works without event_bus (no crash, no events)."""
+    from logos.api.flow_observer import FlowObserver
+
+    shm_root = tmp_path / "shm"
+    agent_dir = shm_root / "hapax-test"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "data.json").write_text("{}")
+
+    observer = FlowObserver(shm_root=shm_root)  # no event_bus
+    observer.scan()
+    observer.scan()  # should not crash
+
+
+# ---------------------------------------------------------------------------
+# Task 4: ReactiveEngine._agent_from_path
+# ---------------------------------------------------------------------------
+
+
+def test_agent_from_path_shm_path() -> None:
+    """_agent_from_path extracts agent name from SHM paths."""
+    from logos.engine import ReactiveEngine
+
+    assert ReactiveEngine._agent_from_path("/dev/shm/hapax-stimmung/state.json") == "stimmung"
+    assert ReactiveEngine._agent_from_path("/dev/shm/hapax-temporal/bands.json") == "temporal"
+
+
+def test_agent_from_path_no_hapax_prefix() -> None:
+    """_agent_from_path falls back to stem when no hapax- prefix."""
+    from logos.engine import ReactiveEngine
+
+    assert ReactiveEngine._agent_from_path("/tmp/some/file.json") == "file"
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Pi handler emits pi.detection events
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pi_handler_emits_detection_event() -> None:
+    """Pi IR detection handler emits pi.detection event on success."""
+    from pathlib import Path as _Path
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    bus = EventBus()
+
+    # Build a minimal FastAPI app with the pi router
+    from fastapi import FastAPI
+
+    from logos.api.routes.pi import router
+
+    test_app = FastAPI()
+    test_app.state.event_bus = bus
+    test_app.include_router(router)
+
+    with (
+        patch("logos.api.routes.pi.IR_STATE_DIR", _Path("/tmp/test-ir-state")),
+        patch("logos.api.routes.pi._last_post_time", {}),
+    ):
+        _Path("/tmp/test-ir-state").mkdir(parents=True, exist_ok=True)
+        client = TestClient(test_app)
+        resp = client.post(
+            "/api/pi/desk/ir",
+            json={
+                "pi": "hapax-pi1",
+                "role": "desk",
+                "ts": "2026-03-31T12:00:00",
+                "persons": [],
+                "hands": [],
+                "screens": [],
+                "inference_ms": 50,
+            },
+        )
+        assert resp.status_code == 200
+
+    events = bus.recent()
+    pi_events = [e for e in events if e.kind == "pi.detection"]
+    assert len(pi_events) == 1
+    assert pi_events[0].source == "pi-desk"
+    assert pi_events[0].target == "perception"
