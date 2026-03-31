@@ -45,12 +45,12 @@ class ReverieActuationLoop:
     def __init__(self) -> None:
         from agents._context import ContextAssembler
         from agents.effect_graph.capability import ShaderGraphCapability
-        from agents.reverie.governance import build_default_veto_chain, guest_reduction_factor
+        from agents.reverie.governance import build_reverie_veto_chain, guest_reduction_factor
         from agents.visual_chain import VisualChainCapability
 
         self._shader_cap = ShaderGraphCapability()
         self._visual_chain = VisualChainCapability(decay_rate=0.02)
-        self._veto_chain = build_default_veto_chain()
+        self._veto_chain = build_reverie_veto_chain()
         self._guest_reduction = guest_reduction_factor
         self._context = ContextAssembler()
         self._last_tick = time.monotonic()
@@ -78,18 +78,24 @@ class ReverieActuationLoop:
         self._tick_count += 1
 
         # 0. Assemble shared context (same snapshot for governance + actuation)
+        from agents._capability import SystemContext
         from agents.reverie.governance import read_consent_phase
 
         ctx = self._context.assemble()
         consent_phase = read_consent_phase()
-        gov_ctx = {
-            "consent_phase": consent_phase,
-            "stance": ctx.stimmung_stance,
-        }
-        allowed, reason = self._veto_chain.evaluate(gov_ctx)
-        if not allowed:
+        gov_ctx = SystemContext(
+            stimmung_stance=ctx.stimmung_stance,
+            consent_state={"phase": consent_phase},
+            guest_present=consent_phase not in ("no_guest",),
+        )
+        result = self._veto_chain.evaluate(gov_ctx)
+        if not result.allowed:
             if self._tick_count % 30 == 1:  # log once per 30s
-                log.info("Visual actuation vetoed: %s", reason)
+                log.info(
+                    "Visual actuation vetoed: denied_by=%s axiom_ids=%s",
+                    result.denied_by,
+                    result.axiom_ids,
+                )
             self._write_uniforms(None, ctx.stimmung_raw)  # write minimal uniforms
             return
 

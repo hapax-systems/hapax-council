@@ -52,3 +52,72 @@ def test_governor_wrapper_collects_all_denials():
     assert "policy_b" in result.denial.reason
     assert "ax1" in result.denial.axiom_ids
     assert "ax2" in result.denial.axiom_ids
+
+
+def test_reverie_veto_chain_denies_consent_pending():
+    """Reverie should suppress visual expression during consent negotiation."""
+    from agents._capability import SystemContext
+    from agents.reverie.governance import build_reverie_veto_chain
+
+    chain = build_reverie_veto_chain()
+    ctx = SystemContext(
+        stimmung_stance="nominal",
+        consent_state={"phase": "consent_pending"},
+        guest_present=True,
+    )
+    result = chain.evaluate(ctx)
+    assert not result.allowed
+    assert "consent_pending" in result.denied_by
+    assert "interpersonal_transparency" in result.axiom_ids
+
+
+def test_reverie_veto_chain_denies_consent_refused():
+    """Reverie should suppress visual expression when consent refused."""
+    from agents._capability import SystemContext
+    from agents.reverie.governance import build_reverie_veto_chain
+
+    chain = build_reverie_veto_chain()
+    ctx = SystemContext(
+        stimmung_stance="nominal",
+        consent_state={"phase": "consent_refused"},
+        guest_present=True,
+    )
+    result = chain.evaluate(ctx)
+    assert not result.allowed
+    assert "consent_refused" in result.denied_by
+
+
+def test_reverie_veto_chain_allows_no_guest():
+    """Reverie should allow when no guest present."""
+    from agents._capability import SystemContext
+    from agents.reverie.governance import build_reverie_veto_chain
+
+    chain = build_reverie_veto_chain()
+    ctx = SystemContext(
+        stimmung_stance="nominal",
+        consent_state={"phase": "no_guest"},
+        guest_present=False,
+    )
+    # gpu_unavailable veto may fire in test env, so mock the path check
+    from pathlib import Path
+    from unittest.mock import patch
+
+    with patch.object(Path, "exists", return_value=True):
+        result = chain.evaluate(ctx)
+    assert result.allowed
+
+
+def test_reverie_veto_chain_denies_critical_health():
+    """Reverie should suspend on critical stimmung."""
+    from agents._capability import SystemContext
+    from agents.reverie.governance import build_reverie_veto_chain
+
+    chain = build_reverie_veto_chain()
+    ctx = SystemContext(
+        stimmung_stance="critical",
+        consent_state={"phase": "no_guest"},
+        guest_present=False,
+    )
+    result = chain.evaluate(ctx)
+    assert not result.allowed
+    assert "health_critical" in result.denied_by
