@@ -24,9 +24,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agents.reverie.actuation import ReverieActuationLoop
 
+from agents._impingement import Impingement, ImpingementType
 from agents.dmn.buffer import DMNBuffer
 from agents.dmn.pulse import DMNPulse
-from agents.imagination import CURRENT_PATH, ImaginationFragment, ImaginationLoop
+from agents.imagination import CURRENT_PATH, ImaginationFragment
+from agents.imagination_loop import ImaginationLoop
 from agents.imagination_resolver import CONTENT_DIR, resolve_references_staged
 
 log = logging.getLogger("dmn")
@@ -71,6 +73,7 @@ class DMNDaemon:
         self._reverie: ReverieActuationLoop | None = None  # initialized in run()
         self._resolver_failures: dict[str, int] = {}
         self._resolver_skip_until: dict[str, float] = {}
+        self._resolver_consecutive_failures: int = 0
 
     async def run(self) -> None:
         """Main loop — never stops unless signalled."""
@@ -166,10 +169,12 @@ class DMNDaemon:
                                 frag = ImaginationFragment.model_validate(data)
                                 resolve_references_staged(frag)
                                 self._resolver_failures.pop(frag_id, None)
+                                self._resolver_consecutive_failures = 0
                                 log.debug("Resolved content for fragment %s", frag_id)
                             except Exception:
                                 count = self._resolver_failures.get(frag_id, 0) + 1
                                 self._resolver_failures[frag_id] = count
+                                self._resolver_consecutive_failures += 1
                                 if count >= 5:
                                     self._resolver_skip_until[frag_id] = time.time() + 60.0
                                     log.warning(
@@ -179,6 +184,8 @@ class DMNDaemon:
                                     )
                                 else:
                                     log.debug("Resolver tick failed for %s (%d/5)", frag_id, count)
+                                if self._resolver_consecutive_failures == 3:
+                                    self._emit_resolver_degraded()
             except Exception:
                 log.warning("Resolver tick failed", exc_info=True)
 
@@ -242,6 +249,24 @@ class DMNDaemon:
             tmp.rename(STATUS_FILE)
         except OSError:
             pass
+
+    def _emit_resolver_degraded(self) -> None:
+        """Emit an impingement when the content resolver is failing repeatedly."""
+        imp = Impingement(
+            timestamp=time.time(),
+            source="dmn.resolver",
+            type=ImpingementType.ABSOLUTE_THRESHOLD,
+            strength=0.6,
+            content={"metric": "resolver_consecutive_failures", "value": 3},
+        )
+        try:
+            with IMPINGEMENTS_FILE.open("a", encoding="utf-8") as f:
+                f.write(imp.model_dump_json() + "\n")
+            log.warning(
+                "Content resolver degraded — emitted impingement after 3 consecutive failures"
+            )
+        except OSError:
+            log.warning("Content resolver degraded but failed to write impingement")
 
     def stop(self) -> None:
         self._running = False

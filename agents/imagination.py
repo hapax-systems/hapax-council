@@ -97,10 +97,12 @@ def publish_fragment(
     with stream_path.open("a") as f:
         f.write(payload + "\n")
 
-    # Cap stream at max_lines
+    # Cap stream at max_lines (atomic: write to tmp, then rename)
     lines = stream_path.read_text().splitlines()
     if len(lines) > max_lines:
-        stream_path.write_text("\n".join(lines[-max_lines:]) + "\n")
+        tmp_cap = stream_path.with_suffix(".cap.tmp")
+        tmp_cap.write_text("\n".join(lines[-max_lines:]) + "\n")
+        tmp_cap.rename(stream_path)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +146,10 @@ class CadenceController:
         if self._tpn_active:
             interval *= 2.0
         return interval
+
+    def force_accelerated(self, enabled: bool) -> None:
+        """Force acceleration state externally (e.g. reverberation boost)."""
+        self._accelerated = enabled
 
     def set_tpn_active(self, active: bool) -> None:
         """Set task-positive network active state."""
@@ -243,47 +249,8 @@ def maybe_escalate(fragment: ImaginationFragment) -> Impingement | None:
 
 
 # ---------------------------------------------------------------------------
-# Imagination loop
+# Reverberation
 # ---------------------------------------------------------------------------
-
-IMAGINATION_SYSTEM_PROMPT = """\
-You are the imagination process of a personal computing system. You observe
-the system's current state and produce spontaneous associations, memories,
-projections, and novel connections — the way a human mind wanders during
-idle moments.
-
-Your output is a structured fragment describing what you're currently
-"imagining." This is not evaluation or analysis — it is free association
-grounded in what you observe.
-
-Content sources you can reference:
-- camera_frame: overhead, hero, left, right (live camera feeds)
-- qdrant_query: profile-facts, documents, operator-episodes, studio-moments (vector knowledge)
-- text: any text you want to display
-- url: any image URL
-- file: any file path
-
-## Material Quality
-Each fragment has an elemental material that determines how it interacts
-with the visual field:
-- water: dissolving, flowing, reflective. For contemplative, fluid thoughts.
-- fire: consuming, vertical, rapid. For urgent, transformative insights.
-- earth: dense, persistent, resistant. For grounded, factual observations.
-- air: translucent, drifting, dispersing. For light, fleeting associations.
-- void: darkening, absorbing. For absence, loss, emptiness.
-Choose the material that matches the character of your thought.
-
-Produce one ImaginationFragment. Be specific in content_references —
-point to real things. Set dimensional coloring to match the emotional
-tone of what you're imagining. Assess salience honestly — most fragments
-are low salience (0.1-0.3). Only mark high salience (>0.6) for genuine
-insights or concerns worth escalating.
-
-If your previous fragment had continuation=true, you may continue that
-train of thought or let it go. Don't force continuation.\
-"""
-
-MAX_RECENT_FRAGMENTS = 5
 
 
 def reverberation_check(narrative: str, perceived_description: str) -> float:
@@ -312,119 +279,3 @@ def reverberation_check(narrative: str, perceived_description: str) -> float:
 
     similarity = len(intersection) / len(union)  # Jaccard similarity
     return 1.0 - similarity
-
-
-class ImaginationLoop:
-    """Main loop that drives imagination ticks via an LLM agent."""
-
-    def __init__(
-        self,
-        current_path: Path | None = None,
-        stream_path: Path | None = None,
-        visual_observation_path: Path | None = None,
-    ):
-        self.cadence = CadenceController()
-        self.recent_fragments: list[ImaginationFragment] = []
-        self._pending_impingements: list[Impingement] = []
-        self._current_path = current_path or CURRENT_PATH
-        self._stream_path = stream_path or STREAM_PATH
-        self._visual_observation_path = visual_observation_path or VISUAL_OBSERVATION_PATH
-        self._agent = None  # lazy-init
-        self._last_reverberation: float = 0.0
-
-    @property
-    def activation_level(self) -> float:
-        """Return the salience of the most recent fragment, or 0."""
-        if not self.recent_fragments:
-            return 0.0
-        return self.recent_fragments[-1].salience
-
-    def _get_agent(self):
-        """Lazy-init pydantic_ai Agent for imagination generation."""
-        if self._agent is None:
-            from pydantic_ai import Agent
-
-            from agents._config import get_model
-
-            self._agent = Agent(
-                get_model("reasoning"),
-                output_type=ImaginationFragment,
-                system_prompt=IMAGINATION_SYSTEM_PROMPT,
-            )
-        return self._agent
-
-    def _record_fragment(self, fragment: ImaginationFragment) -> None:
-        """Append fragment to recent list, capping at MAX_RECENT_FRAGMENTS."""
-        self.recent_fragments.append(fragment)
-        if len(self.recent_fragments) > MAX_RECENT_FRAGMENTS:
-            self.recent_fragments = self.recent_fragments[-MAX_RECENT_FRAGMENTS:]
-
-    def _process_fragment(self, fragment: ImaginationFragment) -> None:
-        """Record, publish, update cadence, and maybe escalate a fragment."""
-        self._record_fragment(fragment)
-        publish_fragment(fragment, self._current_path, self._stream_path)
-        self.cadence.update(fragment)
-        imp = maybe_escalate(fragment)
-        if imp is not None:
-            self._pending_impingements.append(imp)
-
-    def drain_impingements(self) -> list[Impingement]:
-        """Return and clear pending impingements."""
-        result = list(self._pending_impingements)
-        self._pending_impingements.clear()
-        return result
-
-    def set_tpn_active(self, active: bool) -> None:
-        """Delegate TPN state to cadence controller."""
-        self.cadence.set_tpn_active(active)
-
-    def _read_visual_observation(self) -> str:
-        """Read the DMN's visual observation from shm."""
-        try:
-            if self._visual_observation_path.exists():
-                return self._visual_observation_path.read_text().strip()
-        except OSError:
-            pass
-        return ""
-
-    def _check_reverberation(self) -> float:
-        """Compare last fragment's narrative against DMN visual observation."""
-        if not self.recent_fragments:
-            return 0.0
-        perceived = self._read_visual_observation()
-        if not perceived:
-            return 0.0
-        last_narrative = self.recent_fragments[-1].narrative
-        reverb = reverberation_check(last_narrative, perceived)
-        self._last_reverberation = reverb
-        if reverb > REVERBERATION_THRESHOLD:
-            log.info("Reverberation %.2f — visual output surprised imagination", reverb)
-        return reverb
-
-    async def tick(
-        self, observations: list[str], sensor_snapshot: dict
-    ) -> ImaginationFragment | None:
-        """Run one imagination tick: assemble context, call agent, process result."""
-        # Check reverberation from last tick's output
-        reverb = self._check_reverberation()
-
-        context = assemble_context(observations, self.recent_fragments, sensor_snapshot)
-
-        # High reverberation: boost context and accelerate cadence
-        if reverb > REVERBERATION_THRESHOLD:
-            context += (
-                "\n\n## Reverberation\n"
-                "The visual output surprised you — what you see differs from what you "
-                "imagined. This is generative tension. Lean into the surprise."
-            )
-            self.cadence._accelerated = True
-
-        try:
-            agent = self._get_agent()
-            result = await agent.run(context)
-            fragment = result.output
-            self._process_fragment(fragment)
-            return fragment
-        except Exception:
-            log.warning("Imagination tick failed", exc_info=True)
-            return None

@@ -150,6 +150,33 @@ def test_manifest_max_four_slots(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# PIL error handling
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_text_returns_none_on_save_failure(tmp_path, monkeypatch):
+    """resolve_text returns None if PIL save raises."""
+    import PIL.Image as _img
+
+    def failing_save(self, *a, **kw):
+        raise OSError("Disk full")
+
+    monkeypatch.setattr(_img.Image, "save", failing_save)
+    ref = ContentReference(kind="text", source="Hello", query=None, salience=0.5)
+    result = resolve_text(ref, tmp_path, "fail1", 0)
+    assert result is None
+
+
+def test_font_fallback_loads_default(monkeypatch):
+    """_load_font falls back to PIL default when no candidate font exists."""
+    import agents.imagination_resolver as mod
+
+    monkeypatch.setattr(mod, "_FONT_PATH", None)
+    font = mod._load_font(24)
+    assert font is not None
+
+
+# ---------------------------------------------------------------------------
 # Task 2: DMN visual surface sensor
 # ---------------------------------------------------------------------------
 

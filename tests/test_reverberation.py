@@ -7,9 +7,9 @@ from pathlib import Path
 from agents.imagination import (
     ContentReference,
     ImaginationFragment,
-    ImaginationLoop,
     reverberation_check,
 )
+from agents.imagination_loop import ImaginationLoop
 
 # ---------------------------------------------------------------------------
 # Test helpers

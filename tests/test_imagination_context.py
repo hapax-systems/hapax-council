@@ -98,3 +98,14 @@ class TestMalformedLines:
         result = format_imagination_context(stream_path=path)
         assert "valid thought" in result
         assert "(active thought)" in result
+
+    def test_malformed_lines_logged(self, tmp_path: Path, caplog) -> None:
+        """Malformed JSON lines produce a debug log instead of being silently dropped."""
+        import logging
+
+        path = tmp_path / "stream.jsonl"
+        good = json.dumps(_make_fragment(narrative="ok"))
+        path.write_text(f"corrupt line\n{good}\n")
+        with caplog.at_level(logging.DEBUG, logger="agents.imagination_context"):
+            format_imagination_context(stream_path=path)
+        assert any("malformed JSON" in r.message for r in caplog.records)

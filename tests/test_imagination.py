@@ -6,15 +6,14 @@ import json
 from pathlib import Path
 
 from agents.imagination import (
-    MAX_RECENT_FRAGMENTS,
     CadenceController,
     ContentReference,
     ImaginationFragment,
-    ImaginationLoop,
     assemble_context,
     maybe_escalate,
     publish_fragment,
 )
+from agents.imagination_loop import MAX_RECENT_FRAGMENTS, ImaginationLoop
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -179,6 +178,24 @@ class TestPublishFragment:
         assert json.loads(lines[0])["narrative"] == "frag-5"
         assert json.loads(lines[-1])["narrative"] == "frag-9"
 
+    def test_cap_is_atomic(self, tmp_path: Path) -> None:
+        """Stream truncation uses staging file + rename, not in-place rewrite."""
+        current = tmp_path / "current.json"
+        stream = tmp_path / "stream.jsonl"
+
+        for i in range(10):
+            publish_fragment(
+                _make_fragment(narrative=f"frag-{i}"),
+                current_path=current,
+                stream_path=stream,
+                max_lines=5,
+            )
+
+        # After capping, no temp files should be left behind
+        assert not (tmp_path / "stream.cap.tmp").exists()
+        lines = stream.read_text().strip().splitlines()
+        assert len(lines) == 5
+
 
 # ---------------------------------------------------------------------------
 # Task 3: Escalation tests
@@ -290,6 +307,14 @@ class TestCadenceController:
         # Also doubles accelerated
         cc.update(_make_fragment(continuation=True, salience=0.5))
         assert cc.current_interval() == 8.0
+
+    def test_force_accelerated(self) -> None:
+        cc = CadenceController(base_s=12.0, accelerated_s=4.0)
+        assert cc.current_interval() == 12.0
+        cc.force_accelerated(True)
+        assert cc.current_interval() == 4.0
+        cc.force_accelerated(False)
+        assert cc.current_interval() == 12.0
 
 
 # ---------------------------------------------------------------------------
