@@ -165,3 +165,25 @@ class TestDMNSensor:
         result = read_stimmung()
         assert "source" in result
         assert "stance" in result
+
+
+import json as _json
+
+from agents.dmn.sensor import SensorConfig, read_all
+
+
+class TestSensorConfig:
+    def test_read_all_with_custom_config(self, tmp_path):
+        stimmung_path = tmp_path / "stimmung.json"
+        stimmung_path.write_text(_json.dumps({"overall_stance": "nominal"}))
+        config = SensorConfig(
+            stimmung_state=stimmung_path,
+            fortress_state=tmp_path / "nonexistent.json",
+            watch_dir=tmp_path / "watch",
+            voice_perception=tmp_path / "perception.json",
+            visual_frame=tmp_path / "frame.jpg",
+            imagination_current=tmp_path / "imagination.json",
+        )
+        snapshot = read_all(config)
+        assert snapshot["stimmung"]["stance"] == "nominal"
+        assert snapshot["fortress"] is None
