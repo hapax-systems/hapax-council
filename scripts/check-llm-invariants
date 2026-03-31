@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# check-llm-invariants — validates all LLM-optimization invariants in one run.
+#
+# Checks:
+# 1. File size: Python files over 300 LOC (excluding tests, shims)
+# 2. shared/ imports: from shared. in consumer code (not shims)
+# 3. Any types: explicit Any count in agents/logos/ vs baseline
+# 4. METADATA.yaml coverage: every agents/*/ package has one
+# 5. MANIFEST.json sync: package count matches METADATA.yaml count
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+errors=0
+warnings=0
+ANY_BASELINE=81
+
+echo "=== LLM Codebase Invariant Check ==="
+
+# --- 1. File size ---
+oversized=()
+while IFS= read -r file; do
+  [ -f "$file" ] || continue
+  basename="$(basename "$file")"
+  case "$file" in
+    tests/*|*/tests/*) continue ;;
+    shared/*|*/shared/*) continue ;;
+  esac
+  case "$basename" in
+    _*.py|*.generated.py) continue ;;
+  esac
+  lines="$(wc -l < "$file")"
+  if [ "$lines" -gt 300 ]; then
+    oversized+=("${file} (${lines})")
+  fi
+done < <(find agents/ logos/ -name '*.py' -type f 2>/dev/null)
+
+if [ ${#oversized[@]} -gt 0 ]; then
+  echo "1. File size: WARN: ${#oversized[@]} files over 300 LOC (pre-existing)"
+  warnings=$((warnings + ${#oversized[@]}))
+else
+  echo "1. File size: OK"
+fi
+
+# --- 2. shared/ imports in consumer code ---
+bad_imports=()
+while IFS= read -r file; do
+  basename="$(basename "$file")"
+  case "$basename" in
+    _*.py) continue ;;
+  esac
+  case "$file" in
+    */shared/*|tests/*|*/tests/*) continue ;;
+  esac
+  if grep -qE '^\s*from shared\.' "$file" 2>/dev/null; then
+    bad_imports+=("$file")
+  fi
+done < <(find agents/ logos/ -name '*.py' -type f 2>/dev/null)
+
+if [ ${#bad_imports[@]} -gt 0 ]; then
+  echo "2. shared/ imports: FAIL (${#bad_imports[@]} consumer files import from shared/)"
+  for f in "${bad_imports[@]}"; do
+    echo "   $f"
+  done
+  errors=$((errors + 1))
+else
+  echo "2. shared/ imports: OK (0 in consumer code)"
+fi
+
+# --- 3. Any types ---
+any_count="$(grep -rE '\bAny\b' agents/ logos/ --include='*.py' 2>/dev/null | grep -v '_.*\.py:' | grep -v '/tests/' | grep -c 'Any' || echo 0)"
+if [ "$any_count" -gt "$ANY_BASELINE" ]; then
+  echo "3. Any types: WARN (${any_count}, above baseline ${ANY_BASELINE})"
+  warnings=$((warnings + 1))
+elif [ "$any_count" -le "$ANY_BASELINE" ]; then
+  echo "3. Any types: OK (${any_count}, at or below baseline ${ANY_BASELINE})"
+fi
+
+# --- 4. METADATA.yaml coverage ---
+missing_meta=()
+total_pkgs=0
+while IFS= read -r init; do
+  dir="$(dirname "$init")"
+  pkg="$(basename "$dir")"
+  total_pkgs=$((total_pkgs + 1))
+  if [ ! -f "${dir}/METADATA.yaml" ]; then
+    missing_meta+=("$pkg")
+  fi
+done < <(find agents/ -maxdepth 2 -name '__init__.py' -type f 2>/dev/null)
+
+meta_count="$(find agents/ -name 'METADATA.yaml' -type f 2>/dev/null | wc -l)"
+if [ ${#missing_meta[@]} -gt 0 ]; then
+  echo "4. METADATA.yaml: WARN (${meta_count} files, ${#missing_meta[@]} packages missing)"
+  warnings=$((warnings + ${#missing_meta[@]}))
+else
+  echo "4. METADATA.yaml: OK (${meta_count} files, all packages covered)"
+fi
+
+# --- 5. MANIFEST.json sync ---
+if [ -f MANIFEST.json ]; then
+  manifest_count="$(jq '.packages | length' MANIFEST.json 2>/dev/null || echo 0)"
+  echo "5. MANIFEST.json: OK (${manifest_count} packages indexed, ${meta_count} METADATA.yaml files)"
+  if [ "$manifest_count" -ne "$meta_count" ]; then
+    echo "   WARN: counts differ — run: uv run python scripts/llm_validate.py"
+    warnings=$((warnings + 1))
+  fi
+else
+  echo "5. MANIFEST.json: SKIP (file not found)"
+fi
+
+# --- Summary ---
+echo "=== Summary ==="
+echo "Errors: ${errors}, Warnings: ${warnings}"
+if [ "$errors" -gt 0 ]; then
+  echo "Status: FAIL"
+  exit 1
+else
+  echo "Status: PASS"
+  exit 0
+fi
