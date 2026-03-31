@@ -35,9 +35,13 @@ class FlowObserver:
         self._observed: dict[tuple[str, str], float] = {}
         self._event_bus = event_bus
         self._prev_mtimes: dict[str, float] = {}
-        # Map SHM directory names to manifest node IDs
-        # e.g. "compositor" -> "studio_compositor", "stimmung" -> "stimmung_sync"
-        self._writer_node_map: dict[str, str] = {}
+        # Map SHM directory names to manifest node IDs.
+        # Most populated dynamically via register_reader, but some agents
+        # don't have SHM-based state paths (e.g., daimonion uses ~/.cache).
+        self._writer_node_map: dict[str, str] = {
+            "daimonion": "hapax_daimonion",
+            "dmn": "dmn",
+        }
 
     def register_reader(self, agent_id: str, state_path: str) -> None:
         """Register an agent as a reader of a specific state file."""
