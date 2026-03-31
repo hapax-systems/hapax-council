@@ -588,6 +588,12 @@ class VisualLayerAggregator:
                     query = f"activity={activity} flow_state={flow_state} hour={hour}"
                     matches = self._pattern_store.search(query, limit=3, min_score=0.3)
                     self._active_patterns = matches
+                    try:
+                        from .apperception_bridges import write_pattern_shifts
+
+                        write_pattern_shifts(self)
+                    except Exception:
+                        log.debug("Pattern-shifts bridge failed", exc_info=True)
                     if matches:
                         log.debug(
                             "WS3 patterns: %d matches (top: %.2f -- %s)",
@@ -1165,6 +1171,13 @@ class VisualLayerAggregator:
                 self._tick_apperception()
             except Exception:
                 log.debug("Apperception tick failed", exc_info=True)
+
+            try:
+                from .apperception_bridges import write_cross_resonance
+
+                write_cross_resonance(self)
+            except Exception:
+                log.debug("Cross-resonance bridge failed", exc_info=True)
 
             tick_interval = self._adaptive_tick_interval(state)
             await asyncio.sleep(tick_interval)

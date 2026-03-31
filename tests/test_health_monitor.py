@@ -831,6 +831,7 @@ class TestRegistry:
             "traces",
             "backup",
             "sync",
+            "perception",
         }
         assert expected == set(CHECK_REGISTRY.keys())
 

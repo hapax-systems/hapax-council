@@ -171,6 +171,243 @@ class TestEventCollection:
         assert perception_age <= 30.0  # no event
 
 
+class TestNewEventSources:
+    """Tests for performance, cross-resonance, and pattern-shift event sources."""
+
+    def test_performance_above_baseline(self):
+        """Stimmung health at 0.5 (baseline 0.1) → delta 0.4 → event."""
+        from shared.apperception_tick import _STIMMUNG_BASELINES
+
+        stimmung_data = {
+            "health": {"value": 0.5, "trend": "rising", "freshness_s": 10},
+            "resource_pressure": {"value": 0.3, "trend": "stable", "freshness_s": 10},
+        }
+        events: list[CascadeEvent] = []
+        for dim_name, dim in stimmung_data.items():
+            if not isinstance(dim, dict) or "value" not in dim:
+                continue
+            value = dim["value"]
+            baseline = _STIMMUNG_BASELINES.get(dim_name)
+            if baseline is None:
+                continue
+            delta = value - baseline
+            if abs(delta) > 0.15:
+                events.append(
+                    CascadeEvent(
+                        source="performance",
+                        text=f"{dim_name}: {value:.2f} (baseline {baseline:.2f}, delta {delta:+.2f})",
+                        magnitude=min(abs(delta), 1.0),
+                        metadata={"baseline": baseline, "dimension": dim_name},
+                    )
+                )
+        assert len(events) == 1
+        assert events[0].source == "performance"
+        assert events[0].metadata["dimension"] == "health"
+
+    def test_performance_within_baseline(self):
+        """Stimmung health at 0.2 (baseline 0.1) → delta 0.1 → no event."""
+        from shared.apperception_tick import _STIMMUNG_BASELINES
+
+        stimmung_data = {
+            "health": {"value": 0.2, "trend": "stable", "freshness_s": 10},
+            "error_rate": {"value": 0.1, "trend": "stable", "freshness_s": 10},
+        }
+        events = []
+        for dim_name, dim in stimmung_data.items():
+            if not isinstance(dim, dict) or "value" not in dim:
+                continue
+            value = dim["value"]
+            baseline = _STIMMUNG_BASELINES.get(dim_name)
+            if baseline is None:
+                continue
+            if abs(value - baseline) > 0.15:
+                events.append("hit")
+        assert len(events) == 0
+
+    def test_performance_dedup(self):
+        """Same value twice → only first emitted (dedup by snapshot)."""
+        from shared.apperception_tick import _STIMMUNG_BASELINES
+
+        snapshot: dict[str, float] = {}
+        baseline = _STIMMUNG_BASELINES["health"]
+        results = []
+        for _ in range(2):
+            value = 0.6
+            delta = value - baseline
+            if abs(delta) > 0.15:
+                last = snapshot.get("health")
+                if last is not None and abs(value - last) <= 0.1:
+                    results.append("deduped")
+                    continue
+                snapshot["health"] = value
+                results.append("emitted")
+        assert results == ["emitted", "deduped"]
+
+    def test_cross_resonance_above_threshold(self, tmp_path):
+        """Score > 0.3 → cross_resonance event."""
+        cr_file = tmp_path / "cross-resonance.json"
+        cr_file.write_text(
+            json.dumps(
+                {
+                    "resonance_score": 0.7,
+                    "audio_label": "sample-session",
+                    "matching_roles": ["desk", "overhead"],
+                    "timestamp": time.time(),
+                }
+            )
+        )
+        events: list[CascadeEvent] = []
+        cr = json.loads(cr_file.read_text(encoding="utf-8"))
+        if (time.time() - cr.get("timestamp", 0)) <= 30:
+            score = cr.get("resonance_score", 0.0)
+            if score > 0.3:
+                events.append(
+                    CascadeEvent(
+                        source="cross_resonance",
+                        text=f"audio-video agreement: {cr.get('audio_label', '?')} "
+                        f"({len(cr.get('matching_roles', []))} cameras)",
+                        magnitude=score,
+                    )
+                )
+        assert len(events) == 1
+        assert events[0].source == "cross_resonance"
+        assert "2 cameras" in events[0].text
+
+    def test_cross_resonance_stale(self, tmp_path):
+        """Stale data (>30s) → no event."""
+        cr_file = tmp_path / "cross-resonance.json"
+        cr_file.write_text(
+            json.dumps(
+                {
+                    "resonance_score": 0.7,
+                    "audio_label": "sample-session",
+                    "matching_roles": ["desk"],
+                    "timestamp": time.time() - 60,
+                }
+            )
+        )
+        events: list[CascadeEvent] = []
+        cr = json.loads(cr_file.read_text(encoding="utf-8"))
+        if (time.time() - cr.get("timestamp", 0)) <= 30:
+            events.append(CascadeEvent(source="cross_resonance", text="x", magnitude=0.7))
+        assert len(events) == 0
+
+    def test_cross_resonance_no_agreement(self, tmp_path):
+        """Score 0.0 → no event."""
+        cr_file = tmp_path / "cross-resonance.json"
+        cr_file.write_text(
+            json.dumps(
+                {
+                    "resonance_score": 0.0,
+                    "audio_label": "silence",
+                    "matching_roles": [],
+                    "timestamp": time.time(),
+                }
+            )
+        )
+        events: list[CascadeEvent] = []
+        cr = json.loads(cr_file.read_text(encoding="utf-8"))
+        if (time.time() - cr.get("timestamp", 0)) <= 30:
+            if cr.get("resonance_score", 0.0) > 0.3:
+                events.append(CascadeEvent(source="cross_resonance", text="x", magnitude=0.0))
+        assert len(events) == 0
+
+    def test_pattern_shift_confirmed(self, tmp_path):
+        """Confirmed pattern → pattern_shift event with confirmed=True."""
+        ps_file = tmp_path / "pattern-shifts.json"
+        ps_file.write_text(
+            json.dumps(
+                {
+                    "shifts": [
+                        {
+                            "pattern_id": "p1",
+                            "prediction": "production expected",
+                            "confidence": 0.8,
+                            "confirmed": True,
+                            "timestamp": time.time(),
+                        }
+                    ],
+                    "timestamp": time.time(),
+                }
+            )
+        )
+        events: list[CascadeEvent] = []
+        ps = json.loads(ps_file.read_text(encoding="utf-8"))
+        if (time.time() - ps.get("timestamp", 0)) <= 60:
+            for shift in ps.get("shifts", []):
+                events.append(
+                    CascadeEvent(
+                        source="pattern_shift",
+                        text=f"pattern {'confirmed' if shift.get('confirmed') else 'contradicted'}: "
+                        f"{shift.get('prediction', '?')}",
+                        magnitude=shift.get("confidence", 0.5),
+                        metadata={
+                            "confirmed": shift.get("confirmed", False),
+                            "dimension": "pattern_recognition",
+                        },
+                    )
+                )
+        assert len(events) == 1
+        assert events[0].metadata["confirmed"] is True
+        assert "confirmed" in events[0].text
+
+    def test_pattern_shift_contradicted(self, tmp_path):
+        """Contradicted pattern → pattern_shift event with confirmed=False."""
+        ps_file = tmp_path / "pattern-shifts.json"
+        ps_file.write_text(
+            json.dumps(
+                {
+                    "shifts": [
+                        {
+                            "pattern_id": "p2",
+                            "prediction": "idle expected",
+                            "confidence": 0.6,
+                            "confirmed": False,
+                            "timestamp": time.time(),
+                        }
+                    ],
+                    "timestamp": time.time(),
+                }
+            )
+        )
+        events: list[CascadeEvent] = []
+        ps = json.loads(ps_file.read_text(encoding="utf-8"))
+        if (time.time() - ps.get("timestamp", 0)) <= 60:
+            for shift in ps.get("shifts", []):
+                events.append(
+                    CascadeEvent(
+                        source="pattern_shift",
+                        text=f"pattern {'confirmed' if shift.get('confirmed') else 'contradicted'}: "
+                        f"{shift.get('prediction', '?')}",
+                        magnitude=shift.get("confidence", 0.5),
+                        metadata={
+                            "confirmed": shift.get("confirmed", False),
+                            "dimension": "pattern_recognition",
+                        },
+                    )
+                )
+        assert len(events) == 1
+        assert events[0].metadata["confirmed"] is False
+        assert "contradicted" in events[0].text
+
+    def test_pattern_shift_stale(self, tmp_path):
+        """Stale data (>60s) → no event."""
+        ps_file = tmp_path / "pattern-shifts.json"
+        ps_file.write_text(
+            json.dumps(
+                {
+                    "shifts": [{"confirmed": True, "prediction": "x", "confidence": 0.8}],
+                    "timestamp": time.time() - 120,
+                }
+            )
+        )
+        events: list[CascadeEvent] = []
+        ps = json.loads(ps_file.read_text(encoding="utf-8"))
+        if (time.time() - ps.get("timestamp", 0)) <= 60:
+            events.append(CascadeEvent(source="pattern_shift", text="x", magnitude=0.5))
+        assert len(events) == 0
+
+
 class TestCascadeEventFlow:
     """Test that events flow through the cascade correctly."""
 

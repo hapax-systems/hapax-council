@@ -321,7 +321,6 @@ async def get_flow_state_legacy(request: Request) -> dict:
         if isinstance(dim, dict):
             apper_dims[name] = {
                 "confidence": dim.get("confidence", 0.0),
-                "assessment": (dim.get("current_assessment", "") or "")[:60],
                 "affirming": dim.get("affirming_count", 0),
                 "problematizing": dim.get("problematizing_count", 0),
             }
