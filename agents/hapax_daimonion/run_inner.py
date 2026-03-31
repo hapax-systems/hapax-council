@@ -199,7 +199,13 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         await asyncio.gather(*daemon._background_tasks, return_exceptions=True)
         daemon._background_tasks.clear()
 
-        # 6. Close resources (chime, executors, PyAudio)
+        # 6. Stop managed resources (thread pools, etc.)
+        if hasattr(daemon, "resource_registry"):
+            failed = daemon.resource_registry.stop_all(timeout=5.0)
+            if failed:
+                log.warning("Resources failed to stop: %s", failed)
+
+        # 7. Close resources (chime, executors, PyAudio)
         daemon.chime_player.close()
         daemon.executor_registry.close_all()
         if daemon._shared_pa is not None:
@@ -208,7 +214,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
             except Exception:
                 pass
 
-        # 7. Flush telemetry
+        # 8. Flush telemetry
         daemon.event_log.close()
         from opentelemetry.trace import get_tracer_provider
 
@@ -216,6 +222,6 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         if hasattr(provider, "force_flush"):
             provider.force_flush(timeout_millis=5000)
 
-        # 8. Stop hotkey
+        # 9. Stop hotkey
         await daemon.hotkey.stop()
         log.info("Hapax Daimonion daemon stopped")

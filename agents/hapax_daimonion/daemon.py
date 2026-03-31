@@ -70,6 +70,10 @@ class VoiceDaemon:
         from agents.hapax_daimonion.error_strategy import DegradationRegistry
 
         self.degradation_registry = DegradationRegistry()
+
+        from agents.hapax_daimonion.resource_lifecycle import ResourceRegistry
+
+        self.resource_registry = ResourceRegistry()
         self.session = SessionManager(silence_timeout_s=self.cfg.silence_timeout_s)
         self.presence = PresenceDetector(
             window_minutes=self.cfg.presence_window_minutes,
