@@ -76,6 +76,8 @@ def _make_tick(tick_env: dict) -> ApperceptionTick:
     tick._last_save = 0.0
     tick._last_flush = 0.0
     tick._last_correction_ts = 0.0
+    tick._last_perf_snapshot: dict[str, float] = {}
+    tick._last_perf_reset = time.monotonic()
     tick._tick_seq = 0
     tick._store = tick_env["mock_store"]
     return tick
