@@ -67,6 +67,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("Effect graph runtime failed to initialize (continuing without it)")
 
+    # Start event bus
+    from logos.api.routes.events import set_event_bus
+    from logos.event_bus import EventBus
+
+    event_bus = EventBus(maxlen=500)
+    app.state.event_bus = event_bus
+    set_event_bus(event_bus)
+
     # Start reactive engine
     try:
         from logos.engine import ReactiveEngine
@@ -134,6 +142,7 @@ from logos.api.routes.data import router as data_router
 from logos.api.routes.demos import router as demos_router
 from logos.api.routes.dmn import router as dmn_router
 from logos.api.routes.engine import router as engine_router
+from logos.api.routes.events import router as events_router
 from logos.api.routes.flow import router as flow_router
 from logos.api.routes.fortress import router as fortress_router
 from logos.api.routes.governance import router as governance_router
@@ -172,6 +181,7 @@ app.include_router(pi_router)
 app.include_router(sprint_router)
 app.include_router(stimmung_router)
 app.include_router(dmn_router)
+app.include_router(events_router, prefix="/api")
 
 # Mount HLS segment directory for live stream serving
 # Override .ts MIME type: Starlette defaults to Qt Linguist (text/vnd.trolltech.linguist)
