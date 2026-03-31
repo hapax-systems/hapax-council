@@ -67,7 +67,7 @@ class MinuteBuffer:
             self._current_minute.append(snapshot)
             return None
 
-        elapsed = ts - self._minute_start
+        elapsed = float(ts) - self._minute_start
         if elapsed < 60.0:
             self._current_minute.append(snapshot)
             return None

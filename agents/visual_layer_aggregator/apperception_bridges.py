@@ -50,7 +50,7 @@ def write_cross_resonance(agg: VisualLayerAggregator) -> None:
         matching_roles: list[str] = []
         for det in agg._classification_detections:
             for audio_pat, video_pat in _RESONANCE_PAIRS:
-                if audio_pat in audio_label and video_pat in det.label:
+                if audio_pat in str(audio_label) and video_pat in det.label:
                     matching_roles.append(det.camera)
                     break
 

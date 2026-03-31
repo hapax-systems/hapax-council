@@ -847,7 +847,7 @@ class VisualLayerAggregator:
         llm_activity = perception_data.get("llm_activity", "")
         if not production and llm_activity and llm_activity != "idle":
             llm_confidence = perception_data.get("llm_confidence", 0.0)
-            if llm_confidence >= 0.5:
+            if float(llm_confidence) >= 0.5:
                 return llm_activity.replace("_", " "), f"(LLM, {llm_confidence:.0%})"
 
         if music_genre:
@@ -1019,7 +1019,7 @@ class VisualLayerAggregator:
             source = color_temperature if color_temperature != "unknown" else ""
             lightness_bias = 0.0
             if ambient_brightness:
-                lightness_bias = round((ambient_brightness - 0.5) * 0.2, 3)
+                lightness_bias = round((float(ambient_brightness) - 0.5) * 0.2, 3)
             state.environmental_color = EnvironmentalColor(
                 hue_shift=hue_shift,
                 lightness_bias=lightness_bias,
