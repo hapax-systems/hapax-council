@@ -69,6 +69,23 @@ async def run_inner(daemon: VoiceDaemon) -> None:
     except Exception:
         log.debug("Embedding warmup failed (non-fatal)", exc_info=True)
 
+    # Preload Ollama models (avoid 5s cold start on first perception tick)
+    try:
+        import httpx
+
+        for _model in ["qwen3.5:4b"]:
+            _resp = httpx.post(
+                "http://127.0.0.1:11434/api/generate",
+                json={"model": _model, "prompt": "warmup", "keep_alive": -1},
+                timeout=30.0,
+            )
+            if _resp.status_code == 200:
+                log.info("Ollama model preloaded: %s", _model)
+            else:
+                log.warning("Ollama preload failed for %s: %d", _model, _resp.status_code)
+    except Exception:
+        log.warning("Ollama preload failed (non-fatal)", exc_info=True)
+
     daemon._cognitive_loop = None
     precompute_pipeline_deps(daemon)
 

@@ -325,16 +325,11 @@ class SalienceRouter:
         return min(score, 1.0)
 
     def _activation_to_tier(self, activation: float) -> ModelTier:
-        """Map continuous activation score to discrete model tier."""
-        t = self._thresholds
-        if activation <= t["canned_max"]:
-            return ModelTier.LOCAL  # don't route to CANNED via activation — only phatic override
-        if activation <= t["local_max"]:
-            return ModelTier.LOCAL
-        if activation <= t["fast_max"]:
-            return ModelTier.FAST
-        if activation <= t["strong_max"]:
-            return ModelTier.STRONG
+        """Map activation to tier. Intelligence-first: always CAPABLE.
+
+        CANNED handled by phatic detection in route(), never here.
+        Activation still computed for effort calibration — not tier selection.
+        """
         return ModelTier.CAPABLE
 
     def _pick_canned(self, transcript: str, turn_count: int) -> str:

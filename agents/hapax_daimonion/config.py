@@ -224,7 +224,7 @@ class DaimonionConfig(BaseModel):
     salience_concern_refresh_cadence_s: float = 2.5  # match perception fast tick
 
     # Cognitive loop
-    active_silence_enabled: bool = False  # ships dark — contextual actions during silence
+    active_silence_enabled: bool = True
     silence_notification_threshold_s: float = 8.0
     silence_winddown_threshold_s: float = 20.0
 
