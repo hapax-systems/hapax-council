@@ -19,10 +19,6 @@ import logging
 import signal
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from agents.reverie.mixer import ReverieMixer
 
 from agents._impingement import Impingement, ImpingementType
 from agents.dmn.buffer import DMNBuffer
@@ -70,7 +66,6 @@ class DMNDaemon:
         self._imagination = ImaginationLoop()
         self._running = True
         self._start_time = time.monotonic()
-        self._reverie: ReverieMixer | None = None  # initialized in run()
         self._resolver_failures: dict[str, int] = {}
         self._resolver_skip_until: dict[str, float] = {}
         self._resolver_consecutive_failures: int = 0
@@ -80,25 +75,6 @@ class DMNDaemon:
         """Main loop — never stops unless signalled."""
         DMN_STATE_DIR.mkdir(parents=True, exist_ok=True)
         log.info("DMN daemon starting")
-
-        # Write the permanent visual vocabulary (graph structure never changes).
-        # There is no idle state — params are driven by imagination fragments.
-        try:
-            from agents.reverie.bootstrap import write_vocabulary_plan
-
-            if write_vocabulary_plan():
-                log.info("Reverie vocabulary written")
-        except Exception:
-            log.warning("Reverie vocabulary write failed", exc_info=True)
-
-        # Initialize Reverie mixer — visual peer of Daimonion
-        try:
-            from agents.reverie.mixer import ReverieMixer
-
-            self._reverie = ReverieMixer()
-            log.info("Reverie mixer initialized")
-        except Exception:
-            log.warning("Reverie actuation init failed", exc_info=True)
 
         asyncio.create_task(self._imagination_loop())
         asyncio.create_task(self._resolver_loop())
@@ -120,10 +96,6 @@ class DMNDaemon:
                 await self._pulse.tick()
                 self._write_output()
                 self._consume_fortress_feedback()
-
-                # Reverie actuation tick (1s cadence, same as main loop)
-                if self._reverie is not None:
-                    await self._reverie.tick()
             except Exception:
                 log.exception("DMN tick failed")
 
@@ -215,11 +187,6 @@ class DMNDaemon:
                 log.info("Emitted %d impingements to JSONL", len(impingements))
             except OSError:
                 log.warning("Failed to write impingements to %s", IMPINGEMENTS_FILE, exc_info=True)
-
-            # Feed impingements to Reverie via mixer's affordance pipeline
-            if self._reverie is not None:
-                for imp in impingements:
-                    self._reverie.dispatch_impingement(imp)
 
         # Read TPN active flag (anti-correlation signal from voice daemon)
         self._pulse.set_tpn_active(_read_tpn_active())
