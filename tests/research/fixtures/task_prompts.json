@@ -1,0 +1,18 @@
+{
+  "what_changed": {
+    "prompt": "Based on the context provided, what just changed in the operator's state? Be specific about what shifted and when.",
+    "metrics": ["relevance", "specificity", "temporal_awareness"]
+  },
+  "what_next": {
+    "prompt": "Based on the context provided, what is likely to happen next? What should the system anticipate?",
+    "metrics": ["temporal_awareness", "actionability"]
+  },
+  "escalate": {
+    "prompt": "Based on the context provided, should the system escalate any concerns? Why or why not?",
+    "metrics": ["relevance", "actionability"]
+  },
+  "summarize": {
+    "prompt": "Summarize the current situation in 2-3 sentences. What is the operator doing and how is their session going?",
+    "metrics": ["relevance", "specificity", "temporal_awareness", "actionability"]
+  }
+}
