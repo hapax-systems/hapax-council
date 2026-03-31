@@ -13,6 +13,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from logos._config import AI_AGENTS_DIR, PROFILES_DIR, RAG_SOURCES_DIR
 from logos._stimmung import Stance
@@ -22,7 +23,9 @@ from logos.engine.executor import PhasedExecutor
 from logos.engine.models import ActionPlan as ActionPlan
 from logos.engine.models import ChangeEvent
 from logos.engine.rules import RuleRegistry, evaluate_rules
-from logos.engine.watcher import DirectoryWatcher
+
+if TYPE_CHECKING:
+    from logos.engine.watcher import DirectoryWatcher
 
 # ── Persistent Event Counters (WS2) ─────────────────────────────────────────
 
@@ -313,6 +316,8 @@ class ReactiveEngine:
         if self._running:
             _log.warning("Engine already running")
             return
+
+        from logos.engine.watcher import DirectoryWatcher
 
         loop = asyncio.get_running_loop()
         self._watcher = DirectoryWatcher(

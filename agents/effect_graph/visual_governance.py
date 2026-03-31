@@ -16,7 +16,7 @@ import math
 import time
 
 from agents._capability import SystemContext
-from agents.effect_graph._governance_primitives import Candidate, FallbackChain, Veto, VetoChain
+from agents._governance.primitives import Candidate, FallbackChain, Veto, VetoChain
 from agents.effect_graph.types import PresetFamily
 
 # ── Atmospheric Layer ─────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ class VisualGovernance:
         self._veto_chain: VetoChain[SystemContext] = VetoChain(
             [
                 Veto(
-                    "consent_pending",
+                    "block_consent_pending",
                     lambda ctx: ctx.consent_state.get("phase") != "consent_pending",
                     axiom="interpersonal_transparency",
                 ),

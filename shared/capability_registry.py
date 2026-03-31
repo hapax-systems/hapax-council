@@ -158,18 +158,19 @@ class CapabilityRegistry:
             # Cost-weighted effective score
             effective = match_score * (1.0 - cap.activation_cost * 0.5)
 
-            # Consent check (synchronous, <1ms)
+            # Consent check — fail-closed: block if consent infra raises
             if cap.consent_required:
                 try:
-                    from shared.governance.consent_gate import ConsentGatedWriter
+                    from shared.governance.consent import load_contracts
 
-                    gate = ConsentGatedWriter()
-                    decision = gate.check()
-                    if not decision.allowed:
-                        log.debug("Capability %s blocked by consent gate", cap.name)
+                    registry = load_contracts()
+                    active = [c for c in registry.contracts.values() if c.active]
+                    if not active:
+                        log.debug("Capability %s blocked — no active consent contracts", cap.name)
                         continue
                 except Exception:
-                    pass  # consent infrastructure not available — allow
+                    log.warning("Consent gate failed for %s — blocking (fail-closed)", cap.name)
+                    continue
 
             entry = CapabilityMatch(
                 capability=cap,

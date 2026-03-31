@@ -1,88 +1,51 @@
-"""Reverie governance — VetoChain + FallbackChain for visual actuation.
+"""Reverie governance — VetoChain for visual actuation using shared primitives.
 
-Structural mirror of Daimonion's governance chains. Determines whether
-visual expression should proceed, be suppressed, or be reduced based
-on consent state, resource availability, and system health.
+Structural peer of Daimonion's governance chains. Uses shared VetoChain[SystemContext]
+for full audit trail, axiom linkage, and | composition.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
 from pathlib import Path
+
+from agents._capability import SystemContext
+from agents._governance.primitives import Veto, VetoChain
 
 log = logging.getLogger("reverie.governance")
 
 CONSENT_STATE = Path("/dev/shm/hapax-daimonion/consent-state.json")
-GPU_STATE = Path("/proc/driver/nvidia/gpus")  # existence check only
 
 
-class VisualVeto:
-    """A single veto condition for visual actuation."""
-
-    def __init__(self, name: str, check: Callable[[dict[str, object]], str | None]) -> None:
-        self.name = name
-        self._check = check
-
-    def evaluate(self, ctx: dict[str, object]) -> str | None:
-        """Return reason string if vetoed, None if allowed."""
-        return self._check(ctx)
-
-
-class VisualVetoChain:
-    """Deny-wins constraint evaluation for visual expression.
-
-    Monotonic: adding vetoes only restricts, never expands permissions.
-    Mirrors Daimonion's VetoChain semantics.
-    """
-
-    def __init__(self, vetoes: list[VisualVeto] | None = None) -> None:
-        self._vetoes = vetoes or []
-
-    def add(self, veto: VisualVeto) -> None:
-        self._vetoes.append(veto)
-
-    def evaluate(self, ctx: dict[str, object]) -> tuple[bool, str | None]:
-        """Evaluate all vetoes. Returns (allowed, reason)."""
-        for veto in self._vetoes:
-            reason = veto.evaluate(ctx)
-            if reason is not None:
-                return False, f"{veto.name}: {reason}"
-        return True, None
-
-
-def _check_consent(ctx: dict[str, object]) -> str | None:
-    """Veto if consent is refused (guest present, no contract)."""
-    consent_phase = ctx.get("consent_phase", "no_guest")
-    if consent_phase == "consent_refused":
-        return "consent refused — visual expression suppressed"
-    return None
-
-
-def _check_gpu(ctx: dict[str, object]) -> str | None:
-    """Veto if GPU is unavailable."""
-    pipeline_dir = Path("/dev/shm/hapax-imagination/pipeline")
-    if not pipeline_dir.exists():
-        return "imagination pipeline directory missing"
-    return None
-
-
-def _check_stimmung_critical(ctx: dict[str, object]) -> str | None:
-    """Veto heavy visual effects under critical system health."""
-    stance = ctx.get("stance", "nominal")
-    if stance == "critical":
-        return "system health critical — visual expression suspended"
-    return None
-
-
-def build_default_veto_chain() -> VisualVetoChain:
-    """Build the standard visual governance veto chain."""
-    chain = VisualVetoChain()
-    chain.add(VisualVeto("consent", _check_consent))
-    chain.add(VisualVeto("gpu", _check_gpu))
-    chain.add(VisualVeto("health", _check_stimmung_critical))
-    return chain
+def build_reverie_veto_chain() -> VetoChain[SystemContext]:
+    """Build the standard visual governance veto chain on shared primitives."""
+    return VetoChain(
+        [
+            Veto(
+                "consent_refused",
+                lambda ctx: ctx.consent_state.get("phase") != "consent_refused",
+                axiom="interpersonal_transparency",
+                description="Suppress visual expression when consent refused",
+            ),
+            Veto(
+                "consent_pending",
+                lambda ctx: ctx.consent_state.get("phase") != "consent_pending",
+                axiom="interpersonal_transparency",
+                description="Suppress during consent negotiation window",
+            ),
+            Veto(
+                "gpu_unavailable",
+                lambda _ctx: Path("/dev/shm/hapax-imagination/pipeline").exists(),
+                description="Imagination pipeline directory must exist",
+            ),
+            Veto(
+                "health_critical",
+                lambda ctx: ctx.stimmung_stance != "critical",
+                description="Suspend visual expression under critical health",
+            ),
+        ]
+    )
 
 
 def read_consent_phase() -> str:
@@ -97,13 +60,9 @@ def read_consent_phase() -> str:
 
 
 def guest_reduction_factor(consent_phase: str) -> float:
-    """Compute visual intensity reduction when guest is present.
-
-    Applies to all visual chain deltas — Reverie stays visible but
-    less intense when a guest is in the room.
-    """
+    """Compute visual intensity reduction when guest is present."""
     if consent_phase in ("consent_pending", "guest_detected"):
         return 0.6
     if consent_phase == "consent_refused":
-        return 0.0  # veto should catch this, but defense in depth
+        return 0.0
     return 1.0

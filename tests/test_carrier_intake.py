@@ -203,7 +203,7 @@ class TestCarrierIntakeReactiveRule(unittest.TestCase):
     def _import_rules(cls) -> Any:
         import importlib
 
-        return importlib.import_module("logos.engine.reactive_rules")
+        return importlib.import_module("logos.engine.rules_phase0")
 
     def _make_event(self, frontmatter: dict | None = None) -> Any:
         from datetime import datetime

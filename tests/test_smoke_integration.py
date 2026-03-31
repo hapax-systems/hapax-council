@@ -467,11 +467,11 @@ class TestExpressionCoordinatorCrossModal(unittest.TestCase):
 
     def test_fragment_to_shader_mapping(self):
         """map_fragment_to_visual correctly maps dimensions to shader params."""
-        fragment = {"dimensions": {"luminosity": 0.8, "turbulence": 0.5, "warmth": 0.3}}
+        fragment = {"dimensions": {"intensity": 0.8, "diffusion": 0.5, "coherence": 0.3}}
         result = map_fragment_to_visual(fragment)
-        assert result["bloom.alpha"] == 0.8
-        assert result["noise.scale"] == 0.5
-        assert result["color.temperature"] == 0.3
+        assert result["noise.brightness"] == 0.8
+        assert result["noise.speed"] == 0.5
+        assert result["noise.color_warmth"] == 0.3
 
     def test_material_to_uniform_mapping(self):
         assert map_fragment_to_material_uniform({"material": "water"}) == 0.0

@@ -253,6 +253,10 @@ class TestConsentRoute(unittest.TestCase):
         prop = RevocationPropagator(cr)
         prop.register_carrier_registry(carrier)
         set_revocation_propagator(prop)
+        # Also set in agents._governance module (API route imports from there via logos shim)
+        import agents._governance.revocation_wiring as _agent_rw
+
+        _agent_rw._propagator = prop
 
         client = TestClient(test_app)
         resp = client.post("/api/consent/revoke/alice")
@@ -276,6 +280,9 @@ class TestConsentRoute(unittest.TestCase):
         cr = _make_consent_registry()
         prop = RevocationPropagator(cr)
         set_revocation_propagator(prop)
+        import agents._governance.revocation_wiring as _agent_rw
+
+        _agent_rw._propagator = prop
 
         client = TestClient(test_app)
         resp = client.post("/api/consent/revoke/nobody")

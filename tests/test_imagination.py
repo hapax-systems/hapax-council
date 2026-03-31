@@ -241,7 +241,7 @@ class TestMaybeEscalate:
             if imp is not None:
                 break
         assert imp is not None
-        assert imp.context["dimensions"] == dims
+        assert imp.content["dimensions"] == dims
 
 
 # ---------------------------------------------------------------------------

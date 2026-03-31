@@ -100,22 +100,28 @@ class GovernorWrapper:
     def _evaluate(
         self, direction: str, policies: list[GovernorPolicy], data: Labeled[Any]
     ) -> GovernorResult:
-        """Evaluate all policies. First denial wins."""
+        """Evaluate all policies. Collect all denials for audit trail."""
+        denials: list[str] = []
+        axiom_ids: list[str] = []
         for policy in policies:
             if not policy.check(self._agent_id, data):
-                result = GovernorResult(
-                    allowed=False,
-                    denial=GovernorDenial(
-                        agent_id=self._agent_id,
-                        direction=direction,
-                        reason=f"Policy '{policy.name}' denied",
-                        axiom_ids=(policy.axiom_id,) if policy.axiom_id else (),
-                    ),
-                )
-                self._audit_log.append(result)
-                return result
+                denials.append(policy.name)
+                if policy.axiom_id:
+                    axiom_ids.append(policy.axiom_id)
 
-        result = GovernorResult(allowed=True)
+        if denials:
+            result = GovernorResult(
+                allowed=False,
+                denial=GovernorDenial(
+                    agent_id=self._agent_id,
+                    direction=direction,
+                    reason=f"Denied by: {', '.join(denials)}",
+                    axiom_ids=tuple(axiom_ids),
+                ),
+            )
+        else:
+            result = GovernorResult(allowed=True)
+
         self._audit_log.append(result)
         return result
 

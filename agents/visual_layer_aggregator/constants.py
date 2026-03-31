@@ -47,9 +47,7 @@ LOGOS_BASE: str = os.environ.get("COCKPIT_BASE_URL", "http://localhost:8051/api"
 CAMERA_ROLES = [
     "operator",
     "desk",
-    "operator",
     "room",
-    "operator",
     "overhead",
     "room-brio",
     "synths-brio",

@@ -45,12 +45,12 @@ class ReverieActuationLoop:
     def __init__(self) -> None:
         from agents._context import ContextAssembler
         from agents.effect_graph.capability import ShaderGraphCapability
-        from agents.reverie.governance import build_default_veto_chain, guest_reduction_factor
+        from agents.reverie.governance import build_reverie_veto_chain, guest_reduction_factor
         from agents.visual_chain import VisualChainCapability
 
         self._shader_cap = ShaderGraphCapability()
         self._visual_chain = VisualChainCapability(decay_rate=0.02)
-        self._veto_chain = build_default_veto_chain()
+        self._veto_chain = build_reverie_veto_chain()
         self._guest_reduction = guest_reduction_factor
         self._context = ContextAssembler()
         self._last_tick = time.monotonic()
@@ -78,18 +78,24 @@ class ReverieActuationLoop:
         self._tick_count += 1
 
         # 0. Assemble shared context (same snapshot for governance + actuation)
+        from agents._capability import SystemContext
         from agents.reverie.governance import read_consent_phase
 
         ctx = self._context.assemble()
         consent_phase = read_consent_phase()
-        gov_ctx = {
-            "consent_phase": consent_phase,
-            "stance": ctx.stimmung_stance,
-        }
-        allowed, reason = self._veto_chain.evaluate(gov_ctx)
-        if not allowed:
+        gov_ctx = SystemContext(
+            stimmung_stance=ctx.stimmung_stance,
+            consent_state={"phase": consent_phase},
+            guest_present=consent_phase not in ("no_guest",),
+        )
+        result = self._veto_chain.evaluate(gov_ctx)
+        if not result.allowed:
             if self._tick_count % 30 == 1:  # log once per 30s
-                log.info("Visual actuation vetoed: %s", reason)
+                log.info(
+                    "Visual actuation vetoed: denied_by=%s axiom_ids=%s",
+                    result.denied_by,
+                    result.axiom_ids,
+                )
             self._write_uniforms(None, ctx.stimmung_raw)  # write minimal uniforms
             return
 
@@ -118,10 +124,7 @@ class ReverieActuationLoop:
         # handles what StateReader doesn't: material, salience, trace, and
         # impingement-driven visual chain activations.
 
-        # 6. Apply guest reduction to all chain levels
-        if reduction < 1.0:
-            for name in self._visual_chain._levels:
-                self._visual_chain._levels[name] *= reduction
+        # 6. Guest reduction applied at output time (see _write_uniforms)
 
         # 7. Update trace state (Amendment 2: dwelling and trace)
         self._update_trace(imagination, dt)
@@ -130,7 +133,7 @@ class ReverieActuationLoop:
         self._visual_chain.write_state()
 
         # 9. Write merged uniforms
-        self._write_uniforms(imagination, stimmung)
+        self._write_uniforms(imagination, stimmung, reduction)
 
     # Per-slot approximate centers (matches content_layer.wgsl immensity_entry directions)
     _SLOT_CENTERS = {0: (0.4, 0.4), 1: (0.6, 0.4), 2: (0.4, 0.6), 3: (0.6, 0.6)}
@@ -153,7 +156,7 @@ class ReverieActuationLoop:
             if imagination:
                 refs = imagination.get("content_references", [])
                 if isinstance(refs, list) and len(refs) > 0:
-                    slot_idx = min(len(refs) - 1, 3)
+                    slot_idx = 0  # primary (highest-salience) slot
             self._trace_center = self._SLOT_CENTERS.get(slot_idx, (0.5, 0.5))
 
             log.info(
@@ -194,12 +197,33 @@ class ReverieActuationLoop:
         )
 
     # Imagination and stimmung state now read via shared ContextAssembler
+
+    @staticmethod
+    def _build_slot_opacities(
+        imagination: dict[str, object] | None, fallback_salience: float
+    ) -> list[float]:
+        """Build slot opacities from content references or fallback to single-slot."""
+        opacities = [0.0, 0.0, 0.0, 0.0]
+        if not imagination:
+            return opacities
+        refs = imagination.get("content_references", [])
+        if isinstance(refs, list) and refs:
+            for i, ref in enumerate(refs[:4]):
+                if isinstance(ref, dict):
+                    opacities[i] = float(ref.get("salience", fallback_salience))
+                else:
+                    opacities[i] = fallback_salience
+        elif fallback_salience > 0:
+            opacities[0] = fallback_salience
+        return opacities
+
     # in tick(), ensuring both systems see identical context at the same moment.
 
     def _write_uniforms(
         self,
         imagination: dict[str, object] | None,
         stimmung: dict[str, object] | None,
+        reduction: float = 1.0,
     ) -> None:
         """Compute and write merged uniforms to pipeline/uniforms.json."""
         material = "water"
@@ -216,12 +240,12 @@ class ReverieActuationLoop:
         # Build uniforms dict consumed by Rust DynamicPipeline
         uniforms: dict[str, object] = {
             "custom": [material_val],
-            "slot_opacities": [salience, 0.0, 0.0, 0.0],
+            "slot_opacities": self._build_slot_opacities(imagination, salience),
         }
 
-        # Add chain-derived params as node.param overrides
+        # Add chain-derived params as node.param overrides (with guest reduction)
         for key, value in chain_params.items():
-            uniforms[key] = value
+            uniforms[key] = value * reduction if isinstance(value, (int, float)) else value
 
         # Add trace state for feedback shader (Amendment 2: dwelling)
         if self._trace_strength > 0:

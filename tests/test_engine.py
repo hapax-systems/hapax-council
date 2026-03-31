@@ -465,7 +465,7 @@ class TestDirectoryWatcher:
 
 
 class TestReactiveEngine:
-    @patch("logos.engine.DirectoryWatcher")
+    @patch("logos.engine.watcher.DirectoryWatcher")
     async def test_lifecycle_start_stop(self, mock_watcher_cls):
         from logos.engine import ReactiveEngine
 
@@ -507,7 +507,7 @@ class TestReactiveEngine:
         engine = ReactiveEngine(data_dir=Path("/tmp/test"))
         assert len(engine.registry) == 0
 
-    @patch("logos.engine.DirectoryWatcher")
+    @patch("logos.engine.watcher.DirectoryWatcher")
     async def test_handle_change_paused(self, mock_watcher_cls):
         from logos.engine import ReactiveEngine
 

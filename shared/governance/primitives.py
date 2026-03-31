@@ -145,6 +145,10 @@ class FallbackChain[C, T]:
         """Select the highest-priority eligible action."""
         for c in self._candidates:
             if c.predicate(context):
+                if c.veto_chain is not None:
+                    veto_result = c.veto_chain.evaluate(context)
+                    if not veto_result.allowed:
+                        continue
                 return Selected(action=c.action, selected_by=c.name)
         return Selected(action=self._default, selected_by="default")
 

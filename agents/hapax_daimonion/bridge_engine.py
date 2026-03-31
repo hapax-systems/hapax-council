@@ -52,7 +52,7 @@ class BridgeContext:
 
     turn_position: int = 0
     activity_mode: str = "idle"
-    consent_phase: str = "none"
+    consent_phase: str = "no_guest"
     time_of_day: str = ""
     response_type: str = "thinking"
     guest_context: bool = False

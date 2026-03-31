@@ -76,15 +76,15 @@ class TestExpressionCoordinator(unittest.TestCase):
 
 class TestFragmentToVisual(unittest.TestCase):
     def test_maps_dimensions(self):
-        fragment = {"dimensions": {"luminosity": 0.8, "velocity": 0.5}}
+        fragment = {"dimensions": {"intensity": 0.8, "diffusion": 0.5}}
         result = map_fragment_to_visual(fragment)
-        assert result["bloom.alpha"] == 0.8
-        assert result["drift.speed"] == 0.5
+        assert result["noise.brightness"] == 0.8
+        assert result["noise.speed"] == 0.5
 
     def test_missing_dimensions_skipped(self):
-        fragment = {"dimensions": {"luminosity": 0.8}}
+        fragment = {"dimensions": {"intensity": 0.8}}
         result = map_fragment_to_visual(fragment)
-        assert "drift.speed" not in result
+        assert "noise.speed" not in result
 
     def test_no_dimensions_returns_empty(self):
         assert map_fragment_to_visual({}) == {}

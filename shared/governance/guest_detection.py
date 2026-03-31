@@ -37,6 +37,7 @@ class GuestDetectionEvent:
 def check_guest_consent(
     person_id: str,
     data_category: str = "audio",
+    face_count: int = 2,
 ) -> GuestDetectionEvent:
     """Check if a detected guest has consent. Build channel menu if not.
 
@@ -75,7 +76,7 @@ def check_guest_consent(
 
     return GuestDetectionEvent(
         timestamp=now,
-        face_count=2,  # caller provides actual count
+        face_count=face_count,
         speaker_id=person_id,
         has_consent=has_consent,
         contract_id=contract_id,
