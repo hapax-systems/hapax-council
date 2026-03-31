@@ -108,7 +108,7 @@ Destructive command detection strips quoted strings before matching to prevent f
 
 ## IR Perception (Pi NoIR Edge Fleet)
 
-3 Raspberry Pi 4s with Pi Camera Module 3 NoIR under 850nm IR flood illumination. Each runs `hapax-ir-edge` daemon: fine-tuned YOLOv8n (ONNX Runtime) person detection + NIR hand thresholding + screen detection. Captures via `rpicam-still`, POSTs structured JSON to council every ~3s.
+3 Raspberry Pi 4s with Pi Camera Module 3 NoIR under 850nm IR flood illumination. Each runs `hapax-ir-edge` daemon: YOLOv8n (ONNX Runtime) person detection + NIR hand thresholding + adaptive screen detection. Captures via `rpicam-still`, POSTs structured JSON to council every ~3s.
 
 **Pi fleet:**
 - **Pi-1** (hapax-pi1, 192.168.68.78) — ir-desk, co-located with C920-desk
@@ -117,22 +117,38 @@ Destructive command detection strips quoted strings before matching to prevent f
 - **Pi-5** (hapax-pi5, 192.168.68.72) — rag-edge (document preprocessing)
 - **Pi-6** (hapax-pi6, 192.168.68.74) — sync-hub + ir-overhead, co-located with C920-overhead
 
-**IR data flow:** Pi daemon → `POST /api/pi/{role}/ir` (`logos/api/routes/pi.py`) → `~/hapax-state/pi-noir/{role}.json` → `ir_presence` backend (FAST tier, 13 signals) → perception engine → perception-state.json.
+**IR data flow:** Pi daemon → `POST /api/pi/{role}/ir` (`logos/api/routes/pi.py`) → `~/hapax-state/pi-noir/{role}.json` → `ir_presence` backend (FAST tier, 14 signals) → perception engine → perception-state.json.
 
 **Health/observability:** All 5 Pis report heartbeats every 60s via `hapax-heartbeat.timer` → `POST /api/pi/{hostname}/heartbeat` → `~/hapax-state/edge/{hostname}.json`. Health monitor `check_pi_fleet()` validates freshness, service status, CPU temp, memory, disk. Failures feed into stimmung health dimension and ntfy alerts.
 
 **Key files:**
 - `pi-edge/` — Edge daemon + heartbeat code (deployed to each Pi at `~/hapax-edge/`)
-- `shared/ir_models.py` — Shared Pydantic schema (IrDetectionReport)
-- `agents/hapax_daimonion/backends/ir_presence.py` — Perception backend (multi-Pi fusion)
+- `pi-edge/ir_report.py` — Report building (extracted from daemon)
+- `shared/ir_models.py` — Shared Pydantic schema (IrDetectionReport, IrBiometrics with face_detected)
+- `agents/hapax_daimonion/backends/ir_presence.py` — Perception backend (multi-Pi fusion, 14 signals)
+- `agents/hapax_daimonion/backends/contact_mic_ir.py` — Cross-modal fusion (IR hand zone + contact mic DSP)
 - `agents/hapax_daimonion/ir_signals.py` — State file reader
 - `agents/health_monitor.py` — `PI_FLEET` dict defines expected services per Pi
 
-**Inference:** ONNX Runtime preferred (130ms, preserves fine-tuned precision), TFLite fallback. Model: YOLOv8n fine-tuned on 30 NIR studio frames (`best.onnx`).
+**Inference:** ONNX Runtime preferred (130ms, preserves fine-tuned precision), TFLite fallback. Model: YOLOv8n fine-tuned on 30 NIR studio frames (`best.onnx`). **Person detection currently non-functional** — 30-frame training dataset insufficient for NIR domain. Retraining planned (500+ frames, two-stage COCO→FLIR→NIR transfer). See `docs/superpowers/specs/2026-03-31-ir-perception-remediation-design.md`.
 
-**Fusion logic:** Person detection = any() across Pis. Gaze/biometrics prefer desk Pi (face-on). Hand activity prefers overhead Pi. Staleness cutoff: 15s. Presence engine signal weight: `ir_person_detected: (0.90, 0.10)`.
+**Signal quality (remediated 2026-03-31):**
+- Hand detection: max_area_pct=0.25 rejects frame-spanning false positives, aspect ratio 0.3–3.0
+- Screen detection: adaptive threshold (mean_brightness × 0.3) instead of fixed value
+- rPPG: gated on face landmarks actually available (no phantom heart rates)
+- Biometrics: face_detected field in IrBiometrics for observability
 
-**Face landmarks currently disabled** — fdlite incompatible with NumPy 2.x on Trixie (`np.math` removed). Degrades gracefully.
+**Fusion logic:** Person detection = any() across Pis. Gaze/biometrics prefer desk Pi (face-on). Hand activity + hand zone prefer overhead Pi. Staleness cutoff: 10s. Presence engine signal weight: `ir_person_detected: (0.90, 0.10)`.
+
+**14 signals:** ir_person_detected, ir_person_count, ir_motion_delta, ir_gaze_zone, ir_head_pose_yaw, ir_posture, ir_hand_activity, ir_hand_zone, ir_screen_looking, ir_drowsiness_score, ir_blink_rate, ir_heart_rate_bpm, ir_heart_rate_conf, ir_brightness. All 14 flow to perception-state.json.
+
+**Cross-modal fusion:** `contact_mic_ir.py` provides `_classify_activity_with_ir()` — turntable+sliding=scratching, mpc-pads+tapping=pad-work. Function tested but not yet wired into contact mic capture loop (contact_mic.py at 479 lines, needs split refactor).
+
+**Debug/capture tools:**
+- `kill -USR1 $(pgrep -f hapax_ir_edge)` — saves greyscale frame to `/tmp/ir_debug_{role}.jpg`
+- `--save-frames N` — saves every Nth frame to `~/hapax-edge/captures/` for training data collection
+
+**Face landmarks currently disabled** — fdlite incompatible with NumPy 2.x on Trixie (`np.math` removed). Degrades gracefully. Gaze, posture, EAR, drowsiness all zero until fixed.
 
 ## Key Modules
 
