@@ -283,7 +283,7 @@ class TestProactiveDeliveryConditions:
         daemon.event_log = MagicMock()
 
         with patch(
-            "agents.hapax_daimonion.__main__.format_notification",
+            "agents.hapax_daimonion.run_loops_aux.format_notification",
             return_value="Notification: Ready — deliver me",
         ):
             # Simulate the full delivery branch

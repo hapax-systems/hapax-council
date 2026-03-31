@@ -1,0 +1,9 @@
+created_at: '2026-03-30T16:51:35.668003'
+direction: one_way
+id: contract-guest-2026-03-30
+parties:
+- operator
+- guest
+scope:
+- audio
+visibility_mechanism: on_request

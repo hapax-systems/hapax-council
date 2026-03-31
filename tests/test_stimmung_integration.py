@@ -91,10 +91,14 @@ class TestAggregatorStimmung:
         infra_path = tmp_path / "infra-snapshot.json"
         infra_path.write_text(json.dumps({"gpu": {"used_mb": 5000, "total_mb": 24000}}))
 
-        monkeypatch.setattr("agents.visual_layer_aggregator.HEALTH_HISTORY_PATH", health_path)
-        monkeypatch.setattr("agents.visual_layer_aggregator.INFRA_SNAPSHOT_PATH", infra_path)
         monkeypatch.setattr(
-            "agents.visual_layer_aggregator.LANGFUSE_STATE_PATH",
+            "agents.visual_layer_aggregator.constants.HEALTH_HISTORY_PATH", health_path
+        )
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.constants.INFRA_SNAPSHOT_PATH", infra_path
+        )
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.constants.LANGFUSE_STATE_PATH",
             tmp_path / "nonexistent.json",
         )
 
@@ -110,15 +114,15 @@ class TestAggregatorStimmung:
     async def test_update_stimmung_tolerates_missing_files(self, monkeypatch):
         """All sources missing → still produces a nominal snapshot."""
         monkeypatch.setattr(
-            "agents.visual_layer_aggregator.HEALTH_HISTORY_PATH",
+            "agents.visual_layer_aggregator.constants.HEALTH_HISTORY_PATH",
             Path("/nonexistent/health.jsonl"),
         )
         monkeypatch.setattr(
-            "agents.visual_layer_aggregator.INFRA_SNAPSHOT_PATH",
+            "agents.visual_layer_aggregator.constants.INFRA_SNAPSHOT_PATH",
             Path("/nonexistent/infra.json"),
         )
         monkeypatch.setattr(
-            "agents.visual_layer_aggregator.LANGFUSE_STATE_PATH",
+            "agents.visual_layer_aggregator.constants.LANGFUSE_STATE_PATH",
             Path("/nonexistent/langfuse.json"),
         )
 

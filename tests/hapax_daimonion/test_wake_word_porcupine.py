@@ -186,13 +186,13 @@ class TestPorcupineClose:
 
 
 class TestDaemonWakeWordSelection:
-    @patch("agents.hapax_daimonion.__main__._screen_flash")
-    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
-    @patch("agents.hapax_daimonion.__main__.TTSManager")
-    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
-    @patch("agents.hapax_daimonion.__main__.PorcupineWakeWord")
-    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
-    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.session_events.screen_flash")
+    @patch("agents.hapax_daimonion.daemon.AudioInputStream")
+    @patch("agents.hapax_daimonion.daemon.TTSManager")
+    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
+    @patch("agents.hapax_daimonion.daemon.PorcupineWakeWord")
+    @patch("agents.hapax_daimonion.daemon.HotkeyServer")
+    @patch("agents.hapax_daimonion.daemon.ChimePlayer")
     def test_porcupine_selected_by_default(self, _chime, _hotkey, MockPorc, MockOWW, *_):
         from agents.hapax_daimonion.__main__ import VoiceDaemon
         from agents.hapax_daimonion.config import DaimonionConfig
@@ -202,13 +202,13 @@ class TestDaemonWakeWordSelection:
         MockPorc.assert_called_once_with(sensitivity=0.5)
         MockOWW.assert_not_called()
 
-    @patch("agents.hapax_daimonion.__main__._screen_flash")
-    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
-    @patch("agents.hapax_daimonion.__main__.TTSManager")
-    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
-    @patch("agents.hapax_daimonion.__main__.PorcupineWakeWord")
-    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
-    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.session_events.screen_flash")
+    @patch("agents.hapax_daimonion.daemon.AudioInputStream")
+    @patch("agents.hapax_daimonion.daemon.TTSManager")
+    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
+    @patch("agents.hapax_daimonion.daemon.PorcupineWakeWord")
+    @patch("agents.hapax_daimonion.daemon.HotkeyServer")
+    @patch("agents.hapax_daimonion.daemon.ChimePlayer")
     def test_oww_selected_when_configured(self, _chime, _hotkey, MockPorc, MockOWW, *_):
         from agents.hapax_daimonion.__main__ import VoiceDaemon
         from agents.hapax_daimonion.config import DaimonionConfig

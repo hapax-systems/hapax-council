@@ -20,11 +20,11 @@ class TestDaimonionConfigChime:
 
 
 class TestDaemonChimeWiring:
-    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
-    @patch("agents.hapax_daimonion.__main__.TTSManager")
-    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
-    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
-    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.daemon.AudioInputStream")
+    @patch("agents.hapax_daimonion.daemon.TTSManager")
+    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
+    @patch("agents.hapax_daimonion.daemon.HotkeyServer")
+    @patch("agents.hapax_daimonion.daemon.ChimePlayer")
     def test_daemon_creates_chime_player(self, MockChime, *_):
         from agents.hapax_daimonion.__main__ import VoiceDaemon
 
@@ -44,7 +44,7 @@ class TestDaemonChimeWiring:
         daemon._acknowledge("activation")
         mock_player.play.assert_called_once_with("activation")
 
-    @patch("agents.hapax_daimonion.__main__._screen_flash")
+    @patch("agents.hapax_daimonion.session_events.screen_flash")
     def test_acknowledge_uses_screen_flash_when_disabled(self, mock_flash):
         """_acknowledge('activation') uses screen flash when chime_enabled=False."""
         from tests.hapax_daimonion.conftest import make_stub_daemon

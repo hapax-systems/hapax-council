@@ -60,7 +60,7 @@ class TestSessionOpenClose:
 
         with (
             patch.object(daemon, "_start_pipeline", new_callable=AsyncMock),
-            patch("agents.hapax_daimonion.__main__._screen_flash"),
+            patch("agents.hapax_daimonion.session_events.screen_flash"),
         ):
             await daemon._handle_hotkey("open")
 
@@ -74,7 +74,7 @@ class TestSessionOpenClose:
 
         with (
             patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock),
-            patch("agents.hapax_daimonion.__main__._screen_flash"),
+            patch("agents.hapax_daimonion.session_events.screen_flash"),
         ):
             await daemon._handle_hotkey("close")
 
@@ -87,7 +87,7 @@ class TestSessionOpenClose:
 
         with (
             patch.object(daemon, "_start_pipeline", new_callable=AsyncMock),
-            patch("agents.hapax_daimonion.__main__._screen_flash"),
+            patch("agents.hapax_daimonion.session_events.screen_flash"),
         ):
             await daemon._handle_hotkey("toggle")
 
@@ -100,7 +100,7 @@ class TestSessionOpenClose:
 
         with (
             patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock),
-            patch("agents.hapax_daimonion.__main__._screen_flash"),
+            patch("agents.hapax_daimonion.session_events.screen_flash"),
         ):
             await daemon._handle_hotkey("toggle")
 
@@ -113,7 +113,7 @@ class TestSessionOpenClose:
 
         with (
             patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock) as mock_stop,
-            patch("agents.hapax_daimonion.__main__._screen_flash"),
+            patch("agents.hapax_daimonion.session_events.screen_flash"),
         ):
             await daemon._close_session(reason="test")
 
@@ -126,7 +126,7 @@ class TestSessionOpenClose:
 
         with (
             patch.object(daemon, "_stop_pipeline", new_callable=AsyncMock),
-            patch("agents.hapax_daimonion.__main__._screen_flash"),
+            patch("agents.hapax_daimonion.session_events.screen_flash"),
         ):
             await daemon._close_session(reason="timeout")
 

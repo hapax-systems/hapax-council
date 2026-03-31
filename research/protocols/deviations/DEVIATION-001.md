@@ -1,30 +1,35 @@
 # Deviation Record: DEVIATION-001
 
-**Date:** 2026-03-21
+**Date:** 2026-03-30
 **Phase at time of change:** baseline
-**Author:** alpha session (Claude Code)
+**Author:** Claude Code (phase5 decomposition batch)
 
 ## What Changed
 
-Updated `agents/hapax_daimonion/proofs/RESEARCH-STATE.md` to reflect sessions 5-7:
-- Session 5: CI/CD + PII hardening
-- Session 6: cockpit→logos rename
-- Session 7: RESEARCH/R&D working mode isolation infrastructure
+`agents/hapax_daimonion/conversation_pipeline.py`: Extracted 238 lines of
+helper functions and constants (ThreadEntry dataclass, text processing
+utilities, TTS chunking constants, stimmung downgrade logic) into a new
+sibling file `conversation_helpers.py`. The pipeline file now imports from
+helpers instead of defining them inline. Follow-up: added `_DENSITY_WORD_LIMITS`
+and `_stimmung_downgrade` re-exports for test/external backward compat.
 
 ## Why
 
-RESEARCH-STATE.md is the tiered context document for reconstructing research state
-across sessions. The update convention ("After any session with research progress,
-update this file before ending") was missed for sessions 5-7. All three sessions
-were infrastructure-only — no changes to experiment code, grounding theory, or
-research design.
+Codebase-wide decomposition of files >500 LOC. The conversation_pipeline.py
+was 2083 lines. This refactor moves free functions out while leaving the
+ConversationPipeline class unchanged. No behavioral changes.
 
 ## Impact on Experiment Validity
 
-None. The state file is documentation, not experiment code. It describes what exists;
-it does not affect experiment behavior.
+None. This is a pure structural refactor:
+- No behavioral logic changed
+- No constants modified
+- No model routing affected
+- ConversationPipeline class body is identical
+- All imports resolve to the same functions
 
 ## Mitigation
 
-The update is purely additive — documenting completed infrastructure work.
-No experiment parameters, metrics, or analysis code are affected.
+- Import paths preserved via re-export
+- No changes to any function signatures or return values
+- External importers of ThreadEntry, _lcs_word_length, ConvState unaffected

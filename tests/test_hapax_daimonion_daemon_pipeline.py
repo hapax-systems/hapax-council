@@ -21,11 +21,11 @@ def _make_daemon(backend: str = "local") -> VoiceDaemon:
     )
 
     with (
-        patch("agents.hapax_daimonion.__main__.PresenceDetector"),
-        patch("agents.hapax_daimonion.__main__.ContextGate"),
-        patch("agents.hapax_daimonion.__main__.HotkeyServer"),
-        patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
-        patch("agents.hapax_daimonion.__main__.TTSManager"),
+        patch("agents.hapax_daimonion.daemon.PresenceDetector"),
+        patch("agents.hapax_daimonion.daemon.ContextGate"),
+        patch("agents.hapax_daimonion.daemon.HotkeyServer"),
+        patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
+        patch("agents.hapax_daimonion.daemon.TTSManager"),
     ):
         daemon = VoiceDaemon(cfg=cfg)
 
@@ -210,11 +210,11 @@ def test_daemon_creates_perception_engine():
     from agents.hapax_daimonion.config import DaimonionConfig
 
     with (
-        patch("agents.hapax_daimonion.__main__.AudioInputStream"),
-        patch("agents.hapax_daimonion.__main__.WorkspaceMonitor") as MockWM,
-        patch("agents.hapax_daimonion.__main__.TTSManager"),
-        patch("agents.hapax_daimonion.__main__.ChimePlayer"),
-        patch("agents.hapax_daimonion.__main__.EventLog"),
+        patch("agents.hapax_daimonion.daemon.AudioInputStream"),
+        patch("agents.hapax_daimonion.daemon.WorkspaceMonitor") as MockWM,
+        patch("agents.hapax_daimonion.daemon.TTSManager"),
+        patch("agents.hapax_daimonion.daemon.ChimePlayer"),
+        patch("agents.hapax_daimonion.daemon.EventLog"),
     ):
         MockWM.return_value.set_notification_queue = MagicMock()
         MockWM.return_value.set_presence = MagicMock()

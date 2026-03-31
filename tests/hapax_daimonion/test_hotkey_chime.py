@@ -6,12 +6,12 @@ from agents.hapax_daimonion.config import DaimonionConfig
 
 
 class TestHotkeyChime:
-    @patch("agents.hapax_daimonion.__main__._screen_flash")
-    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
-    @patch("agents.hapax_daimonion.__main__.TTSManager")
-    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
-    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
-    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.session_events.screen_flash")
+    @patch("agents.hapax_daimonion.daemon.AudioInputStream")
+    @patch("agents.hapax_daimonion.daemon.TTSManager")
+    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
+    @patch("agents.hapax_daimonion.daemon.HotkeyServer")
+    @patch("agents.hapax_daimonion.daemon.ChimePlayer")
     def test_toggle_open_plays_activation(self, MockChime, *_, **__):
         import asyncio
 
@@ -26,12 +26,12 @@ class TestHotkeyChime:
         asyncio.get_event_loop().run_until_complete(daemon._handle_hotkey("toggle"))
         mock_player.play.assert_called_with("activation")
 
-    @patch("agents.hapax_daimonion.__main__._screen_flash")
-    @patch("agents.hapax_daimonion.__main__.AudioInputStream")
-    @patch("agents.hapax_daimonion.__main__.TTSManager")
-    @patch("agents.hapax_daimonion.__main__.WakeWordDetector")
-    @patch("agents.hapax_daimonion.__main__.HotkeyServer")
-    @patch("agents.hapax_daimonion.__main__.ChimePlayer")
+    @patch("agents.hapax_daimonion.session_events.screen_flash")
+    @patch("agents.hapax_daimonion.daemon.AudioInputStream")
+    @patch("agents.hapax_daimonion.daemon.TTSManager")
+    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
+    @patch("agents.hapax_daimonion.daemon.HotkeyServer")
+    @patch("agents.hapax_daimonion.daemon.ChimePlayer")
     def test_open_cmd_plays_activation(self, MockChime, *_, **__):
         import asyncio
 

@@ -155,7 +155,7 @@ class TestWakeWordStartsPipeline:
         daemon = _make_daemon()
 
         with (
-            patch.object(daemon, "_start_conversation_pipeline", new_callable=AsyncMock),
+            patch.object(daemon, "_start_pipeline", new_callable=AsyncMock),
         ):
             await daemon._start_pipeline()
 

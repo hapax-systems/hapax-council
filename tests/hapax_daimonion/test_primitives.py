@@ -324,21 +324,21 @@ def _mock_daemon():
     class _Ctx:
         def __enter__(self):
             self._patches = [
-                patch("agents.hapax_daimonion.__main__.load_config"),
-                patch("agents.hapax_daimonion.__main__.SessionManager"),
-                patch("agents.hapax_daimonion.__main__.PresenceDetector"),
-                patch("agents.hapax_daimonion.__main__.ContextGate"),
-                patch("agents.hapax_daimonion.__main__.NotificationQueue"),
-                patch("agents.hapax_daimonion.__main__.HotkeyServer"),
-                patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
-                patch("agents.hapax_daimonion.__main__.PorcupineWakeWord"),
-                patch("agents.hapax_daimonion.__main__.AudioInputStream"),
-                patch("agents.hapax_daimonion.__main__.TTSManager"),
-                patch("agents.hapax_daimonion.__main__.ChimePlayer"),
-                patch("agents.hapax_daimonion.__main__.WorkspaceMonitor"),
-                patch("agents.hapax_daimonion.__main__.PipelineGovernor"),
-                patch("agents.hapax_daimonion.__main__.FrameGate"),
-                patch("agents.hapax_daimonion.__main__.EventLog"),
+                patch("agents.hapax_daimonion.daemon.load_config"),
+                patch("agents.hapax_daimonion.daemon.SessionManager"),
+                patch("agents.hapax_daimonion.daemon.PresenceDetector"),
+                patch("agents.hapax_daimonion.daemon.ContextGate"),
+                patch("agents.hapax_daimonion.daemon.NotificationQueue"),
+                patch("agents.hapax_daimonion.daemon.HotkeyServer"),
+                patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
+                patch("agents.hapax_daimonion.daemon.PorcupineWakeWord"),
+                patch("agents.hapax_daimonion.daemon.AudioInputStream"),
+                patch("agents.hapax_daimonion.daemon.TTSManager"),
+                patch("agents.hapax_daimonion.daemon.ChimePlayer"),
+                patch("agents.hapax_daimonion.daemon.WorkspaceMonitor"),
+                patch("agents.hapax_daimonion.daemon.PipelineGovernor"),
+                patch("agents.hapax_daimonion.daemon.FrameGate"),
+                patch("agents.hapax_daimonion.daemon.EventLog"),
             ]
             for p in self._patches:
                 p.start()

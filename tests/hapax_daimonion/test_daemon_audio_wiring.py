@@ -20,10 +20,10 @@ class TestAudioInputCreated:
             webcam_enabled=False,
         )
         with (
-            patch("agents.hapax_daimonion.__main__.AudioInputStream") as mock_cls,
-            patch("agents.hapax_daimonion.__main__.HotkeyServer"),
-            patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
-            patch("agents.hapax_daimonion.__main__.TTSManager"),
+            patch("agents.hapax_daimonion.daemon.AudioInputStream") as mock_cls,
+            patch("agents.hapax_daimonion.daemon.HotkeyServer"),
+            patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
+            patch("agents.hapax_daimonion.daemon.TTSManager"),
         ):
             daemon = VoiceDaemon(cfg=cfg)
             mock_cls.assert_called_once_with(source_name=cfg.audio_input_source)
@@ -51,7 +51,7 @@ class TestAudioStartedEvent:
     async def test_audio_started_event_emitted(self):
         daemon = _make_daemon(audio_active=True)
 
-        with patch("agents.hapax_daimonion.__main__.subscribe_ntfy", new_callable=AsyncMock):
+        with patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
         daemon._audio_input.start.assert_called_once()
@@ -65,7 +65,7 @@ class TestAudioFailedEvent:
     async def test_audio_failed_event_on_stream_failure(self):
         daemon = _make_daemon(audio_active=False)
 
-        with patch("agents.hapax_daimonion.__main__.subscribe_ntfy", new_callable=AsyncMock):
+        with patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
         daemon._audio_input.start.assert_called()
@@ -81,7 +81,7 @@ class TestAudioStoppedOnShutdown:
     async def test_audio_stopped_on_shutdown(self):
         daemon = _make_daemon(audio_active=True)
 
-        with patch("agents.hapax_daimonion.__main__.subscribe_ntfy", new_callable=AsyncMock):
+        with patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
         daemon._audio_input.stop.assert_called_once()
@@ -100,7 +100,7 @@ class TestAudioLoopBackgroundTask:
 
         daemon._audio_loop = _dummy_audio_loop
 
-        with patch("agents.hapax_daimonion.__main__.subscribe_ntfy", new_callable=AsyncMock):
+        with patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
         # When active, background tasks should include the audio loop
@@ -127,7 +127,7 @@ class TestAudioLoopBackgroundTask:
         tracking = TrackingList()
         daemon._background_tasks = tracking
 
-        with patch("agents.hapax_daimonion.__main__.subscribe_ntfy", new_callable=AsyncMock):
+        with patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
         # Should have 7 tasks (proactive delivery, ntfy, workspace monitor,

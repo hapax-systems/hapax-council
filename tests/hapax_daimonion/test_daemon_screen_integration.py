@@ -98,7 +98,7 @@ def test_daemon_creates_workspace_monitor():
 
     cfg = DaimonionConfig(screen_monitor_enabled=True, webcam_enabled=True)
 
-    with patch("agents.hapax_daimonion.__main__.WorkspaceMonitor") as mock_wm:
+    with patch("agents.hapax_daimonion.daemon.WorkspaceMonitor") as mock_wm:
         from agents.hapax_daimonion.__main__ import VoiceDaemon
 
         VoiceDaemon(cfg=cfg)
@@ -117,9 +117,9 @@ def test_daemon_creates_event_log():
         webcam_enabled=False,
     )
     with (
-        patch("agents.hapax_daimonion.__main__.HotkeyServer"),
-        patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
-        patch("agents.hapax_daimonion.__main__.TTSManager"),
+        patch("agents.hapax_daimonion.daemon.HotkeyServer"),
+        patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
+        patch("agents.hapax_daimonion.daemon.TTSManager"),
     ):
         from agents.hapax_daimonion.__main__ import VoiceDaemon
 
@@ -138,9 +138,9 @@ def test_daemon_wires_event_log_to_subsystems():
         webcam_enabled=False,
     )
     with (
-        patch("agents.hapax_daimonion.__main__.HotkeyServer"),
-        patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
-        patch("agents.hapax_daimonion.__main__.TTSManager"),
+        patch("agents.hapax_daimonion.daemon.HotkeyServer"),
+        patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
+        patch("agents.hapax_daimonion.daemon.TTSManager"),
     ):
         from agents.hapax_daimonion.__main__ import VoiceDaemon
 

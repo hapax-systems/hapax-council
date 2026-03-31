@@ -211,7 +211,7 @@ async def test_daemon_starts_background_tasks():
     with (
         patch.object(daemon.hotkey, "start", new_callable=AsyncMock),
         patch.object(daemon.hotkey, "stop", new_callable=AsyncMock),
-        patch("agents.hapax_daimonion.__main__.subscribe_ntfy", new_callable=AsyncMock),
+        patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock),
     ):
         task = asyncio.create_task(stop_quickly())
         await daemon.run()

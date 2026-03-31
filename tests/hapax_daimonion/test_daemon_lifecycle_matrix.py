@@ -33,16 +33,16 @@ def _make_daemon(**cfg_overrides) -> VoiceDaemon:
     cfg = DaimonionConfig(**defaults)
 
     patches = [
-        patch("agents.hapax_daimonion.__main__.PresenceDetector"),
-        patch("agents.hapax_daimonion.__main__.ContextGate"),
-        patch("agents.hapax_daimonion.__main__.HotkeyServer"),
-        patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
-        patch("agents.hapax_daimonion.__main__.PorcupineWakeWord"),
-        patch("agents.hapax_daimonion.__main__.AudioInputStream"),
-        patch("agents.hapax_daimonion.__main__.TTSManager"),
-        patch("agents.hapax_daimonion.__main__.ChimePlayer"),
-        patch("agents.hapax_daimonion.__main__.WorkspaceMonitor"),
-        patch("agents.hapax_daimonion.__main__.EventLog"),
+        patch("agents.hapax_daimonion.daemon.PresenceDetector"),
+        patch("agents.hapax_daimonion.daemon.ContextGate"),
+        patch("agents.hapax_daimonion.daemon.HotkeyServer"),
+        patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
+        patch("agents.hapax_daimonion.daemon.PorcupineWakeWord"),
+        patch("agents.hapax_daimonion.daemon.AudioInputStream"),
+        patch("agents.hapax_daimonion.daemon.TTSManager"),
+        patch("agents.hapax_daimonion.daemon.ChimePlayer"),
+        patch("agents.hapax_daimonion.daemon.WorkspaceMonitor"),
+        patch("agents.hapax_daimonion.daemon.EventLog"),
     ]
     for p in patches:
         p.start()
@@ -282,16 +282,16 @@ class TestDaemonErrorPaths:
         )
 
         patches = [
-            patch("agents.hapax_daimonion.__main__.PresenceDetector"),
-            patch("agents.hapax_daimonion.__main__.ContextGate"),
-            patch("agents.hapax_daimonion.__main__.HotkeyServer"),
-            patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
-            patch("agents.hapax_daimonion.__main__.PorcupineWakeWord"),
-            patch("agents.hapax_daimonion.__main__.AudioInputStream"),
-            patch("agents.hapax_daimonion.__main__.TTSManager"),
-            patch("agents.hapax_daimonion.__main__.ChimePlayer"),
-            patch("agents.hapax_daimonion.__main__.WorkspaceMonitor"),
-            patch("agents.hapax_daimonion.__main__.EventLog"),
+            patch("agents.hapax_daimonion.daemon.PresenceDetector"),
+            patch("agents.hapax_daimonion.daemon.ContextGate"),
+            patch("agents.hapax_daimonion.daemon.HotkeyServer"),
+            patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
+            patch("agents.hapax_daimonion.daemon.PorcupineWakeWord"),
+            patch("agents.hapax_daimonion.daemon.AudioInputStream"),
+            patch("agents.hapax_daimonion.daemon.TTSManager"),
+            patch("agents.hapax_daimonion.daemon.ChimePlayer"),
+            patch("agents.hapax_daimonion.daemon.WorkspaceMonitor"),
+            patch("agents.hapax_daimonion.daemon.EventLog"),
         ]
         for p in patches:
             p.start()
@@ -317,16 +317,16 @@ class TestDaemonErrorPaths:
         )
 
         patches = [
-            patch("agents.hapax_daimonion.__main__.PresenceDetector"),
-            patch("agents.hapax_daimonion.__main__.ContextGate"),
-            patch("agents.hapax_daimonion.__main__.HotkeyServer"),
-            patch("agents.hapax_daimonion.__main__.WakeWordDetector"),
-            patch("agents.hapax_daimonion.__main__.PorcupineWakeWord"),
-            patch("agents.hapax_daimonion.__main__.AudioInputStream"),
-            patch("agents.hapax_daimonion.__main__.TTSManager"),
-            patch("agents.hapax_daimonion.__main__.ChimePlayer"),
-            patch("agents.hapax_daimonion.__main__.WorkspaceMonitor"),
-            patch("agents.hapax_daimonion.__main__.EventLog"),
+            patch("agents.hapax_daimonion.daemon.PresenceDetector"),
+            patch("agents.hapax_daimonion.daemon.ContextGate"),
+            patch("agents.hapax_daimonion.daemon.HotkeyServer"),
+            patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
+            patch("agents.hapax_daimonion.daemon.PorcupineWakeWord"),
+            patch("agents.hapax_daimonion.daemon.AudioInputStream"),
+            patch("agents.hapax_daimonion.daemon.TTSManager"),
+            patch("agents.hapax_daimonion.daemon.ChimePlayer"),
+            patch("agents.hapax_daimonion.daemon.WorkspaceMonitor"),
+            patch("agents.hapax_daimonion.daemon.EventLog"),
         ]
         for p in patches:
             p.start()
