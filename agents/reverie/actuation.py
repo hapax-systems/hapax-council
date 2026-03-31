@@ -132,12 +132,14 @@ class ReverieActuationLoop:
         # 9. Write merged uniforms
         self._write_uniforms(imagination, stimmung)
 
+    # Per-slot approximate centers (matches content_layer.wgsl immensity_entry directions)
+    _SLOT_CENTERS = {0: (0.4, 0.4), 1: (0.6, 0.4), 2: (0.4, 0.6), 3: (0.6, 0.6)}
+
     def _update_trace(self, imagination: dict[str, object] | None, dt: float) -> None:
         """Update trace state for dwelling/trace effect (Bachelard Amendment 2).
 
         When content salience drops (fading out), the trace activates at the
-        content's last position. The feedback shader then decays slower in
-        that region, creating a ghostly afterimage.
+        content's approximate position based on its slot index.
         """
         current_salience = imagination.get("salience", 0.0) if imagination else 0.0
 
@@ -145,12 +147,20 @@ class ReverieActuationLoop:
         if self._last_salience > 0.2 and current_salience < self._last_salience * 0.5:
             self._trace_strength = min(1.0, self._last_salience)
             self._trace_radius = 0.3 + self._last_salience * 0.2
-            # Center from content reference positions (default center if unknown)
-            self._trace_center = (0.5, 0.5)
+
+            # Approximate center from primary content slot
+            slot_idx = 0
+            if imagination:
+                refs = imagination.get("content_references", [])
+                if isinstance(refs, list) and len(refs) > 0:
+                    slot_idx = min(len(refs) - 1, 3)
+            self._trace_center = self._SLOT_CENTERS.get(slot_idx, (0.5, 0.5))
+
             log.info(
-                "Trace activated: strength=%.2f radius=%.2f (salience %.2f→%.2f)",
+                "Trace activated: strength=%.2f radius=%.2f center=%s (salience %.2f→%.2f)",
                 self._trace_strength,
                 self._trace_radius,
+                self._trace_center,
                 self._last_salience,
                 current_salience,
             )

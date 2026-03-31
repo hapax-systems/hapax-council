@@ -3,7 +3,7 @@
 // Bachelard effects:
 // 1. Materialization from substrate (noise-gated crystallization)
 // 2. Corner incubation (low salience → peripheral)
-// 3. Off-screen entry / immensity (slide in from beyond viewport)
+// 3. Off-screen entry / immensity (per-slot direction, slide in from beyond viewport)
 // 4. Material quality (water/fire/earth/air/void UV + color modulation)
 // 5. Dwelling trace boost (luminance boost during fadeout for feedback persistence)
 
@@ -47,10 +47,10 @@ fn corner_incubation(uv: vec2<f32>, intensity: f32) -> vec2<f32> {
     return uv + (uv - 0.5) * corner_offset;
 }
 
-fn immensity_entry(uv: vec2<f32>, salience: f32, time: f32) -> vec2<f32> {
+fn immensity_entry(uv: vec2<f32>, salience: f32, slot_index: f32) -> vec2<f32> {
     let entry_progress = smoothstep(0.0, 0.5, salience);
     let entry_offset = (1.0 - entry_progress) * 0.4;
-    let entry_dir = vec2<f32>(sin(time * 0.1 + 2.1), cos(time * 0.1 + 1.7));
+    let entry_dir = vec2<f32>(sin(slot_index * 2.1), cos(slot_index * 1.7));
     return uv + entry_dir * entry_offset;
 }
 
@@ -112,21 +112,26 @@ fn dwelling_trace_boost(salience: f32) -> f32 {
     return 1.0 + (1.0 - smoothstep(0.3, 0.7, salience)) * 0.15;
 }
 
-// --- Per-slot blending ---
+// --- Per-slot blending with per-slot UV ---
 
 fn sample_and_blend_slot(
     slot_tex: texture_2d<f32>,
     samp: sampler,
-    uv: vec2<f32>,
     uv_raw: vec2<f32>,
     opacity: f32,
     material_id: u32,
     time: f32,
+    slot_index: f32,
     base: vec3<f32>,
 ) -> vec3<f32> {
     if opacity < 0.001 {
         return base;
     }
+    // Per-slot UV: corner incubation + per-slot immensity direction + material
+    var uv = corner_incubation(uv_raw, opacity);
+    uv = immensity_entry(uv, opacity, slot_index);
+    uv = material_uv(uv, material_id, time);
+
     let content = textureSample(slot_tex, samp, uv);
     let gated = content.rgb * materialization(uv_raw, opacity, time);
     let colored = material_color(gated, material_id);
@@ -140,30 +145,24 @@ fn sample_and_blend_slot(
 fn main_1() {
     let uv_raw = v_texcoord_1;
     let time = uniforms.time;
-    let intensity = uniforms.intensity;
     let material_id = u32(round(uniforms.custom[0][0]));
-
-    // UV modulation for content (not the procedural background)
-    var uv = corner_incubation(uv_raw, intensity);
-    let max_salience = max(max(uniforms.slot_opacities[0], uniforms.slot_opacities[1]),
-                           max(uniforms.slot_opacities[2], uniforms.slot_opacities[3]));
-    uv = immensity_entry(uv, max_salience, time);
-    uv = material_uv(uv, material_id, time);
 
     // Sample procedural field at original UV (background unaffected by content distortion)
     var base = textureSample(tex, tex_sampler, uv_raw).rgb;
 
-    // Screen-blend each content slot over the procedural field
-    base = sample_and_blend_slot(content_slot_0, tex_sampler, uv, uv_raw,
-        uniforms.slot_opacities[0], material_id, time, base);
-    base = sample_and_blend_slot(content_slot_1, tex_sampler, uv, uv_raw,
-        uniforms.slot_opacities[1], material_id, time, base);
-    base = sample_and_blend_slot(content_slot_2, tex_sampler, uv, uv_raw,
-        uniforms.slot_opacities[2], material_id, time, base);
-    base = sample_and_blend_slot(content_slot_3, tex_sampler, uv, uv_raw,
-        uniforms.slot_opacities[3], material_id, time, base);
+    // Screen-blend each content slot — per-slot UV with distinct immensity direction
+    base = sample_and_blend_slot(content_slot_0, tex_sampler, uv_raw,
+        uniforms.slot_opacities[0], material_id, time, 0.0, base);
+    base = sample_and_blend_slot(content_slot_1, tex_sampler, uv_raw,
+        uniforms.slot_opacities[1], material_id, time, 1.0, base);
+    base = sample_and_blend_slot(content_slot_2, tex_sampler, uv_raw,
+        uniforms.slot_opacities[2], material_id, time, 2.0, base);
+    base = sample_and_blend_slot(content_slot_3, tex_sampler, uv_raw,
+        uniforms.slot_opacities[3], material_id, time, 3.0, base);
 
     // Dwelling trace boost on final composited result
+    let max_salience = max(max(uniforms.slot_opacities[0], uniforms.slot_opacities[1]),
+                           max(uniforms.slot_opacities[2], uniforms.slot_opacities[3]));
     let trace_boost = dwelling_trace_boost(max_salience);
     base *= trace_boost;
 
