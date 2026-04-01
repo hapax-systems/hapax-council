@@ -7,6 +7,10 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from shared.sheaf_graph import build_scm_graph
+from shared.sheaf_health import compute_sheaf_health
+from shared.topology_health import compute_topological_stability
+
 router = APIRouter(prefix="/api/stimmung", tags=["stimmung"])
 
 _SHM_STATE = Path("/dev/shm/hapax-stimmung/state.json")
@@ -60,8 +64,16 @@ async def get_stimmung() -> dict:
     overall_stance = raw.get("overall_stance", "unknown")
     timestamp = raw.get("timestamp", 0)
 
-    return {
+    response: dict = {
         "dimensions": dimensions,
         "overall_stance": overall_stance,
         "timestamp": timestamp,
     }
+
+    try:
+        response["sheaf_health"] = compute_sheaf_health()
+        response["topology"] = compute_topological_stability(build_scm_graph())
+    except Exception:
+        pass
+
+    return response
