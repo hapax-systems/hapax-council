@@ -18,6 +18,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from agents._impingement import Impingement, ImpingementType
+from shared.governance.consent_label import ConsentLabel
+from shared.labeled_trace import write_labeled_trace
 
 log = logging.getLogger(__name__)
 
@@ -86,16 +88,15 @@ def publish_fragment(
     current_path.parent.mkdir(parents=True, exist_ok=True)
     stream_path.parent.mkdir(parents=True, exist_ok=True)
 
-    payload = fragment.model_dump_json()
+    payload_dict = fragment.model_dump()
 
-    # Atomic write to current.json via tmp+rename
-    tmp_path = current_path.with_suffix(".tmp")
-    tmp_path.write_text(payload)
-    tmp_path.rename(current_path)
+    # Atomic write to current.json via labeled trace
+    write_labeled_trace(current_path, payload_dict, ConsentLabel.bottom())
 
-    # Append to stream.jsonl
+    # Append to stream.jsonl (JSONL — not labeled, consent at boundary gates)
+    payload_json = fragment.model_dump_json()
     with stream_path.open("a") as f:
-        f.write(payload + "\n")
+        f.write(payload_json + "\n")
 
     # Cap stream at max_lines (atomic: write to tmp, then rename)
     lines = stream_path.read_text().splitlines()

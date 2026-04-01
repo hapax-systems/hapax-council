@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 
 from shared.apperception import ApperceptionCascade, ApperceptionStore, CascadeEvent, SelfModel
+from shared.governance.consent_label import ConsentLabel
+from shared.labeled_trace import write_labeled_trace
 
 log = logging.getLogger("apperception_tick")
 
@@ -277,10 +279,7 @@ class ApperceptionTick:
                 "tick_seq": self._tick_seq,
                 "events_this_tick": event_count,
             }
-            APPERCEPTION_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = APPERCEPTION_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload), encoding="utf-8")
-            tmp.rename(APPERCEPTION_FILE)
+            write_labeled_trace(APPERCEPTION_FILE, payload, ConsentLabel.bottom())
         except OSError:
             log.debug("Failed to write apperception state", exc_info=True)
 
