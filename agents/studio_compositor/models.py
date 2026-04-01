@@ -70,7 +70,7 @@ class CompositorConfig(BaseModel):
     output_device: str = "/dev/video42"
     output_width: int = 1920
     output_height: int = 1080
-    framerate: int = 30
+    framerate: int = 10  # was 30 — no consumer needs >10fps. Saves ~67% compositor CPU.
     bitrate: int = 8_000_000
     watchdog_timeout_ms: int = 5000
     status_interval_s: float = 5.0
