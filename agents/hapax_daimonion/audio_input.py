@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import queue
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
 
 import pyaudio
 
@@ -31,7 +29,8 @@ class AudioInputStream:
         self._source_name = source_name
         self._sample_rate = sample_rate
         self._frame_ms = frame_ms
-        self._queue: queue.Queue[bytes] = queue.Queue(maxsize=queue_maxsize)
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=queue_maxsize)
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._stream: pyaudio.Stream | None = None
         self._active = False
 
@@ -122,6 +121,10 @@ class AudioInputStream:
                 stream_callback=self._pyaudio_callback,
             )
             self._active = True
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._loop = None
             log.info(
                 "Audio input stream started (rate=%d, frame=%dms)",
                 self._sample_rate,
@@ -150,24 +153,26 @@ class AudioInputStream:
     def _pyaudio_callback(
         self, in_data: bytes, frame_count: int, time_info: dict, status: int
     ) -> tuple[None, int]:
+        if self._loop is not None and not self._loop.is_closed():
+            try:
+                self._loop.call_soon_threadsafe(self._enqueue_frame, in_data)
+            except RuntimeError:
+                pass  # loop closed during shutdown
+        return (None, pyaudio.paContinue)
+
+    def _enqueue_frame(self, data: bytes) -> None:
+        """Called on the event loop thread via call_soon_threadsafe."""
         try:
-            self._queue.put_nowait(in_data)
+            self._queue.put_nowait(data)
             self._drop_count = 0
-        except queue.Full:
+        except asyncio.QueueFull:
             self._drop_count += 1
             if self._drop_count == 1:
                 log.warning("Audio frame queue full — dropping frames")
-        return (None, pyaudio.paContinue)
-
-    # Dedicated single-thread executor so get_frame never contends with
-    # STT, TTS, or speaker verification in the default thread pool.
-    _frame_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-in")
 
     async def get_frame(self, timeout: float = 1.0) -> bytes | None:
-        loop = asyncio.get_running_loop()
+        """Await the next audio frame from the async queue."""
         try:
-            return await loop.run_in_executor(
-                self._frame_executor, lambda: self._queue.get(timeout=timeout)
-            )
-        except queue.Empty:
+            return await asyncio.wait_for(self._queue.get(), timeout=timeout)
+        except TimeoutError:
             return None
