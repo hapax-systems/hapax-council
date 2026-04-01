@@ -21,6 +21,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from shared.governance.consent import ConsentRegistry
+
 try:
     from agents import _langfuse_config  # noqa: F401
 except ImportError:
@@ -378,6 +380,10 @@ def _log_change(email: EmailMetadata, change_type: str, extra: dict | None = Non
 
 def _write_recent_emails(state: GmailSyncState) -> int:
     """Write recent email metadata as markdown stubs to rag-sources/gmail/."""
+    # Load consent registry for sender/recipient filtering
+    _consent_registry = ConsentRegistry()
+    _consent_registry.load()
+
     GMAIL_DIR.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now(UTC)
@@ -396,6 +402,18 @@ def _write_recent_emails(state: GmailSyncState) -> int:
 
         if email_dt < cutoff:
             continue
+
+        # Consent gate: strip unconsented sender/recipients
+        update: dict = {}
+        if email.sender and not _consent_registry.contract_check(email.sender, "email"):
+            update["sender"] = "[redacted]"
+        if email.recipients:
+            update["recipients"] = [
+                r if _consent_registry.contract_check(r, "email") else "[redacted]"
+                for r in email.recipients
+            ]
+        if update:
+            email = email.model_copy(update=update)
 
         md = _format_email_markdown(email)
         safe_subject = email.subject.replace("/", "_").replace(" ", "-")[:60]
