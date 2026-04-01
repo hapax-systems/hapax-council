@@ -55,6 +55,9 @@ from agents.visual_layer_state import (
     WatershedEvent,
 )
 from shared.apperception_tick import ApperceptionTick
+from shared.eigenform_logger import log_state_vector
+from shared.mesh_health import aggregate_mesh_health
+from shared.sheaf_health import compute_sheaf_health
 
 from .constants import (
     AMBIENT_CONTENT_INTERVAL_S,
@@ -1126,6 +1129,28 @@ class VisualLayerAggregator:
             tmp.rename(OUTPUT_FILE)
         except OSError:
             log.debug("Failed to write visual layer state", exc_info=True)
+
+        try:
+            _pd = self._last_perception_data
+            _mesh = aggregate_mesh_health()
+            _sheaf = compute_sheaf_health()
+            log_state_vector(
+                presence=float(_pd.get("presence_probability", 0)),
+                flow_score=float(_pd.get("flow_score", self._flow_score)),
+                audio_energy=float(_pd.get("audio_energy_rms", self._audio_energy)),
+                stimmung_stance=stimmung_stance,
+                imagination_salience=0.0,
+                visual_brightness=float(state.ambient_params.brightness),
+                heart_rate=float(_pd.get("heart_rate_bpm", 0)),
+                operator_stress=float(self._stimmung.operator_stress.value)
+                if self._stimmung
+                else 0.0,
+                activity=str(_pd.get("production_activity", "idle")),
+                e_mesh=float(_mesh.get("e_mesh", 1.0)),
+                consistency_radius=float(_sheaf.get("consistency_radius", 0.0)),
+            )
+        except Exception:
+            pass  # eigenform logging is observational — never block the VLA
 
         return state
 
