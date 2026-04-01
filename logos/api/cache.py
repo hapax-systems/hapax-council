@@ -110,7 +110,6 @@ class DataCache:
         from logos.data.briefing import collect_briefing
         from logos.data.cost import collect_cost
         from logos.data.drift import collect_drift
-        from logos.data.goals import collect_goals
         from logos.data.nudges import collect_nudges
         from logos.data.readiness import collect_readiness
         from logos.data.scout import collect_scout
@@ -121,7 +120,6 @@ class DataCache:
             ("scout", collect_scout),
             ("drift", collect_drift),
             ("cost", collect_cost),
-            ("goals", collect_goals),
             ("readiness", collect_readiness),
             ("agents", get_agent_registry),
             ("studio", collect_studio),

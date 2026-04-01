@@ -21,7 +21,7 @@ def _goal(
     status: str = "active",
     priority: str = "P1",
     stale: bool = False,
-    progress: float = 0.0,
+    progress: float | None = None,
 ) -> VaultGoal:
     return VaultGoal(
         id=id,
@@ -60,11 +60,11 @@ _PATCH_PREFIX = "logos.data.orientation"
 # Default mocks that every test applies.
 _DEFAULT_PATCHES = {
     f"{_PATCH_PREFIX}._load_domain_registry": lambda: {
-        "research": {"staleness_days": 7},
-        "studio": {"staleness_days": 14},
+        "research": {"staleness_days": 7, "apis": {"sprint": "/api/sprint"}, "telemetry": {}},
+        "studio": {"staleness_days": 14, "apis": {}, "telemetry": {}},
     },
     f"{_PATCH_PREFIX}.collect_vault_goals": lambda **kw: [],
-    f"{_PATCH_PREFIX}.infer_session": lambda: _session(),
+    f"{_PATCH_PREFIX}.infer_session": lambda **kw: _session(),
     f"{_PATCH_PREFIX}._get_sprint_summary": lambda: None,
     f"{_PATCH_PREFIX}._sprint_measure_statuses": lambda: {},
     f"{_PATCH_PREFIX}._get_stimmung_stance": lambda: "nominal",
@@ -99,7 +99,11 @@ class TestBasicAssembly:
         result = _run_with(
             {
                 f"{_PATCH_PREFIX}._load_domain_registry": lambda: {
-                    "research": {"staleness_days": 7},
+                    "research": {
+                        "staleness_days": 7,
+                        "apis": {"sprint": "/api/sprint"},
+                        "telemetry": {},
+                    },
                 },
                 f"{_PATCH_PREFIX}.collect_vault_goals": lambda **kw: [
                     _goal("g1", "research", "active", "P1"),
@@ -119,7 +123,7 @@ class TestDomainSorting:
     def test_sorted_by_recency(self):
         result = _run_with(
             {
-                f"{_PATCH_PREFIX}.infer_session": lambda: SessionContext(
+                f"{_PATCH_PREFIX}.infer_session": lambda **kw: SessionContext(
                     last_active_domain="studio",
                     absence_hours=0.5,
                     session_boundary=False,
@@ -134,7 +138,7 @@ class TestDomainSorting:
     def test_blocked_domain_ranks_highest(self):
         result = _run_with(
             {
-                f"{_PATCH_PREFIX}.infer_session": lambda: SessionContext(
+                f"{_PATCH_PREFIX}.infer_session": lambda **kw: SessionContext(
                     last_active_domain="studio",
                     absence_hours=0.5,
                     session_boundary=False,
@@ -157,7 +161,7 @@ class TestDomainSorting:
     def test_stale_p0_ranks_high(self):
         result = _run_with(
             {
-                f"{_PATCH_PREFIX}.infer_session": lambda: SessionContext(
+                f"{_PATCH_PREFIX}.infer_session": lambda **kw: SessionContext(
                     last_active_domain="studio",
                     absence_hours=0.5,
                     session_boundary=False,
@@ -175,7 +179,7 @@ class TestNarrative:
     def test_no_narrative_steady_state(self):
         result = _run_with(
             {
-                f"{_PATCH_PREFIX}.infer_session": lambda: SessionContext(
+                f"{_PATCH_PREFIX}.infer_session": lambda **kw: SessionContext(
                     last_active_domain="research",
                     absence_hours=0.5,
                     session_boundary=False,

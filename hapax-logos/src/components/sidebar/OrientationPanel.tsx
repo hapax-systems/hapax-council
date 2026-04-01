@@ -90,10 +90,10 @@ function DomainStrip({
               <div className="h-1 flex-1 rounded-full bg-zinc-800">
                 <div
                   className="h-1 rounded-full bg-green-400/40"
-                  style={{ width: `${Math.min(100, ds.top_goal.progress)}%` }}
+                  style={{ width: `${Math.min(100, Math.round(ds.top_goal.progress * 100))}%` }}
                 />
               </div>
-              <span className="text-[10px] text-zinc-600">{ds.top_goal.progress}%</span>
+              <span className="text-[10px] text-zinc-600">{Math.round(ds.top_goal.progress * 100)}%</span>
             </div>
           )}
         </div>
@@ -150,12 +150,11 @@ export function OrientationPanel() {
   // Stimmung modulation: filter visible domains
   let visibleDomains: DomainState[];
   if (stance === "critical") {
-    // Single line — show only top active domain
-    visibleDomains = orientation.domains.filter((d) => d.health === "active").slice(0, 1);
-    if (visibleDomains.length === 0) visibleDomains = orientation.domains.slice(0, 1);
+    // Single line: most urgent action item only
+    visibleDomains = orientation.domains.slice(0, 1);
   } else if (stance === "degraded") {
-    // Top 2 domains only
-    visibleDomains = orientation.domains.slice(0, 2);
+    // Only top domain + system health, no narrative
+    visibleDomains = orientation.domains.slice(0, 1);
   } else if (stance === "cautious") {
     // All domains, but dormant ones compressed
     visibleDomains = orientation.domains;
@@ -176,8 +175,8 @@ export function OrientationPanel() {
   return (
     <>
       <SidebarSection title="ORIENTATION" age={orientation ? formatAge(dataUpdatedAt) : undefined}>
-        {/* Narrative block — nominal stance only */}
-        {stance === "nominal" && orientation.narrative && (
+        {/* Narrative block — nominal/cautious only, suppressed in degraded/critical */}
+        {(stance === "nominal" || stance === "cautious") && orientation.narrative && (
           <p className="text-zinc-400 text-xs leading-relaxed mb-2">{orientation.narrative}</p>
         )}
 
@@ -196,8 +195,15 @@ export function OrientationPanel() {
           ))}
         </div>
 
+        {/* System health line — always visible in degraded/critical */}
+        {(stance === "degraded" || stance === "critical") && (
+          <p className="mt-1 text-[10px] text-zinc-500">
+            System: {orientation.system_health} · {orientation.drift_high_count} high drift
+          </p>
+        )}
+
         {/* Briefing summary line */}
-        {orientation.briefing_headline && (
+        {orientation.briefing_headline && stance !== "critical" && (
           <button
             onClick={() => setBriefingOpen(true)}
             className="mt-2 w-full text-left text-[10px] text-zinc-500 hover:text-zinc-300 truncate"

@@ -47,7 +47,7 @@ class VaultGoal:
     file_path: Path | None = None
     last_modified: datetime | None = None
     stale: bool = False
-    progress: float = 0.0
+    progress: float | None = None
     obsidian_uri: str = ""
 
 
@@ -60,10 +60,10 @@ def _priority_sort_key(priority: str) -> int:
 def _compute_progress(
     measures: list[str],
     statuses: dict[str, str] | None,
-) -> float:
+) -> float | None:
     """Compute sprint progress as fraction of completed measures."""
     if not measures or not statuses:
-        return 0.0
+        return None
     completed = sum(1 for m in measures if statuses.get(m) == "completed")
     return completed / len(measures)
 

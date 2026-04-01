@@ -150,11 +150,11 @@ class TestVaultGoalsSprintProgress:
         assert len(result) == 1
         assert abs(result[0].progress - 2.0 / 3.0) < 0.01
 
-    def test_no_measures_progress_zero(self, tmp_path: Path) -> None:
+    def test_no_measures_progress_none(self, tmp_path: Path) -> None:
         _write_goal(tmp_path, "no-measures", sprint_measures=[])
         result = collect_vault_goals(vault_base=tmp_path, vault_name="Test")
         assert len(result) == 1
-        assert result[0].progress == 0.0
+        assert result[0].progress is None
 
 
 class TestVaultGoalsRobustness:
