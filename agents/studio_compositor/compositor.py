@@ -69,15 +69,8 @@ class StudioCompositor:
             self._slot_pipeline.update_node_uniforms(node_id, params)
 
     def _on_graph_plan_changed(self, old_plan: Any, new_plan: Any) -> None:
-        if (
-            old_plan is not None
-            and hasattr(self, "_fx_crossfade")
-            and self._fx_crossfade is not None
-        ):
-            self._fx_crossfade.set_property("trigger", True)
         if hasattr(self, "_slot_pipeline") and self._slot_pipeline is not None:
             self._slot_pipeline.activate_plan(new_plan)
-            self._fx_graph_mode = True
             log.info("Slot pipeline activated: %s", new_plan.name if new_plan else "none")
 
     def _resolve_camera_role(self, element: Any) -> str | None:
