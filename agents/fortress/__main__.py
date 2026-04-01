@@ -423,9 +423,9 @@ class FortressDaemon:
                     "fortress": state.fortress_name if state else "",
                 },
             )
-            dmn_jsonl = Path("/dev/shm/hapax-dmn/impingements.jsonl")
-            if dmn_jsonl.parent.exists():
-                with dmn_jsonl.open("a", encoding="utf-8") as f:
+            fortress_actions = Path("/dev/shm/hapax-dmn/fortress-actions.jsonl")
+            if fortress_actions.parent.exists():
+                with fortress_actions.open("a", encoding="utf-8") as f:
                     f.write(feedback.model_dump_json() + "\n")
         except Exception:
             log.debug("Failed to emit fortress feedback impingement", exc_info=True)
