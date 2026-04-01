@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 from datetime import UTC, datetime
 
+from shared.mesh_health import aggregate_mesh_health
+
 from .constants import AI_AGENTS_DIR, PROFILES_DIR
 from .models import HealthReport, Status
 
@@ -176,12 +178,16 @@ def write_infra_snapshot(report: HealthReport) -> None:
                     }
                 )
 
+    # Add mesh-wide perceptual health
+    mesh = aggregate_mesh_health()
+
     snapshot = {
         "timestamp": report.timestamp,
         "working_mode": wmode,
         "containers": containers,
         "timers": timers,
         "gpu": gpu,
+        "mesh_health": mesh,
     }
 
     try:

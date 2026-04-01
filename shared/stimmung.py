@@ -20,6 +20,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from shared.control_signal import ControlSignal, publish_health
+
 # ── Stance ───────────────────────────────────────────────────────────────────
 
 
@@ -375,6 +377,15 @@ class StimmungCollector:
 
         raw_stance = self._compute_stance(dimensions)
         stance = self._apply_hysteresis(raw_stance)
+
+        # Publish perceptual control signal for mesh-wide health aggregation
+        _stance_error_map = {"nominal": 0.0, "cautious": 0.3, "degraded": 0.6, "critical": 1.0}
+        sig = ControlSignal(
+            component="stimmung",
+            reference=0.0,  # target is nominal
+            perception=_stance_error_map.get(stance, 0.5),
+        )
+        publish_health(sig)
 
         return SystemStimmung(
             **dimensions,
