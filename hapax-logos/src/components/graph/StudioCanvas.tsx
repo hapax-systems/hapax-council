@@ -19,6 +19,9 @@ import { ShaderNode } from "./nodes/ShaderNode";
 import { OutputNode } from "./nodes/OutputNode";
 import { SignalEdge } from "./edges/SignalEdge";
 import { GraphToolbar } from "./GraphToolbar";
+import { NodeDetailSheet } from "./NodeDetailSheet";
+import { NodePalette } from "./NodePalette";
+import { PresetLibrary } from "./PresetLibrary";
 import { useGraphSync } from "./useGraphSync";
 
 type S = StudioGraphState;
@@ -118,6 +121,9 @@ export function StudioCanvas() {
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <GraphToolbar />
+      <NodePalette />
+      <PresetLibrary />
+      <NodeDetailSheet />
       <div style={{ width: "100%", height: "100%", paddingTop: 36 }}>
         <ReactFlow
           nodes={nodes}
