@@ -11,6 +11,9 @@ import tempfile
 from datetime import UTC, datetime
 
 from shared.mesh_health import aggregate_mesh_health
+from shared.sheaf_graph import build_scm_graph
+from shared.sheaf_health import compute_sheaf_health
+from shared.topology_health import compute_topological_stability
 
 from .constants import AI_AGENTS_DIR, PROFILES_DIR
 from .models import HealthReport, Status
@@ -181,6 +184,16 @@ def write_infra_snapshot(report: HealthReport) -> None:
     # Add mesh-wide perceptual health
     mesh = aggregate_mesh_health()
 
+    try:
+        sheaf_health = compute_sheaf_health()
+    except Exception:
+        sheaf_health = {"error": "failed"}
+
+    try:
+        topology = compute_topological_stability(build_scm_graph())
+    except Exception:
+        topology = {"error": "failed"}
+
     snapshot = {
         "timestamp": report.timestamp,
         "working_mode": wmode,
@@ -188,6 +201,8 @@ def write_infra_snapshot(report: HealthReport) -> None:
         "timers": timers,
         "gpu": gpu,
         "mesh_health": mesh,
+        "sheaf_health": sheaf_health,
+        "topology": topology,
     }
 
     try:

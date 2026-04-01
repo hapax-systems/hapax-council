@@ -69,7 +69,7 @@ async def audio_loop(daemon: VoiceDaemon) -> None:
         # Engagement detection: when VAD detects speech and operator is present
         if (
             not daemon.session.is_active
-            and daemon.presence._latest_vad_confidence >= 0.5
+            and daemon.presence._latest_vad_confidence >= 0.3
             and hasattr(daemon, "_engagement")
         ):
             try:
