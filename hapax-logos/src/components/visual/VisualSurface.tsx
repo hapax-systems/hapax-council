@@ -3,12 +3,11 @@ import { usePageVisible } from "../../hooks/usePageVisible";
 import { FRAME_SERVER_URL } from "../../config";
 
 const FRAME_URL = `${FRAME_SERVER_URL}/frame`;
-const MIN_FRAME_MS = 100; // ~10fps — background element, 30fps was wasteful
+const FRAME_INTERVAL_MS = 333; // ~3fps — background ambiance, imperceptible above 3fps
 
 /**
  * Displays the wgpu visual surface as a fullscreen background image.
- * Sets img.src directly to the frame server URL (cache-busted with timestamp).
- * Uses img-src CSP — no fetch/connect-src needed.
+ * Uses setInterval (not rAF) to avoid 60fps tick overhead.
  */
 export function VisualSurface() {
   const imgRef = useRef<HTMLImageElement>(null);
@@ -17,42 +16,27 @@ export function VisualSurface() {
   useEffect(() => {
     if (!visible) return;
 
-    let active = true;
-    let lastFrame = 0;
     let loading = false;
-
-    const tick = (now: number) => {
-      if (!active) return;
-
-      if (now - lastFrame >= MIN_FRAME_MS && !loading && imgRef.current) {
-        lastFrame = now;
-        loading = true;
-        imgRef.current.src = `${FRAME_URL}?_t=${Date.now()}`;
-      }
-
-      if (active) {
-        requestAnimationFrame(tick);
-      }
-    };
-
-    // Reset loading flag when image loads or errors
     const img = imgRef.current;
-    if (img) {
-      const onLoad = () => { loading = false; };
-      const onError = () => { loading = false; };
-      img.addEventListener("load", onLoad);
-      img.addEventListener("error", onError);
+    if (!img) return;
 
-      requestAnimationFrame(tick);
+    const onLoad = () => { loading = false; };
+    const onError = () => { loading = false; };
+    img.addEventListener("load", onLoad);
+    img.addEventListener("error", onError);
 
-      return () => {
-        active = false;
-        img.removeEventListener("load", onLoad);
-        img.removeEventListener("error", onError);
-      };
-    }
+    const timer = setInterval(() => {
+      if (!loading && img) {
+        loading = true;
+        img.src = `${FRAME_URL}?_t=${Date.now()}`;
+      }
+    }, FRAME_INTERVAL_MS);
 
-    return () => { active = false; };
+    return () => {
+      clearInterval(timer);
+      img.removeEventListener("load", onLoad);
+      img.removeEventListener("error", onError);
+    };
   }, [visible]);
 
   return (

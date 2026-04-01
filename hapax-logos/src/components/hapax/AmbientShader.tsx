@@ -109,12 +109,12 @@ void main() {
 function targetFPS(displayState: string): number {
   switch (displayState) {
     case "performative":
-      return 60;
+      return 30;
     case "informational":
     case "alert":
-      return 30;
-    default:
       return 15;
+    default:
+      return 5; // ambient background — imperceptible above 5fps
   }
 }
 

@@ -211,10 +211,10 @@ const PERCEPTION = 3_000;
 const FAST_VL = 2_000;
 
 export const usePerception = () =>
-  useQuery({ queryKey: ["perception"], queryFn: api.perception, refetchInterval: PERCEPTION });
+  useQuery({ queryKey: ["perception"], queryFn: api.perception, refetchInterval: PERCEPTION, refetchIntervalInBackground: false });
 
 export const useVisualLayer = () =>
-  useQuery({ queryKey: ["visualLayer"], queryFn: api.visualLayer, refetchInterval: FAST_VL });
+  useQuery({ queryKey: ["visualLayer"], queryFn: api.visualLayer, refetchInterval: FAST_VL, refetchIntervalInBackground: false });
 
 // ── Insight Queries ─────────────────────────────────────────────────────────
 
