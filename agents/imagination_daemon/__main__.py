@@ -25,6 +25,7 @@ from agents.imagination_loop import (
     observations_are_fresh,
     should_accelerate_from_engagement,
 )
+from shared.control_signal import ControlSignal, publish_health
 from shared.impingement import Impingement
 
 log = logging.getLogger("imagination-daemon")
@@ -111,12 +112,20 @@ class ImaginationDaemon:
                             published_at=published_at, cadence_s=interval
                         ):
                             log.debug("Skipping tick — observations stale relative to cadence")
+                            publish_health(
+                                ControlSignal(
+                                    component="imagination", reference=1.0, perception=0.0
+                                )
+                            )
                             await asyncio.sleep(interval)
                             continue
                     except (OSError, json.JSONDecodeError):
                         pass
 
                     await self._imagination.tick(observations, snapshot)
+                    publish_health(
+                        ControlSignal(component="imagination", reference=1.0, perception=1.0)
+                    )
 
                     # Positive feedback: high engagement → faster imagination
                     snapshot_perception = snapshot.get("perception", {})
@@ -131,6 +140,9 @@ class ImaginationDaemon:
                         "Skipping tick — observations=%s snapshot=%s",
                         "fresh" if observations is not None else "stale/missing",
                         "fresh" if snapshot is not None else "stale/missing",
+                    )
+                    publish_health(
+                        ControlSignal(component="imagination", reference=1.0, perception=0.0)
                     )
             except Exception:
                 log.warning("Imagination tick failed", exc_info=True)
