@@ -19,6 +19,7 @@ import numpy as np
 
 from agents.hapax_daimonion.perception import PerceptionTier
 from agents.hapax_daimonion.primitives import Behavior
+from shared.control_signal import ControlSignal, publish_health
 
 log = logging.getLogger(__name__)
 
@@ -457,6 +458,13 @@ class ContactMicBackend:
                         desk_tap_gesture=current_gesture,
                         desk_spectral_centroid=centroid,
                         desk_autocorr_peak=autocorr_peak,
+                    )
+                    publish_health(
+                        ControlSignal(
+                            component="contact_mic",
+                            reference=1.0,
+                            perception=1.0 if len(energy_buffer) > 0 else 0.0,
+                        )
                     )
 
                 except Exception:

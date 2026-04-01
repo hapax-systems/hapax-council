@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from shared.control_signal import ControlSignal, publish_health
+
 if TYPE_CHECKING:
     from agents._impingement import Impingement
 
@@ -172,6 +174,9 @@ class ReverieMixer:
         self._write_visual_salience(
             salience=current_salience, content_density=content_density, satellites_active=n_sat
         )
+
+        # 10. ControlSignal health
+        publish_health(ControlSignal(component="reverie", reference=1.0, perception=1.0))
 
     def dispatch_impingement(self, imp: Impingement) -> None:
         """Route impingement through affordance pipeline. Recruits satellites for node.* matches."""

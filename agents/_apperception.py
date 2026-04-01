@@ -25,6 +25,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from shared.control_signal import ControlSignal, publish_health
 from shared.impingement import Impingement, ImpingementType
 
 log = logging.getLogger(__name__)
@@ -604,6 +605,14 @@ class ApperceptionCascade:
         if reflection:
             self.model.recent_reflections.append(reflection)
         self.model.update_coherence()
+
+        publish_health(
+            ControlSignal(
+                component="apperception",
+                reference=1.0,
+                perception=self.model.coherence,
+            )
+        )
 
         return apperception
 

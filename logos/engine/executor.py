@@ -7,6 +7,7 @@ import logging
 import time
 
 from logos.engine.models import Action, ActionPlan
+from shared.control_signal import ControlSignal, publish_health
 
 _log = logging.getLogger(__name__)
 
@@ -94,4 +95,11 @@ class PhasedExecutor:
             tasks = [self._run_action(action, plan, sem) for action in actions]
             await asyncio.gather(*tasks)
 
+        publish_health(
+            ControlSignal(
+                component="reactive_engine",
+                reference=1.0,
+                perception=1.0 if not plan.errors else 0.0,
+            )
+        )
         return plan

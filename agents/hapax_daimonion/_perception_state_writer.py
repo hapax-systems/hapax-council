@@ -13,6 +13,9 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from shared.governance.consent_label import ConsentLabel
+from shared.labeled_trace import write_labeled_trace
+
 if TYPE_CHECKING:
     from agents._governance import ConsentRegistry
     from agents.hapax_daimonion.consent_state import ConsentStateTracker
@@ -470,12 +473,14 @@ def write_perception_state(
     # Push to ring buffer for temporal depth (WS1)
     _push_to_ring(state)
 
+    # Determine consent label for this trace
+    # Safe default: bottom() (public/operator-only) — consent-aware derivation
+    # will be added in a follow-up once the consent phase → label mapping is finalized.
+    label = ConsentLabel.bottom()
+
     global _perception_write_failures
     try:
-        PERCEPTION_STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = PERCEPTION_STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state), encoding="utf-8")
-        tmp.rename(PERCEPTION_STATE_FILE)
+        write_labeled_trace(PERCEPTION_STATE_FILE, state, label)
         _perception_write_failures = 0
     except OSError:
         _perception_write_failures += 1
