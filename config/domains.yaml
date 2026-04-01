@@ -31,6 +31,7 @@ domains:
       git_repos: []
       langfuse_tags: []
       vault_paths: ["20 Projects/studio/", "30 Areas/music/"]
+      midi_activity: true
 
   personal:
     staleness_days: 30
@@ -50,3 +51,4 @@ domains:
       git_repos: []
       langfuse_tags: []
       vault_paths: []
+      watch_data: true

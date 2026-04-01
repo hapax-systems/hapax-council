@@ -244,7 +244,9 @@ def collect_orientation() -> OrientationState:
     global _last_narrative, _last_narrative_ts
 
     registry = _load_domain_registry()
-    session = infer_session()
+    session = infer_session(
+        domains={name: {"telemetry": cfg.get("telemetry", {})} for name, cfg in registry.items()}
+    )
     all_goals = collect_vault_goals(sprint_measure_statuses=_sprint_measure_statuses())
     sprint = _get_sprint_summary()
     stance = _get_stimmung_stance()
@@ -267,15 +269,16 @@ def collect_orientation() -> OrientationState:
                 title=g.title,
                 priority=g.priority,
                 status=g.status,
-                progress=g.progress if g.progress else None,
+                progress=g.progress,
                 stale=g.stale,
                 file_path=str(g.file_path) if g.file_path else "",
                 obsidian_uri=g.obsidian_uri,
                 target_date=g.target_date,
             )
 
-        # Sprint progress — only attach to domains with goals.
-        domain_sprint = sprint if sprint and domain_goals else None
+        # Sprint progress — research domain only per spec.
+        has_sprint = "sprint" in (registry.get(domain_name, {}).get("apis") or {})
+        domain_sprint = sprint if sprint and has_sprint else None
 
         health = _compute_health(domain_goals, domain_sprint, recency)
 
