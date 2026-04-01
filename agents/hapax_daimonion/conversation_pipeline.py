@@ -231,7 +231,7 @@ class ConversationPipeline:
             ]
 
             response = await litellm.acompletion(
-                model=self._model_id or "anthropic/claude-sonnet-4-6",
+                model="gemini/gemini-2.5-flash-preview-04-17",  # spontaneous speech is short atmospheric — flash suffices
                 messages=messages,
                 max_tokens=80,
                 temperature=0.7,

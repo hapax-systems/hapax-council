@@ -3,7 +3,7 @@ import { usePageVisible } from "../../hooks/usePageVisible";
 import { FRAME_SERVER_URL } from "../../config";
 
 const FRAME_URL = `${FRAME_SERVER_URL}/frame`;
-const MIN_FRAME_MS = 33; // ~30fps
+const MIN_FRAME_MS = 100; // ~10fps — background element, 30fps was wasteful
 
 /**
  * Displays the wgpu visual surface as a fullscreen background image.
