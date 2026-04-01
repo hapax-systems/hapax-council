@@ -66,8 +66,13 @@ class ConsentRegistry:
         return self._fail_closed
 
     def is_stale(self, stale_threshold_s: float = 300.0) -> bool:
+        """Check if the registry was loaded too long ago to trust.
+
+        Returns False if load() was never called (registry may have been
+        populated programmatically via create_contract).
+        """
         if self._loaded_at == 0.0:
-            return True
+            return False  # Never loaded from disk — staleness doesn't apply
         return time.time() - self._loaded_at > stale_threshold_s
 
     def load(self, contracts_dir: Path | None = None) -> int:
