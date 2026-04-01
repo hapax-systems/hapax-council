@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from logos.data.goals import GoalSnapshot
     from logos.data.gpu import VramSnapshot
     from logos.data.health import HealthSnapshot
+    from logos.data.orientation import OrientationState
     from logos.data.readiness import ReadinessSnapshot
     from logos.data.scout import ScoutData
     from logos.data.studio import StudioSnapshot
@@ -49,6 +50,7 @@ class DataCache:
     agents: list = field(default_factory=list)
     accommodations: AccommodationSet | None = None
     studio: StudioSnapshot | None = None
+    orientation: OrientationState | None = None
 
     # Refresh timestamps (monotonic seconds)
     _fast_refreshed_at: float = 0.0
@@ -143,6 +145,13 @@ class DataCache:
             self.accommodations = load_accommodations()
         except Exception as e:
             log.warning("Accommodation load error: %s", e)
+
+        try:
+            from logos.data.orientation import collect_orientation
+
+            self.orientation = collect_orientation()
+        except Exception as e:
+            log.warning("Orientation refresh failed: %s", e)
 
 
 # Singleton cache instance
