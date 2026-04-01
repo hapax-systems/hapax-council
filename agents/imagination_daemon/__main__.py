@@ -20,7 +20,7 @@ import signal
 import time
 from pathlib import Path
 
-from agents.imagination_loop import ImaginationLoop
+from agents.imagination_loop import ImaginationLoop, observations_are_fresh
 from shared.impingement import Impingement
 
 log = logging.getLogger("imagination-daemon")
@@ -98,6 +98,20 @@ class ImaginationDaemon:
                 snapshot = read_snapshot()
 
                 if observations is not None and snapshot is not None:
+                    # Skip tick if observations are stale relative to imagination cadence
+                    try:
+                        obs_raw = json.loads(OBSERVATIONS_PATH.read_text(encoding="utf-8"))
+                        published_at = obs_raw.get("published_at", 0)
+                        interval = self._imagination.cadence.current_interval()
+                        if not observations_are_fresh(
+                            published_at=published_at, cadence_s=interval
+                        ):
+                            log.debug("Skipping tick — observations stale relative to cadence")
+                            await asyncio.sleep(interval)
+                            continue
+                    except (OSError, json.JSONDecodeError):
+                        pass
+
                     await self._imagination.tick(observations, snapshot)
 
                     # Drain and emit impingements
