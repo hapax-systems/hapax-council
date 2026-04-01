@@ -55,6 +55,18 @@ class ContentResolverDaemon:
         self._cl_ok = 0
         self._cl_degraded = False
         self._cl_original_poll = POLL_INTERVAL_S
+        # Exploration tracking (spec §8: kappa=0.010, T_patience=300s)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration = ExplorationTrackerBundle(
+            component="content_resolver",
+            edges=["fragment_novelty", "resolution_success"],
+            traces=["fragment_stream", "failure_rate"],
+            neighbors=["imagination", "stimmung"],
+            kappa=0.010,
+            t_patience=300.0,
+        )
+        self._prev_fragment_hash: float = 0.0
 
     async def run(self) -> None:
         log.info("Content resolver daemon starting")
@@ -122,6 +134,20 @@ class ContentResolverDaemon:
                 POLL_INTERVAL_S = self._cl_original_poll
                 self._cl_degraded = False
                 log.info("Control law [content_resolver]: recovered")
+
+            # Exploration signal
+            frag_hash = hash(self._last_fragment_id) % 100 / 100.0
+            self._exploration.feed_habituation(
+                "fragment_novelty", frag_hash, self._prev_fragment_hash, 0.3
+            )
+            success = 1.0 if self._cl_ok > 0 else 0.0
+            self._exploration.feed_habituation("resolution_success", success, 0.0, 0.3)
+            self._exploration.feed_interest("fragment_stream", frag_hash, 0.3)
+            fail_rate = len(self._failures) / max(1, len(self._failures) + self._cl_ok)
+            self._exploration.feed_interest("failure_rate", fail_rate, 0.2)
+            self._exploration.feed_error(fail_rate)
+            self._exploration.compute_and_publish()
+            self._prev_fragment_hash = frag_hash
 
             await asyncio.sleep(POLL_INTERVAL_S)
 

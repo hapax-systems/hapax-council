@@ -286,6 +286,19 @@ class ApperceptionCascade:
         # Rumination gate: dimension → ungate time
         self._attention_gates: dict[str, float] = {}
 
+        # Exploration tracking (spec §8: kappa=0.005, T_patience=120s)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration = ExplorationTrackerBundle(
+            component="apperception",
+            edges=["trigger_novelty", "valence_diversity"],
+            traces=["cascade_frequency", "gate_activity"],
+            neighbors=["dmn_pulse", "stimmung"],
+            kappa=0.005,
+            t_patience=120.0,
+        )
+        self._prev_trigger_count: float = 0.0
+
         # Context-adaptive noise (0.1-0.4)
         self._base_noise: float = 0.2
 
@@ -633,6 +646,20 @@ class ApperceptionCascade:
         if self._cl_ok >= 5 and self._cl_degraded:
             self._cl_degraded = False
             log.info("Control law [apperception]: recovered — all 7 sources re-enabled")
+
+        # Exploration signal
+        trigger_count = float(len(self._recent_triggers))
+        valence_diversity = float(len(self._valence_history))
+        self._exploration.feed_habituation(
+            "trigger_novelty", trigger_count, self._prev_trigger_count, 5.0
+        )
+        self._exploration.feed_habituation("valence_diversity", valence_diversity, 0.0, 2.0)
+        self._exploration.feed_interest("cascade_frequency", trigger_count, 5.0)
+        gate_count = sum(1 for t in self._attention_gates.values() if t > time.time())
+        self._exploration.feed_interest("gate_activity", float(gate_count), 1.0)
+        self._exploration.feed_error(1.0 - self.model.coherence)
+        self._exploration.compute_and_publish()
+        self._prev_trigger_count = trigger_count
 
         return apperception
 

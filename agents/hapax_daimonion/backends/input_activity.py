@@ -103,6 +103,18 @@ class InputActivityBackend:
         self._idle_threshold_s = idle_threshold_s
         self._b_input_active: Behavior[bool] = Behavior(True)  # fail-open default
         self._b_idle_seconds: Behavior[float] = Behavior(0.0)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration = ExplorationTrackerBundle(
+            component="input_activity",
+            edges=["active_state", "idle_duration"],
+            traces=["input_active", "idle_seconds"],
+            neighbors=["ir_presence", "contact_mic"],
+            kappa=0.020,
+            t_patience=180.0,
+        )
+        self._prev_active: float = 1.0
+        self._prev_idle: float = 0.0
 
     @property
     def name(self) -> str:
@@ -130,6 +142,15 @@ class InputActivityBackend:
 
         behaviors["input_active"] = self._b_input_active
         behaviors["input_idle_seconds"] = self._b_idle_seconds
+
+        self._exploration.feed_habituation("active_state", float(active), self._prev_active, 0.3)
+        self._exploration.feed_habituation("idle_duration", idle_seconds, self._prev_idle, 5.0)
+        self._exploration.feed_interest("input_active", float(active), 0.3)
+        self._exploration.feed_interest("idle_seconds", idle_seconds, 5.0)
+        self._exploration.feed_error(0.0 if active else 0.5)
+        self._exploration.compute_and_publish()
+        self._prev_active = float(active)
+        self._prev_idle = idle_seconds
 
     def start(self) -> None:
         log.info("InputActivity backend started (threshold=%.1fs)", self._idle_threshold_s)

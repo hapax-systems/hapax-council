@@ -82,6 +82,18 @@ class AffordancePipeline:
             "qdrant_retrieve", failure_threshold=3, cooldown_s=60.0
         )
         self._index_breaker = CircuitBreaker("qdrant_index", failure_threshold=5, cooldown_s=60.0)
+        # Exploration tracking (spec §8: kappa=0.012, T_patience=300s)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration = ExplorationTrackerBundle(
+            component="affordance_pipeline",
+            edges=["impingement_source", "candidate_diversity"],
+            traces=["selection_frequency", "activation_spread"],
+            neighbors=["dmn_pulse", "imagination"],
+            kappa=0.012,
+            t_patience=300.0,
+        )
+        self._prev_source_hash: float = 0.0
 
     def _ensure_collection(self, client: object, vector_size: int) -> None:
         """Create the affordances collection if it doesn't exist."""
@@ -222,6 +234,20 @@ class AffordancePipeline:
             was_interrupt=False,
             was_fallback=embedding is None,
         )
+        # Exploration signal
+        source_hash = hash(impingement.source) % 100 / 100.0
+        diversity = float(len(set(c.capability_name for c in candidates))) if candidates else 0.0
+        self._exploration.feed_habituation(
+            "impingement_source", source_hash, self._prev_source_hash, 0.3
+        )
+        self._exploration.feed_habituation("candidate_diversity", diversity, 0.0, 2.0)
+        self._exploration.feed_interest("selection_frequency", float(len(survivors)), 1.0)
+        spread = float(len(self._activation))
+        self._exploration.feed_interest("activation_spread", spread, 5.0)
+        self._exploration.feed_error(0.0 if survivors else 1.0)
+        self._exploration.compute_and_publish()
+        self._prev_source_hash = source_hash
+
         return survivors
 
     def record_success(self, capability_name: str) -> None:

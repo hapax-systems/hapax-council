@@ -131,6 +131,20 @@ class CognitiveLoop:
         self._b_conversation_temperature: Behavior[float] = Behavior(0.0)
         self._b_predicted_tier: Behavior[str] = Behavior("")
 
+        # Exploration tracking (spec §8: kappa=0.008, T_patience=360s)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration = ExplorationTrackerBundle(
+            component="voice_state",
+            edges=["turn_phase_changes", "readiness_level"],
+            traces=["phase_stability", "temperature"],
+            neighbors=["salience_router", "stimmung"],
+            kappa=0.008,
+            t_patience=360.0,
+        )
+        self._prev_phase_hash: float = 0.0
+        self._prev_readiness: float = 0.0
+
     # ── PerceptionBackend interface ────────────────────────────────
 
     @property
@@ -162,6 +176,22 @@ class CognitiveLoop:
             behaviors["conversation_temperature"].update(temp, now)
         if "predicted_tier" in behaviors:
             behaviors["predicted_tier"].update(self._predicted_tier, now)
+
+        # Exploration signal
+        phase_hash = hash(self._turn_phase.value) % 100 / 100.0
+        self._exploration.feed_habituation(
+            "turn_phase_changes", phase_hash, self._prev_phase_hash, 0.3
+        )
+        self._exploration.feed_habituation(
+            "readiness_level", self._cognitive_readiness, self._prev_readiness, 0.2
+        )
+        self._exploration.feed_interest("phase_stability", phase_hash, 0.3)
+        temp = self._model.conversation_temperature if self._model else 0.0
+        self._exploration.feed_interest("temperature", temp, 0.2)
+        self._exploration.feed_error(0.0)
+        self._exploration.compute_and_publish()
+        self._prev_phase_hash = phase_hash
+        self._prev_readiness = self._cognitive_readiness
 
     def start(self) -> None:
         pass
