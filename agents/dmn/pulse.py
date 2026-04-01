@@ -13,7 +13,9 @@ from agents.dmn.ollama import (
     EVALUATIVE_SYSTEM,
     SENSORY_SYSTEM,
     _format_sensor_prompt,
-    _ollama_generate,
+    _ollama_fast,
+    collect_thinking,
+    start_thinking,
 )
 from agents.dmn.sensor import read_all
 
@@ -96,7 +98,7 @@ class DMNPulse:
             return
         prompt = _format_sensor_prompt(snapshot, deltas)
         if self._ollama_breaker.allow_request():
-            observation = await _ollama_generate(prompt, SENSORY_SYSTEM)
+            observation = await _ollama_fast(prompt, SENSORY_SYSTEM)
             if observation:
                 self._ollama_breaker.record_success()
                 self._degradation_emitted = False
@@ -212,68 +214,69 @@ class DMNPulse:
 
     async def _evaluative_tick(self, snapshot: dict) -> None:
         self._check_absolute_thresholds(snapshot)
+
+        # Collect previous thinking result if ready
+        result = collect_thinking("evaluative")
+        if result:
+            self._ollama_breaker.record_success()
+            self._degradation_emitted = False
+            self._process_evaluative_result(result, snapshot)
+        elif result == "":
+            self._ollama_breaker.record_failure()
+            self._check_ollama_degradation()
+
+        # Fire new thinking request
         deltas = self._buffer.format_delta_context(self._prior_snapshot, snapshot)
         stimmung = snapshot.get("stimmung", {})
         if not deltas and stimmung.get("stance") == "nominal":
             return
         prompt = _format_sensor_prompt(snapshot, deltas)
         if self._ollama_breaker.allow_request():
-            result = await _ollama_generate(prompt, EVALUATIVE_SYSTEM)
-            if result:
-                self._ollama_breaker.record_success()
-                self._degradation_emitted = False
-            else:
-                self._ollama_breaker.record_failure()
-                self._check_ollama_degradation()
-                result = ""
-        else:
-            result = ""
-        if result:
-            trajectory = "stable"
-            concerns = []
-            lower = result.lower()
-            if "degrading" in lower:
-                trajectory = "degrading"
-            elif "improving" in lower:
-                trajectory = "improving"
-            if "concern:" in lower:
-                concern_part = result.split("oncern:")[-1].strip().rstrip(".")
-                if concern_part and concern_part.lower() != "none":
-                    concerns.append(concern_part)
-            self._buffer.add_evaluation(trajectory, concerns)
-            log.debug("Evaluative: %s %s", trajectory, concerns)
-            if trajectory == "degrading":
-                self._pending_impingements.append(
-                    Impingement(
-                        timestamp=time.time(),
-                        source="dmn.evaluative",
-                        type=ImpingementType.SALIENCE_INTEGRATION,
-                        strength=0.6,
-                        content={"trajectory": trajectory, "concerns": concerns},
-                        context={"stimmung_stance": stimmung.get("stance", "unknown")},
-                    )
+            start_thinking("evaluative", prompt, EVALUATIVE_SYSTEM)
+
+    def _process_evaluative_result(self, result: str, snapshot: dict) -> None:
+        trajectory = "stable"
+        concerns: list[str] = []
+        lower = result.lower()
+        if "degrading" in lower:
+            trajectory = "degrading"
+        elif "improving" in lower:
+            trajectory = "improving"
+        if "concern:" in lower:
+            concern_part = result.split("oncern:")[-1].strip().rstrip(".")
+            if concern_part and concern_part.lower() != "none":
+                concerns.append(concern_part)
+        self._buffer.add_evaluation(trajectory, concerns)
+        log.debug("Evaluative: %s %s", trajectory, concerns)
+        stimmung = snapshot.get("stimmung", {})
+        if trajectory == "degrading":
+            self._pending_impingements.append(
+                Impingement(
+                    timestamp=time.time(),
+                    source="dmn.evaluative",
+                    type=ImpingementType.SALIENCE_INTEGRATION,
+                    strength=0.6,
+                    content={"trajectory": trajectory, "concerns": concerns},
+                    context={"stimmung_stance": stimmung.get("stance", "unknown")},
                 )
+            )
 
     async def _consolidation_tick(self) -> None:
+        # Collect previous thinking result if ready
+        summary = collect_thinking("consolidation")
+        if summary:
+            self._ollama_breaker.record_success()
+            self._degradation_emitted = False
+            self._buffer.set_retentional_summary(summary)
+            pruned = self._buffer.prune_consolidated()
+            log.info("Consolidated into summary, pruned %d", pruned)
+        elif summary == "":
+            self._ollama_breaker.record_failure()
+            self._check_ollama_degradation()
+
+        # Fire new thinking request
         input_text = self._buffer.get_consolidation_input()
         if not input_text:
             return
         if self._ollama_breaker.allow_request():
-            summary = await _ollama_generate(input_text, CONSOLIDATION_SYSTEM)
-            if summary:
-                self._ollama_breaker.record_success()
-                self._degradation_emitted = False
-            else:
-                self._ollama_breaker.record_failure()
-                self._check_ollama_degradation()
-                summary = ""
-        else:
-            summary = ""
-        if summary:
-            self._buffer.set_retentional_summary(summary)
-            pruned = self._buffer.prune_consolidated()
-            log.info(
-                "Consolidated %d observations into summary, pruned %d",
-                len(input_text.split("\n")),
-                pruned,
-            )
+            start_thinking("consolidation", input_text, CONSOLIDATION_SYSTEM)

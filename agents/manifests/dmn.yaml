@@ -8,5 +8,5 @@ schedule:
 pipeline_role: processor
 pipeline_layer: cognition
 pipeline_state:
-  path: "/dev/shm/hapax-imagination/current.json"
-  metrics: [id, salience, material]
+  path: "/dev/shm/hapax-dmn/status.json"
+  metrics: [running, uptime_s, buffer_entries, tick]
