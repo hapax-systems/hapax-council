@@ -31,6 +31,7 @@ DMN_STATE_DIR = Path("/dev/shm/hapax-dmn")
 BUFFER_FILE = DMN_STATE_DIR / "buffer.txt"
 STATUS_FILE = DMN_STATE_DIR / "status.json"
 IMPINGEMENTS_FILE = DMN_STATE_DIR / "impingements.jsonl"
+FORTRESS_ACTIONS_FILE = DMN_STATE_DIR / "fortress-actions.jsonl"
 
 # Main loop tick rate (fastest possible — individual ticks have their own cadence)
 LOOP_TICK_S = 1.0
@@ -115,15 +116,15 @@ class DMNDaemon:
         except OSError:
             log.warning("Failed to write status to %s", STATUS_FILE, exc_info=True)
 
-    def _consume_fortress_feedback(self) -> None:
-        """Read fortress feedback impingements from JSONL and suppress re-emission."""
-        if not IMPINGEMENTS_FILE.exists():
+    def _consume_fortress_feedback(self, *, path: Path = FORTRESS_ACTIONS_FILE) -> None:
+        """Read fortress action feedback from dedicated JSONL (one-way, no dedup needed)."""
+        if not path.exists():
             return
         try:
-            size = IMPINGEMENTS_FILE.stat().st_size
+            size = path.stat().st_size
             if size <= self._feedback_cursor:
                 return
-            with IMPINGEMENTS_FILE.open("r", encoding="utf-8") as f:
+            with path.open("r", encoding="utf-8") as f:
                 f.seek(self._feedback_cursor)
                 feedback = []
                 for line in f:
@@ -132,14 +133,13 @@ class DMNDaemon:
                         continue
                     try:
                         imp = Impingement.model_validate_json(line)
-                        if imp.source == "fortress.action_taken":
-                            feedback.append(imp)
+                        feedback.append(imp)
                     except Exception:
                         continue
                 self._feedback_cursor = f.tell()
             if feedback:
                 self._pulse.consume_fortress_feedback(feedback)
-                log.debug("Consumed %d fortress feedback impingements", len(feedback))
+                log.debug("Consumed %d fortress feedback items", len(feedback))
         except OSError:
             pass
 
