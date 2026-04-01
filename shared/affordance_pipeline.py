@@ -190,6 +190,10 @@ class AffordancePipeline:
                     was_interrupt=True,
                 )
                 return result
+            else:
+                # Interrupt token with no registered handler — don't fall through
+                # to general retrieval; the token was intended for a specific handler.
+                return []
         if self._is_inhibited(impingement):
             return []
         embedding = self._get_embedding(impingement)

@@ -20,7 +20,7 @@ def test_default_config_values():
     assert cfg.context_gate_volume_threshold == 0.7
     assert cfg.gemini_model == "gemini-2.5-flash-preview-native-audio"
     assert cfg.local_stt_model == "distil-large-v3"
-    assert cfg.kokoro_voice == "af_heart"
+    assert cfg.voxtral_voice_id == "gb_jane_neutral"
     assert cfg.notification_priority_ttls == {
         "urgent": 1800,
         "normal": 14400,

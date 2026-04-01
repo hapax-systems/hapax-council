@@ -7,9 +7,19 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-import torch
 
 from agents.hapax_daimonion.presence import FRAME_SAMPLES, PresenceDetector
+
+
+def _fake_vad_model(prob: float) -> MagicMock:
+    """Create a mock VAD model that returns a float-compatible result.
+
+    Works regardless of whether torch is real or MagicMock-stubbed.
+    """
+    result = MagicMock()
+    result.item.return_value = prob
+    model = MagicMock(return_value=result)
+    return model
 
 
 def test_starts_absent() -> None:
@@ -60,7 +70,7 @@ def _make_pcm_chunk(n_samples: int = FRAME_SAMPLES) -> bytes:
 def test_process_audio_frame_above_threshold() -> None:
     """process_audio_frame records event when model returns high probability."""
     det = PresenceDetector(vad_threshold=0.4)
-    mock_model = MagicMock(return_value=torch.tensor(0.85))
+    mock_model = _fake_vad_model(0.85)
     det._vad_model = mock_model
 
     prob = det.process_audio_frame(_make_pcm_chunk())
@@ -73,7 +83,7 @@ def test_process_audio_frame_above_threshold() -> None:
 def test_process_audio_frame_below_threshold() -> None:
     """process_audio_frame does not record event when probability is low."""
     det = PresenceDetector(vad_threshold=0.4)
-    mock_model = MagicMock(return_value=torch.tensor(0.1))
+    mock_model = _fake_vad_model(0.1)
     det._vad_model = mock_model
 
     prob = det.process_audio_frame(_make_pcm_chunk())
@@ -85,7 +95,7 @@ def test_process_audio_frame_below_threshold() -> None:
 def test_process_audio_frame_reaches_likely_present() -> None:
     """Multiple high-probability frames lead to likely_present."""
     det = PresenceDetector(vad_threshold=0.4)
-    mock_model = MagicMock(return_value=torch.tensor(0.9))
+    mock_model = _fake_vad_model(0.9)
     det._vad_model = mock_model
 
     for _ in range(5):
@@ -126,7 +136,7 @@ def test_latest_vad_confidence_stored() -> None:
     assert det.latest_vad_confidence == 0.0  # default
 
     # Simulate processing with a mock model
-    mock_model = MagicMock(return_value=torch.tensor(0.75))
+    mock_model = _fake_vad_model(0.75)
     det._vad_model = mock_model
     prob = det.process_audio_frame(_make_pcm_chunk())
     assert prob == pytest.approx(0.75, abs=0.01)

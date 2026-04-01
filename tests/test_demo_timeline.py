@@ -7,7 +7,6 @@ import wave
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import numpy as np
 import pytest
 
 pytest.importorskip("playwright", reason="playwright not installed")
@@ -99,29 +98,12 @@ class TestTerrainRecipesExist:
 
 
 class TestKokoroVoiceSegment:
-    """Test Kokoro TTS voice segment generation."""
+    """Test TTS voice segment generation (Kokoro removed, Voxtral replaced it)."""
 
+    @pytest.mark.skip(reason="Kokoro TTS removed; replaced by Voxtral (PR #371)")
     def test_generate_voice_segment_kokoro(self, tmp_path: Path):
         """Mock KPipeline and verify WAV output."""
-        fake_audio = np.zeros(12000, dtype=np.float32)
-        mock_tensor = MagicMock()
-        mock_tensor.cpu.return_value.numpy.return_value = fake_audio
-
-        mock_pipeline_instance = MagicMock()
-        mock_pipeline_instance.return_value = [("graphemes", "phonemes", mock_tensor)]
-
-        with patch("agents.demo_pipeline.voice._kokoro_pipeline", mock_pipeline_instance):
-            from agents.demo_pipeline.voice import generate_voice_segment_kokoro
-
-            output = tmp_path / "test.wav"
-            generate_voice_segment_kokoro("Hello world.", output)
-
-            assert output.exists()
-            with wave.open(str(output), "rb") as wf:
-                assert wf.getnchannels() == 1
-                assert wf.getsampwidth() == 2
-                assert wf.getframerate() == 24000
-                assert wf.getnframes() == 12000
+        pass
 
     def test_get_wav_duration(self, tmp_path: Path):
         """Test WAV duration measurement."""

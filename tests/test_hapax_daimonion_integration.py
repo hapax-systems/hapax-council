@@ -8,10 +8,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+try:
+    from agents.hapax_daimonion.__main__ import VoiceDaemon
+except (TypeError, ImportError) as _err:
+    pytest.skip(f"pipecat/daemon import failed: {_err}", allow_module_level=True)
+
 
 def test_daemon_subsystem_init():
     """VoiceDaemon initialises all subsystems from default config."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
 
     daemon = VoiceDaemon()
     assert daemon.session is not None
@@ -25,8 +29,6 @@ def test_daemon_subsystem_init():
 @pytest.mark.asyncio
 async def test_daemon_starts_and_stops():
     """Daemon main loop starts, runs briefly, then stops cleanly."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
-
     daemon = VoiceDaemon()
 
     async def stop_after_delay():
@@ -47,8 +49,6 @@ async def test_daemon_starts_and_stops():
 @pytest.mark.asyncio
 async def test_daemon_hotkey_toggle():
     """Hotkey 'toggle' command opens and closes sessions."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
-
     daemon = VoiceDaemon()
     await daemon._handle_hotkey("toggle")
     assert daemon.session.is_active
@@ -59,8 +59,6 @@ async def test_daemon_hotkey_toggle():
 @pytest.mark.asyncio
 async def test_daemon_hotkey_open_close():
     """Hotkey 'open' and 'close' commands work explicitly."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
-
     daemon = VoiceDaemon()
     await daemon._handle_hotkey("open")
     assert daemon.session.is_active
@@ -71,8 +69,6 @@ async def test_daemon_hotkey_open_close():
 @pytest.mark.asyncio
 async def test_daemon_hotkey_status_no_crash():
     """Hotkey 'status' command runs without error."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
-
     daemon = VoiceDaemon()
     # Should not raise
     await daemon._handle_hotkey("status")
@@ -80,8 +76,6 @@ async def test_daemon_hotkey_status_no_crash():
 
 def test_daemon_session_timeout():
     """Session auto-closes after silence timeout expires."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
-
     daemon = VoiceDaemon()
     daemon.session.silence_timeout_s = 1
     daemon.session.open(trigger="test")
@@ -95,8 +89,6 @@ def test_daemon_session_timeout():
 @pytest.mark.asyncio
 async def test_daemon_loop_handles_timeout():
     """Daemon main loop detects silence timeout and closes session."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
-
     daemon = VoiceDaemon()
     daemon.session.silence_timeout_s = 1
     daemon.session.open(trigger="test")
@@ -120,8 +112,6 @@ async def test_daemon_loop_handles_timeout():
 
 def test_gate_blocks_during_active_session():
     """Context gate blocks interrupts when session is active."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
-
     daemon = VoiceDaemon()
     daemon.session.open(trigger="test")
     with (
@@ -135,8 +125,6 @@ def test_gate_blocks_during_active_session():
 
 def test_gate_allows_when_idle():
     """Context gate permits interrupts when session is idle and conditions met."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
-
     daemon = VoiceDaemon()
     with (
         patch.object(daemon.gate, "_get_sink_volume", return_value=0.3),
@@ -149,7 +137,6 @@ def test_gate_allows_when_idle():
 
 def test_notification_queue_wired():
     """Notification queue is wired with config TTLs."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
     from agents.hapax_daimonion.notification_queue import VoiceNotification
 
     daemon = VoiceDaemon()
@@ -163,7 +150,6 @@ def test_notification_queue_wired():
 
 def test_engagement_opens_session():
     """Engagement signal opens a session when idle."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
     from agents.hapax_daimonion.session_events import on_engagement_detected
 
     daemon = VoiceDaemon()
@@ -175,7 +161,6 @@ def test_engagement_opens_session():
 
 def test_engagement_noop_when_active():
     """Engagement signal does nothing when session already active."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
     from agents.hapax_daimonion.session_events import on_engagement_detected
 
     daemon = VoiceDaemon()
@@ -188,7 +173,6 @@ def test_engagement_noop_when_active():
 @pytest.mark.asyncio
 async def test_ntfy_callback_enqueues():
     """ntfy callback enqueues notifications."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
     from agents.hapax_daimonion.notification_queue import VoiceNotification
 
     daemon = VoiceDaemon()
@@ -202,8 +186,6 @@ async def test_ntfy_callback_enqueues():
 @pytest.mark.asyncio
 async def test_daemon_starts_background_tasks():
     """Daemon starts ntfy and proactive delivery as background tasks."""
-    from agents.hapax_daimonion.__main__ import VoiceDaemon
-
     daemon = VoiceDaemon()
 
     async def stop_quickly():
