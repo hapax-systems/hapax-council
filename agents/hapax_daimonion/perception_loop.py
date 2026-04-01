@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from agents.hapax_daimonion._perception_state_writer import write_perception_state
 from agents.hapax_daimonion.governance import VetoResult
+from shared.control_signal import ControlSignal, publish_health
 
 if TYPE_CHECKING:
     from agents.hapax_daimonion.daemon import VoiceDaemon
@@ -92,6 +94,18 @@ async def perception_loop(daemon: VoiceDaemon) -> None:
                 daemon.consent_tracker,
                 session=daemon.session,
                 pipeline=daemon._conversation_pipeline,
+            )
+
+            _now = time.time()
+            _behaviors = daemon.perception.behaviors
+            _total = len(_behaviors)
+            _fresh = sum(1 for b in _behaviors.values() if (_now - b.watermark) < 30.0)
+            publish_health(
+                ControlSignal(
+                    component="voice_daemon",
+                    reference=1.0,
+                    perception=_fresh / max(_total, 1),
+                )
             )
         except asyncio.CancelledError:
             break
