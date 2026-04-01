@@ -169,11 +169,15 @@ class StimmungCollector:
     Keeps a rolling window of last 5 readings per dimension for trend detection.
     """
 
+    RECOVERY_THRESHOLD = 3  # consecutive nominal readings required to recover
+
     def __init__(self) -> None:
         self._windows: dict[str, deque[tuple[float, float]]] = {
             name: deque(maxlen=5) for name in _DIMENSION_NAMES
         }
         self._last_update: dict[str, float] = {}
+        self._recovery_readings: int = 0
+        self._last_stance: Stance = Stance.NOMINAL
 
     def update_health(
         self, healthy: int, total: int, failed_checks: list[str] | None = None
@@ -369,13 +373,36 @@ class StimmungCollector:
                 freshness_s=round(freshness, 1),
             )
 
-        stance = self._compute_stance(dimensions)
+        raw_stance = self._compute_stance(dimensions)
+        stance = self._apply_hysteresis(raw_stance)
 
         return SystemStimmung(
             **dimensions,
             overall_stance=stance,
             timestamp=time.time(),
         )
+
+    def _apply_hysteresis(self, raw_stance: Stance) -> Stance:
+        """Apply hysteresis: degrade immediately, recover only after sustained improvement."""
+        if _STANCE_ORDER[raw_stance] >= _STANCE_ORDER[self._last_stance]:
+            # Degradation (or same): apply immediately, reset recovery counter
+            self._recovery_readings = 0
+            self._last_stance = raw_stance
+            return raw_stance
+
+        # Raw stance is better than current — require sustained improvement
+        if raw_stance == Stance.NOMINAL and self._last_stance != Stance.NOMINAL:
+            self._recovery_readings += 1
+            if self._recovery_readings >= self.RECOVERY_THRESHOLD:
+                self._recovery_readings = 0
+                self._last_stance = Stance.NOMINAL
+                return Stance.NOMINAL
+            return self._last_stance
+
+        # Partial recovery (e.g. critical → cautious): apply immediately
+        self._recovery_readings = 0
+        self._last_stance = raw_stance
+        return raw_stance
 
     def _record(self, dimension: str, value: float) -> None:
         """Record a reading for a dimension."""
