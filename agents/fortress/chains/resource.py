@@ -7,14 +7,14 @@ FullFortressState (stockpiles + workshops).
 
 from __future__ import annotations
 
-from agents.fortress.schema import FastFortressState, FullFortressState
-from agents.hapax_daimonion.governance import (
+from agents._governance import (
     Candidate,
     FallbackChain,
     Selected,
     VetoChain,
     VetoResult,
 )
+from agents.fortress.schema import FastFortressState, FullFortressState
 
 _STILL_TYPES = {"Still", "still", 13}
 _KITCHEN_TYPES = {"Kitchen", "kitchen", 6}

@@ -6,9 +6,7 @@ Works with FastFortressState (food_count/drink_count/active_threats/stress).
 
 from __future__ import annotations
 
-from agents.fortress.config import FortressConfig
-from agents.fortress.schema import FastFortressState
-from agents.hapax_daimonion.governance import (
+from agents._governance import (
     Candidate,
     FallbackChain,
     Selected,
@@ -16,6 +14,8 @@ from agents.hapax_daimonion.governance import (
     VetoChain,
     VetoResult,
 )
+from agents.fortress.config import FortressConfig
+from agents.fortress.schema import FastFortressState
 
 
 class CrisisResponderChain:

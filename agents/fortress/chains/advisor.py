@@ -6,14 +6,14 @@ No vetoes: advisory output is never blocked.
 
 from __future__ import annotations
 
-from agents.fortress.schema import FullFortressState
-from agents.hapax_daimonion.governance import (
+from agents._governance import (
     Candidate,
     FallbackChain,
     Selected,
     VetoChain,
     VetoResult,
 )
+from agents.fortress.schema import FullFortressState
 
 
 def _has_threats(state: FullFortressState) -> bool:

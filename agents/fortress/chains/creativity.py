@@ -6,13 +6,7 @@ Gated by Maslow hierarchy, neuroception, and creativity suppression.
 
 from __future__ import annotations
 
-from agents.fortress.creativity import (
-    creativity_available,
-    maslow_gate,
-    neuroception_safe,
-)
-from agents.fortress.schema import FullFortressState
-from agents.hapax_daimonion.governance import (
+from agents._governance import (
     Candidate,
     FallbackChain,
     Selected,
@@ -20,6 +14,12 @@ from agents.hapax_daimonion.governance import (
     VetoChain,
     VetoResult,
 )
+from agents.fortress.creativity import (
+    creativity_available,
+    maslow_gate,
+    neuroception_safe,
+)
+from agents.fortress.schema import FullFortressState
 
 
 def _maslow_satisfied(state: FullFortressState) -> bool:
