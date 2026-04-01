@@ -276,3 +276,16 @@ def load_contracts(contracts_dir: Path | None = None) -> ConsentRegistry:
     registry = ConsentRegistry()
     registry.load(contracts_dir)
     return registry
+
+
+def check_consent_state_freshness(path: Path, *, stale_threshold_s: float = 300.0) -> bool:
+    """Check if a consent state file on disk is fresh enough to trust.
+
+    Returns False (fail-closed) if the file is missing, unreadable, or older
+    than stale_threshold_s seconds.
+    """
+    try:
+        mtime = path.stat().st_mtime
+        return (time.time() - mtime) < stale_threshold_s
+    except OSError:
+        return False
