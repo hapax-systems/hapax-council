@@ -421,6 +421,10 @@ class CognitiveLoop:
 
         Runs as a background task — does NOT block the cognitive loop.
         """
+        # Record raw operator audio BEFORE any processing
+        if self._session_recorder is not None:
+            self._session_recorder.record_operator_audio(utterance)
+
         # Speaker verification gate
         if self._speaker_identifier is not None and not self._speaker_verified:
             utterance_samples = len(utterance) // 2
@@ -468,10 +472,6 @@ class CognitiveLoop:
 
         self._session.mark_activity()
         self._update_model_on_utterance(utterance)
-
-        # Record raw operator audio before STT
-        if self._session_recorder is not None:
-            self._session_recorder.record_operator_audio(utterance)
 
         await self._pipeline.process_utterance(utterance)
         self._session.mark_activity()
