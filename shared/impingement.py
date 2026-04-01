@@ -28,6 +28,9 @@ class ImpingementType(StrEnum):
     PATTERN_MATCH = "pattern_match"  # matches an interrupt token
     SALIENCE_INTEGRATION = "salience_integration"  # multi-modal salience exceeds threshold
     ABSOLUTE_THRESHOLD = "absolute_threshold"  # value outside acceptable range regardless of delta
+    BOREDOM = "boredom"  # system-internal: nothing interesting
+    CURIOSITY = "curiosity"  # system-internal: something novel found
+    EXPLORATION_OPPORTUNITY = "exploration_opp"  # system-internal: bored but see a target
 
 
 class Impingement(BaseModel, frozen=True):
