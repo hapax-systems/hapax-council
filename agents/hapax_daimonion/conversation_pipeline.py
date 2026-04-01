@@ -1265,8 +1265,11 @@ class ConversationPipeline:
                     result = json.dumps({"error": str(e)})
 
             # Consent gate: filter tool results before they reach the LLM
-            if self._consent_reader:
-                result = self._consent_reader.filter_tool_result(tc["name"], result)
+            if self._consent_reader is not None:
+                try:
+                    result = self._consent_reader.filter_tool_result(tc["name"], result)
+                except Exception:
+                    log.warning("Consent filtering failed for %s", tc["name"], exc_info=True)
 
             self.messages.append(
                 {
