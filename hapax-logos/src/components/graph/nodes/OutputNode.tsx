@@ -21,26 +21,21 @@ function OutputNodeInner({ data, selected }: NodeProps) {
   useEffect(() => {
     let running = true;
     let pending = false;
-    let prevUrl = "";
-    const poll = async () => {
+    const poll = () => {
       if (!running || pending) return;
       pending = true;
-      try {
-        const resp = await fetch(`${LOGOS_API_URL}/studio/stream/fx?_t=${Date.now()}`);
-        if (!running || !resp.ok) { pending = false; return; }
-        const blob = await resp.blob();
-        if (!running) { pending = false; return; }
-        const url = URL.createObjectURL(blob);
+      const loader = new Image();
+      const url = `${LOGOS_API_URL}/studio/stream/fx?_t=${Date.now()}`;
+      loader.onload = () => {
+        pending = false;
+        if (!running) return;
         if (imgRef.current) imgRef.current.src = url;
         if (fullscreenRef.current) fullscreenRef.current.src = url;
-        if (prevUrl) URL.revokeObjectURL(prevUrl);
-        prevUrl = url;
         lastSuccess.current = Date.now();
         setIsStale(false);
-      } catch {
-        // Network error — skip this frame
-      }
-      pending = false;
+      };
+      loader.onerror = () => { pending = false; };
+      loader.src = url;
     };
     poll();
     const pollTimer = setInterval(poll, 100);
