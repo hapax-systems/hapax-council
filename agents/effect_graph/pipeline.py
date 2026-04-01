@@ -114,11 +114,11 @@ class SlotPipeline:
         self._slot_assignments = [None] * self._num_slots
         self._slot_base_params = [{} for _ in range(self._num_slots)]
 
-        # Reset unused slots to passthrough
+        # Default all slots to passthrough
         for i in range(self._num_slots):
             self._slot_pending_frag[i] = PASSTHROUGH_SHADER
-            self._slots[i].set_property("update-shader", True)
 
+        # Assign actual shaders to used slots
         slot_idx = 0
         for step in plan.steps:
             if step.node_type == "output":
@@ -130,9 +130,14 @@ class SlotPipeline:
                 self._slot_pending_frag[slot_idx] = step.shader_source
                 self._slot_assignments[slot_idx] = step.node_type
                 self._slot_base_params[slot_idx] = dict(step.params)
-                self._slots[slot_idx].set_property("update-shader", True)
                 self._set_uniforms(slot_idx, step.params)
                 slot_idx += 1
+
+        # Trigger GL recompilation in a single pass after all assignments are final.
+        # Avoids race where GL thread compiles a stale passthrough before the actual
+        # shader is assigned (create-shader signals fire asynchronously on GL thread).
+        for i in range(self._num_slots):
+            self._slots[i].set_property("update-shader", True)
 
         log.info("Activated plan '%s': %d/%d slots used", plan.name, slot_idx, self._num_slots)
 

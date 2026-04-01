@@ -135,6 +135,8 @@ def state_reader_loop(compositor: Any) -> None:
                 fx_request_path.unlink(missing_ok=True)
                 if preset_name and compositor._graph_runtime is not None:
                     try_graph_preset(compositor, preset_name)
+                    # Sync with governance so it doesn't immediately override
+                    compositor._current_preset_name = preset_name
                     try:
                         (SNAPSHOT_DIR / "fx-current.txt").write_text(preset_name)
                     except OSError:
