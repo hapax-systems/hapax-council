@@ -132,28 +132,106 @@ def inject_url(
     z_order: int = 10,
     tags: list[str] | None = None,
 ) -> bool:
-    """Fetch an image from a URL and inject it into the visual surface."""
+    """Fetch content from a URL and inject into the visual surface.
+
+    Tries image first. If not an image (HTML, text, JSON), extracts
+    text content and renders it visually.
+    """
     try:
         import io
 
         import httpx
-        from PIL import Image
 
         resp = httpx.get(url, timeout=10, follow_redirects=True)
         resp.raise_for_status()
-        img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
-        return inject_rgba(
-            source_id,
-            img.tobytes("raw", "RGBA"),
-            img.width,
-            img.height,
-            opacity=opacity,
-            z_order=z_order,
-            tags=tags or ["web"],
-        )
+        content_type = resp.headers.get("content-type", "")
+
+        if "image" in content_type:
+            from PIL import Image
+
+            img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+            return inject_rgba(
+                source_id,
+                img.tobytes("raw", "RGBA"),
+                img.width,
+                img.height,
+                opacity=opacity,
+                z_order=z_order,
+                tags=tags or ["web", "image"],
+            )
+
+        # Non-image: extract text and render
+        text = _extract_web_text(resp.text, content_type)
+        if text:
+            return inject_text(
+                source_id,
+                text[:500],
+                opacity=opacity,
+                z_order=z_order,
+                tags=tags or ["web", "text"],
+            )
+        return False
     except Exception:
         log.debug("Failed to inject URL %s from %s", source_id, url, exc_info=True)
         return False
+
+
+def inject_search(
+    source_id: str,
+    query: str,
+    opacity: float = 0.5,
+    z_order: int = 15,
+    tags: list[str] | None = None,
+) -> bool:
+    """Inject web search results as rendered text on the visual surface."""
+    try:
+        import httpx
+
+        resp = httpx.get(
+            "https://api.duckduckgo.com/",
+            params={"q": query, "format": "json", "no_html": "1"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        abstract = data.get("AbstractText", "")
+        if not abstract:
+            results = data.get("RelatedTopics", [])
+            lines = [r.get("Text", "")[:100] for r in results[:5] if isinstance(r, dict)]
+            abstract = "\n".join(lines) if lines else f"No results for: {query}"
+        return inject_text(
+            source_id,
+            abstract[:500],
+            opacity=opacity,
+            z_order=z_order,
+            tags=tags or ["web", "search"],
+        )
+    except Exception:
+        log.debug("Failed to inject search %s for %s", source_id, query, exc_info=True)
+        return False
+
+
+def _extract_web_text(html: str, content_type: str) -> str:
+    """Extract readable text from web content."""
+    if "json" in content_type:
+        import json as json_mod
+
+        try:
+            data = json_mod.loads(html)
+            return json_mod.dumps(data, indent=2)[:500]
+        except Exception:
+            return html[:500]
+
+    if "html" in content_type:
+        import re
+
+        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:500]
+
+    return html[:500]
 
 
 def remove_source(source_id: str) -> None:
