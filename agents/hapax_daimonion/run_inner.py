@@ -57,6 +57,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
             audio_output=getattr(daemon, "_audio_output", None),
             grounding_ledger=getattr(daemon, "_grounding_ledger", None),
             tts_manager=daemon.tts,
+            echo_canceller=getattr(daemon, "_echo_canceller", None),
         )
 
         import threading
@@ -152,9 +153,37 @@ async def run_inner(daemon: VoiceDaemon) -> None:
     daemon._background_tasks.append(asyncio.create_task(ambient_refresh_loop(daemon)))
 
     if daemon.cfg.use_cpal:
-        # CPAL mode: run CpalRunner instead of engagement/session/cognitive loop
+        # CPAL mode: run CpalRunner + CPAL impingement consumer
         daemon._background_tasks.append(asyncio.create_task(daemon._cpal_runner.run()))
-        log.info("CPAL runner started as background task")
+
+        # Start CPAL-aware impingement consumer that routes through runner
+        async def _cpal_impingement_loop() -> None:
+            """Poll impingements and route through CPAL control loop."""
+            from agents._impingement_consumer import ImpingementConsumer
+
+            consumer = ImpingementConsumer(Path("/dev/shm/hapax-dmn/impingements.jsonl"))
+            while daemon._running:
+                try:
+                    for imp in consumer.read_new():
+                        await daemon._cpal_runner.process_impingement(imp)
+                except Exception:
+                    log.debug("CPAL impingement consumer error", exc_info=True)
+                await asyncio.sleep(0.5)
+
+        from pathlib import Path
+
+        daemon._background_tasks.append(asyncio.create_task(_cpal_impingement_loop()))
+
+        # Wire pipeline to runner when engagement fires (CPAL still needs pipeline for T3)
+        from agents.hapax_daimonion.session_events import on_engagement_detected_cpal
+
+        daemon._engagement = __import__(
+            "agents.hapax_daimonion.engagement", fromlist=["EngagementClassifier"]
+        ).EngagementClassifier(
+            on_engaged=lambda: on_engagement_detected_cpal(daemon),
+        )
+
+        log.info("CPAL runner + impingement consumer started")
     else:
         daemon._background_tasks.append(asyncio.create_task(engagement_processor(daemon)))
         daemon._background_tasks.append(asyncio.create_task(impingement_consumer_loop(daemon)))

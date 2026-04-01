@@ -67,13 +67,23 @@ class ProductionStream:
                 self._producing = False
                 self._current_tier = None
 
-    def produce_t2(self, *, text: str) -> None:
+    def produce_t2(self, *, text: str, pcm_data: bytes | None = None) -> None:
+        """Produce T2 lightweight response (echo/rephrase, discourse marker).
+
+        If pcm_data is provided, plays it directly. Otherwise logs the text
+        (caller is responsible for synthesis).
+        """
         self._producing = True
         self._current_tier = CorrectionTier.T2_LIGHTWEIGHT
         self._interrupted = False
-        log.info("T2 production: %s", text[:50])
-        self._producing = False
-        self._current_tier = None
+        try:
+            if pcm_data is not None and self._audio_output is not None:
+                self._audio_output.write(pcm_data)
+            log.info("T2 production: %s", text[:50])
+        finally:
+            if not self._interrupted:
+                self._producing = False
+                self._current_tier = None
 
     def mark_t3_start(self) -> None:
         self._producing = True

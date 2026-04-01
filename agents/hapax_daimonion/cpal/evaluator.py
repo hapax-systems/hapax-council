@@ -1,8 +1,8 @@
 """CPAL control law evaluator -- the cognitive tick.
 
-Replaces CognitiveLoop. Ticks at ~150ms, reads all three streams,
-runs the control law, and dispatches actions. This is the single
-point of coordination for the CPAL architecture.
+Replaces CognitiveLoop. Reads perception, formulation, and production
+streams, runs the control law, and produces action decisions. The
+runner calls this with real grounding state from the grounding bridge.
 """
 
 from __future__ import annotations
@@ -50,8 +50,24 @@ class CpalEvaluator:
     def gain_controller(self) -> LoopGainController:
         return self._gain_controller
 
-    def tick(self, dt: float) -> EvaluatorResult:
-        """Run one evaluator tick."""
+    def tick(
+        self,
+        dt: float,
+        *,
+        ungrounded_du_count: int = 0,
+        repair_rate: float = 0.0,
+        gqi: float = 0.8,
+        silence_s: float | None = None,
+    ) -> EvaluatorResult:
+        """Run one evaluator tick.
+
+        Args:
+            dt: Time since last tick.
+            ungrounded_du_count: From grounding bridge.
+            repair_rate: From grounding bridge.
+            gqi: From grounding bridge (0.0-1.0).
+            silence_s: Accumulated silence. If None, uses dt when not speaking.
+        """
         signals = self.perception.signals
 
         # 1. Gain updates
@@ -71,13 +87,14 @@ class CpalEvaluator:
             self.production.interrupt()
             log.info("Barge-in: operator speech interrupted production")
 
-        # 3. Control law evaluation
+        # 3. Control law evaluation with real grounding state
+        _silence = silence_s if silence_s is not None else (0.0 if signals.speech_active else dt)
         result = self._control_law.evaluate(
             gain=self._gain_controller.gain,
-            ungrounded_du_count=0,  # Phase 4 wires grounding ledger
-            repair_rate=0.0,
-            gqi=0.8,  # Phase 4 wires GQI
-            silence_s=0.0 if signals.speech_active else dt,
+            ungrounded_du_count=ungrounded_du_count,
+            repair_rate=repair_rate,
+            gqi=gqi,
+            silence_s=_silence,
         )
 
         # 4. Backchannel check

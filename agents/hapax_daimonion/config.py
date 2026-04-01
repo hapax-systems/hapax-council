@@ -86,7 +86,7 @@ class DaimonionConfig(BaseModel):
     voxtral_ref_audio: str = (
         ""  # clean carrier — character comes from Evil Pet + S-4 hardware chain
     )
-    use_cpal: bool = False  # CPAL skeleton complete but utterance processing not yet wired
+    use_cpal: bool = True  # CPAL conversation loop with T3 pipeline delegation
 
     # Consent
     consent_debounce_s: float = 5.0  # sustained presence before triggering

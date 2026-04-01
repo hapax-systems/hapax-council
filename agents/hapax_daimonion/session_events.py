@@ -58,6 +58,28 @@ def on_engagement_detected(daemon: VoiceDaemon) -> None:
         daemon._engagement_signal.set()
 
 
+def on_engagement_detected_cpal(daemon: VoiceDaemon) -> None:
+    """CPAL mode: engagement drives gain + ensures pipeline exists for T3.
+
+    No session open/close — CPAL uses continuous loop gain. But we still
+    need the ConversationPipeline for T3 (LLM/TTS). Create it lazily
+    on first engagement if not already running.
+    """
+    if daemon._cpal_runner is None:
+        return
+
+    # Boost gain on engagement
+    from agents.hapax_daimonion.cpal.types import GainUpdate
+
+    daemon._cpal_runner.evaluator.gain_controller.apply(
+        GainUpdate(delta=0.2, source="engagement_detected")
+    )
+
+    # Ensure pipeline exists for T3 delegation
+    if daemon._conversation_pipeline is None:
+        daemon._engagement_signal.set()
+
+
 async def engagement_processor(daemon: VoiceDaemon) -> None:
     """Await engagement signal, then atomically set up session + pipeline."""
     while daemon._running:
