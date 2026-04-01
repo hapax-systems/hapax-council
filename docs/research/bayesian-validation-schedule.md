@@ -189,11 +189,12 @@ All measures on non-frozen code can proceed freely in R&D mode:
 
 | Block | Hours | Measure | Detail |
 |-------|-------|---------|--------|
-| 0800-1200 | 4.0 | **3.4** | Decay function comparison. Run retention summarization with exponential, power law, and stepped decay. Generate temporal context for 20 perception windows per strategy. Human-rate coherence (which narrative best captures what actually happened?). |
+| 0800-1200 | 4.0 | **M-1: Integration depth** | Controlled mesh integration experiment (SCM §4.2). (1) Baseline: collect 30 min of `/api/stimmung` snapshots (includes E_mesh, sheaf residuals, eigenform state, topology) at 1-min intervals. (2) Disable stimmung collector (`systemctl --user stop hapax-stimmung-sync.timer`). Hold for 20 min. (3) Record which components change behavior: check DMN pulse rate (should lose modulation), imagination cadence (should lose stance adjustment), voice response length (should lose word_limit modulation), visual surface intensity (should lose gain scheduling). (4) Count non-adjacent affected components: if ≥ 3 components beyond stimmung's direct consumers change, integration depth ≥ 1. (5) Restore stimmung. Record recovery time. Save to `docs/research/mesh-integration-depth.md`. **This simultaneously validates SCM §4.2 and provides data for G-mesh criterion 1.** |
 | 1200-1300 | 1.0 | — | Break |
-| 1300-1500 | 2.0 | **4.4** | U-Curve primacy validation. Parse 20 fortress deliberation outputs. Count references to DMN buffer summary (position 0) vs. individual mid-buffer observations. Compute ratio. Target: summary referenced >3× more. |
-| 1500-1700 | 2.0 | **7.4** | Static tier comparison. From Langfuse: identify turns where salience would have routed to LOCAL or FAST. Compare context_anchor_success on those turns vs. CAPABLE turns. Tests whether "Always CAPABLE" is empirically justified. |
-| 1700-2000 | 3.0 | **Consolidation** | Compile all measure results into unified posterior update table. Write `docs/research/bayesian-validation-results.md` with: measure, expected result, actual result, posterior shift, implications. |
+| 1300-1500 | 2.0 | **3.4** | Decay function comparison. Run retention summarization with exponential, power law, and stepped decay. Generate temporal context for 20 perception windows per strategy. Human-rate coherence (which narrative best captures what actually happened?). |
+| 1500-1700 | 2.0 | **4.4** | U-Curve primacy validation. Parse 20 fortress deliberation outputs. Count references to DMN buffer summary (position 0) vs. individual mid-buffer observations. Compute ratio. Target: summary referenced >3× more. |
+| 1700-1900 | 2.0 | **7.4** | Static tier comparison. From Langfuse: identify turns where salience would have routed to LOCAL or FAST. Compare context_anchor_success on those turns vs. CAPABLE turns. Tests whether "Always CAPABLE" is empirically justified. |
+| 1900-2000 | 1.0 | **Consolidation** | Compile all measure results into unified posterior update table. Write `docs/research/bayesian-validation-results.md` with: measure, expected result, actual result, posterior shift, implications. |
 
 #### Days 10-12 (2026-04-08 to 2026-04-10) — 36 hr total
 
@@ -228,8 +229,23 @@ All measures on non-frozen code can proceed freely in R&D mode:
 | G3: Temporal band value | 3 | Effect > 0.5 points on 5-point scale | Continue phenomenological measures | Downgrade phenomenological mapping; accept ML-mechanistic explanation without philosophical vocabulary |
 | G4: Stimmung perception | 4 | Operator notices perturbation | Continue stimmung investment | Amplify stimmung effects (increase modulation range) or accept as infrastructure-only (no phenomenological claim) |
 | G5: Material imagination | 7 | Bachelardian vocabulary > control in interview | Continue Reverie investment | Accept visual surface as "good generative art" without phenomenological framing |
+| **G-mesh: Integrated mesh** | **7** | **See criteria below** | **Treat portfolio as coupled system; apply correlated gains** | **Treat models as independent; discount portfolio by coupling fragility factor 0.85** |
 | G6: Phase A stability | 8 | ≥ 10 sessions + stability criterion | Transition to Phase B | Continue Phase A collection; delay Sprint 2 integration work |
 | G7: Phase B decisive | 14 | BF > 10 at session 10 | Early Phase A' reversal | Continue to session 20 |
+
+### G-mesh Criteria (Sprint 1 Review, Day 7)
+
+The SCM formalization claims the 14 S1 components form a genuinely integrated mesh, not independent agents sharing a filesystem. This gate tests that claim using three operational criteria. All three must pass.
+
+**Criterion 1: Cascade propagation.** During the stimmung perturbation study (6.1, Day 4), measure whether forcing stimmung to nominal changes behavior in at least 3 non-adjacent components (integration depth ≥ 1 per §4.2). Components to instrument: DMN pulse rate, imagination cadence, visual surface intensity, voice response length. If perturbation in stimmung changes only its direct consumers (depth 0), the mesh is merely aggregated.
+
+**Criterion 2: Sheaf consistency under load.** During normal operation on Days 3-7, collect `restriction_residual_rms` from `/api/stimmung` at 5-minute intervals. Pass condition: median residual < 0.15 (restriction maps are approximately consistent). If median ≥ 0.15, the mesh's distributed state is incoherent — components are reading the same traces but computing inconsistent results.
+
+**Criterion 3: Topological robustness.** From `topology_health.py`, verify β₀ = 1 (single connected component) and stability > 0.25 (removing the worst single node doesn't fragment the cycle structure by >75%). If β₀ > 1, the mesh has disconnected subgraphs. If stability < 0.25, a single node failure destroys most feedback loops.
+
+**If G-mesh fails:** The portfolio probability must be computed as independent products with a 0.85 coupling fragility discount (models that the SCM claims are integrated but aren't get their SCM-adjusted gains reduced by 15%). The remaining schedule measures are still valid but their interpretation shifts from "validating a system" to "validating components."
+
+**If G-mesh passes:** The portfolio benefits from correlated gains — improvements to stimmung, DMN, or salience propagate through the mesh and raise neighboring models' posteriors. The ~0.92 SCM-adjusted portfolio estimate holds.
 
 ---
 
@@ -237,19 +253,39 @@ All measures on non-frozen code can proceed freely in R&D mode:
 
 Update this table as results come in. Initial values from Bayesian Validity Analysis (2026-03-29).
 
-| Model | Pre-Schedule | After Sprint 0 | After Sprint 1 | After Sprint 2 | After Sprint 3 |
+### SCM-Adjusted Priors (2026-04-01)
+
+The SCM formalization (PRs #507-#524, spec: `docs/research/stigmergic-cognitive-mesh.md`) delivered structural changes that move several priors before scheduled measures execute. These adjustments reflect implemented, operational code — not aspirational design. The schedule's 10 models are not independent; the SCM reveals they are components of a single formal system with defined coupling through `/dev/shm` stigmergic traces. This has implications: correlated gains (SCM work raised multiple models simultaneously) and correlated risk (if stigmergic coordination proves empirically weak, several models fall together). Gate G-mesh (below) tests for this.
+
+| Model | Pre-Schedule | SCM-Adjusted | Evidence |
+|-------|-------------|-------------|----------|
+| 1. Clark & Brennan Grounding | 0.88 | 0.88 | No SCM impact; awaits Phase B |
+| 2. Context as Computation | 0.97 | 0.97 | No change |
+| 3. Phenomenological Mapping | 0.58 | 0.63 | Temporal A/B harness shipped (PR #480), multi-scale integration (minute/session/day), surprise-weighted ordering, ProtentionEngine wired |
+| 4. DMN Continuous Substrate | 0.53 | 0.70 | Extracted to 3 daemons (pulse/imagination/resolver), all publish ControlSignals, stimmung modulation (4:2:1.5:1× by stance), G1 passed (0% contradiction in 716 impingements), impingement cascade architecture operational |
+| 5. Constitutional Governance | 0.93 | 0.95 | Production consent enforcement in 5 subsystems (calendar, gmail, pipeline, RAG, video), IFC label infra operational, fail-closed + staleness detection, 14 egress gates |
+| 6. Stimmung | 0.64 | 0.73 | Gain scheduling operational (DMN pulse, imagination cadence), positioned as system prior with 11+ readers, hysteresis (3-reading recovery), sheaf health monitors stimmung↔DMN consistency |
+| 7. Salience/Biased Competition | 0.61 | 0.65 | Signal audit complete (11/16 exist, 4 derivable, 1 naming only), salience_integration = 59.6% of all impingements (dominant type) |
+| 8. Bayesian Tool Selection | 0.54 | 0.58 | Signal audit confirms no fundamental gaps, all 16 signals available or trivially derivable |
+| 9. Temporal Structure | 0.94 | 0.94 | No change |
+| 10. Reverie (Bachelard) | 0.33 | 0.58 | All 6 amendments implemented and operational (materialization, temporal feedback, 5 materials, DMN evaluative tick, per-slot immensity, soft escalation); smoke test renders exist; awaits phenomenological validation |
+| **Portfolio** | **0.89** | **~0.92** | 6 remediation models avg 0.54→0.66; discount for correlated risk under SCM coupling |
+
+### Live Tracking
+
+| Model | SCM-Adjusted | After Sprint 0 | After Sprint 1 | After Sprint 2 | After Sprint 3 |
 |-------|-------------|----------------|----------------|----------------|----------------|
 | 1. Clark & Brennan Grounding | 0.88 | — | — | — | _Phase B result_ |
 | 2. Context as Computation | 0.97 | — | — | — | — |
-| 3. Phenomenological Mapping | 0.58 | _3.2, 3.3_ | _3.1_ | _3.4_ | — |
-| 4. DMN Continuous Substrate | 0.53 | _4.1, 4.5_ | _4.2, 4.3_ | _4.4_ | — |
-| 5. Constitutional Governance | 0.93 | — | — | — | — |
-| 6. Stimmung | 0.64 | _6.2, 6.3, 6.5_ | _6.1, 6.4_ | — | _longitudinal_ |
-| 7. Salience/Biased Competition | 0.61 | _7.1, 7.2_ | _7.3_ | _7.4_ | — |
-| 8. Bayesian Tool Selection | 0.54 | _8.1_ | — | _8.2, 8.3_ | — |
+| 3. Phenomenological Mapping | 0.63 | _3.2, 3.3_ | _3.1_ | _3.4_ | — |
+| 4. DMN Continuous Substrate | 0.70 | _4.1 ✓ (G1 pass), 4.5_ | _4.2, 4.3_ | _4.4_ | — |
+| 5. Constitutional Governance | 0.95 | — | — | — | — |
+| 6. Stimmung | 0.73 | _6.2, 6.3, 6.5_ | _6.1, 6.4_ | — | _longitudinal_ |
+| 7. Salience/Biased Competition | 0.65 | _7.1, 7.2_ | _7.3_ | _7.4_ | — |
+| 8. Bayesian Tool Selection | 0.58 | _8.1 ✓_ | — | _8.2, 8.3_ | — |
 | 9. Temporal Structure | 0.94 | — | — | — | — |
-| 10. Reverie (Bachelard) | 0.33 | — | _10.1-10.5_ | — | _longitudinal_ |
-| **Portfolio** | **0.89** | — | — | — | — |
+| 10. Reverie (Bachelard) | 0.58 | — | _10.1-10.5_ | — | _longitudinal_ |
+| **Portfolio** | **~0.92** | — | — | — | — |
 
 ---
 
@@ -266,6 +302,7 @@ All output documents created by this schedule:
 | `docs/research/stimmung-perturbation-results.md` | Day 4 | 6.1 results |
 | `docs/research/reverie-amendment-comparison.md` | Day 6-7 | 10.1-10.5 results |
 | `docs/research/bayesian-validation-results.md` | Day 9 | Unified posterior updates |
+| `docs/research/mesh-integration-depth.md` | Day 9 | M-1 results (SCM §4.2 integration depth) |
 | `research/protocols/deviations/DEVIATION-025.md` | Day 1 | Salience observability in frozen file |
 | `research/protocols/deviations/DEVIATION-026.md` | Day 8 | stats.py BEST implementation |
 
@@ -298,3 +335,4 @@ All output documents created by this schedule:
 | 7.4 Static tier | Langfuse query (analysis only) | No |
 | 8.1 Signal audit | Codebase grep (analysis only) | No |
 | 8.3 Tool baseline | Langfuse query (analysis only) | No |
+| M-1 Integration depth | systemctl stop/start, /api/stimmung snapshots, DMN/imagination/voice/visual observation | No |
