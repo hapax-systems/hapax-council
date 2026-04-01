@@ -105,6 +105,7 @@ def write_uniforms(
         else [0.0, 0.0, 0.0, 0.0],
     }
 
+    uniforms["post.master_opacity"] = silence
     for key, value in chain_params.items():
         uniforms[key] = value * reduction * silence if isinstance(value, (int, float)) else value
 

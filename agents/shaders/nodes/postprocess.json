@@ -1,1 +1,1 @@
-{"node_type":"postprocess","glsl_fragment":"postprocess.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"vignette_strength":{"type":"float","default":0.3},"sediment_strength":{"type":"float","default":0.1}},"temporal":false,"temporal_buffers":0}
+{"node_type":"postprocess","glsl_fragment":"postprocess.frag","inputs":{"in":"frame"},"outputs":{"out":"frame"},"params":{"vignette_strength":{"type":"float","default":0.3},"sediment_strength":{"type":"float","default":0.1},"master_opacity":{"type":"float","default":1.0}},"temporal":false,"temporal_buffers":0}

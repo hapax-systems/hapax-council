@@ -1,6 +1,7 @@
 struct Params {
     u_vignette_strength: f32,
     u_sediment_strength: f32,
+    u_master_opacity: f32,
 }
 
 struct FragmentOutput {
@@ -33,6 +34,9 @@ fn main_1() {
     // Sediment: bottom-edge darkening
     let sed = smoothstep(0.95, 1.0, v_texcoord_1.y) * global.u_sediment_strength;
     c = vec4<f32>(c.xyz * (1.0 - sed), c.w);
+
+    // Master opacity gate — black when nothing is recruited
+    c = vec4<f32>(c.xyz * global.u_master_opacity, c.w);
 
     fragColor = c;
     return;
