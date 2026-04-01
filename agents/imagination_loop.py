@@ -8,6 +8,7 @@ and sensor state, calls a reasoning model, and processes the resulting fragment
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from agents._impingement import Impingement
@@ -68,6 +69,16 @@ train of thought or let it go. Don't force continuation.\
 """
 
 MAX_RECENT_FRAGMENTS = 5
+
+
+def observations_are_fresh(*, published_at: float, cadence_s: float) -> bool:
+    """Check if observations are fresh enough for imagination.
+
+    Threshold: 2x current cadence. If observations are older than this,
+    generating a fragment would be based on stale data.
+    """
+    age = time.time() - published_at
+    return age <= cadence_s * 2.0
 
 
 class ImaginationLoop:

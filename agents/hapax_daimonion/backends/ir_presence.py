@@ -41,6 +41,8 @@ _SIGNALS: frozenset[str] = frozenset(
     }
 )
 
+IR_STALE_S = 10.0  # Pi reports older than this are discarded (P3 staleness safety)
+
 _DESK_CONFIDENCE_BONUS = 0.1
 
 
@@ -89,7 +91,7 @@ class IrPresenceBackend:
 
     def contribute(self, behaviors: dict[str, Behavior]) -> None:
         now = time.monotonic()
-        reports = read_all_ir_reports(state_dir=self._state_dir)
+        reports = read_all_ir_reports(state_dir=self._state_dir, max_age_seconds=IR_STALE_S)
         self._fuse(reports, now)
         for key, behavior in self._behaviors.items():
             behaviors[key] = behavior

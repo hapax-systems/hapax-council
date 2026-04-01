@@ -35,6 +35,8 @@ log = logging.getLogger(__name__)
 _DEFAULT_POLL_INTERVAL = 3.0  # per-camera interval
 
 
+# P3 staleness safety — compositor snapshots older than this are STALE and skipped
+VISION_STALE_S = 30.0
 _GESTURE_LABELS = {
     0: "unknown",
     1: "closed_fist",
@@ -1431,7 +1433,8 @@ class VisionBackend:
                 shm_name = _role_to_shm.get(role, role)
                 shm_path = Path(f"/dev/shm/hapax-compositor/{shm_name}.jpg")
                 frame = None
-                if shm_path.exists():
+                # P3 staleness gate: skip compositor snapshots older than VISION_STALE_S
+                if shm_path.exists() and (time.time() - shm_path.stat().st_mtime) <= VISION_STALE_S:
                     try:
                         data = shm_path.read_bytes()
                         if len(data) > 100:

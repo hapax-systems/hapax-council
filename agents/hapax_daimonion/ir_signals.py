@@ -2,6 +2,9 @@
 
 Follows the same pattern as watch_signals.py: read JSON state files
 from ~/hapax-state/pi-noir/ with staleness checking.
+
+Uses the same staleness gate as shared.trace_reader.read_trace (P3 safety):
+files older than the configured STALE threshold are treated as missing.
 """
 
 from __future__ import annotations
@@ -18,14 +21,23 @@ log = logging.getLogger(__name__)
 IR_STATE_DIR: Path = HAPAX_HOME / "hapax-state" / "pi-noir"
 IR_ROLES: tuple[str, ...] = ("desk", "room", "overhead")
 
+# P3 staleness constant — mirrors IR_STALE_S in ir_presence backend
+IR_SIGNAL_STALE_S = 10.0
 
-def read_ir_signal(path: Path, max_age_seconds: float = 10.0) -> dict[str, object] | None:
-    """Read a Pi NoIR JSON state file, returning None if missing or stale."""
-    if not path.exists():
-        return None
+
+def read_ir_signal(
+    path: Path, max_age_seconds: float = IR_SIGNAL_STALE_S
+) -> dict[str, object] | None:
+    """Read a Pi NoIR JSON state file, returning None if missing or stale.
+
+    Implements the same staleness gate as read_trace() from shared.trace_reader:
+    checks mtime freshness before parsing JSON. Files older than max_age_seconds
+    are treated as absent (P3 staleness safety).
+    """
     try:
-        mtime = path.stat().st_mtime
-        if time.time() - mtime > max_age_seconds:
+        age = time.time() - path.stat().st_mtime
+        if age > max_age_seconds:
+            log.debug("IR signal %s is STALE (%.1fs > %.1fs)", path.name, age, max_age_seconds)
             return None
         return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
