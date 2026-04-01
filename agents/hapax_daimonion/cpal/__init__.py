@@ -16,6 +16,8 @@ from agents.hapax_daimonion.cpal.loop_gain import LoopGainController
 from agents.hapax_daimonion.cpal.perception_stream import PerceptionSignals, PerceptionStream
 from agents.hapax_daimonion.cpal.production_stream import ProductionStream
 from agents.hapax_daimonion.cpal.shm_publisher import publish_cpal_state
+from agents.hapax_daimonion.cpal.signal_cache import SignalCache
+from agents.hapax_daimonion.cpal.tier_composer import ComposedAction, TierComposer
 from agents.hapax_daimonion.cpal.types import (
     ConversationalRegion,
     CorrectionTier,
@@ -26,6 +28,7 @@ from agents.hapax_daimonion.cpal.types import (
 
 __all__ = [
     "BackchannelDecision",
+    "ComposedAction",
     "ConversationalRegion",
     "ConversationControlLaw",
     "ControlLawResult",
@@ -41,5 +44,7 @@ __all__ = [
     "PerceptionSignals",
     "PerceptionStream",
     "ProductionStream",
+    "SignalCache",
+    "TierComposer",
     "publish_cpal_state",
 ]
