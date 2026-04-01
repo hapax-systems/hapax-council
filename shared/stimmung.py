@@ -32,6 +32,7 @@ class Stance(StrEnum):
     """System-wide self-assessment."""
 
     NOMINAL = "nominal"
+    SEEKING = "seeking"
     CAUTIOUS = "cautious"
     DEGRADED = "degraded"
     CRITICAL = "critical"
@@ -64,6 +65,7 @@ class SystemStimmung(BaseModel):
 
     # Cognitive dimensions (weight 0.3 — epistemic state, lighter than infrastructure)
     grounding_quality: DimensionReading = Field(default_factory=DimensionReading)
+    exploration_deficit: DimensionReading = Field(default_factory=DimensionReading)
 
     # Biometric dimensions (weight 0.5 — softer thresholds, operator changes slowly)
     operator_stress: DimensionReading = Field(default_factory=DimensionReading)
@@ -120,6 +122,7 @@ _INFRA_DIMENSION_NAMES = [
 
 _COGNITIVE_DIMENSION_NAMES = [
     "grounding_quality",
+    "exploration_deficit",
 ]
 
 _BIOMETRIC_DIMENSION_NAMES = [
@@ -150,6 +153,7 @@ _COGNITIVE_THRESHOLDS = (0.15, 1.01, 1.01)  # DEGRADED+CRITICAL unreachable (eff
 # Keyed by Stance members; since Stance is StrEnum, Stance.NOMINAL == "nominal".
 _STANCE_ORDER: dict[Stance, int] = {
     Stance.NOMINAL: 0,
+    Stance.SEEKING: 0,  # parallel to NOMINAL, not a severity level
     Stance.CAUTIOUS: 1,
     Stance.DEGRADED: 2,
     Stance.CRITICAL: 3,
@@ -358,6 +362,10 @@ class StimmungCollector:
         value = 1.0 - max(0.0, min(1.0, gqi))
         self._record("grounding_quality", value)
 
+    def update_exploration(self, deficit: float) -> None:
+        """Update exploration deficit (0.0 = engaged, 1.0 = system-wide boredom)."""
+        self._record("exploration_deficit", max(0.0, min(1.0, deficit)))
+
     def snapshot(self, now: float | None = None) -> SystemStimmung:
         """Produce a SystemStimmung from current readings."""
         if now is None:
@@ -420,6 +428,26 @@ class StimmungCollector:
 
     def _apply_hysteresis(self, raw_stance: Stance) -> Stance:
         """Apply hysteresis: degrade immediately, recover only after sustained improvement."""
+        # SEEKING hysteresis: separate track (enter after 3, exit after 5)
+        if raw_stance == Stance.SEEKING:
+            self._seeking_count = getattr(self, "_seeking_count", 0) + 1
+            if self._seeking_count >= 3:
+                self._last_stance = Stance.SEEKING
+                return Stance.SEEKING
+            # Not yet sustained — return previous non-SEEKING stance
+            return self._last_stance if self._last_stance != Stance.SEEKING else Stance.NOMINAL
+        elif self._last_stance == Stance.SEEKING:
+            self._seeking_exit_count = getattr(self, "_seeking_exit_count", 0) + 1
+            if self._seeking_exit_count >= 5:
+                self._seeking_count = 0
+                self._seeking_exit_count = 0
+                self._last_stance = raw_stance
+                return raw_stance
+            return Stance.SEEKING
+        else:
+            self._seeking_count = 0
+            self._seeking_exit_count = 0
+
         if _STANCE_ORDER[raw_stance] >= _STANCE_ORDER[self._last_stance]:
             # Degradation (or same): apply immediately, reset recovery counter
             self._recovery_readings = 0
@@ -469,6 +497,9 @@ class StimmungCollector:
         for name, dim in dimensions.items():
             if dim.freshness_s > _STALE_THRESHOLD_S:
                 continue
+            # exploration_deficit only drives SEEKING, not severity escalation
+            if name == "exploration_deficit":
+                continue
             effective = dim.value
             if name in _BIOMETRIC_DIMENSION_NAMES:
                 effective *= _BIOMETRIC_STANCE_WEIGHT
@@ -490,5 +521,11 @@ class StimmungCollector:
 
             if _STANCE_ORDER[dim_stance] > _STANCE_ORDER[worst]:
                 worst = dim_stance
+
+        # SEEKING: only when infrastructure is healthy AND exploration_deficit is high
+        if worst == Stance.NOMINAL:
+            exploration = dimensions.get("exploration_deficit", DimensionReading())
+            if exploration.freshness_s <= _STALE_THRESHOLD_S and exploration.value > 0.35:
+                return Stance.SEEKING
 
         return worst
