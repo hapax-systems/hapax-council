@@ -51,6 +51,9 @@ class FlowObserver:
         # Most populated dynamically via register_reader, but some agents
         # don't have SHM-based state paths (e.g., daimonion uses ~/.cache).
         self._writer_node_map: dict[str, str] = {
+            "stimmung": "stimmung_sync",
+            "temporal": "temporal_bands",
+            "compositor": "studio_compositor",
             "daimonion": "hapax_daimonion",
             "dmn": "dmn",
         }
@@ -58,12 +61,6 @@ class FlowObserver:
     def register_reader(self, agent_id: str, state_path: str) -> None:
         """Register an agent as a reader of a specific state file."""
         self._readers[agent_id] = state_path
-        # Build reverse mapping: SHM dir name -> node ID
-        # Path like .../hapax-compositor/... means dir "compositor" -> agent_id
-        for part in Path(state_path).parts:
-            if part.startswith("hapax-"):
-                self._writer_node_map[part.removeprefix("hapax-")] = agent_id
-                break
 
     def scan(self) -> None:
         """Scan SHM directories for recent writes and correlate with readers."""

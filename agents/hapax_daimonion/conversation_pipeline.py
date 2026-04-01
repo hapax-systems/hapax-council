@@ -922,6 +922,9 @@ class ConversationPipeline:
             _bd = self._salience_router.last_breakdown
             if _bd is not None:
                 hapax_score(_utt_trace, "activation_score", _bd.final_activation)
+                hapax_score(_utt_trace, "novelty", _bd.novelty)
+                hapax_score(_utt_trace, "concern_overlap", _bd.concern_overlap)
+                hapax_score(_utt_trace, "dialog_feature_score", _bd.dialog_feature_score)
         self.state = ConvState.LISTENING
 
     async def _generate_and_speak(self) -> None:
@@ -990,9 +993,6 @@ class ConversationPipeline:
                 "api_base": _voice_litellm_base,
                 "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
             }
-            # Tools disabled for voice pacing — tool execution + second LLM
-            # round-trip adds 10-15s latency that destroys conversation flow.
-            # The model answers from system prompt context instead.
             if self.tools:
                 kwargs["tools"] = self.tools
 
@@ -1186,8 +1186,6 @@ class ConversationPipeline:
             # Tool execution + second LLM round-trip eats the 20s timeout budget.
             # The model already has workspace context via system prompt injection;
             # tools add precision but destroy conversational pacing.
-            # TODO: re-enable with tight per-tool timeouts (3s cap) once latency
-            # is under control.
             if tool_calls_data:
                 log.info(
                     "Executing %d tool call(s): %s",

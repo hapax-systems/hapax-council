@@ -33,7 +33,7 @@ def test_observer_builds_observed_edges(tmp_path: Path):
     obs.scan()
 
     edges = obs.get_observed_edges()
-    assert ("stimmung", "perception") in edges
+    assert ("stimmung_sync", "perception") in edges
 
 
 def test_observer_decays_stale_edges(tmp_path: Path):

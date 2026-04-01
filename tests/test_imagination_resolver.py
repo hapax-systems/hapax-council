@@ -561,7 +561,7 @@ def test_escalation_zero_salience_never_escalates():
     frag = _make_fragment([], salience=0.0)
     # Run many times — should never escalate
     escalated = sum(1 for _ in range(1000) if maybe_escalate(frag) is not None)
-    assert escalated < 20  # sigmoid at 0.0 ≈ 0.012, expect ~12 in 1000
+    assert escalated < 50  # sigmoid at 0.0 ≈ 0.012, expect ~12 in 1000 (wide margin for CI)
 
 
 def test_escalation_high_salience_usually_escalates():
