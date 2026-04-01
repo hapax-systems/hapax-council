@@ -20,9 +20,12 @@ import logging
 import random
 import time
 from collections import deque
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from shared.impingement import Impingement, ImpingementType
 
 log = logging.getLogger(__name__)
 
@@ -724,3 +727,43 @@ class ApperceptionStore:
         except Exception:
             log.warning("Apperception search failed", exc_info=True)
             return []
+
+
+# ── Impingement → Cascade Event mapping ───────────────────────────────────
+
+
+def impingement_to_cascade_event(imp: Impingement) -> CascadeEvent | None:
+    """Map a perception impingement to an apperception cascade event.
+    Only STATISTICAL_DEVIATION from perception.* sources maps to prediction_error.
+    """
+    if imp.type != ImpingementType.STATISTICAL_DEVIATION:
+        return None
+    if not imp.source.startswith("perception."):
+        return None
+    metric = imp.content.get("metric", imp.source)
+    value = imp.content.get("value", "")
+    delta = imp.content.get("delta", 0)
+    return CascadeEvent(
+        source="prediction_error",
+        text=f"Perception signal {metric} deviated: value={value}, delta={delta}",
+        magnitude=imp.strength,
+        metadata={"impingement_id": imp.id, "metric": metric},
+        timestamp=imp.timestamp,
+    )
+
+
+def consume_perception_impingements(
+    *, path: Path | None = None, cursor: int = 0
+) -> list[CascadeEvent]:
+    """Read new perception impingements from JSONL and convert to cascade events."""
+    from shared.impingement_consumer import ImpingementConsumer
+
+    _path = path or Path("/dev/shm/hapax-dmn/impingements.jsonl")
+    consumer = ImpingementConsumer(_path)
+    consumer._cursor = cursor
+    events = []
+    for imp in consumer.read_new():
+        event = impingement_to_cascade_event(imp)
+        if event is not None:
+            events.append(event)
+    return events
