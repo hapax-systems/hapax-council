@@ -11,6 +11,12 @@ def tick_governance(compositor: Any, t: float) -> None:
     if compositor._graph_runtime is None or not hasattr(compositor, "_atmospheric_selector"):
         return
 
+    # User override hold: when the user explicitly selects a preset via API,
+    # governance is suppressed for a hold period to prevent instant override.
+    hold_until = getattr(compositor, "_user_preset_hold_until", 0.0)
+    if time.monotonic() < hold_until:
+        return
+
     from agents.effect_graph.visual_governance import (
         compute_gestural_offsets,
         energy_level_from_activity,
