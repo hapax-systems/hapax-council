@@ -159,31 +159,24 @@ The impingement JSONL transport has different semantics: it is append-only and c
 
 ## 3. Dynamics
 
-### 3.1 Active Inference Frame
+### 3.1 Dynamical Framework
 
-Each SCM process can be modeled as an active inference agent (Friston, 2010) that maintains a generative model of its perceptual domain and acts to minimize variational free energy — the discrepancy between its model's predictions and its actual sensory input.
+The SCM's dynamics are best described by **coupled Perceptual Control Theory** (Powers, 1973) with Active Inference vocabulary used where it genuinely adds analytical power.
 
-**Generative model.** Each process has an implicit generative model encoded in its processing logic. The IR perception backend's model predicts that when the operator is present, person detections will arrive from at least one Pi within the staleness window. The stimmung collector's model predicts that system health dimensions will remain within nominal bounds. The DMN's model predicts that recent observations will form coherent narratives amenable to imagination.
+**Control structure.** Each process maintains an implicit reference signal (what it expects to perceive) and acts to minimize the discrepancy. This is standard negative-feedback control, not a metaphor. The ControlSignal model (`shared/control_signal.py`) makes this concrete: each of the 14 S1 components publishes `error = abs(reference - perception)` to `/dev/shm/hapax-{component}/health.json`.
 
-**Prediction error.** When sensory input diverges from the generative model's predictions, the process experiences prediction error. In the SCM, prediction error manifests as:
-- **Impingements** (explicit): STATISTICAL_DEVIATION type impingements are literally surprise signals — a sensor value that deviates from the running average
-- **Staleness** (implicit): A trace that should have been refreshed but wasn't is a negative prediction error — the expected signal failed to arrive
-- **Apperception surprise** (computed): The temporal bonds module explicitly computes a surprise field by comparing protention (prediction) with impression (actuality)
+**Prediction error.** Three manifestations in the SCM:
+- **Impingements** (explicit): STATISTICAL_DEVIATION type — a sensor value deviating from the running average
+- **Staleness** (implicit): A trace that should have been refreshed but wasn't — the expected signal failed to arrive
+- **Apperception surprise** (computed): The temporal bonds module computes a surprise field by comparing protention (prediction) with impression (actuality)
 
-**Prior.** The stimmung signal functions as the system's empirical prior — a background expectation that biases all processing. When stimmung is "nominal," processes operate with default sensitivity. When stimmung is "degraded," the prior shifts: processes expect more failures, reduce resource consumption, and lower salience thresholds. The stimmung prior is not centrally imposed; each process reads the stimmung trace and incorporates it into its own generative model according to its own weighting scheme.
+**Stimmung as gain scheduling.** The stimmung signal modulates the gain of all control loops simultaneously — what control theory calls gain scheduling. When stimmung is "nominal," loops operate at full gain. When "degraded," gains are reduced via the modulation_factor (0.3–1.0 range), slowing response and reducing resource consumption. This is implemented: DMN pulse rate is multiplied by stance (nominal=1x, degraded=2x, critical=4x). Imagination cadence doubles on degraded, pauses on critical.
 
-**Action.** Active inference agents minimize free energy through two routes: updating beliefs (perception) or changing the world (action). SCM processes do both:
-- **Perceptual inference:** Adjusting internal state to better explain sensory input (e.g., stimmung recomputing stance from fresh dimension readings)
-- **Active inference:** Changing the environment to match predictions (e.g., voice daemon adjusting OBS scenes to match the expected visual state; imagination resolver fetching content to fill empty slots)
+**Where Active Inference adds value.** The AIF vocabulary (generative model, free energy, empirical prior) is most useful for §4.3's free energy health scalar — the aggregate prediction error across the mesh provides a single number capturing "how well is the mesh tracking reality?" The concept of stimmung as an empirical prior (a background expectation biasing all perception) is genuine: it is not just a gain modulator but a contextual shifter that changes what counts as surprising. Beyond this, the AIF framing restates what PCT already describes. The SCM's dynamics are coupled control loops, not variational inference.
 
-**Hierarchical organization.** Active inference naturally supports hierarchical processing with different timescales at each level (Friston, 2008). In the SCM:
-- **Fast processes** (IR perception at 3s, contact mic continuous) update low-level sensory predictions
-- **Medium processes** (DMN at 5s, stimmung at 15m) update mid-level contextual predictions
-- **Slow processes** (visual surface at variable cadence, pattern consolidator daily) update high-level abstract predictions
+**Hierarchical organization.** Fast processes (IR at 3s, contact mic continuous) update low-level sensory variables. Medium processes (DMN at 5s, stimmung at 15m) update mid-level contextual variables. Slow processes (visual surface at variable cadence, pattern consolidator daily) update high-level abstractions. Each level's outputs become reference inputs for the level below. This hierarchy arises from the trace-reading dependencies rather than explicit architectural layering.
 
-Each level's predictions become the priors for the level below. IR perception's person detection becomes part of the context that shapes stimmung's self-assessment, which becomes the prior that shapes all other processes' behavior. This hierarchical influence propagation arises from the trace-reading dependencies — the causal structure is designed (someone decided which processes read which traces), but the hierarchical dynamics are a consequence of those design choices rather than an explicitly engineered hierarchy.
-
-**Free energy of the mesh.** The aggregate free energy of the SCM is the sum of all processes' prediction errors, weighted by their perceptual significance. This provides a scalar health metric (see §4.3): low aggregate free energy indicates a well-calibrated mesh where all processes' models align with reality; high aggregate free energy indicates surprise — the mesh is encountering conditions its models do not predict.
+**Coupled operator-system dynamics.** The operator and system form two interlocking control hierarchies — the system controls its perceptions of the operator, the operator controls their perceptions of the system (see §6.2 and the concrete PCT model in `docs/research/2026-03-31-scm-concrete-formalizations.md` §6). Stable coupled states are eigenforms (Kauffman, 2005): fixed points of the recursive transformation where system output drives operator response drives system input. The loop gain product (G_sys × G_op) determines stability: deep work ≈ 0.03 (strongly stable), music production ≈ 0.35 (stable), correction cycles ≈ 1.0 (marginal). Stimmung hysteresis (3-reading recovery) and the frustration detector prevent high-frequency oscillation.
 
 ### 3.2 Stigmergic Dynamics
 
@@ -427,11 +420,15 @@ The following gaps between this specification and the reference implementation h
 
 **Emergent state underspecified.** Property 3 (§1.1) defines emergent perceptual state as "the superposition of all traces," but no section formalizes what superposition means operationally. The fusion rules in §3.2 are component-specific; a general theory of emergent state in stigmergic systems is needed.
 
-**Partial ControlSignal coverage.** Only IR perception and stimmung publish ControlSignals. 12 other components lack closed-loop health reporting. The framework (`shared/control_signal.py`, `shared/mesh_health.py`) is operational but needs extension to all S1 units.
+**ControlSignal coverage complete.** All 14 S1 components now publish ControlSignals to `/dev/shm/hapax-{component}/health.json`. `aggregate_mesh_health()` computes E_mesh from all 14. PR #516, #517.
 
-**Active Inference framing.** The AIF terminology in §3.1 provides useful vocabulary but much of the analytical content could be equivalently stated in PCT or cybernetic terms. The AIF framing is most valuable in §4.3 (free energy as health scalar) and least valuable in §3.1's component-level descriptions.
+**Sheaf cohomology operational.** `shared/sheaf_health.py` computes consistency radius and H^1 dimension from restriction map residuals. `shared/topology_health.py` computes Betti numbers (β₀=1, β₁≥3) and topological stability. Both wired into health monitor. PR #514.
 
-**Consent label enforcement.** The consent lattice algebra (ConsentLabel, Labeled[T], floating labels) remains algebraically complete but operationally unused at the data-flow level. Current enforcement uses `contract_check()` at boundaries rather than label propagation through transformations. The gap between boundary checking and full IFC enforcement remains.
+**AIF framing tightened.** §3.1 revised to lead with PCT (the actual dynamical framework) and use AIF vocabulary only where it genuinely adds analytical power (§4.3 free energy scalar, stimmung as empirical prior).
+
+**IFC label infrastructure operational.** `shared/labeled_trace.py` provides `write_labeled_trace()` / `read_labeled_trace()`. API egress gate at `logos/api/deps/consent_gate.py`. Perception-state writer migrated as first labeled trace. PRs #515, #517. Remaining writers to be migrated gradually.
+
+**Consent label enforcement gap narrowing.** Boundary checking now covers sync agents, conversation pipeline, RAG ingest, and video processor. IFC label embedding enables future flow-tracking if needed, but boundary enforcement is provably equivalent for single-operator systems (Rajani et al., POPL'20).
 
 ### 6.4 Open Questions
 
