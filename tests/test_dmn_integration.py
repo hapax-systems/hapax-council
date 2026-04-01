@@ -2,7 +2,6 @@
 
 from unittest.mock import AsyncMock, patch
 
-from agents.dmn.__main__ import _read_tpn_active
 from agents.dmn.buffer import DMNBuffer
 from agents.dmn.pulse import DMNPulse
 
@@ -46,12 +45,6 @@ class TestDMNPulseIntegration:
         assert evaluative[0].content["trajectory"] == "degrading"
 
 
-class TestTPNActiveIntegration:
-    def test_timestamped_write_read_roundtrip(self, tmp_path):
-        from agents.hapax_daimonion.cognitive_loop import write_tpn_active
-
-        path = tmp_path / "tpn_active"
-        write_tpn_active(True, path)
-        assert _read_tpn_active(path) is True
-        write_tpn_active(False, path)
-        assert _read_tpn_active(path) is False
+# TestTPNActiveIntegration removed — TPN active flag no longer in DMN.
+# The voice daemon writes tpn_active; perception signals replace it for DMN.
+# See: docs/research/stigmergic-cognitive-mesh.md §3.3 P1
