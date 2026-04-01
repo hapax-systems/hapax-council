@@ -16,9 +16,10 @@ import logging
 import time
 from pathlib import Path
 
-from agents.hapax_daimonion.ir_signals import read_all_ir_reports
+from agents.hapax_daimonion.ir_signals import IR_ROLES, read_all_ir_reports
 from agents.hapax_daimonion.perception import PerceptionTier
 from agents.hapax_daimonion.primitives import Behavior
+from shared.control_signal import ControlSignal, publish_health
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +96,11 @@ class IrPresenceBackend:
         self._fuse(reports, now)
         for key, behavior in self._behaviors.items():
             behaviors[key] = behavior
+
+        # Publish perceptual control signal: freshness = fraction of Pi roles reporting
+        freshness = len(reports) / len(IR_ROLES) if IR_ROLES else 0.0
+        signal = ControlSignal(component="ir_perception", reference=1.0, perception=freshness)
+        publish_health(signal)
 
     def _fuse(self, reports: dict[str, dict[str, object]], now: float) -> None:
         """Fuse all Pi reports into behavior values."""
