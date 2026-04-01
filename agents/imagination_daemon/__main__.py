@@ -98,6 +98,10 @@ class ImaginationDaemon:
     def __init__(self) -> None:
         self._imagination = ImaginationLoop()
         self._running = True
+        # Control law state (Property 4: closed-loop error → cadence)
+        self._consecutive_errors: int = 0
+        self._consecutive_ok: int = 0
+        self._cadence_degraded: bool = False
 
     async def run(self) -> None:
         log.info("Imagination daemon starting")
@@ -151,6 +155,24 @@ class ImaginationDaemon:
                     )
             except Exception:
                 log.warning("Imagination tick failed", exc_info=True)
+
+            # Control law (Property 4): error drives cadence
+            if observations is None or snapshot is None:
+                self._consecutive_errors += 1
+                self._consecutive_ok = 0
+            else:
+                self._consecutive_errors = 0
+                self._consecutive_ok += 1
+
+            if self._consecutive_errors >= 3 and not self._cadence_degraded:
+                self._imagination.cadence._base_s *= 2.0
+                self._cadence_degraded = True
+                log.warning("Control law: degrading cadence after 3 consecutive errors")
+
+            if self._consecutive_ok >= 3 and self._cadence_degraded:
+                self._imagination.cadence._base_s /= 2.0
+                self._cadence_degraded = False
+                log.info("Control law: restoring cadence after 3 consecutive successes")
 
             interval = self._imagination.cadence.current_interval()
 
