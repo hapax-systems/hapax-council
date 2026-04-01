@@ -35,6 +35,7 @@ DIMENSION_NAMES = [
     "perception_confidence",
     "llm_cost_pressure",
     "grounding_quality",
+    "exploration_deficit",
     "operator_stress",
     "operator_energy",
     "physiological_coherence",

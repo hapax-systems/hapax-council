@@ -95,11 +95,21 @@ class SalienceRouter:
         self._last_breakdown: ActivationBreakdown | None = None
         # Hysteresis: track previous tier to resist oscillation
         self._prev_tier: ModelTier | None = None
+        self._seeking: bool = False
 
     @property
     def last_breakdown(self) -> ActivationBreakdown | None:
         """Last routing decision breakdown for diagnostics."""
         return self._last_breakdown
+
+    def set_seeking(self, seeking: bool) -> None:
+        """When system is in SEEKING stance, boost novelty weight."""
+        self._seeking = seeking
+
+    def effective_novelty_weight(self) -> float:
+        """Current novelty weight (boosted in SEEKING stance)."""
+        base = self._weights.get("novelty", 0.15)
+        return 0.30 if self._seeking else base
 
     def route(
         self,
@@ -217,6 +227,13 @@ class SalienceRouter:
             w["novelty"] = 0.15
             w["dialog_features"] = 0.45
         # else: use configured weights (full concern activation)
+
+        # SEEKING stance: boost novelty weight at expense of concern overlap
+        if self._seeking:
+            novelty_boost = 0.30 - w["novelty"]
+            if novelty_boost > 0:
+                w["novelty"] = 0.30
+                w["concern_overlap"] = max(0.0, w["concern_overlap"] - novelty_boost)
 
         activation = (
             concern_overlap * w["concern_overlap"]

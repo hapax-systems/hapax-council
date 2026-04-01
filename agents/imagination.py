@@ -128,6 +128,7 @@ class CadenceController:
         self._accelerated = False
         self._non_continuation_streak = 0
         self._tpn_active = False
+        self._seeking = False
 
     def update(self, fragment: ImaginationFragment) -> None:
         """Update cadence state based on the latest fragment."""
@@ -143,10 +144,19 @@ class CadenceController:
 
     def current_interval(self) -> float:
         """Return the current tick interval in seconds."""
-        interval = self._accelerated_s if self._accelerated else self._base_s
+        if self._seeking:
+            interval = 2.0  # SEEKING floor — faster than accelerated
+        elif self._accelerated:
+            interval = self._accelerated_s
+        else:
+            interval = self._base_s
         if self._tpn_active:
             interval *= 2.0
         return interval
+
+    def set_seeking(self, seeking: bool) -> None:
+        """When system is in SEEKING stance, use 2s floor."""
+        self._seeking = seeking
 
     def force_accelerated(self, enabled: bool) -> None:
         """Force acceleration state externally (e.g. reverberation boost)."""

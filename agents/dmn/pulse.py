@@ -56,6 +56,50 @@ class DMNPulse:
         self._cl_ok = 0
         self._cl_degraded = False
         self._cl_original_sensory_tick = SENSORY_TICK_S
+        # Exploration escalation state
+        self._exploration_targets: list[str] = []
+        self._boredom_window: list[tuple[float, str]] = []
+
+    def receive_exploration_impingement(self, imp: Impingement) -> None:
+        """Receive boredom/curiosity impingement for escalation processing."""
+        import time as _time
+
+        if imp.type == ImpingementType.BOREDOM:
+            self._exploration_targets.append(imp.source)
+            self._boredom_window.append((_time.time(), imp.source))
+            cutoff = _time.time() - 60.0
+            self._boredom_window = [(t, s) for t, s in self._boredom_window if t > cutoff]
+
+    def exploration_level(self) -> int:
+        """Current escalation: 0=none, 1=single-component, 2=multi-component, 3=sustained."""
+        if not self._boredom_window:
+            return 0
+        unique_sources = {s for _, s in self._boredom_window}
+        if len(unique_sources) >= 3:
+            return 2
+        return 1
+
+    @property
+    def last_exploration_deficit(self) -> float:
+        """Most recent aggregate exploration deficit (0-1)."""
+        return getattr(self, "_last_exploration_deficit", 0.0)
+
+    def _read_exploration_deficit(self) -> float:
+        """Read all ExplorationSignals and compute aggregate deficit."""
+        try:
+            from shared.exploration_writer import ExplorationReader
+
+            reader = ExplorationReader()
+            signals = reader.read_all()
+            if not signals:
+                return 0.0
+            boredom = [s.get("boredom_index", 0.0) for s in signals.values()]
+            curiosity = [s.get("curiosity_index", 0.0) for s in signals.values()]
+            agg_boredom = sum(boredom) / len(boredom)
+            agg_curiosity = sum(curiosity) / len(curiosity)
+            return max(0.0, min(1.0, agg_boredom - agg_curiosity))
+        except Exception:
+            return 0.0
 
     def set_tpn_active(self, active: bool) -> None:
         self._tpn_active = active
@@ -71,6 +115,10 @@ class DMNPulse:
         sensory_rate = SENSORY_TICK_S * tpn_mult * stimmung_mult
         evaluative_rate = EVALUATIVE_TICK_S * tpn_mult * stimmung_mult
         snapshot = read_all()
+
+        # Read exploration signals and compute aggregate deficit
+        self._last_exploration_deficit = self._read_exploration_deficit()
+
         # Extract stimmung stance for rate modulation
         stimmung = snapshot.get("stimmung", {})
         if isinstance(stimmung, dict) and "stance" in stimmung:
