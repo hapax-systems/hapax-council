@@ -65,6 +65,7 @@ class ContentResolverDaemon:
             neighbors=["imagination", "stimmung"],
             kappa=0.010,
             t_patience=300.0,
+            sigma_explore=0.08,
         )
         self._prev_fragment_hash: float = 0.0
 

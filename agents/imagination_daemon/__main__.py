@@ -112,6 +112,7 @@ class ImaginationDaemon:
             neighbors=["dmn_pulse", "stimmung"],
             kappa=0.015,
             t_patience=240.0,
+            sigma_explore=0.20,
         )
         self._prev_obs_count: int = 0
         self._prev_stance: str = "nominal"

@@ -69,6 +69,7 @@ class DMNPulse:
             neighbors=["imagination", "stimmung"],
             kappa=0.02,
             t_patience=180.0,
+            sigma_explore=0.15,
         )
         self._prev_obs_quality: float = 1.0
 

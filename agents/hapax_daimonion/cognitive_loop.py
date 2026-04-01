@@ -141,6 +141,7 @@ class CognitiveLoop:
             neighbors=["salience_router", "stimmung"],
             kappa=0.008,
             t_patience=360.0,
+            sigma_explore=0.05,
         )
         self._prev_phase_hash: float = 0.0
         self._prev_readiness: float = 0.0

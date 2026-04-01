@@ -49,11 +49,30 @@ class HabituationTracker:
         self._beta = beta
         self._g_max = g_max
         self._weights: dict[str, float] = {e: 0.0 for e in edges}
+        # Adaptive std_dev: running variance per edge (Welford's algorithm)
+        self._edge_mean: dict[str, float] = {e: 0.0 for e in edges}
+        self._edge_m2: dict[str, float] = {e: 0.0 for e in edges}
+        self._edge_n: dict[str, int] = {e: 0 for e in edges}
 
     def update(self, edge: str, current: float, previous: float, std_dev: float) -> None:
-        """Feed one tick of trace data for an edge."""
+        """Feed one tick of trace data for an edge.
+
+        If std_dev > 0, it is used directly. If std_dev <= 0, the historical
+        standard deviation (Welford's online algorithm) is used instead.
+        """
         if edge not in self._weights:
             return
+        # Update running variance
+        self._edge_n[edge] += 1
+        n = self._edge_n[edge]
+        old_mean = self._edge_mean[edge]
+        self._edge_mean[edge] += (current - old_mean) / n
+        self._edge_m2[edge] += (current - old_mean) * (current - self._edge_mean[edge])
+
+        # Use adaptive std_dev when caller passes 0 or negative
+        if std_dev <= 0 and n >= 3:
+            std_dev = math.sqrt(self._edge_m2[edge] / n)
+
         delta = abs(current - previous)
         threshold = max(std_dev, 1e-9)
         predictable = 1.0 if delta < threshold else 0.0

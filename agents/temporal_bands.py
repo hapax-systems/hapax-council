@@ -60,6 +60,7 @@ class TemporalBandFormatter:
             neighbors=["stimmung", "dmn_pulse"],
             kappa=0.010,
             t_patience=360.0,
+            sigma_explore=0.08,
         )
         self._prev_snapshot_hash: float = 0.0
 

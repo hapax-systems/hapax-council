@@ -81,6 +81,7 @@ class ReverieMixer:
             neighbors=["imagination", "stimmung"],
             kappa=0.015,
             t_patience=240.0,
+            sigma_explore=0.12,
         )
         self._prev_salience_input: float = 0.0
 

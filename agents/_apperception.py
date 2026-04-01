@@ -296,6 +296,7 @@ class ApperceptionCascade:
             neighbors=["dmn_pulse", "stimmung"],
             kappa=0.005,
             t_patience=120.0,
+            sigma_explore=0.05,
         )
         self._prev_trigger_count: float = 0.0
 

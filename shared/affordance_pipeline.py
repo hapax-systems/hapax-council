@@ -71,6 +71,7 @@ class AffordancePipeline:
         self._activation: dict[str, ActivationState] = {}
         self._embed_cache = EmbeddingCache()
         self._interrupt_handlers: dict[str, list[InterruptHandler]] = {}
+        self._seeking: bool = False
         self._inhibitions: list[InhibitionEntry] = []
         self._cascade_log: list[dict[str, Any]] = []
         self._context_associations: dict[tuple[str, str], float] = {}
@@ -92,6 +93,7 @@ class AffordancePipeline:
             neighbors=["dmn_pulse", "imagination"],
             kappa=0.012,
             t_patience=300.0,
+            sigma_explore=0.10,
         )
         self._prev_source_hash: float = 0.0
 
@@ -149,6 +151,10 @@ class AffordancePipeline:
             self._activation[record.name] = ActivationState()
         log.info("Indexed capability: %s", record.name)
         return True
+
+    def set_seeking(self, seeking: bool) -> None:
+        """SEEKING stance: widen retrieval (more candidates, lower threshold)."""
+        self._seeking = seeking
 
     def register_interrupt(self, token: str, capability_name: str, daemon: str) -> None:
         self._interrupt_handlers.setdefault(token, []).append(
@@ -220,7 +226,9 @@ class AffordancePipeline:
             for c in normal[1:]:
                 suppression = (winner_score - c.combined) * SUPPRESSION_FACTOR
                 c.combined = max(0.0, c.combined - suppression)
-        survivors = [c for c in normal if c.combined > THRESHOLD]
+        # SEEKING stance: lower threshold to surface more distant associations
+        effective_threshold = THRESHOLD * 0.5 if self._seeking else THRESHOLD
+        survivors = [c for c in normal if c.combined > effective_threshold]
         survivors.sort(key=lambda c: -c.combined)
         self._log_cascade(impingement, survivors)
         winner = survivors[0] if survivors else None

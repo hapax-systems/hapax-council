@@ -62,6 +62,7 @@ class IrPresenceBackend:
             neighbors=["stimmung", "perception"],
             kappa=0.020,
             t_patience=180.0,
+            sigma_explore=0.02,
         )
         self._prev_person: float = 0.0
         self._prev_motion: float = 0.0

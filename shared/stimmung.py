@@ -201,6 +201,7 @@ class StimmungCollector:
             neighbors=["dmn_pulse", "imagination"],
             kappa=0.005,
             t_patience=600.0,
+            sigma_explore=0.02,
         )
         self._prev_stance_val: float = 0.0
 

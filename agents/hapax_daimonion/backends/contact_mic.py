@@ -259,6 +259,7 @@ class ContactMicBackend:
             neighbors=["ir_presence", "stimmung"],
             kappa=0.020,
             t_patience=180.0,
+            sigma_explore=0.02,
         )
         self._prev_energy: float = 0.0
         self._prev_activity_hash: float = 0.0

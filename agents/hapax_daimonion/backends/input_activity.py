@@ -112,6 +112,7 @@ class InputActivityBackend:
             neighbors=["ir_presence", "contact_mic"],
             kappa=0.020,
             t_patience=180.0,
+            sigma_explore=0.02,
         )
         self._prev_active: float = 1.0
         self._prev_idle: float = 0.0
