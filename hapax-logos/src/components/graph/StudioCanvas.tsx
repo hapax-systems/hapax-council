@@ -13,13 +13,15 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { useStudioGraph } from "../../stores/studioGraphStore";
+import { useStudioGraph, type StudioGraphState } from "../../stores/studioGraphStore";
 import { SourceNode } from "./nodes/SourceNode";
 import { ShaderNode } from "./nodes/ShaderNode";
 import { OutputNode } from "./nodes/OutputNode";
 import { SignalEdge } from "./edges/SignalEdge";
 import { GraphToolbar } from "./GraphToolbar";
 import { useGraphSync } from "./useGraphSync";
+
+type S = StudioGraphState;
 
 const nodeTypes = {
   source: SourceNode,
@@ -36,12 +38,12 @@ const defaultEdgeOptions = {
 };
 
 export function StudioCanvas() {
-  const nodes = useStudioGraph((s) => s.nodes);
-  const edges = useStudioGraph((s) => s.edges);
-  const setNodes = useStudioGraph((s) => s.setNodes);
-  const setEdges = useStudioGraph((s) => s.setEdges);
-  const markDirty = useStudioGraph((s) => s.markDirty);
-  const selectNode = useStudioGraph((s) => s.selectNode);
+  const nodes = useStudioGraph((s: S) => s.nodes);
+  const edges = useStudioGraph((s: S) => s.edges);
+  const setNodes = useStudioGraph((s: S) => s.setNodes);
+  const setEdges = useStudioGraph((s: S) => s.setEdges);
+  const markDirty = useStudioGraph((s: S) => s.markDirty);
+  const selectNode = useStudioGraph((s: S) => s.selectNode);
 
   useGraphSync();
 

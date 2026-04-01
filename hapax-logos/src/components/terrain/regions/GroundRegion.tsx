@@ -10,7 +10,7 @@ interface GroundRegionProps {
   vl: VisualLayerState | undefined;
 }
 
-export const GroundRegion = memo(function GroundRegion() {
+export const GroundRegion = memo(function GroundRegion(_props: GroundRegionProps) {
   const { stimmungStance } = useSignals();
   const { regionDepths } = useTerrainDisplay();
 

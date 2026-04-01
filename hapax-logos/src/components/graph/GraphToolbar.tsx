@@ -1,12 +1,14 @@
 import { useReactFlow } from "@xyflow/react";
-import { useStudioGraph } from "../../stores/studioGraphStore";
+import { useStudioGraph, type StudioGraphState } from "../../stores/studioGraphStore";
+
+type S = StudioGraphState;
 
 export function GraphToolbar() {
   const { fitView, zoomIn, zoomOut } = useReactFlow();
-  const graphName = useStudioGraph((s) => s.graphName);
-  const graphDirty = useStudioGraph((s) => s.graphDirty);
-  const hapaxLocked = useStudioGraph((s) => s.hapaxLocked);
-  const toggleHapaxLock = useStudioGraph((s) => s.toggleHapaxLock);
+  const graphName = useStudioGraph((s: S) => s.graphName);
+  const graphDirty = useStudioGraph((s: S) => s.graphDirty);
+  const hapaxLocked = useStudioGraph((s: S) => s.hapaxLocked);
+  const toggleHapaxLock = useStudioGraph((s: S) => s.toggleHapaxLock);
 
   return (
     <div

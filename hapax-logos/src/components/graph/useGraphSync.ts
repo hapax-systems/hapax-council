@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { useStudioGraph } from "../../stores/studioGraphStore";
+import { useStudioGraph, type StudioGraphState } from "../../stores/studioGraphStore";
+type S = StudioGraphState;
 import { useCompositorLive } from "../../api/hooks";
 import { api } from "../../api/client";
 
@@ -8,7 +9,7 @@ import { api } from "../../api/client";
  * - Poll camera statuses from compositor
  */
 export function useGraphSync() {
-  const setCameraStatuses = useStudioGraph((s) => s.setCameraStatuses);
+  const setCameraStatuses = useStudioGraph((s: S) => s.setCameraStatuses);
   const { data: compositor } = useCompositorLive();
 
   useEffect(() => {

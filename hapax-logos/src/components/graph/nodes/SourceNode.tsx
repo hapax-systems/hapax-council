@@ -1,7 +1,8 @@
 import { memo, useEffect, useRef } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { LOGOS_API_URL } from "../../../config";
-import { useStudioGraph } from "../../../stores/studioGraphStore";
+import { useStudioGraph, type StudioGraphState } from "../../../stores/studioGraphStore";
+type S = StudioGraphState;
 
 export interface SourceNodeData {
   sourceType: "camera" | "reverie" | "ir" | "generator";
@@ -13,7 +14,7 @@ export interface SourceNodeData {
 function SourceNodeInner({ data }: NodeProps) {
   const { sourceType, role, label } = data as SourceNodeData;
   const imgRef = useRef<HTMLImageElement>(null);
-  const cameraStatuses = useStudioGraph((s) => s.cameraStatuses);
+  const cameraStatuses = useStudioGraph((s: S) => s.cameraStatuses);
   const status = cameraStatuses[role] ?? "offline";
 
   useEffect(() => {

@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { useStudioGraph } from "../../../stores/studioGraphStore";
+import { useStudioGraph, type StudioGraphState } from "../../../stores/studioGraphStore";
+type S = StudioGraphState;
 
 export interface ShaderNodeData {
   shaderType: string;
@@ -19,8 +20,8 @@ function paramSummary(params: Record<string, number | string | boolean>): string
 
 function ShaderNodeInner({ id, data }: NodeProps) {
   const { shaderType, label, params } = data as ShaderNodeData;
-  const selectedNodeId = useStudioGraph((s) => s.selectedNodeId);
-  const selectNode = useStudioGraph((s) => s.selectNode);
+  const selectedNodeId = useStudioGraph((s: S) => s.selectedNodeId);
+  const selectNode = useStudioGraph((s: S) => s.selectNode);
   const isSelected = selectedNodeId === id;
 
   return (

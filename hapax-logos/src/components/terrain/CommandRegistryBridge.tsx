@@ -13,7 +13,7 @@ import { useTerrain } from "../../contexts/TerrainContext";
 import { useRecordingToggle } from "../../api/hooks";
 import { registerStudioCommands, type StudioState } from "../../lib/commands/studio";
 import { registerDetectionCommands, type DetectionState } from "../../lib/commands/detection";
-import { selectEffect } from "../../components/studio/effectSources";
+// selectEffect was in deleted effectSources.ts — inline the API call
 import { api } from "../../api/client";
 
 function createMirror<T extends object>(initial: T) {
@@ -67,10 +67,8 @@ export function CommandRegistryBridge() {
           studioMirror.set({ activePreset: name });
           setActivePreset(name);
           // Switch hero source to FX so the camera polls the GPU-processed output
-          const fxSource = `fx-${name}`;
-          setEffectSourceId(fxSource);
-          selectEffect(fxSource);
-          api.post(`/studio/presets/${name}/activate`).catch(() => {});
+          setEffectSourceId(`fx-${name}`);
+          api.post("/studio/effect/select", { preset: name }).catch(() => {});
         },
         cyclePreset: (direction: "next" | "prev") => {
           api.post(`/studio/presets/cycle?direction=${direction}`).catch(
