@@ -144,7 +144,9 @@ impl ContentSourceManager {
         let sources_dir = self.sources_dir.clone();
         self.sources.retain(|id, src| {
             let keep = seen.contains(id)
-                && now.duration_since(src.last_refresh).as_millis() <= src.manifest.ttl_ms as u128;
+                && (src.manifest.ttl_ms == 0
+                    || now.duration_since(src.last_refresh).as_millis()
+                        <= src.manifest.ttl_ms as u128);
             if !keep {
                 let dir = sources_dir.join(id);
                 if dir.exists() {

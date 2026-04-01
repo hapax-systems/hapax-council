@@ -35,6 +35,15 @@ def write_source_protocol(
 
     source_id = f"imagination-{fragment.id}"
     source_dir = sources_dir / source_id
+
+    # Clean up previous imagination sources (replaced by this one)
+    import shutil
+
+    if sources_dir.exists():
+        for old in sources_dir.iterdir():
+            if old.is_dir() and old.name.startswith("imagination-") and old.name != source_id:
+                shutil.rmtree(old, ignore_errors=True)
+
     source_dir.mkdir(parents=True, exist_ok=True)
 
     rgba_data, width, height = _render_text_to_rgba(fragment.narrative)
@@ -53,7 +62,7 @@ def write_source_protocol(
         "layer": 1,
         "blend_mode": "screen",
         "z_order": 10,
-        "ttl_ms": 10000,
+        "ttl_ms": 0,
         "tags": ["imagination"],
     }
 
