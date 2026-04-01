@@ -1,0 +1,20 @@
+[Unit]
+Description=Hapax Content Resolver Daemon
+After=hapax-secrets.service hapax-imagination-loop.service
+Wants=hapax-imagination-loop.service
+PartOf=hapax-visual-stack.target
+
+[Service]
+Type=simple
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+ExecStart=%h/.local/bin/uv run python -m agents.content_resolver
+WorkingDirectory=%h/projects/hapax-council
+MemoryMax=512M
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=300
+OnFailure=notify-failure@%n.service
+
+[Install]
+WantedBy=hapax-visual-stack.target
