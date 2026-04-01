@@ -16,6 +16,8 @@ from typing import Any
 
 import yaml
 
+from shared.control_signal import ControlSignal, publish_health
+
 log = logging.getLogger(__name__)
 
 _CONTRACTS_DIR = Path(__file__).parent.parent.parent / "axioms" / "contracts"
@@ -109,10 +111,12 @@ class ConsentRegistry:
 
             self._fail_closed = False
             self._loaded_at = time.time()
+            publish_health(ControlSignal(component="consent_engine", reference=1.0, perception=1.0))
             return count
         except Exception:
             log.exception("Failed to load contracts from %s", directory)
             self._fail_closed = True
+            publish_health(ControlSignal(component="consent_engine", reference=1.0, perception=0.0))
             return 0
 
     def get(self, contract_id: str) -> ConsentContract | None:

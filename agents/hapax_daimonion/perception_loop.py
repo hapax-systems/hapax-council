@@ -107,6 +107,16 @@ async def perception_loop(daemon: VoiceDaemon) -> None:
                     perception=_fresh / max(_total, 1),
                 )
             )
+            _asr_available = daemon._conversation_pipeline is not None and hasattr(
+                daemon._conversation_pipeline, "is_active"
+            )
+            publish_health(
+                ControlSignal(
+                    component="voice_pipeline",
+                    reference=1.0,
+                    perception=1.0 if _asr_available else 0.0,
+                )
+            )
         except asyncio.CancelledError:
             break
         except Exception:

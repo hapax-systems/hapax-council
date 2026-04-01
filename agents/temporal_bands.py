@@ -24,6 +24,7 @@ from agents.temporal_scales import MultiScaleContext
 from agents.temporal_surprise import compute_surprise
 from agents.temporal_trend import trend_protention
 from agents.temporal_xml import format_temporal_xml
+from shared.control_signal import ControlSignal, publish_health
 
 # Re-export models for backward compatibility
 __all__ = [
@@ -59,6 +60,7 @@ class TemporalBandFormatter:
         """
         current = ring.current()
         if current is None:
+            publish_health(ControlSignal(component="temporal_bands", reference=1.0, perception=0.0))
             return TemporalBands()
 
         now = current.get("ts", 0.0)
@@ -92,7 +94,7 @@ class TemporalBandFormatter:
                     activities=d.activities,
                 )
 
-        return TemporalBands(
+        bands = TemporalBands(
             retention=retention,
             impression=impression,
             protention=protention,
@@ -102,6 +104,8 @@ class TemporalBandFormatter:
             recent_sessions=recent_sessions,
             day_context=day_context,
         )
+        publish_health(ControlSignal(component="temporal_bands", reference=1.0, perception=1.0))
+        return bands
 
     def format_xml(self, bands: TemporalBands) -> str:
         """Format bands as XML tags for LLM context injection."""

@@ -15,6 +15,7 @@ import logging
 import signal
 from pathlib import Path
 
+from shared.control_signal import ControlSignal, publish_health
 from shared.impingement_consumer import ImpingementConsumer
 
 log = logging.getLogger("reverie")
@@ -76,6 +77,7 @@ class ReverieDaemon:
                 await self.tick()
             except Exception:
                 log.exception("Reverie tick failed")
+                publish_health(ControlSignal(component="reverie", reference=1.0, perception=0.0))
             await asyncio.sleep(TICK_INTERVAL_S)
         log.info("Reverie daemon stopped")
 

@@ -9,6 +9,8 @@ import threading
 import time
 from typing import Any
 
+from shared.control_signal import ControlSignal, publish_health
+
 from .config import PERCEPTION_STATE_PATH
 from .consent import log_consent_event
 
@@ -78,6 +80,16 @@ def start_compositor(compositor: Any) -> None:
     compositor._running = True
     compositor._write_status("running")
     log_consent_event(compositor, "pipeline_start", allowed=compositor._consent_recording_allowed)
+
+    with compositor._camera_status_lock:
+        cameras_active = sum(1 for s in compositor._camera_status.values() if s == "active")
+    publish_health(
+        ControlSignal(
+            component="compositor",
+            reference=1.0,
+            perception=1.0 if cameras_active > 0 else 0.0,
+        )
+    )
 
     _register_purge_handler(compositor)
 
