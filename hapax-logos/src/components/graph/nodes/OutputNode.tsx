@@ -24,18 +24,14 @@ function OutputNodeInner({ data, selected }: NodeProps) {
     const poll = () => {
       if (!running || pending) return;
       pending = true;
-      const loader = new Image();
+      // Direct src assignment — no preloader. The Tauri webview handles
+      // the image load inline. Preloading caused double-fetch issues.
       const url = `${LOGOS_API_URL}/studio/stream/fx?_t=${Date.now()}`;
-      loader.onload = () => {
-        pending = false;
-        if (!running) return;
-        if (imgRef.current) imgRef.current.src = url;
-        if (fullscreenRef.current) fullscreenRef.current.src = url;
-        lastSuccess.current = Date.now();
-        setIsStale(false);
-      };
-      loader.onerror = () => { pending = false; };
-      loader.src = url;
+      if (imgRef.current) imgRef.current.src = url;
+      if (fullscreenRef.current) fullscreenRef.current.src = url;
+      lastSuccess.current = Date.now();
+      setIsStale(false);
+      pending = false;
     };
     poll();
     const pollTimer = setInterval(poll, 100);
