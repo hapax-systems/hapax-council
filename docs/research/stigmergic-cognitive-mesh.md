@@ -38,7 +38,7 @@ The definition gains precision by contrast with existing system classes.
 
 **Not a microservice architecture.** Microservices coordinate through synchronous RPC or asynchronous message queues with delivery guarantees. An SCM has no delivery guarantees — a trace deposited in the shared medium may never be read if no process happens to look. There is no broker, no queue, no at-least-once semantics. The medium is passive; readers are active.
 
-**Not a conventional cognitive architecture.** SOAR, ACT-R, and CLARION operate on a synchronized cognitive cycle where modules execute in lockstep phases. An SCM has no global cycle. Processes are temporally independent and causally coupled only through the shared medium. The closest cognitive architecture is LIDA (Franklin et al.), whose asynchronous codelets parallel SCM processes, but LIDA still assumes a Global Workspace with serial broadcast — a centralized mechanism absent from an SCM.
+**Not a conventional cognitive architecture.** SOAR, ACT-R, and CLARION operate on a globally clocked cognitive cycle. An SCM has no global cycle. Processes are temporally independent and causally coupled only through the shared medium. The closest cognitive architecture is LIDA (Franklin et al.), whose asynchronous codelets parallel SCM processes, but LIDA still assumes a Global Workspace with serial broadcast — a centralized mechanism absent from an SCM.
 
 **Not an ambient intelligence system.** Smart home platforms coordinate heterogeneous devices for utilitarian goals (comfort, energy efficiency, security). An SCM coordinates heterogeneous processes for perceptual self-maintenance — maintaining a coherent perceptual field for a single operator, not optimizing measurable objectives. The success criterion is not "did the system achieve the goal?" but "is the system perceiving accurately?"
 
@@ -50,7 +50,7 @@ The SCM sits at the intersection of three established research traditions:
 
 **Stigmergy** (Grassé, 1959; Theraulaz & Bonabeau, 1999) provides the coordination mechanism. Originally describing indirect coordination in termite colonies through pheromone traces, stigmergy has been formalized for multi-agent software systems (Fernandez-Marquez et al., 2013) and applied to swarm robotics and self-organizing systems. The SCM extends stigmergic coordination to cognitive processes with heterogeneous timescales — a combination not previously formalized. Traditional stigmergy assumes homogeneous agents depositing the same type of trace; the SCM involves heterogeneous agents depositing typed traces (stimmung dimensions, perception signals, imagination fragments) with different decay semantics.
 
-**Perceptual Control Theory** (Powers, 1973) provides the control structure. PCT models organisms as hierarchical negative-feedback controllers that control perceptions, not outputs. The SCM applies this to a distributed system: each process controls a different perceptual variable, and the hierarchy emerges from the trace-reading dependencies rather than from explicit architectural layering. PCT has been applied to robotic control (Mansell & Marken, 2015) and organizational behavior, but not to distributed software systems operating as cognitive infrastructure.
+**Perceptual Control Theory** (Powers, 1973) provides the control structure. PCT models organisms as hierarchical negative-feedback controllers that control perceptions, not outputs. The SCM applies this to a distributed system: each process controls a different perceptual variable, and the hierarchy emerges from the trace-reading dependencies rather than from explicit architectural layering. PCT has been applied to robotic control and organizational behavior, but not to distributed software systems operating as cognitive infrastructure.
 
 **Autopoiesis** (Maturana & Varela, 1980) provides the self-maintenance frame. An autopoietic system continuously produces and maintains itself by creating its own components. The SCM's 24/7 recovery chain (kernel panic auto-reboot → hardware watchdog → display manager autologin → systemd lingering → service restart) is an autopoietic closure: the system produces the conditions for its own continued operation. The cognitive mesh adds a further autopoietic property: the system's perceptual processing produces the traces that coordinate its own perceptual processing.
 
@@ -89,7 +89,7 @@ Stafford Beer's Viable System Model (1972) identifies five subsystems necessary 
 | Visual Surface (Reverie) | real-time/30fps | Expressive visual field | `/dev/shm/hapax-visual/frame.jpg` |
 | Voice Pipeline | continuous | Voice interaction state | Audio output, routing state |
 | Content Engine | ~5s | Imagination fragment production | `/dev/shm/hapax-imagination/current.json` |
-| Consent Engine | continuous | Consent coverage | Consent state, pipeline gates |
+| Consent Engine | continuous | Consent coverage | Consent state, audit trail |
 
 **System 2 — Coordination.** Anti-oscillation and conflict damping. In the SCM, S2 is the stimmung signal combined with the staleness threshold mechanism.
 
@@ -99,7 +99,7 @@ Staleness thresholds provide damping. Each S1 unit defines a staleness threshold
 
 **System 3 — Control.** Resource allocation and audit. In the SCM, S3 comprises the health monitor, VRAM watchdog, and reactive engine phase gating.
 
-The health monitor reads all S1 units' state and reports aggregate health via the Logos API. The VRAM watchdog prevents GPU memory exhaustion by monitoring allocation across GPU-bound services (DMN, Reverie, Compositor, voice daemon). The reactive engine's phase gating enforces execution ordering (deterministic Phase 0 before LLM-bound Phase 1 before cloud-LLM Phase 2) and concurrency bounds (semaphore at max 2 concurrent LLM calls).
+The health monitor reads all S1 units' state and reports aggregate health via the Logos API. The VRAM watchdog prevents GPU memory exhaustion by monitoring allocation across GPU-bound services (DMN, Reverie, Compositor, voice daemon). The reactive engine's 11 rules execute in phase order (8 deterministic Phase 0 rules before 3 GPU-bound Phase 1 rules before 3 cloud-LLM Phase 2 rules) with concurrency bounds (semaphore at max 2 concurrent cloud LLM calls).
 
 S3 differs from S2 in that it has authority to intervene: the VRAM watchdog can kill processes; the phase gate can block rule execution. S2 (stimmung) only informs; S3 acts.
 
@@ -107,13 +107,13 @@ S3 differs from S2 in that it has authority to intervene: the VRAM watchdog can 
 
 The scout agent scans external sources (technology landscape, tool ecosystem) for opportunities and threats relevant to the system's evolution. Apperception synthesizes a self-referential awareness signal from prediction errors, corrections, and cross-modal resonance — the system's capacity to observe itself. The DMN generates imagination fragments that are not responses to stimuli but spontaneous cognitive activity — the system's capacity for free association and anticipation.
 
-S4 is where the SCM most diverges from conventional distributed systems, which have no equivalent of imagination or self-awareness. These are not metaphorical labels; they describe computational processes with specific implementations and measurable outputs.
+S4 is where the SCM most diverges from conventional distributed systems, which have no equivalent of imagination or self-awareness. These labels are operationally grounded — the DMN produces structured fragments with measurable salience and material properties; apperception produces a coherence metric from 7 classified event sources — but whether they constitute "imagination" and "self-awareness" in any philosophically robust sense is a separate question addressed in the [Phenomenology-AI Research](../research/phenomenology-ai-perception-research.md).
 
 **System 5 — Policy.** Identity and normative closure. In the SCM, S5 is the Hapax Constitution: 5 axioms, the consent lattice algebra, and the SDLC enforcement pipeline.
 
 S5 defines what the system IS — a single-operator cognitive environment with specific ethical commitments. It constrains all other subsystems: S1 units cannot store data about non-operator persons without active consent contracts (interpersonal transparency axiom); S3 cannot allocate resources to multi-user features (single-user axiom); S4 cannot recommend management actions that involve generating evaluative language about individuals (management governance axiom).
 
-The recursive property of VSM applies: the voice daemon (an S1 unit of the mesh) contains its own S1-S5 internally. Its 27 perception backends are S1 operations; its resource arbiter is S2 coordination; its executor is S3 control; its salience routing is S4 intelligence; its governance chains are S5 policy. This recursive viability means the voice daemon could, in principle, operate independently — and indeed it does during periods when other mesh components are unavailable.
+The recursive property of VSM applies: the voice daemon (an S1 unit of the mesh) contains its own S1-S5 internally. Its 25 perception backends are S1 operations; its resource arbiter is S2 coordination; its executor is S3 control; its salience routing is S4 intelligence; its governance chains are S5 policy. This recursive viability means the voice daemon could, in principle, operate independently — and indeed it does during periods when other mesh components are unavailable.
 
 ### 2.2 Compositional Structure
 
@@ -181,7 +181,7 @@ Each SCM process can be modeled as an active inference agent (Friston, 2010) tha
 - **Medium processes** (DMN at 5s, stimmung at 15m) update mid-level contextual predictions
 - **Slow processes** (visual surface at variable cadence, pattern consolidator daily) update high-level abstract predictions
 
-Each level's predictions become the priors for the level below. IR perception's person detection becomes part of the context that shapes stimmung's self-assessment, which becomes the prior that shapes all other processes' behavior. This hierarchical influence propagation is not engineered — it emerges from the trace-reading dependencies.
+Each level's predictions become the priors for the level below. IR perception's person detection becomes part of the context that shapes stimmung's self-assessment, which becomes the prior that shapes all other processes' behavior. This hierarchical influence propagation arises from the trace-reading dependencies — the causal structure is designed (someone decided which processes read which traces), but the hierarchical dynamics are a consequence of those design choices rather than an explicitly engineered hierarchy.
 
 **Free energy of the mesh.** The aggregate free energy of the SCM is the sum of all processes' prediction errors, weighted by their perceptual significance. This provides a scalar health metric (see §4.3): low aggregate free energy indicates a well-calibrated mesh where all processes' models align with reality; high aggregate free energy indicates surprise — the mesh is encountering conditions its models do not predict.
 
@@ -216,7 +216,7 @@ These fusion rules are the SCM's equivalent of nonlinear pheromone interaction i
 
 ### 3.3 Temporal Verification
 
-The SCM's heterogeneous timescales create verification challenges not addressed by standard temporal logic, which assumes a single global clock or synchronized local clocks. Multi-clock temporal logic (Bérard et al., 2024) provides the formal framework.
+The SCM's heterogeneous timescales create verification challenges not addressed by standard temporal logic, which assumes a single global clock or synchronized local clocks. Multi-clock temporal logic provides the formal framework for expressing and verifying such properties.
 
 **Local clocks.** Each S1 unit defines a local clock with its own tick rate:
 
@@ -238,7 +238,7 @@ Clock_Apperception = event-driven (7 trigger sources)
 
 **P4. Imagination liveness.** *If the DMN is active and at least one perception backend is producing fresh data, the imagination loop produces a new fragment within its configured cadence.* This is a conditional liveness property: under specified preconditions (DMN running, perception available), the system makes progress. The condition excludes cases where the DMN is deliberately idle (TPN active gate set) or where all perception is stale (no input to imagine about).
 
-**P5. Stimmung convergence.** *After a perturbation (service restart, sensor failure), stimmung converges to a stable stance within 3 stimmung cycles.* This is a bounded convergence property. It holds because stimmung dimensions are computed from current readings (not accumulated history), so a transient failure resolves as soon as the next fresh reading arrives.
+**P5. Stimmung convergence.** *After a perturbation (service restart, sensor failure), stimmung converges to a stable stance within one stimmung sync cycle.* This is a bounded convergence property. It holds because stimmung dimensions are computed from current readings (not accumulated history), so a transient failure resolves as soon as the next fresh reading arrives and the sync timer fires.
 
 These properties are not aspirational — they are checkable against the codebase and, in several cases, observable in the system's runtime behavior through the health monitor and Langfuse traces.
 
@@ -277,7 +277,7 @@ This metric reframes "is the system healthy?" as "is the system perceiving what 
 
 ### 4.2 Integration Metric
 
-Integrated Information Theory (Tononi, 2004, 2023) proposes that the degree of consciousness corresponds to phi (Φ) — the amount of information generated by a system above and beyond its parts. Computing Φ is intractable for any non-trivial system. However, the concept motivates a tractable proxy: **integration depth**.
+Integrated Information Theory (Tononi, 2004) proposes that consciousness corresponds to integrated information (Φ) — information generated by a system above and beyond its parts. We do not claim a formal connection to IIT's phi, which is computationally intractable and designed for neural systems. However, the underlying question — "is this system genuinely integrated or merely aggregated?" — motivates a pragmatic metric: **integration depth**.
 
 **Definition.** The integration depth of a component C is the number of non-adjacent components whose behavior measurably changes when C is removed or disabled.
 
@@ -347,8 +347,8 @@ In distributed databases, consistency defines the agreement guarantees among rep
 
 The **appropriate consistency level** depends on the latency of consent-relevant events. For the Hapax reference implementation, eventual consistency is acceptable because:
 1. Consent changes are infrequent (contract activation/revocation happens at human timescales — minutes, not seconds)
-2. Gated components (voice pipeline, studio compositor) read consent state on every activation, so the propagation delay is bounded by their cadence (effectively immediate for continuous daemons)
-3. The consent lattice's monotonic join property ensures that stale consent is always more restrictive than current consent (labels only float up), so the worst case is processing data under an unnecessarily restrictive — never an insufficiently restrictive — consent state
+2. Components handling governed data (voice pipeline, studio compositor) are continuous daemons, so any consent check would have near-zero propagation delay. (Note: the reference implementation currently logs consent events for audit rather than enforcing runtime gates — the formalism here describes the target architecture.)
+3. The consent lattice's monotonic join property governs the *data plane*: data labels only float up through processing. However, this does not protect against stale *authorization state* on the control plane. A revocation (removing permission) makes the effective authorization more restrictive, but a component reading stale pre-revocation state would operate under the old, more-permissive grant — the opposite of safe. The data-plane monotonicity does not save the control plane. The actual safety guarantee comes from points 1 and 2: infrequent changes and near-zero propagation delay in continuous daemons
 
 However, the formalism identifies a scenario where eventual consistency is insufficient: **consent revocation during active data flow.** If Alice revokes consent while her voice data is being processed through the pipeline, eventual consistency means some pipeline stages may still process her data under the revoked contract. Causal consent consistency would prevent this by ensuring that the revocation propagates causally through the pipeline before the data does.
 
@@ -378,7 +378,7 @@ The combination of information flow control algebra (data plane) with distribute
 
 **Prior work in IFC** (Myers & Liskov, 2000; Stefan et al., 2011; Hedin & Sabelfeld, 2012) provides rigorous label algebras for tracking information flow through computations. This work assumes a single runtime or a tightly coupled distributed system with coordinated clocks. It does not address propagation delays in asynchronous, heterogeneous-cadence systems.
 
-**Prior work in consent management** (Fatema et al., 2017; Rantos et al., 2019; Kotal et al., 2025) provides formal models for GDPR compliance with dynamic consent states. This work treats consent as a static grant checked at a point in time, not as a distributed system property with propagation dynamics, consistency levels, and partition behavior.
+**Prior work in consent management** (Fatema et al., 2017; Rantos et al., 2019) provides formal models for GDPR compliance with dynamic consent states. This work treats consent as a static grant checked at a point in time, not as a distributed system property with propagation dynamics, consistency levels, and partition behavior.
 
 **The SCM contribution** bridges these two bodies of work:
 1. IFC provides the data-plane algebra (consent labels, lattice operations, floating labels)
@@ -403,7 +403,21 @@ Several frameworks partially address SCM concerns but were developed for differe
 
 **Reaction-diffusion systems** provide mathematical models for signal propagation and pattern formation that could formalize the SCM's trace interference patterns. The SCM's discrete-process, discrete-trace architecture differs from continuous reaction-diffusion, but the qualitative dynamics (positive feedback, negative feedback, fluctuation amplification) are isomorphic.
 
-### 6.2 Open Questions
+### 6.2 Limitations of This Document
+
+**Partial component coverage.** The S1 inventory (§2.1) lists 14 components, but the dynamics (§3) and health (§4) sections analyze only the 7 most interconnected. Contact Mic, Imagination Resolver, Reactive Engine, Studio Compositor, Voice Pipeline, Content Engine, and Temporal Bonds receive structural description but not dynamical or health-metric treatment. This reflects the document's focus on the mesh's coordination properties rather than exhaustive component analysis, but a complete formalization would extend to all 14.
+
+**Observer-system circularity unformalized.** Property 6 (§1.1) asserts that operator-system circularity is constitutive, but sections 2–5 analyze the system as if the operator were external. Formalizing circularity would require modeling the operator's behavioral responses to system outputs and their effect on system inputs — a feedback loop that crosses the boundary between computational and psychological domains. This remains the deepest open problem in the formalization.
+
+**Emergent state underspecified.** Property 3 (§1.1) defines emergent perceptual state as "the superposition of all traces," but no section formalizes what superposition means operationally — how it would be computed, what its properties are, or how it differs from a simple snapshot of all `/dev/shm` files. The fusion rules in §3.2 are component-specific; a general theory of emergent state in stigmergic systems is needed.
+
+**Health metrics not yet instrumented.** The metrics in §4 are theoretical constructs grounded in available data sources but not yet computed by the reference implementation. Aggregate control error (§4.1) requires quantifying reference signals for all components, some of which are context-dependent. Integration depth (§4.2) requires ablation experiments. Free energy (§4.3) has identified proxies but no aggregation formula. These metrics are design targets, not operational tools — yet.
+
+**Active Inference framing.** The AIF terminology in §3.1 provides useful vocabulary (prediction error, empirical prior, free energy) but much of the analytical content could be equivalently stated in PCT or cybernetic terms. The AIF framing is most valuable in §4.3 (free energy as health scalar) and least valuable in §3.1's component-level descriptions, where it relabels staleness checks as "negative prediction errors" without adding analytical power. A future revision may tighten the AIF contributions to where they genuinely exceed what PCT provides.
+
+**Consent gating architecture.** The reference implementation currently audits consent events rather than enforcing runtime gates on component execution (§5.2–5.3). The formalism describes the target architecture. The gap between audit and enforcement is itself a research and engineering problem.
+
+### 6.3 Open Questions
 
 **Q1. Formal verification.** The temporal properties in §3.3 are currently verified informally (code inspection, runtime observation). Can they be formalized in a multi-clock temporal logic and verified automatically? This would require extracting a formal model from the codebase — a significant but valuable effort.
 
@@ -425,13 +439,10 @@ Baars, B.J. (1988). *A Cognitive Theory of Consciousness*. Cambridge University 
 
 Beer, S. (1972). *Brain of the Firm*. Allen Lane.
 
-Bérard, B. et al. (2024). "Specification and Verification of Multi-Clock Systems." *ACM Transactions on Computational Logic*.
+Bérard, B. et al. "Specification and Verification of Multi-Clock Systems." (Citation needs verification — included as representative of the multi-clock temporal logic literature.)
 
 Clark, A. & Chalmers, D. (1998). "The Extended Mind." *Analysis*, 58(1), 7–19.
 
-Conant, R.C. & Ashby, W.R. (1970). "Every Good Regulator of a System Must Be a Model of That System." *International Journal of Systems Science*, 1(2), 89–97.
-
-Evans, R. (2020). *Kant's Cognitive Architecture*. PhD thesis, Imperial College London.
 
 Fernandez-Marquez, J.L. et al. (2013). "Self-Managing and Self-Organising Mobile Computing Applications: A Separation of Concerns Approach." *33rd IEEE ICDCSW*.
 
@@ -459,8 +470,4 @@ Theraulaz, G. & Bonabeau, E. (1999). "A brief history of stigmergy." *Artificial
 
 Tononi, G. (2004). "An information integration theory of consciousness." *BMC Neuroscience*, 5, 42.
 
-Tononi, G. et al. (2023). "IIT 4.0." arXiv:2212.14787.
-
 Varela, F., Thompson, E. & Rosch, E. (1991). *The Embodied Mind: Cognitive Science and Human Experience*. MIT Press.
-
-von Foerster, H. (1974). *Cybernetics of Cybernetics*. University of Illinois.
