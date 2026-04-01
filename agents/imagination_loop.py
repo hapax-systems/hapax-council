@@ -193,3 +193,18 @@ class ImaginationLoop:
         except Exception:
             log.warning("Imagination tick failed", exc_info=True)
             return None
+
+
+# ── Positive Feedback: Engagement → Imagination Acceleration ──────────────
+
+PRESENCE_THRESHOLD = 0.7
+AUDIO_ENERGY_THRESHOLD = 0.3
+
+
+def should_accelerate_from_engagement(perception: dict) -> bool:
+    """Check if operator engagement is high enough to accelerate imagination.
+    Positive feedback: high presence + audio energy → faster imagination.
+    """
+    presence = perception.get("presence_probability", 0.0)
+    audio = perception.get("audio_energy", 0.0)
+    return presence >= PRESENCE_THRESHOLD and audio >= AUDIO_ENERGY_THRESHOLD
