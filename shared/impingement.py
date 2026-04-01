@@ -13,6 +13,7 @@ Impingements are:
 
 from __future__ import annotations
 
+import time
 import uuid
 from enum import StrEnum
 from typing import Any
@@ -59,3 +60,34 @@ def render_impingement_text(imp: Impingement) -> str:
     if imp.interrupt_token:
         parts.append(f"critical: {imp.interrupt_token}")
     return "; ".join(parts)
+
+
+def cascade_depth(imp: Impingement) -> int:
+    """Get the cascade depth of an impingement (0 = root, no parent)."""
+    return imp.content.get("_cascade_depth", 0)
+
+
+def child_impingement(
+    *,
+    parent: Impingement,
+    source: str,
+    type: ImpingementType,
+    content: dict[str, Any],
+    decay: float = 0.7,
+    max_depth: int = 3,
+) -> Impingement | None:
+    """Create a child impingement with decayed strength and parent tracing.
+    Returns None if max cascade depth exceeded.
+    """
+    depth = cascade_depth(parent) + 1
+    if depth > max_depth:
+        return None
+    return Impingement(
+        timestamp=time.time(),
+        source=source,
+        type=type,
+        strength=parent.strength * decay,
+        content={**content, "_cascade_depth": depth},
+        context=parent.context,
+        parent_id=parent.id,
+    )
