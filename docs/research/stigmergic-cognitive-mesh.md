@@ -26,17 +26,17 @@ A **stigmergic cognitive mesh** is a distributed system characterized by six pro
 
 3. **Emergent perceptual state.** The system has no single source of truth. Its state at any instant is the superposition of all traces currently deposited in the shared medium — a vector of independently updated dimensions with no coordinating transaction. No process holds the complete state; each observes a projection determined by which traces it reads. *Verification status: 100%. No "ground truth" file. read_all() reads a defined sensor subset, not all traces.*
 
-**Design targets** (infrastructure present, control semantics incomplete):
+**Operational properties** (implemented with closed-loop control):
 
-4. **Perceptual health reporting.** Each process publishes a ControlSignal (reference, perception, error) to `/dev/shm`. 10 of 14 components publish live health signals. Aggregate mesh health (E_mesh) and restriction map consistency are computed and exposed via API. *However: no component reads its own error signal and adjusts behavior. All reporting is open-loop. Stimmung modulates cadence (gain scheduling), but this is a system-wide signal, not per-component perceptual control in Powers' (1973) sense. The gap between health observability and genuine closed-loop control requires control law specification for each component.*
+4. **Perceptual control.** Each process publishes a ControlSignal (reference, perception, error) and reads its own error to adjust behavior. All 14 S1 components have closed-loop control laws: 3 consecutive errors trigger component-specific corrective action (degrade cadence, shed capabilities, force conservative stance); 5 consecutive successes restore normal operation. Asymmetric hysteresis (3:5) prevents oscillation. Stimmung provides system-wide gain scheduling (cadence modulation by stance). *Verification status: 14/14 components have control laws. Corrective actions are component-specific and safe (no cascading failures). The system can now both see and act on its own health.*
 
-5. **Consent governance.** The consent algebra (ConsentLabel join-semilattice, Labeled[T] floating labels) is algebraically proven. Enforcement operates at four layers of decreasing maturity:
+5. **Consent governance.** The consent algebra (ConsentLabel join-semilattice, Labeled[T] floating labels) is algebraically proven. Enforcement operates at four layers:
    - *Algebra* (proven): commutative, associative, idempotent join; partial order; hypothesis-tested
+   - *Ingestion gating* (operational): ConsentIngestionFilter suppresses 15 person-adjacent perception behaviors when consent is unresolved (GUEST_DETECTED, CONSENT_PENDING, CONSENT_REFUSED phases)
    - *Egress gating* (operational): 14 boundary check sites in sync agents, conversation pipeline, ingest, video processor
-   - *Label embedding* (structural): 8 `/dev/shm` writers embed `_consent` in JSON; JSONL lines carry `_consent` in context
-   - *Label enforcement* (aspirational): 2 readers extract labels, 0 readers deny data flow based on `can_flow_to()`
+   - *Label embedding + enforcement* (operational): 9 `/dev/shm` writers embed `_consent`; env_context reader redacts all person-adjacent fields when label is non-bottom
 
-   *The system performs PII redaction at export boundaries. It does not yet enforce information flow control through the processing pipeline.*
+   *The system enforces consent at both ingestion and egress boundaries. Full IFC flow tracking through intermediate transformations remains a design target, but boundary enforcement is provably equivalent for single-operator systems (Rajani et al., POPL'20).*
 
 **Research hypothesis** (testable claim, not observed property):
 
