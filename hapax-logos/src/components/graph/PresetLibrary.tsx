@@ -193,11 +193,15 @@ function PresetItem({ name }: { name: string }) {
   const loadPreset = useStudioGraph((s: S) => s.loadPreset);
 
   const handleClick = async () => {
+    console.log("[preset] click:", name);
     // Activate on backend
-    await api.post("/studio/effect/select", { preset: name }).catch(() => {});
+    await api.post("/studio/effect/select", { preset: name }).catch((e: unknown) => {
+      console.error("[preset] activate failed:", e);
+    });
     // Fetch preset JSON and convert to React Flow graph with dagre layout
     const { fetchAndLoadPreset } = await import("./presetLoader");
     const result = await fetchAndLoadPreset(name);
+    console.log("[preset] load result:", result ? `${result.nodes.length} nodes` : "null");
     if (result) {
       loadPreset(name, result.nodes, result.edges);
     }

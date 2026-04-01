@@ -178,9 +178,13 @@ function layoutGraph(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge
 export async function fetchAndLoadPreset(presetName: string): Promise<{ nodes: Node[]; edges: Edge[] } | null> {
   try {
     const graph = await api.get<EffectGraphJson>(`/studio/presets/${presetName}`);
+    console.log("[preset] fetched:", presetName, graph ? Object.keys(graph) : "null");
     if (!graph?.nodes) return null;
-    return effectGraphToFlow(graph);
-  } catch {
+    const result = effectGraphToFlow(graph);
+    console.log("[preset] converted:", result.nodes.length, "nodes", result.edges.length, "edges");
+    return result;
+  } catch (e) {
+    console.error("[preset] fetch failed:", presetName, e);
     return null;
   }
 }
