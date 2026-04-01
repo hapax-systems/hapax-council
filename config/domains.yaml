@@ -1,0 +1,52 @@
+# Domain registry — maps life domains to data sources for orientation panel.
+# Adding a domain: add an entry here. No code changes needed.
+
+domains:
+  research:
+    staleness_days: 7
+    vault_goal_filter: "domain: research"
+    apis:
+      sprint: "/api/sprint"
+    telemetry:
+      git_repos: [hapax-council, hapax-constitution]
+      langfuse_tags: [research, bayesian, sprint]
+      vault_paths: []
+
+  management:
+    staleness_days: 14
+    vault_goal_filter: "domain: management"
+    apis:
+      officium_nudges: "http://localhost:8050/api/nudges"
+      officium_briefing: "http://localhost:8050/api/briefing"
+    telemetry:
+      git_repos: []
+      langfuse_tags: []
+      vault_paths: ["30 Areas/management/"]
+
+  studio:
+    staleness_days: 14
+    vault_goal_filter: "domain: studio"
+    apis: {}
+    telemetry:
+      git_repos: []
+      langfuse_tags: []
+      vault_paths: ["20 Projects/studio/", "30 Areas/music/"]
+
+  personal:
+    staleness_days: 30
+    vault_goal_filter: "domain: personal"
+    apis: {}
+    telemetry:
+      git_repos: []
+      langfuse_tags: []
+      vault_paths: ["30 Areas/", "20-personal/"]
+
+  health:
+    staleness_days: 7
+    vault_goal_filter: "domain: health"
+    apis:
+      watch: "/api/biometrics"
+    telemetry:
+      git_repos: []
+      langfuse_tags: []
+      vault_paths: []
