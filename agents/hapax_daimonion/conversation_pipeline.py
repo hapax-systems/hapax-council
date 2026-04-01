@@ -691,7 +691,8 @@ class ConversationPipeline:
                     self.buffer.set_speaking(True)
                 if self._echo_canceller:
                     self._echo_canceller.feed_reference(pcm)
-                self._audio_output.write(pcm)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._audio_output.write, pcm)
                 if self.buffer:
                     self.buffer.set_speaking(False)
             else:
@@ -1222,9 +1223,10 @@ class ConversationPipeline:
             phrase, pcm = self._bridge_engine.select(ctx)
             if pcm and self._audio_output:
                 try:
-                    self._audio_output.write(pcm)
                     if self._echo_canceller:
                         self._echo_canceller.feed_reference(pcm)
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, self._audio_output.write, pcm)
                 except Exception:
                     log.debug("Tool bridge playback failed", exc_info=True)
 
@@ -1337,9 +1339,10 @@ class ConversationPipeline:
         # the first TTS clause to get clipped.
         if pcm and self._audio_output:
             try:
-                self._audio_output.write(pcm)
                 if self._echo_canceller:
                     self._echo_canceller.feed_reference(pcm)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._audio_output.write, pcm)
             except Exception:
                 log.debug("Bridge playback failed", exc_info=True)
         elif phrase:

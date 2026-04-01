@@ -251,7 +251,12 @@ def _start_cognitive_loop(daemon: VoiceDaemon) -> None:
 
 
 def _play_wake_greeting(daemon: VoiceDaemon) -> None:
-    """Play a presynthesized acknowledging phrase."""
+    """Play a presynthesized acknowledging phrase in a background thread.
+
+    Must not block the event loop — audio_output.write() sleeps for the
+    audio duration (real-time pacing). Blocking here freezes the cognitive
+    loop and causes utterances to be swallowed.
+    """
     try:
         from agents.hapax_daimonion.bridge_engine import BridgeContext
 
@@ -262,9 +267,14 @@ def _play_wake_greeting(daemon: VoiceDaemon) -> None:
         )
         phrase, pcm = daemon._bridge_engine.select(ctx)
         if pcm and daemon._conversation_pipeline._audio_output:
-            daemon._conversation_buffer.set_speaking(True)
-            daemon._conversation_pipeline._audio_output.write(pcm)
-            daemon._conversation_buffer.set_speaking(False)
+            import threading
+
+            def _play() -> None:
+                daemon._conversation_buffer.set_speaking(True)
+                daemon._conversation_pipeline._audio_output.write(pcm)
+                daemon._conversation_buffer.set_speaking(False)
+
+            threading.Thread(target=_play, daemon=True).start()
             log.info("Wake greeting: '%s'", phrase)
     except Exception:
         log.debug("Wake greeting failed (non-fatal)", exc_info=True)
