@@ -17,6 +17,30 @@ from agents.hapax_daimonion.cpal.types import ConversationalRegion, CorrectionTi
 
 log = logging.getLogger(__name__)
 
+# Tier ordering for comparison (avoids fragile string comparison on enum values)
+_TIER_ORDER = [
+    CorrectionTier.T0_VISUAL,
+    CorrectionTier.T1_PRESYNTHESIZED,
+    CorrectionTier.T2_LIGHTWEIGHT,
+    CorrectionTier.T3_FULL_FORMULATION,
+]
+_TIER_RANK = {t: i for i, t in enumerate(_TIER_ORDER)}
+
+_VOCAL_REGIONS = frozenset(
+    {
+        ConversationalRegion.ATTENTIVE,
+        ConversationalRegion.CONVERSATIONAL,
+        ConversationalRegion.INTENSIVE,
+    }
+)
+
+_T3_REGIONS = frozenset(
+    {
+        ConversationalRegion.CONVERSATIONAL,
+        ConversationalRegion.INTENSIVE,
+    }
+)
+
 
 @dataclass(frozen=True)
 class ComposedAction:
@@ -42,71 +66,37 @@ class TierComposer:
         region: ConversationalRegion,
         trigger: str = "control_law",
     ) -> ComposedAction:
-        """Compose a signal sequence for the given action tier.
-
-        The sequence always starts at T0 and builds up to the
-        requested tier, skipping tiers not available in the
-        current region.
-        """
+        """Compose a signal sequence for the given action tier."""
         tiers: list[CorrectionTier] = []
         signals: list[str] = []
+        requested_rank = _TIER_RANK[action_tier]
 
         # T0 always fires (visual acknowledgment)
         tiers.append(CorrectionTier.T0_VISUAL)
         signals.append("attentional_shift")
 
-        if action_tier == CorrectionTier.T0_VISUAL:
-            return ComposedAction(
-                tiers=tuple(tiers),
-                signal_types=tuple(signals),
-                trigger=trigger,
-            )
+        if requested_rank < _TIER_RANK[CorrectionTier.T1_PRESYNTHESIZED]:
+            return ComposedAction(tiers=tuple(tiers), signal_types=tuple(signals), trigger=trigger)
 
-        # T1 fires if region permits and tier requests it
-        if action_tier.value >= CorrectionTier.T1_PRESYNTHESIZED.value:
-            if region in (
-                ConversationalRegion.ATTENTIVE,
-                ConversationalRegion.CONVERSATIONAL,
-                ConversationalRegion.INTENSIVE,
-            ):
-                tiers.append(CorrectionTier.T1_PRESYNTHESIZED)
-                signals.append("acknowledgment")
+        # T1: vocal acknowledgment if region permits
+        if region in _VOCAL_REGIONS:
+            tiers.append(CorrectionTier.T1_PRESYNTHESIZED)
+            signals.append("acknowledgment")
 
-        if action_tier == CorrectionTier.T1_PRESYNTHESIZED:
-            return ComposedAction(
-                tiers=tuple(tiers),
-                signal_types=tuple(signals),
-                trigger=trigger,
-            )
+        if requested_rank < _TIER_RANK[CorrectionTier.T2_LIGHTWEIGHT]:
+            return ComposedAction(tiers=tuple(tiers), signal_types=tuple(signals), trigger=trigger)
 
-        # T2 fires for floor claim before T3
-        if action_tier.value >= CorrectionTier.T2_LIGHTWEIGHT.value:
-            if region in (
-                ConversationalRegion.ATTENTIVE,
-                ConversationalRegion.CONVERSATIONAL,
-                ConversationalRegion.INTENSIVE,
-            ):
-                tiers.append(CorrectionTier.T2_LIGHTWEIGHT)
-                signals.append("discourse_marker")
+        # T2: discourse marker / floor claim if region permits
+        if region in _VOCAL_REGIONS:
+            tiers.append(CorrectionTier.T2_LIGHTWEIGHT)
+            signals.append("discourse_marker")
 
-        if action_tier == CorrectionTier.T2_LIGHTWEIGHT:
-            return ComposedAction(
-                tiers=tuple(tiers),
-                signal_types=tuple(signals),
-                trigger=trigger,
-            )
+        if requested_rank < _TIER_RANK[CorrectionTier.T3_FULL_FORMULATION]:
+            return ComposedAction(tiers=tuple(tiers), signal_types=tuple(signals), trigger=trigger)
 
-        # T3 substantive response
-        if action_tier == CorrectionTier.T3_FULL_FORMULATION:
-            if region in (
-                ConversationalRegion.CONVERSATIONAL,
-                ConversationalRegion.INTENSIVE,
-            ):
-                tiers.append(CorrectionTier.T3_FULL_FORMULATION)
-                signals.append("substantive_response")
+        # T3: substantive response if region permits
+        if region in _T3_REGIONS:
+            tiers.append(CorrectionTier.T3_FULL_FORMULATION)
+            signals.append("substantive_response")
 
-        return ComposedAction(
-            tiers=tuple(tiers),
-            signal_types=tuple(signals),
-            trigger=trigger,
-        )
+        return ComposedAction(tiers=tuple(tiers), signal_types=tuple(signals), trigger=trigger)
