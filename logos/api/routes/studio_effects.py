@@ -203,6 +203,25 @@ async def activate_preset(name: str):
     return {"status": "ok", "name": p.name}
 
 
+@router.post("/studio/presets")
+async def create_preset(request: dict[str, object]):
+    """Save a preset JSON to the user preset directory."""
+    name = request.get("name")
+    if not name or not isinstance(name, str):
+        raise HTTPException(400, "Missing or invalid 'name' field")
+    # Sanitize filename
+    safe_name = "".join(c for c in name if c.isalnum() or c in "-_").strip()
+    if not safe_name:
+        raise HTTPException(400, "Invalid preset name")
+    _USER_PRESETS.mkdir(parents=True, exist_ok=True)
+    path = _USER_PRESETS / f"{safe_name}.json"
+    try:
+        path.write_text(_json_mod.dumps(request, indent=2))
+    except OSError as e:
+        raise HTTPException(503, f"Failed to write preset: {e}") from e
+    return {"status": "saved", "name": safe_name, "path": str(path)}
+
+
 @router.get("/studio/effect/nodes")
 async def list_node_types():
     reg = _get_registry()

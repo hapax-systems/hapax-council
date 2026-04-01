@@ -75,6 +75,14 @@ export function StudioCanvas() {
       } else if (e.key === "f" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         rfInstance.current?.fitView({ padding: 0.2 });
+      } else if (e.key === "s" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        const state = useStudioGraph.getState();
+        import("./presetLoader").then(({ savePreset }) => {
+          savePreset(state.graphName, state.nodes, state.edges).then((ok) => {
+            if (ok) state.markClean();
+          });
+        });
       }
     };
     window.addEventListener("keydown", handler);
