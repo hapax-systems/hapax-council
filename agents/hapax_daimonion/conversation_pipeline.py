@@ -722,9 +722,9 @@ class ConversationPipeline:
         llm_task = asyncio.create_task(self._generate_and_speak())
         await self._speak_bridge()
         try:
-            await asyncio.wait_for(llm_task, timeout=20.0)
+            await asyncio.wait_for(llm_task, timeout=90.0)
         except TimeoutError:
-            log.warning("LLM task timed out after 20s")
+            log.warning("LLM task timed out after 90s")
             llm_task.cancel()
             # Speak error WHILE still in speaking mode — prevents echo feedback.
             # Previous bug: set_speaking(False) before error TTS let the buffer
