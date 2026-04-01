@@ -89,18 +89,20 @@ def write_uniforms(
     # as if it were DMN's visual projection.
     IMAGINATION_STALE_S = 60.0
     if imagination is None:
-        silence = 0.05
+        silence = 0.0
     else:
         frag_age = time.time() - float(imagination.get("timestamp", 0))
         if frag_age > IMAGINATION_STALE_S:
             # Fade toward silence as fragment ages beyond threshold
-            silence = max(0.05, 1.0 - (frag_age - IMAGINATION_STALE_S) / IMAGINATION_STALE_S)
+            silence = max(0.0, 1.0 - (frag_age - IMAGINATION_STALE_S) / IMAGINATION_STALE_S)
         else:
             silence = 1.0
 
     uniforms: dict[str, object] = {
         "custom": [material_val],
-        "slot_opacities": build_slot_opacities(imagination, salience),
+        "slot_opacities": build_slot_opacities(imagination, salience)
+        if silence > 0
+        else [0.0, 0.0, 0.0, 0.0],
     }
 
     for key, value in chain_params.items():
