@@ -39,6 +39,7 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
     Most dependencies are precomputed at startup. This method builds
     the fresh system prompt and creates the pipeline object (<50ms).
     """
+    from agents._working_mode import get_working_mode
     from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
     from agents.hapax_daimonion.conversational_policy import get_policy
     from agents.hapax_daimonion.persona import screen_context_block, system_prompt
@@ -143,8 +144,6 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
     daemon._conversation_pipeline._nudges_fn = daemon._nudges_fn
     daemon._conversation_pipeline._dmn_fn = daemon._dmn_fn
     daemon._conversation_pipeline._imagination_fn = daemon._imagination_fn
-    daemon._cognitive_loop._speech_capability = daemon._speech_capability
-    daemon._cognitive_loop._daemon = daemon
 
     # Wire salience
     if daemon._salience_router is not None:
@@ -168,6 +167,12 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
 
     # Create cognitive loop
     _start_cognitive_loop(daemon)
+    daemon._cognitive_loop._speech_capability = daemon._speech_capability
+    daemon._cognitive_loop._daemon = daemon
+
+    from agents.hapax_daimonion.session_recorder import SessionRecorder
+
+    daemon._cognitive_loop._session_recorder = SessionRecorder(daemon.session.session_id)
 
     # Wake greeting
     _play_wake_greeting(daemon)

@@ -94,7 +94,7 @@ class TTSManager:
 
         # Voxtral drops very short utterances (especially with ref_audio voice
         # cloning). Fall back to voice_id preset for texts under 3 words.
-        use_ref = self._ref_audio_b64 is not None and len(text.split()) >= 3
+        use_ref = self._ref_audio_b64 is not None
 
         # Build request kwargs — voice_id and ref_audio are mutually exclusive
         kwargs: dict = {

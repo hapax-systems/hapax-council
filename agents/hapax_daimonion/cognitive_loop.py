@@ -104,6 +104,7 @@ class CognitiveLoop:
         self._model = conversational_model
         self._event_log = event_log
         self._active_silence_enabled = active_silence_enabled
+        self._session_recorder = None
         self._silence_notification_threshold_s = silence_notification_threshold_s
         self._silence_winddown_threshold_s = silence_winddown_threshold_s
         self._notification_queue = notification_queue
@@ -468,8 +469,16 @@ class CognitiveLoop:
         self._session.mark_activity()
         self._update_model_on_utterance(utterance)
 
+        # Record raw operator audio before STT
+        if self._session_recorder is not None:
+            self._session_recorder.record_operator_audio(utterance)
+
         await self._pipeline.process_utterance(utterance)
         self._session.mark_activity()
+
+        # Record what happened (transcript + response) after pipeline completes
+        if self._session_recorder is not None:
+            self._session_recorder.capture_pipeline_results(self._pipeline)
 
     def _update_model_on_utterance(self, utterance: bytes) -> None:
         """Update conversational model after an utterance is processed."""
