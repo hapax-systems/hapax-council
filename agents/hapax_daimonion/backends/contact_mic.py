@@ -249,6 +249,19 @@ class ContactMicBackend:
     def __init__(self, source_name: str = "Contact Microphone") -> None:
         self._source_name = source_name
         self._cache = _ContactMicCache()
+        # Exploration tracking (spec §8: kappa=0.020, T_patience=180s)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration = ExplorationTrackerBundle(
+            component="contact_mic",
+            edges=["desk_energy", "desk_activity"],
+            traces=["energy_level", "activity_type"],
+            neighbors=["ir_presence", "stimmung"],
+            kappa=0.020,
+            t_patience=180.0,
+        )
+        self._prev_energy: float = 0.0
+        self._prev_activity_hash: float = 0.0
         self._stop_event = threading.Event()
         self._capture_failed = False
         self._thread: threading.Thread | None = None
@@ -335,6 +348,20 @@ class ContactMicBackend:
         behaviors["desk_tap_gesture"] = self._b_gesture
         behaviors["desk_spectral_centroid"] = self._b_spectral_centroid
         behaviors["desk_autocorr_peak"] = self._b_autocorr_peak
+
+        # Exploration signal: track energy and activity habituation
+        energy = float(data["desk_energy"])
+        activity_hash = hash(data["desk_activity"]) % 100 / 100.0
+        self._exploration.feed_habituation("desk_energy", energy, self._prev_energy, 0.05)
+        self._exploration.feed_habituation(
+            "desk_activity", activity_hash, self._prev_activity_hash, 0.3
+        )
+        self._exploration.feed_interest("energy_level", energy, 0.05)
+        self._exploration.feed_interest("activity_type", activity_hash, 0.3)
+        self._exploration.feed_error(0.0 if energy > 0.001 else 1.0)
+        self._exploration.compute_and_publish()
+        self._prev_energy = energy
+        self._prev_activity_hash = activity_hash
 
     def _capture_loop(self) -> None:
         """Background thread: capture audio, compute DSP, update cache.

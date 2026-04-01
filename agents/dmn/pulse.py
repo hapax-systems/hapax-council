@@ -59,6 +59,18 @@ class DMNPulse:
         # Exploration escalation state
         self._exploration_targets: list[str] = []
         self._boredom_window: list[tuple[float, str]] = []
+        # Own exploration signal (spec §8: kappa=0.02, T_patience=180s)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration_tracker = ExplorationTrackerBundle(
+            component="dmn_pulse",
+            edges=["observation_quality", "evaluative_trajectory"],
+            traces=["sensor_freshness", "stance_value"],
+            neighbors=["imagination", "stimmung"],
+            kappa=0.02,
+            t_patience=180.0,
+        )
+        self._prev_obs_quality: float = 1.0
 
     def receive_exploration_impingement(self, imp: Impingement) -> None:
         """Receive boredom/curiosity impingement for escalation processing."""
@@ -142,6 +154,24 @@ class DMNPulse:
             if self._buffer.needs_consolidation():
                 await self._consolidation_tick()
             self._last_consolidation = now
+
+        # Exploration signal: track own observation quality + stance stability
+        obs_quality = 1.0 if snapshot.get("perception") else 0.0
+        self._exploration_tracker.feed_habituation(
+            "observation_quality", obs_quality, self._prev_obs_quality, 0.2
+        )
+        self._exploration_tracker.feed_interest("sensor_freshness", obs_quality, 0.3)
+        stance_val = {
+            "nominal": 0.0,
+            "seeking": 0.1,
+            "cautious": 0.3,
+            "degraded": 0.6,
+            "critical": 1.0,
+        }.get(self._last_stance, 0.0)
+        self._exploration_tracker.feed_interest("stance_value", stance_val, 0.2)
+        self._exploration_tracker.feed_error(1.0 - obs_quality)
+        self._exploration_tracker.compute_and_publish()
+        self._prev_obs_quality = obs_quality
 
         self._prior_snapshot = snapshot
 
