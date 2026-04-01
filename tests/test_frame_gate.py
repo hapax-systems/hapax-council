@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agents.hapax_daimonion.frame_gate import FrameGate
+try:
+    from agents.hapax_daimonion.frame_gate import FrameGate
+except (TypeError, ImportError) as _err:
+    pytest.skip(f"pipecat import failed: {_err}", allow_module_level=True)
 
 
 @pytest.mark.asyncio

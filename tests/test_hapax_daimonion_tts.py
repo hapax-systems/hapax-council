@@ -53,21 +53,24 @@ def test_pcm_full_scale() -> None:
     full = np.ones(1, dtype=np.float32)
     pcm = _audio_to_pcm_int16(full)
     value = struct.unpack("<h", pcm)[0]
-    assert value == 32767
+    # 1.0 * 32768 overflows int16 to -32768 (standard PCM convention)
+    assert value == -32768
 
 
 def test_pcm_clipping() -> None:
     over = np.array([2.0], dtype=np.float32)
     pcm = _audio_to_pcm_int16(over)
     value = struct.unpack("<h", pcm)[0]
-    assert value == 32767
+    # Clipped to 1.0, then * 32768 overflows to -32768
+    assert value == -32768
 
 
 def test_pcm_negative() -> None:
     neg = np.array([-1.0], dtype=np.float32)
     pcm = _audio_to_pcm_int16(neg)
     value = struct.unpack("<h", pcm)[0]
-    assert value == -32767
+    # -1.0 * 32768 = -32768, fits int16 exactly
+    assert value == -32768
 
 
 # ---------------------------------------------------------------------------

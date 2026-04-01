@@ -503,18 +503,19 @@ def _make_audio_frame(n_samples: int = 480) -> bytes:
 
 
 class TestAudioPipelineIntegration:
-    """End-to-end audio pipeline: input → distribution → wake word → session."""
+    """End-to-end audio pipeline: input → distribution → engagement → session."""
 
     @pytest.mark.asyncio
-    async def test_audio_to_wake_word_to_session(self):
-        """Audio frame triggers wake word which opens a session."""
+    async def test_audio_to_engagement_detection(self):
+        """Audio frames trigger engagement classifier when VAD detects speech."""
         from agents.hapax_daimonion.__main__ import VoiceDaemon
 
         daemon = object.__new__(VoiceDaemon)
         daemon._running = True
         daemon.event_log = MagicMock()
         daemon.presence = MagicMock()
-        daemon.presence.process_audio_frame.return_value = 0.5  # open VAD gate
+        daemon.presence.process_audio_frame.return_value = 0.5
+        daemon.presence._latest_vad_confidence = 0.5  # above 0.3 threshold
         daemon._gemini_session = None
         daemon._echo_canceller = None
         daemon._noise_reference = None
@@ -525,24 +526,25 @@ class TestAudioPipelineIntegration:
         daemon.session.is_active = False
         daemon.session.session_id = "test123"
 
-        session_opened = False
+        engagement_called = False
 
-        def process_and_trigger(audio_np):
-            nonlocal session_opened
-            if not session_opened:
-                session_opened = True
-                daemon.session.open(trigger="wake_word")
-                daemon._running = False
+        def on_speech(behaviors):
+            nonlocal engagement_called
+            engagement_called = True
+            daemon._running = False
 
-        daemon.wake_word = MagicMock()
-        daemon.wake_word.frame_length = 1280
-        daemon.wake_word.process_audio = process_and_trigger
+        daemon._engagement = MagicMock()
+        daemon._engagement.on_speech_detected = on_speech
+        ps_behavior = MagicMock()
+        ps_behavior.value = "PRESENT"
+        daemon.perception = MagicMock()
+        daemon.perception.behaviors = {"presence_state": ps_behavior}
 
         frame = _make_audio_frame()
         audio_input = AsyncMock()
         call_count = 0
-        # Need enough frames to fill the wake word buffer (1280 samples = 2560 bytes).
-        # Each frame is 480 samples = 960 bytes, so we need ceil(2560/960) = 3 frames.
+        # Need enough frames to fill the VAD buffer (512 samples = 1024 bytes).
+        # Each frame is 480 samples = 960 bytes, so we need 3 frames.
         _frames_needed = 3
 
         async def get_frame_side_effect(timeout=1.0):
@@ -557,6 +559,4 @@ class TestAudioPipelineIntegration:
 
         await daemon._audio_loop()
 
-        assert session_opened
-        daemon.session.open.assert_called_once_with(trigger="wake_word")
-        assert daemon.presence.process_audio_frame.call_count >= 1
+        assert engagement_called

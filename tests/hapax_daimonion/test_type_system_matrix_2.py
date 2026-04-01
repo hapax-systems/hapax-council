@@ -325,7 +325,7 @@ class TestFallbackChainFreshnessComposition:
         )
         sched_override = Schedule(command=cmd_override, domain="beat")
         assert sched_override.command.governance_result.allowed is True
-        assert sched_override.command.selected_by == "wake_word_override"
+        assert sched_override.command.selected_by == "engagement_override"
         assert isinstance(sched_override.command.params, MappingProxyType)
 
     def test_veto_chain_add_dynamically_restricts_fused_context(self):
@@ -557,7 +557,7 @@ class TestGovernorStateTransitions:
         gov.wake_word_active = True
         r2 = gov.evaluate(state_absent)
         assert r2 == "process"
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
         assert gov.last_veto_result.allowed is True
 
         cmd_override = Command(
@@ -569,7 +569,7 @@ class TestGovernorStateTransitions:
 
         # Two commands have different results
         assert cmd_withdraw.selected_by == "operator_absent"
-        assert cmd_override.selected_by == "wake_word_override"
+        assert cmd_override.selected_by == "engagement_override"
         assert cmd_withdraw.governance_result is not cmd_override.governance_result
 
         # EnvironmentState uses operator_present field

@@ -437,7 +437,7 @@ class TestGovernorStatePerturbation:
 
         assert cmd1.action == "pause"
         assert cmd2.action == "process"
-        assert cmd2.selected_by == "wake_word_override"
+        assert cmd2.selected_by == "engagement_override"
         assert isinstance(cmd1.params, MappingProxyType)
         assert isinstance(cmd2.params, MappingProxyType)
 

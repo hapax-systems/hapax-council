@@ -142,7 +142,7 @@ class TestIdleToActiveLifecycle:
         engine.tick()
         r2 = gov.evaluate(engine.latest)
         assert r2 == "process"
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
         assert gov.wake_word_active is False  # consumed
 
         # Grace period: 8 ticks protected by wake_word_grace
@@ -150,7 +150,7 @@ class TestIdleToActiveLifecycle:
             engine.tick()
             rg = gov.evaluate(engine.latest)
             assert rg == "process"
-            assert gov.last_selected.selected_by == "wake_word_grace"
+            assert gov.last_selected.selected_by == "engagement_grace"
 
         # Cycle 3: grace exhausted, meeting still active → pause again
         engine.tick()
@@ -246,14 +246,14 @@ class TestConversationDebounceLifecycle:
         s2 = _make_state(face_count=2, guest_count=1, speech_detected=True)
         r2 = gov.evaluate(s2)
         assert r2 == "process"
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
         # Grace period: 8 ticks protected by wake_word_grace
         for _ in range(8):
             s_grace = _make_state(face_count=2, guest_count=1, speech_detected=True)
             rg = gov.evaluate(s_grace)
             assert rg == "process"
-            assert gov.last_selected.selected_by == "wake_word_grace"
+            assert gov.last_selected.selected_by == "engagement_grace"
 
         # Feedback: grace exhausted, conversation still happening → pause
         s3 = _make_state(face_count=2, guest_count=1, speech_detected=True)

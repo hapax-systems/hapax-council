@@ -22,7 +22,6 @@ class TestAudioInputCreated:
         with (
             patch("agents.hapax_daimonion.daemon.AudioInputStream") as mock_cls,
             patch("agents.hapax_daimonion.daemon.HotkeyServer"),
-            patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
             patch("agents.hapax_daimonion.daemon.TTSManager"),
         ):
             daemon = VoiceDaemon(cfg=cfg)
@@ -131,6 +130,6 @@ class TestAudioLoopBackgroundTask:
             await daemon.run()
 
         # Should have 7 tasks (proactive delivery, ntfy, workspace monitor,
-        # perception, wake_word_processor, ambient_refresh, impingement_consumer)
+        # perception, engagement_processor, ambient_refresh, impingement_consumer)
         # but NOT 8 (no audio loop since inactive)
         assert tracking.total_appended == 7

@@ -22,7 +22,6 @@ class TestDaimonionConfigChime:
 class TestDaemonChimeWiring:
     @patch("agents.hapax_daimonion.daemon.AudioInputStream")
     @patch("agents.hapax_daimonion.daemon.TTSManager")
-    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
     @patch("agents.hapax_daimonion.daemon.HotkeyServer")
     @patch("agents.hapax_daimonion.daemon.ChimePlayer")
     def test_daemon_creates_chime_player(self, MockChime, *_):

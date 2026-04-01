@@ -5,10 +5,14 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pipecat.frames.frames import TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame
 
-from agents.hapax_daimonion.pipecat_tts import VoxtralTTSService
-from agents.hapax_daimonion.tts import VOXTRAL_SAMPLE_RATE
+try:
+    from pipecat.frames.frames import TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame
+
+    from agents.hapax_daimonion.pipecat_tts import VoxtralTTSService
+    from agents.hapax_daimonion.tts import VOXTRAL_SAMPLE_RATE
+except (TypeError, ImportError) as _err:
+    pytest.skip(f"pipecat import failed: {_err}", allow_module_level=True)
 
 
 @pytest.fixture

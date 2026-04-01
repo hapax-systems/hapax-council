@@ -139,7 +139,7 @@ class TestDaemonLoopSimulation:
 
         assert cmd1.action == "pause"
         assert cmd2.action == "process"
-        assert cmd2.selected_by == "wake_word_override"
+        assert cmd2.selected_by == "engagement_override"
         assert cmd3.action == "pause"
         assert isinstance(cmd1.params, MappingProxyType)
         assert "not present" in guard.check(ctx, now).violations[0]
@@ -361,7 +361,7 @@ class TestFeedbackStateAccumulation:
         gov.wake_word_active = True
         gov.evaluate(state2)
         assert gov.last_veto_result.allowed is True
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
         cmd3 = Command(action="process", params={"cycle": 3})
 
         assert isinstance(cmd1.params, MappingProxyType)
@@ -457,7 +457,7 @@ class TestCyclicPipelineIntegrity:
         for _ in range(8):
             rg = gov.evaluate(state)
             assert rg == "process"
-            assert gov.last_selected.selected_by == "wake_word_grace"
+            assert gov.last_selected.selected_by == "engagement_grace"
 
         # Cycle 2: grace exhausted → pause
         r2 = gov.evaluate(state)

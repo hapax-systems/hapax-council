@@ -177,28 +177,47 @@ class TestImaginationContext:
 class TestDMNSensor:
     """Test sensor reading functions."""
 
-    def test_read_all_returns_dict(self):
-        from agents.dmn.sensor import read_all
+    def test_read_all_returns_dict(self, tmp_path):
+        from unittest.mock import patch
 
-        result = read_all()
+        from agents.dmn.sensor import SensorConfig, read_all
+
+        config = SensorConfig(
+            stimmung_state=tmp_path / "stimmung.json",
+            fortress_state=tmp_path / "fortress.json",
+            watch_dir=tmp_path / "watch",
+            voice_perception=tmp_path / "perception.json",
+            visual_frame=tmp_path / "frame.jpg",
+            imagination_current=tmp_path / "imagination.json",
+        )
+        with (
+            patch("agents.dmn.sensor.read_sensors", return_value={}),
+            patch(
+                "agents.dmn.sensor.read_visual_surface",
+                return_value={"source": "visual_surface", "age_s": 999.0, "stale": True},
+            ),
+        ):
+            result = read_all(config)
         assert "timestamp" in result
         assert "perception" in result
         assert "stimmung" in result
         assert "watch" in result
 
-    def test_perception_has_required_fields(self):
-        from agents.dmn.sensor import read_perception
+    def test_perception_has_required_fields(self, tmp_path):
+        from agents.dmn.sensor import SensorConfig, read_perception
 
-        result = read_perception()
+        config = SensorConfig(voice_perception=tmp_path / "perception.json")
+        result = read_perception(config)
         assert "source" in result
         assert "activity" in result
         assert "flow_score" in result
         assert "stale" in result
 
-    def test_stimmung_has_required_fields(self):
-        from agents.dmn.sensor import read_stimmung
+    def test_stimmung_has_required_fields(self, tmp_path):
+        from agents.dmn.sensor import SensorConfig, read_stimmung
 
-        result = read_stimmung()
+        config = SensorConfig(stimmung_state=tmp_path / "stimmung.json")
+        result = read_stimmung(config)
         assert "source" in result
         assert "stance" in result
 
@@ -222,7 +241,14 @@ class TestSensorConfig:
             visual_frame=tmp_path / "frame.jpg",
             imagination_current=tmp_path / "imagination.json",
         )
-        snapshot = read_all(config)
+        with (
+            patch("agents.dmn.sensor.read_sensors", return_value={}),
+            patch(
+                "agents.dmn.sensor.read_visual_surface",
+                return_value={"source": "visual_surface", "age_s": 999.0, "stale": True},
+            ),
+        ):
+            snapshot = read_all(config)
         assert snapshot["stimmung"]["stance"] == "nominal"
         assert snapshot["fortress"] is None
 

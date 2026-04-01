@@ -9,7 +9,6 @@ class TestHotkeyChime:
     @patch("agents.hapax_daimonion.session_events.screen_flash")
     @patch("agents.hapax_daimonion.daemon.AudioInputStream")
     @patch("agents.hapax_daimonion.daemon.TTSManager")
-    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
     @patch("agents.hapax_daimonion.daemon.HotkeyServer")
     @patch("agents.hapax_daimonion.daemon.ChimePlayer")
     def test_toggle_open_plays_activation(self, MockChime, *_, **__):
@@ -29,7 +28,6 @@ class TestHotkeyChime:
     @patch("agents.hapax_daimonion.session_events.screen_flash")
     @patch("agents.hapax_daimonion.daemon.AudioInputStream")
     @patch("agents.hapax_daimonion.daemon.TTSManager")
-    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
     @patch("agents.hapax_daimonion.daemon.HotkeyServer")
     @patch("agents.hapax_daimonion.daemon.ChimePlayer")
     def test_open_cmd_plays_activation(self, MockChime, *_, **__):

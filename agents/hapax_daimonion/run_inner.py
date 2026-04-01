@@ -45,28 +45,52 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         daemon._resident_stt.load()
     daemon.tts.preload()
 
-    # Initialize engagement classifier (replaces wake word)
-    from agents.hapax_daimonion.engagement import EngagementClassifier
-    from agents.hapax_daimonion.session_events import on_engagement_detected
+    # CPAL mode: use CpalRunner instead of session/engagement/cognitive loop
+    if daemon.cfg.use_cpal:
+        log.info("CPAL mode enabled — using CpalRunner")
+        from agents.hapax_daimonion.cpal.runner import CpalRunner
 
-    daemon._engagement = EngagementClassifier(
-        on_engaged=lambda: on_engagement_detected(daemon),
-    )
+        daemon._cpal_runner = CpalRunner(
+            buffer=daemon._conversation_buffer,
+            stt=daemon._resident_stt,
+            salience_router=daemon._salience_router,
+            audio_output=getattr(daemon, "_audio_output", None),
+            grounding_ledger=getattr(daemon, "_grounding_ledger", None),
+            tts_manager=daemon.tts,
+        )
 
-    # Bridge presynthesis — run in background to avoid blocking audio input start
-    daemon._bridges_presynthesized = False
+        import threading
 
-    def _presynth_background() -> None:
-        try:
-            daemon._bridge_engine.presynthesize_all(daemon.tts)
-            daemon._bridges_presynthesized = True
-            log.info("Bridge phrases presynthesized (background)")
-        except Exception:
-            log.warning("Bridge presynthesis failed (will retry on first session)")
+        def _cpal_presynth() -> None:
+            daemon._cpal_runner.presynthesize_signals()
+            log.info("CPAL signal cache presynthesized")
 
-    import threading
+        threading.Thread(target=_cpal_presynth, daemon=True, name="cpal-presynth").start()
+    else:
+        daemon._cpal_runner = None
 
-    threading.Thread(target=_presynth_background, daemon=True, name="bridge-presynth").start()
+        # Initialize engagement classifier (replaces wake word)
+        from agents.hapax_daimonion.engagement import EngagementClassifier
+        from agents.hapax_daimonion.session_events import on_engagement_detected
+
+        daemon._engagement = EngagementClassifier(
+            on_engaged=lambda: on_engagement_detected(daemon),
+        )
+
+        # Bridge presynthesis — run in background to avoid blocking audio input start
+        daemon._bridges_presynthesized = False
+
+        def _presynth_background() -> None:
+            try:
+                daemon._bridge_engine.presynthesize_all(daemon.tts)
+                daemon._bridges_presynthesized = True
+                log.info("Bridge phrases presynthesized (background)")
+            except Exception:
+                log.warning("Bridge presynthesis failed (will retry on first session)")
+
+        import threading
+
+        threading.Thread(target=_presynth_background, daemon=True, name="bridge-presynth").start()
 
     # Warm embedding model
     try:
@@ -104,10 +128,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "  Context gate: volume_threshold=%.0f%%", daemon.cfg.context_gate_volume_threshold * 100
     )
     log.info("  Notifications: %d pending", daemon.notifications.pending_count)
-    log.info(
-        "  Wake word: %s (engine=%s)",
-        # Wake word replaced by engagement classifier
-    )
+    log.info("  Activation: engagement classifier")
     log.info(
         "  Workspace monitor: %s (cameras: %s)",
         "enabled" if daemon.cfg.screen_monitor_enabled else "disabled",
@@ -128,17 +149,23 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         daemon._background_tasks.append(asyncio.create_task(audio_loop(daemon)))
 
     daemon._background_tasks.append(asyncio.create_task(perception_loop(daemon)))
-    daemon._background_tasks.append(asyncio.create_task(engagement_processor(daemon)))
     daemon._background_tasks.append(asyncio.create_task(ambient_refresh_loop(daemon)))
-    daemon._background_tasks.append(asyncio.create_task(impingement_consumer_loop(daemon)))
+
+    if daemon.cfg.use_cpal:
+        # CPAL mode: run CpalRunner instead of engagement/session/cognitive loop
+        daemon._background_tasks.append(asyncio.create_task(daemon._cpal_runner.run()))
+        log.info("CPAL runner started as background task")
+    else:
+        daemon._background_tasks.append(asyncio.create_task(engagement_processor(daemon)))
+        daemon._background_tasks.append(asyncio.create_task(impingement_consumer_loop(daemon)))
 
     if daemon.cfg.mc_enabled or daemon.cfg.obs_enabled:
         daemon._background_tasks.append(asyncio.create_task(actuation_loop(daemon)))
 
     try:
         while daemon._running:
-            # Session timeout check
-            if daemon.session.is_active and daemon.session.is_timed_out:
+            # Session timeout check (skip in CPAL mode — no sessions)
+            if not daemon.cfg.use_cpal and daemon.session.is_active and daemon.session.is_timed_out:
                 if daemon._cognitive_loop and daemon._cognitive_loop.turn_phase in (
                     "hapax_speaking",
                     "transition",

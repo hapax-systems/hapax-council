@@ -196,8 +196,8 @@ def make_stub_daemon(**overrides):
     daemon.notifications = MagicMock()
     daemon.notifications.pending_count = 0
     daemon.hotkey = MagicMock()
-    daemon.wake_word = MagicMock()
-    daemon.wake_word.frame_length = 1280
+    daemon._engagement = MagicMock()
+    daemon._engagement._debounce_s = 2.0
     daemon.tts = MagicMock()
     daemon.chime_player = MagicMock()
     daemon.workspace_monitor = MagicMock()
@@ -234,7 +234,7 @@ def make_stub_daemon(**overrides):
     daemon._precompute_pipeline_deps = MagicMock()
     daemon._frame_gate = MagicMock()
     daemon._perception_tier = "full"
-    daemon._wake_word_signal = asyncio.Event()
+    daemon._engagement_signal = asyncio.Event()
 
     # Salience
     daemon._salience_router = None
@@ -256,7 +256,7 @@ def make_stub_daemon(**overrides):
     daemon._midi_output = None
 
     # Events
-    daemon.wake_word_event = MagicMock()
+    daemon.engagement_event = MagicMock()
     daemon.focus_event = MagicMock()
 
     # Perception loop

@@ -85,11 +85,28 @@ def test_dmn_read_sensors(tmp_path: Path, monkeypatch):
     assert "chrome" in result
 
 
-def test_dmn_read_all_includes_sensors():
+def test_dmn_read_all_includes_sensors(tmp_path):
     """read_all() includes a 'sensors' key."""
-    from agents.dmn.sensor import read_all
+    from unittest.mock import patch
 
-    result = read_all()
+    from agents.dmn.sensor import SensorConfig, read_all
+
+    config = SensorConfig(
+        stimmung_state=tmp_path / "stimmung.json",
+        fortress_state=tmp_path / "fortress.json",
+        watch_dir=tmp_path / "watch",
+        voice_perception=tmp_path / "perception.json",
+        visual_frame=tmp_path / "frame.jpg",
+        imagination_current=tmp_path / "imagination.json",
+    )
+    with (
+        patch("agents.dmn.sensor.read_sensors", return_value={}),
+        patch(
+            "agents.dmn.sensor.read_visual_surface",
+            return_value={"source": "visual_surface", "age_s": 999.0, "stale": True},
+        ),
+    ):
+        result = read_all(config)
     assert "sensors" in result
     assert isinstance(result["sensors"], dict)
 

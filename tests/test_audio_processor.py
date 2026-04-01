@@ -3,20 +3,31 @@
 from __future__ import annotations
 
 
-def test_audio_segment_defaults():
-    from agents.audio_processor import AudioSegment
+def test_window_classification_defaults():
+    from agents.audio_processor import WindowClassification
 
-    seg = AudioSegment(
-        source_file="rec-20260308-143000.flac",
-        start_seconds=30.0,
-        end_seconds=75.0,
-        classification="speech",
-        confidence=0.94,
-    )
-    assert seg.duration_seconds == 45.0
-    assert seg.classification == "speech"
-    assert seg.speakers == []
-    assert seg.sub_classifications == []
+    wc = WindowClassification(start=0.0, end=10.0, music_prob=0.8, speech_prob=0.2)
+    assert wc.start == 0.0
+    assert wc.end == 10.0
+    assert wc.music_prob == 0.8
+    assert wc.instruments == {}
+
+
+def test_music_region_duration():
+    from agents.audio_processor import MusicRegion
+
+    region = MusicRegion(start=30.0, end=75.0, instruments={"drums": 0.9})
+    assert region.duration == 45.0
+
+
+def test_speech_region_defaults():
+    from agents.audio_processor import SpeechRegion
+
+    sr = SpeechRegion(start=10.0, end=55.0, transcript="Hello world")
+    assert sr.duration == 45.0
+    assert sr.speakers == []
+    assert sr.near_music is False
+    assert sr.during_music is False
 
 
 def test_processor_state_empty():
@@ -33,48 +44,6 @@ def test_format_timestamp():
     assert _format_timestamp(0.0) == "00:00:00"
     assert _format_timestamp(65.5) == "00:01:05"
     assert _format_timestamp(3661.0) == "01:01:01"
-
-
-def test_format_transcript_markdown():
-    from agents.audio_processor import AudioSegment, _format_transcript_markdown
-
-    seg = AudioSegment(
-        source_file="rec-20260308-143000.flac",
-        start_seconds=330.0,
-        end_seconds=375.0,
-        classification="speech",
-        confidence=0.94,
-        speakers=["SPEAKER_00", "SPEAKER_01"],
-        speaker_count=2,
-        transcript="Hello world",
-    )
-    md = _format_transcript_markdown(seg, "2026-03-08T14:30:00")
-    assert "source_service: ambient-audio" in md
-    assert "content_type: audio_transcript" in md
-    assert "speaker_count: 2" in md
-    assert "Hello world" in md
-    assert "00:05:30" in md  # 330 seconds
-
-
-def test_format_event_markdown():
-    from agents.audio_processor import AudioSegment, _format_event_markdown
-
-    seg = AudioSegment(
-        source_file="rec-20260308-150000.flac",
-        start_seconds=130.0,
-        end_seconds=310.0,
-        classification="music",
-        sub_classifications=["singing", "acoustic_guitar"],
-        confidence=0.87,
-        energy_db=-18.4,
-    )
-    md = _format_event_markdown(seg, "2026-03-08T15:00:00")
-    assert "source_service: ambient-audio" in md
-    assert "content_type: audio_event" in md
-    assert "classification: music" in md
-    assert "singing" in md
-    assert "acoustic_guitar" in md
-    assert "-18.4" in md
 
 
 def test_generate_profile_facts():
@@ -133,120 +102,23 @@ def test_run_vad_returns_segments():
     sr = 16000
     waveform = np.zeros(sr * 3, dtype=np.float32)
 
-    with patch("agents.audio_processor._load_vad_model") as mock_load:
-        mock_model = MagicMock()
-        mock_load.return_value = (mock_model, MagicMock())
-        with patch(
-            "agents.audio_processor.silero_get_speech_timestamps",
-            return_value=[{"start": 16000, "end": 32000}],
-        ):
-            segments = _run_vad(waveform, sr)
-    assert len(segments) == 1
-    assert segments[0] == (1.0, 2.0)
-
-
-def test_classify_segments_returns_labels():
-    from unittest.mock import MagicMock, patch
-
-    import numpy as np
-
-    from agents.audio_processor import _classify_audio_frames
-
-    with patch("agents.audio_processor._load_panns_model") as mock_load:
-        mock_at = MagicMock()
-        mock_load.return_value = mock_at
-        fake_output = np.zeros((1, 527), dtype=np.float32)
-        fake_output[0, 0] = 0.95
-        mock_at.inference.return_value = (fake_output, None)
-
-        waveform = np.zeros(16000, dtype=np.float32)
-        labels = _classify_audio_frames(waveform, 16000, [(0.0, 1.0)])
-
-    assert len(labels) == 1
-    assert labels[0][3] >= 0.9
-
-
-def test_merge_adjacent_segments():
-    from agents.audio_processor import _merge_segments
-
-    raw = [
-        (0.0, 5.0, "speech", 0.9),
-        (5.5, 10.0, "speech", 0.85),
-        (10.2, 15.0, "speech", 0.92),
-        (30.0, 45.0, "music", 0.88),
-    ]
-    merged = _merge_segments(raw, max_gap=1.0)
-    assert len(merged) == 2
-    assert merged[0][0] == 0.0
-    assert merged[0][1] == 15.0
-    assert merged[0][2] == "speech"
-    assert merged[1][2] == "music"
-
-
-def test_should_skip_segment():
-    from agents.audio_processor import _should_skip_segment
-
-    assert _should_skip_segment("silence", 0.9) is True
-    assert _should_skip_segment("white_noise", 0.8) is True
-    assert _should_skip_segment("air_conditioning", 0.7) is True
-    assert _should_skip_segment("speech", 0.9) is False
-    assert _should_skip_segment("music", 0.8) is False
-    assert _should_skip_segment("singing", 0.7) is False
-
-
-def test_process_file_speech(tmp_path):
-    """Test full processing pipeline for a file with speech."""
-    from unittest.mock import MagicMock, patch
-
-    import numpy as np
-
-    from agents.audio_processor import (
-        AudioProcessorState,
-        _process_file,
-    )
-
-    fake_flac = tmp_path / "rec-20260308-143000.flac"
-    fake_flac.write_bytes(b"fake-audio-data")
-
-    state = AudioProcessorState()
-    rag_dir = tmp_path / "rag-output"
+    # Create a mock tensor that behaves like a real torch tensor
+    mock_tensor = MagicMock()
+    mock_tensor.dim.return_value = 1
 
     with (
-        patch("agents.audio_processor.torchaudio") as mock_ta,
-        patch("agents.audio_processor._run_vad") as mock_vad,
-        patch("agents.audio_processor._classify_audio_frames") as mock_classify,
-        patch("agents.audio_processor._merge_segments") as mock_merge,
-        patch("agents.audio_processor._run_diarization") as mock_diar,
-        patch("agents.audio_processor._run_transcription") as mock_trans,
-        patch("agents.audio_processor._check_vram_available", return_value=True),
-        patch("agents.audio_processor.AUDIO_RAG_DIR", rag_dir),
+        patch("agents.audio_processor._load_vad_model") as mock_load,
+        patch(
+            "agents.audio_processor.silero_get_speech_timestamps",
+            return_value=[{"start": 16000, "end": 32000}],
+        ),
+        patch("torch.from_numpy", return_value=mock_tensor),
     ):
-        # Mock waveform tensor with shape attribute
-        mock_waveform = MagicMock()
-        mock_waveform.shape = (1, 16000 * 180)
-        mock_ta.load.return_value = (mock_waveform, 48000)
-
-        # Mock resample result with squeeze().numpy() chain
-        mock_resampled = MagicMock()
-        mock_resampled.squeeze.return_value.numpy.return_value = np.zeros(
-            16000 * 180, dtype=np.float32
-        )
-        mock_ta.functional.resample.return_value = mock_resampled
-
-        mock_vad.return_value = [(10.0, 55.0)]
-        mock_classify.return_value = [(10.0, 55.0, "Speech", 0.92)]
-        mock_merge.return_value = [(10.0, 55.0, "speech", 0.92)]
-        mock_diar.return_value = [(10.0, 30.0, "SPEAKER_00"), (30.5, 55.0, "SPEAKER_01")]
-        mock_trans.return_value = "Hello, this is a test conversation."
-
-        info = _process_file(fake_flac, state)
-
-    assert info is not None
-    assert info.speech_seconds > 0
-    assert info.segment_count >= 1
-    assert info.speaker_count == 2
-    rag_files = list(rag_dir.glob("*.md"))
-    assert len(rag_files) >= 1
+        mock_model = MagicMock()
+        mock_load.return_value = (mock_model, MagicMock())
+        segments = _run_vad(waveform, sr)
+    assert len(segments) == 1
+    assert segments[0] == (1.0, 2.0)
 
 
 def test_run_diarization():
@@ -275,24 +147,3 @@ def test_run_diarization():
     assert len(result) == 2
     assert result[0] == (0.0, 5.0, "SPEAKER_00")
     assert result[1] == (5.5, 10.0, "SPEAKER_01")
-
-
-def test_run_transcription():
-    """Test transcription returns text with timestamps."""
-    from unittest.mock import MagicMock, patch
-
-    from agents.audio_processor import _run_transcription
-
-    with patch("agents.audio_processor._load_whisper_model") as mock_load:
-        mock_model = MagicMock()
-        mock_load.return_value = mock_model
-
-        mock_seg = MagicMock()
-        mock_seg.text = " Hello world"
-        mock_seg.start = 0.0
-        mock_seg.end = 2.5
-        mock_model.transcribe.return_value = ([mock_seg], MagicMock(language="en"))
-
-        text = _run_transcription("/tmp/fake.wav", 0.0, 10.0)
-
-    assert "Hello world" in text

@@ -132,7 +132,7 @@ class TestFullSystemConvergence:
         assert actions[5] == "process"  # steady state restored
 
         # Provenance traceable
-        assert schedules[4].command.selected_by == "wake_word_override"
+        assert schedules[4].command.selected_by == "engagement_override"
         assert all(s.command.params["fresh"] for s in schedules)
 
     def test_convergent_perturbation_with_provenance_feedback(self):
@@ -307,7 +307,7 @@ class TestFullSystemConvergence:
         commands = [cmd1, cmd2, cmd3, cmd4, cmd5]
         actions = [c.action for c in commands]
         assert actions == ["process", "pause", "process", "withdraw", "process"]
-        assert commands[2].selected_by == "wake_word_override"
+        assert commands[2].selected_by == "engagement_override"
         assert commands[3].selected_by == "operator_absent"
 
 

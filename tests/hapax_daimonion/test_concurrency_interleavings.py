@@ -9,7 +9,7 @@ and schedules pipeline start via create_task. The perception loop can tick in th
 gap between the task being scheduled and it actually running.
 
 The fix has two parts:
-1. Governor grace period: _wake_word_grace_remaining counter protects the
+1. Governor grace period: _engagement_grace_remaining counter protects the
    session for N ticks after wake word, preventing meeting/conversation
    modes from overriding the wake word intent.
 2. Async wake word processor: _on_wake_word() sets an asyncio.Event,
@@ -61,7 +61,7 @@ class TestGraceProtectsAgainstMeetingMode:
         # Perception tick with meeting mode — grace period protects
         result = gov.evaluate(_make_state(activity_mode="meeting"))
         assert result == "process"
-        assert gov.last_selected.selected_by == "wake_word_grace"
+        assert gov.last_selected.selected_by == "engagement_grace"
 
     def test_grace_period_lasts_eight_ticks(self):
         """Grace period protects for exactly 8 ticks after wake word."""
@@ -86,16 +86,16 @@ class TestGraceProtectsAgainstMeetingMode:
         gov.wake_word_active = True
         gov.evaluate(_make_state())  # consumes wake_word_active, sets grace=8
 
-        assert gov._wake_word_grace_remaining == 8
+        assert gov._engagement_grace_remaining == 8
 
         gov.evaluate(_make_state())
-        assert gov._wake_word_grace_remaining == 7
+        assert gov._engagement_grace_remaining == 7
 
         gov.evaluate(_make_state())
-        assert gov._wake_word_grace_remaining == 6
+        assert gov._engagement_grace_remaining == 6
 
         gov.evaluate(_make_state())
-        assert gov._wake_word_grace_remaining == 5
+        assert gov._engagement_grace_remaining == 5
 
 
 class TestGraceProtectsAgainstConversationDebounce:
@@ -113,7 +113,7 @@ class TestGraceProtectsAgainstConversationDebounce:
             _make_state(face_count=2, guest_count=1, speech_detected=True, vad_confidence=0.9)
         )
         assert result == "process"
-        assert gov.last_selected.selected_by == "wake_word_grace"
+        assert gov.last_selected.selected_by == "engagement_grace"
 
     def test_conversation_debounce_resumes_after_grace(self):
         """After grace expires, conversation debounce functions normally."""
@@ -147,7 +147,7 @@ class TestGraceProtectsSession:
         # Absent tick during grace
         result = gov.evaluate(_make_state(operator_present=False, face_count=0))
         assert result == "process"
-        assert gov.last_selected.selected_by == "wake_word_grace"
+        assert gov.last_selected.selected_by == "engagement_grace"
 
 
 class TestGraceProtectsFrameGate:
@@ -229,7 +229,7 @@ class TestGraceEdgeCases:
         gov.wake_word_active = True
         gov.evaluate(_make_state())  # consume again, grace=8
 
-        assert gov._wake_word_grace_remaining == 8
+        assert gov._engagement_grace_remaining == 8
 
     def test_grace_plus_meeting_then_clear(self):
         """Grace protects during meeting, normal eval resumes after grace + meeting clears."""
@@ -265,7 +265,7 @@ class TestGraceEdgeCases:
         """Normal evaluation has no grace period protection."""
         gov = PipelineGovernor()
 
-        assert gov._wake_word_grace_remaining == 0
+        assert gov._engagement_grace_remaining == 0
 
         result = gov.evaluate(_make_state(activity_mode="meeting"))
         assert result == "pause"

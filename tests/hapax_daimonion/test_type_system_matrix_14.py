@@ -423,7 +423,7 @@ class TestGracefulDegradationInFullPipeline:
         s2 = _make_state(activity_mode="production")
         r2 = gov.evaluate(s2)
         assert r2 == "process"
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
         # Exhaust 8-tick grace period
         for _ in range(8):

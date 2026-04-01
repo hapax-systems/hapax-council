@@ -219,7 +219,7 @@ class TestMonotonicSafety:
         r1 = gov.evaluate(state)
         assert r1 == "process"
         assert gov.wake_word_active is False
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
         cmd1 = Command(
             action="process",
@@ -232,7 +232,7 @@ class TestMonotonicSafety:
         for _ in range(8):
             rg = gov.evaluate(state)
             assert rg == "process"
-            assert gov.last_selected.selected_by == "wake_word_grace"
+            assert gov.last_selected.selected_by == "engagement_grace"
 
         # After grace: normal governance (production mode vetoes)
         r2 = gov.evaluate(state)
