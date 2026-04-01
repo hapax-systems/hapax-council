@@ -1,13 +1,15 @@
 """Content source protocol writer for imagination fragments.
 
-Renders text to RGBA and writes the per-fragment directory format
-under sources/ for the Rust ContentSourceManager.
+Writes per-fragment content to sources/ for the Rust ContentSourceManager.
+Resolved images are converted to RGBA. Text narratives rendered via Pillow.
+Each fragment produces one source; previous sources cleaned up on write.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import shutil
 import textwrap
 from pathlib import Path
 
@@ -27,8 +29,8 @@ def write_source_protocol(
 ) -> None:
     """Write content using the source protocol.
 
-    Creates a directory per fragment in sources/ with manifest.json + frame.rgba.
-    Text is rendered to an RGBA buffer via Pillow.
+    If resolved_paths contains images, the first is converted to RGBA.
+    Otherwise the narrative text is rendered to RGBA via Pillow.
     """
     if sources_dir is None:
         sources_dir = SOURCES_DIR
@@ -36,9 +38,7 @@ def write_source_protocol(
     source_id = f"imagination-{fragment.id}"
     source_dir = sources_dir / source_id
 
-    # Clean up previous imagination sources (replaced by this one)
-    import shutil
-
+    # Clean up previous imagination sources
     if sources_dir.exists():
         for old in sources_dir.iterdir():
             if old.is_dir() and old.name.startswith("imagination-") and old.name != source_id:
@@ -46,12 +46,12 @@ def write_source_protocol(
 
     source_dir.mkdir(parents=True, exist_ok=True)
 
-    rgba_data, width, height = _render_text_to_rgba(fragment.narrative)
+    # Try resolved image first, fall back to text rendering
+    rgba_data, width, height = _resolve_to_rgba(resolved_paths, fragment.narrative)
 
-    frame_path = source_dir / "frame.rgba"
     tmp_frame = source_dir / "frame.tmp"
     tmp_frame.write_bytes(rgba_data)
-    tmp_frame.rename(frame_path)
+    tmp_frame.rename(source_dir / "frame.rgba")
 
     manifest = {
         "source_id": source_id,
@@ -69,6 +69,32 @@ def write_source_protocol(
     tmp = source_dir / "manifest.tmp"
     tmp.write_text(json.dumps(manifest))
     tmp.rename(source_dir / "manifest.json")
+
+
+def _resolve_to_rgba(resolved_paths: list[Path], narrative: str) -> tuple[bytes, int, int]:
+    """Convert the best available content to RGBA bytes."""
+    # Try each resolved image path
+    for path in resolved_paths:
+        result = _jpeg_to_rgba(path)
+        if result is not None:
+            return result
+
+    # Fall back to text rendering
+    return _render_text_to_rgba(narrative)
+
+
+def _jpeg_to_rgba(path: Path) -> tuple[bytes, int, int] | None:
+    """Convert a JPEG file to raw RGBA bytes. Returns None on failure."""
+    if not path.exists():
+        return None
+    try:
+        from PIL import Image
+
+        img = Image.open(path).convert("RGBA")
+        return img.tobytes("raw", "RGBA"), img.width, img.height
+    except Exception:
+        log.debug("Failed to convert %s to RGBA", path, exc_info=True)
+        return None
 
 
 def _render_text_to_rgba(
