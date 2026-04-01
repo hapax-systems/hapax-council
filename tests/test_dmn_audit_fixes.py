@@ -2,7 +2,7 @@
 
 import json
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -96,8 +96,17 @@ class TestConsolidationTick:
             buf.add_observation(f"obs {i}", raw_sensor=f"raw sensor data {i}")
 
         assert buf.needs_consolidation()
-        with patch("agents.dmn.pulse._ollama_generate", new_callable=AsyncMock) as mock:
-            mock.return_value = "Compressed: 14 observations showing stable coding session."
+        with (
+            patch("agents.dmn.pulse.start_thinking") as mock_start,
+            patch("agents.dmn.pulse.collect_thinking", return_value=None),
+        ):
+            await pulse._consolidation_tick()
+            mock_start.assert_called_once()
+
+        with patch(
+            "agents.dmn.pulse.collect_thinking",
+            return_value="Compressed: 14 observations showing stable coding session.",
+        ):
             await pulse._consolidation_tick()
 
         assert "Compressed" in buf._retentional_summary
@@ -106,9 +115,12 @@ class TestConsolidationTick:
     async def test_consolidation_tick_noop_when_empty(self):
         buf = DMNBuffer()
         pulse = DMNPulse(buf)
-        with patch("agents.dmn.pulse._ollama_generate", new_callable=AsyncMock) as mock:
+        with (
+            patch("agents.dmn.pulse.collect_thinking", return_value=None),
+            patch("agents.dmn.pulse.start_thinking") as mock_start,
+        ):
             await pulse._consolidation_tick()
-            mock.assert_not_called()
+            mock_start.assert_not_called()
 
 
 class TestSensorReadFailures:
@@ -141,7 +153,7 @@ class TestOllamaLogLevel:
 
         import httpx
 
-        from agents.dmn.ollama import _ollama_generate
+        from agents.dmn.ollama import _ollama_fast
 
         with (
             caplog.at_level(logging.DEBUG, logger="dmn.ollama"),
@@ -150,7 +162,7 @@ class TestOllamaLogLevel:
                 side_effect=httpx.ConnectError("test connection refused"),
             ),
         ):
-            result = await _ollama_generate("test prompt", "test system")
+            result = await _ollama_fast("test prompt", "test system")
         assert result == ""
         ollama_records = [r for r in caplog.records if r.name == "dmn.ollama"]
         assert any(r.levelno >= logging.WARNING for r in ollama_records)

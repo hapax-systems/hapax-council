@@ -85,8 +85,8 @@ def compute_restriction_consistency(
     h1_dim = sum(1 for r in residuals if r > 0.1)
 
     return {
-        "restriction_residual_rms": round(radius, 4),
-        "inconsistent_edge_count": h1_dim,
+        "consistency_radius": round(radius, 4),
+        "h1_dimension": h1_dim,
         "residual_count": len(residuals),
         "residuals": [round(r, 4) for r in residuals],
         "timestamp": time.time(),

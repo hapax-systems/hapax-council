@@ -231,7 +231,7 @@ class TestOllamaFailureTracking:
     async def test_degradation_impingement_after_threshold(self):
         buf = DMNBuffer()
         pulse = DMNPulse(buf)
-        with patch("agents.dmn.pulse._ollama_generate", new_callable=AsyncMock, return_value=""):
+        with patch("agents.dmn.pulse._ollama_fast", new_callable=AsyncMock, return_value=""):
             for _ in range(6):
                 snapshot = {
                     "perception": {"activity": "coding", "flow_score": 0.5},

@@ -1147,7 +1147,9 @@ class VisualLayerAggregator:
                 else 0.0,
                 activity=str(_pd.get("production_activity", "idle")),
                 e_mesh=float(_mesh.get("e_mesh", 1.0)),
-                restriction_residual_rms=float(_sheaf.get("restriction_residual_rms", 0.0)),
+                restriction_residual_rms=float(
+                    _sheaf.get("consistency_radius", _sheaf.get("restriction_residual_rms", 0.0))
+                ),
             )
         except Exception:
             pass  # eigenform logging is observational — never block the VLA
