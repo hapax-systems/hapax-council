@@ -12,12 +12,14 @@ Buffer layout aligned to the U-curve (primacy + recency privilege):
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from shared.governance.consent_label import ConsentLabel
+from shared.labeled_trace import write_labeled_trace
 
 log = logging.getLogger("dmn.buffer")
 
@@ -250,12 +252,9 @@ class DMNBuffer:
 
     def publish_observations(self, count: int, *, path: Path = OBSERVATIONS_PATH) -> None:
         """Write recent observations atomically to /dev/shm for imagination daemon."""
-        path.parent.mkdir(parents=True, exist_ok=True)
         observations = self.recent_observations(count)
         data = {"observations": observations, "tick": self.tick, "published_at": time.time()}
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.rename(path)
+        write_labeled_trace(path, data, ConsentLabel.bottom())
 
     def __len__(self) -> int:
         return len(self._observations)
