@@ -12,12 +12,16 @@ Buffer layout aligned to the U-curve (primacy + recency privilege):
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 log = logging.getLogger("dmn.buffer")
+
+OBSERVATIONS_PATH = Path("/dev/shm/hapax-dmn/observations.json")
 
 # Buffer limits
 MAX_RAW_ENTRIES = 18  # ~90 seconds at 5s tick
@@ -243,6 +247,15 @@ class DMNBuffer:
         """Return content strings of the last N observations."""
         obs = list(self._observations)
         return [o.content for o in obs[-n:]]
+
+    def publish_observations(self, count: int, *, path: Path = OBSERVATIONS_PATH) -> None:
+        """Write recent observations atomically to /dev/shm for imagination daemon."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        observations = self.recent_observations(count)
+        data = {"observations": observations, "tick": self.tick, "published_at": time.time()}
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.rename(path)
 
     def __len__(self) -> int:
         return len(self._observations)
