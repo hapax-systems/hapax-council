@@ -1,7 +1,7 @@
-"""Surface 1: Wake word detection → pipeline start.
+"""Surface 1: Engagement detection → pipeline start.
 
-Tests the critical handoff: wake word fires → session opens →
-daemon audio stops → Pipecat pipeline builds and starts.
+Tests the critical handoff: engagement detected → session opens →
+daemon audio stops → pipeline builds and starts.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agents.hapax_daimonion.__main__ import VoiceDaemon
-from agents.hapax_daimonion.primitives import Event
 from agents.hapax_daimonion.session import VoiceLifecycle
 
 
@@ -42,9 +41,8 @@ def _make_daemon() -> VoiceDaemon:
     daemon.workspace_monitor = MagicMock()
     daemon.workspace_monitor.webcam_capturer = None
     daemon.workspace_monitor.screen_capturer = None
-    daemon.wake_word_event = Event()
-    daemon.focus_event = Event()
-    daemon._wake_word_signal = asyncio.Event()
+    daemon.focus_event = MagicMock()
+    daemon._engagement_signal = asyncio.Event()
     daemon.perception = MagicMock()
     daemon._cognitive_loop = None
     daemon._conversation_pipeline = None
@@ -59,40 +57,48 @@ def _make_daemon() -> VoiceDaemon:
     return daemon
 
 
-class TestWakeWordOpensSession:
-    """Wake word detection opens a session and starts the pipeline.
+class TestEngagementOpensSession:
+    """Engagement detection opens a session and starts the pipeline.
 
-    After the async refactor, _on_wake_word() sets a signal and
-    _wake_word_processor() handles session setup atomically.
+    After the async refactor, on_engagement_detected() sets a signal and
+    engagement_processor() handles session setup atomically.
     """
 
-    def test_wake_word_sets_signal(self):
+    def test_engagement_sets_signal(self):
         daemon = _make_daemon()
-        assert not daemon._wake_word_signal.is_set()
+        assert not daemon._engagement_signal.is_set()
 
-        daemon._on_wake_word()
+        from agents.hapax_daimonion.session_events import on_engagement_detected
 
-        assert daemon._wake_word_signal.is_set()
+        on_engagement_detected(daemon)
 
-    def test_wake_word_noop_if_session_active(self):
+        assert daemon._engagement_signal.is_set()
+
+    def test_engagement_noop_if_session_active(self):
         daemon = _make_daemon()
         daemon.session.open(trigger="test")
 
-        daemon._on_wake_word()
+        from agents.hapax_daimonion.session_events import on_engagement_detected
 
-        assert not daemon._wake_word_signal.is_set()
+        on_engagement_detected(daemon)
+
+        assert not daemon._engagement_signal.is_set()
 
     @pytest.mark.asyncio
     async def test_processor_opens_session(self):
         daemon = _make_daemon()
         daemon._running = True
-        daemon._wake_word_signal.set()
+        daemon._engagement_signal.set()
+        daemon.governor._veto_chain = MagicMock()
+        daemon.governor._veto_chain.evaluate.return_value = MagicMock(allowed=True, denied_by=())
 
         with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock):
-            task = asyncio.create_task(daemon._wake_word_processor())
+            from agents.hapax_daimonion.session_events import engagement_processor
+
+            task = asyncio.create_task(engagement_processor(daemon))
             await asyncio.sleep(0.05)
             daemon._running = False
-            daemon._wake_word_signal.set()  # unblock to exit
+            daemon._engagement_signal.set()  # unblock to exit
             await asyncio.sleep(0.01)
             task.cancel()
             try:
@@ -101,20 +107,24 @@ class TestWakeWordOpensSession:
                 pass
 
         assert daemon.session.is_active
-        assert daemon.session.trigger == "wake_word"
+        assert daemon.session.trigger == "engagement"
 
     @pytest.mark.asyncio
     async def test_processor_sets_governor_and_gate(self):
         daemon = _make_daemon()
-        daemon.governor.wake_word_active = False
+        daemon.governor.engagement_active = False
         daemon._running = True
-        daemon._wake_word_signal.set()
+        daemon._engagement_signal.set()
+        daemon.governor._veto_chain = MagicMock()
+        daemon.governor._veto_chain.evaluate.return_value = MagicMock(allowed=True, denied_by=())
 
         with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock):
-            task = asyncio.create_task(daemon._wake_word_processor())
+            from agents.hapax_daimonion.session_events import engagement_processor
+
+            task = asyncio.create_task(engagement_processor(daemon))
             await asyncio.sleep(0.05)
             daemon._running = False
-            daemon._wake_word_signal.set()
+            daemon._engagement_signal.set()
             await asyncio.sleep(0.01)
             task.cancel()
             try:
@@ -122,24 +132,28 @@ class TestWakeWordOpensSession:
             except asyncio.CancelledError:
                 pass
 
-        assert daemon.governor.wake_word_active is True
+        assert daemon.governor.engagement_active is True
         daemon._frame_gate.set_directive.assert_called_once_with("process")
 
 
-class TestWakeWordStartsPipeline:
-    """Wake word triggers pipeline build and audio handoff."""
+class TestEngagementStartsPipeline:
+    """Engagement triggers pipeline build and audio handoff."""
 
     @pytest.mark.asyncio
-    async def test_pipeline_starts_on_wake_word(self):
+    async def test_pipeline_starts_on_engagement(self):
         daemon = _make_daemon()
         daemon._running = True
-        daemon._wake_word_signal.set()
+        daemon._engagement_signal.set()
+        daemon.governor._veto_chain = MagicMock()
+        daemon.governor._veto_chain.evaluate.return_value = MagicMock(allowed=True, denied_by=())
 
         with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock) as mock_start:
-            task = asyncio.create_task(daemon._wake_word_processor())
+            from agents.hapax_daimonion.session_events import engagement_processor
+
+            task = asyncio.create_task(engagement_processor(daemon))
             await asyncio.sleep(0.05)
             daemon._running = False
-            daemon._wake_word_signal.set()
+            daemon._engagement_signal.set()
             await asyncio.sleep(0.01)
             task.cancel()
             try:

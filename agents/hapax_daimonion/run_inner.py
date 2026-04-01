@@ -104,10 +104,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "  Context gate: volume_threshold=%.0f%%", daemon.cfg.context_gate_volume_threshold * 100
     )
     log.info("  Notifications: %d pending", daemon.notifications.pending_count)
-    log.info(
-        "  Wake word: %s (engine=%s)",
-        # Wake word replaced by engagement classifier
-    )
+    log.info("  Activation: engagement classifier")
     log.info(
         "  Workspace monitor: %s (cameras: %s)",
         "enabled" if daemon.cfg.screen_monitor_enabled else "disabled",

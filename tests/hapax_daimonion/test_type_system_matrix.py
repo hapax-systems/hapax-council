@@ -161,7 +161,7 @@ class TestImmutabilityBarriers:
         assert gov.last_veto_result is not None
         assert gov.last_veto_result.allowed
         assert gov.last_selected is not None
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
         cmd = Command(
             action="process",
@@ -199,7 +199,7 @@ class TestGovernorObservability:
         assert gov.last_veto_result.allowed is True
         assert gov.last_selected is not None
         assert gov.last_selected.action == "process"
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
     def test_wake_word_overrides_conversation_debounce(self):
         """S5, A3: Wake word overrides conversation-paused state."""
@@ -221,7 +221,7 @@ class TestGovernorObservability:
         result2 = gov.evaluate(conv_state)
         assert result2 == "process"
         assert gov.last_selected is not None
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
         # Next normal eval proceeds without conversation debounce blocking
         # (conversation_detected is still true but _paused_by_conversation was cleared)

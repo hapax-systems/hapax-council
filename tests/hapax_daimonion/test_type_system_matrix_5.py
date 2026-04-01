@@ -289,7 +289,7 @@ class TestGovernorForwardChain:
         )
         sched = Schedule(command=cmd, domain="beat")
 
-        assert sched.command.selected_by == "wake_word_override"
+        assert sched.command.selected_by == "engagement_override"
         assert sched.command.governance_result.allowed is True
         assert isinstance(sched.command.params, MappingProxyType)
 

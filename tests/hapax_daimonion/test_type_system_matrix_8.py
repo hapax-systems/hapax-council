@@ -117,14 +117,14 @@ class TestVetoReconfigurationInvariants:
         gov.wake_word_active = True
         r1 = gov.evaluate(state)
         assert r1 == "process"
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
         # Add a 5th veto, wake word again
         gov.veto_chain.add(Veto(name="deny_4", predicate=lambda _s: False))
         gov.wake_word_active = True
         r2 = gov.evaluate(state)
         assert r2 == "process"
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
         assert "not present" in guard.check(ctx, now).violations[0]
         assert isinstance(ctx.samples, MappingProxyType)
@@ -371,7 +371,7 @@ class TestFreshnessReconfigurationInvariants:
         assert cmd1.action == "process"
         assert cmd2.action == "pause"
         assert cmd3.action == "process"
-        assert cmd3.selected_by == "wake_word_override"
+        assert cmd3.selected_by == "engagement_override"
         assert isinstance(cmd2.params, MappingProxyType)
         assert (
             "not present"
@@ -497,7 +497,7 @@ class TestWakeWordReconfigurationInvariants:
         gov.wake_word_active = True
         gov.evaluate(state)
         assert gov.last_veto_result.allowed is True
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
         cmd = Command(
             action="process", params={"obs": True}, governance_result=gov.last_veto_result

@@ -36,8 +36,6 @@ def _make_daemon(**cfg_overrides) -> VoiceDaemon:
         patch("agents.hapax_daimonion.daemon.PresenceDetector"),
         patch("agents.hapax_daimonion.daemon.ContextGate"),
         patch("agents.hapax_daimonion.daemon.HotkeyServer"),
-        patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
-        patch("agents.hapax_daimonion.daemon.PorcupineWakeWord"),
         patch("agents.hapax_daimonion.daemon.AudioInputStream"),
         patch("agents.hapax_daimonion.daemon.TTSManager"),
         patch("agents.hapax_daimonion.daemon.ChimePlayer"),
@@ -184,12 +182,6 @@ class TestDaemonBoundaries:
             pytest.skip("consent_registry not yet wired in committed __main__.py")
         assert daemon.consent_registry is not None
 
-    def test_wake_word_event_exists(self):
-        daemon = _make_daemon()
-        from agents.hapax_daimonion.primitives import Event
-
-        assert isinstance(daemon.wake_word_event, Event)
-
     def test_focus_event_exists(self):
         daemon = _make_daemon()
         from agents.hapax_daimonion.primitives import Event
@@ -285,8 +277,6 @@ class TestDaemonErrorPaths:
             patch("agents.hapax_daimonion.daemon.PresenceDetector"),
             patch("agents.hapax_daimonion.daemon.ContextGate"),
             patch("agents.hapax_daimonion.daemon.HotkeyServer"),
-            patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
-            patch("agents.hapax_daimonion.daemon.PorcupineWakeWord"),
             patch("agents.hapax_daimonion.daemon.AudioInputStream"),
             patch("agents.hapax_daimonion.daemon.TTSManager"),
             patch("agents.hapax_daimonion.daemon.ChimePlayer"),
@@ -320,8 +310,6 @@ class TestDaemonErrorPaths:
             patch("agents.hapax_daimonion.daemon.PresenceDetector"),
             patch("agents.hapax_daimonion.daemon.ContextGate"),
             patch("agents.hapax_daimonion.daemon.HotkeyServer"),
-            patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
-            patch("agents.hapax_daimonion.daemon.PorcupineWakeWord"),
             patch("agents.hapax_daimonion.daemon.AudioInputStream"),
             patch("agents.hapax_daimonion.daemon.TTSManager"),
             patch("agents.hapax_daimonion.daemon.ChimePlayer"),

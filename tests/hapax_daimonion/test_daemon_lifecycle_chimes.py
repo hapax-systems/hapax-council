@@ -9,7 +9,6 @@ class TestDeactivationChime:
     @patch("agents.hapax_daimonion.session_events.screen_flash")
     @patch("agents.hapax_daimonion.daemon.AudioInputStream")
     @patch("agents.hapax_daimonion.daemon.TTSManager")
-    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
     @patch("agents.hapax_daimonion.daemon.HotkeyServer")
     @patch("agents.hapax_daimonion.daemon.ChimePlayer")
     def test_close_session_plays_deactivation_chime(self, MockChime, *_, **__):
@@ -30,12 +29,9 @@ class TestDeactivationChime:
     @patch("agents.hapax_daimonion.session_events.screen_flash")
     @patch("agents.hapax_daimonion.daemon.AudioInputStream")
     @patch("agents.hapax_daimonion.daemon.TTSManager")
-    @patch("agents.hapax_daimonion.daemon.WakeWordDetector")
     @patch("agents.hapax_daimonion.daemon.HotkeyServer")
     @patch("agents.hapax_daimonion.daemon.ChimePlayer")
-    def test_chime_disabled_uses_screen_flash(
-        self, MockChime, _hotkey, _ww, _tts, _audio, mock_flash
-    ):
+    def test_chime_disabled_uses_screen_flash(self, MockChime, _hotkey, _tts, _audio, mock_flash):
         from agents.hapax_daimonion.__main__ import VoiceDaemon
 
         cfg = DaimonionConfig(chime_enabled=False)

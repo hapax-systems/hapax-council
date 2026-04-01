@@ -517,7 +517,7 @@ class TestMergedPipelineOutputs:
         state = _make_state(activity_mode="production")
         r = gov.evaluate(state)
         assert r == "process"
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
         # Path B: freshness check with missing behavior
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={}, min_watermark=now)
@@ -538,7 +538,7 @@ class TestMergedPipelineOutputs:
         sched = Schedule(command=cmd, domain="beat")
 
         assert sched.command.action == "process"
-        assert sched.command.selected_by == "wake_word_override"
+        assert sched.command.selected_by == "engagement_override"
         assert any("not present" in v for v in sched.command.params["freshness_warnings"])
         assert isinstance(sched.command.params, MappingProxyType)
 

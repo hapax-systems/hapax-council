@@ -19,7 +19,6 @@ def test_daemon_subsystem_init():
     assert daemon.gate is not None
     assert daemon.notifications is not None
     assert daemon.hotkey is not None
-    assert daemon.wake_word is not None
     assert daemon.tts is not None
 
 
@@ -162,24 +161,27 @@ def test_notification_queue_wired():
     assert item.title == "Test"
 
 
-def test_wake_word_opens_session():
-    """Wake word callback opens a session when idle."""
+def test_engagement_opens_session():
+    """Engagement signal opens a session when idle."""
     from agents.hapax_daimonion.__main__ import VoiceDaemon
+    from agents.hapax_daimonion.session_events import on_engagement_detected
 
     daemon = VoiceDaemon()
     assert not daemon.session.is_active
-    daemon._on_wake_word()
-    assert daemon.session.is_active
-    assert daemon.session.trigger == "wake_word"
+    # on_engagement_detected sets the signal rather than directly opening
+    on_engagement_detected(daemon)
+    assert daemon._engagement_signal.is_set()
 
 
-def test_wake_word_noop_when_active():
-    """Wake word callback does nothing when session already active."""
+def test_engagement_noop_when_active():
+    """Engagement signal does nothing when session already active."""
     from agents.hapax_daimonion.__main__ import VoiceDaemon
+    from agents.hapax_daimonion.session_events import on_engagement_detected
 
     daemon = VoiceDaemon()
     daemon.session.open(trigger="hotkey")
-    daemon._on_wake_word()
+    on_engagement_detected(daemon)
+    assert not daemon._engagement_signal.is_set()
     assert daemon.session.trigger == "hotkey"  # unchanged
 
 

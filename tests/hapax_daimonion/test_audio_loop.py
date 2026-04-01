@@ -2,12 +2,10 @@
 
 Audio frames are 480 samples (30ms at 16kHz = 960 bytes).  Consumers need
 exact chunk sizes:
-- Wake word (Porcupine): exactly 512 samples = 1024 bytes
-- Wake word (OWW): exactly 1280 samples = 2560 bytes
 - Presence/VAD (Silero v5): exactly 512 samples = 1024 bytes
 - Gemini Live: any size (each 30ms frame forwarded immediately)
 
-Wake word runs on ALL audio (no VAD gating). VAD feeds presence detection only.
+Engagement classifier runs on VAD confidence after presence processing.
 """
 
 from __future__ import annotations
@@ -15,19 +13,15 @@ from __future__ import annotations
 import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import numpy as np
 import pytest
 
 from agents.hapax_daimonion.__main__ import VoiceDaemon
 
 _FRAME_SAMPLES = 480  # 30ms at 16kHz
 _FRAME_BYTES = _FRAME_SAMPLES * 2  # 960 bytes
-_WAKE_SAMPLES = 1280
-_WAKE_BYTES = _WAKE_SAMPLES * 2  # 2560 bytes
 _VAD_SAMPLES = 512
 _VAD_BYTES = _VAD_SAMPLES * 2  # 1024 bytes
 
-_FRAMES_FOR_WAKE = 3  # 3 × 480 = 1440 ≥ 1280 → 1 wake call
 _FRAMES_FOR_VAD = 3  # 3 × 480 = 1440 ≥ 1024 → 1 VAD call
 
 
@@ -35,8 +29,12 @@ def _make_daemon() -> VoiceDaemon:
     """Create a VoiceDaemon with __init__ bypassed."""
     daemon = object.__new__(VoiceDaemon)
     daemon._running = True
-    daemon.wake_word = MagicMock()
-    daemon.wake_word.frame_length = _WAKE_SAMPLES
+    daemon._engagement = MagicMock()
+    daemon._engagement._debounce_s = 2.0
+    daemon.session = MagicMock()
+    daemon.session.is_active = False
+    daemon.perception = MagicMock()
+    daemon.perception.behaviors = {}
     daemon.presence = MagicMock()
     daemon.presence.process_audio_frame.return_value = 0.5
     daemon.presence._latest_vad_confidence = 0.5
@@ -54,7 +52,7 @@ def _make_frame(n_samples: int = _FRAME_SAMPLES) -> bytes:
     return struct.pack(f"<{n_samples}h", *([100] * n_samples))
 
 
-def _make_flush_frames(n: int = _FRAMES_FOR_WAKE) -> list[bytes]:
+def _make_flush_frames(n: int = _FRAMES_FOR_VAD) -> list[bytes]:
     """Create enough frames to trigger at least one consumer flush."""
     return [_make_frame() for _ in range(n)]
 
@@ -80,21 +78,7 @@ def _wire_audio_input(daemon: VoiceDaemon, frames: list[bytes | None]) -> None:
 
 
 class TestAudioLoopDistribution:
-    """Frames are distributed to wake word, presence, and Gemini consumers."""
-
-    @pytest.mark.asyncio
-    async def test_wake_word_gets_exact_1280_samples(self):
-        """Wake word receives exactly 1280-sample numpy array."""
-        daemon = _make_daemon()
-        frames = _make_flush_frames(3)  # 1440 samples total
-        _wire_audio_input(daemon, frames)
-
-        await daemon._audio_loop()
-
-        daemon.wake_word.process_audio.assert_called_once()
-        arr = daemon.wake_word.process_audio.call_args[0][0]
-        assert arr.shape == (_WAKE_SAMPLES,)
-        assert arr.dtype == np.int16
+    """Frames are distributed to presence/VAD and Gemini consumers."""
 
     @pytest.mark.asyncio
     async def test_vad_gets_exact_512_samples(self):
@@ -142,7 +126,7 @@ class TestAudioLoopDistribution:
 
     @pytest.mark.asyncio
     async def test_no_gemini_session_attribute(self):
-        """Works when _gemini_session is None; wake_word/presence called after flush."""
+        """Works when _gemini_session is None; presence called after flush."""
         daemon = _make_daemon()
         frames = _make_flush_frames(3)
         _wire_audio_input(daemon, frames)
@@ -150,33 +134,17 @@ class TestAudioLoopDistribution:
 
         await daemon._audio_loop()
 
-        daemon.wake_word.process_audio.assert_called_once()
         assert daemon.presence.process_audio_frame.call_count == 2  # 1440/512 = 2
 
     @pytest.mark.asyncio
     async def test_no_consumer_call_below_threshold(self):
-        """Single 480-sample frame does NOT trigger wake word or presence."""
+        """Single 480-sample frame does NOT trigger presence."""
         daemon = _make_daemon()
         _wire_audio_input(daemon, [_make_frame()])
 
         await daemon._audio_loop()
 
-        daemon.wake_word.process_audio.assert_not_called()
         daemon.presence.process_audio_frame.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_multiple_wake_chunks_from_many_frames(self):
-        """6 frames (2880 samples) → 2 wake calls (2×1280) + 320 leftover."""
-        daemon = _make_daemon()
-        frames = _make_flush_frames(6)
-        _wire_audio_input(daemon, frames)
-
-        await daemon._audio_loop()
-
-        assert daemon.wake_word.process_audio.call_count == 2
-        for call in daemon.wake_word.process_audio.call_args_list:
-            arr = call[0][0]
-            assert arr.shape == (_WAKE_SAMPLES,)
 
     @pytest.mark.asyncio
     async def test_multiple_vad_chunks_from_many_frames(self):
@@ -191,19 +159,19 @@ class TestAudioLoopDistribution:
         assert daemon.presence.process_audio_frame.call_count == 5
 
     @pytest.mark.asyncio
-    async def test_wake_word_runs_regardless_of_vad_result(self):
-        """Wake word processes ALL audio even when VAD reports silence."""
+    async def test_engagement_classifier_called_on_speech(self):
+        """Engagement classifier is called when VAD detects speech and operator present."""
         daemon = _make_daemon()
-        daemon.presence.process_audio_frame.return_value = 0.0  # "silence"
+        daemon.presence._latest_vad_confidence = 0.5  # above 0.3 threshold
+        ps_behavior = MagicMock()
+        ps_behavior.value = "PRESENT"
+        daemon.perception.behaviors = {"presence_state": ps_behavior}
         frames = _make_flush_frames(3)
         _wire_audio_input(daemon, frames)
 
         await daemon._audio_loop()
 
-        # Wake word still called — no VAD gating
-        daemon.wake_word.process_audio.assert_called_once()
-        # VAD still runs for presence detection
-        assert daemon.presence.process_audio_frame.call_count == 2
+        daemon._engagement.on_speech_detected.assert_called()
 
 
 # --- Error handling ---
@@ -213,21 +181,8 @@ class TestAudioLoopErrorHandling:
     """One consumer failing must not kill the loop or other consumers."""
 
     @pytest.mark.asyncio
-    async def test_continues_after_wake_word_exception(self):
-        """Presence still gets frames after wake_word.process_audio raises."""
-        daemon = _make_daemon()
-        frames = _make_flush_frames(6)  # enough for multiple flushes
-        _wire_audio_input(daemon, frames)
-
-        daemon.wake_word.process_audio.side_effect = RuntimeError("boom")
-
-        await daemon._audio_loop()
-
-        assert daemon.presence.process_audio_frame.call_count > 0
-
-    @pytest.mark.asyncio
     async def test_continues_after_presence_exception(self):
-        """Wake word still processes audio after presence raises."""
+        """Loop continues after presence raises."""
         daemon = _make_daemon()
         frames = _make_flush_frames(6)
         _wire_audio_input(daemon, frames)
@@ -238,8 +193,6 @@ class TestAudioLoopErrorHandling:
 
         # Presence was attempted (and raised)
         assert daemon.presence.process_audio_frame.call_count > 0
-        # Wake word still runs (independent of VAD)
-        assert daemon.wake_word.process_audio.call_count > 0
 
     @pytest.mark.asyncio
     async def test_continues_after_gemini_exception(self):
@@ -255,7 +208,6 @@ class TestAudioLoopErrorHandling:
 
         await daemon._audio_loop()
 
-        assert daemon.wake_word.process_audio.call_count > 0
         assert daemon.presence.process_audio_frame.call_count > 0
 
     @pytest.mark.asyncio
@@ -267,7 +219,6 @@ class TestAudioLoopErrorHandling:
 
         await daemon._audio_loop()
 
-        daemon.wake_word.process_audio.assert_called_once()
         assert daemon.presence.process_audio_frame.call_count == 2  # 1440/512 = 2
 
     @pytest.mark.asyncio
@@ -320,4 +271,3 @@ class TestAudioLoopRecovery:
         mock_audio.stop.assert_called()
         mock_sleep.assert_any_call(5.0)
         mock_audio.start.assert_called()
-        daemon.wake_word.process_audio.assert_called_once()

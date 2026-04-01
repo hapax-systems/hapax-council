@@ -118,7 +118,6 @@ def test_daemon_creates_event_log():
     )
     with (
         patch("agents.hapax_daimonion.daemon.HotkeyServer"),
-        patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
         patch("agents.hapax_daimonion.daemon.TTSManager"),
     ):
         from agents.hapax_daimonion.__main__ import VoiceDaemon
@@ -139,7 +138,6 @@ def test_daemon_wires_event_log_to_subsystems():
     )
     with (
         patch("agents.hapax_daimonion.daemon.HotkeyServer"),
-        patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
         patch("agents.hapax_daimonion.daemon.TTSManager"),
     ):
         from agents.hapax_daimonion.__main__ import VoiceDaemon

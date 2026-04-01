@@ -296,7 +296,7 @@ class TestGovernanceProvenance:
         )
         sched = Schedule(command=cmd)
 
-        assert sched.command.selected_by == "wake_word_override"
+        assert sched.command.selected_by == "engagement_override"
         assert sched.command.governance_result.allowed is True
         assert isinstance(sched.command.params, MappingProxyType)
         assert "not present" in guard.check(ctx, now).violations[0]
@@ -341,7 +341,7 @@ class TestGovernanceProvenance:
 
         assert sched_idle.command.selected_by == "default"
         assert sched_prod.command.governance_result.allowed is False
-        assert sched_wake.command.selected_by == "wake_word_override"
+        assert sched_wake.command.selected_by == "engagement_override"
         assert isinstance(sched_idle.command.params, MappingProxyType)
 
         ctx = FusedContext(trigger_time=now, trigger_value="x", samples={"a": Stamped(1, now)})

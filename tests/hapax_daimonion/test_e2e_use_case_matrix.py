@@ -118,7 +118,7 @@ class TestWakeWordUseCases:
 
         # Primitive: Command immutable, provenance correct
         assert isinstance(cmd.params, MappingProxyType)
-        assert cmd.selected_by == "wake_word_override"
+        assert cmd.selected_by == "engagement_override"
         assert cmd.governance_result.allowed is True
         assert gate.last_command is cmd
 
@@ -156,7 +156,7 @@ class TestWakeWordUseCases:
 
         # Primitive: override provenance, veto result shows allowed
         assert cmd2.governance_result.allowed is True
-        assert cmd2.selected_by == "wake_word_override"
+        assert cmd2.selected_by == "engagement_override"
         assert gate.last_command is cmd2
 
     def test_wake_word_consumed_production_resumes_pause(self):
@@ -216,7 +216,7 @@ class TestWakeWordUseCases:
         assert r2 == "process"
 
         # Primitive: override is active, conversation state persists but overridden
-        assert gov.last_selected.selected_by == "wake_word_override"
+        assert gov.last_selected.selected_by == "engagement_override"
 
 
 # ── Governance Use Cases ─────────────────────────────────────────────────────

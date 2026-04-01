@@ -24,7 +24,6 @@ def _make_daemon(backend: str = "local") -> VoiceDaemon:
         patch("agents.hapax_daimonion.daemon.PresenceDetector"),
         patch("agents.hapax_daimonion.daemon.ContextGate"),
         patch("agents.hapax_daimonion.daemon.HotkeyServer"),
-        patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
         patch("agents.hapax_daimonion.daemon.TTSManager"),
     ):
         daemon = VoiceDaemon(cfg=cfg)

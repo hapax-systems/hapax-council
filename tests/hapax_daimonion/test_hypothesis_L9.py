@@ -29,8 +29,6 @@ def _make_daemon():
         patch("agents.hapax_daimonion.daemon.PresenceDetector"),
         patch("agents.hapax_daimonion.daemon.ContextGate"),
         patch("agents.hapax_daimonion.daemon.HotkeyServer"),
-        patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
-        patch("agents.hapax_daimonion.daemon.PorcupineWakeWord"),
         patch("agents.hapax_daimonion.daemon.AudioInputStream"),
         patch("agents.hapax_daimonion.daemon.TTSManager"),
         patch("agents.hapax_daimonion.daemon.ChimePlayer"),

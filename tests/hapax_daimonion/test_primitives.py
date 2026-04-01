@@ -304,11 +304,6 @@ class TestBehaviorWithPerceptionEngine:
 
 
 class TestEventIntegration:
-    def test_daemon_has_wake_word_event(self):
-
-        with _mock_daemon() as daemon:
-            assert isinstance(daemon.wake_word_event, Event)
-
     def test_daemon_has_focus_event(self):
 
         with _mock_daemon() as daemon:
@@ -330,8 +325,6 @@ def _mock_daemon():
                 patch("agents.hapax_daimonion.daemon.ContextGate"),
                 patch("agents.hapax_daimonion.daemon.NotificationQueue"),
                 patch("agents.hapax_daimonion.daemon.HotkeyServer"),
-                patch("agents.hapax_daimonion.daemon.WakeWordDetector"),
-                patch("agents.hapax_daimonion.daemon.PorcupineWakeWord"),
                 patch("agents.hapax_daimonion.daemon.AudioInputStream"),
                 patch("agents.hapax_daimonion.daemon.TTSManager"),
                 patch("agents.hapax_daimonion.daemon.ChimePlayer"),
@@ -345,8 +338,6 @@ def _mock_daemon():
             daemon = VoiceDaemon.__new__(VoiceDaemon)
             # Minimal init to get the attributes we care about
             daemon.cfg = MagicMock()
-            daemon.cfg.wake_word_engine = "porcupine"
-            daemon.cfg.porcupine_sensitivity = 0.5
             VoiceDaemon.__init__(daemon, cfg=daemon.cfg)
             return daemon
 
