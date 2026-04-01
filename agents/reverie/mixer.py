@@ -71,6 +71,18 @@ class ReverieMixer:
 
         self._satellites = SatelliteManager(load_vocabulary(), decay_rate=0.02)
         self._pipeline = self._init_pipeline()
+        # Exploration tracking (spec §8: kappa=0.015, T_patience=240s)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration = ExplorationTrackerBundle(
+            component="visual_chain",
+            edges=["salience_input", "technique_selection"],
+            traces=["visual_salience", "imagination_material"],
+            neighbors=["imagination", "stimmung"],
+            kappa=0.015,
+            t_patience=240.0,
+        )
+        self._prev_salience_input: float = 0.0
 
     @staticmethod
     def _init_pipeline():
@@ -177,6 +189,20 @@ class ReverieMixer:
 
         # 10. ControlSignal health
         publish_health(ControlSignal(component="reverie", reference=1.0, perception=1.0))
+
+        # 11. Exploration signal: track visual salience habituation
+        self._exploration.feed_habituation(
+            "salience_input", current_salience, self._prev_salience_input, 0.2
+        )
+        technique = imagination.get("material", "void") if imagination else "void"
+        self._exploration.feed_habituation(
+            "technique_selection", hash(technique) % 100 / 100.0, 0.0, 0.3
+        )
+        self._exploration.feed_interest("visual_salience", current_salience, 0.2)
+        self._exploration.feed_interest("imagination_material", hash(technique) % 100 / 100.0, 0.3)
+        self._exploration.feed_error(0.0 if current_salience > 0.1 else 0.5)
+        self._exploration.compute_and_publish()
+        self._prev_salience_input = current_salience
 
     def dispatch_impingement(self, imp: Impingement) -> None:
         """Route impingement through affordance pipeline. Recruits satellites for node.* matches."""

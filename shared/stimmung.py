@@ -191,6 +191,18 @@ class StimmungCollector:
         self._cl_errors = 0
         self._cl_ok = 0
         self._cl_degraded = False
+        # Exploration tracking (spec §8: kappa=0.005, T_patience=600s)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration = ExplorationTrackerBundle(
+            component="stimmung",
+            edges=["stance_changes", "dimension_freshness"],
+            traces=["overall_stance", "dimension_count"],
+            neighbors=["dmn_pulse", "imagination"],
+            kappa=0.005,
+            t_patience=600.0,
+        )
+        self._prev_stance_val: float = 0.0
 
     def update_health(
         self, healthy: int, total: int, failed_checks: list[str] | None = None
@@ -419,6 +431,25 @@ class StimmungCollector:
         if self._cl_ok >= 5 and self._cl_degraded:
             self._cl_degraded = False
             log.info("Control law [stimmung]: recovered")
+
+        # Exploration signal: track stance stability and dimension freshness
+        stance_val = {
+            "nominal": 0.0,
+            "seeking": 0.1,
+            "cautious": 0.3,
+            "degraded": 0.6,
+            "critical": 1.0,
+        }.get(stance, 0.0)
+        self._exploration.feed_habituation("stance_changes", stance_val, self._prev_stance_val, 0.1)
+        fresh_count = sum(1 for d in dimensions.values() if d.freshness_s < 120.0)
+        self._exploration.feed_habituation(
+            "dimension_freshness", float(fresh_count), float(len(dimensions)), 1.0
+        )
+        self._exploration.feed_interest("overall_stance", stance_val, 0.1)
+        self._exploration.feed_interest("dimension_count", float(fresh_count), 1.0)
+        self._exploration.feed_error(0.0 if stance in ("nominal", "seeking") else 0.5)
+        self._exploration.compute_and_publish()
+        self._prev_stance_val = stance_val
 
         return SystemStimmung(
             **dimensions,
