@@ -8,5 +8,5 @@ schedule:
 pipeline_role: integrator
 pipeline_layer: cognition
 pipeline_state:
-  path: "/dev/shm/hapax-imagination/content/active/slots.json"
-  metrics: [fragment_id, slots]
+  path: "/dev/shm/hapax-imagination/pipeline/uniforms.json"
+  metrics: [intensity, tension, depth, coherence]

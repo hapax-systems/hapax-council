@@ -734,6 +734,23 @@ def _classify_segment(segment_path: Path) -> SegmentClassification:
 # ── Sidecar Files ────────────────────────────────────────────────────────────
 
 
+def _guest_consent_check() -> bool:
+    """Check if guest presence metadata may be persisted.
+
+    Returns True if guest metadata is safe to persist (consent granted
+    or registry unavailable — degrade open since operator is always present).
+    Returns False if registry is loaded and no guest consent contract exists.
+    """
+    try:
+        from shared.governance.consent import ConsentRegistry
+
+        registry = ConsentRegistry()
+        registry.load()
+        return registry.contract_check("guest", "video")
+    except Exception:
+        return True  # Registry unavailable — degrade gracefully
+
+
 def _write_sidecar(
     segment_path: Path,
     classification: SegmentClassification,
@@ -758,6 +775,11 @@ def _write_sidecar(
         "ssim": classification.ssim,
         "disposition": disposition,
     }
+    # Consent gate: redact guest presence metadata if unconsented
+    if data["people_count"] > 1 and not _guest_consent_check():
+        log.info("Consent: redacting guest count in sidecar for %s", segment_path.name)
+        data["people_count"] = 1  # Only operator
+        data["max_people"] = 1
     sidecar_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return sidecar_path
 

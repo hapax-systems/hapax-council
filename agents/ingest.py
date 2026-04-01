@@ -530,6 +530,29 @@ def _record_ingested(path: Path, tracker: dict) -> None:
     }
 
 
+def _check_consent_for_ingest(payload: dict) -> bool:
+    """Check if all persons in payload have active consent contracts.
+
+    Returns True if safe to ingest, False if unconsented persons present.
+    Degrades gracefully — if the consent registry is unavailable, allows
+    ingestion (sync agents already filter upstream).
+    """
+    people = payload.get("people", [])
+    if not people:
+        return True  # No persons — safe
+
+    try:
+        from shared.governance.consent import ConsentRegistry
+
+        registry = ConsentRegistry()
+        registry.load()
+    except Exception:
+        return True  # Registry unavailable — degrade gracefully
+
+    source_service = payload.get("source_service", "document")
+    return all(registry.contract_check(str(person), source_service) for person in people)
+
+
 def ingest_file(path: Path) -> tuple[bool, str]:
     """Parse, chunk, embed, and upsert a single file.
 
@@ -607,6 +630,11 @@ def ingest_file(path: Path) -> tuple[bool, str]:
                         payload=payload,
                     )
                 )
+
+        # Consent check: skip if unconsented persons in any chunk payload
+        if points and not _check_consent_for_ingest(points[0].payload):
+            log.info("Consent: skipping %s — unconsented persons in payload", path.name)
+            return (True, "consent_skipped")
 
         if points:
             # Batch upsert (Qdrant handles batching internally)

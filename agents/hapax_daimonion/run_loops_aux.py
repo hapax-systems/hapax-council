@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agents._apperception import impingement_to_cascade_event
 from agents._impingement_consumer import ImpingementConsumer
 from agents.hapax_daimonion.persona import format_notification  # noqa: F401 (patched in tests)
 
@@ -165,6 +166,33 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     len(activations),
                                     imp.content.get("narrative", "")[:40],
                                 )
+                    # Apperception cascade: map perception impingements to cascade events
+                    cascade_event = impingement_to_cascade_event(imp)
+                    if cascade_event is not None:
+                        if (
+                            hasattr(daemon, "_apperception_cascade")
+                            and daemon._apperception_cascade is not None
+                        ):
+                            try:
+                                apperception = daemon._apperception_cascade.process(
+                                    cascade_event,
+                                )
+                                if apperception is not None and hasattr(
+                                    daemon, "_apperception_store"
+                                ):
+                                    daemon._apperception_store.add(apperception)
+                                    log.debug(
+                                        "Apperception cascade: %s → %s",
+                                        imp.content.get("metric", imp.source),
+                                        apperception.theme,
+                                    )
+                            except Exception:
+                                log.debug("Apperception cascade error (non-fatal)", exc_info=True)
+                        else:
+                            log.debug(
+                                "Apperception cascade event generated but no cascade on daemon: %s",
+                                cascade_event.source,
+                            )
                     # Proactive utterance
                     if imp.source == "imagination" and imp.strength >= 0.65:
                         _handle_proactive_impingement(daemon, imp)
