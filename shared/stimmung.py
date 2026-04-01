@@ -14,6 +14,7 @@ dimensions use 0.3× weight, so system stance remains infrastructure-driven.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
 from enum import StrEnum
@@ -21,6 +22,8 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 from shared.control_signal import ControlSignal, publish_health
+
+log = logging.getLogger("stimmung")
 
 # ── Stance ───────────────────────────────────────────────────────────────────
 

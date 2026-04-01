@@ -254,7 +254,7 @@ export function TerrainLayout() {
               >
                 <HorizonRegion />
                 {(!coreMiddle || coreMiddle === "field") && <FieldRegion />}
-                {(!coreMiddle || coreMiddle === "ground") && <GroundRegion vl={vl} />}
+                {(!coreMiddle || coreMiddle === "ground") && <GroundRegion />}
                 {(!coreMiddle || coreMiddle === "watershed") && <WatershedRegion />}
                 <BedrockRegion />
               </div>
@@ -262,7 +262,7 @@ export function TerrainLayout() {
             fullscreenLeft={
               splitRegion === "ground" ? (
                 <div className="w-full h-full overflow-hidden relative" style={{ background: "#1d2021" }}>
-                  <GroundRegion vl={vl} />
+                  <GroundRegion />
                 </div>
               ) : undefined
             }
@@ -285,7 +285,7 @@ export function TerrainLayout() {
           >
             <HorizonRegion />
             {(!coreMiddle || coreMiddle === "field") && <FieldRegion />}
-            {(!coreMiddle || coreMiddle === "ground") && <GroundRegion vl={vl} />}
+            {(!coreMiddle || coreMiddle === "ground") && <GroundRegion />}
             {(!coreMiddle || coreMiddle === "watershed") && <WatershedRegion />}
             <BedrockRegion />
           </div>

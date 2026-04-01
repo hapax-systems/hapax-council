@@ -24,6 +24,9 @@ def _passing_state() -> dict:
         "vad_active": False,
         "last_utterance_time": time.monotonic() - 60.0,
         "tpn_active": False,
+        "presence_state": "PRESENT",
+        "stimmung_stance": "nominal",
+        "session_active": False,
     }
 
 

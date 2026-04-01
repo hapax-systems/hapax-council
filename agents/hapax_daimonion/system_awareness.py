@@ -37,7 +37,7 @@ class SystemAwarenessCapability:
     ) -> None:
         self._stimmung_path = stimmung_path
         self._cooldown_s = cooldown_s
-        self._last_activation: float = 0.0
+        self._last_activation: float = -(cooldown_s + 1.0)
         self._pending: list[Impingement] = []
 
     def can_resolve(self, impingement: Impingement) -> float:

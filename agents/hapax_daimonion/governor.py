@@ -146,6 +146,15 @@ class PipelineGovernor:
         )
 
     @property
+    def wake_word_active(self) -> bool:
+        """Backward-compat alias for engagement_active."""
+        return self.engagement_active
+
+    @wake_word_active.setter
+    def wake_word_active(self, value: bool) -> None:
+        self.engagement_active = value
+
+    @property
     def veto_chain(self) -> VetoChain[EnvironmentState]:
         """Expose veto chain for external composition (Phase 3 extension point)."""
         return self._veto_chain

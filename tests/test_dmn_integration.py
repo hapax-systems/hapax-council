@@ -16,7 +16,7 @@ class TestDMNPulseIntegration:
             "fortress": None,
             "watch": {"heart_rate": 72, "age_s": 1.0},
         }
-        with patch("agents.dmn.pulse._ollama_generate", new_callable=AsyncMock) as mock_ollama:
+        with patch("agents.dmn.pulse._ollama_fast", new_callable=AsyncMock) as mock_ollama:
             mock_ollama.return_value = "Operator coding with moderate flow."
             await pulse._sensory_tick(snapshot)
         assert len(buf) == 1
@@ -36,8 +36,13 @@ class TestDMNPulseIntegration:
             "fortress": None,
             "watch": {"heart_rate": 0, "age_s": 1.0},
         }
-        with patch("agents.dmn.pulse._ollama_generate", new_callable=AsyncMock) as mock:
-            mock.return_value = "Trajectory: degrading. Concern: flow dropped significantly."
+        with (
+            patch(
+                "agents.dmn.pulse.collect_thinking",
+                return_value="Trajectory: degrading. Concern: flow dropped significantly.",
+            ),
+            patch("agents.dmn.pulse.start_thinking"),
+        ):
             await pulse._evaluative_tick(snapshot)
         impingements = pulse.drain_impingements()
         evaluative = [i for i in impingements if i.source == "dmn.evaluative"]

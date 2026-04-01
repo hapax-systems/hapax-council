@@ -32,7 +32,7 @@ class ProactiveGate:
 
     def __init__(self, cooldown_s: float = DEFAULT_COOLDOWN_S) -> None:
         self._cooldown_s = cooldown_s
-        self._last_proactive: float = 0.0
+        self._last_proactive: float = -(cooldown_s + 1.0)
 
     def should_speak(self, fragment: ImaginationFragment, state: dict) -> bool:
         """Return True only when ALL gate conditions pass."""
@@ -64,4 +64,4 @@ class ProactiveGate:
 
     def on_operator_speech(self) -> None:
         """Clear cooldown when the operator speaks (conversation started)."""
-        self._last_proactive = 0.0
+        self._last_proactive = -(self._cooldown_s + 1.0)

@@ -76,6 +76,7 @@ class ReverieDaemon:
 
     async def run(self) -> None:
         """Main loop — never stops unless signalled."""
+        global TICK_INTERVAL_S
         log.info("Reverie daemon starting")
         while self._running:
             try:
@@ -88,7 +89,6 @@ class ReverieDaemon:
                 self._cl_ok = 0
 
                 if self._cl_errors >= 3 and not self._cl_degraded:
-                    global TICK_INTERVAL_S
                     self._cl_original_tick = TICK_INTERVAL_S
                     TICK_INTERVAL_S = TICK_INTERVAL_S * 2.0
                     self._cl_degraded = True

@@ -10,8 +10,6 @@ import { HorizonRegion } from "./regions/HorizonRegion";
 import { FieldRegion } from "./regions/FieldRegion";
 import { WatershedRegion } from "./regions/WatershedRegion";
 import { BedrockRegion } from "./regions/BedrockRegion";
-import { StudioDetailPane } from "./ground/StudioDetailPane";
-import { useVisualLayer } from "../../api/hooks";
 import type { RegionName } from "../../contexts/TerrainContext";
 
 interface DetailPaneProps {
@@ -19,8 +17,6 @@ interface DetailPaneProps {
 }
 
 export function DetailPane({ region }: DetailPaneProps) {
-  const { data: vl } = useVisualLayer();
-
   return (
     <div
       className="w-full h-full"
@@ -34,9 +30,9 @@ export function DetailPane({ region }: DetailPaneProps) {
       {region === "horizon" && <HorizonRegion />}
       {region === "field" && <FieldRegion />}
       {region === "ground" && (
-        <StudioDetailPane
-          classificationDetections={vl?.classification_detections ?? []}
-        />
+        <div className="flex items-center justify-center h-full text-[var(--color-fg4)] text-sm">
+          Graph canvas controls (Plan B)
+        </div>
       )}
       {region === "watershed" && <WatershedRegion />}
       {region === "bedrock" && <BedrockRegion />}
