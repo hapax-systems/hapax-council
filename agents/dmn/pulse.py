@@ -27,6 +27,14 @@ CONSOLIDATION_TICK_S = 180.0
 class DMNPulse:
     """Multi-rate DMN pulse engine."""
 
+    # Stimmung stance → tick rate multiplier (higher = slower)
+    _STANCE_RATE_MULTIPLIERS: dict[str, float] = {
+        "critical": 4.0,
+        "degraded": 2.0,
+        "cautious": 1.5,
+        "nominal": 1.0,
+    }
+
     def __init__(self, buffer: DMNBuffer) -> None:
         self._buffer = buffer
         self._last_sensory = 0.0
@@ -34,6 +42,7 @@ class DMNPulse:
         self._last_consolidation = 0.0
         self._prior_snapshot: dict | None = None
         self._tpn_active = False
+        self._last_stance: str = "nominal"
         self._pending_impingements: list[Impingement] = []
         self._ollama_breaker = CircuitBreaker("ollama", failure_threshold=5, cooldown_s=30.0)
         self._degradation_emitted = False
@@ -43,11 +52,21 @@ class DMNPulse:
     def set_tpn_active(self, active: bool) -> None:
         self._tpn_active = active
 
+    def _get_stance_rate_multiplier(self) -> float:
+        """Return tick rate multiplier based on stimmung stance."""
+        return self._STANCE_RATE_MULTIPLIERS.get(self._last_stance, 1.0)
+
     async def tick(self) -> None:
         now = time.monotonic()
-        sensory_rate = SENSORY_TICK_S * (2.0 if self._tpn_active else 1.0)
-        evaluative_rate = EVALUATIVE_TICK_S * (2.0 if self._tpn_active else 1.0)
+        tpn_mult = 2.0 if self._tpn_active else 1.0
+        stimmung_mult = self._get_stance_rate_multiplier()
+        sensory_rate = SENSORY_TICK_S * tpn_mult * stimmung_mult
+        evaluative_rate = EVALUATIVE_TICK_S * tpn_mult * stimmung_mult
         snapshot = read_all()
+        # Extract stimmung stance for rate modulation
+        stimmung = snapshot.get("stimmung", {})
+        if isinstance(stimmung, dict) and "stance" in stimmung:
+            self._last_stance = stimmung["stance"]
         vs = snapshot.get("visual_surface", {})
         if vs.get("imagination_narrative"):
             self._buffer.set_imagination_context(
