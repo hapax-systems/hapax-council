@@ -11,11 +11,13 @@ import time
 
 from shared.exploration import (
     CoherenceTracker,
+    ExplorationAction,
     ExplorationSignal,
     HabituationTracker,
     InterestTracker,
     LearningProgressTracker,
     compute_exploration_signal,
+    evaluate_control_law,
 )
 from shared.exploration_writer import publish_exploration_signal
 
@@ -76,3 +78,15 @@ class ExplorationTrackerBundle:
         except Exception:
             log.debug("Failed to publish exploration signal for %s", self.component)
         return sig
+
+    def evaluate_action(
+        self, signal: ExplorationSignal | None = None, sigma_explore: float = 0.10
+    ) -> ExplorationAction:
+        """Evaluate the 15th control law for this component.
+
+        Call after compute_and_publish(). Returns an ExplorationAction
+        that the component should apply to its behavior this tick.
+        """
+        if signal is None:
+            signal = self.compute_and_publish()
+        return evaluate_control_law(signal, sigma_explore)

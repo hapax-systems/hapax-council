@@ -172,9 +172,22 @@ class ImaginationDaemon:
                         "snapshot_activity", hash(activity) % 100 / 100.0, 0.3
                     )
                     self._exploration.feed_error(0.0 if observations else 1.0)
-                    self._exploration.compute_and_publish()
+                    sig = self._exploration.compute_and_publish()
                     self._prev_obs_count = obs_count
                     self._prev_stance = cur_stance
+
+                    # 15th control law: apply exploration action
+                    action = self._exploration.evaluate_action(sig, sigma_explore=0.20)
+                    if action.mode != "none":
+                        log.debug(
+                            "Exploration action: %s (boost=%s ×%.1f)",
+                            action.mode,
+                            action.gain_boost_edge,
+                            action.gain_boost_factor,
+                        )
+                    # Tick rate modulation: directed exploration → faster cadence
+                    if action.tick_rate_factor < 1.0:
+                        self._imagination.cadence.force_accelerated(True)
 
                     # Drain and emit impingements
                     impingements = self._imagination.drain_impingements()

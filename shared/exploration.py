@@ -300,3 +300,107 @@ def compute_exploration_signal(
         boredom_index=bi,
         curiosity_index=ci,
     )
+
+
+# ── Control Law: 15th SCM Control Law ───────────────────────────────────────
+
+
+class ExplorationMode:
+    """Response mode from the 15th control law."""
+
+    NONE = "none"
+    DIRECTED = "directed"  # bored + curious → focus on novel edge
+    UNDIRECTED = "undirected"  # bored + not curious → random perturbation
+    FOCUSED = "focused"  # not bored + curious → amplify novel edge
+
+
+@dataclass(frozen=True)
+class ExplorationAction:
+    """What a component should do this tick based on its exploration state.
+
+    Components read these fields and apply them to their own behavior:
+    - gain_boost_edge: which input edge to amplify (None = no change)
+    - gain_boost_factor: multiplier for the boosted edge (1.0 = no change)
+    - gain_suppress_factor: multiplier for habituated edges (1.0 = no change)
+    - tick_rate_factor: multiplier for tick/cadence interval (1.0 = no change)
+    - explore: whether to try reading an unfamiliar trace
+    - perturb_sigma: magnitude of reference signal perturbation (0.0 = none)
+    """
+
+    mode: str
+    gain_boost_edge: str | None
+    gain_boost_factor: float
+    gain_suppress_factor: float
+    tick_rate_factor: float
+    explore: bool
+    perturb_sigma: float
+
+    @staticmethod
+    def no_action() -> ExplorationAction:
+        return ExplorationAction(
+            mode=ExplorationMode.NONE,
+            gain_boost_edge=None,
+            gain_boost_factor=1.0,
+            gain_suppress_factor=1.0,
+            tick_rate_factor=1.0,
+            explore=False,
+            perturb_sigma=0.0,
+        )
+
+
+_BOREDOM_THRESHOLD = 0.7
+_CURIOSITY_DIRECTED_THRESHOLD = 0.4
+_CURIOSITY_FOCUSED_THRESHOLD = 0.6
+
+
+def evaluate_control_law(
+    signal: ExplorationSignal,
+    sigma_explore: float = 0.10,
+) -> ExplorationAction:
+    """Evaluate the 15th control law and return an action for the component.
+
+    Args:
+        signal: The component's current ExplorationSignal.
+        sigma_explore: Component-specific perturbation magnitude.
+    """
+    bi = signal.boredom_index
+    ci = signal.curiosity_index
+
+    if bi > _BOREDOM_THRESHOLD and ci > _CURIOSITY_DIRECTED_THRESHOLD:
+        # DIRECTED EXPLORATION: bored but see something interesting
+        return ExplorationAction(
+            mode=ExplorationMode.DIRECTED,
+            gain_boost_edge=signal.max_novelty_edge,
+            gain_boost_factor=1.5,
+            gain_suppress_factor=0.5,
+            tick_rate_factor=1.0 / 1.3,  # 1.3x faster
+            explore=False,
+            perturb_sigma=0.0,
+        )
+
+    if bi > _BOREDOM_THRESHOLD and ci <= _CURIOSITY_DIRECTED_THRESHOLD:
+        # UNDIRECTED EXPLORATION: bored with nothing interesting
+        should_explore = _sigmoid(bi - _BOREDOM_THRESHOLD) > 0.5
+        return ExplorationAction(
+            mode=ExplorationMode.UNDIRECTED,
+            gain_boost_edge=None,
+            gain_boost_factor=1.0,
+            gain_suppress_factor=0.8,
+            tick_rate_factor=1.0,
+            explore=should_explore,
+            perturb_sigma=sigma_explore,
+        )
+
+    if bi <= _BOREDOM_THRESHOLD and ci > _CURIOSITY_FOCUSED_THRESHOLD:
+        # FOCUSED ENGAGEMENT: not bored, found something interesting
+        return ExplorationAction(
+            mode=ExplorationMode.FOCUSED,
+            gain_boost_edge=signal.max_novelty_edge,
+            gain_boost_factor=2.0,
+            gain_suppress_factor=1.0,
+            tick_rate_factor=1.0,
+            explore=False,
+            perturb_sigma=0.0,
+        )
+
+    return ExplorationAction.no_action()
