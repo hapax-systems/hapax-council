@@ -12,9 +12,12 @@ from agents.hapax_daimonion.cpal.formulation_stream import (
     FormulationState,
     FormulationStream,
 )
+from agents.hapax_daimonion.cpal.grounding_bridge import GroundingBridge, GroundingState
+from agents.hapax_daimonion.cpal.impingement_adapter import ImpingementAdapter, ImpingementEffect
 from agents.hapax_daimonion.cpal.loop_gain import LoopGainController
 from agents.hapax_daimonion.cpal.perception_stream import PerceptionSignals, PerceptionStream
 from agents.hapax_daimonion.cpal.production_stream import ProductionStream
+from agents.hapax_daimonion.cpal.runner import CpalRunner
 from agents.hapax_daimonion.cpal.shm_publisher import publish_cpal_state
 from agents.hapax_daimonion.cpal.signal_cache import SignalCache
 from agents.hapax_daimonion.cpal.tier_composer import ComposedAction, TierComposer
@@ -34,12 +37,17 @@ __all__ = [
     "ControlLawResult",
     "CorrectionTier",
     "CpalEvaluator",
+    "CpalRunner",
     "ErrorDimension",
     "ErrorSignal",
     "EvaluatorResult",
     "FormulationState",
     "FormulationStream",
     "GainUpdate",
+    "GroundingBridge",
+    "GroundingState",
+    "ImpingementAdapter",
+    "ImpingementEffect",
     "LoopGainController",
     "PerceptionSignals",
     "PerceptionStream",
