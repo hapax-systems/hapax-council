@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -49,7 +49,37 @@ export function StudioCanvas() {
   const markDirty = useStudioGraph((s: S) => s.markDirty);
   const selectNode = useStudioGraph((s: S) => s.selectNode);
 
+  const toggleLeftDrawer = useStudioGraph((s: S) => s.toggleLeftDrawer);
+  const toggleRightDrawer = useStudioGraph((s: S) => s.toggleRightDrawer);
+  const toggleHapaxLock = useStudioGraph((s: S) => s.toggleHapaxLock);
+  const rfInstance = useRef<{ fitView: (opts?: { padding?: number }) => void } | null>(null);
+
   useGraphSync();
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Don't capture when typing in inputs
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      if (e.key === "p" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        toggleLeftDrawer();
+      } else if (e.key === "l" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        toggleRightDrawer();
+      } else if (e.key === " " && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        toggleHapaxLock();
+      } else if (e.key === "f" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        rfInstance.current?.fitView({ padding: 0.2 });
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [toggleLeftDrawer, toggleRightDrawer, toggleHapaxLock]);
 
   // Seed default graph on first load
   useEffect(() => {

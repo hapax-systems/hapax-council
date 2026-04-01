@@ -195,8 +195,12 @@ function PresetItem({ name }: { name: string }) {
   const handleClick = async () => {
     // Activate on backend
     await api.post("/studio/effect/select", { preset: name }).catch(() => {});
-    // Load minimal graph representation (full graph loading from JSON is Plan B+)
-    loadPreset(name, [], []);
+    // Fetch preset JSON and convert to React Flow graph with dagre layout
+    const { fetchAndLoadPreset } = await import("./presetLoader");
+    const result = await fetchAndLoadPreset(name);
+    if (result) {
+      loadPreset(name, result.nodes, result.edges);
+    }
   };
 
   return (
