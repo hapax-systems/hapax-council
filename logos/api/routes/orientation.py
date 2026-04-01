@@ -1,6 +1,8 @@
 """Orientation API route."""
 
+import math
 from dataclasses import asdict, is_dataclass
+from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -10,10 +12,21 @@ from logos.api.cache import cache
 router = APIRouter(prefix="/api", tags=["orientation"])
 
 
+def _sanitize_floats(obj: Any) -> Any:
+    """Replace inf/nan floats with None for JSON compliance."""
+    if isinstance(obj, float) and (math.isinf(obj) or math.isnan(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
+
 def _to_dict(obj: object) -> object:
-    """Recursively convert dataclasses to dicts for JSON serialization."""
+    """Convert dataclasses to JSON-safe dicts."""
     if is_dataclass(obj) and not isinstance(obj, type):
-        return asdict(obj)
+        return _sanitize_floats(asdict(obj))
     return obj
 
 
