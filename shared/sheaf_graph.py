@@ -42,6 +42,10 @@ SCM_EDGES = [
     ("compositor", "voice_daemon"),
     ("stimmung", "voice_daemon"),
     ("temporal_bonds", "voice_daemon"),
+    ("ir_perception", "stimmung"),
+    ("ir_perception", "apperception"),
+    ("reactive_engine", "stimmung"),
+    ("voice_pipeline", "voice_daemon"),
 ]
 
 
