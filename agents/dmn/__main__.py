@@ -23,6 +23,8 @@ from pathlib import Path
 from agents._impingement import Impingement
 from agents.dmn.buffer import DMNBuffer
 from agents.dmn.pulse import DMNPulse
+from shared.governance.consent_label import ConsentLabel
+from shared.labeled_trace import serialize_label
 
 log = logging.getLogger("dmn")
 
@@ -79,9 +81,12 @@ class DMNDaemon:
         impingements = self._pulse.drain_impingements()
         if impingements:
             try:
+                _consent_val = serialize_label(ConsentLabel.bottom())
                 with IMPINGEMENTS_FILE.open("a", encoding="utf-8") as f:
                     for imp in impingements:
-                        f.write(imp.model_dump_json() + "\n")
+                        line_data = imp.model_dump()
+                        line_data.setdefault("context", {})["_consent"] = _consent_val
+                        f.write(json.dumps(line_data) + "\n")
                 log.info("Emitted %d impingements to JSONL", len(impingements))
             except OSError:
                 log.warning("Failed to write impingements to %s", IMPINGEMENTS_FILE, exc_info=True)

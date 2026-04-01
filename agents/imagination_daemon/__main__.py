@@ -26,7 +26,9 @@ from agents.imagination_loop import (
     should_accelerate_from_engagement,
 )
 from shared.control_signal import ControlSignal, publish_health
+from shared.governance.consent_label import ConsentLabel
 from shared.impingement import Impingement
+from shared.labeled_trace import serialize_label
 
 log = logging.getLogger("imagination-daemon")
 
@@ -80,9 +82,12 @@ def _emit_impingements(impingements: list[Impingement]) -> None:
         return
     try:
         IMPINGEMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _consent_val = serialize_label(ConsentLabel.bottom())
         with IMPINGEMENTS_FILE.open("a", encoding="utf-8") as f:
             for imp in impingements:
-                f.write(imp.model_dump_json() + "\n")
+                line_data = imp.model_dump()
+                line_data.setdefault("context", {})["_consent"] = _consent_val
+                f.write(json.dumps(line_data) + "\n")
     except OSError:
         log.warning("Failed to write impingements", exc_info=True)
 
