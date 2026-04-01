@@ -201,8 +201,26 @@ class ReverieMixer:
         self._exploration.feed_interest("visual_salience", current_salience, 0.2)
         self._exploration.feed_interest("imagination_material", hash(technique) % 100 / 100.0, 0.3)
         self._exploration.feed_error(0.0 if current_salience > 0.1 else 0.5)
-        self._exploration.compute_and_publish()
+        sig = self._exploration.compute_and_publish()
         self._prev_salience_input = current_salience
+
+        # 12. Control law: modulate visual expression when bored
+        action = self._exploration.evaluate_action(sig, sigma_explore=0.12)
+        if action.mode in ("directed", "undirected"):
+            # Bored → increase diffusion and temporal distortion (contemplative mode)
+            from shared.impingement import Impingement, ImpingementType
+
+            boredom_imp = Impingement(
+                timestamp=time.time(),
+                source="exploration.boredom",
+                type=ImpingementType.BOREDOM,
+                strength=sig.boredom_index,
+                content={"mode": action.mode},
+            )
+            self._visual_chain.activate_dimension("visual_chain.diffusion", boredom_imp, 0.3)
+            self._visual_chain.activate_dimension(
+                "visual_chain.temporal_distortion", boredom_imp, 0.2
+            )
 
     def dispatch_impingement(self, imp: Impingement) -> None:
         """Route impingement through affordance pipeline. Recruits satellites for node.* matches."""
