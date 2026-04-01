@@ -34,16 +34,26 @@ log = logging.getLogger("exploration")
 _IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 
 
+_EMISSION_COOLDOWN_S = 30.0  # max one impingement per component per 30s
+_last_emission: dict[str, float] = {}
+
+
 def _emit_exploration_impingement(
     component: str, action: ExplorationAction, signal: ExplorationSignal
 ) -> None:
     """Write exploration impingement to the cross-daemon JSONL transport.
 
-    This feeds the DMN escalation system (L1/L2/L3). Only emits when
-    the control law produces a non-NONE action.
+    Rate-limited to one emission per component per 30s to prevent
+    flooding the JSONL transport and overwhelming CPAL/DMN consumers.
     """
     if action.mode == ExplorationMode.NONE:
         return
+
+    now = time.time()
+    last = _last_emission.get(component, 0.0)
+    if now - last < _EMISSION_COOLDOWN_S:
+        return
+    _last_emission[component] = now
 
     type_map = {
         ExplorationMode.DIRECTED: "exploration_opp",
