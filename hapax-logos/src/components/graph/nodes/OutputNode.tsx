@@ -20,22 +20,30 @@ function OutputNodeInner({ data, selected }: NodeProps) {
 
   useEffect(() => {
     let running = true;
-    const poll = () => {
-      if (!running) return;
-      const url = `${LOGOS_API_URL}/studio/stream/fx?_t=${Date.now()}`;
-      const loader = new Image();
-      loader.onload = () => {
-        if (!running) return;
-        if (imgRef.current) imgRef.current.src = loader.src;
-        if (fullscreenRef.current) fullscreenRef.current.src = loader.src;
+    let pending = false;
+    let prevUrl = "";
+    const poll = async () => {
+      if (!running || pending) return;
+      pending = true;
+      try {
+        const resp = await fetch(`${LOGOS_API_URL}/studio/stream/fx?_t=${Date.now()}`);
+        if (!running || !resp.ok) { pending = false; return; }
+        const blob = await resp.blob();
+        if (!running) { pending = false; return; }
+        const url = URL.createObjectURL(blob);
+        if (imgRef.current) imgRef.current.src = url;
+        if (fullscreenRef.current) fullscreenRef.current.src = url;
+        if (prevUrl) URL.revokeObjectURL(prevUrl);
+        prevUrl = url;
         lastSuccess.current = Date.now();
         setIsStale(false);
-      };
-      loader.onerror = () => {};
-      loader.src = url;
+      } catch {
+        // Network error — skip this frame
+      }
+      pending = false;
     };
     poll();
-    const pollTimer = setInterval(poll, 83);
+    const pollTimer = setInterval(poll, 100);
     const staleTimer = setInterval(() => {
       if (Date.now() - lastSuccess.current > 5000) setIsStale(true);
     }, 2000);
