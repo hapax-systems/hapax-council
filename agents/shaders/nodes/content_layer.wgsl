@@ -142,7 +142,12 @@ fn sample_and_blend_slot(
     uv = material_uv(uv, material_id, time);
 
     let content = textureSample(slot_tex, samp, uv);
-    let gated = content.rgb * materialization(uv_raw, opacity, time);
+    // Content-aware fade: use the content's own luminance to drive blending.
+    // Dark/black pixels (empty areas, edges of undersized sources) contribute
+    // nothing. No hard boundary artifacts regardless of source size.
+    let lum = dot(content.rgb, vec3(0.299, 0.587, 0.114));
+    let content_presence = smoothstep(0.02, 0.08, lum);
+    let gated = content.rgb * materialization(uv_raw, opacity, time) * content_presence;
     let colored = material_color(gated, material_id);
     let weighted = colored * opacity;
     // Screen blend: adds light to dark base. Content emerges from darkness.

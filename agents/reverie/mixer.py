@@ -239,6 +239,7 @@ class ReverieMixer:
             name = c.capability_name
             if name.startswith("node."):
                 self._satellites.recruit(name.removeprefix("node."), c.combined)
+                self._pipeline.record_outcome(name, success=c.combined > 0.4)
                 self._apply_shader_impingement(imp)
                 break
             elif name.startswith("content."):
@@ -248,6 +249,9 @@ class ReverieMixer:
                 else:
                     self._content_router.activate_content(name, narrative, c.combined)
                 self._recruited_content_count += 1
+                # Learning: high-confidence matches strengthen, weak matches weaken.
+                # Over time, cameras stop winning for tangential exploration impingements.
+                self._pipeline.record_outcome(name, success=c.combined > 0.4)
                 self._apply_shader_impingement(imp)
                 break
             elif name == "shader_graph":
