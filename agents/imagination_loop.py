@@ -21,6 +21,7 @@ from agents.imagination import (
     CadenceController,
     ImaginationFragment,
     assemble_context,
+    detect_convergence,
     maybe_escalate,
     publish_fragment,
     reverberation_check,
@@ -130,9 +131,17 @@ class ImaginationLoop:
         # Force real timestamp and ID — LLMs hallucinate these fields with
         # training-data values (e.g. timestamps from 2024), which makes the
         # silence factor treat every fragment as stale.
-        fragment = fragment.model_copy(
-            update={"timestamp": time.time(), "id": uuid.uuid4().hex[:12]}
-        )
+        updates: dict = {"timestamp": time.time(), "id": uuid.uuid4().hex[:12]}
+
+        # Break continuation chain when imagination has converged.
+        # The context assembly injects a convergence warning, but the LLM may
+        # still set continuation=True. Force it False to reset the thought train.
+        if detect_convergence(self.recent_fragments):
+            updates["continuation"] = False
+            self.cadence.force_accelerated(False)
+            log.info("Convergence detected — breaking continuation chain")
+
+        fragment = fragment.model_copy(update=updates)
         self._record_fragment(fragment)
         publish_fragment(fragment, self._current_path, self._stream_path)
         self.cadence.update(fragment)
