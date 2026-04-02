@@ -200,7 +200,7 @@ class CoherenceTracker:
 
     def local_coherence(self) -> float:
         if not self._phases:
-            return 0.0
+            return 0.5  # Unknown coherence, not desynchronized
         n = len(self._phases)
         total = sum(cmath.exp(1j * p) for p in self._phases.values())
         return abs(total) / n

@@ -11,9 +11,16 @@ from shared.exploration_tracker import ExplorationTrackerBundle, _emit_explorati
 
 
 class TestImpingementEmission:
+    def _clear_cooldown(self) -> None:
+        """Reset the module-level emission cooldown so each test can emit."""
+        import shared.exploration_tracker as mod
+
+        mod._last_emission.clear()
+
     def test_directed_emits_exploration_opp(self, tmp_path: Path) -> None:
         from shared.exploration import ExplorationAction, ExplorationSignal
 
+        self._clear_cooldown()
         imp_file = tmp_path / "impingements.jsonl"
         sig = ExplorationSignal(
             component="test",
@@ -50,6 +57,7 @@ class TestImpingementEmission:
     def test_undirected_emits_boredom(self, tmp_path: Path) -> None:
         from shared.exploration import ExplorationAction, ExplorationSignal
 
+        self._clear_cooldown()
         imp_file = tmp_path / "impingements.jsonl"
         sig = ExplorationSignal(
             component="test",
