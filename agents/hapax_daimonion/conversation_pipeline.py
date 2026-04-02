@@ -24,7 +24,6 @@ from agents.hapax_daimonion.conversation_helpers import (
     _DENSITY_WORD_LIMITS,  # noqa: F401 — re-exported for tests
     _MAX_ACCUMULATION_S,
     _MAX_RESPONSE_TOKENS,
-    _MAX_SPOKEN_WORDS,
     _MAX_TURNS,
     _MIN_CLAUSE_WORDS,
     _MIN_FIRST_CLAUSE_WORDS,
@@ -253,11 +252,13 @@ class ConversationPipeline:
         self._session_start_ts = time.time()
         self._conversation_thread = []
 
-        # Initialize grounding ledger if experiment flags enable it
-        if self._experiment_flags.get("grounding_directive", False):
-            from agents.hapax_daimonion.grounding_ledger import GroundingLedger
+        # Grounding ledger always exists — it provides effort calibration
+        # (dynamic word limits from activation × GQI) and DU state tracking.
+        # The grounding_directive flag controls whether directives are injected
+        # into the prompt, not whether the ledger itself runs.
+        from agents.hapax_daimonion.grounding_ledger import GroundingLedger
 
-            self._grounding_ledger = GroundingLedger()
+        self._grounding_ledger = GroundingLedger()
 
         # Generate sentinel fact for probe question testing
         self._sentinel_number = random.randint(10, 99)
@@ -431,14 +432,19 @@ class ConversationPipeline:
                 log.debug("salience context build failed (non-fatal)", exc_info=True)
 
         # Grounding directive: injected per turn from ledger (Batch 2)
+        # Directive text only injected when grounding_directive flag is set —
+        # this is the IV in the experiment. The ledger still tracks DU state
+        # and computes effort calibration regardless.
         _ledger = getattr(self, "_grounding_ledger", None)
-        if _ledger is not None:
+        if _ledger is not None and self._experiment_flags.get("grounding_directive", False):
             directive = _ledger.grounding_directive()
             if directive:
                 updated += "\n\n" + directive
 
         # Effort level: dynamic word limit from activation × GQI (Batch 2)
-        if _ledger is not None and self._experiment_flags.get("effort_modulation", False):
+        # Always active when grounding ledger exists — response length is a
+        # dynamic property of salience and grounding state, not a static table.
+        if _ledger is not None:
             _activation = 0.5
             if self._salience_router is not None:
                 _bd = self._salience_router.last_breakdown
@@ -1020,17 +1026,14 @@ class ConversationPipeline:
             _t_first_audio = 0.0
             _first_clause_spoken = False
             _spoken_words = 0  # Track words sent to TTS for cutoff
-            # Word limit: effort-driven (Batch 2) > lockdown fixed > density-driven
-            if self._grounding_ledger is not None and self._experiment_flags.get(
-                "effort_modulation", False
-            ):
+            # Word limit: effort calibration from grounding ledger (activation × GQI)
+            # is the primary path. Falls back to density-driven only when no ledger.
+            if self._grounding_ledger is not None:
                 _word_limit = (
                     self.last_word_limit
                 )  # set by effort calibration in _update_system_context
-            elif self._experiment_flags.get("volatile_lockdown", False):
-                _word_limit = _MAX_SPOKEN_WORDS
             else:
-                _word_limit = _density_word_limit()  # Bayesian Tier 1: density-driven
+                _word_limit = _density_word_limit()  # fallback: no grounding ledger
 
             self.state = ConvState.SPEAKING
             # set_speaking(True) already called by process_utterance before bridge
