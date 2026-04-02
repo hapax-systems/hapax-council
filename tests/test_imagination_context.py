@@ -30,6 +30,18 @@ def _write_stream(tmp_path: Path, fragments: list[dict]) -> Path:
     return path
 
 
+def test_system_prompt_has_no_content_sources():
+    """System prompt should not mention specific content sources."""
+    from agents.imagination_loop import IMAGINATION_SYSTEM_PROMPT
+
+    assert "camera_frame" not in IMAGINATION_SYSTEM_PROMPT
+    assert "qdrant_query" not in IMAGINATION_SYSTEM_PROMPT
+    assert "content_references" not in IMAGINATION_SYSTEM_PROMPT
+    assert "Content sources you can reference" not in IMAGINATION_SYSTEM_PROMPT
+    assert "intensity" in IMAGINATION_SYSTEM_PROMPT
+    assert "tension" in IMAGINATION_SYSTEM_PROMPT
+
+
 class TestEmptyAndMissing:
     def test_empty_stream(self, tmp_path: Path) -> None:
         path = tmp_path / "stream.jsonl"
