@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -176,14 +175,9 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
     await daemon._conversation_pipeline.start()
     log.info("Conversation pipeline started (mic stays shared)")
 
-    # Create cognitive loop
-    _start_cognitive_loop(daemon)
-    daemon._cognitive_loop._speech_capability = daemon._speech_capability
-    daemon._cognitive_loop._daemon = daemon
-
-    from agents.hapax_daimonion.session_recorder import SessionRecorder
-
-    daemon._cognitive_loop._session_recorder = SessionRecorder(daemon.session.session_id)
+    # Wire pipeline to CPAL runner for T3 delegation
+    if daemon._cpal_runner is not None:
+        daemon._cpal_runner.set_pipeline(daemon._conversation_pipeline)
 
     # Wake greeting
     _play_wake_greeting(daemon)
@@ -223,34 +217,6 @@ def _resolve_tools(daemon, _exp, get_working_mode):
     tools = daemon._tool_registry.schemas_for_llm(tool_ctx) or None
     tool_handlers = daemon._tool_registry.handler_map(tool_ctx)
     return tools, tool_handlers
-
-
-def _start_cognitive_loop(daemon: VoiceDaemon) -> None:
-    """Create and start the cognitive loop."""
-    from agents.hapax_daimonion.cognitive_loop import CognitiveLoop
-    from agents.hapax_daimonion.conversational_model import ConversationalModel
-    from agents.hapax_daimonion.speculative_stt import SpeculativeTranscriber
-
-    spec_stt = SpeculativeTranscriber(daemon._resident_stt) if daemon._resident_stt else None
-    conv_model = ConversationalModel()
-    _speaker_id = daemon._speaker_identifier if daemon.session.trigger != "engagement" else None
-
-    daemon._cognitive_loop = CognitiveLoop(
-        buffer=daemon._conversation_buffer,
-        pipeline=daemon._conversation_pipeline,
-        session=daemon.session,
-        speaker_identifier=_speaker_id,
-        salience_router=daemon._salience_router,
-        speculative_stt=spec_stt,
-        conversational_model=conv_model,
-        event_log=daemon.event_log,
-        active_silence_enabled=daemon.cfg.active_silence_enabled,
-        silence_notification_threshold_s=daemon.cfg.silence_notification_threshold_s,
-        silence_winddown_threshold_s=daemon.cfg.silence_winddown_threshold_s,
-        notification_queue=daemon.notifications,
-    )
-    daemon.perception.replace_backend(daemon._cognitive_loop)
-    daemon._pipeline_task = asyncio.create_task(daemon._cognitive_loop.run())
 
 
 def _play_wake_greeting(daemon: VoiceDaemon) -> None:

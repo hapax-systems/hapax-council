@@ -1,6 +1,6 @@
 """CPAL control law evaluator -- the cognitive tick.
 
-Replaces CognitiveLoop. Reads perception, formulation, and production
+Control law evaluator. Reads perception, formulation, and production
 streams, runs the control law, and produces action decisions. The
 runner calls this with real grounding state from the grounding bridge.
 """

@@ -1,6 +1,6 @@
 """CPAL async runner -- the main conversation loop.
 
-Replaces CognitiveLoop as the daemon's conversation coordinator.
+Sole conversation coordinator for the daemon.
 Ticks at ~150ms, driving perception, formulation, and production
 streams through the control law evaluator.
 
@@ -265,7 +265,7 @@ class CpalRunner:
         # 11. TPN signal for DMN anti-correlation
         self._signal_tpn(self._processing_utterance or self._production.is_producing)
 
-        # 12. Publish simplified perception behaviors (replaces CognitiveLoop.contribute)
+        # 12. Publish simplified perception behaviors
         if self._daemon is not None and hasattr(self._daemon, "perception"):
             _now = time.monotonic()
             _behaviors = self._daemon.perception.behaviors
