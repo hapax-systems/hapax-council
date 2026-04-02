@@ -20,20 +20,28 @@ function SourceNodeInner({ data }: NodeProps) {
   useEffect(() => {
     if (sourceType !== "camera") return;
     let running = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     const poll = () => {
-      if (!running || !imgRef.current) return;
-      const url = `${LOGOS_API_URL}/studio/stream/camera/${role}?_t=${Date.now()}`;
+      if (!running || !imgRef.current) {
+        timer = setTimeout(poll, 1000);
+        return;
+      }
       const loader = new Image();
       loader.onload = () => {
         if (running && imgRef.current) imgRef.current.src = loader.src;
+        // Adaptive chain — poll after load, match camera 1fps write rate
+        if (running) timer = setTimeout(poll, 1000);
       };
-      loader.src = url;
+      loader.onerror = () => {
+        if (running) timer = setTimeout(poll, 2000);
+      };
+      loader.src = `${LOGOS_API_URL}/studio/stream/camera/${role}?_t=${Date.now()}`;
     };
     poll();
-    const timer = setInterval(poll, 250);
     return () => {
       running = false;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
     };
   }, [sourceType, role]);
 

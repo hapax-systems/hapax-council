@@ -305,12 +305,10 @@ async def mjpeg_stream(feed: str, fps: float = 12.0):
 @router.get("/studio/stream/fx")
 async def fx_snapshot():
     """Single JPEG snapshot of the GPU-effected compositor output."""
-    if not FX_SNAPSHOT_PATH.exists():
-        return JSONResponse({"error": "FX pipeline not running"}, status_code=503)
     try:
         data = FX_SNAPSHOT_PATH.read_bytes()
-    except OSError:
-        return JSONResponse({"error": "read failed"}, status_code=503)
+    except (OSError, FileNotFoundError):
+        return JSONResponse({"error": "FX pipeline not running"}, status_code=503)
     from starlette.responses import Response
 
     return Response(content=data, media_type="image/jpeg", headers=_NO_CACHE)

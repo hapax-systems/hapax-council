@@ -17,28 +17,33 @@ function useFxPoll(imgRef: React.RefObject<HTMLImageElement | null>, intervalMs:
 
   useEffect(() => {
     let running = true;
-    let pending = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     const poll = () => {
-      if (!running || !imgRef.current || pending) return;
-      pending = true;
+      if (!running || !imgRef.current) {
+        timer = setTimeout(poll, intervalMs);
+        return;
+      }
       const loader = new Image();
       loader.onload = () => {
-        pending = false;
         if (running && imgRef.current) imgRef.current.src = loader.src;
         lastSuccess.current = Date.now();
         setIsStale(false);
+        // Schedule next poll AFTER this frame loads — adaptive chain, no overlap
+        if (running) timer = setTimeout(poll, intervalMs);
       };
-      loader.onerror = () => { pending = false; };
+      loader.onerror = () => {
+        if (running) timer = setTimeout(poll, intervalMs * 2); // back off on error
+      };
       loader.src = `${LOGOS_API_URL}/studio/stream/fx?_t=${Date.now()}`;
     };
     poll();
-    const pollTimer = setInterval(poll, Math.max(intervalMs, 200));
     const staleTimer = setInterval(() => {
       if (Date.now() - lastSuccess.current > 5000) setIsStale(true);
     }, 2000);
     return () => {
       running = false;
-      clearInterval(pollTimer);
+      if (timer) clearTimeout(timer);
       clearInterval(staleTimer);
     };
   }, [imgRef, intervalMs]);

@@ -3,11 +3,12 @@ import { usePageVisible } from "../../hooks/usePageVisible";
 import { FRAME_SERVER_URL } from "../../config";
 
 const FRAME_URL = `${FRAME_SERVER_URL}/frame`;
-const FRAME_INTERVAL_MS = 333; // ~3fps — background ambiance, imperceptible above 3fps
+const FRAME_INTERVAL_MS = 333; // ~3fps
 
 /**
  * Displays the wgpu visual surface as a fullscreen background image.
- * Uses setInterval (not rAF) to avoid 60fps tick overhead.
+ * Uses Image() preloader → swap pattern to avoid flash-of-blank.
+ * Adaptive setTimeout chain — no frame overlap, no stacking.
  */
 export function VisualSurface() {
   const imgRef = useRef<HTMLImageElement>(null);
@@ -15,27 +16,29 @@ export function VisualSurface() {
 
   useEffect(() => {
     if (!visible) return;
-
-    let loading = false;
     const img = imgRef.current;
     if (!img) return;
 
-    const onLoad = () => { loading = false; };
-    const onError = () => { loading = false; };
-    img.addEventListener("load", onLoad);
-    img.addEventListener("error", onError);
+    let running = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
-    const timer = setInterval(() => {
-      if (!loading && img) {
-        loading = true;
-        img.src = `${FRAME_URL}?_t=${Date.now()}`;
-      }
-    }, FRAME_INTERVAL_MS);
+    const poll = () => {
+      if (!running) return;
+      const loader = new Image();
+      loader.onload = () => {
+        if (running && img) img.src = loader.src;
+        if (running) timer = setTimeout(poll, FRAME_INTERVAL_MS);
+      };
+      loader.onerror = () => {
+        if (running) timer = setTimeout(poll, FRAME_INTERVAL_MS * 2);
+      };
+      loader.src = `${FRAME_URL}?_t=${Date.now()}`;
+    };
+    poll();
 
     return () => {
-      clearInterval(timer);
-      img.removeEventListener("load", onLoad);
-      img.removeEventListener("error", onError);
+      running = false;
+      if (timer) clearTimeout(timer);
     };
   }, [visible]);
 
