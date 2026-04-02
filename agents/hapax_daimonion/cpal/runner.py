@@ -94,6 +94,7 @@ class CpalRunner:
         self._processing_utterance = False
         self._last_stimmung_check = 0.0
         self._queued_utterance: bytes | None = None
+        self._last_speech_end: float = 0.0  # monotonic timestamp of last system speech end
 
     @property
     def is_running(self) -> bool:
@@ -360,9 +361,16 @@ class CpalRunner:
                 intensity=self._evaluator.gain_controller.gain,
             )
 
-            # T1: Acknowledgment (if cache ready and gain high enough)
+            # T1: Acknowledgment (if cache ready, gain high enough, and outside echo window)
+            # Cooldown prevents T1 from firing on echo of system's own speech.
+            # Without this, T1 plays "mm-hmm" on echo → echo of "mm-hmm" → T1 again → loop.
+            _echo_cooldown_s = 2.0
+            _since_last_speech = time.monotonic() - self._last_speech_end
             region = ConversationalRegion.from_gain(self._evaluator.gain_controller.gain)
-            if region.value >= ConversationalRegion.ATTENTIVE.value:
+            if (
+                region.value >= ConversationalRegion.ATTENTIVE.value
+                and _since_last_speech > _echo_cooldown_s
+            ):
                 ack = self._signal_cache.select("acknowledgment")
                 if ack is not None:
                     _, pcm = ack
@@ -396,6 +404,7 @@ class CpalRunner:
             log.exception("CPAL: utterance processing failed")
             self._evaluator.gain_controller.record_grounding_outcome(success=False)
         finally:
+            self._last_speech_end = time.monotonic()
             self._processing_utterance = False
             self._production.mark_t3_end()
             self._formulation.reset()
@@ -492,3 +501,5 @@ class CpalRunner:
                     await self._pipeline.generate_spontaneous_speech(impingement)
                 except Exception:
                     log.debug("Spontaneous speech failed", exc_info=True)
+                finally:
+                    self._last_speech_end = time.monotonic()

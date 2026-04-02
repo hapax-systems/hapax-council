@@ -160,14 +160,14 @@ _TIER_MAX_TOKENS: dict[str, int] = {
     "STRONG": 150,
     "CAPABLE": 150,
 }
-_MAX_RESPONSE_TOKENS = 150
-_MAX_SPOKEN_WORDS = 35
+_MAX_RESPONSE_TOKENS = 256
+_MAX_SPOKEN_WORDS = 60
 
 _DENSITY_WORD_LIMITS: dict[str, int] = {
-    "presenting": 15,
-    "focused": 20,
-    "ambient": 35,
-    "receptive": 50,
+    "presenting": 25,
+    "focused": 35,
+    "ambient": 60,
+    "receptive": 80,
 }
 _MAX_TURNS = 20
 _SILENCE_TIMEOUT_S = 30.0
