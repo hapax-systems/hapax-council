@@ -1,4 +1,4 @@
-"""Voice generation pipeline — Chatterbox TTS API and Voxtral TTS."""
+"""Voice generation pipeline — Chatterbox TTS API and Kokoro TTS."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ TTS_URL = "http://localhost:4123"
 MAX_TTS_WORKERS = 1  # Sequential to avoid GPU VRAM contention on long demos
 VOICE_SAMPLE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "voice-sample.wav"
 
-VOXTRAL_VOICE_ID = "gb_jane_neutral"
-VOXTRAL_SAMPLE_RATE = 24000
+KOKORO_VOICE = "af_heart"
+KOKORO_SAMPLE_RATE = 24000
 
 
 def check_tts_available() -> bool:
@@ -31,68 +31,47 @@ def check_tts_available() -> bool:
         return False
 
 
-def check_voxtral_available() -> bool:
-    """Check if Mistral API key is available for Voxtral TTS."""
-    import subprocess
-
+def check_kokoro_available() -> bool:
+    """Check if Kokoro TTS is importable."""
     try:
-        result = subprocess.run(
-            ["pass", "show", "api/mistral"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.returncode == 0 and bool(result.stdout.strip())
-    except Exception:
+        from kokoro import KPipeline  # noqa: F401
+
+        return True
+    except ImportError:
         return False
 
 
-def generate_voice_segment_voxtral(
+def generate_voice_segment_kokoro(
     text: str,
     output_path: Path,
-    voice_id: str = VOXTRAL_VOICE_ID,
+    voice: str = KOKORO_VOICE,
 ) -> None:
-    """Generate a single voice segment using Mistral Voxtral TTS API."""
-    import base64
-    import os
+    """Generate a single voice segment using Kokoro 82M TTS."""
+    from kokoro import KPipeline
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    from mistralai.client.sdk import Mistral
-
-    api_key = os.environ.get("MISTRAL_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("MISTRAL_API_KEY is not set")
-
-    client = Mistral(api_key=api_key)
-
+    pipeline = KPipeline(lang_code="a")
     chunks: list[bytes] = []
-    with client.audio.speech.complete(
-        model="voxtral-mini-tts-2603",
-        input=text,
-        voice_id=voice_id,
-        response_format="pcm",
-        stream=True,
-    ) as stream:
-        for event in stream:
-            if event.event == "speech.audio.delta":
-                raw = base64.b64decode(event.data.audio_data)
-                f32 = np.frombuffer(raw, dtype="<f4")
-                f32 = np.clip(f32, -1.0, 1.0)
-                pcm = (f32 * 32767).astype(np.int16)
-                chunks.append(pcm.tobytes())
+    for _graphemes, _phonemes, audio in pipeline(text, voice=voice):
+        if audio is not None:
+            if hasattr(audio, "numpy"):
+                audio = audio.numpy()
+            audio_np = np.asarray(audio, dtype=np.float32)
+            pcm = (audio_np * 32768).clip(-32768, 32767).astype(np.int16)
+            chunks.append(pcm.tobytes())
 
     if not chunks:
-        raise RuntimeError(f"Voxtral produced no audio for text: {text[:80]!r}")
+        raise RuntimeError(f"Kokoro produced no audio for text: {text[:80]!r}")
 
     pcm_data = b"".join(chunks)
     with wave.open(str(output_path), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
-        wf.setframerate(VOXTRAL_SAMPLE_RATE)
+        wf.setframerate(KOKORO_SAMPLE_RATE)
         wf.writeframes(pcm_data)
 
-    log.info("Generated voice segment (voxtral): %s (%d bytes)", output_path.name, len(pcm_data))
+    log.info("Generated voice segment (kokoro): %s (%d bytes)", output_path.name, len(pcm_data))
 
 
 def check_elevenlabs_available() -> bool:
@@ -228,7 +207,7 @@ def generate_all_voice_segments(
     output_dir: Path,
     voice_sample: Path | None = None,
     on_progress: Callable[[str], None] | None = None,
-    backend: Literal["chatterbox", "voxtral", "elevenlabs", "auto"] = "chatterbox",
+    backend: Literal["chatterbox", "kokoro", "elevenlabs", "auto"] = "chatterbox",
 ) -> list[Path]:
     """Generate WAV files for all segments.
 
@@ -237,7 +216,7 @@ def generate_all_voice_segments(
         output_dir: Directory to save WAV files.
         voice_sample: Path to voice sample for Chatterbox cloning.
         on_progress: Optional progress callback.
-        backend: TTS backend — "chatterbox" (default), "voxtral", "elevenlabs", or "auto".
+        backend: TTS backend — "chatterbox" (default), "kokoro", "elevenlabs", or "auto".
     """
     # Resolve backend
     resolved_backend = backend
@@ -246,12 +225,12 @@ def generate_all_voice_segments(
             resolved_backend = "elevenlabs"
         elif check_tts_available():
             resolved_backend = "chatterbox"
-        elif check_voxtral_available():
-            resolved_backend = "voxtral"
+        elif check_kokoro_available():
+            resolved_backend = "kokoro"
         else:
             raise RuntimeError(
                 "No TTS backend available. Set up ElevenLabs (pass insert elevenlabs/api-key), "
-                "start Chatterbox, or configure Voxtral (pass insert api/mistral)."
+                "start Chatterbox, or install Kokoro (uv sync)."
             )
     # else: backend == "chatterbox", use_kokoro stays False
 
@@ -273,8 +252,8 @@ def generate_all_voice_segments(
         gen_start = _time.monotonic()
         if resolved_backend == "elevenlabs":
             generate_voice_segment_elevenlabs(text, output_path)
-        elif resolved_backend == "voxtral":
-            generate_voice_segment_voxtral(text, output_path)
+        elif resolved_backend == "kokoro":
+            generate_voice_segment_kokoro(text, output_path)
         else:
             generate_voice_segment(
                 text,
