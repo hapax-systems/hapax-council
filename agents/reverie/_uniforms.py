@@ -107,7 +107,10 @@ def write_uniforms(
         else [0.0, 0.0, 0.0, 0.0],
     }
 
-    uniforms["post.master_opacity"] = silence
+    # master_opacity defaults to 1.0 in the vocabulary plan — the base visual is
+    # always visible ("there is no idle state"). Silence modulates chain deltas
+    # (below) but does NOT dim the vocabulary base.
+    #
     # Only write non-zero chain deltas — zero deltas would overwrite vocabulary
     # defaults (e.g., noise.amplitude=0.6) with 0.0, blanking the visual output.
     for key, value in chain_params.items():

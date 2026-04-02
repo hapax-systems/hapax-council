@@ -161,6 +161,8 @@ def read_sensors() -> dict[str, dict]:
         return {}
     result = {}
     for f in sensor_dir.glob("*.json"):
+        if f.name == "snapshot.json":
+            continue  # skip our own output to prevent recursive nesting
         data = _read_json(f)
         if data:
             result[f.stem] = data

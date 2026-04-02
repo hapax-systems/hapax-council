@@ -75,7 +75,8 @@
             "type": "postprocess",
             "params": {
                 "vignette_strength": 0.4,
-                "sediment_strength": 0.05
+                "sediment_strength": 0.05,
+                "master_opacity": 1.0
             }
         },
         "out": {
