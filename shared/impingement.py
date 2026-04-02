@@ -50,6 +50,8 @@ class Impingement(BaseModel, frozen=True):
     context: dict[str, Any] = Field(default_factory=dict)  # system state at detection
     interrupt_token: str | None = None  # if pattern-matched, which token
     parent_id: str | None = None  # for cascade tracing
+    trace_id: str | None = None  # OTel trace ID (32-hex) for chronicle causal chains
+    span_id: str | None = None  # OTel span ID (16-hex) for chronicle causal chains
     embedding: list[float] | None = None  # 768-dim vector for affordance retrieval
 
 

@@ -94,8 +94,27 @@ async def lifespan(app: FastAPI):
         _log.exception("Reactive engine failed to start (continuing without it)")
         engine = None
 
+    # Start chronicle sampler and periodic trim
+    import asyncio
+
+    from shared.chronicle import trim as chronicle_trim
+    from shared.chronicle_sampler import run_sampler
+
+    async def _chronicle_trim_loop():
+        while True:
+            try:
+                chronicle_trim()
+            except Exception:
+                _log.debug("Chronicle trim failed", exc_info=True)
+            await asyncio.sleep(60)
+
+    _sampler_task = asyncio.create_task(run_sampler())
+    _trim_task = asyncio.create_task(_chronicle_trim_loop())
+
     yield
 
+    _sampler_task.cancel()
+    _trim_task.cancel()
     if engine is not None:
         await engine.stop()
     await agent_run_manager.shutdown()
@@ -137,6 +156,7 @@ except Exception:
 from logos.api.routes.accommodations import router as accommodations_router
 from logos.api.routes.agents import router as agents_router
 from logos.api.routes.chat import router as chat_router
+from logos.api.routes.chronicle import router as chronicle_router
 from logos.api.routes.consent import router as consent_router
 from logos.api.routes.copilot import router as copilot_router
 from logos.api.routes.data import router as data_router
@@ -189,6 +209,7 @@ app.include_router(events_router)
 app.include_router(exploration_router)
 app.include_router(orientation_router)
 app.include_router(vault_router)
+app.include_router(chronicle_router)
 
 # Mount HLS segment directory for live stream serving
 # Override .ts MIME type: Starlette defaults to Qt Linguist (text/vnd.trolltech.linguist)

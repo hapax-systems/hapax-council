@@ -23,6 +23,8 @@ from logos.engine.executor import PhasedExecutor
 from logos.engine.models import ActionPlan as ActionPlan
 from logos.engine.models import ChangeEvent
 from logos.engine.rules import RuleRegistry, evaluate_rules
+from shared.chronicle import ChronicleEvent, current_otel_ids
+from shared.chronicle import record as chronicle_record
 
 if TYPE_CHECKING:
     from logos.engine.watcher import DirectoryWatcher
@@ -440,6 +442,25 @@ class ReactiveEngine:
                 plan = evaluate_rules(event, self._registry)
             self._rules_evaluated += len(self._registry)
 
+            # Chronicle: record rule matches
+            if plan.actions:
+                _tid, _sid = current_otel_ids()
+                chronicle_record(
+                    ChronicleEvent(
+                        ts=time.time(),
+                        trace_id=_tid,
+                        span_id=_sid,
+                        parent_span_id=None,
+                        source="engine",
+                        event_type="rule.matched",
+                        payload={
+                            "rules": [a.name for a in plan.actions],
+                            "event_path": str(event.path),
+                            "doc_type": event.doc_type or "",
+                        },
+                    )
+                )
+
             # Affordance pipeline: convert event and select capabilities
             try:
                 if not self._cascade_initialized:
@@ -458,6 +479,25 @@ class ReactiveEngine:
                     )
 
                 impingement = self._convert_event(event)
+                # Inject OTel trace context for chronicle causal chains
+                if impingement is not None:
+                    _tid, _sid = current_otel_ids()
+                    from shared.impingement import Impingement
+
+                    impingement = Impingement(
+                        id=impingement.id,
+                        timestamp=impingement.timestamp,
+                        source=impingement.source,
+                        type=impingement.type,
+                        strength=impingement.strength,
+                        content=impingement.content,
+                        context=impingement.context,
+                        interrupt_token=impingement.interrupt_token,
+                        parent_id=impingement.parent_id,
+                        trace_id=_tid,
+                        span_id=_sid,
+                        embedding=impingement.embedding,
+                    )
                 candidates = self._affordance_pipeline.select(impingement)
                 if candidates:
                     _log.debug(
@@ -538,6 +578,24 @@ class ReactiveEngine:
             self._actions_executed += len(plan.results)
             self._error_count += len(plan.errors)
 
+            # Chronicle: record action executions
+            _tid, _sid = current_otel_ids()
+            for action_name in plan.results:
+                chronicle_record(
+                    ChronicleEvent(
+                        ts=time.time(),
+                        trace_id=_tid,
+                        span_id=_sid,
+                        parent_span_id=None,
+                        source="engine",
+                        event_type="action.executed",
+                        payload={
+                            "action_name": action_name,
+                            "event_path": str(event.path),
+                        },
+                    )
+                )
+
             if self._event_bus:
                 for action_name in plan.results:
                     from logos.event_bus import FlowEvent
@@ -548,6 +606,8 @@ class ReactiveEngine:
                             source=self._agent_from_path(str(event.path)),
                             target=action_name,
                             label=action_name,
+                            trace_id=_tid,
+                            span_id=_sid,
                         )
                     )
 

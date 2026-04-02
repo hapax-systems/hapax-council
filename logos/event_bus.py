@@ -20,6 +20,8 @@ class FlowEvent:
     label: str
     duration_ms: float | None = None
     ts: float = field(default_factory=time.time)
+    trace_id: str | None = None  # OTel trace ID for chronicle causal chains
+    span_id: str | None = None  # OTel span ID for chronicle causal chains
 
 
 class EventBus:

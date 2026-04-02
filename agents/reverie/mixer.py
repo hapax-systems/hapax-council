@@ -188,6 +188,36 @@ class ReverieMixer:
             reduction,
         )
 
+        # 8b. Chronicle: detect param shifts (dead zone 0.05)
+        try:
+            from shared.chronicle import ChronicleEvent, current_otel_ids
+            from shared.chronicle import record as chronicle_record
+
+            current_deltas = self._visual_chain.compute_param_deltas()
+            _prev = getattr(self, "_prev_chronicle_params", {})
+            changed = {}
+            for k, v in current_deltas.items():
+                if isinstance(v, (int, float)) and abs(v - _prev.get(k, 0.0)) > 0.05:
+                    changed[k] = round(v, 4)
+            if changed:
+                _tid, _sid = current_otel_ids()
+                chronicle_record(
+                    ChronicleEvent(
+                        ts=time.time(),
+                        trace_id=_tid,
+                        span_id=_sid,
+                        parent_span_id=None,
+                        source="visual",
+                        event_type="params.shifted",
+                        payload={"changed_params": changed},
+                    )
+                )
+            self._prev_chronicle_params = {
+                k: v for k, v in current_deltas.items() if isinstance(v, (int, float))
+            }
+        except Exception:
+            pass
+
         # 9. Write cross-modal output
         current_salience = float(imagination.get("salience", 0.0)) if imagination else 0.0
         content_density = self._recruited_content_count
@@ -241,6 +271,7 @@ class ReverieMixer:
             name = c.capability_name
             if name.startswith("node."):
                 self._satellites.recruit(name.removeprefix("node."), c.combined)
+                self._chronicle_technique(name, c.combined)
                 self._pipeline.record_outcome(name, success=c.combined > 0.4)
                 self._apply_shader_impingement(imp)
                 break
@@ -251,6 +282,7 @@ class ReverieMixer:
                 else:
                     self._content_router.activate_content(name, narrative, c.combined)
                 self._recruited_content_count += 1
+                self._chronicle_technique(name, c.combined)
                 # Learning: high-confidence matches strengthen, weak matches weaken.
                 # Over time, cameras stop winning for tangential exploration impingements.
                 self._pipeline.record_outcome(name, success=c.combined > 0.4)
@@ -265,6 +297,29 @@ class ReverieMixer:
                 s = imp.strength
                 self._visual_chain.activate_dimension("visual_chain.tension", imp, s * 0.8)
                 self._visual_chain.activate_dimension("visual_chain.degradation", imp, s * 0.6)
+
+    # --- Chronicle integration ---
+
+    def _chronicle_technique(self, name: str, confidence: float) -> None:
+        """Record technique activation to chronicle."""
+        try:
+            from shared.chronicle import ChronicleEvent, current_otel_ids
+            from shared.chronicle import record as chronicle_record
+
+            _tid, _sid = current_otel_ids()
+            chronicle_record(
+                ChronicleEvent(
+                    ts=time.time(),
+                    trace_id=_tid,
+                    span_id=_sid,
+                    parent_span_id=None,
+                    source="visual",
+                    event_type="technique.activated",
+                    payload={"technique_name": name, "confidence": round(confidence, 3)},
+                )
+            )
+        except Exception:
+            pass
 
     # --- Cross-modal coupling ---
 
