@@ -48,7 +48,7 @@ class TestCameraSpec:
 class TestRecordingConfig:
     def test_defaults(self) -> None:
         cfg = RecordingConfig()
-        assert cfg.enabled is True
+        assert cfg.enabled is False
         assert cfg.segment_seconds == 300
         assert cfg.qp == 23
         assert str(cfg.output_dir).endswith("video-recording")

@@ -46,7 +46,7 @@ class CameraSpec(BaseModel):
 class RecordingConfig(BaseModel):
     """Per-camera recording configuration."""
 
-    enabled: bool = True
+    enabled: bool = False  # Archival pipeline not active — see CLAUDE.md
     output_dir: str = str(Path.home() / "video-recording")
     segment_seconds: int = 300
     qp: int = 23
