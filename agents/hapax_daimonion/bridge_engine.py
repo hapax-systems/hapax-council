@@ -194,7 +194,7 @@ class BridgeEngine:
                     self._cache[phrase] = pcm
             except Exception:
                 log.debug("Failed to presynthesize: %s", phrase, exc_info=True)
-            time.sleep(0.2)  # avoid Voxtral rate limit (51 calls in burst)
+            time.sleep(0.01)  # brief yield between local Kokoro synth calls
 
         elapsed = time.monotonic() - t0
         log.info(
