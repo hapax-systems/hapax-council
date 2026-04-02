@@ -1,0 +1,9 @@
+[Unit]
+Description=Write working context to Obsidian daily note
+After=logos-api.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.vault_context_writer
+TimeoutStartSec=30
