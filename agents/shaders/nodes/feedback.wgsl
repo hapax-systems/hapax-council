@@ -120,17 +120,19 @@ fn main_1() {
         let _e183 = acc;
         let _e185 = cur;
         r = max(_e183.xyz, _e185.xyz);
+    } else if (_e180 < 1.5f) {
+        let _e193 = acc;
+        let _e198 = cur;
+        r = (vec3(1f) - ((vec3(1f) - _e193.xyz) * (vec3(1f) - _e198.xyz)));
+    } else if (_e180 < 2.5f) {
+        let _e205 = acc;
+        let _e207 = cur;
+        r = (_e205.xyz + _e207.xyz);
     } else {
-        let _e188 = global.u_blend_mode;
-        if (_e188 < 1.5f) {
-            let _e193 = acc;
-            let _e198 = cur;
-            r = (vec3(1f) - ((vec3(1f) - _e193.xyz) * (vec3(1f) - _e198.xyz)));
-        } else {
-            let _e205 = acc;
-            let _e207 = cur;
-            r = (_e205.xyz + _e207.xyz);
-        }
+        // blend_mode 3: lerp — energy-preserving. Decayed accumulator blends
+        // with current frame. No monotonic accumulation. Noise cannot persist
+        // longer than the decay half-life.
+        r = mix(acc.xyz, cur.xyz, vec3(effective_decay * 3.0));
     }
     let _e210 = r;
     let _e215 = clamp(_e210, vec3(0f), vec3(1f));
