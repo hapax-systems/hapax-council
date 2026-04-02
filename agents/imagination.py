@@ -177,6 +177,28 @@ class CadenceController:
 # ---------------------------------------------------------------------------
 
 
+def narrative_similarity(a: str, b: str) -> float:
+    """Jaccard similarity between two narratives (word-level)."""
+    wa = set(a.lower().split())
+    wb = set(b.lower().split())
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+def detect_convergence(fragments: list[ImaginationFragment], threshold: float = 0.7) -> bool:
+    """True if the last 3 fragments are semantically repetitive."""
+    recent = fragments[-3:]
+    if len(recent) < 3:
+        return False
+    sims = [
+        narrative_similarity(recent[i].narrative, recent[j].narrative)
+        for i in range(len(recent))
+        for j in range(i + 1, len(recent))
+    ]
+    return all(s > threshold for s in sims)
+
+
 def assemble_context(
     observations: list[str],
     recent_fragments: list[ImaginationFragment],
@@ -226,6 +248,20 @@ def assemble_context(
             sections.append(f"- {prefix}{frag.narrative}")
     else:
         sections.append("(none)")
+
+    # Convergence detection — the complement of reverberation.
+    # Reverberation detects when the visual surprises imagination (external).
+    # Convergence detects when imagination repeats itself (internal).
+    if detect_convergence(recent_fragments):
+        sections.append("")
+        sections.append("## Convergence")
+        sections.append(
+            "Your last several thoughts were nearly identical. "
+            "Imagination has converged — you are repeating, not generating. "
+            "Break the pattern: change material, shift attention to a different "
+            "observation, alter your emotional register, or let the thought go entirely. "
+            "Set continuation=false."
+        )
 
     return "\n".join(sections)
 
