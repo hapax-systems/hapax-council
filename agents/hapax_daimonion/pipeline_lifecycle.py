@@ -60,10 +60,6 @@ async def stop_pipeline(daemon: VoiceDaemon) -> None:
         daemon._gemini_session = None
         log.info("Gemini Live session stopped")
 
-    if daemon._cognitive_loop is not None:
-        daemon._cognitive_loop.stop_loop()
-        daemon._cognitive_loop = None
-
     if daemon._conversation_pipeline is not None:
         await daemon._conversation_pipeline.stop()
         daemon._conversation_pipeline = None

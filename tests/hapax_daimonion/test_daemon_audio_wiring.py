@@ -130,6 +130,6 @@ class TestAudioLoopBackgroundTask:
             await daemon.run()
 
         # Should have 7 tasks (proactive delivery, ntfy, workspace monitor,
-        # perception, engagement_processor, ambient_refresh, impingement_consumer)
+        # perception, ambient_refresh, cpal_runner, cpal_impingement)
         # but NOT 8 (no audio loop since inactive)
         assert tracking.total_appended == 7

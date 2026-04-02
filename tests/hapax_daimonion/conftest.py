@@ -230,7 +230,7 @@ def make_stub_daemon(**overrides):
     daemon._resident_stt.is_loaded = True
     daemon._bridge_engine = MagicMock()
     daemon._bridges_presynthesized = False
-    daemon._cognitive_loop = None
+    daemon._cpal_runner = MagicMock()
     daemon._precompute_pipeline_deps = MagicMock()
     daemon._frame_gate = MagicMock()
     daemon._perception_tier = "full"

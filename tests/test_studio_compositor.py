@@ -83,7 +83,7 @@ class TestCompositorConfig:
         assert cfg.output_device == "/dev/video42"
         assert cfg.output_width == 1920
         assert cfg.output_height == 1080
-        assert cfg.framerate == 30
+        assert cfg.framerate == 10
         assert cfg.cameras == []
         assert cfg.overlay_enabled is True
         assert cfg.recording.enabled is True

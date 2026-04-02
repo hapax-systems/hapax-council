@@ -52,63 +52,51 @@ def acknowledge(daemon: VoiceDaemon, kind: str = "activation") -> None:
         screen_flash(kind)
 
 
-def on_engagement_detected(daemon: VoiceDaemon) -> None:
-    """Called from audio loop when engagement classifier fires."""
-    if not daemon.session.is_active:
-        daemon._engagement_signal.set()
+async def on_engagement_detected(daemon: VoiceDaemon) -> None:
+    """Called (via ensure_future) when engagement classifier fires.
 
-
-def on_engagement_detected_cpal(daemon: VoiceDaemon) -> None:
-    """CPAL mode: engagement drives gain + ensures pipeline exists for T3.
-
-    No session open/close — CPAL uses continuous loop gain. But we still
-    need the ConversationPipeline for T3 (LLM/TTS). Create it lazily
-    on first engagement if not already running.
+    Single entry point: boosts CPAL gain, opens session if needed,
+    runs axiom veto, starts pipeline, and wires to CPAL runner.
     """
-    if daemon._cpal_runner is None:
+    # 1. Boost CPAL gain on every engagement detection
+    if daemon._cpal_runner is not None:
+        from agents.hapax_daimonion.cpal.types import GainUpdate
+
+        daemon._cpal_runner.evaluator.gain_controller.apply(
+            GainUpdate(delta=0.2, source="engagement_detected")
+        )
+
+    # 2. Early return if session already active
+    if daemon.session.is_active:
         return
 
-    # Boost gain on engagement
-    from agents.hapax_daimonion.cpal.types import GainUpdate
+    # 3. Axiom veto check
+    state = daemon.perception.tick()
+    veto = daemon.governor._veto_chain.evaluate(state)
+    if not veto.allowed and "axiom_compliance" in veto.denied_by:
+        log.warning("Engagement blocked by axiom compliance: %s", veto.denied_by)
+        acknowledge(daemon, "denied")
+        return
 
-    daemon._cpal_runner.evaluator.gain_controller.apply(
-        GainUpdate(delta=0.2, source="engagement_detected")
-    )
+    # 4. Open session + activate buffer
+    acknowledge(daemon, "activation")
+    daemon.governor.engagement_active = True
+    daemon._frame_gate.set_directive("process")
+    daemon.session.open(trigger="engagement")
+    daemon.session.set_speaker("operator", confidence=1.0)
+    daemon._conversation_buffer.activate()
+    log.info("Session opened via engagement detection")
+    daemon.event_log.set_session_id(daemon.session.session_id)
+    daemon.event_log.emit("session_lifecycle", action="opened", trigger="engagement")
 
-    # Ensure pipeline exists for T3 delegation
-    if daemon._conversation_pipeline is None:
-        daemon._engagement_signal.set()
-
-
-async def engagement_processor(daemon: VoiceDaemon) -> None:
-    """Await engagement signal, then atomically set up session + pipeline."""
-    while daemon._running:
-        await daemon._engagement_signal.wait()
-        daemon._engagement_signal.clear()
-
-        if daemon.session.is_active:
-            continue
-
-        state = daemon.perception.tick()
-        veto = daemon.governor._veto_chain.evaluate(state)
-        if not veto.allowed and "axiom_compliance" in veto.denied_by:
-            log.warning("Wake word blocked by axiom compliance: %s", veto.denied_by)
-            acknowledge(daemon, "denied")
-            continue
-
-        acknowledge(daemon, "activation")
-        daemon.governor.engagement_active = True
-        daemon._frame_gate.set_directive("process")
-        daemon.session.open(trigger="engagement")
-        daemon.session.set_speaker("operator", confidence=1.0)
-        log.info("Session opened via engagement detection")
-        daemon.event_log.set_session_id(daemon.session.session_id)
-        daemon.event_log.emit("session_lifecycle", action="opened", trigger="engagement")
-        try:
-            await daemon._start_pipeline()
-            log.info("Pipeline started successfully")
-        except Exception:
-            log.exception("PIPELINE START FAILED")
+    # 5. Ensure pipeline exists and wire to CPAL runner
+    try:
+        await daemon._start_pipeline()
+        if daemon._cpal_runner is not None and daemon._conversation_pipeline is not None:
+            daemon._cpal_runner.set_pipeline(daemon._conversation_pipeline)
+        log.info("Pipeline started successfully")
+    except Exception:
+        log.exception("PIPELINE START FAILED")
 
 
 async def handle_hotkey(daemon: VoiceDaemon, cmd: str) -> None:

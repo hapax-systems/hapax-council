@@ -44,7 +44,7 @@ def _make_daemon() -> VoiceDaemon:
     daemon.focus_event = MagicMock()
     daemon._engagement_signal = asyncio.Event()
     daemon.perception = MagicMock()
-    daemon._cognitive_loop = None
+    daemon._cpal_runner = MagicMock()
     daemon._conversation_pipeline = None
     daemon._salience_router = None
     daemon._conversation_buffer = MagicMock()
@@ -60,77 +60,48 @@ def _make_daemon() -> VoiceDaemon:
 class TestEngagementOpensSession:
     """Engagement detection opens a session and starts the pipeline.
 
-    After the async refactor, on_engagement_detected() sets a signal and
-    engagement_processor() handles session setup atomically.
+    on_engagement_detected() is now a single async entry point that
+    boosts CPAL gain, opens session, runs veto, and starts pipeline.
     """
 
-    def test_engagement_sets_signal(self):
-        daemon = _make_daemon()
-        assert not daemon._engagement_signal.is_set()
-
-        from agents.hapax_daimonion.session_events import on_engagement_detected
-
-        on_engagement_detected(daemon)
-
-        assert daemon._engagement_signal.is_set()
-
-    def test_engagement_noop_if_session_active(self):
+    @pytest.mark.asyncio
+    async def test_engagement_noop_if_session_active(self):
         daemon = _make_daemon()
         daemon.session.open(trigger="test")
 
         from agents.hapax_daimonion.session_events import on_engagement_detected
 
-        on_engagement_detected(daemon)
+        with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock):
+            await on_engagement_detected(daemon)
 
-        assert not daemon._engagement_signal.is_set()
+        # Pipeline should NOT have been started — session was already active
+        assert daemon.session.trigger == "test"
 
     @pytest.mark.asyncio
-    async def test_processor_opens_session(self):
+    async def test_engagement_opens_session(self):
         daemon = _make_daemon()
-        daemon._running = True
-        daemon._engagement_signal.set()
         daemon.governor._veto_chain = MagicMock()
         daemon.governor._veto_chain.evaluate.return_value = MagicMock(allowed=True, denied_by=())
 
         with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock):
-            from agents.hapax_daimonion.session_events import engagement_processor
+            from agents.hapax_daimonion.session_events import on_engagement_detected
 
-            task = asyncio.create_task(engagement_processor(daemon))
-            await asyncio.sleep(0.05)
-            daemon._running = False
-            daemon._engagement_signal.set()  # unblock to exit
-            await asyncio.sleep(0.01)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await on_engagement_detected(daemon)
 
         assert daemon.session.is_active
         assert daemon.session.trigger == "engagement"
 
     @pytest.mark.asyncio
-    async def test_processor_sets_governor_and_gate(self):
+    async def test_engagement_sets_governor_and_gate(self):
         daemon = _make_daemon()
         daemon.governor.engagement_active = False
-        daemon._running = True
-        daemon._engagement_signal.set()
         daemon.governor._veto_chain = MagicMock()
         daemon.governor._veto_chain.evaluate.return_value = MagicMock(allowed=True, denied_by=())
 
         with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock):
-            from agents.hapax_daimonion.session_events import engagement_processor
+            from agents.hapax_daimonion.session_events import on_engagement_detected
 
-            task = asyncio.create_task(engagement_processor(daemon))
-            await asyncio.sleep(0.05)
-            daemon._running = False
-            daemon._engagement_signal.set()
-            await asyncio.sleep(0.01)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await on_engagement_detected(daemon)
 
         assert daemon.governor.engagement_active is True
         daemon._frame_gate.set_directive.assert_called_once_with("process")
@@ -142,24 +113,13 @@ class TestEngagementStartsPipeline:
     @pytest.mark.asyncio
     async def test_pipeline_starts_on_engagement(self):
         daemon = _make_daemon()
-        daemon._running = True
-        daemon._engagement_signal.set()
         daemon.governor._veto_chain = MagicMock()
         daemon.governor._veto_chain.evaluate.return_value = MagicMock(allowed=True, denied_by=())
 
         with patch.object(VoiceDaemon, "_start_pipeline", new_callable=AsyncMock) as mock_start:
-            from agents.hapax_daimonion.session_events import engagement_processor
+            from agents.hapax_daimonion.session_events import on_engagement_detected
 
-            task = asyncio.create_task(engagement_processor(daemon))
-            await asyncio.sleep(0.05)
-            daemon._running = False
-            daemon._engagement_signal.set()
-            await asyncio.sleep(0.01)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await on_engagement_detected(daemon)
 
             mock_start.assert_called_once()
 
@@ -187,16 +147,3 @@ class TestEngagementStartsPipeline:
         await daemon._stop_pipeline()
 
         assert daemon._pipeline_task is None
-
-    @pytest.mark.asyncio
-    async def test_pipeline_stop_clears_cognitive_loop(self):
-        daemon = _make_daemon()
-        daemon._salience_concern_graph = None
-
-        mock_loop = MagicMock()
-        daemon._cognitive_loop = mock_loop
-
-        await daemon._stop_pipeline()
-
-        mock_loop.stop_loop.assert_called_once()
-        assert daemon._cognitive_loop is None
