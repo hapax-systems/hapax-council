@@ -45,9 +45,6 @@ const defaultEdgeOptions = {
 export function StudioCanvas() {
   const nodes = useStudioGraph((s: S) => s.nodes);
   const edges = useStudioGraph((s: S) => s.edges);
-  const setNodes = useStudioGraph((s: S) => s.setNodes);
-  const setEdges = useStudioGraph((s: S) => s.setEdges);
-  const markDirty = useStudioGraph((s: S) => s.markDirty);
   const selectNode = useStudioGraph((s: S) => s.selectNode);
 
   const toggleLeftDrawer = useStudioGraph((s: S) => s.toggleLeftDrawer);
@@ -94,7 +91,7 @@ export function StudioCanvas() {
   useEffect(() => {
     if (nodes.length > 0) return;
 
-    setNodes([
+    useStudioGraph.getState().setNodes([
       {
         id: "camera-1",
         type: "source",
@@ -124,7 +121,7 @@ export function StudioCanvas() {
       },
     ]);
 
-    setEdges([
+    useStudioGraph.getState().setEdges([
       { id: "e-cam-color", source: "camera-1", target: "colorgrade-1", type: "signal" },
       { id: "e-color-out", source: "colorgrade-1", target: "output-1", type: "signal" },
     ]);
@@ -138,26 +135,29 @@ export function StudioCanvas() {
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => {
-      setNodes(applyNodeChanges(changes, nodes));
-      markDirty();
+      const current = useStudioGraph.getState();
+      current.setNodes(applyNodeChanges(changes, current.nodes));
+      current.markDirty();
     },
-    [nodes, setNodes, markDirty],
+    [],
   );
 
   const onEdgesChange: OnEdgesChange = useCallback(
     (changes) => {
-      setEdges(applyEdgeChanges(changes, edges));
-      markDirty();
+      const current = useStudioGraph.getState();
+      current.setEdges(applyEdgeChanges(changes, current.edges));
+      current.markDirty();
     },
-    [edges, setEdges, markDirty],
+    [],
   );
 
   const onConnect: OnConnect = useCallback(
     (params) => {
-      setEdges(addEdge({ ...params, type: "signal" }, edges));
-      markDirty();
+      const current = useStudioGraph.getState();
+      current.setEdges(addEdge({ ...params, type: "signal" }, current.edges));
+      current.markDirty();
     },
-    [edges, setEdges, markDirty],
+    [],
   );
 
   const onPaneClick = useCallback(() => {

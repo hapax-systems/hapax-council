@@ -14,8 +14,7 @@ export interface SourceNodeData {
 function SourceNodeInner({ data }: NodeProps) {
   const { sourceType, role, label } = data as SourceNodeData;
   const imgRef = useRef<HTMLImageElement>(null);
-  const cameraStatuses = useStudioGraph((s: S) => s.cameraStatuses);
-  const status = cameraStatuses[role] ?? "offline";
+  const status = useStudioGraph((s: S) => s.cameraStatuses[role] ?? "offline");
 
   useEffect(() => {
     if (sourceType !== "camera") return;

@@ -138,7 +138,7 @@ def add_camera_branch(
 
     # Compositor branch
     queue_comp = Gst.ElementFactory.make("queue", f"queue-comp-{role}")
-    queue_comp.set_property("leaky", 1)
+    queue_comp.set_property("leaky", 2)  # drop oldest, keep newest for lowest latency
     queue_comp.set_property("max-size-buffers", 2)
     upload = Gst.ElementFactory.make("cudaupload", f"upload_{role}")
     cuda_convert = Gst.ElementFactory.make("cudaconvert", f"cudaconv_{role}")

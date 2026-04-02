@@ -265,7 +265,7 @@ async def _mjpeg_generator(path: Path, fps: float = 12.0):  # noqa: ANN201
             if st.st_mtime_ns != last_mtime_ns:
                 data = path.read_bytes()
                 last_mtime_ns = st.st_mtime_ns
-                if len(data) > 100:
+                if len(data) > 100 and data[:2] == b"\xff\xd8":  # valid JPEG SOI
                     yield (
                         (
                             f"--{MJPEG_BOUNDARY}\r\n"

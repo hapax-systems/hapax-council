@@ -105,7 +105,7 @@ def build_pipeline(compositor: Any) -> Any:
 
     # v4l2sink branch
     queue_v4l2 = Gst.ElementFactory.make("queue", "queue-v4l2")
-    queue_v4l2.set_property("leaky", 1)
+    queue_v4l2.set_property("leaky", 2)  # drop oldest, keep newest for temporal coherence
     queue_v4l2.set_property("max-size-buffers", 2)
     convert_out = Gst.ElementFactory.make("videoconvert", "convert-out")
     sink_caps = Gst.ElementFactory.make("capsfilter", "sink-caps")
