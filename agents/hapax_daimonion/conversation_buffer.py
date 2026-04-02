@@ -44,7 +44,7 @@ SPEECH_END_DEFAULT = 33  # ~1000ms — was 750ms, raised for natural pauses
 # Post-TTS cooldown: wait after TTS ends before listening again.
 # In dampened studio, room echo decays within 1-2s. Echo rejection
 # catches any residual TTS text that leaks through.
-POST_TTS_COOLDOWN_S = 2.0
+POST_TTS_COOLDOWN_S = 0.5
 
 
 class ConversationBuffer:
@@ -147,7 +147,7 @@ class ConversationBuffer:
             self._speaking_ended_at = time.monotonic()
             speaking_duration = self._speaking_ended_at - self._speaking_started_at
             # Base 2s + 0.3s per second of TTS, capped at 5s
-            self._dynamic_cooldown_s = min(5.0, POST_TTS_COOLDOWN_S + speaking_duration * 0.3)
+            self._dynamic_cooldown_s = min(1.5, POST_TTS_COOLDOWN_S + speaking_duration * 0.1)
 
     def feed_audio(self, frame: bytes) -> None:
         if not self._active:

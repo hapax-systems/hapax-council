@@ -364,7 +364,7 @@ class CpalRunner:
             # T1: Acknowledgment (if cache ready, gain high enough, and outside echo window)
             # Cooldown prevents T1 from firing on echo of system's own speech.
             # Without this, T1 plays "mm-hmm" on echo → echo of "mm-hmm" → T1 again → loop.
-            _echo_cooldown_s = 2.0
+            _echo_cooldown_s = 1.0
             _since_last_speech = time.monotonic() - self._last_speech_end
             region = ConversationalRegion.from_gain(self._evaluator.gain_controller.gain)
             if (
