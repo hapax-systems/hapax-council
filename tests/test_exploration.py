@@ -137,6 +137,11 @@ class TestCoherenceTracker:
         ct.tick(elapsed_s=5.0)
         assert ct.dwell_time_in_coherence() == 10.0
 
+    def test_no_phases_returns_unknown_coherence(self) -> None:
+        """Empty phases = unknown, not desynchronized."""
+        ct = CoherenceTracker(neighbors=["a", "b", "c"])
+        assert ct.local_coherence() == 0.5
+
     def test_dwell_time_resets_on_desync(self) -> None:
         ct = CoherenceTracker(neighbors=["a", "b"], coherence_threshold=0.8)
         ct.update_phases({"a": 0.0, "b": 0.1})
@@ -186,6 +191,16 @@ class TestComputeCuriosityIndex:
             local_coherence=0.95,
         )
         assert ci > 0.5
+
+    def test_unknown_coherence_does_not_saturate_curiosity(self) -> None:
+        """When coherence is unknown (0.5), curiosity should not be 1.0."""
+        ci = compute_curiosity_index(
+            chronic_error=0.0,
+            error_improvement_rate=0.0,
+            max_novelty_score=0.3,
+            local_coherence=0.5,
+        )
+        assert ci == 0.5  # desync term = 1.0 - 0.5 = 0.5, max(0, 0.3, 0.5) = 0.5
 
     def test_desynchronization_drives_curiosity(self) -> None:
         ci = compute_curiosity_index(

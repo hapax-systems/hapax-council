@@ -48,20 +48,27 @@ class TemporalBandFormatter:
     Protention: statistical predictions from engine (with trend fallback).
     """
 
-    def __init__(self, protention_engine: ProtentionEngine | None = None) -> None:
+    def __init__(
+        self,
+        protention_engine: ProtentionEngine | None = None,
+        *,
+        enable_exploration: bool = True,
+    ) -> None:
         self._protention_engine = protention_engine
         self._last_protention: list[ProtentionEntry] = []
-        from shared.exploration_tracker import ExplorationTrackerBundle
+        self._exploration: ExplorationTrackerBundle | None = None
+        if enable_exploration:
+            from shared.exploration_tracker import ExplorationTrackerBundle
 
-        self._exploration = ExplorationTrackerBundle(
-            component="temporal_bands",
-            edges=["snapshot_content", "surprise_level"],
-            traces=["perception_freshness", "protention_accuracy"],
-            neighbors=["stimmung", "dmn_pulse"],
-            kappa=0.010,
-            t_patience=360.0,
-            sigma_explore=0.08,
-        )
+            self._exploration = ExplorationTrackerBundle(
+                component="temporal_bands",
+                edges=["snapshot_content", "surprise_level"],
+                traces=["perception_freshness", "protention_accuracy"],
+                neighbors=["stimmung", "dmn_pulse"],
+                kappa=0.010,
+                t_patience=360.0,
+                sigma_explore=0.08,
+            )
         self._prev_snapshot_hash: float = 0.0
 
     def format(
@@ -137,17 +144,20 @@ class TemporalBandFormatter:
             log.info("Control law [temporal_bands]: recovered")
 
         # Exploration signal
-        snap_hash = hash(str(current.get("activity", ""))) % 100 / 100.0
-        surprise_total = sum(s.surprise for s in surprises) if surprises else 0.0
-        self._exploration.feed_habituation(
-            "snapshot_content", snap_hash, self._prev_snapshot_hash, 0.3
-        )
-        self._exploration.feed_habituation("surprise_level", surprise_total, 0.0, 0.2)
-        self._exploration.feed_interest("perception_freshness", 1.0, 0.3)
-        self._exploration.feed_interest("protention_accuracy", 1.0 - min(surprise_total, 1.0), 0.3)
-        self._exploration.feed_error(0.0)
-        self._exploration.compute_and_publish()
-        self._prev_snapshot_hash = snap_hash
+        if self._exploration is not None:
+            snap_hash = hash(str(current.get("activity", ""))) % 100 / 100.0
+            surprise_total = sum(s.surprise for s in surprises) if surprises else 0.0
+            self._exploration.feed_habituation(
+                "snapshot_content", snap_hash, self._prev_snapshot_hash, 0.3
+            )
+            self._exploration.feed_habituation("surprise_level", surprise_total, 0.0, 0.2)
+            self._exploration.feed_interest("perception_freshness", 1.0, 0.3)
+            self._exploration.feed_interest(
+                "protention_accuracy", 1.0 - min(surprise_total, 1.0), 0.3
+            )
+            self._exploration.feed_error(min(surprise_total, 1.0))
+            self._exploration.compute_and_publish()
+            self._prev_snapshot_hash = snap_hash
 
         return bands
 

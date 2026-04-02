@@ -142,7 +142,7 @@ class VisualLayerAggregator:
         self._epoch: int = 0
 
         # Stimmung: system self-state
-        self._stimmung_collector = StimmungCollector()
+        self._stimmung_collector = StimmungCollector(enable_exploration=False)
         self._stimmung: SystemStimmung | None = None
         self._grounding_ledger = None
 
@@ -156,7 +156,9 @@ class VisualLayerAggregator:
 
         # Multi-scale temporal aggregator
         self._multi_scale = MultiScaleAggregator()
-        self._temporal_formatter = TemporalBandFormatter(protention_engine=self._protention)
+        self._temporal_formatter = TemporalBandFormatter(
+            protention_engine=self._protention, enable_exploration=False
+        )
 
         # Local perception ring
         from agents.hapax_daimonion.perception_ring import PerceptionRing

@@ -96,6 +96,20 @@ class SalienceRouter:
         # Hysteresis: track previous tier to resist oscillation
         self._prev_tier: ModelTier | None = None
         self._seeking: bool = False
+        # Exploration tracking (spec §8: kappa=0.012, T_patience=300s)
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        self._exploration = ExplorationTrackerBundle(
+            component="salience_router",
+            edges=["concern_overlap", "activation_level"],
+            traces=["novelty_signal", "tier_selection"],
+            neighbors=["stimmung", "dmn_pulse"],
+            kappa=0.012,
+            t_patience=300.0,
+            sigma_explore=0.10,
+        )
+        self._prev_activation: float = 0.0
+        self._prev_concern_overlap: float = 0.0
 
     @property
     def last_breakdown(self) -> ActivationBreakdown | None:
@@ -261,6 +275,20 @@ class SalienceRouter:
 
         # Track recent turns for feature extraction
         self._add_recent_turn(transcript)
+
+        # Exploration signal
+        self._exploration.feed_habituation(
+            "concern_overlap", concern_overlap, self._prev_concern_overlap, 0.2
+        )
+        self._exploration.feed_habituation(
+            "activation_level", activation, self._prev_activation, 0.1
+        )
+        self._exploration.feed_interest("novelty_signal", novelty, 0.2)
+        self._exploration.feed_interest("tier_selection", float(tier.value) / 4.0, 0.3)
+        self._exploration.feed_error(1.0 - activation)
+        self._exploration.compute_and_publish()
+        self._prev_concern_overlap = concern_overlap
+        self._prev_activation = activation
 
         # Add utterance to concern graph's recent window for novelty
         self._concern_graph.add_recent_utterance(utt_vec)

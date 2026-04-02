@@ -59,6 +59,47 @@ class TestExplorationTrackerBundle:
         assert bundle.habituation.mean_habituation() <= habituated
 
 
+class TestExplorationGuard:
+    def test_stimmung_collector_default_has_exploration(self) -> None:
+        from shared.stimmung import StimmungCollector
+
+        sc = StimmungCollector()
+        assert sc._exploration is not None
+
+    def test_stimmung_collector_disabled_exploration(self) -> None:
+        from shared.stimmung import StimmungCollector
+
+        sc = StimmungCollector(enable_exploration=False)
+        assert sc._exploration is None
+
+    def test_temporal_formatter_default_has_exploration(self) -> None:
+        from agents.temporal_bands import TemporalBandFormatter
+
+        tf = TemporalBandFormatter()
+        assert tf._exploration is not None
+
+    def test_temporal_formatter_disabled_exploration(self) -> None:
+        from agents.temporal_bands import TemporalBandFormatter
+
+        tf = TemporalBandFormatter(enable_exploration=False)
+        assert tf._exploration is None
+
+
+class TestSalienceRouterExploration:
+    def test_salience_router_has_exploration_tracker(self) -> None:
+        from unittest.mock import MagicMock
+
+        from agents.hapax_daimonion.salience_router import SalienceRouter
+
+        embedder = MagicMock()
+        concern_graph = MagicMock()
+        concern_graph.anchor_count = 0
+
+        router = SalienceRouter(embedder, concern_graph)
+        assert router._exploration is not None
+        assert router._exploration.component == "salience_router"
+
+
 class TestIrPresenceExplorationInit:
     def test_ir_backend_has_exploration_tracker(self) -> None:
         from agents.hapax_daimonion.backends.ir_presence import IrPresenceBackend
