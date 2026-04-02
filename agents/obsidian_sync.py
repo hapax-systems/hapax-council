@@ -532,6 +532,74 @@ def _write_profile_facts(state: ObsidianSyncState) -> None:
     log.info("Wrote %d profile facts to %s", len(facts), PROFILE_FACTS_FILE)
 
 
+# ── Management Cadence Extraction ─────────────────────────────────────────────
+
+CADENCE_OUTPUT = Path.home() / "hapax-state" / "management" / "people-cadence.json"
+
+
+def _extract_management_cadence() -> None:
+    """Extract meeting cadence from person notes in the vault.
+
+    Reads 30-areas/people/*.md for type: person notes with last_meeting and
+    cadence_days frontmatter. Writes structured JSON for consumption by the
+    orientation panel and nudge system.
+    """
+    from shared.frontmatter import parse_frontmatter
+
+    people_dir = Path.home() / "Documents" / "Personal" / "30-areas" / "people"
+    if not people_dir.is_dir():
+        return
+
+    people: list[dict] = []
+    now = datetime.now(UTC)
+
+    for md in people_dir.glob("*.md"):
+        try:
+            fm, _body = parse_frontmatter(md)
+        except Exception:
+            continue
+
+        if fm.get("type") != "person":
+            continue
+        if fm.get("role") == "historical":
+            continue
+
+        last_meeting = fm.get("last_meeting")
+        cadence = fm.get("cadence_days", 14)
+        overdue = False
+        days_since = None
+
+        if last_meeting:
+            try:
+                if isinstance(last_meeting, str):
+                    last_dt = datetime.fromisoformat(last_meeting).replace(tzinfo=UTC)
+                else:
+                    last_dt = datetime.combine(last_meeting, datetime.min.time(), tzinfo=UTC)
+                days_since = (now - last_dt).days
+                overdue = days_since > cadence
+            except (ValueError, TypeError):
+                pass
+
+        people.append(
+            {
+                "name": fm.get("title", md.stem),
+                "role": fm.get("role", "unknown"),
+                "last_meeting": str(last_meeting) if last_meeting else None,
+                "cadence_days": cadence,
+                "days_since": days_since,
+                "overdue": overdue,
+            }
+        )
+
+    if people:
+        CADENCE_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+        CADENCE_OUTPUT.write_text(
+            json.dumps({"people": people, "timestamp": now.isoformat()}, indent=2),
+            encoding="utf-8",
+        )
+        log.info("Wrote %d people cadence entries to %s", len(people), CADENCE_OUTPUT)
+
+
 # ── Stats ────────────────────────────────────────────────────────────────────
 
 
@@ -585,6 +653,7 @@ def run_full_sync() -> None:
     written, deleted = _full_sync(state=state)
     _save_state(state)
     _write_profile_facts(state)
+    _extract_management_cadence()
 
     # Sensor protocol — write state + impingement
     from agents._sensor_protocol import emit_sensor_impingement, write_sensor_state
@@ -612,6 +681,7 @@ def run_auto() -> None:
     written, deleted = _incremental_sync(state=state)
     _save_state(state)
     _write_profile_facts(state)
+    _extract_management_cadence()
 
     # Sensor protocol — write state + impingement on changes
     from agents._sensor_protocol import emit_sensor_impingement, write_sensor_state
