@@ -189,6 +189,16 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
         if getattr(daemon._conversation_pipeline, "_audio_output", None) is not None:
             daemon._cpal_runner._audio_output = daemon._conversation_pipeline._audio_output
 
+        # Wire during-production speech classifier (backchannel vs floor claim)
+        from agents.hapax_daimonion.speech_classifier import DuringProductionClassifier
+
+        async def _stt_for_classifier(audio: bytes) -> str:
+            return daemon._resident_stt.transcribe_sync(audio)
+
+        daemon._cpal_runner.set_speech_classifier(
+            DuringProductionClassifier(stt=_stt_for_classifier)
+        )
+
     # Wake greeting
     _play_wake_greeting(daemon)
 
