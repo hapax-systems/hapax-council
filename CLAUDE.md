@@ -104,6 +104,28 @@ Logos is a Tauri 2 native app. The frontend speaks **only IPC** — zero browser
 
 **Dev workflow:** `pnpm tauri dev` is the only dev path. Vite serves assets to the Tauri webview only — no proxy, no exposed API.
 
+## Unified Semantic Recruitment
+
+Everything that appears — visual content, tool invocation, vocal expression, destination routing — is recruited through a single `AffordancePipeline`. No bypass paths. Spec: `docs/superpowers/specs/2026-04-02-unified-semantic-recruitment-design.md`.
+
+**Mechanism:** Impingement → embed narrative → cosine similarity against Qdrant `affordances` collection → score (0.50×similarity + 0.20×base_level + 0.10×context_boost + 0.20×thompson) → governance veto → recruited capabilities activate. Thompson sampling + Hebbian associations learn from outcomes across sessions.
+
+**Taxonomy (6 domains):** perception, expression, recall, action, communication, regulation. Each capability has a Gibson-verb affordance description (15-30 words, cognitive function not implementation). Three-level Rosch structure: Domain (organizational) → Affordance (embedded in Qdrant) → Instance (metadata payload).
+
+**Imagination produces intent, not implementation.** `ImaginationFragment` carries: narrative, dimensions (9 canonical: intensity, tension, depth, coherence, spectral_color, temporal_distortion, degradation, pitch_displacement, diffusion), material (water/fire/earth/air/void), salience. No `content_references` — the narrative IS the only retrieval query.
+
+**Content recruitment:** Camera feeds, text rendering, knowledge queries are registered affordances. Only appear when the pipeline recruits them based on semantic match against imagination narrative. `ContentCapabilityRouter` handles activation. No unconditional `update_camera_sources()`.
+
+**Tool recruitment:** 31 tools registered with Gibson-verb descriptions. `ToolRecruitmentGate` converts operator utterances to impingements, pipeline selects tools per-turn, LLM sees only recruited tools. Outcomes recorded for Thompson sampling learning.
+
+**Destinations:** `OperationalProperties.medium` field ("auditory", "visual", "textual", "notification"). `_infer_modality()` reads declared medium, not capability name substrings. Pipeline returns multi-modal candidates naturally.
+
+**Generative substrate:** The vocabulary shader graph always runs (8-pass: noise→rd→color→drift→breath→feedback→content→post). Not registered as a capability. Not recruited. The DMN is a permanently running generative process — recruitment modulates it, content composites into it.
+
+**Novel discovery:** `capability_discovery` meta-affordance matches boredom/curiosity impingements when no capability matches an intention. Handler stub for web search/package scanning. `consent_required=True`.
+
+**Learning persistence:** Activation state (Thompson alpha/beta + Hebbian associations) saved to `~/.cache/hapax/affordance-activation-state.json` on daemon shutdown, loaded on startup.
+
 ## Council-Specific Conventions
 
 - Hypothesis for property-based algebraic proofs.
