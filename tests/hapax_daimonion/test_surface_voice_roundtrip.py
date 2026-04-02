@@ -18,7 +18,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -43,7 +43,7 @@ class TestPipelineWiring:
         build_pipeline_task(
             stt_model="base",
             llm_model="test",
-            voxtral_voice="gb_jane_neutral",
+            tts_voice="af_heart",
         )
 
         call_kwargs = mock_pipeline_cls.call_args.kwargs
@@ -60,7 +60,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -100,7 +100,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -132,7 +132,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -170,7 +170,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -202,7 +202,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")
@@ -232,7 +232,7 @@ class TestPipelineWiring:
     @patch("agents.hapax_daimonion.pipeline.LocalAudioTransport")
     @patch("agents.hapax_daimonion.pipeline.WhisperSTTService")
     @patch("agents.hapax_daimonion.pipeline.OpenAILLMService")
-    @patch("agents.hapax_daimonion.pipeline.VoxtralTTSService")
+    @patch("agents.hapax_daimonion.pipeline.KokoroTTSService")
     @patch("agents.hapax_daimonion.pipeline.LLMContext")
     @patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair")
     @patch("agents.hapax_daimonion.pipeline.Pipeline")

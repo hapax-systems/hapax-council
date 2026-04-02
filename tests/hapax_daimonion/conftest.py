@@ -182,7 +182,7 @@ def make_stub_daemon(**overrides):
     daemon.cfg.obs_enabled = False
     daemon.cfg.salience_enabled = False
     daemon.cfg.aec_enabled = False
-    daemon.cfg.voxtral_voice_id = "gb_jane_neutral"
+    daemon.cfg.tts_voice = "af_heart"
     daemon.cfg.perception_tier = "full"
     daemon.cfg.local_stt_model = "distil-large-v3"
 

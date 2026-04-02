@@ -88,10 +88,7 @@ class VoiceDaemon:
             on_command=self._handle_hotkey,
         )
         self._audio_input = AudioInputStream(source_name=self.cfg.audio_input_source)
-        self.tts = TTSManager(
-            voice_id=self.cfg.voxtral_voice_id,
-            ref_audio_path=self.cfg.voxtral_ref_audio or None,
-        )
+        self.tts = TTSManager(voice_id=self.cfg.tts_voice)
         self.chime_player = ChimePlayer(
             chime_dir=Path(self.cfg.chime_dir).expanduser(),
             auto_generate=True,

@@ -98,12 +98,23 @@ class TestTerrainRecipesExist:
 
 
 class TestKokoroVoiceSegment:
-    """Test TTS voice segment generation (Kokoro removed, Voxtral replaced it)."""
+    """Test TTS voice segment generation via Kokoro."""
 
-    @pytest.mark.skip(reason="Kokoro TTS removed; replaced by Voxtral (PR #371)")
     def test_generate_voice_segment_kokoro(self, tmp_path: Path):
         """Mock KPipeline and verify WAV output."""
-        pass
+        import numpy as np
+
+        from agents.demo_pipeline.voice import generate_voice_segment_kokoro
+
+        audio = np.array([0.0, 0.5, -0.5], dtype=np.float32)
+        mock_pipeline = MagicMock()
+        mock_pipeline.return_value = iter([("hi", "haɪ", audio)])
+
+        with patch("agents.demo_pipeline.voice.KPipeline", return_value=mock_pipeline):
+            output = tmp_path / "test_kokoro.wav"
+            generate_voice_segment_kokoro("Hello", output)
+            assert output.exists()
+            assert output.stat().st_size > 0
 
     def test_get_wav_duration(self, tmp_path: Path):
         """Test WAV duration measurement."""

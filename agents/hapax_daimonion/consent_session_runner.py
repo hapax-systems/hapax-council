@@ -42,7 +42,7 @@ async def run_consent_session(daemon: VoiceDaemon) -> None:
 
         stt = _build_stt(daemon.cfg.local_stt_model)
         llm = _build_llm(daemon.cfg.llm_model, CONSENT_SYSTEM_PROMPT)
-        tts = _build_tts(daemon.cfg.voxtral_voice_id)
+        tts = _build_tts(daemon.cfg.tts_voice)
 
         consent_state = build_consent_tools_for_llm(
             llm,

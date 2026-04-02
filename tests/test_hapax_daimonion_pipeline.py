@@ -12,7 +12,7 @@ try:
         _build_context,
         _build_transport,
     )
-    from agents.hapax_daimonion.tts import VOXTRAL_SAMPLE_RATE
+    from agents.hapax_daimonion.tts import TTS_SAMPLE_RATE
 except (TypeError, ImportError) as _err:
     pytest.skip(f"pipecat import failed: {_err}", allow_module_level=True)
 
@@ -34,7 +34,7 @@ class TestBuildTransport:
             audio_in_enabled=True,
             audio_in_sample_rate=INPUT_SAMPLE_RATE,
             audio_out_enabled=True,
-            audio_out_sample_rate=VOXTRAL_SAMPLE_RATE,
+            audio_out_sample_rate=TTS_SAMPLE_RATE,
             vad_enabled=True,
             vad_analyzer="vad_analyzer",
         )
@@ -112,7 +112,7 @@ class TestBuildPipelineTask:
             task, transport = build_pipeline_task(
                 stt_model="base",
                 llm_model="test-model",
-                voxtral_voice="gb_jane_neutral",
+                tts_voice="af_heart",
                 guest_mode=False,
             )
 
@@ -120,7 +120,7 @@ class TestBuildPipelineTask:
         assert transport == mock_transport_inst
         mock_stt.assert_called_once_with("base")
         mock_llm.assert_called_once()
-        mock_tts.assert_called_once_with("gb_jane_neutral")
+        mock_tts.assert_called_once_with("af_heart")
 
     @patch("agents.hapax_daimonion.pipeline._build_transport")
     @patch("agents.hapax_daimonion.pipeline._build_stt")
@@ -198,7 +198,7 @@ def test_frame_gate_inserted_before_stt():
         patch("agents.hapax_daimonion.pipeline.LocalAudioTransport") as MockTransport,
         patch("agents.hapax_daimonion.pipeline.WhisperSTTService") as MockSTT,
         patch("agents.hapax_daimonion.pipeline.OpenAILLMService"),
-        patch("agents.hapax_daimonion.pipeline.VoxtralTTSService"),
+        patch("agents.hapax_daimonion.pipeline.KokoroTTSService"),
         patch("agents.hapax_daimonion.pipeline.LLMContext") as MockContext,
         patch("agents.hapax_daimonion.pipeline.LLMContextAggregatorPair") as MockAggPair,
         patch("agents.hapax_daimonion.pipeline.Pipeline") as MockPipeline,

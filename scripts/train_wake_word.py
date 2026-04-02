@@ -597,7 +597,7 @@ def generate_positive_samples(
     target_count: int = 10000,
     use_chatterbox: bool = True,
     use_kokoro: bool = False,
-    use_piper: bool = False,  # piper-tts removed — use Voxtral/chatterbox instead
+    use_piper: bool = False,  # piper-tts removed — use Kokoro/chatterbox instead
     use_piper_generator: bool = True,
 ) -> int:
     """Generate positive samples of the wake word using available TTS engines.
@@ -679,7 +679,7 @@ def generate_positive_samples(
 
 def generate_negative_samples(
     use_kokoro: bool = False,
-    use_piper: bool = False,  # piper-tts removed — use Voxtral/chatterbox instead
+    use_piper: bool = False,  # piper-tts removed — use Kokoro/chatterbox instead
     use_chatterbox: bool = False,  # Chatterbox is slow, skip for negatives by default
 ) -> int:
     """Generate negative samples (non-wake-word speech).

@@ -24,7 +24,7 @@ def _make_daemon() -> VoiceDaemon:
     daemon.cfg.backend = "local"
     daemon.cfg.local_stt_model = "base"
     daemon.cfg.llm_model = "test-model"
-    daemon.cfg.voxtral_voice_id = "gb_jane_neutral"
+    daemon.cfg.tts_voice = "af_heart"
     daemon.cfg.chime_enabled = False
 
     daemon.session = VoiceLifecycle(silence_timeout_s=30)

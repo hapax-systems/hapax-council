@@ -24,7 +24,7 @@ def _make_daemon(silence_timeout_s: int = 30) -> VoiceDaemon:
     daemon.cfg.chime_enabled = False
     daemon.cfg.local_stt_model = "base"
     daemon.cfg.llm_model = "test-model"
-    daemon.cfg.voxtral_voice_id = "gb_jane_neutral"
+    daemon.cfg.tts_voice = "af_heart"
 
     daemon.session = VoiceLifecycle(silence_timeout_s=silence_timeout_s)
     daemon.event_log = MagicMock()

@@ -1,4 +1,4 @@
-"""Tests for TTS tier map after chime cleanup — Voxtral backend."""
+"""Tests for TTS tier map after chime cleanup — Kokoro backend."""
 
 from agents.hapax_daimonion.tts import _TIER_MAP, select_tier
 
@@ -17,10 +17,10 @@ class TestTierMapCleanup:
         assert "confirmation" not in _TIER_MAP
 
     def test_conversation_tier_unchanged(self):
-        assert select_tier("conversation") == "voxtral"
+        assert select_tier("conversation") == "kokoro"
 
     def test_notification_tier_unchanged(self):
-        assert select_tier("notification") == "voxtral"
+        assert select_tier("notification") == "kokoro"
 
-    def test_unknown_tier_defaults_voxtral(self):
-        assert select_tier("unknown_use_case") == "voxtral"
+    def test_unknown_tier_defaults_kokoro(self):
+        assert select_tier("unknown_use_case") == "kokoro"
