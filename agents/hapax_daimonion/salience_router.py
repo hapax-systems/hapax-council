@@ -109,6 +109,7 @@ class SalienceRouter:
             sigma_explore=0.10,
         )
         self._prev_activation: float = 0.0
+        self._prev_concern_overlap: float = 0.0
 
     @property
     def last_breakdown(self) -> ActivationBreakdown | None:
@@ -277,7 +278,7 @@ class SalienceRouter:
 
         # Exploration signal
         self._exploration.feed_habituation(
-            "concern_overlap", concern_overlap, self._prev_activation, 0.2
+            "concern_overlap", concern_overlap, self._prev_concern_overlap, 0.2
         )
         self._exploration.feed_habituation(
             "activation_level", activation, self._prev_activation, 0.1
@@ -286,6 +287,7 @@ class SalienceRouter:
         self._exploration.feed_interest("tier_selection", float(tier.value) / 4.0, 0.3)
         self._exploration.feed_error(1.0 - activation)
         self._exploration.compute_and_publish()
+        self._prev_concern_overlap = concern_overlap
         self._prev_activation = activation
 
         # Add utterance to concern graph's recent window for novelty
