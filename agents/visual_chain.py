@@ -136,7 +136,7 @@ VISUAL_CHAIN_RECORDS = [
         name=dim.name,
         description=dim.description,
         daemon="visual_layer_aggregator",
-        operational=OperationalProperties(latency_class="realtime"),
+        operational=OperationalProperties(latency_class="realtime", medium="visual"),
     )
     for dim in VISUAL_DIMENSIONS.values()
 ]

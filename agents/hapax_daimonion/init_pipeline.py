@@ -117,7 +117,7 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
             name="speech_production",
             description=SPEECH_DESCRIPTION,
             daemon="hapax_daimonion",
-            operational=OperationalProperties(requires_gpu=True),
+            operational=OperationalProperties(requires_gpu=True, medium="auditory"),
         )
     )
     daemon._affordance_pipeline.register_interrupt(

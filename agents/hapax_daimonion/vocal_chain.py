@@ -151,7 +151,7 @@ VOCAL_CHAIN_RECORDS = [
         name=dim.name,
         description=dim.description,
         daemon="hapax_daimonion",
-        operational=OperationalProperties(latency_class="fast"),
+        operational=OperationalProperties(latency_class="fast", medium="auditory"),
     )
     for dim in DIMENSIONS.values()
 ]

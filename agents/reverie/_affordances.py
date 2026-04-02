@@ -33,17 +33,17 @@ PERCEPTION_AFFORDANCES: list[tuple[str, str, OperationalProperties]] = [
     (
         "content.overhead_perspective",
         "Observe workspace from above, providing spatial context for physical activity and object arrangement",
-        OperationalProperties(latency_class="fast"),
+        OperationalProperties(latency_class="fast", medium="visual"),
     ),
     (
         "content.desk_perspective",
         "Observe the operator's face, hands, and immediate work surface at close range",
-        OperationalProperties(latency_class="fast"),
+        OperationalProperties(latency_class="fast", medium="visual"),
     ),
     (
         "content.operator_perspective",
         "Observe the operator directly, capturing presence and expression",
-        OperationalProperties(latency_class="fast"),
+        OperationalProperties(latency_class="fast", medium="visual"),
     ),
 ]
 
@@ -52,27 +52,27 @@ CONTENT_AFFORDANCES: list[tuple[str, str, OperationalProperties]] = [
     (
         "content.narrative_text",
         "Render imagination narrative as visible text, making thought legible in the visual field",
-        OperationalProperties(latency_class="slow"),
+        OperationalProperties(latency_class="slow", medium="visual"),
     ),
     (
         "content.episodic_recall",
         "Recall and visualize past experiences similar to the current moment from episodic memory",
-        OperationalProperties(latency_class="slow"),
+        OperationalProperties(latency_class="slow", medium="visual"),
     ),
     (
         "content.knowledge_recall",
         "Search and visualize relevant knowledge from ingested documents and notes",
-        OperationalProperties(latency_class="slow"),
+        OperationalProperties(latency_class="slow", medium="visual"),
     ),
     (
         "content.profile_recall",
         "Recall and visualize known facts about the operator's preferences and patterns",
-        OperationalProperties(latency_class="slow"),
+        OperationalProperties(latency_class="slow", medium="visual"),
     ),
     (
         "content.waveform_viz",
         "Sense acoustic energy and render sound as visible waveform shape",
-        OperationalProperties(latency_class="fast"),
+        OperationalProperties(latency_class="fast", medium="visual"),
     ),
 ]
 
@@ -95,7 +95,7 @@ def build_reverie_pipeline_affordances() -> list[CapabilityRecord]:
                 name=name,
                 description=desc,
                 daemon="reverie",
-                operational=OperationalProperties(latency_class="realtime"),
+                operational=OperationalProperties(latency_class="realtime", medium="visual"),
             )
         )
     for name, desc, ops in ALL_CONTENT_AFFORDANCES:
@@ -113,7 +113,7 @@ def build_reverie_pipeline_affordances() -> list[CapabilityRecord]:
                 name=name,
                 description=desc,
                 daemon="reverie",
-                operational=OperationalProperties(latency_class="realtime"),
+                operational=OperationalProperties(latency_class="realtime", medium="visual"),
             )
         )
     return records
