@@ -61,7 +61,9 @@ async def run_inner(daemon: VoiceDaemon) -> None:
     from agents.hapax_daimonion.session_events import on_engagement_detected
 
     daemon._engagement = EngagementClassifier(
-        on_engaged=lambda: asyncio.ensure_future(on_engagement_detected(daemon)),
+        on_engaged=lambda: daemon._loop.call_soon_threadsafe(
+            lambda: asyncio.ensure_future(on_engagement_detected(daemon))
+        ),
     )
 
     # Presynthesize signal cache + bridge phrases in one background thread

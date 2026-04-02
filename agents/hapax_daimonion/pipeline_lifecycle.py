@@ -64,6 +64,11 @@ async def stop_pipeline(daemon: VoiceDaemon) -> None:
         await daemon._conversation_pipeline.stop()
         daemon._conversation_pipeline = None
 
+    # Unwire CPAL runner to prevent stale pipeline references
+    if daemon._cpal_runner is not None:
+        daemon._cpal_runner.set_pipeline(None)
+        daemon._cpal_runner._audio_output = None
+
     if daemon._pipeline_task is not None:
         daemon._pipeline_task.cancel()
         try:

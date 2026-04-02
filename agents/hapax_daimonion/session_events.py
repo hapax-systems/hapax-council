@@ -52,6 +52,33 @@ def acknowledge(daemon: VoiceDaemon, kind: str = "activation") -> None:
         screen_flash(kind)
 
 
+async def _open_session(daemon: VoiceDaemon, trigger: str) -> None:
+    """Open session, activate buffer, start pipeline, wire CPAL.
+
+    Shared helper used by both engagement detection and hotkey paths.
+    If pipeline start fails, the session is closed (zombie recovery).
+    """
+    acknowledge(daemon, "activation")
+    daemon.governor.engagement_active = True
+    daemon._frame_gate.set_directive("process")
+    daemon.session.open(trigger=trigger)
+    daemon.session.set_speaker("operator", confidence=1.0)
+    daemon._conversation_buffer.activate()
+    log.info("Session opened via %s", trigger)
+    daemon.event_log.set_session_id(daemon.session.session_id)
+    daemon.event_log.emit("session_lifecycle", action="opened", trigger=trigger)
+
+    if daemon._conversation_pipeline is None:
+        try:
+            await daemon._start_pipeline()
+            if daemon._cpal_runner is not None:
+                daemon._cpal_runner.set_pipeline(daemon._conversation_pipeline)
+            log.info("Pipeline started for CPAL T3")
+        except Exception:
+            log.exception("Pipeline start failed — closing session")
+            await close_session(daemon, reason="pipeline_start_failed")
+
+
 async def on_engagement_detected(daemon: VoiceDaemon) -> None:
     """Called (via ensure_future) when engagement classifier fires.
 
@@ -78,25 +105,8 @@ async def on_engagement_detected(daemon: VoiceDaemon) -> None:
         acknowledge(daemon, "denied")
         return
 
-    # 4. Open session + activate buffer
-    acknowledge(daemon, "activation")
-    daemon.governor.engagement_active = True
-    daemon._frame_gate.set_directive("process")
-    daemon.session.open(trigger="engagement")
-    daemon.session.set_speaker("operator", confidence=1.0)
-    daemon._conversation_buffer.activate()
-    log.info("Session opened via engagement detection")
-    daemon.event_log.set_session_id(daemon.session.session_id)
-    daemon.event_log.emit("session_lifecycle", action="opened", trigger="engagement")
-
-    # 5. Ensure pipeline exists and wire to CPAL runner
-    try:
-        await daemon._start_pipeline()
-        if daemon._cpal_runner is not None and daemon._conversation_pipeline is not None:
-            daemon._cpal_runner.set_pipeline(daemon._conversation_pipeline)
-        log.info("Pipeline started successfully")
-    except Exception:
-        log.exception("PIPELINE START FAILED")
+    # 4. Open session via shared helper
+    await _open_session(daemon, trigger="engagement")
 
 
 async def handle_hotkey(daemon: VoiceDaemon, cmd: str) -> None:
@@ -112,16 +122,7 @@ async def handle_hotkey(daemon: VoiceDaemon, cmd: str) -> None:
                 log.warning("Hotkey toggle blocked by axiom compliance: %s", veto.denied_by)
                 acknowledge(daemon, "denied")
                 return
-            acknowledge(daemon, "activation")
-            daemon.session.open(trigger="hotkey")
-            daemon.session.set_speaker("operator", confidence=1.0)
-            daemon.event_log.set_session_id(daemon.session.session_id)
-            daemon.event_log.emit("session_lifecycle", action="opened", trigger="hotkey")
-            try:
-                await daemon._start_pipeline()
-                log.info("Pipeline started successfully")
-            except Exception:
-                log.exception("PIPELINE START FAILED")
+            await _open_session(daemon, trigger="hotkey")
     elif cmd == "open":
         state = daemon.perception.tick()
         veto = daemon.governor._veto_chain.evaluate(state)
@@ -129,16 +130,7 @@ async def handle_hotkey(daemon: VoiceDaemon, cmd: str) -> None:
             log.warning("Hotkey open blocked by axiom compliance: %s", veto.denied_by)
             acknowledge(daemon, "denied")
             return
-        acknowledge(daemon, "activation")
-        daemon.session.open(trigger="hotkey")
-        daemon.session.set_speaker("operator", confidence=1.0)
-        daemon.event_log.set_session_id(daemon.session.session_id)
-        daemon.event_log.emit("session_lifecycle", action="opened", trigger="hotkey")
-        try:
-            await daemon._start_pipeline()
-            log.info("Pipeline started successfully")
-        except Exception:
-            log.exception("PIPELINE START FAILED")
+        await _open_session(daemon, trigger="hotkey")
     elif cmd == "close":
         await close_session(daemon, reason="hotkey")
     elif cmd == "scan":
@@ -186,6 +178,9 @@ async def close_session(daemon: VoiceDaemon, reason: str) -> None:
         )
     daemon.event_log.set_session_id(None)
     daemon.event_log.clear_experiment()
+    # Notify engagement classifier so context/follow-up windows reset
+    if hasattr(daemon, "_engagement"):
+        daemon._engagement.notify_session_closed()
     daemon.session.close(reason=reason)
 
 

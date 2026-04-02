@@ -77,19 +77,7 @@ async def audio_loop(daemon: VoiceDaemon) -> None:
             except Exception as exc:
                 log.warning("Presence consumer error: %s", exc)
 
-        # Engagement detection: when VAD detects speech and operator is present
-        if (
-            not daemon.session.is_active
-            and daemon.presence._latest_vad_confidence >= 0.3
-            and hasattr(daemon, "_engagement")
-        ):
-            try:
-                behaviors = daemon.perception.behaviors
-                ps = behaviors.get("presence_state")
-                if ps is not None and getattr(ps, "value", "") == "PRESENT":
-                    daemon._engagement.on_speech_detected(behaviors)
-            except Exception as exc:
-                log.warning("Engagement evaluation error: %s", exc)
+        # Engagement detection handled inside the VAD while-loop above (no duplicate)
 
 
 async def actuation_loop(daemon: VoiceDaemon) -> None:

@@ -160,8 +160,6 @@ class VoiceDaemon:
         self._background_tasks: list[asyncio.Task] = []
         self._pipeline_task: asyncio.Task | None = None
         self._gemini_session = None
-        self._engagement_signal = asyncio.Event()
-
         events_dir = Path.home() / ".local" / "share" / "hapax-daimonion"
         self.event_log = EventLog(
             base_dir=events_dir,

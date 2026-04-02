@@ -179,6 +179,16 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
     if daemon._cpal_runner is not None:
         daemon._cpal_runner.set_pipeline(daemon._conversation_pipeline)
 
+        # Wire grounding ledger for GQI feedback loop
+        if getattr(daemon._conversation_pipeline, "_grounding_ledger", None) is not None:
+            daemon._cpal_runner.set_grounding_ledger(
+                daemon._conversation_pipeline._grounding_ledger
+            )
+
+        # Wire audio output for T1 acknowledgments + backchannels
+        if getattr(daemon._conversation_pipeline, "_audio_output", None) is not None:
+            daemon._cpal_runner._audio_output = daemon._conversation_pipeline._audio_output
+
     # Wake greeting
     _play_wake_greeting(daemon)
 

@@ -41,14 +41,6 @@ SPEECH_END_SHORT = 30  # ~900ms — was 600ms, raised for dysfluent pauses
 SPEECH_END_LONG = 40  # ~1200ms — for long utterances > 3s
 SPEECH_END_DEFAULT = 33  # ~1000ms — was 750ms, raised for natural pauses
 
-# Barge-in / interrupt detection during TTS playback.
-# In studio conditions, the AEC can't cancel TTS echo from monitors —
-# the Yeti picks up Hapax's voice at high VAD. Raised consecutive count
-# to 30 (~900ms sustained speech) to distinguish real operator speech
-# from echo, which is typically shorter bursts.
-BARGE_IN_PROB = 0.90
-BARGE_IN_CONSECUTIVE = 30
-
 # Post-TTS cooldown: wait after TTS ends before listening again.
 # In dampened studio, room echo decays within 1-2s. Echo rejection
 # catches any residual TTS text that leaks through.
@@ -65,9 +57,9 @@ class ConversationBuffer:
         if utterance is not None:
             transcript = await stt.transcribe(utterance)
 
-    Barge-in: while speaking, VAD still runs at a high threshold. If
-    the operator talks over TTS output, barge_in_detected goes True.
-    The pipeline can poll this to cut playback and switch to listening.
+    Barge-in is handled by the CPAL runner (not the buffer). The
+    barge_in_detected property is kept for backward compatibility
+    but always returns False.
     """
 
     def __init__(self, max_duration_s: float = 30.0) -> None:
@@ -82,10 +74,6 @@ class ConversationBuffer:
         self._pending_utterance: bytes | None = None
         self._speaking_ended_at: float = 0.0
         self._speaking_started_at: float = 0.0
-
-        # Barge-in detection (active during SPEAKING state)
-        self._barge_in_speech_count = 0
-        self.barge_in_detected = False
 
         # Adaptive speech-end: track speech duration for threshold adjustment
         self._speech_start_time: float = 0.0
@@ -110,6 +98,15 @@ class ConversationBuffer:
     def is_speaking(self) -> bool:
         """True when TTS playback is active."""
         return self._speaking
+
+    @property
+    def barge_in_detected(self) -> bool:
+        """Always False — barge-in is handled by CPAL runner, not the buffer.
+
+        Kept as a read-only property for backward compatibility with
+        conversation_pipeline and perception_state_writer readers.
+        """
+        return False
 
     @property
     def speech_frames_snapshot(self) -> list[bytes]:
@@ -141,9 +138,6 @@ class ConversationBuffer:
     def set_speaking(self, speaking: bool) -> None:
         self._speaking = speaking
         if speaking:
-            # Reset barge-in state when TTS starts
-            self._barge_in_speech_count = 0
-            self.barge_in_detected = False
             self._speaking_ended_at = 0.0
             self._speaking_started_at = time.monotonic()
         else:
@@ -160,13 +154,13 @@ class ConversationBuffer:
             return
         self._pre_roll.append(frame)
 
-        # During normal TTS (no barge-in): pre-roll only
-        if self._speaking and not self.barge_in_detected:
+        # During TTS playback: pre-roll only (barge-in handled by CPAL runner)
+        if self._speaking:
             return
         # During cooldown (normal TTS end): pre-roll only
         if self.in_cooldown:
             return
-        # During TTS with barge-in active, OR after TTS: accumulate speech
+        # After TTS: accumulate speech
         if self._speech_active:
             self._speech_frames.append(frame)
             if len(self._speech_frames) >= self._max_frames:
@@ -241,5 +235,3 @@ class ConversationBuffer:
         self._pending_utterance = None
         self._speaking = False
         self._speaking_ended_at = 0.0
-        self._barge_in_speech_count = 0
-        self.barge_in_detected = False
