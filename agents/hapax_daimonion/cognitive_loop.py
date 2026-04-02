@@ -189,7 +189,7 @@ class CognitiveLoop:
         self._exploration.feed_interest("phase_stability", phase_hash, 0.3)
         temp = self._model.conversation_temperature if self._model else 0.0
         self._exploration.feed_interest("temperature", temp, 0.2)
-        self._exploration.feed_error(0.0)
+        self._exploration.feed_error(1.0 - self._cognitive_readiness)
         self._exploration.compute_and_publish()
         self._prev_phase_hash = phase_hash
         self._prev_readiness = self._cognitive_readiness
