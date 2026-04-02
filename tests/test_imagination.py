@@ -439,6 +439,26 @@ class TestImaginationLoop:
 import pytest
 
 
+def test_escalation_impingement_has_no_content_references():
+    """Escalated impingement carries narrative and dimensions, not content_references."""
+    import random
+
+    random.seed(42)
+    frag = ImaginationFragment(
+        narrative="Something important is emerging",
+        dimensions={"intensity": 0.8, "tension": 0.6},
+        salience=0.9,
+        continuation=False,
+        material="fire",
+    )
+    imp = maybe_escalate(frag)
+    assert imp is not None
+    assert "narrative" in imp.content
+    assert "dimensions" in imp.content
+    assert "material" in imp.content
+    assert "content_references" not in imp.content
+
+
 def test_fragment_has_no_content_references():
     """ImaginationFragment carries semantic intent only — no content_references."""
     frag = ImaginationFragment(
