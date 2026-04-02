@@ -6,11 +6,11 @@
         "noise": {
             "type": "noise_gen",
             "params": {
-                "frequency_x": 3.0,
-                "frequency_y": 2.0,
-                "octaves": 4,
-                "amplitude": 0.35,
-                "speed": 0.15
+                "frequency_x": 1.5,
+                "frequency_y": 1.0,
+                "octaves": 3,
+                "amplitude": 0.3,
+                "speed": 0.08
             }
         },
         "rd": {
@@ -26,9 +26,9 @@
         "color": {
             "type": "colorgrade",
             "params": {
-                "brightness": 0.25,
+                "brightness": 0.3,
                 "saturation": 1.0,
-                "contrast": 0.9,
+                "contrast": 0.8,
                 "sepia": 0.0,
                 "hue_rotate": 0.0
             }
@@ -52,10 +52,10 @@
         "fb": {
             "type": "feedback",
             "params": {
-                "decay": 0.05,
+                "decay": 0.12,
                 "zoom": 1.0,
                 "rotate": 0.0,
-                "blend_mode": 0.0,
+                "blend_mode": 3.0,
                 "hue_shift": 0.0,
                 "trace_center_x": 0.5,
                 "trace_center_y": 0.5,
