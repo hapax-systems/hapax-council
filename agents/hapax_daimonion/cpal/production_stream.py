@@ -28,9 +28,11 @@ class ProductionStream:
         self,
         audio_output: object | None = None,
         shm_writer: object | None = None,
+        on_speaking_changed: object | None = None,
     ) -> None:
         self._audio_output = audio_output
         self._shm_writer = shm_writer or self._default_shm_write
+        self._on_speaking_changed = on_speaking_changed  # callback(bool) for buffer.set_speaking
         self._producing = False
         self._current_tier: CorrectionTier | None = None
         self._interrupted = False
@@ -61,8 +63,12 @@ class ProductionStream:
         self._interrupted = False
         try:
             if self._audio_output is not None:
+                if self._on_speaking_changed:
+                    self._on_speaking_changed(True)
                 self._audio_output.write(pcm_data)
         finally:
+            if self._on_speaking_changed:
+                self._on_speaking_changed(False)
             if not self._interrupted:
                 self._producing = False
                 self._current_tier = None

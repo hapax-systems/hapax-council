@@ -61,7 +61,10 @@ class CpalRunner:
         # Streams
         self._perception = PerceptionStream(buffer=buffer)
         self._formulation = FormulationStream(stt=stt, salience_router=salience_router)
-        self._production = ProductionStream(audio_output=audio_output)
+        self._production = ProductionStream(
+            audio_output=audio_output,
+            on_speaking_changed=lambda speaking: buffer.set_speaking(speaking),
+        )
 
         # Control components
         self._evaluator = CpalEvaluator(
@@ -352,10 +355,12 @@ class CpalRunner:
                 if ack is not None:
                     _, pcm = ack
                     if self._audio_output is not None:
+                        self._buffer.set_speaking(True)
                         if self._echo_canceller:
                             self._echo_canceller.feed_reference(pcm)
                         loop = asyncio.get_running_loop()
                         await loop.run_in_executor(None, self._audio_output.write, pcm)
+                        self._buffer.set_speaking(False)
 
             # T3: Full formulation via pipeline
             if self._pipeline is not None:
