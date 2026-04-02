@@ -25,13 +25,13 @@ _VAULT_MEASURES_DIR = (
     Path.home()
     / "Documents"
     / "Personal"
-    / "20 Projects"
+    / "20-projects"
     / "hapax-research"
     / "sprint"
     / "measures"
 )
 _VAULT_GATES_DIR = (
-    Path.home() / "Documents" / "Personal" / "20 Projects" / "hapax-research" / "sprint" / "gates"
+    Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-research" / "sprint" / "gates"
 )
 
 # Per-model baselines (prior probability of coherence)

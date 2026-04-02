@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 # ── Paths ───────────────────────────────────────────────────────────────
 
 VAULT_DIR = Path.home() / "Documents" / "Personal"
-SPRINT_DIR = VAULT_DIR / "20 Projects" / "hapax-research" / "sprint"
+SPRINT_DIR = VAULT_DIR / "20-projects" / "hapax-research" / "sprint"
 MEASURES_DIR = SPRINT_DIR / "measures"
 GATES_DIR = SPRINT_DIR / "gates"
 SPRINTS_DIR = SPRINT_DIR / "sprints"
