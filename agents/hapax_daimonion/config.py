@@ -82,10 +82,7 @@ class DaimonionConfig(BaseModel):
     llm_model: str = "gemini-flash"
     gemini_model: str = "gemini-2.5-flash-preview-native-audio"
     local_stt_model: str = "distil-large-v3"
-    voxtral_voice_id: str = "gb_jane_neutral"
-    voxtral_ref_audio: str = (
-        ""  # clean carrier — character comes from Evil Pet + S-4 hardware chain
-    )
+    tts_voice: str = "af_heart"
     # Consent
     consent_debounce_s: float = 5.0  # sustained presence before triggering
     consent_absence_clear_s: float = 30.0  # how long guest must be absent to clear
