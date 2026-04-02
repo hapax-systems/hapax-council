@@ -997,6 +997,11 @@ class ConversationPipeline:
                 "temperature": 0.7,
                 "api_base": _voice_litellm_base,
                 "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
+                # CPAL is the cognition — the LLM is a T3 production capability
+                # that formulates speech, not a reasoning engine. Extended thinking
+                # burns the token budget on internal reasoning (1400+ tokens) leaving
+                # nothing for the actual response.
+                "thinking": {"type": "disabled"},
             }
             if self.tools and self._tool_recruitment_gate:
                 # Extract last user utterance for recruitment
