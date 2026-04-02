@@ -36,11 +36,18 @@ fn hash21(p: vec2<f32>) -> f32 {
 
 // --- Effects ---
 
+fn smooth_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
+               mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+
 fn materialization(uv: vec2<f32>, salience: f32, time: f32) -> f32 {
-    // Low-frequency crystallization: large organic regions emerge, not pixel speckle.
-    // floor() quantizes UV to a grid; 3.0 = ~6 large tiles across each axis.
-    let noise = hash21(floor(uv * 3.0) + time * 0.02);
-    return smoothstep(1.0 - salience, 1.0 - salience + 0.15, noise);
+    // Smooth organic regions — no grid, no per-pixel speckle, no time flicker.
+    let noise = smooth_noise(uv * 3.0);
+    return smoothstep(1.0 - salience, 1.0 - salience + 0.2, noise);
 }
 
 fn corner_incubation(uv: vec2<f32>, intensity: f32) -> vec2<f32> {
