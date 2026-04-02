@@ -36,6 +36,22 @@ def test_router_maps_affordance_to_camera():
     assert router.camera_for_affordance("content.unknown") is None
 
 
+def test_daemon_tick_does_not_call_update_camera_sources():
+    """The reverie daemon tick must NOT call update_camera_sources unconditionally."""
+    import ast
+    from pathlib import Path
+
+    source = Path("agents/reverie/__main__.py").read_text()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "update_camera_sources":
+                raise AssertionError("update_camera_sources() still called in daemon tick")
+            if isinstance(func, ast.Attribute) and func.attr == "update_camera_sources":
+                raise AssertionError("update_camera_sources() still called in daemon tick")
+
+
 def test_router_returns_false_for_missing_camera(tmp_path):
     """Camera activation returns False when compositor frame doesn't exist."""
     router = ContentCapabilityRouter(
