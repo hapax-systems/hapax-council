@@ -17,19 +17,13 @@ MATERIAL_MAP = {"water": 0, "fire": 1, "earth": 2, "air": 3, "void": 4}
 
 
 def build_slot_opacities(imagination: dict | None, fallback_salience: float) -> list[float]:
-    """Build slot opacities from content references or fallback to single-slot."""
+    """Build slot opacities from fragment salience (uniform, not per-reference)."""
     opacities = [0.0, 0.0, 0.0, 0.0]
     if not imagination:
         return opacities
-    refs = imagination.get("content_references", [])
-    if isinstance(refs, list) and refs:
-        for i, ref in enumerate(refs[:4]):
-            if isinstance(ref, dict):
-                opacities[i] = float(ref.get("salience", fallback_salience))
-            else:
-                opacities[i] = fallback_salience
-    elif fallback_salience > 0:
-        opacities[0] = fallback_salience
+    salience = float(imagination.get("salience", fallback_salience))
+    if salience > 0:
+        opacities[0] = salience
     return opacities
 
 
@@ -50,12 +44,7 @@ def update_trace(
     if last_salience > 0.2 and current_salience < last_salience * 0.5:
         trace_strength = min(1.0, last_salience)
         trace_radius = 0.3 + last_salience * 0.2
-        slot_idx = 0
-        if imagination:
-            refs = imagination.get("content_references", [])
-            if isinstance(refs, list) and refs:
-                slot_idx = 0
-        trace_center = SLOT_CENTERS.get(slot_idx, (0.5, 0.5))
+        trace_center = SLOT_CENTERS.get(0, (0.5, 0.5))
         log.info(
             "Trace: strength=%.2f radius=%.2f center=%s", trace_strength, trace_radius, trace_center
         )

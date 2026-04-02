@@ -77,6 +77,24 @@ def test_affordance_registration_includes_shader_nodes():
         assert name.startswith("content."), f"{name} should start with content."
 
 
+def test_slot_opacities_from_fragment_salience():
+    """Slot opacities use fragment-level salience, not per-reference salience."""
+    from agents.reverie._uniforms import build_slot_opacities
+
+    imagination = {"salience": 0.6}
+    opacities = build_slot_opacities(imagination, fallback_salience=0.6)
+    assert opacities[0] == 0.6
+    assert opacities[1] == 0.0
+
+
+def test_slot_opacities_no_imagination():
+    """No imagination → all zeros."""
+    from agents.reverie._uniforms import build_slot_opacities
+
+    opacities = build_slot_opacities(None, fallback_salience=0.0)
+    assert opacities == [0.0, 0.0, 0.0, 0.0]
+
+
 def test_dispatch_impingement_activates_visual_chain():
     """Dispatching an impingement with dimensions should activate the visual chain.
 
