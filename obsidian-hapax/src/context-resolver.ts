@@ -34,27 +34,47 @@ export function resolveNoteContext(
     return { kind: NoteKind.PosteriorTracker, id, model, tags: allTags };
   }
 
-  // 5. Briefing: path contains 30-system/briefings/
-  if (path.includes("30-system/briefings/")) {
+  // 5. Goal: type: goal frontmatter
+  if (fm["type"] === "goal") {
+    return { kind: NoteKind.Goal, id, model, tags: allTags };
+  }
+
+  // 6. Daily: calendar/daily/ path or type: daily
+  if (path.includes("40-calendar/daily/") || fm["type"] === "daily") {
+    return { kind: NoteKind.Daily, id, model, tags: allTags };
+  }
+
+  // 7. Management: people/ path or type: person (non-historical)
+  if (path.includes("/people/") || (fm["type"] === "person" && fm["role"] !== "historical")) {
+    return { kind: NoteKind.Management, id, model, tags: allTags };
+  }
+
+  // 8. Studio: studio or music tags
+  if (allTags.includes("studio") || allTags.includes("music")) {
+    return { kind: NoteKind.Studio, id, model, tags: allTags };
+  }
+
+  // 9. Briefing: path contains briefings/
+  if (path.includes("briefings/")) {
     return { kind: NoteKind.Briefing, id, model, tags: allTags };
   }
 
-  // 6. Nudges: path ends with 30-system/nudges.md
-  if (path.endsWith("30-system/nudges.md")) {
+  // 10. Nudges: path ends with nudges.md
+  if (path.endsWith("nudges.md")) {
     return { kind: NoteKind.Nudges, id, model, tags: allTags };
   }
 
-  // 7. Research: path contains hapax-research/ + tags include hapax/research
-  if (path.includes("hapax-research/") && allTags.includes("hapax/research")) {
+  // 11. Research: path contains hapax-research/
+  if (path.includes("hapax-research/")) {
     return { kind: NoteKind.Research, id, model, tags: allTags };
   }
 
-  // 8. Concept: path contains 33 Permanent notes/ + tags include type/concept
-  if (path.includes("33 Permanent notes/") && allTags.includes("type/concept")) {
+  // 12. Concept: path contains permanent-notes/
+  if (path.includes("permanent-notes/") && allTags.includes("type/concept")) {
     return { kind: NoteKind.Concept, id, model, tags: allTags };
   }
 
-  // 9. Unknown
+  // 13. Unknown
   return { kind: NoteKind.Unknown, id, model, tags: allTags };
 }
 

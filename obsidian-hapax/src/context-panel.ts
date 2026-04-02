@@ -215,6 +215,52 @@ export class ContextPanel extends ItemView {
         break;
       }
 
+      case NoteKind.Goal: {
+        const [gSprint, gStimmung, gNudges] = await Promise.all([
+          this.client.getSprint(),
+          this.client.getStimmung(),
+          this.client.getNudges(),
+        ]);
+        parts.push(renderSprintStatus(gSprint));
+        parts.push(renderStimmungBadge(gStimmung));
+        parts.push(renderNudgeCount(gNudges));
+        break;
+      }
+
+      case NoteKind.Daily: {
+        const [dSprint, dStimmung, dNudges, dHealth] = await Promise.all([
+          this.client.getSprint(),
+          this.client.getStimmung(),
+          this.client.getNudges(),
+          this.client.getHealth(),
+        ]);
+        parts.push(renderHealthSnapshot(dHealth));
+        parts.push(renderStimmungDetail(dStimmung));
+        parts.push(renderSprintStatus(dSprint));
+        parts.push(renderNudgeList(dNudges));
+        break;
+      }
+
+      case NoteKind.Management: {
+        const [mStimmung, mNudges] = await Promise.all([
+          this.client.getStimmung(),
+          this.client.getNudges(),
+        ]);
+        parts.push(renderStimmungBadge(mStimmung));
+        parts.push(renderNudgeCount(mNudges));
+        break;
+      }
+
+      case NoteKind.Studio: {
+        const [sStimmung, sSprint] = await Promise.all([
+          this.client.getStimmung(),
+          this.client.getSprint(),
+        ]);
+        parts.push(renderStimmungDetail(sStimmung));
+        parts.push(renderSprintStatus(sSprint));
+        break;
+      }
+
       case NoteKind.Unknown:
       default: {
         const [sprint, stimmung, nudges] = await Promise.all([

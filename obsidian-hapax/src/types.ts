@@ -7,6 +7,10 @@ export enum NoteKind {
   Concept = "Concept",
   Briefing = "Briefing",
   Nudges = "Nudges",
+  Goal = "Goal",
+  Daily = "Daily",
+  Management = "Management",
+  Studio = "Studio",
   Unknown = "Unknown",
 }
 
