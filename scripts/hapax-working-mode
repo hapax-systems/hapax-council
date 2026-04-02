@@ -43,8 +43,24 @@ check_stale_branches() {
         if [[ ! -d "$repo_path/.git" ]]; then
             continue
         fi
+        # Collect branches used by worktrees so we don't flag them as stale
+        local worktree_branches
+        worktree_branches=$(git -C "$repo_path" worktree list --porcelain 2>/dev/null \
+            | grep '^branch ' | sed 's|^branch refs/heads/||' | xargs || true)
+
         local branches
-        branches=$(git -C "$repo_path" branch --list | grep -v '^\*' | grep -v 'main$' | xargs || true)
+        local all_branches
+        all_branches=$(git -C "$repo_path" branch --list | sed 's/^[*+] //' | grep -v '^main$' | xargs || true)
+        # Filter out worktree branches
+        branches=""
+        for b in $all_branches; do
+            local is_worktree=0
+            for wb in $worktree_branches; do
+                [[ "$b" == "$wb" ]] && is_worktree=1 && break
+            done
+            [[ $is_worktree -eq 0 ]] && branches="$branches $b"
+        done
+        branches=$(echo "$branches" | xargs || true)
         if [[ -n "$branches" ]]; then
             echo "  ✗ $repo has branches: $branches"
             stale=1
@@ -61,7 +77,7 @@ check_clean_worktree() {
             continue
         fi
         local status
-        status=$(git -C "$repo_path" status --porcelain 2>/dev/null | head -5)
+        status=$(git -C "$repo_path" status --porcelain 2>/dev/null | grep -v '^??' | head -5)
         if [[ -n "$status" ]]; then
             echo "  ✗ $repo has uncommitted changes"
             dirty=1
@@ -233,7 +249,12 @@ write_relay_mode "$MODE"
 write_inflection "$MODE"
 apply_timer_overrides "$MODE"
 notify "$MODE"
-signal_waybar
+# Signal waybar if running (Hyprland status bar)
+if command -v signal_waybar &>/dev/null; then
+    signal_waybar
+elif pgrep -x waybar &>/dev/null; then
+    pkill -SIGRTMIN+8 waybar 2>/dev/null || true
+fi
 
 # Apply visual theme (DE colors, wallpaper, terminal palette)
 if command -v hapax-theme-apply &>/dev/null; then
