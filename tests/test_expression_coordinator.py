@@ -15,11 +15,13 @@ from shared.expression import (
 
 
 class TestExpressionCoordinator(unittest.TestCase):
-    def _mock_cap(self, name, category_value="expression"):
+    def _mock_cap(self, medium_value=None, category_value="expression"):
         from shared.capability import CapabilityCategory
 
         cap = MagicMock()
         cap.category = CapabilityCategory.EXPRESSION
+        cap.operational.medium = medium_value
+        cap.medium = medium_value
         return cap
 
     def test_coordinate_distributes_fragment(self):
@@ -38,8 +40,8 @@ class TestExpressionCoordinator(unittest.TestCase):
         coord = ExpressionCoordinator()
         content = {"fragment": {"narrative": "test"}}
         recruited = [
-            ("speech_production", self._mock_cap("speech")),
-            ("shader_graph", self._mock_cap("shader")),
+            ("speech_production", self._mock_cap(medium_value="speech")),
+            ("shader_graph", self._mock_cap(medium_value="visual")),
         ]
         activations = coord.coordinate(content, recruited)
         modalities = {a["modality"] for a in activations}
@@ -78,13 +80,13 @@ class TestFragmentToVisual(unittest.TestCase):
     def test_maps_dimensions(self):
         fragment = {"dimensions": {"intensity": 0.8, "diffusion": 0.5}}
         result = map_fragment_to_visual(fragment)
-        assert result["noise.brightness"] == 0.8
-        assert result["noise.speed"] == 0.5
+        assert result["noise.amplitude"] == 0.8
+        assert result["physarum.sensor_dist"] == 0.5
 
     def test_missing_dimensions_skipped(self):
         fragment = {"dimensions": {"intensity": 0.8}}
         result = map_fragment_to_visual(fragment)
-        assert "noise.speed" not in result
+        assert "physarum.sensor_dist" not in result
 
     def test_no_dimensions_returns_empty(self):
         assert map_fragment_to_visual({}) == {}

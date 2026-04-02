@@ -12,20 +12,26 @@ from agents._affordance import CapabilityRecord, OperationalProperties
 
 log = logging.getLogger("reverie.affordances")
 
-# 12 shader node affordances — expressive descriptions for embedding
+# 12 shader node affordances — Gibson verb descriptions for embedding (spec §4.3)
 SHADER_NODE_AFFORDANCES = [
-    ("node.noise_gen", "procedural texture, substrate, continuous field"),
-    ("node.reaction_diffusion", "self-organizing emergent spatial patterns, regime-sensitive"),
-    ("node.colorgrade", "palette regime, color world shift, atmospheric tone"),
-    ("node.drift", "spatial displacement, coherence modulation, gentle warping"),
-    ("node.breathing", "rhythmic pulse, expansion and contraction, life cadence"),
-    ("node.feedback", "temporal persistence, afterimage, dwelling trace"),
-    ("node.content_layer", "content materialization, imagination surface, phenomenology"),
-    ("node.postprocess", "final composition, enclosure, vignette, sediment"),
-    ("node.fluid_sim", "directional flow with inertia, vorticity, viscous movement"),
-    ("node.trail", "motion history, velocity as visual thickness, temporal accumulation"),
-    ("node.voronoi_overlay", "spatial partitioning, organic boundaries, cellular territory"),
-    ("node.echo", "discrete temporal copies, ghosting, fading repetition"),
+    (
+        "node.noise_gen",
+        "Generate continuous procedural texture as the visual field's ambient substrate",
+    ),
+    (
+        "node.reaction_diffusion",
+        "Produce self-organizing emergent patterns that respond to regime shifts",
+    ),
+    ("node.colorgrade", "Transform the visual field's color palette, warmth, and atmospheric tone"),
+    ("node.drift", "Displace spatial patterns with gentle coherent warping"),
+    ("node.breathing", "Modulate rhythmic expansion and contraction to convey life cadence"),
+    ("node.feedback", "Sustain temporal persistence and afterimage as a dwelling trace"),
+    ("node.content_layer", "Materialize imagination content onto the visual surface"),
+    ("node.postprocess", "Enclose the final composition with vignette, sediment, and grading"),
+    ("node.fluid_sim", "Propel directional flow with inertia and viscous vorticity"),
+    ("node.trail", "Accumulate motion history as temporal thickness from velocity"),
+    ("node.voronoi_overlay", "Partition space into organic cellular boundaries and territories"),
+    ("node.echo", "Replicate discrete temporal copies as ghosting and fading repetition"),
 ]
 
 # Perception content — observe/sense the environment (FAST tier)

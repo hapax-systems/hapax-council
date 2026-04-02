@@ -87,6 +87,7 @@ class ReverieMixer:
             sigma_explore=0.12,
         )
         self._prev_salience_input: float = 0.0
+        self._recruited_content_count: int = 0
 
     @staticmethod
     def _init_pipeline():
@@ -112,6 +113,8 @@ class ReverieMixer:
         dt = now - self._last_tick
         self._last_tick = now
         self._tick_count += 1
+
+        self._recruited_content_count = 0
 
         # 1. Read cross-modal input
         acoustic = self._read_acoustic_impulse()
@@ -185,7 +188,7 @@ class ReverieMixer:
 
         # 9. Write cross-modal output
         current_salience = float(imagination.get("salience", 0.0)) if imagination else 0.0
-        content_density = 1 if imagination and imagination.get("salience", 0) > 0.1 else 0
+        content_density = self._recruited_content_count
         n_sat = self._satellites.active_count
         self._write_visual_salience(
             salience=current_salience, content_density=content_density, satellites_active=n_sat
@@ -244,15 +247,14 @@ class ReverieMixer:
                     self._content_router.activate_camera(name, c.combined)
                 else:
                     self._content_router.activate_content(name, narrative, c.combined)
+                self._recruited_content_count += 1
                 self._apply_shader_impingement(imp)
                 break
             elif name == "shader_graph":
                 self._shader_cap.activate(imp, imp.strength)
                 self._apply_shader_impingement(imp)
             elif name == "visual_chain":
-                score = self._visual_chain.can_resolve(imp)
-                if score > 0:
-                    self._visual_chain.activate(imp, score)
+                self._visual_chain.activate(imp, c.combined)
             elif name == "fortress_visual_response":
                 s = imp.strength
                 self._visual_chain.activate_dimension("visual_chain.tension", imp, s * 0.8)

@@ -78,15 +78,15 @@ class ExpressionCoordinator:
 # ── Dimension mapping for visual expression ──────────────────────────────────
 
 FRAGMENT_TO_SHADER: dict[str, str] = {
-    "intensity": "noise.brightness",
-    "tension": "noise.turbulence",
+    "intensity": "noise.amplitude",
+    "tension": "rd.feed_rate",
     "depth": "post.vignette_strength",
-    "coherence": "noise.color_warmth",
-    "spectral_color": "noise.hue_offset",
-    "temporal_distortion": "fb.hue_shift",
-    "degradation": "post.sediment_height",
-    "pitch_displacement": "noise.chroma_boost",
-    "diffusion": "noise.speed",
+    "coherence": "noise.frequency_x",
+    "spectral_color": "color.saturation",
+    "temporal_distortion": "noise.speed",
+    "degradation": "physarum.deposit_amount",
+    "pitch_displacement": "color.hue_rotate",
+    "diffusion": "physarum.sensor_dist",
 }
 
 # Material is a shader UNIFORM in content_layer.wgsl, NOT a preset selector.

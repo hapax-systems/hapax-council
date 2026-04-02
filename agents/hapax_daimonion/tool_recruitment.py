@@ -48,6 +48,9 @@ class ToolRecruitmentGate:
             content={"narrative": utterance},
         )
 
+    # Tools that produce visual output rather than textual (spoken) output
+    _VISUAL_TOOLS: set[str] = {"generate_image", "highlight_detection", "set_detection_layers"}
+
     @staticmethod
     def register_tools(pipeline, affordances: list[tuple[str, str]]) -> int:
         """Register all tool affordances into the pipeline's vector index.
@@ -56,12 +59,13 @@ class ToolRecruitmentGate:
         """
         registered = 0
         for name, desc in affordances:
+            medium = "visual" if name in ToolRecruitmentGate._VISUAL_TOOLS else "textual"
             ok = pipeline.index_capability(
                 CapabilityRecord(
                     name=name,
                     description=desc,
                     daemon="hapax_daimonion",
-                    operational=OperationalProperties(latency_class="fast"),
+                    operational=OperationalProperties(latency_class="fast", medium=medium),
                 )
             )
             if ok:

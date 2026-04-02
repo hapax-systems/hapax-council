@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from agents.imagination import CURRENT_PATH, ImaginationFragment
-from agents.imagination_resolver import CONTENT_DIR, resolve_references_staged
+from agents.imagination_resolver import CONTENT_DIR
 from shared.control_signal import ControlSignal, publish_health
 
 log = logging.getLogger("content-resolver")
@@ -85,10 +85,12 @@ class ContentResolverDaemon:
                             del self._skip_until[frag_id]
                         self._last_fragment_id = frag_id
                         try:
-                            frag = ImaginationFragment.model_validate(data)
-                            resolve_references_staged(frag)
+                            ImaginationFragment.model_validate(data)
+                            # ImaginationFragment no longer carries content_references.
+                            # The resolver only acts when external refs are provided;
+                            # skip resolution and just publish health.
                             self._failures.pop(frag_id, None)
-                            log.debug("Resolved content for fragment %s", frag_id)
+                            log.debug("Fragment %s has no content to resolve, skipping", frag_id)
                             publish_health(
                                 ControlSignal(
                                     component="content_resolver", reference=1.0, perception=1.0

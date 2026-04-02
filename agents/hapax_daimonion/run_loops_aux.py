@@ -153,16 +153,6 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 results = daemon._discovery_handler.search(intent)
                                 if results:
                                     daemon._discovery_handler.propose(results)
-                    # Vocal chain: modulate voice character via MIDI
-                    if hasattr(daemon, "_vocal_chain") and daemon._vocal_chain is not None:
-                        vc_score = daemon._vocal_chain.can_resolve(imp)
-                        if vc_score > 0.0:
-                            daemon._vocal_chain.activate_from_impingement(imp)
-                            log.debug(
-                                "Vocal chain activated: %s (score=%.2f)",
-                                imp.content.get("metric", imp.source),
-                                vc_score,
-                            )
                     # Cross-modal coordination
                     if len(candidates) > 1 and hasattr(daemon, "_expression_coordinator"):
                         recruited_pairs = [
@@ -237,7 +227,6 @@ def _handle_proactive_impingement(daemon: VoiceDaemon, imp) -> None:
 
     try:
         proxy_frag = ImaginationFragment(
-            content_references=[],
             dimensions=imp.context.get("dimensions", {}),
             salience=imp.strength,
             continuation=imp.content.get("continuation", False),
