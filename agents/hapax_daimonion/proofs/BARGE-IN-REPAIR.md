@@ -22,7 +22,7 @@ mutual monitoring stops.
 | Streaming loop check | Polls `barge_in_detected`, breaks loop | conversation_pipeline.py:958-972 |
 | Audio playback | PyAudio blocking write, no interrupt API | conversation_pipeline.py:1509-1522 |
 | Echo canceller | Speexdsp AEC, ~60-70% effective on Yeti | echo_canceller.py:131-174 |
-| Turn phases | 5 phases including overlap detection | cognitive_loop.py:45-52 |
+| Turn phases | 5 phases including overlap detection | cpal/runner.py (CPAL tick loop) |
 | Conversation thread | Sequential strings, no temporal metadata | conversation_pipeline.py:371-377 |
 
 ### What's Missing
