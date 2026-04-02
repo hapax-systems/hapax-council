@@ -410,8 +410,72 @@ class StimmungCollector:
                 freshness_s=round(freshness, 1),
             )
 
+        # Chronicle: detect dimension spikes before stance computation
+        try:
+            from shared.chronicle import (
+                ChronicleEvent,
+                current_otel_ids,
+            )
+            from shared.chronicle import (
+                record as chronicle_record,
+            )
+
+            _prev_dims = getattr(self, "_prev_chronicle_dims", {})
+            for name, reading in dimensions.items():
+                if reading.value > 0.7 or reading.value < 0.3:
+                    prev = _prev_dims.get(name)
+                    if prev is None or abs(reading.value - prev) > 0.15:
+                        _tid, _sid = current_otel_ids()
+                        chronicle_record(
+                            ChronicleEvent(
+                                ts=time.time(),
+                                trace_id=_tid,
+                                span_id=_sid,
+                                parent_span_id=None,
+                                source="stimmung",
+                                event_type="dimension.spike",
+                                payload={
+                                    "dimension_name": name,
+                                    "value": round(reading.value, 3),
+                                    "trend": reading.trend,
+                                    "previous_value": round(prev, 3) if prev is not None else None,
+                                },
+                            )
+                        )
+            self._prev_chronicle_dims = {
+                name: reading.value for name, reading in dimensions.items()
+            }
+        except Exception:
+            pass  # Chronicle unavailable — non-fatal
+
+        _prev_stance = self._last_stance
         raw_stance = self._compute_stance(dimensions)
         stance = self._apply_hysteresis(raw_stance)
+
+        # Chronicle: record stance transitions
+        if _prev_stance != stance:
+            try:
+                _tid, _sid = current_otel_ids()
+                chronicle_record(
+                    ChronicleEvent(
+                        ts=time.time(),
+                        trace_id=_tid,
+                        span_id=_sid,
+                        parent_span_id=None,
+                        source="stimmung",
+                        event_type="stance.changed",
+                        payload={
+                            "from_stance": _prev_stance,
+                            "to_stance": stance,
+                            "dimension_values": {
+                                name: round(reading.value, 3)
+                                for name, reading in dimensions.items()
+                            },
+                        },
+                    )
+                )
+            except Exception:
+                pass  # Chronicle unavailable — non-fatal
 
         # Publish perceptual control signal for mesh-wide health aggregation
         _stance_error_map = {"nominal": 0.0, "cautious": 0.3, "degraded": 0.6, "critical": 1.0}
