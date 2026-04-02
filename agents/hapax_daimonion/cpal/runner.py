@@ -56,6 +56,7 @@ class CpalRunner:
         tts_manager: object | None = None,
         conversation_pipeline: object | None = None,
         echo_canceller: object | None = None,
+        daemon: object | None = None,
     ) -> None:
         # Streams
         self._perception = PerceptionStream(buffer=buffer)
@@ -80,6 +81,7 @@ class CpalRunner:
         self._audio_output = audio_output
         self._echo_canceller = echo_canceller
         self._pipeline = conversation_pipeline  # T3 delegate
+        self._daemon = daemon
 
         # State
         self._running = False
@@ -170,6 +172,29 @@ class CpalRunner:
         else:
             self._accumulated_silence_s += dt
 
+        # 2b. Session timeout check — close session if silence exceeds timeout
+        if self._daemon is not None:
+            d = self._daemon
+            if (
+                d.session.is_active
+                and d.session.is_timed_out
+                and not self._processing_utterance
+                and not self._production.is_producing
+            ):
+                from agents.hapax_daimonion.persona import session_end_message
+                from agents.hapax_daimonion.session_events import close_session
+
+                msg = session_end_message(d.notifications.pending_count)
+                log.info("CPAL session timeout: %s", msg)
+                if d._conversation_pipeline and d._conversation_pipeline._audio_output:
+                    try:
+                        pcm = d.tts.synthesize(msg, "conversation")
+                        if pcm:
+                            d._conversation_pipeline._audio_output.write(pcm)
+                    except Exception:
+                        log.debug("Goodbye TTS failed", exc_info=True)
+                await close_session(d, reason="silence_timeout")
+
         # 3. Gain drivers beyond just speech (C: I5, I6)
         self._apply_gain_drivers(signals, dt)
 
@@ -177,6 +202,11 @@ class CpalRunner:
         utterance = self._perception.get_utterance()
         if utterance is not None and not self._processing_utterance:
             asyncio.create_task(self._process_utterance(utterance))
+
+        # 4b. Mark session activity during production/processing
+        if self._daemon is not None and self._daemon.session.is_active:
+            if self._processing_utterance or self._production.is_producing or signals.speech_active:
+                self._daemon.session.mark_activity()
 
         # 5. Speculative formulation during operator speech
         if signals.speech_active and hasattr(self._buffer, "speech_frames_snapshot"):
@@ -234,6 +264,17 @@ class CpalRunner:
 
         # 11. TPN signal for DMN anti-correlation
         self._signal_tpn(self._processing_utterance or self._production.is_producing)
+
+        # 12. Publish simplified perception behaviors (replaces CognitiveLoop.contribute)
+        if self._daemon is not None and hasattr(self._daemon, "perception"):
+            _now = time.monotonic()
+            _behaviors = self._daemon.perception.behaviors
+            if "turn_phase" in _behaviors:
+                _phase = "hapax_speaking" if self._production.is_producing else "mutual_silence"
+                _behaviors["turn_phase"].update(_phase, _now)
+            if "cognitive_readiness" in _behaviors:
+                _readiness = 1.0 if not self._processing_utterance else 0.0
+                _behaviors["cognitive_readiness"].update(_readiness, _now)
 
     def _get_audio_frame(self) -> bytes:
         """Get the latest audio frame from the buffer for energy/prosodic analysis."""
