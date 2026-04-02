@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 
+from agents._affordance import CapabilityRecord, OperationalProperties
+
 log = logging.getLogger("reverie.affordances")
 
 # 12 shader node affordances — expressive descriptions for embedding
@@ -26,14 +28,55 @@ SHADER_NODE_AFFORDANCES = [
     ("node.echo", "discrete temporal copies, ghosting, fading repetition"),
 ]
 
-# 5 content type affordances
-CONTENT_TYPE_AFFORDANCES = [
-    ("content.camera_feed", "live spatial perception, room awareness, presence"),
-    ("content.imagination_text", "narrative fragment, poetic image, dwelling thought"),
-    ("content.imagination_image", "resolved visual content, concrete reference"),
-    ("content.waveform_viz", "acoustic energy shape, sound made visible"),
-    ("content.data_plot", "structured information, measurement, trend"),
+# Perception content — observe/sense the environment (FAST tier)
+PERCEPTION_AFFORDANCES: list[tuple[str, str, OperationalProperties]] = [
+    (
+        "content.overhead_perspective",
+        "Observe workspace from above, providing spatial context for physical activity and object arrangement",
+        OperationalProperties(latency_class="fast"),
+    ),
+    (
+        "content.desk_perspective",
+        "Observe the operator's face, hands, and immediate work surface at close range",
+        OperationalProperties(latency_class="fast"),
+    ),
+    (
+        "content.operator_perspective",
+        "Observe the operator directly, capturing presence and expression",
+        OperationalProperties(latency_class="fast"),
+    ),
 ]
+
+# Expression content — materialize imagination as visual (SLOW tier)
+CONTENT_AFFORDANCES: list[tuple[str, str, OperationalProperties]] = [
+    (
+        "content.narrative_text",
+        "Render imagination narrative as visible text, making thought legible in the visual field",
+        OperationalProperties(latency_class="slow"),
+    ),
+    (
+        "content.episodic_recall",
+        "Recall and visualize past experiences similar to the current moment from episodic memory",
+        OperationalProperties(latency_class="slow"),
+    ),
+    (
+        "content.knowledge_recall",
+        "Search and visualize relevant knowledge from ingested documents and notes",
+        OperationalProperties(latency_class="slow"),
+    ),
+    (
+        "content.profile_recall",
+        "Recall and visualize known facts about the operator's preferences and patterns",
+        OperationalProperties(latency_class="slow"),
+    ),
+    (
+        "content.waveform_viz",
+        "Sense acoustic energy and render sound as visible waveform shape",
+        OperationalProperties(latency_class="fast"),
+    ),
+]
+
+ALL_CONTENT_AFFORDANCES = PERCEPTION_AFFORDANCES + CONTENT_AFFORDANCES
 
 # Legacy capabilities for backward compat with DMN dispatch
 LEGACY_AFFORDANCES = [
@@ -43,17 +86,11 @@ LEGACY_AFFORDANCES = [
 ]
 
 
-def build_reverie_pipeline():
-    """Build the affordance pipeline with all Reverie affordances registered in Qdrant."""
-    from agents._affordance import CapabilityRecord, OperationalProperties
-    from agents._affordance_pipeline import AffordancePipeline
-
-    p = AffordancePipeline()
-
-    all_affordances = SHADER_NODE_AFFORDANCES + CONTENT_TYPE_AFFORDANCES + LEGACY_AFFORDANCES
-    registered = 0
-    for name, desc in all_affordances:
-        ok = p.index_capability(
+def build_reverie_pipeline_affordances() -> list[CapabilityRecord]:
+    """Build all CapabilityRecord objects for Reverie affordances."""
+    records: list[CapabilityRecord] = []
+    for name, desc in SHADER_NODE_AFFORDANCES:
+        records.append(
             CapabilityRecord(
                 name=name,
                 description=desc,
@@ -61,8 +98,36 @@ def build_reverie_pipeline():
                 operational=OperationalProperties(latency_class="realtime"),
             )
         )
-        if ok:
-            registered += 1
+    for name, desc, ops in ALL_CONTENT_AFFORDANCES:
+        records.append(
+            CapabilityRecord(
+                name=name,
+                description=desc,
+                daemon="reverie",
+                operational=ops,
+            )
+        )
+    for name, desc in LEGACY_AFFORDANCES:
+        records.append(
+            CapabilityRecord(
+                name=name,
+                description=desc,
+                daemon="reverie",
+                operational=OperationalProperties(latency_class="realtime"),
+            )
+        )
+    return records
 
-    log.info("Registered %d/%d Reverie affordances in Qdrant", registered, len(all_affordances))
+
+def build_reverie_pipeline():
+    """Build the affordance pipeline with all Reverie affordances registered in Qdrant."""
+    from agents._affordance_pipeline import AffordancePipeline
+
+    p = AffordancePipeline()
+    records = build_reverie_pipeline_affordances()
+    registered = 0
+    for rec in records:
+        if p.index_capability(rec):
+            registered += 1
+    log.info("Registered %d/%d Reverie affordances in Qdrant", registered, len(records))
     return p

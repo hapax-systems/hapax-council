@@ -60,16 +60,11 @@ class ReverieDaemon:
             self._mixer = None
 
     async def tick(self) -> None:
-        """One daemon cycle: consume impingements, update sources, tick mixer."""
+        """One daemon cycle: consume impingements, tick mixer."""
         impingements = self._consumer.read_new()
         for imp in impingements:
             if self._mixer is not None:
                 self._mixer.dispatch_impingement(imp)
-
-        # Update camera sources from compositor
-        from agents.reverie.camera_source import update_camera_sources
-
-        update_camera_sources()
 
         if self._mixer is not None:
             await self._mixer.tick()

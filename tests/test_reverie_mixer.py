@@ -59,21 +59,21 @@ def test_mixer_has_same_interface_as_actuation_loop():
 
 
 def test_affordance_registration_includes_shader_nodes():
-    """Pipeline should register 12 shader node + 5 content + 3 legacy affordances."""
+    """Pipeline should register 12 shader node + 8 content + 3 legacy affordances."""
     from agents.reverie._affordances import (
-        CONTENT_TYPE_AFFORDANCES,
+        ALL_CONTENT_AFFORDANCES,
         LEGACY_AFFORDANCES,
         SHADER_NODE_AFFORDANCES,
     )
 
     assert len(SHADER_NODE_AFFORDANCES) == 12
-    assert len(CONTENT_TYPE_AFFORDANCES) == 5
+    assert len(ALL_CONTENT_AFFORDANCES) == 8
     assert len(LEGACY_AFFORDANCES) == 3
     # All shader nodes start with "node."
     for name, _ in SHADER_NODE_AFFORDANCES:
         assert name.startswith("node."), f"{name} should start with node."
     # All content types start with "content."
-    for name, _ in CONTENT_TYPE_AFFORDANCES:
+    for name, _, _ops in ALL_CONTENT_AFFORDANCES:
         assert name.startswith("content."), f"{name} should start with content."
 
 
