@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from agents.imagination import (
-    ContentReference,
     ImaginationFragment,
     reverberation_check,
 )
@@ -18,9 +17,6 @@ from agents.imagination_loop import ImaginationLoop
 
 def _make_fragment(**overrides) -> ImaginationFragment:
     defaults = {
-        "content_references": [
-            ContentReference(kind="text", source="test", salience=0.5),
-        ],
         "dimensions": {"intensity": 0.4},
         "salience": 0.5,
         "continuation": False,

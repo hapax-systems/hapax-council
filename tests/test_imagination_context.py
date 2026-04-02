@@ -19,7 +19,6 @@ def _make_fragment(
         "salience": salience,
         "continuation": continuation,
         "narrative": narrative,
-        "content_references": [],
         "dimensions": {},
     }
 

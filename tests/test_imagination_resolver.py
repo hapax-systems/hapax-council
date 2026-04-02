@@ -18,7 +18,6 @@ import pytest
 
 from agents.imagination import (
     CadenceController,
-    ContentReference,
     ImaginationFragment,
     assemble_context,
     maybe_escalate,
@@ -32,6 +31,7 @@ from agents.imagination_resolver import (
     FAST_KINDS,
     MAX_SLOTS,
     SLOW_KINDS,
+    ContentReference,
     cleanup_content_dir,
     resolve_references,
     resolve_references_staged,
@@ -57,7 +57,6 @@ NINE_DIMENSIONS = {
 
 
 def _make_fragment(
-    refs: list[ContentReference],
     fid: str = "test123",
     salience: float = 0.3,
     continuation: bool = False,
@@ -67,7 +66,6 @@ def _make_fragment(
 ) -> ImaginationFragment:
     return ImaginationFragment(
         id=fid,
-        content_references=refs,
         dimensions=dimensions or {"intensity": 0.5},
         salience=salience,
         continuation=continuation,
@@ -146,8 +144,8 @@ def test_resolve_references_skips_fast_kinds(tmp_path):
         ContentReference(kind="file", source="/some/path.jpg", query=None, salience=0.5),
         ContentReference(kind="text", source="hello", query=None, salience=0.3),
     ]
-    frag = _make_fragment(refs)
-    results = resolve_references(frag, tmp_path)
+    frag = _make_fragment()
+    results = resolve_references(frag, tmp_path, refs=refs)
     assert len(results) == 1
     assert results[0].name == "test123-2.jpg"
 
@@ -155,8 +153,8 @@ def test_resolve_references_skips_fast_kinds(tmp_path):
 def test_resolve_references_unknown_kind_falls_back_to_text(tmp_path):
     """Unknown content kinds should be rendered as text fallback."""
     refs = [ContentReference(kind="hologram", source="mystery data", query=None, salience=0.5)]
-    frag = _make_fragment(refs)
-    results = resolve_references(frag, tmp_path)
+    frag = _make_fragment()
+    results = resolve_references(frag, tmp_path, refs=refs)
     assert len(results) == 1
     assert results[0].exists()
 
@@ -164,16 +162,16 @@ def test_resolve_references_unknown_kind_falls_back_to_text(tmp_path):
 def test_resolve_references_audio_clip_falls_back_to_text(tmp_path):
     """audio_clip is listed in spec but has no resolver — should fallback to text."""
     refs = [ContentReference(kind="audio_clip", source="/tmp/clip.wav", query=None, salience=0.4)]
-    frag = _make_fragment(refs)
-    results = resolve_references(frag, tmp_path)
+    frag = _make_fragment()
+    results = resolve_references(frag, tmp_path, refs=refs)
     # audio_clip is not in SLOW_KINDS or FAST_KINDS → unknown kind → text fallback
     assert len(results) == 1
 
 
 def test_resolve_references_empty_content_references(tmp_path):
     """Fragment with no content references produces empty results."""
-    frag = _make_fragment([], fid="empty")
-    results = resolve_references(frag, tmp_path)
+    frag = _make_fragment(fid="empty")
+    results = resolve_references(frag, tmp_path, refs=[])
     assert results == []
 
 
@@ -183,8 +181,8 @@ def test_resolve_references_all_fast_kinds_produces_nothing(tmp_path):
         ContentReference(kind="camera_frame", source="hero", query=None, salience=0.9),
         ContentReference(kind="file", source="/img.jpg", query=None, salience=0.5),
     ]
-    frag = _make_fragment(refs)
-    results = resolve_references(frag, tmp_path)
+    frag = _make_fragment()
+    results = resolve_references(frag, tmp_path, refs=refs)
     assert results == []
 
 
@@ -198,12 +196,12 @@ def test_write_slot_manifest(tmp_path):
         ContentReference(kind="text", source="Hello", query=None, salience=0.7),
         ContentReference(kind="text", source="World", query=None, salience=0.4),
     ]
-    frag = _make_fragment(refs, fid="m1")
+    frag = _make_fragment(fid="m1")
     manifest_path = tmp_path / "slots.json"
     paths = [tmp_path / "m1-0.jpg", tmp_path / "m1-1.jpg"]
     for p in paths:
         p.write_bytes(b"\xff\xd8dummy")
-    write_slot_manifest(frag, paths, manifest_path)
+    write_slot_manifest(frag, paths, manifest_path, refs=refs)
     data = json.loads(manifest_path.read_text())
     assert data["fragment_id"] == "m1"
     assert len(data["slots"]) == 2
@@ -217,8 +215,8 @@ def test_resolve_references_staged_atomic(tmp_path):
     staging = tmp_path / "staging"
     active = tmp_path / "active"
     refs = [ContentReference(kind="text", source="Test content", query=None, salience=0.5)]
-    frag = _make_fragment(refs, fid="s1")
-    resolve_references_staged(frag, staging_dir=staging, active_dir=active)
+    frag = _make_fragment(fid="s1")
+    resolve_references_staged(frag, staging_dir=staging, active_dir=active, refs=refs)
     assert active.exists()
     assert not staging.exists()
     assert (active / "s1-0.jpg").exists()
@@ -230,21 +228,21 @@ def test_resolve_references_staged_replaces_previous(tmp_path):
     staging = tmp_path / "staging"
     active = tmp_path / "active"
     refs1 = [ContentReference(kind="text", source="First", query=None, salience=0.5)]
-    frag1 = _make_fragment(refs1, fid="r1")
-    resolve_references_staged(frag1, staging_dir=staging, active_dir=active)
+    frag1 = _make_fragment(fid="r1")
+    resolve_references_staged(frag1, staging_dir=staging, active_dir=active, refs=refs1)
     assert (active / "r1-0.jpg").exists()
     refs2 = [ContentReference(kind="text", source="Second", query=None, salience=0.6)]
-    frag2 = _make_fragment(refs2, fid="r2")
-    resolve_references_staged(frag2, staging_dir=staging, active_dir=active)
+    frag2 = _make_fragment(fid="r2")
+    resolve_references_staged(frag2, staging_dir=staging, active_dir=active, refs=refs2)
     assert (active / "r2-0.jpg").exists()
     assert not (active / "r1-0.jpg").exists()
 
 
 def test_manifest_camera_frame_uses_source_path(tmp_path):
     refs = [ContentReference(kind="camera_frame", source="overhead", query=None, salience=0.8)]
-    frag = _make_fragment(refs, fid="c1")
+    frag = _make_fragment(fid="c1")
     manifest_path = tmp_path / "slots.json"
-    write_slot_manifest(frag, [], manifest_path)
+    write_slot_manifest(frag, [], manifest_path, refs=refs)
     data = json.loads(manifest_path.read_text())
     assert data["slots"][0]["path"] == "/dev/shm/hapax-compositor/overhead.jpg"
     assert data["slots"][0]["kind"] == "camera_frame"
@@ -252,9 +250,9 @@ def test_manifest_camera_frame_uses_source_path(tmp_path):
 
 def test_manifest_file_ref_uses_source_path(tmp_path):
     refs = [ContentReference(kind="file", source="/tmp/test.jpg", query=None, salience=0.6)]
-    frag = _make_fragment(refs, fid="f1")
+    frag = _make_fragment(fid="f1")
     manifest_path = tmp_path / "slots.json"
-    write_slot_manifest(frag, [], manifest_path)
+    write_slot_manifest(frag, [], manifest_path, refs=refs)
     data = json.loads(manifest_path.read_text())
     assert data["slots"][0]["path"] == "/tmp/test.jpg"
 
@@ -264,9 +262,11 @@ def test_manifest_max_four_slots(tmp_path):
         ContentReference(kind="text", source=f"Slot {i}", query=None, salience=0.5)
         for i in range(6)
     ]
-    frag = _make_fragment(refs, fid="max")
+    frag = _make_fragment(fid="max")
     manifest_path = tmp_path / "slots.json"
-    write_slot_manifest(frag, [tmp_path / f"max-{i}.jpg" for i in range(6)], manifest_path)
+    write_slot_manifest(
+        frag, [tmp_path / f"max-{i}.jpg" for i in range(6)], manifest_path, refs=refs
+    )
     data = json.loads(manifest_path.read_text())
     assert len(data["slots"]) == 4  # capped at MAX_SLOTS
 
@@ -274,11 +274,11 @@ def test_manifest_max_four_slots(tmp_path):
 def test_manifest_includes_material_and_continuation(tmp_path):
     """Manifest includes material and continuation for Rust shader interaction (B3)."""
     refs = [ContentReference(kind="text", source="Flame", query=None, salience=0.8)]
-    frag = _make_fragment(refs, fid="mat1", material="fire", continuation=True)
+    frag = _make_fragment(fid="mat1", material="fire", continuation=True)
     manifest_path = tmp_path / "slots.json"
     paths = [tmp_path / "mat1-0.jpg"]
     paths[0].write_bytes(b"\xff\xd8dummy")
-    write_slot_manifest(frag, paths, manifest_path)
+    write_slot_manifest(frag, paths, manifest_path, refs=refs)
     data = json.loads(manifest_path.read_text())
     assert data["material"] == "fire"
     assert data["continuation"] is True
@@ -475,7 +475,7 @@ def test_publish_fragment_atomic_write(tmp_path):
     current = tmp_path / "current.json"
     stream = tmp_path / "stream.jsonl"
 
-    frag = _make_fragment([], fid="pub1", narrative="atomic test")
+    frag = _make_fragment(fid="pub1", narrative="atomic test")
     publish_fragment(frag, current_path=current, stream_path=stream)
 
     assert current.exists()
@@ -494,7 +494,7 @@ def test_publish_fragment_caps_stream(tmp_path):
     stream = tmp_path / "stream.jsonl"
 
     for i in range(60):
-        frag = _make_fragment([], fid=f"cap{i}", narrative=f"thought {i}")
+        frag = _make_fragment(fid=f"cap{i}", narrative=f"thought {i}")
         publish_fragment(frag, current_path=current, stream_path=stream, max_lines=50)
 
     lines = stream.read_text().strip().splitlines()
@@ -515,7 +515,7 @@ def test_cadence_base_interval():
 
 def test_cadence_accelerates_on_high_salience_continuation():
     cc = CadenceController(base_s=12.0, accelerated_s=4.0, salience_threshold=0.3)
-    frag = _make_fragment([], salience=0.5, continuation=True)
+    frag = _make_fragment(salience=0.5, continuation=True)
     cc.update(frag)
     assert cc.current_interval() == 4.0
 
@@ -527,7 +527,7 @@ def test_cadence_decelerates_after_streak():
     assert cc.current_interval() == 4.0
     # Three non-continuation fragments decelerate
     for _ in range(3):
-        frag = _make_fragment([], salience=0.5, continuation=False)
+        frag = _make_fragment(salience=0.5, continuation=False)
         cc.update(frag)
     assert cc.current_interval() == 12.0
 
@@ -558,7 +558,7 @@ def test_cadence_force_accelerated():
 
 def test_escalation_zero_salience_never_escalates():
     """Salience 0 should have near-zero escalation probability."""
-    frag = _make_fragment([], salience=0.0)
+    frag = _make_fragment(salience=0.0)
     # Run many times — should never escalate
     escalated = sum(1 for _ in range(1000) if maybe_escalate(frag) is not None)
     assert escalated < 50  # sigmoid at 0.0 ≈ 0.012, expect ~12 in 1000 (wide margin for CI)
@@ -566,7 +566,7 @@ def test_escalation_zero_salience_never_escalates():
 
 def test_escalation_high_salience_usually_escalates():
     """Salience 0.9 should escalate most of the time."""
-    frag = _make_fragment([], salience=0.9)
+    frag = _make_fragment(salience=0.9)
     escalated = sum(1 for _ in range(1000) if maybe_escalate(frag) is not None)
     assert escalated > 900  # sigmoid at 0.9 ≈ 0.94
 
@@ -581,8 +581,8 @@ def test_escalation_continuation_boosts_probability():
     assert boosted_prob > base_prob
 
     # Empirical check
-    frag_no_cont = _make_fragment([], salience=0.55, continuation=False)
-    frag_cont = _make_fragment([], salience=0.55, continuation=True)
+    frag_no_cont = _make_fragment(salience=0.55, continuation=False)
+    frag_cont = _make_fragment(salience=0.55, continuation=True)
     no_cont_count = sum(1 for _ in range(2000) if maybe_escalate(frag_no_cont) is not None)
     cont_count = sum(1 for _ in range(2000) if maybe_escalate(frag_cont) is not None)
     assert cont_count > no_cont_count
@@ -591,7 +591,6 @@ def test_escalation_continuation_boosts_probability():
 def test_escalation_produces_valid_impingement():
     """Escalated impingement has correct source, type, and content keys."""
     frag = _make_fragment(
-        [ContentReference(kind="text", source="hello", query=None, salience=0.5)],
         salience=1.0,  # guarantee escalation
         material="fire",
         continuation=True,
@@ -606,7 +605,7 @@ def test_escalation_produces_valid_impingement():
     assert imp.content["material"] == "fire"
     assert imp.content["continuation"] is True
     assert "dimensions" in imp.content
-    assert "content_references" in imp.content
+    assert "content_references" not in imp.content
 
 
 # ---------------------------------------------------------------------------
@@ -676,7 +675,7 @@ def test_assemble_context_all_sections():
         "perception": {"activity": "focused", "flow_score": 0.7},
         "watch": {"heart_rate": 72},
     }
-    fragments = [_make_fragment([], narrative="recent thought")]
+    fragments = [_make_fragment(narrative="recent thought")]
     ctx = assemble_context(observations, fragments, sensor_snapshot)
     assert "## Current Observations" in ctx
     assert "saw something" in ctx
@@ -696,7 +695,7 @@ def test_assemble_context_empty_inputs():
 
 def test_assemble_context_marks_continuation():
     """Continuing fragments are prefixed with (continuing)."""
-    frag = _make_fragment([], continuation=True, narrative="ongoing train")
+    frag = _make_fragment(continuation=True, narrative="ongoing train")
     ctx = assemble_context([], [frag], {})
     assert "(continuing)" in ctx
 
@@ -754,14 +753,13 @@ def test_format_imagination_context_continuation_marker(tmp_path):
 def test_fragment_material_values():
     """Material field accepts exactly 5 Bachelard elements (B3)."""
     for mat in ("water", "fire", "earth", "air", "void"):
-        frag = _make_fragment([], material=mat)
+        frag = _make_fragment(material=mat)
         assert frag.material == mat
 
 
 def test_fragment_material_default_is_water():
     """Default material is water — the contemplative element (B3)."""
     frag = ImaginationFragment(
-        content_references=[],
         dimensions={},
         salience=0.3,
         continuation=False,
@@ -774,7 +772,6 @@ def test_fragment_material_rejects_invalid():
     """Invalid material value is rejected by Pydantic Literal validation."""
     with pytest.raises(Exception):  # ValidationError
         ImaginationFragment(
-            content_references=[],
             dimensions={},
             salience=0.3,
             continuation=False,
@@ -786,14 +783,14 @@ def test_fragment_material_rejects_invalid():
 def test_fragment_salience_bounds():
     """Salience is bounded [0, 1]."""
     with pytest.raises(Exception):
-        _make_fragment([], salience=-0.1)
+        _make_fragment(salience=-0.1)
     with pytest.raises(Exception):
-        _make_fragment([], salience=1.1)
+        _make_fragment(salience=1.1)
 
 
 def test_fragment_is_frozen():
     """Fragments are immutable (Pydantic frozen=True)."""
-    frag = _make_fragment([], narrative="original")
+    frag = _make_fragment(narrative="original")
     with pytest.raises(Exception):
         frag.narrative = "modified"  # type: ignore[misc]
 
@@ -813,7 +810,7 @@ def test_nine_dimensions_structure():
     Currently dimensions is dict[str, float] — this test documents the
     expected schema even though the code doesn't enforce it yet.
     """
-    frag = _make_fragment([], dimensions=NINE_DIMENSIONS)
+    frag = _make_fragment(dimensions=NINE_DIMENSIONS)
     assert len(frag.dimensions) == 9
     for key in (
         "intensity",
@@ -831,12 +828,8 @@ def test_nine_dimensions_structure():
 
 def test_fragment_id_uniqueness():
     """Fragment IDs are unique (uuid4 hex[:12])."""
-    frag_a = ImaginationFragment(
-        content_references=[], dimensions={}, salience=0.3, continuation=False, narrative="a"
-    )
-    frag_b = ImaginationFragment(
-        content_references=[], dimensions={}, salience=0.3, continuation=False, narrative="b"
-    )
+    frag_a = ImaginationFragment(dimensions={}, salience=0.3, continuation=False, narrative="a")
+    frag_b = ImaginationFragment(dimensions={}, salience=0.3, continuation=False, narrative="b")
     assert frag_a.id != frag_b.id
     assert len(frag_a.id) == 12
 

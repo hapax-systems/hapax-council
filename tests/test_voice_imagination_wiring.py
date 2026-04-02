@@ -5,7 +5,7 @@ import time
 import unittest.mock
 from pathlib import Path
 
-from agents.imagination import ContentReference, ImaginationFragment
+from agents.imagination import ImaginationFragment
 from agents.imagination_context import format_imagination_context
 from agents.proactive_gate import ProactiveGate
 
@@ -30,9 +30,6 @@ def test_context_injection_with_stream(tmp_path: Path):
 def test_proactive_gate_checks_imagination_source():
     gate = ProactiveGate()
     frag = ImaginationFragment(
-        content_references=[
-            ContentReference(kind="text", source="insight", query=None, salience=0.8)
-        ],
         dimensions={"intensity": 0.7},
         salience=0.9,
         continuation=False,
@@ -75,28 +72,24 @@ def test_spontaneous_speech_imagination_prompt():
     imp.strength = 0.9
     imp.content = {
         "narrative": "The drift report suggests consolidating inference.",
-        "content_references": [
-            {"kind": "qdrant_query", "source": "documents", "salience": 0.7},
-        ],
+        "dimensions": {"intensity": 0.7, "tension": 0.3},
         "continuation": False,
+        "material": "water",
     }
 
     # Extract the prompt that would be built
     content = imp.content
     source = imp.source
     narrative = content.get("narrative", "")
-    refs = content.get("content_references", [])
-    ref_summary = ", ".join(r.get("source", "") for r in refs[:3] if isinstance(r, dict))
 
     assert source == "imagination"
     assert "consolidating inference" in narrative
-    assert "documents" in ref_summary
+    assert "content_references" not in content
 
 
 def test_proactive_gate_rejects_low_salience():
     gate = ProactiveGate()
     frag = ImaginationFragment(
-        content_references=[],
         dimensions={},
         salience=0.5,
         continuation=False,

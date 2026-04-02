@@ -14,7 +14,6 @@ def test_write_source_manifest_creates_directory():
     fragment = ImaginationFragment(
         id="test-frag-1",
         narrative="test narrative",
-        content_references=[],
         salience=0.5,
         dimensions={},
         continuation=False,
@@ -41,7 +40,6 @@ def test_write_source_protocol_opacity_from_salience():
     fragment = ImaginationFragment(
         id="test-frag-3",
         narrative="test",
-        content_references=[],
         salience=0.75,
         dimensions={},
         continuation=False,
@@ -61,7 +59,6 @@ def test_write_source_protocol_has_required_fields():
     fragment = ImaginationFragment(
         id="test-frag-4",
         narrative="complete test",
-        content_references=[],
         salience=0.6,
         dimensions={},
         continuation=False,

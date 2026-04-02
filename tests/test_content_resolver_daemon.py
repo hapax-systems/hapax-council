@@ -8,7 +8,7 @@ def test_detect_new_fragment(tmp_path):
     from agents.content_resolver.__main__ import check_for_new_fragment
 
     current = tmp_path / "current.json"
-    current.write_text(json.dumps({"id": "abc123", "content_references": []}))
+    current.write_text(json.dumps({"id": "abc123", "dimensions": {}}))
 
     frag_id, data = check_for_new_fragment(last_id="", path=current)
     assert frag_id == "abc123"
@@ -20,7 +20,7 @@ def test_skip_same_fragment(tmp_path):
     from agents.content_resolver.__main__ import check_for_new_fragment
 
     current = tmp_path / "current.json"
-    current.write_text(json.dumps({"id": "abc123", "content_references": []}))
+    current.write_text(json.dumps({"id": "abc123", "dimensions": {}}))
 
     frag_id, data = check_for_new_fragment(last_id="abc123", path=current)
     assert frag_id is None

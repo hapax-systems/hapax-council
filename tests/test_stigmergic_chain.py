@@ -47,7 +47,7 @@ def test_fragment_flow_through_shm(tmp_path):
         json.dumps(
             {
                 "id": "test_frag_001",
-                "content_references": [{"kind": "text", "value": "test content"}],
+                "dimensions": {"intensity": 0.5},
                 "timestamp": time.time(),
             }
         )
@@ -56,4 +56,4 @@ def test_fragment_flow_through_shm(tmp_path):
     # Resolver detects it
     frag_id, data = check_for_new_fragment(last_id="", path=current)
     assert frag_id == "test_frag_001"
-    assert len(data["content_references"]) == 1
+    assert "dimensions" in data

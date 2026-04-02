@@ -22,9 +22,6 @@ from agents.imagination_loop import MAX_RECENT_FRAGMENTS, ImaginationLoop
 def _make_fragment(**overrides) -> ImaginationFragment:
     """Factory for test fragments with sensible defaults."""
     defaults = {
-        "content_references": [
-            ContentReference(kind="text", source="test", salience=0.5),
-        ],
         "dimensions": {"intensity": 0.4, "tension": 0.2},
         "salience": 0.7,
         "continuation": False,
@@ -39,36 +36,15 @@ def _make_fragment(**overrides) -> ImaginationFragment:
 # ---------------------------------------------------------------------------
 
 
-class TestContentReference:
-    def test_construction(self) -> None:
-        ref = ContentReference(kind="qdrant_query", source="memory", salience=0.8)
-        assert ref.kind == "qdrant_query"
-        assert ref.source == "memory"
-        assert ref.salience == 0.8
-        assert ref.query is None
-
-    def test_query_field(self) -> None:
-        ref = ContentReference(
-            kind="qdrant_query", source="memory", query="recent events", salience=0.6
-        )
-        assert ref.query == "recent events"
-
-
 class TestImaginationFragment:
     def test_full_fragment(self) -> None:
-        refs = [
-            ContentReference(kind="text", source="input", salience=0.5),
-            ContentReference(kind="qdrant_query", source="memory", query="mood", salience=0.9),
-        ]
         frag = ImaginationFragment(
-            content_references=refs,
             dimensions={"intensity": 0.7, "depth": 0.3},
             salience=0.8,
             continuation=True,
             narrative="a brooding passage",
             parent_id="abc123",
         )
-        assert len(frag.content_references) == 2
         assert frag.continuation is True
         assert frag.parent_id == "abc123"
         assert len(frag.id) == 12
@@ -94,7 +70,6 @@ class TestImaginationFragment:
 
     def test_fragment_material_field(self) -> None:
         frag = ImaginationFragment(
-            content_references=[],
             dimensions={"intensity": 0.5},
             salience=0.3,
             continuation=False,
@@ -108,7 +83,6 @@ class TestImaginationFragment:
 
     def test_fragment_material_defaults_to_water(self) -> None:
         frag = ImaginationFragment(
-            content_references=[],
             dimensions={},
             salience=0.1,
             continuation=False,
@@ -122,7 +96,6 @@ class TestImaginationFragment:
         restored = ImaginationFragment.model_validate_json(data)
         assert restored.id == frag.id
         assert restored.narrative == frag.narrative
-        assert restored.content_references == frag.content_references
         assert restored.dimensions == frag.dimensions
 
 
@@ -231,12 +204,8 @@ class TestMaybeEscalate:
             assert maybe_escalate(base_frag) is None  # test_val > base_prob
             assert maybe_escalate(cont_frag) is not None  # test_val < cont_prob
 
-    def test_preserves_content_refs(self) -> None:
-        refs = [
-            ContentReference(kind="qdrant_query", source="mem", query="q1", salience=0.9),
-            ContentReference(kind="text", source="input", salience=0.4),
-        ]
-        frag = _make_fragment(content_references=refs, salience=0.99)
+    def test_escalation_excludes_content_references(self) -> None:
+        frag = _make_fragment(salience=0.99)
         # salience=0.99 → near-certain escalation; retry to handle rare misses
         imp = None
         for _ in range(10):
@@ -244,9 +213,9 @@ class TestMaybeEscalate:
             if imp is not None:
                 break
         assert imp is not None
-        assert len(imp.content["content_references"]) == 2
-        assert imp.content["content_references"][0]["kind"] == "qdrant_query"
-        assert imp.content["content_references"][0]["query"] == "q1"
+        assert "content_references" not in imp.content
+        assert "narrative" in imp.content
+        assert "dimensions" in imp.content
 
     def test_includes_dimensions(self) -> None:
         dims = {"intensity": 0.7, "tension": 0.5}
@@ -477,7 +446,6 @@ def test_fragment_has_no_content_references():
 def test_material_rejects_invalid_values():
     with pytest.raises(Exception):
         ImaginationFragment(
-            content_references=[],
             dimensions={},
             salience=0.5,
             continuation=False,

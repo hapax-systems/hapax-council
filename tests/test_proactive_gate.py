@@ -10,7 +10,6 @@ from agents.proactive_gate import ProactiveGate
 
 def _make_fragment(salience: float = 0.9) -> ImaginationFragment:
     return ImaginationFragment(
-        content_references=[],
         dimensions={},
         salience=salience,
         continuation=False,

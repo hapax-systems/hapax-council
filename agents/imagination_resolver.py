@@ -14,13 +14,33 @@ import textwrap
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from pydantic import BaseModel, Field
 
-from agents.imagination import ContentReference, ImaginationFragment
+from agents.imagination import ImaginationFragment
 from agents.imagination_source_protocol import SOURCES_DIR, write_source_protocol
 
 __all__ = ["write_source_protocol"]
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Resolver-local content reference (removed from ImaginationFragment model)
+# ---------------------------------------------------------------------------
+
+
+class ContentReference(BaseModel, frozen=True):
+    """A content reference used internally by the resolver pipeline.
+
+    This was previously part of ImaginationFragment but has been decoupled.
+    The resolver still needs typed references for its rendering pipeline.
+    """
+
+    kind: str
+    source: str
+    query: str | None = None
+    salience: float = Field(ge=0.0, le=1.0, default=0.5)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -115,10 +135,15 @@ def resolve_text(
 def resolve_references(
     fragment: ImaginationFragment,
     content_dir: Path | None = None,
+    refs: list[ContentReference] | None = None,
 ) -> list[Path]:
-    """Resolve all slow content references in a fragment to JPEG files."""
+    """Resolve all slow content references to JPEG files.
+
+    References are passed explicitly via *refs* (decoupled from the fragment
+    model which no longer carries content_references).
+    """
     results: list[Path] = []
-    for i, ref in enumerate(fragment.content_references):
+    for i, ref in enumerate(refs or []):
         if ref.kind not in SLOW_KINDS and ref.kind not in FAST_KINDS:
             # Unknown kind — treat as text fallback so content still renders
             log.info("Unknown content kind %r — resolving as text", ref.kind)
@@ -141,12 +166,17 @@ def write_slot_manifest(
     fragment: ImaginationFragment,
     resolved_paths: list[Path],
     manifest_path: Path,
+    refs: list[ContentReference] | None = None,
 ) -> None:
-    """Write a slot manifest JSON for the Rust content texture manager."""
+    """Write a slot manifest JSON for the Rust content texture manager.
+
+    References are passed explicitly via *refs* (decoupled from the fragment
+    model which no longer carries content_references).
+    """
     slots = []
     resolved_idx = 0
 
-    for i, ref in enumerate(fragment.content_references[:MAX_SLOTS]):
+    for i, ref in enumerate((refs or [])[:MAX_SLOTS]):
         if ref.kind == "camera_frame":
             path = f"{CAMERA_FRAME_DIR}/{ref.source}.jpg"
         elif ref.kind == "file":
@@ -183,6 +213,7 @@ def resolve_references_staged(
     fragment: ImaginationFragment,
     staging_dir: Path | None = None,
     active_dir: Path | None = None,
+    refs: list[ContentReference] | None = None,
 ) -> list[Path]:
     """Resolve content references to staging, then atomically swap to active."""
     staging = staging_dir or (CONTENT_DIR / "staging")
@@ -192,8 +223,8 @@ def resolve_references_staged(
         shutil.rmtree(staging)
     staging.mkdir(parents=True, exist_ok=True)
 
-    resolved = resolve_references(fragment, content_dir=staging)
-    write_slot_manifest(fragment, resolved, staging / "slots.json")
+    resolved = resolve_references(fragment, content_dir=staging, refs=refs)
+    write_slot_manifest(fragment, resolved, staging / "slots.json", refs=refs)
 
     old = active.with_name("old")
     if active.exists():
