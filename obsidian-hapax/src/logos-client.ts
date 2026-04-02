@@ -17,6 +17,9 @@ export class LogosClient {
   private baseUrl: string;
   private cache: Map<string, CacheEntry<unknown>> = new Map();
 
+  /** True after at least one successful API call; false after a failure. */
+  apiAvailable = false;
+
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
@@ -31,10 +34,16 @@ export class LogosClient {
     if (cached && Date.now() - cached.fetchedAt < ttlMs) {
       return cached.data as T;
     }
-    const resp = await requestUrl({ url: `${this.baseUrl}${path}` });
-    const data = resp.json as T;
-    this.cache.set(path, { data, fetchedAt: Date.now() });
-    return data;
+    try {
+      const resp = await requestUrl({ url: `${this.baseUrl}${path}` });
+      const data = resp.json as T;
+      this.cache.set(path, { data, fetchedAt: Date.now() });
+      this.apiAvailable = true;
+      return data;
+    } catch (err) {
+      this.apiAvailable = false;
+      throw err;
+    }
   }
 
   private invalidatePrefix(prefix: string): void {

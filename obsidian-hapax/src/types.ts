@@ -94,6 +94,10 @@ export interface Nudge {
   source_id: string;
 }
 
+/** Tailscale IP for the hapax workstation — stable across networks. */
+export const TAILSCALE_API_URL = "http://100.117.1.83:8051";
+export const LOCAL_API_URL = "http://localhost:8051";
+
 export interface HapaxSettings {
   logosApiUrl: string;
   refreshInterval: number;
@@ -102,7 +106,7 @@ export interface HapaxSettings {
 }
 
 export const DEFAULT_SETTINGS: HapaxSettings = {
-  logosApiUrl: "http://localhost:8051",
+  logosApiUrl: LOCAL_API_URL,
   refreshInterval: 30,
   showOnUnknownNotes: true,
   collapsedSections: [],

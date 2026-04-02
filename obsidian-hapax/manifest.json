@@ -5,5 +5,5 @@
   "minAppVersion": "1.5.0",
   "description": "Context-first system companion — surfaces sprint state, stimmung, and research context alongside the active note.",
   "author": "hapax",
-  "isDesktopOnly": true
+  "isDesktopOnly": false
 }

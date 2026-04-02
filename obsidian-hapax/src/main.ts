@@ -1,5 +1,5 @@
-import { App, Modal, Notice, Plugin, TFile, WorkspaceLeaf, ButtonComponent, TextAreaComponent } from "obsidian";
-import { DEFAULT_SETTINGS } from "./types";
+import { App, Modal, Notice, Platform, Plugin, TFile, WorkspaceLeaf, ButtonComponent, TextAreaComponent } from "obsidian";
+import { DEFAULT_SETTINGS, LOCAL_API_URL, TAILSCALE_API_URL } from "./types";
 import type { HapaxSettings, NoteContext } from "./types";
 import { NoteKind } from "./types";
 import { LogosClient } from "./logos-client";
@@ -71,7 +71,13 @@ export default class HapaxPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
 
-    this.client = new LogosClient(this.settings.logosApiUrl);
+    // On mobile, auto-switch to Tailscale URL unless the user has set a custom URL.
+    const effectiveUrl =
+      Platform.isMobile && this.settings.logosApiUrl === LOCAL_API_URL
+        ? TAILSCALE_API_URL
+        : this.settings.logosApiUrl;
+
+    this.client = new LogosClient(effectiveUrl);
 
     // Register view
     this.registerView(HAPAX_VIEW_TYPE, (leaf: WorkspaceLeaf) => {
