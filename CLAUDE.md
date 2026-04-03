@@ -10,14 +10,14 @@ Shared conventions (uv, ruff, testing, git workflow, pydantic-ai) are in the wor
 
 **Three tiers**:
 - **Tier 1** — Interactive interfaces (hapax-logos Tauri native app, waybar GTK4 status bar, VS Code extension)
-- **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000)
+- **Tier 2** — LLM-driven agents (pydantic-ai, routed through LiteLLM at :4000). Local: TabbyAPI serves Qwen3.5-35B-A3B (EXL3) on `:5000` for `local-fast`/`coding`/`reasoning`. Cloud: Claude Sonnet/Opus for `balanced`/governance, Gemini Flash for `fast`/vision.
 - **Tier 3** — Deterministic agents (sync, health, maintenance — no LLM calls)
 
 **Reactive engine** (`logos/engine/`): inotify watcher → 14 rules → phased execution (deterministic first, then LLM semaphore-bounded at max 2 concurrent).
 
 **Infrastructure**: Docker Compose for databases/proxies (13 containers), systemd user units for all application services. No process-compose in production. See `systemd/README.md` for boot sequence, resource isolation, and recovery chain.
 
-**Key services**: `hapax-secrets` (credentials) → `logos-api` (:8051) → `waybar` (GTK4 status bar) → `hapax-daimonion` (GPU) → `visual-layer-aggregator` → `studio-compositor` (GPU). 31 timers for sync, health, backups. Archival pipeline (audio/video recording, classification, RAG ingest) disabled — see `systemd/README.md § Disabled Services`.
+**Key services**: `hapax-secrets` (credentials) → `logos-api` (:8051) → `waybar` (GTK4 status bar) → `tabbyapi` (GPU, EXL3 inference :5000) → `hapax-daimonion` (GPU STT, CPU TTS) → `visual-layer-aggregator` → `studio-compositor` (GPU). 34 timers for sync, health, backups. Archival pipeline (audio/video recording, classification, RAG ingest) disabled — see `systemd/README.md § Disabled Services`.
 
 ## Design Language
 
@@ -262,7 +262,7 @@ Destructive command detection strips quoted strings before matching to prevent f
 
 ## Key Modules
 
-- **`shared/config.py`** — Model aliases, LiteLLM/Qdrant clients, embedding, `DATA_DIR`
+- **`shared/config.py`** — Model aliases (`fast`→gemini-flash, `balanced`→claude-sonnet, `local-fast`/`coding`/`reasoning`→TabbyAPI Qwen3.5-35B-A3B), `get_model_adaptive()` for stimmung-aware routing, LiteLLM/Qdrant clients, CPU embedding via nomic-embed-cpu
 - **`shared/working_mode.py`** — Reads `~/.cache/hapax/working-mode` (research/rnd). CLI: `hapax-working-mode`
 - **`shared/notify.py`** — `send_notification()` for ntfy + desktop
 - **`shared/frontmatter.py`** — Canonical frontmatter parser (never duplicate this)
