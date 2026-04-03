@@ -234,6 +234,7 @@ class CpalRunner:
                 log.info("CPAL: utterance arrived during processing — queued for next tick")
                 self._queued_utterance = utterance
             elif utterance is not None:
+                self._processing_utterance = True  # set before task starts to prevent race
                 asyncio.create_task(self._process_utterance(utterance))
 
         # 4b. Mark session activity during production/processing
