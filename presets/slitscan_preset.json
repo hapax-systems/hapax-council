@@ -1,20 +1,20 @@
 {
   "name": "Slit-scan",
-  "description": "Slit-scan placeholder",
+  "description": "Temporal slit-scan — each column represents a different moment in time. Douglas Trumbull Stargate reference.",
   "transition_ms": 500,
   "nodes": {
-    "warp": {
-      "type": "warp",
+    "slitscan": {
+      "type": "slitscan",
       "params": {
-        "pan_x": 3,
-        "slice_count": 20,
-        "slice_amplitude": 5
+        "direction": 0,
+        "speed": 1.5
       }
     },
     "colorgrade": {
       "type": "colorgrade",
       "params": {
-        "saturation": 1.2
+        "saturation": 1.15,
+        "contrast": 1.1
       }
     },
     "out": {
@@ -29,31 +29,16 @@
       "type": "postprocess",
       "params": {
         "vignette_strength": 0.3,
-        "sediment_strength": 0.1
+        "sediment_strength": 0.08
       }
     }
   },
   "edges": [
-    [
-      "@live",
-      "warp"
-    ],
-    [
-      "warp",
-      "colorgrade"
-    ],
-    [
-      "colorgrade",
-      "content_layer"
-    ],
-    [
-      "content_layer",
-      "postprocess"
-    ],
-    [
-      "postprocess",
-      "out"
-    ]
+    ["@live", "slitscan"],
+    ["slitscan", "colorgrade"],
+    ["colorgrade", "content_layer"],
+    ["content_layer", "postprocess"],
+    ["postprocess", "out"]
   ],
   "modulations": [],
   "layer_palettes": {}

@@ -1,20 +1,29 @@
 {
-  "name": "Diff",
-  "description": "Motion detection",
+  "name": "Motion Detection",
+  "description": "Frame differencing — only motion is visible. Double-ghost contour with leading and trailing edges. Daniel Rozin Mechanical Mirrors reference.",
   "transition_ms": 500,
   "nodes": {
-    "threshold": {
-      "type": "threshold",
+    "diff": {
+      "type": "diff",
       "params": {
-        "level": 0.15,
-        "softness": 0.05
+        "threshold": 0.06,
+        "color_mode": 0
       }
     },
     "colorgrade": {
       "type": "colorgrade",
       "params": {
-        "contrast": 2.0,
-        "brightness": 1.3
+        "contrast": 1.8,
+        "brightness": 1.5,
+        "saturation": 0.3
+      }
+    },
+    "bloom": {
+      "type": "bloom",
+      "params": {
+        "threshold": 0.2,
+        "radius": 6,
+        "alpha": 0.25
       }
     },
     "out": {
@@ -28,32 +37,18 @@
     "postprocess": {
       "type": "postprocess",
       "params": {
-        "vignette_strength": 0.3,
-        "sediment_strength": 0.1
+        "vignette_strength": 0.35,
+        "sediment_strength": 0.05
       }
     }
   },
   "edges": [
-    [
-      "@live",
-      "threshold"
-    ],
-    [
-      "threshold",
-      "colorgrade"
-    ],
-    [
-      "colorgrade",
-      "content_layer"
-    ],
-    [
-      "content_layer",
-      "postprocess"
-    ],
-    [
-      "postprocess",
-      "out"
-    ]
+    ["@live", "diff"],
+    ["diff", "colorgrade"],
+    ["colorgrade", "bloom"],
+    ["bloom", "content_layer"],
+    ["content_layer", "postprocess"],
+    ["postprocess", "out"]
   ],
   "modulations": [],
   "layer_palettes": {}
