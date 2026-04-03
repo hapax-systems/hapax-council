@@ -191,9 +191,20 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
     tool_names = {name for name, _ in TOOL_AFFORDANCES}
     daemon._tool_recruitment_gate = ToolRecruitmentGate(daemon._affordance_pipeline, tool_names)
 
+    # Index ALL world affordances from the shared registry so daimonion can
+    # recruit from the full field — not just tools and speech. Each faculty
+    # indexes the full world per SCM Property 1 (stigmergic coordination).
+    from shared.affordance_registry import ALL_AFFORDANCES
+
+    _world_indexed = 0
+    for record in ALL_AFFORDANCES:
+        if daemon._affordance_pipeline.index_capability(record):
+            _world_indexed += 1
+
     log.info(
         "Pipeline dependencies precomputed"
         " (affordance pipeline: speech + 9 vocal chain dims + system_awareness"
-        " + capability_discovery + %d tool affordances)",
+        " + capability_discovery + %d tool affordances + %d world affordances)",
         len(TOOL_AFFORDANCES),
+        _world_indexed,
     )

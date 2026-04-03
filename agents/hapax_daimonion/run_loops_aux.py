@@ -112,6 +112,31 @@ async def ambient_refresh_loop(daemon: VoiceDaemon) -> None:
             log.debug("Ambient refresh error (non-fatal)", exc_info=True)
 
 
+_WORLD_ROUTING_FLAG = Path.home() / ".cache" / "hapax" / "world-routing-enabled"
+
+# World domain prefixes that the daimonion can act on — affordances from the
+# shared registry indexed in the daimonion pipeline. When recruited with
+# sufficient score, they surface as proactive speech context enrichment.
+_WORLD_DOMAIN_PREFIXES = (
+    "env.",
+    "body.",
+    "studio.",
+    "digital.",
+    "social.",
+    "system.",
+    "knowledge.",
+    "space.",
+)
+
+
+def _world_routing_enabled() -> bool:
+    """Check if world affordance routing is enabled (feature flag, hot-toggleable)."""
+    try:
+        return _WORLD_ROUTING_FLAG.exists()
+    except OSError:
+        return False
+
+
 async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
     """Poll DMN impingements and route through affordance pipeline."""
     consumer = ImpingementConsumer(Path("/dev/shm/hapax-dmn/impingements.jsonl"))
@@ -122,6 +147,25 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                 try:
                     candidates = await asyncio.to_thread(daemon._affordance_pipeline.select, imp)
                     for c in candidates:
+                        # --- World domain routing (feature-flagged) ---
+                        if (
+                            any(c.capability_name.startswith(p) for p in _WORLD_DOMAIN_PREFIXES)
+                            and _world_routing_enabled()
+                        ):
+                            if c.combined >= 0.3:
+                                log.info(
+                                    "World affordance recruited: %s (score=%.2f, source=%s)",
+                                    c.capability_name,
+                                    c.combined,
+                                    imp.source[:30],
+                                )
+                                daemon._affordance_pipeline.record_outcome(
+                                    c.capability_name,
+                                    success=True,
+                                    context={"source": imp.source},
+                                )
+                            continue  # don't break — let other capabilities also activate
+
                         if c.capability_name == "speech_production":
                             # Block speech recruitment when no conversation session is active
                             # or when operator hasn't spoken yet (turn_count == 0).
