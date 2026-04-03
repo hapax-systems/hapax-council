@@ -1,4 +1,4 @@
-"""Vendored from shared/config.py — path constants and model factory."""
+"""Path constants and model factory for drift detector."""
 
 from __future__ import annotations
 
@@ -53,11 +53,6 @@ PROFILES_DIR: Path = Path(__file__).resolve().parent.parent.parent / "profiles"
 
 MODELS: dict[str, str] = {
     "fast": "gemini-flash",
-    "balanced": "claude-sonnet",
-    "long-context": "gemini-flash",
-    "reasoning": "qwen3:8b",
-    "coding": "qwen3:8b",
-    "local-fast": "qwen3:8b",
 }
 
 
