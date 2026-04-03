@@ -85,7 +85,7 @@ class ContentCapabilityRouter:
             "content_type": "rgba",
             "width": width,
             "height": height,
-            "opacity": level,
+            "opacity": level,  # recruitment score IS expression intensity
             "layer": 1,
             "blend_mode": "screen",
             "z_order": 5,
