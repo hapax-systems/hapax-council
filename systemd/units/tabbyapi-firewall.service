@@ -1,0 +1,14 @@
+[Unit]
+Description=Allow Docker bridge access to TabbyAPI port 5000
+After=tabbyapi.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Allow both Docker bridge networks to reach host port 5000
+# br-* is the llm-stack_default bridge, docker0 is the default bridge
+ExecStart=/bin/sh -c 'for iface in $(ip -o link show type bridge | grep -oP "docker0|br-[a-f0-9]+"); do sudo iptables -C INPUT -i "$iface" -p tcp --dport 5000 -j ACCEPT 2>/dev/null || sudo iptables -I INPUT -i "$iface" -p tcp --dport 5000 -j ACCEPT; done'
+ExecStop=/bin/sh -c 'for iface in $(ip -o link show type bridge | grep -oP "docker0|br-[a-f0-9]+"); do sudo iptables -D INPUT -i "$iface" -p tcp --dport 5000 -j ACCEPT 2>/dev/null; done'
+
+[Install]
+WantedBy=default.target
