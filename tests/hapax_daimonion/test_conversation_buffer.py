@@ -1,4 +1,4 @@
-"""Tests for ConversationBuffer — VAD-gated audio accumulation.
+"""Tests for ConversationBuffer — continuous audio accumulation.
 
 Self-contained, unittest.mock only.
 """
@@ -37,13 +37,16 @@ class TestConversationBufferBasic(unittest.TestCase):
         buf.update_vad(0.9)
         assert buf.get_utterance() is None
 
-    def test_no_accumulation_when_speaking(self):
+    def test_low_vad_during_speaking_does_not_trigger_speech(self):
+        """During system speech, probability 0.9 is below the 0.8 adaptive threshold
+        when fewer than 7 consecutive frames are seen — but actually 0.9 >= 0.8 so
+        speech CAN be detected. This test verifies the higher threshold (0.5) blocks."""
         buf = ConversationBuffer()
         buf.activate()
         buf.set_speaking(True)
         for _ in range(10):
             buf.feed_audio(_frame())
-            buf.update_vad(0.9)
+            buf.update_vad(0.5)  # below adaptive 0.8 threshold during speech
         # Trigger silence
         for _ in range(SPEECH_END_DEFAULT + 1):
             buf.update_vad(0.05)
@@ -152,3 +155,41 @@ class TestResidentSTTInterface(unittest.TestCase):
         stt = ResidentSTT(model="tiny")
         result = asyncio.get_event_loop().run_until_complete(stt.transcribe(b"\x00" * 1000))
         assert result == ""
+
+
+class TestAdaptiveVad:
+    """Tests for continuous perception — no _speaking gate."""
+
+    def test_vad_updates_during_speaking(self):
+        """VAD must process during system speech (was gated before)."""
+        buf = ConversationBuffer()
+        buf.activate()
+        buf.set_speaking(True)
+        for _ in range(10):
+            buf.update_vad(0.9)
+        assert buf.speech_active
+
+    def test_vad_requires_higher_threshold_during_speaking(self):
+        """During system speech, VAD threshold rises to 0.8."""
+        buf = ConversationBuffer()
+        buf.activate()
+        buf.set_speaking(True)
+        for _ in range(10):
+            buf.update_vad(0.5)
+        assert not buf.speech_active
+
+    def test_frames_accumulated_during_speaking(self):
+        """Audio frames must accumulate during system speech."""
+        buf = ConversationBuffer()
+        buf.activate()
+        buf.set_speaking(True)
+        for _ in range(10):
+            buf.update_vad(0.9)
+        for _ in range(5):
+            buf.feed_audio(b"\x01\x00" * 480)
+        assert len(buf._speech_frames) >= 5
+
+    def test_no_cooldown_property(self):
+        """Cooldown mechanism must be removed entirely."""
+        buf = ConversationBuffer()
+        assert not hasattr(buf, "_dynamic_cooldown_s")

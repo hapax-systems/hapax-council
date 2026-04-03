@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from agents.hapax_daimonion.conversation_pipeline import (
+from agents.hapax_daimonion.conversation_helpers import (
     _DENSITY_WORD_LIMITS,
     _MAX_SPOKEN_WORDS,
     _density_word_limit,

@@ -9,6 +9,7 @@ Four sub-checks:
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 from pathlib import Path
 
@@ -148,6 +149,8 @@ def check_coverage_rules(
                 search_text = ""  # Section not found — all CIs will be gaps
 
         for ci_name in ci_names:
+            if any(fnmatch.fnmatch(ci_name, pat) for pat in rule.exclude_patterns):
+                continue
             # Check if CI name appears in the search text
             # Try both hyphenated and underscored forms
             name_variants = {ci_name, ci_name.replace("-", "_"), ci_name.replace("_", "-")}

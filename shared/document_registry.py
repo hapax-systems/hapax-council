@@ -43,6 +43,7 @@ class CoverageRule:
     match_by: str = "name"
     severity: str = "medium"
     description: str = ""
+    exclude_patterns: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -124,6 +125,7 @@ def load_registry(
                 match_by=rule_data.get("match_by", "name"),
                 severity=rule_data.get("severity", "medium"),
                 description=rule_data.get("description", ""),
+                exclude_patterns=rule_data.get("exclude_patterns", []),
             )
         )
 

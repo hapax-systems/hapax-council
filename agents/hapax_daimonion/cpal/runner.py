@@ -55,8 +55,9 @@ class CpalRunner:
         grounding_ledger: object | None = None,
         tts_manager: object | None = None,
         conversation_pipeline: object | None = None,
-        echo_canceller: object | None = None,
+        tts_energy_tracker: object | None = None,
         daemon: object | None = None,
+        speech_classifier: object | None = None,
     ) -> None:
         # Streams
         self._perception = PerceptionStream(buffer=buffer)
@@ -82,9 +83,12 @@ class CpalRunner:
         self._stt = stt
         self._tts_manager = tts_manager
         self._audio_output = audio_output
-        self._echo_canceller = echo_canceller
+        self._tts_energy_tracker = tts_energy_tracker
         self._pipeline = conversation_pipeline  # T3 delegate
         self._daemon = daemon
+
+        # Speech classifier for during-production routing
+        self._speech_classifier = speech_classifier
 
         # State
         self._running = False
@@ -119,6 +123,10 @@ class CpalRunner:
     def set_grounding_ledger(self, ledger: object) -> None:
         """Update grounding ledger (may be created after runner init)."""
         self._grounding = GroundingBridge(ledger=ledger)
+
+    def set_speech_classifier(self, classifier: object) -> None:
+        """Set the during-production speech classifier (may be created after runner init)."""
+        self._speech_classifier = classifier
 
     def presynthesize_signals(self) -> None:
         """Presynthesize T1 signal cache. Call once at startup."""
@@ -208,18 +216,25 @@ class CpalRunner:
         # 3. Gain drivers beyond just speech (C: I5, I6)
         self._apply_gain_drivers(signals, dt)
 
-        # 4. Check for utterances — dispatch T3 via pipeline
-        # Discard utterances during own speech (echo from speakers)
-        if self._production.is_producing or self._buffer.is_speaking:
-            _ = self._perception.get_utterance()  # drain without processing
+        # 4. Check for utterances — route based on production state
+        if self._production.is_producing and self._speech_classifier is not None:
+            # During production: classify speech (backchannel vs floor claim)
+            utterance = self._perception.get_utterance()
+            if utterance is not None:
+                asyncio.create_task(self._classify_during_production(utterance))
+        elif self._production.is_producing:
+            # No classifier — legacy drain
+            _ = self._perception.get_utterance()
             self._queued_utterance = None
         else:
+            # Not producing: normal utterance dispatch
             utterance = self._queued_utterance or self._perception.get_utterance()
             self._queued_utterance = None
             if utterance is not None and self._processing_utterance:
                 log.info("CPAL: utterance arrived during processing — queued for next tick")
                 self._queued_utterance = utterance
             elif utterance is not None:
+                self._processing_utterance = True  # set before task starts to prevent race
                 asyncio.create_task(self._process_utterance(utterance))
 
         # 4b. Mark session activity during production/processing
@@ -258,12 +273,8 @@ class CpalRunner:
         elif gs.gqi > 0.8 and self._evaluator.gain_controller.gain > 0.3:
             self._evaluator.gain_controller.apply(GainUpdate(delta=0.01, source="high_gqi"))
 
-        # 8. Barge-in detection
-        if self._production.is_producing and signals.speech_active and signals.vad_confidence > 0.9:
-            self._production.interrupt()
-            if self._pipeline and hasattr(self._pipeline, "buffer") and self._pipeline.buffer:
-                self._pipeline.buffer.set_speaking(False)
-            log.info("CPAL barge-in: operator interrupted production")
+        # 8. Barge-in handled by _classify_during_production (step 4 above).
+        # No binary threshold — speech during production flows through the classifier.
 
         # 9. Backchannel selection (independent of T3)
         bc = self._formulation.select_backchannel(
@@ -376,8 +387,8 @@ class CpalRunner:
                     _, pcm = ack
                     if self._audio_output is not None:
                         self._buffer.set_speaking(True)
-                        if self._echo_canceller:
-                            self._echo_canceller.feed_reference(pcm)
+                        if self._tts_energy_tracker:
+                            self._tts_energy_tracker.record(pcm)
                         loop = asyncio.get_running_loop()
                         await loop.run_in_executor(None, self._audio_output.write, pcm)
                         self._buffer.set_speaking(False)
@@ -409,6 +420,43 @@ class CpalRunner:
             self._production.mark_t3_end()
             self._formulation.reset()
 
+    async def _classify_during_production(self, utterance: bytes) -> None:
+        """Classify operator speech detected during system output.
+
+        Routes to grounding ledger (backchannel) or yields production (floor claim).
+        """
+        from agents.hapax_daimonion.speech_classifier import BackchannelSignal, FloorClaim
+
+        try:
+            result = await self._speech_classifier.classify([utterance])
+
+            if isinstance(result, BackchannelSignal):
+                # Feed to grounding ledger as acceptance evidence
+                if self._grounding._ledger is not None:
+                    self._grounding._ledger.update_from_acceptance(
+                        acceptance="ACCEPT",
+                        concern_overlap=0.5,
+                    )
+                self._evaluator.gain_controller.apply(
+                    GainUpdate(delta=0.02, source="operator_backchannel"),
+                )
+                log.info("CPAL: backchannel during production: %r", result.transcript)
+
+            elif isinstance(result, FloorClaim):
+                # Yield production, queue utterance for T3
+                self._production.yield_to_operator()
+                self._buffer.set_speaking(False)
+                if self._pipeline and hasattr(self._pipeline, "buffer") and self._pipeline.buffer:
+                    self._pipeline.buffer.set_speaking(False)
+                self._queued_utterance = result.utterance_bytes
+                self._evaluator.gain_controller.apply(
+                    GainUpdate(delta=0.1, source="floor_claim"),
+                )
+                log.info("CPAL: floor claim during production: %r", result.transcript[:60])
+
+        except Exception:
+            log.debug("During-production classification failed", exc_info=True)
+
     def _execute_backchannel(self, bc) -> None:
         """Execute a backchannel decision from the formulation stream."""
         if bc.tier == CorrectionTier.T0_VISUAL:
@@ -417,8 +465,8 @@ class CpalRunner:
             signal = self._signal_cache.select(bc.signal_type)
             if signal is not None:
                 _, pcm = signal
-                if self._echo_canceller:
-                    self._echo_canceller.feed_reference(pcm)
+                if self._tts_energy_tracker:
+                    self._tts_energy_tracker.record(pcm)
                 self._production.produce_t1(pcm_data=pcm)
 
     def _execute_composed(self, composed) -> None:
@@ -433,8 +481,8 @@ class CpalRunner:
                 signal = self._signal_cache.select(signal_type)
                 if signal is not None:
                     _, pcm = signal
-                    if self._echo_canceller:
-                        self._echo_canceller.feed_reference(pcm)
+                    if self._tts_energy_tracker:
+                        self._tts_energy_tracker.record(pcm)
                     self._production.produce_t1(pcm_data=pcm)
 
     def _check_stimmung(self) -> None:

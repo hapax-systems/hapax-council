@@ -136,6 +136,27 @@ class TestCheckCoverageRules:
         gaps = [i for i in items if i.category == "coverage-gap"]
         assert len(gaps) == 0
 
+    def test_exclude_patterns_skip_matching_cis(self, registry_env):
+        reg, tmp_path = registry_env
+        # Add exclude_patterns to the coverage rule
+        reg.coverage_rules[0].exclude_patterns = ["*-sync", "demo*"]
+        agents = ["briefing", "chrome-sync", "gdrive-sync", "demo", "demo-eval"]
+        items = check_coverage_rules(reg, discovered_cis={"agent": agents})
+        gaps = [i for i in items if i.category == "coverage-gap"]
+        # chrome-sync, gdrive-sync excluded by *-sync; demo, demo-eval excluded by demo*
+        # briefing is in the doc → 0 gaps
+        assert len(gaps) == 0
+
+    def test_exclude_patterns_only_skip_matches(self, registry_env):
+        reg, tmp_path = registry_env
+        reg.coverage_rules[0].exclude_patterns = ["*-sync"]
+        agents = ["briefing", "chrome-sync", "drift-detector"]
+        items = check_coverage_rules(reg, discovered_cis={"agent": agents})
+        gaps = [i for i in items if i.category == "coverage-gap"]
+        # chrome-sync excluded, briefing in doc, drift-detector not excluded and not in doc
+        assert len(gaps) == 1
+        assert "drift-detector" in gaps[0].reality
+
 
 class TestCheckMutualAwareness:
     def test_byte_identical_mismatch(self, registry_env):

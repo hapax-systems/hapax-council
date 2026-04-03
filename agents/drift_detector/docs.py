@@ -8,7 +8,6 @@ from .config import (
     AI_AGENTS_DIR,
     CLAUDE_CONFIG_DIR,
     HAPAX_HOME,
-    HAPAX_SYSTEM_DIR,
     HAPAX_VSCODE_DIR,
     HAPAXROMANA_DIR,
     LOGOS_WEB_DIR,
@@ -25,24 +24,17 @@ DOC_FILES = [
     HAPAXROMANA_DIR / "agent-architecture.md",
     HAPAXROMANA_DIR / "operations-manual.md",
     HAPAXROMANA_DIR / "README.md",
-    # Rules files with factual infrastructure claims
-    HAPAX_SYSTEM_DIR / "rules" / "axioms.md",
-    HAPAX_SYSTEM_DIR / "rules" / "system-context.md",
-    CLAUDE_CONFIG_DIR / "rules" / "environment.md",
-    CLAUDE_CONFIG_DIR / "rules" / "models.md",
-    CLAUDE_CONFIG_DIR / "rules" / "toolchain.md",
+    AI_AGENTS_DIR / "CLAUDE.md",
+    AI_AGENTS_DIR / "docs" / "logos-design-language.md",
+    AI_AGENTS_DIR / "systemd" / "README.md",
 ]
 
-# Expected hardware devices — edit here when hardware changes
-EXPECTED_DEVICES: dict[str, str] = {
-    "Logitech BRIO": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index0",
-    "Logitech C920": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_2657DFCF-video-index0",
-}
+# Hardware devices removed — Pi fleet handles camera monitoring (see pi-edge/).
+EXPECTED_DEVICES: dict[str, str] = {}
 
 HAPAX_REPO_DIRS = [
     AI_AGENTS_DIR,
     HAPAXROMANA_DIR,
-    HAPAX_SYSTEM_DIR,
     LOGOS_WEB_DIR,
     OBSIDIAN_HAPAX_DIR,
     HAPAX_VSCODE_DIR,

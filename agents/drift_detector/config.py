@@ -1,4 +1,4 @@
-"""Vendored from shared/config.py — path constants and model factory."""
+"""Path constants and model factory for drift detector."""
 
 from __future__ import annotations
 
@@ -39,13 +39,12 @@ LOGOS_STATE_DIR: Path = HAPAX_CACHE_DIR / "logos"
 # Project directories
 HAPAX_COUNCIL_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-council"
 HAPAX_CONSTITUTION_DIR: Path = HAPAX_PROJECTS_DIR / "hapax-constitution"
-OBSIDIAN_HAPAX_DIR: Path = HAPAX_PROJECTS_DIR / "obsidian-hapax"
+OBSIDIAN_HAPAX_DIR: Path = HAPAX_COUNCIL_DIR / "obsidian-hapax"
 
-# Legacy aliases
+# Legacy aliases (used by docs.py and other modules)
 AI_AGENTS_DIR: Path = HAPAX_COUNCIL_DIR
 HAPAXROMANA_DIR: Path = HAPAX_CONSTITUTION_DIR
 LOGOS_WEB_DIR: Path = HAPAX_COUNCIL_DIR / "hapax-logos"
-HAPAX_SYSTEM_DIR: Path = HAPAX_COUNCIL_DIR
 HAPAX_VSCODE_DIR: Path = HAPAX_COUNCIL_DIR / "vscode"
 
 PROFILES_DIR: Path = Path(__file__).resolve().parent.parent.parent / "profiles"
@@ -54,18 +53,13 @@ PROFILES_DIR: Path = Path(__file__).resolve().parent.parent.parent / "profiles"
 
 MODELS: dict[str, str] = {
     "fast": "gemini-flash",
-    "balanced": "claude-sonnet",
-    "long-context": "gemini-flash",
-    "reasoning": "qwen3:8b",
-    "coding": "qwen3:8b",
-    "local-fast": "qwen3:8b",
 }
 
 
 # ── Factories ──────────────────────────────────────────────────────────────
 
 
-def get_model(alias_or_id: str = "balanced") -> OpenAIChatModel:
+def get_model(alias_or_id: str = "fast") -> OpenAIChatModel:
     """Create a LiteLLM-backed chat model."""
     model_id = MODELS.get(alias_or_id, alias_or_id)
     return OpenAIChatModel(

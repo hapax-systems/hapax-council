@@ -1,20 +1,20 @@
-"""Conversation buffer — VAD-gated audio accumulation for STT.
+"""Conversation buffer — continuous audio accumulation for STT.
 
 Third consumer in _audio_loop(). Accumulates raw PCM frames during
 detected speech and delivers complete utterances when silence is
 detected. Runs inline — no extra task, no mic ownership.
 
-Pre-roll: captures 300ms of audio before speech onset so word
+Pre-roll: captures 1500ms of audio before speech onset so word
 beginnings aren't clipped.
 
-Application-level AEC (echo_canceller.py) reduces echo but the
-Yeti mic still picks up enough TTS bleed-through at close range
-to trigger VAD. The speaking gate in feed_audio() remains as
-primary defense; AEC is supplementary. Barge-in is enabled at a
-high threshold (0.85) requiring clear operator speech over TTS.
+Echo handling: three-layer stack.
+  Layer 1: PipeWire webrtc AEC (echo cancellation at audio server level)
+  Layer 2: Energy-ratio classifier in audio_loop (residual echo discrimination)
+  Layer 3: Adaptive VAD thresholds (0.8 during system speech, 0.15 otherwise)
 
-Post-TTS cooldown removed — AEC handles the residual echo tail
-that previously required 500ms of dead time.
+The buffer NEVER goes deaf. Perception is continuous per CPAL spec §7.4.
+Operator speech during system output is classified (backchannel vs floor
+claim) by the CPAL runner, not dropped.
 """
 
 from __future__ import annotations
@@ -40,11 +40,6 @@ SPEECH_END_PROB = 0.1
 SPEECH_END_SHORT = 30  # ~900ms — was 600ms, raised for dysfluent pauses
 SPEECH_END_LONG = 40  # ~1200ms — for long utterances > 3s
 SPEECH_END_DEFAULT = 33  # ~1000ms — was 750ms, raised for natural pauses
-
-# Post-TTS cooldown: wait after TTS ends before listening again.
-# In dampened studio, room echo decays within 1-2s. Echo rejection
-# catches any residual TTS text that leaks through.
-POST_TTS_COOLDOWN_S = 0.5
 
 
 class ConversationBuffer:
@@ -72,8 +67,8 @@ class ConversationBuffer:
         self._active = False
         self._speaking = False
         self._pending_utterance: bytes | None = None
-        self._speaking_ended_at: float = 0.0
         self._speaking_started_at: float = 0.0
+        self._speaking_ended_at: float = 0.0
 
         # Adaptive speech-end: track speech duration for threshold adjustment
         self._speech_start_time: float = 0.0
@@ -113,20 +108,6 @@ class ConversationBuffer:
         """Shallow copy of accumulated speech frames for speculative STT."""
         return list(self._speech_frames)
 
-    @property
-    def in_cooldown(self) -> bool:
-        """True while post-TTS echo decay cooldown is active.
-
-        Cooldown scales with response length: longer responses produce
-        more room echo. Base 2s + 0.3s per second of TTS, capped at 5s.
-        """
-        if self._speaking:
-            return False
-        if self._speaking_ended_at == 0.0:
-            return False
-        cooldown = getattr(self, "_dynamic_cooldown_s", POST_TTS_COOLDOWN_S)
-        return (time.monotonic() - self._speaking_ended_at) < cooldown
-
     def activate(self) -> None:
         self._active = True
         self._reset()
@@ -136,31 +117,24 @@ class ConversationBuffer:
         self._reset()
 
     def set_speaking(self, speaking: bool) -> None:
+        """Track system speech state for adaptive VAD thresholds.
+
+        No longer gates audio — perception is continuous.
+        """
         self._speaking = speaking
         if speaking:
-            self._speaking_ended_at = 0.0
             self._speaking_started_at = time.monotonic()
+            self._speaking_ended_at = 0.0
         else:
-            # TTS ended — start cooldown for residual echo decay.
-            # Cooldown scales with how long Hapax was speaking: longer
-            # responses produce more room echo that persists longer.
             self._speaking_ended_at = time.monotonic()
-            speaking_duration = self._speaking_ended_at - self._speaking_started_at
-            # Base 2s + 0.3s per second of TTS, capped at 5s
-            self._dynamic_cooldown_s = min(1.5, POST_TTS_COOLDOWN_S + speaking_duration * 0.1)
 
     def feed_audio(self, frame: bytes) -> None:
         if not self._active:
             return
         self._pre_roll.append(frame)
 
-        # During TTS playback: pre-roll only (barge-in handled by CPAL runner)
-        if self._speaking:
-            return
-        # During cooldown (normal TTS end): pre-roll only
-        if self.in_cooldown:
-            return
-        # After TTS: accumulate speech
+        # Always accumulate speech frames when speech is active.
+        # Echo discrimination is handled upstream (PipeWire AEC + energy classifier).
         if self._speech_active:
             self._speech_frames.append(frame)
             if len(self._speech_frames) >= self._max_frames:
@@ -170,29 +144,27 @@ class ConversationBuffer:
         if not self._active:
             return
 
-        # During TTS: completely ignore VAD. The AEC can't attenuate TTS
-        # echo from studio monitors — echo sustains above any VAD threshold
-        # for the full duration of playback, making interrupt detection
-        # impossible to distinguish from echo. Operator speaks AFTER TTS
-        # finishes + cooldown (natural turn-taking).
+        # Adaptive threshold: higher during system speech to filter
+        # residual echo that passes through PipeWire AEC + energy classifier.
+        # Three states: speaking (0.8), post-TTS 500ms (0.7), silent (0.15).
+        _post_tts_window = 0.5  # seconds
         if self._speaking:
-            return
+            start_threshold = 0.8
+            consecutive_required = 7  # ~210ms sustained
+        elif (
+            self._speaking_ended_at > 0.0
+            and (time.monotonic() - self._speaking_ended_at) < _post_tts_window
+        ):
+            start_threshold = 0.7  # post-TTS: residual echo decay
+            consecutive_required = 5  # ~150ms sustained
+        else:
+            start_threshold = SPEECH_START_PROB  # 0.15
+            consecutive_required = SPEECH_START_CONSECUTIVE  # 3
 
-        # During short post-TTS cooldown: track VAD state so speech detection
-        # begins immediately when cooldown ends, but don't emit utterances.
-        if self.in_cooldown:
-            if probability >= SPEECH_START_PROB:
-                self._consecutive_speech += 1
-                self._consecutive_silence = 0
-            else:
-                self._consecutive_speech = 0
-                self._consecutive_silence += 1
-            return
-
-        if probability >= SPEECH_START_PROB:
+        if probability >= start_threshold:
             self._consecutive_speech += 1
             self._consecutive_silence = 0
-            if not self._speech_active and self._consecutive_speech >= SPEECH_START_CONSECUTIVE:
+            if not self._speech_active and self._consecutive_speech >= consecutive_required:
                 self._speech_active = True
                 self._speech_start_time = time.monotonic()
                 self._speech_frames = list(self._pre_roll) + self._speech_frames
@@ -200,14 +172,13 @@ class ConversationBuffer:
             self._consecutive_silence += 1
             self._consecutive_speech = 0
             if self._speech_active:
-                # Adaptive threshold: long utterances get more patience
                 speech_duration = time.monotonic() - self._speech_start_time
                 if speech_duration > 3.0:
-                    threshold = SPEECH_END_LONG  # ~1050ms
+                    threshold = SPEECH_END_LONG
                 elif speech_duration < 1.0:
-                    threshold = SPEECH_END_SHORT  # ~600ms
+                    threshold = SPEECH_END_SHORT
                 else:
-                    threshold = SPEECH_END_DEFAULT  # ~750ms
+                    threshold = SPEECH_END_DEFAULT
                 if self._consecutive_silence >= threshold:
                     self._emit_utterance()
 
@@ -234,4 +205,3 @@ class ConversationBuffer:
         self._consecutive_silence = 0
         self._pending_utterance = None
         self._speaking = False
-        self._speaking_ended_at = 0.0

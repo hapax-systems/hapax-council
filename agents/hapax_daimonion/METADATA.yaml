@@ -27,10 +27,6 @@ interface:
     type: list[str]
   - name: noise_ref_structure_patterns
     type: list[str]
-  - name: aec_enabled
-    type: bool
-  - name: aec_tail_ms
-    type: int
   - name: backend
     type: str
   - name: llm_model

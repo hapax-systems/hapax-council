@@ -55,13 +55,12 @@ class DaimonionConfig(BaseModel):
     context_gate_ambient_block_threshold: float = 0.15
 
     # Audio hardware
-    # PipeWire's echo-cancel module is broken on PipeWire 1.6.x
-    # (ENOTSUP on capture node start). Use raw Yeti with application-level
-    # echo suppression: wake word + VAD gated during TTS playback,
-    # post-TTS cooldown to let room reflections decay.
-    # Raw Yeti mic. PipeWire AEC (WebRTC AEC3) loads but attenuates
-    # too aggressively (-16dB) — wake word can't detect in the quiet signal.
-    # Using application-level speexdsp AEC until PipeWire AEC is tuned.
+    # PipeWire webrtc AEC module handles echo cancellation at the audio
+    # server level. Application-level speexdsp removed — energy-ratio
+    # classifier (Layer 2) discriminates residual echo from real speech.
+    # Raw mic — PipeWire webrtc AEC module degrades signal quality and
+    # suppresses speech. Layers 2+3 (energy classifier + adaptive VAD)
+    # handle echo discrimination without hardware-level AEC.
     audio_input_source: str = (
         "alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
     )
@@ -72,10 +71,6 @@ class DaimonionConfig(BaseModel):
     # Multi-mic noise reference patterns (substring match against PipeWire source names)
     noise_ref_room_patterns: list[str] = ["HD Pro Webcam C920", "Logitech BRIO"]
     noise_ref_structure_patterns: list[str] = ["Contact Microphone"]
-
-    # Application-level echo cancellation (speexdsp)
-    aec_enabled: bool = True
-    aec_tail_ms: int = 500  # 500ms covers typical room reverb (was 200ms)
 
     # Backends
     backend: str = "local"  # "local" or "gemini"

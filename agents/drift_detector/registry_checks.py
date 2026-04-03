@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 from pathlib import Path
 
@@ -129,6 +130,8 @@ def check_coverage_rules(
                 search_text = ""
 
         for ci_name in ci_names:
+            if any(fnmatch.fnmatch(ci_name, pat) for pat in rule.exclude_patterns):
+                continue
             name_variants = {ci_name, ci_name.replace("-", "_"), ci_name.replace("_", "-")}
             found = any(variant in search_text for variant in name_variants)
 
