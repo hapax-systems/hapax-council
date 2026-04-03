@@ -17,7 +17,7 @@ def test_content_affordances_have_latency_class():
 
     records = build_reverie_pipeline_affordances()
     content_records = [r for r in records if r.name.startswith("content.")]
-    assert len(content_records) >= 5
+    assert len(content_records) >= 2
     for r in content_records:
         assert r.operational.latency_class in ("fast", "slow"), (
             f"{r.name}: latency_class must be 'fast' or 'slow', got '{r.operational.latency_class}'"

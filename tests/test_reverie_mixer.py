@@ -59,7 +59,12 @@ def test_mixer_has_same_interface_as_actuation_loop():
 
 
 def test_affordance_registration_includes_shader_nodes():
-    """Pipeline should register 12 shader node + 8 content + 3 legacy affordances."""
+    """Pipeline should register 12 shader node + 2 content + 3 legacy affordances.
+
+    Camera-perspective affordances moved to space.* domain in the shared registry.
+    Episodic/knowledge/profile recall affordances live in knowledge.* domain.
+    Content affordances are expression-only: narrative_text and waveform_viz.
+    """
     from agents.reverie._affordances import (
         ALL_CONTENT_AFFORDANCES,
         LEGACY_AFFORDANCES,
@@ -67,7 +72,7 @@ def test_affordance_registration_includes_shader_nodes():
     )
 
     assert len(SHADER_NODE_AFFORDANCES) == 12
-    assert len(ALL_CONTENT_AFFORDANCES) == 8
+    assert len(ALL_CONTENT_AFFORDANCES) == 2
     assert len(LEGACY_AFFORDANCES) == 3
     # All shader nodes start with "node."
     for name, _ in SHADER_NODE_AFFORDANCES:
