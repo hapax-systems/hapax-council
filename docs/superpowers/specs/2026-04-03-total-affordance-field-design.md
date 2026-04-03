@@ -1,7 +1,7 @@
 # Total Affordance Field — Epic Design Specification
 
 **Date:** 2026-04-03
-**Status:** Draft
+**Status:** Implemented (all phases complete, audit passed)
 **Scope:** System-wide architectural epic — three phases, all subsystems
 **Depends on:** Unified Semantic Recruitment (2026-04-02), SCM Formalization, Capability Parity, Boredom/Exploration Signal
 **Governance gate:** interpersonal_transparency (axiom, weight 88), corporate_boundary (axiom, weight 90), experiment freeze (Cycle 2 Phase A active)
@@ -193,7 +193,41 @@ Nine domains, operator-perspective Gibson-verb descriptions. Three-level Rosch s
 - `world.stock_market` — Sense broad market conditions (not financial advice)
 - `world.astronomy` — Sense current celestial events (moon phase, planet visibility)
 
-## 6. Implementation Phasing and Experiment Gate
+## 6. Taxonomy Theoretical Status
+
+The nine-domain taxonomy is a **pragmatic Roschian categorization of the operator's niche**, not a recovery of natural kinds. No established framework in phenomenology, ecological psychology, or cognitive science proposes a fixed content taxonomy of affordances — Gibson explicitly refused to do so, and the field has deliberately left this space open.
+
+### What is naturally justified
+
+- **The three-level Rosch structure** (domain → affordance → instance) has direct support from prototype theory (Rosch 1978). Basic-level categories maximize within-category similarity and between-category distinctiveness.
+- **The concentric spatial structure** (space → env → world) maps to Schutz's phenomenological zones of reach (world within reach → restorable reach → attainable reach).
+- **The body domain** maps to Damasio's interoception and Merleau-Ponty's lived body (Leib).
+- **The social domain** maps to Neisser's interpersonal self (1988) and Gibson's "affordances of other persons."
+- **The knowledge domain** maps to Neisser's extended self.
+- **Competitive recruitment across domains** mirrors Cisek's affordance competition hypothesis (2007) and Baars' Global Workspace Theory.
+- **Stimmung as orthogonal modulator** (not a domain) is phenomenologically correct per Heidegger — Befindlichkeit discloses the world as a whole; it determines which affordances solicit and which recede.
+
+### What is pragmatically imposed but defensible
+
+- **The studio domain** is niche-specific (hip hop production environment). Gibson would call it a "niche" — the affordance landscape of this organism in this environment.
+- **The digital domain** extends affordance theory into virtual technology (grounded in Norman's perceived affordances).
+- **The system domain** is metacognitive self-monitoring — no phenomenological analog, but necessary for an artificial cognitive system.
+- **The nine-domain count** reflects engineering convenience, not cognitive architecture.
+
+### Known theoretical gaps
+
+- **Temporal experience** (Husserl's retention/protention, van Manen's lived time) — distributed across env.time_of_day and body.circadian_phase rather than a dedicated domain; this may be phenomenologically sounder than reifying time as a domain.
+- **Affective/emotional** (Heidegger's Befindlichkeit) — operator's felt emotion absent except as inferred from body signals; Stimmung covers system-level affect.
+- **Motor/action** (Gibson's core definition) — the taxonomy is perception-weighted; tools handle action through Layer 2 (tool affordances) but the domain structure doesn't reflect it.
+- **Proprioception** (Merleau-Ponty) — sensor hardware limitation, not architectural gap.
+
+### Openness guarantee
+
+The taxonomy does not need to be closed. Domains are **prototypical centers of a radial category system** (Lakoff 1987), not exhaustive containers. The `world.*` domain plus `capability_discovery` meta-affordance provide the explicit mechanism for the taxonomy to grow. The competitive recruitment mechanism (cosine similarity across the full embedding space) is domain-agnostic — it does not respect domain boundaries during selection, only during dispatch.
+
+The honest framing: **domains organize registration and dispatch; the embedding space organizes recruitment.** These serve different purposes. The domains are a pragmatic partition for human legibility and handler routing. The embedding space is inherently open-ended.
+
+## 7. Implementation Phasing and Experiment Gate
 
 | Phase | Touches conversation_pipeline.py? | Experiment conflict? | Gate |
 |---|---|---|---|
@@ -212,3 +246,40 @@ Phases 1 and 2 can proceed in parallel with the active experiment. Phase 3 is ga
 5. All five content stub affordances produce visible output on the Reverie surface
 6. No T0 axiom violations (automated scan)
 7. No experiment contamination (Phase A sessions unaffected)
+
+## 9. Implementation Status (2026-04-03)
+
+All three phases implemented. Code review audit passed with 4 critical bugs found and fixed.
+
+**PRs:** #571, #573, #574, #576, #577, #579, #580, #581
+
+**Key files created:**
+- `shared/affordance_registry.py` — 87 affordances, 9 domains
+- `agents/reverie/_content_resolvers.py` — 5 content resolution handlers
+- `agents/notification_capability.py` — salience→priority notification wrapper
+- `agents/hapax_daimonion/proofs/research/protocols/deviations/DEVIATION-040-total-affordance-field.md`
+
+**Key files modified:**
+- `shared/impingement.py` — narrative in render_impingement_text
+- `shared/affordance_pipeline.py` — activation_summary + medium in Qdrant payload
+- `shared/expression.py` — FRAGMENT_TO_SHADER retargeted
+- `agents/visual_chain.py` — physarum → vocabulary nodes
+- `agents/imagination.py` — expanded assemble_context (weather, time, music, goals, fortress)
+- `agents/dmn/sensor.py` — sensor promotion in read_all()
+- `agents/reverie/_affordances.py` — imports from shared registry
+- `agents/reverie/_content_capabilities.py` — activate_content dispatch + CAMERA_MAP
+- `agents/reverie/mixer.py` — knowledge.* and space.* dispatch
+- `agents/hapax_daimonion/init_pipeline.py` — indexes ALL_AFFORDANCES
+- `agents/hapax_daimonion/run_loops_aux.py` — world routing + notification + ExpressionCoordinator dispatch
+- `agents/hapax_daimonion/_perception_state_writer.py` — 5 new fields + PII curtailment
+- `agents/hapax_daimonion/discovery_affordance.py` — search() implemented
+- `agents/stimmung_sync.py` — dimension-level impingement emission
+- `agents/visual_layer_aggregator/aggregator.py` — scheduler_enabled flag
+- `axioms/enforcement-exceptions.yaml` — Open-Meteo + DuckDuckGo exceptions
+
+**Feature flag:** `~/.cache/hapax/world-routing-enabled` (touch to enable, rm to disable)
+
+**Remaining architectural items (deferred by design):**
+- `can_resolve()` deprecation — documented as intentional secondary gates
+- ContentScheduler folding — flag added, full folding requires VLA architectural work
+- Claim 6 pre-registration — architectural snapshot documented, formal pre-reg after Claim 1 cycle

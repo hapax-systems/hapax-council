@@ -2,6 +2,14 @@
 
 Every affordance the system can recruit lives here. Nine perceptual domains
 plus shader nodes, content affordances, and legacy bridge entries.
+
+Theoretical status: pragmatic Roschian categorization of the operator's niche.
+Domains are prototypical centers of a radial category system (Lakoff 1987),
+not exhaustive containers. The concentric spatial structure (space → env → world)
+maps to Schutz's phenomenological zones of reach. The three-level structure
+(domain → affordance → instance) follows Rosch's basic-level categories (1978).
+Competitive recruitment across domains mirrors Cisek's affordance competition
+hypothesis (2007). See spec §6 for full theoretical analysis.
 """
 
 from shared.affordance import CapabilityRecord, OperationalProperties
