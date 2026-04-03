@@ -24,7 +24,7 @@ capabilities:
 schedule:
   type: timer
   systemd_unit: drift-detector.timer
-  interval: 12h
+  interval: weekly
 model: fast
 autonomy: supervised
 decision_scope: Detect and report drift. Suggests corrections but does not auto-apply
@@ -43,21 +43,13 @@ raci:
 health_group: drift
 service_tier: 2
 metrics_source: profiles/drift-report.json
-narrative: 'The Drift Detector compares documentation against actual system state,
-  finding
-
-  places where the two have diverged. It runs every 6 hours, consuming the
-
-  infrastructure manifest from introspect and checking it against docs, configs,
-
-  and README files. It produces a drift report with specific correction suggestions
-
-  but never auto-applies fixes — the operator reviews and decides. This agent is
-
-  essential for a system that evolves faster than its documentation.
-  It runs twice daily (03:00 and 15:00) to catch drift early.
-
-  '
+narrative: >-
+  The Drift Detector compares documentation against actual system state, finding
+  places where the two have diverged. It runs weekly (Sunday 03:00), consuming
+  the infrastructure manifest and checking it against docs, configs, and README
+  files. In dev/rnd mode, it runs twice weekly (Wednesday + Sunday). It produces
+  a drift report with specific correction suggestions but never auto-applies
+  fixes — the operator reviews and decides.
 short_description: Docs vs reality comparison
 cli:
   command: uv run python -m agents.drift_detector
@@ -70,7 +62,7 @@ cli:
   - flag: --apply
     description: Apply fixes directly to files (requires --fix)
 timer_display:
-  schedule_label: Twice daily 03:00 & 15:00
+  schedule_label: Weekly (Sun 03:00), twice-weekly in dev/rnd
   purpose: Documentation drift detection
 manual_section:
   title: Maintaining Documentation
@@ -84,4 +76,4 @@ manual_section:
   - 'uv run python -m agents.drift_detector --fix  # generate corrected fragments'
   - '```'
   - ''
-  - The drift detector timer runs twice daily (03:00 and 15:00).
+  - The drift detector timer runs weekly (Sunday 03:00).
