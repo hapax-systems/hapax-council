@@ -212,32 +212,49 @@ def p2_base_level_warmth(activations: dict, hours: float) -> PredictionResult:
 
 
 def p3_hebbian_crystallization(associations: dict, hours: float) -> PredictionResult:
-    """P3: Top context associations should exceed 0.3 within 12h."""
+    """P3: Track breadth and depth of Hebbian learning.
+
+    Reports number of distinct learned associations (breadth) as the primary
+    metric. Top strength saturates at 4.0 quickly; association count tracks
+    whether the system is learning DIVERSE pairings over time.
+    """
+    n_associations = len(associations)
     sorted_assoc = sorted(associations.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
     top_strength = abs(sorted_assoc[0][1]) if sorted_assoc else 0.0
 
+    # Track distinct source→capability pairings (filter out empty-key entries)
+    meaningful = {k: v for k, v in associations.items() if "|" in k and not k.startswith("|")}
+    n_meaningful = len(meaningful)
+
+    actual = float(n_meaningful)
+
     if hours < 6:
-        expected = f"building ({hours:.1f}h of 12h window)"
+        expected = f"growing ({hours:.1f}h of 12h)"
         healthy = True
         alert = None
-    elif hours < 12:
-        expected = "some associations > 0.1"
-        healthy = top_strength > 0.05 or len(associations) > 0
-        alert = f"No associations after {hours:.1f}h" if not healthy else None
+    elif hours < 24:
+        expected = "≥10 distinct pairings"
+        healthy = n_meaningful >= 5
+        alert = f"Only {n_meaningful} associations after {hours:.1f}h" if not healthy else None
     else:
-        expected = "top associations > 0.3"
-        healthy = top_strength > 0.1
-        alert = (
-            f"Top association only {top_strength:.3f} after {hours:.1f}h" if not healthy else None
-        )
+        expected = "≥20 distinct pairings (mature)"
+        healthy = n_meaningful >= 10
+        alert = f"Only {n_meaningful} associations after {hours:.1f}h" if not healthy else None
 
     return PredictionResult(
         name="P3_hebbian_crystallization",
         expected=expected,
-        actual=round(top_strength, 4),
+        actual=actual,
         healthy=healthy,
         alert=alert,
-        detail=json.dumps(dict(sorted_assoc[:3])) if sorted_assoc else "{}",
+        detail=json.dumps(
+            {
+                "total_associations": n_associations,
+                "meaningful_pairings": n_meaningful,
+                "top_strength": round(top_strength, 2),
+                "top_3": dict(sorted_assoc[:3]) if sorted_assoc else {},
+            }
+        ),
     )
 
 

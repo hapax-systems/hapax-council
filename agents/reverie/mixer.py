@@ -197,7 +197,7 @@ class ReverieMixer:
             _prev = getattr(self, "_prev_chronicle_params", {})
             changed = {}
             for k, v in current_deltas.items():
-                if isinstance(v, (int, float)) and abs(v - _prev.get(k, 0.0)) > 0.05:
+                if isinstance(v, (int, float)) and abs(v - _prev.get(k, 0.0)) > 0.01:
                     changed[k] = round(v, 4)
             if changed:
                 _tid, _sid = current_otel_ids()
