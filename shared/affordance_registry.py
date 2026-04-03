@@ -487,6 +487,12 @@ SYSTEM_AFFORDANCES = [
         daemon="system",
         operational=OperationalProperties(latency_class="slow"),
     ),
+    CapabilityRecord(
+        name="system.notify_operator",
+        description="Alert the operator to urgent or noteworthy events via push notification",
+        daemon="system",
+        operational=OperationalProperties(latency_class="fast", medium="notification"),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
