@@ -23,7 +23,7 @@ except ImportError:
         import ollama
 
         prefixed = f"{prefix}: {text}" if prefix else text
-        result = ollama.embed(model="nomic-embed-text-v2-moe", input=prefixed)
+        result = ollama.embed(model="nomic-embed-cpu", input=prefixed)
         return result["embeddings"][0]
 
 

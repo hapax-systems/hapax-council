@@ -69,7 +69,7 @@ STUDIO_MOMENTS_COLLECTION: str = "studio-moments"
 
 # ── Embedding ──────────────────────────────────────────────────────────────
 
-EMBEDDING_MODEL: str = "nomic-embed-text-v2-moe"
+EMBEDDING_MODEL: str = "nomic-embed-cpu"
 EXPECTED_EMBED_DIMENSIONS: int = 768
 
 

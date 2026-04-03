@@ -99,7 +99,7 @@ MODELS: dict[str, str] = {
     "local-fast": "qwen3:8b",
 }
 
-EMBEDDING_MODEL: str = "nomic-embed-text-v2-moe"
+EMBEDDING_MODEL: str = "nomic-embed-cpu"
 EXPECTED_EMBED_DIMENSIONS: int = 768
 
 # CLAP (audio-text) embedding dimensions

@@ -26,7 +26,7 @@ from watchdog.observers import Observer
 # isolated venv without pydantic-ai due to docling/huggingface-hub conflict).
 _HAPAX_HOME = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
-EMBEDDING_MODEL = "nomic-embed-text-v2-moe"
+EMBEDDING_MODEL = "nomic-embed-cpu"
 RAG_SOURCES_DIR = _HAPAX_HOME / "documents" / "rag-sources"
 RAG_INGEST_STATE_DIR = _HAPAX_HOME / ".cache" / "rag-ingest"
 HAPAX_PROJECTS_DIR = _HAPAX_HOME / "projects"

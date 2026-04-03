@@ -26,8 +26,8 @@ def test_model_aliases_defined():
     assert "local-fast" in MODELS
 
 
-def test_embedding_model_is_v2():
-    assert "v2" in EMBEDDING_MODEL
+def test_embedding_model_is_nomic():
+    assert "nomic-embed" in EMBEDDING_MODEL
 
 
 def test_env_defaults():
