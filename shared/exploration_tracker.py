@@ -37,6 +37,98 @@ _IMPINGEMENTS_FILE = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 _EMISSION_COOLDOWN_S = 30.0  # max one impingement per component per 30s
 _last_emission: dict[str, float] = {}
 
+# Edge descriptions: what each exploration edge means in plain language.
+# These flow into the impingement narrative so the affordance pipeline
+# can match exploration signals against semantically relevant affordances.
+_EDGE_DESCRIPTIONS: dict[str, str] = {
+    # affordance_pipeline
+    "impingement_source": "the pattern of incoming signals to the recruitment pipeline",
+    "candidate_diversity": "the variety of affordances retrieved for each impingement",
+    # visual_chain / ReverieMixer
+    "salience_input": "the imagination's assessed importance of its current thought",
+    "technique_selection": "which visual techniques are being recruited for expression",
+    # dmn_pulse
+    "observation_quality": "the freshness and availability of perceptual observations",
+    "evaluative_trajectory": "the DMN's assessment of whether things are improving or degrading",
+    # ir_presence
+    "person_detected": "whether a person is physically present in the space",
+    "motion_delta": "the level of physical movement detected by infrared cameras",
+    # contact_mic
+    "desk_energy": "the vibration energy level from the desk contact microphone",
+    "desk_activity": "the type of physical desk engagement detected",
+    # stimmung
+    "stance_changes": "transitions in the system's overall attunement state",
+    "dimension_freshness": "how many health dimensions are reporting current data",
+    # content_resolver
+    "fragment_novelty": "the novelty of incoming imagination fragments",
+    "resolution_success": "whether content resolution is succeeding or failing",
+    # salience_router
+    "concern_overlap": "how well the operator's speech matches established concern areas",
+    "activation_level": "the composite activation score for conversational engagement",
+    # temporal_bands
+    "snapshot_content": "the current activity context in the temporal formatter",
+    "surprise_level": "divergence between predicted and actual perceptual state",
+    # dmn_imagination
+    "observations": "the flow rate of DMN sensory observations",
+    "stimmung_stance": "whether the system's attunement state has shifted",
+    # input_activity
+    "active_state": "whether physical keyboard and mouse input is occurring",
+    "idle_duration": "how long since the last physical input event",
+    # apperception
+    "trigger_novelty": "the rate of self-model cascade triggers",
+    "valence_diversity": "the variety of self-model dimensions being observed",
+    # voice_state
+    "session_active": "whether a voice conversation session is in progress",
+    "turn_phase": "the current phase of the conversational turn",
+}
+
+# Component descriptions: what each S1 component monitors
+_COMPONENT_DESCRIPTIONS: dict[str, str] = {
+    "affordance_pipeline": "the recruitment pipeline's selection dynamics",
+    "visual_chain": "the visual expression compositor",
+    "dmn_pulse": "the default mode network's sensory monitoring",
+    "ir_presence": "infrared presence and motion detection",
+    "contact_mic": "desk vibration and physical engagement sensing",
+    "stimmung": "the system's overall attunement and health state",
+    "content_resolver": "content resolution and visual surface generation",
+    "salience_router": "conversational salience and concern matching",
+    "temporal_bands": "temporal context prediction and surprise detection",
+    "dmn_imagination": "the imagination generation loop",
+    "input_activity": "physical keyboard and mouse input monitoring",
+    "apperception": "the self-model cascade and coherence tracking",
+    "voice_state": "voice conversation session state",
+}
+
+
+def _build_exploration_narrative(
+    component: str, action: ExplorationAction, signal: ExplorationSignal
+) -> str:
+    """Build a semantically meaningful narrative for an exploration impingement.
+
+    The narrative is what gets embedded for Qdrant cosine similarity against
+    affordance descriptions. It should convey what the component is experiencing
+    and why the exploration signal fired.
+    """
+    comp_desc = _COMPONENT_DESCRIPTIONS.get(component, component)
+    edge_desc = _EDGE_DESCRIPTIONS.get(signal.max_novelty_edge or "", signal.max_novelty_edge or "")
+
+    if action.mode == ExplorationMode.DIRECTED:
+        return (
+            f"{comp_desc} is habituated to routine inputs but drawn to "
+            f"a surprising change in {edge_desc}"
+        )
+    elif action.mode == ExplorationMode.UNDIRECTED:
+        return (
+            f"{comp_desc} has become monotonous with no novel stimulus — "
+            f"all inputs are predictable and interest is evaporating"
+        )
+    elif action.mode == ExplorationMode.FOCUSED:
+        return (
+            f"{comp_desc} is engaged but noticing an unexpected shift in "
+            f"{edge_desc} that warrants closer attention"
+        )
+    return f"{comp_desc} exploration signal"
+
 
 def _emit_exploration_impingement(
     component: str, action: ExplorationAction, signal: ExplorationSignal
@@ -69,6 +161,7 @@ def _emit_exploration_impingement(
         "type": imp_type,
         "strength": round(strength, 4),
         "content": {
+            "narrative": _build_exploration_narrative(component, action, signal),
             "mode": action.mode,
             "boredom_index": round(signal.boredom_index, 4),
             "curiosity_index": round(signal.curiosity_index, 4),
