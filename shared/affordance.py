@@ -56,17 +56,23 @@ class ActivationState(BaseModel):
     def thompson_sample(self) -> float:
         return random.betavariate(max(0.01, self.ts_alpha), max(0.01, self.ts_beta))
 
+    # Floor for the opposing parameter. Without a floor, beta decays to 0.01
+    # under sustained success, making Beta(10, 0.01) ≈ 1.0 deterministic.
+    # Floor of 1.0 means Beta(10, 1) samples ~0.91 with variance ~0.007 —
+    # still exploitative but with enough variance for newcomers to occasionally win.
+    _TS_FLOOR: float = 1.0
+
     def record_success(self, gamma: float = 0.99) -> None:
         now = time.time()
         self.ts_alpha = min(self._TS_CAP, self.ts_alpha * gamma + 1.0)
-        self.ts_beta = max(0.01, self.ts_beta * gamma)
+        self.ts_beta = max(self._TS_FLOOR, self.ts_beta * gamma)
         self.use_count += 1
         if self.first_use_ts == 0.0:
             self.first_use_ts = now
         self.last_use_ts = now
 
     def record_failure(self, gamma: float = 0.99) -> None:
-        self.ts_alpha = max(0.01, self.ts_alpha * gamma)
+        self.ts_alpha = max(self._TS_FLOOR, self.ts_alpha * gamma)
         self.ts_beta = min(self._TS_CAP, self.ts_beta * gamma + 1.0)
         self.use_count += 1
 
