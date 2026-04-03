@@ -1,6 +1,6 @@
 # Voice Grounding Research State
 
-**Last updated:** 2026-04-02 (session 22 — Langfuse telemetry gap discovered + research mode switch)
+**Last updated:** 2026-04-03 (session 23 — Total Affordance Field epic)
 **Update convention:** After any session with research decisions or implementation progress, update this file before ending.
 
 ## Position (one paragraph)
@@ -521,6 +521,26 @@ Mixed session: visual pipeline completion (R&D), infrastructure, and Bayesian va
 - Pi-6 sensor sync gap fixed, Google OAuth refreshed.
 
 **Impact on grounding research:** None. Visual pipeline, infrastructure, and naming changes are all outside experiment code. DEVIATION-025 is observability-only (prepared, not yet executed). Phase A baseline collection continues unaffected.
+
+## Session 23 (2026-04-03): Total Affordance Field Epic
+
+Major architectural expansion. 14 PRs merged (#571–#594). All work gated by DEVIATION-040 confirming zero experiment impact.
+
+**Total Affordance Field (spec: `docs/superpowers/specs/2026-04-03-total-affordance-field-design.md`).** System-wide reframe: affordances belong to the world, not to subsystems. Every cognitive faculty draws from a shared field of 87 affordances across 9 Gibson-verb domains (env, body, studio, space, digital, knowledge, social, system, world). Three phases: (1) Shared Pheromone Field — fixed render_impingement_text narrative inclusion, stimmung stance mismatch, plan defaults cache, physarum retargeting, cross-daemon activation summaries; (2) World Perception — expanded DMN sensor layer (weather, time, music, goals, fortress), centralized affordance registry, Reverie indexes full world; (3) Total Expression — 5 content resolvers (narrative text, episodic/knowledge/profile recall, waveform viz), mixer routes knowledge.*/space.*, daimonion indexes ALL_AFFORDANCES with feature-flagged world routing, ExpressionCoordinator dispatch, notification affordance.
+
+**Theoretical grounding (spec §6).** Taxonomy evaluated against phenomenology (Husserl regional ontology, Heidegger Befindlichkeit, Merleau-Ponty body schema, Schutz zones of reach, van Manen lifeworld existentials), cognitive science (Neisser five selves, Barsalou perceptual symbols, Damasio interoception, Cisek affordance competition, Baars GWT), and ecological psychology (Gibson, Chemero, Withagen, Turvey). Assessment: pragmatic Roschian categorization of operator's niche, not recovery of natural kinds. Domains are prototypical centers of a radial category system. Known gaps: temporal experience, affective domain, motor/action domain, proprioception.
+
+**Thompson sampling fix.** Discovered incumbent affordances saturated at Beta(100, 0) — 6 affordances captured all recruitment (43K+ combined uses), 81 affordances at zero uses. Fixed: alpha/beta capped at 10.0, beta floored at 1.0, saturated states reset. Beta(10, 1) samples ~0.91 with variance ~0.007.
+
+**Semantic exploration narratives.** 92% of impingements were content-free strings producing near-random Qdrant matches. Added narrative generation to all 14 S1 component exploration signals: 28 edge descriptions + 13 component descriptions + 3 mode templates. Impingements now carry prose like "the visual expression compositor is habituated to routine inputs but drawn to a surprising change in which visual techniques are being recruited."
+
+**Observability (spec: `docs/superpowers/specs/2026-04-03-affordance-observability-design.md`).** Expanded metrics endpoint from ~25 to ~180 Prometheus gauges. Two Grafana dashboards: Operational Health (mesh health, stimmung, exploration, content, CPAL, flags) and Behavioral Predictions (realtime shader/imagination, fast recruitment/content, slow Thompson/Hebbian, structural cross-domain/SEEKING). Every metric has documented theoretical import, research references, and predictive import.
+
+**Governance.** DEVIATION-040 filed confirming volatile_lockdown gate prevents affordance content from reaching experiment sessions. Corporate boundary exception records filed for Open-Meteo and DuckDuckGo APIs. PII curtailment extended to phone SMS sender/text/call fields. Claim 6 hypothesis.md updated with USR architectural snapshot for future pre-registration baseline.
+
+**Audit findings fixed.** Code review found 4 critical bugs (stale test assertion, dead resolver entries, space.* fall-through, unreachable notification) and 5 important issues (exception path, PII exposure, hardcoded activation level, flag caching, test alignment). All fixed in PR #581.
+
+**Impact on grounding research:** DEVIATION-040 analysis confirms zero impact. volatile_lockdown gate prevents all affordance content from reaching experiment sessions. Tool recruitment gate inactive during experiment (self.tools empty). World routing feature-flagged. Reverie and DMN operate as independent processes from voice daemon's conversation pipeline. Phase A baseline collection continues unaffected.
 
 ## Operator Research Preferences
 
