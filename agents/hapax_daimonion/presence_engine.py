@@ -259,9 +259,12 @@ class PresenceEngine:
         else:
             obs["desktop_active"] = None
 
-        # Bluetooth phone presence (paired, connected = in room)
-        b = behaviors.get("bt_watch_connected")
-        obs["bt_phone_connected"] = b.value if b is not None else None
+        # Bluetooth phone presence: DISABLED. The bt_presence backend checks
+        # bluetoothctl's paired device list, not active BLE scan. Paired
+        # devices are ALWAYS listed regardless of proximity. Connected ≠ present.
+        # Needs rewrite to use BLE RSSI-based proximity (scan + distance
+        # calibration) before it can contribute real presence evidence.
+        obs["bt_phone_connected"] = None
 
         # KDE Connect phone reachable (WiFi)
         b = behaviors.get("phone_kde_connected")
