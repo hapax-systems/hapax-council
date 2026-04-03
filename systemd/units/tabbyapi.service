@@ -1,0 +1,16 @@
+[Unit]
+Description=TabbyAPI — EXL3 inference engine on :5000
+After=network.target
+After=ollama.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/tabbyAPI
+ExecStart=%h/projects/tabbyAPI/venv/bin/python3 main.py
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=120
+Environment=PYTORCH_ALLOC_CONF=backend:cudaMallocAsync
+
+[Install]
+WantedBy=default.target

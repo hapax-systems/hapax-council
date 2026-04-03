@@ -71,7 +71,7 @@ if [ "$PCT" -ge 90 ]; then
 
     # Kill rogue GPU processes — anything not in the allowlist
     # Allowlist: hapax_daimonion, studio_compositor, video_processor, ollama_llama_server
-    ALLOWLIST="hapax_daimonion|studio_compositor|video_processor|ollama_llama_server"
+    ALLOWLIST="hapax_daimonion|studio_compositor|video_processor|ollama_llama_server|tabbyAPI|hapax-imagination|hapax-council"
     while IFS=, read -r pid name; do
         pid=$(echo "$pid" | tr -d ' ')
         name=$(echo "$name" | tr -d ' ')

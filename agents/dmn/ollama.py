@@ -1,8 +1,10 @@
-"""DMN Ollama inference — two paths: fast (no-think) and thinking (async).
+"""DMN inference — two paths: fast (no-think) and thinking (async).
 
-Sensory ticks use _ollama_fast (chat API, /no_think, ~2-6s).
+Sensory ticks use _tabby_fast (OpenAI-compatible, ~1-3s).
 Evaluative/consolidation use start_thinking/collect_thinking (fire-and-forget,
 result collected on next tick cycle).
+
+Backend: TabbyAPI (EXL3) on :5000, fallback to Ollama on :11434.
 """
 
 from __future__ import annotations
@@ -14,9 +16,10 @@ import httpx
 
 log = logging.getLogger("dmn.ollama")
 
+TABBY_CHAT_URL = "http://localhost:5000/v1/chat/completions"
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
-DMN_MODEL_FAST = "qwen3:8b"
-DMN_MODEL_THINK = "qwen3:8b"
+DMN_MODEL = "Qwen3.5-35B-A3B-exl3-3.00bpw"
+DMN_MODEL_OLLAMA_FALLBACK = "qwen3:8b"
 
 SENSORY_SYSTEM = (
     "You are a continuous situation monitor. Report WHAT is happening in one sentence. "
@@ -38,14 +41,69 @@ CONSOLIDATION_SYSTEM = (
 )
 
 
-async def _ollama_fast(prompt: str, system: str) -> str:
-    """Fast path: non-thinking model, returns in ~1-3s warm."""
+async def _tabby_fast(prompt: str, system: str) -> str:
+    """Fast path via TabbyAPI (OpenAI-compatible). Falls back to Ollama."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                TABBY_CHAT_URL,
+                json={
+                    "model": DMN_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": 256,
+                    "temperature": 0.3,
+                    "stream": False,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["choices"][0]["message"]["content"].strip()
+            log.warning("TabbyAPI fast returned %d, falling back to Ollama", resp.status_code)
+    except Exception as exc:
+        log.warning("TabbyAPI fast failed (%s), falling back to Ollama", exc)
+
+    return await _ollama_fallback(prompt, system)
+
+
+async def _tabby_think(prompt: str, system: str) -> str:
+    """Thinking path via TabbyAPI (with reasoning enabled). Falls back to Ollama."""
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await client.post(
+                TABBY_CHAT_URL,
+                json={
+                    "model": DMN_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": 1024,
+                    "temperature": 0.3,
+                    "stream": False,
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["choices"][0]["message"]["content"].strip()
+            log.warning("TabbyAPI think returned %d, falling back to Ollama", resp.status_code)
+    except Exception as exc:
+        log.warning("TabbyAPI think failed (%s), falling back to Ollama", exc)
+
+    return await _ollama_fallback(prompt, system)
+
+
+async def _ollama_fallback(prompt: str, system: str) -> str:
+    """Fallback to Ollama if TabbyAPI is unavailable."""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 OLLAMA_CHAT_URL,
                 json={
-                    "model": DMN_MODEL_FAST,
+                    "model": DMN_MODEL_OLLAMA_FALLBACK,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": prompt},
@@ -58,41 +116,9 @@ async def _ollama_fast(prompt: str, system: str) -> str:
             if resp.status_code == 200:
                 msg = resp.json().get("message", {})
                 return msg.get("content", "").strip()
-            log.warning("Ollama fast returned %d", resp.status_code)
-            return ""
     except Exception as exc:
-        log.warning("Ollama fast failed: %s: %s", type(exc).__name__, exc)
-        return ""
-
-
-async def _ollama_think(prompt: str, system: str) -> str:
-    """Thinking path: lets the model reason fully. May take 30-120s."""
-    try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            resp = await client.post(
-                OLLAMA_CHAT_URL,
-                json={
-                    "model": DMN_MODEL_THINK,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "stream": False,
-                    "keep_alive": "10m",
-                    "options": {"temperature": 0.3},
-                },
-            )
-            if resp.status_code == 200:
-                msg = resp.json().get("message", {})
-                text = msg.get("content", "").strip()
-                if not text:
-                    text = msg.get("thinking", "").strip()
-                return text
-            log.warning("Ollama think returned %d", resp.status_code)
-            return ""
-    except Exception as exc:
-        log.warning("Ollama think failed: %s: %s", type(exc).__name__, exc)
-        return ""
+        log.warning("Ollama fallback also failed: %s", exc)
+    return ""
 
 
 _pending: dict[str, asyncio.Task[str]] = {}
@@ -102,7 +128,7 @@ def start_thinking(key: str, prompt: str, system: str) -> None:
     """Fire a thinking request in background. Retrieve with collect_thinking()."""
     if key in _pending and not _pending[key].done():
         return
-    _pending[key] = asyncio.ensure_future(_ollama_think(prompt, system))
+    _pending[key] = asyncio.ensure_future(_tabby_think(prompt, system))
 
 
 def collect_thinking(key: str) -> str | None:

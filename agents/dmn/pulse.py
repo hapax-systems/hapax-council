@@ -13,7 +13,7 @@ from agents.dmn.ollama import (
     EVALUATIVE_SYSTEM,
     SENSORY_SYSTEM,
     _format_sensor_prompt,
-    _ollama_fast,
+    _tabby_fast,
     collect_thinking,
     start_thinking,
 )
@@ -183,7 +183,7 @@ class DMNPulse:
             return
         prompt = _format_sensor_prompt(snapshot, deltas)
         if self._ollama_breaker.allow_request():
-            observation = await _ollama_fast(prompt, SENSORY_SYSTEM)
+            observation = await _tabby_fast(prompt, SENSORY_SYSTEM)
             if observation:
                 self._ollama_breaker.record_success()
                 self._degradation_emitted = False
