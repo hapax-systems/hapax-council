@@ -197,7 +197,7 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 results = daemon._discovery_handler.search(intent)
                                 if results:
                                     daemon._discovery_handler.propose(results)
-                    # Cross-modal coordination
+                    # Cross-modal coordination: distribute fragment to all recruited modalities
                     if len(candidates) > 1 and hasattr(daemon, "_expression_coordinator"):
                         recruited_pairs = [
                             (
@@ -213,6 +213,27 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                             activations = daemon._expression_coordinator.coordinate(
                                 imp.content, recruited_pairs
                             )
+                            for act in activations:
+                                modality = act.get("modality", "unknown")
+                                cap_name = act.get("capability")
+                                # Dispatch to capabilities the daimonion owns.
+                                # Visual modalities are handled by Reverie's own consumer.
+                                if modality in ("auditory", "textual", "notification"):
+                                    cap_obj = getattr(daemon, f"_{cap_name}", None)
+                                    if cap_obj is not None and hasattr(cap_obj, "activate"):
+                                        try:
+                                            cap_obj.activate(imp, 0.5)
+                                            log.info(
+                                                "Cross-modal dispatch: %s (%s)",
+                                                cap_name,
+                                                modality,
+                                            )
+                                        except Exception:
+                                            log.debug(
+                                                "Cross-modal dispatch failed: %s",
+                                                cap_name,
+                                                exc_info=True,
+                                            )
                             if activations:
                                 log.info(
                                     "Cross-modal coordination: %d modalities for %s",

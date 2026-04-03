@@ -266,6 +266,16 @@ def assemble_context(
             f"focus={goals.get('top_domain', 'unknown')}"
         )
 
+    # Fortress (Dwarf Fortress game state, when running)
+    fortress = sensor_snapshot.get("fortress")
+    if fortress and not fortress.get("stale"):
+        sections.append(
+            f"- Fortress: {fortress.get('fortress_name', '?')}, "
+            f"pop={fortress.get('population', 0)}, "
+            f"food={fortress.get('food', 0)}, drink={fortress.get('drink', 0)}, "
+            f"threats={fortress.get('threats', 0)}"
+        )
+
     if not any(sensor_snapshot.get(k) for k in ("stimmung", "perception", "watch", "weather")):
         sections.append("(none)")
 

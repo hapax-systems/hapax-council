@@ -109,10 +109,15 @@ def sync() -> bool:
 
     write_sensor_state("stimmung", reading)
 
-    # Emit impingement on stance change
-    if current_stance != last_stance:
-        changed = ["overall_stance"]
-        changed.extend(dim for dim in DIMENSION_NAMES if reading.get(dim, 0.0) > 0.5)
+    # Emit impingement on stance transition OR significant dimension change
+    last_reading = state["readings"][-2] if len(state["readings"]) >= 2 else {}
+    significant = [
+        dim
+        for dim in reading
+        if dim in DIMENSION_NAMES and abs(reading.get(dim, 0.0) - last_reading.get(dim, 0.0)) > 0.15
+    ]
+    if significant or current_stance != last_stance:
+        changed = (["overall_stance"] if current_stance != last_stance else []) + significant
         emit_sensor_impingement("stimmung", "energy_and_attention", changed)
 
     # Write daily summary

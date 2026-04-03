@@ -118,8 +118,9 @@ class VisualLayerAggregator:
         self._classification_detections: list[ClassificationDetection] = []
         self._entity_filters: dict[str, ClassificationFilter] = {}
 
-        # Content scheduler
+        # Content scheduler (can be disabled when affordance pipeline handles content)
         self._scheduler = ContentScheduler()
+        self._scheduler_enabled = True
         self._ambient_text: str = ""
         self._secondary_ambient_text: str = ""
         self._ambient_facts: list[str] = []
@@ -999,7 +1000,8 @@ class VisualLayerAggregator:
             stimmung_stance=stimmung_stance,
         )
 
-        self._run_scheduler(state)
+        if self._scheduler_enabled:
+            self._run_scheduler(state)
 
         if cache_hit is not None:
             cached = cache_hit.ambient_params
