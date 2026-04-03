@@ -33,10 +33,14 @@ DEFAULT_SIGNAL_WEIGHTS: dict[str, tuple[float, float]] = {
     "watch_connected": (0.70, 0.40),
     "desktop_active": (0.75, 0.10),
     "midi_active": (0.90, 0.02),
-    "bt_phone_connected": (0.95, 0.05),  # BT paired phone in range = very strong presence
+    "bt_phone_connected": (0.70, 0.30),  # Linux BLE unreliable; downweighted from (0.95, 0.05)
     "phone_kde_connected": (0.80, 0.25),  # KDE Connect WiFi reachable = likely in house
     "room_occupancy": (0.85, 0.20),  # person detected on any camera = strong presence signal
     "ir_person_detected": (0.90, 0.10),  # lighting-invariant IR detection from Pi NoIR
+    "ir_hand_active": (
+        0.85,
+        0.10,
+    ),  # IR hand detection on desk — works even when person detection broken
 }
 
 
@@ -225,9 +229,13 @@ class PresenceEngine:
         else:
             obs["watch_hr"] = None  # no data = neutral, not negative
 
-        # Watch connected
+        # Watch connected: positive-only. Connected = evidence FOR presence.
+        # Disconnected = neutral (watch charging, Bluetooth off, battery dead).
         b = behaviors.get("watch_connected")
-        obs["watch_connected"] = b.value if b is not None else None
+        if b is not None and b.value:
+            obs["watch_connected"] = True
+        else:
+            obs["watch_connected"] = None
 
         # Desktop activity: positive-only. Focus change = evidence FOR presence.
         # Sustained focus on one window = neutral (deep work, not absence).
@@ -259,6 +267,15 @@ class PresenceEngine:
         # IR person detected (from Pi NoIR edge cameras)
         b = behaviors.get("ir_person_detected")
         obs["ir_person_detected"] = b.value if b is not None else None
+
+        # IR hand activity: positive-only. Hands detected on desk = someone working.
+        # The IR fleet reliably detects hands even when person detection is broken
+        # (30-frame YOLO training). Hand activity is the strongest unwired signal.
+        b = behaviors.get("ir_hand_activity")
+        if b is not None and isinstance(b.value, str) and b.value not in ("none", "idle", ""):
+            obs["ir_hand_active"] = True
+        else:
+            obs["ir_hand_active"] = None
 
         return obs
 
