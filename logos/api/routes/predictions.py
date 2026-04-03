@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/predictions", tags=["predictions"])
 
 PREDICTIONS_SHM = Path("/dev/shm/hapax-reverie/predictions.json")
-UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/pipeline/uniforms.json")
+UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 PERCEPTION_STATE = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 CHRONICLE_DIR = Path("/dev/shm/hapax-chronicle")
 
@@ -76,8 +76,6 @@ async def predictions_metrics() -> Response:
         "noise.amplitude": 0.7,
         "noise.frequency_x": 1.5,
         "fb.hue_shift": 0.0,
-        "physarum.sensor_dist": 1.0,
-        "physarum.turn_speed": 0.08,
         "post.vignette_strength": 0.35,
     }
     lines.append("# HELP reverie_uniform_value Current shader uniform value")
