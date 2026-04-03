@@ -108,7 +108,7 @@ Logos is a Tauri 2 native app. The frontend speaks **only IPC** — zero browser
 
 Everything that appears — visual content, tool invocation, vocal expression, destination routing — is recruited through a single `AffordancePipeline`. No bypass paths. Spec: `docs/superpowers/specs/2026-04-02-unified-semantic-recruitment-design.md`.
 
-**Mechanism:** Impingement → embed narrative → cosine similarity against Qdrant `affordances` collection → score (0.50×similarity + 0.20×base_level + 0.10×context_boost + 0.20×thompson) → governance veto → recruited capabilities activate. Thompson sampling + Hebbian associations learn from outcomes across sessions.
+**Mechanism:** Impingement → embed narrative → cosine similarity against Qdrant `affordances` collection → score (0.50×similarity + 0.20×base_level + 0.10×context_boost + 0.20×thompson) → governance veto → recruited capabilities activate. Thompson sampling (optimistic prior: Beta(2,1)) + Hebbian associations learn from outcomes across sessions. Recruited candidates record success (pipeline threshold IS the quality gate); activation level drives response intensity via slot opacity. Activation state persisted every 5 minutes + on shutdown.
 
 **Taxonomy (6 domains):** perception, expression, recall, action, communication, regulation. Each capability has a Gibson-verb affordance description (15-30 words, cognitive function not implementation). Three-level Rosch structure: Domain (organizational) → Affordance (embedded in Qdrant) → Instance (metadata payload).
 
@@ -197,11 +197,45 @@ Destructive command detection strips quoted strings before matching to prevent f
 - rPPG: gated on face landmarks actually available (no phantom heart rates)
 - Biometrics: face_detected field in IrBiometrics for observability
 
-**Fusion logic:** Person detection = any() across Pis. Gaze/biometrics prefer desk Pi (face-on). Hand activity + hand zone prefer overhead Pi. Staleness cutoff: 10s. Presence engine signal weight: `ir_person_detected: (0.90, 0.10)`.
+**Fusion logic:** Person detection = any() across Pis. Gaze/biometrics prefer desk Pi (face-on). Hand activity + hand zone prefer overhead Pi. Staleness cutoff: 10s. **Person detection currently non-functional** (30-frame training set) — `ir_person_detected` set to `None` (neutral) to prevent false-negative Bayesian poisoning. `ir_hand_activity` is reliable and wired into presence engine as a strong positive-only signal.
 
 **14 signals:** ir_person_detected, ir_person_count, ir_motion_delta, ir_gaze_zone, ir_head_pose_yaw, ir_posture, ir_hand_activity, ir_hand_zone, ir_screen_looking, ir_drowsiness_score, ir_blink_rate, ir_heart_rate_bpm, ir_heart_rate_conf, ir_brightness. All 14 flow to perception-state.json.
 
-**Cross-modal fusion:** `contact_mic_ir.py` provides `_classify_activity_with_ir()` — turntable+sliding=scratching, mpc-pads+tapping=pad-work. Function tested but not yet wired into contact mic capture loop (contact_mic.py at 479 lines, needs split refactor).
+**Cross-modal fusion:** `contact_mic_ir.py` provides `_classify_activity_with_ir()` — turntable+sliding=scratching, mpc-pads+tapping=pad-work. Function tested but not yet wired into contact mic capture loop.
+
+## Bayesian Presence Detection
+
+`PresenceEngine` (`agents/hapax_daimonion/presence_engine.py`) fuses 14 heterogeneous signals into a single `presence_probability` posterior via Bayesian log-odds update. Hysteresis state machine: PRESENT (≥0.7 for 2 ticks), UNCERTAIN, AWAY (<0.3 for 24 ticks).
+
+**Signal design principle — positive-only for unreliable sensors:** Signals where absence is ambiguous (face not visible, silence, no desktop focus change, broken IR person detection) contribute `True` when detected but `None` (neutral, skipped by Bayesian update) when absent. Only structurally reliable signals (keyboard from logind, BT device connection) use bidirectional evidence.
+
+**Primary signals (active during desk work):**
+
+| Signal | Source | LR (True) | Type |
+|--------|--------|-----------|------|
+| desk_active | Contact mic Cortado MKIII via pw-cat | 18x | positive-only |
+| keyboard_active | systemd-logind IdleHint | 17x | bidirectional |
+| ir_hand_active | Pi NoIR hand detection | 8.5x | positive-only |
+
+**Secondary signals:**
+
+| Signal | Source | LR (True) | Type |
+|--------|--------|-----------|------|
+| midi_active | OXI One MIDI clock | 45x | bidirectional |
+| operator_face | InsightFace SCRFD face ReID | 9x | positive-only |
+| desktop_active | Hyprland window focus | 7.5x | positive-only |
+| room_occupancy | Multi-camera YOLO person | 4.25x | positive-only |
+| vad_speech | Silero VAD | 4x | positive-only |
+| watch_hr | Pixel Watch 4 HR>0 | 2.67x | positive-only |
+| bt_phone_connected | BLE scan | 2.33x | bidirectional |
+| watch_connected | Pixel Watch BLE | — | positive-only |
+| phone_kde_connected | KDE Connect WiFi | 3.2x | bidirectional |
+| ir_person_detected | Pi NoIR YOLOv8n | 9x | positive-only (broken, always None) |
+| speaker_is_operator | pyannote embedding | 47.5x | not wired (no backend) |
+
+**Contact mic:** Cortado MKIII on PreSonus Studio 24c Input 2 (48V phantom). Captured via `pw-cat --record --target "Contact Microphone"` at 16kHz mono int16. DSP pipeline: RMS energy, onset detection, spectral centroid, autocorrelation, gesture classification. Provides `desk_activity` (idle/typing/tapping/drumming/active), `desk_energy`, `desk_onset_rate`, `desk_tap_gesture`.
+
+**Prediction monitor:** `agents/reverie_prediction_monitor.py` (5-min systemd timer) tracks 6 post-fix behavioral predictions. Grafana dashboard at `localhost:3001/d/reverie-predictions/`. Prometheus metrics at `/api/predictions/metrics`.
 
 **Debug/capture tools:**
 - `kill -USR1 $(pgrep -f hapax_ir_edge)` — saves greyscale frame to `/tmp/ir_debug_{role}.jpg`
