@@ -301,7 +301,7 @@ def p4_winner_take_all(chronicle_events: list[dict]) -> PredictionResult:
     )
 
 
-UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/pipeline/uniforms.json")
+UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 
 # Plan defaults for vocabulary-only baseline (no content modulation)
 _VOCABULARY_DEFAULTS = {
@@ -311,8 +311,6 @@ _VOCABULARY_DEFAULTS = {
     "noise.amplitude": 0.7,
     "noise.frequency_x": 1.5,
     "fb.hue_shift": 0.0,
-    "physarum.sensor_dist": 1.0,
-    "physarum.turn_speed": 0.08,
     "post.vignette_strength": 0.35,
 }
 
