@@ -84,9 +84,9 @@ FRAGMENT_TO_SHADER: dict[str, str] = {
     "coherence": "noise.frequency_x",
     "spectral_color": "color.saturation",
     "temporal_distortion": "noise.speed",
-    "degradation": "physarum.deposit_amount",
+    "degradation": "noise.octaves",
     "pitch_displacement": "color.hue_rotate",
-    "diffusion": "physarum.sensor_dist",
+    "diffusion": "rd.diffusion_a",
 }
 
 # Material is a shader UNIFORM in content_layer.wgsl, NOT a preset selector.

@@ -313,7 +313,7 @@ class TestAssembleContext:
     def test_includes_sensor_data(self) -> None:
         sensors = {
             "stimmung": {
-                "overall_stance": "calm",
+                "stance": "calm",
                 "operator_stress": {"value": 0.2, "trend": "stable", "freshness_s": 5.0},
             },
             "perception": {"activity": "idle", "flow_score": "steady"},
@@ -330,7 +330,7 @@ class TestAssembleContext:
         """Verify context uses the actual sensor key names from dmn/sensor.py."""
         snapshot = {
             "stimmung": {
-                "overall_stance": "nominal",
+                "stance": "nominal",
                 "operator_stress": {"value": 0.3, "trend": "stable", "freshness_s": 5.0},
             },
             "perception": {"activity": "typing", "flow_score": 0.7},

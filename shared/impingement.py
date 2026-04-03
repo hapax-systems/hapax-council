@@ -56,8 +56,15 @@ class Impingement(BaseModel, frozen=True):
 
 
 def render_impingement_text(imp: Impingement) -> str:
-    """Render impingement content as embeddable text for affordance retrieval."""
+    """Render impingement content as embeddable text for affordance retrieval.
+
+    Includes narrative when present — this is the primary semantic content
+    for imagination-sourced impingements and must not be dropped.
+    """
     parts = [f"source: {imp.source}"]
+    narrative = imp.content.get("narrative")
+    if narrative:
+        parts.append(f"intent: {narrative}")
     if imp.content.get("metric"):
         parts.append(f"signal: {imp.content['metric']}")
     if imp.content.get("value") is not None:

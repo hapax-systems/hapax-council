@@ -220,7 +220,7 @@ def assemble_context(
     sections.append("## System State")
     stimmung = sensor_snapshot.get("stimmung", {})
     if stimmung:
-        stance = stimmung.get("overall_stance", "unknown")
+        stance = stimmung.get("stance", "unknown")
         stress_d = stimmung.get("operator_stress", {})
         stress = stress_d.get("value", "unknown") if isinstance(stress_d, dict) else "unknown"
         sections.append(f"- Stimmung: stance={stance}, stress={stress}")

@@ -137,6 +137,10 @@ class AffordancePipeline:
                             "latency_class": record.operational.latency_class,
                             "consent_required": record.operational.consent_required,
                             "priority_floor": record.operational.priority_floor,
+                            "medium": record.operational.medium,
+                            "activation_summary": self._activation.get(
+                                record.name, ActivationState()
+                            ).to_summary(),
                             "available": True,
                         },
                     )

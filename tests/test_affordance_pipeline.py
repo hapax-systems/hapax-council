@@ -224,7 +224,7 @@ def test_record_failure():
     p = AffordancePipeline()
     p.record_failure("cap")
     assert (
-        p.get_activation_state("cap").ts_beta > 1.0 and p.get_activation_state("cap").use_count == 0
+        p.get_activation_state("cap").ts_beta > 1.0 and p.get_activation_state("cap").use_count == 1
     )
 
 

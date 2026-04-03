@@ -3,7 +3,7 @@
 Regression tests for the 2026-03-31 audit findings:
 - C1: API route must parse nested DimensionReading dicts
 - C2: Sync agent must persist all 10 dimensions
-- C3: imagination.py must use "overall_stance" not "stance"
+- C3: imagination.py must use "stance" (sensor-layer key) not "overall_stance" (raw SHM key)
 - C4: reverie/actuation.py must use "overall_stance" and derive color_warmth
 - H2: Engine must ignore stale stimmung (>5min)
 - M4: ContextAssembler must read SHM only once
@@ -112,13 +112,19 @@ class TestConsumerFieldNames:
         )
         return json.loads(s.model_dump_json())
 
-    def test_imagination_reads_overall_stance(self):
-        """imagination.assemble_context must use 'overall_stance' not 'stance'."""
+    def test_imagination_reads_stance(self):
+        """imagination.assemble_context must use 'stance' (sensor-layer key), not 'overall_stance'."""
         from agents.imagination import assemble_context
 
+        # sensor.py normalises overall_stance → stance before writing the snapshot
         stimmung_raw = self._make_stimmung_raw()
-        sensor = {"stimmung": stimmung_raw}
-        context = assemble_context([], [], sensor)
+        sensor_snapshot = {
+            "stimmung": {
+                "stance": stimmung_raw["overall_stance"],  # sensor.py normalisation
+                "operator_stress": stimmung_raw.get("operator_stress", {}),
+            }
+        }
+        context = assemble_context([], [], sensor_snapshot)
 
         assert "stance=degraded" in context
         assert "stance=unknown" not in context

@@ -671,7 +671,7 @@ def test_assemble_context_all_sections():
     """Context includes observations, system state, and recent fragments."""
     observations = ["saw something", "heard noise"]
     sensor_snapshot = {
-        "stimmung": {"overall_stance": "cautious", "operator_stress": {"value": 0.3}},
+        "stimmung": {"stance": "cautious", "operator_stress": {"value": 0.3}},
         "perception": {"activity": "focused", "flow_score": 0.7},
         "watch": {"heart_rate": 72},
     }

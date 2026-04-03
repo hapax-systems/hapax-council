@@ -60,6 +60,18 @@ class ActivationState(BaseModel):
     def record_failure(self, gamma: float = 0.99) -> None:
         self.ts_alpha *= gamma
         self.ts_beta = self.ts_beta * gamma + 1.0
+        self.use_count += 1
+
+    def to_summary(self) -> dict[str, float]:
+        """Summary for cross-daemon visibility via Qdrant payload."""
+        total = self.ts_alpha + self.ts_beta
+        return {
+            "use_count": self.use_count,
+            "last_use_ts": self.last_use_ts,
+            "ts_alpha": self.ts_alpha,
+            "ts_beta": self.ts_beta,
+            "success_rate": self.ts_alpha / total if total > 0 else 0.5,
+        }
 
 
 class SelectionCandidate(BaseModel):

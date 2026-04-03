@@ -17,12 +17,17 @@ PLAN_FILE = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
 MATERIAL_MAP = {"water": 0, "fire": 1, "earth": 2, "air": 3, "void": 4}
 
 _plan_defaults_cache: dict[str, float] | None = None
+_plan_defaults_mtime: float = 0.0
 
 
 def _load_plan_defaults() -> dict[str, float]:
-    """Load plan.json defaults as {node_id.param: value} dict. Cached."""
-    global _plan_defaults_cache
-    if _plan_defaults_cache is not None:
+    """Load plan.json defaults as {node_id.param: value} dict. Cached; invalidates on mtime change."""
+    global _plan_defaults_cache, _plan_defaults_mtime
+    try:
+        current_mtime = PLAN_FILE.stat().st_mtime
+    except OSError:
+        current_mtime = 0.0
+    if _plan_defaults_cache is not None and current_mtime == _plan_defaults_mtime:
         return _plan_defaults_cache
     defaults: dict[str, float] = {}
     try:
@@ -35,6 +40,7 @@ def _load_plan_defaults() -> dict[str, float]:
     except (OSError, json.JSONDecodeError):
         log.warning("Failed to load plan defaults", exc_info=True)
     _plan_defaults_cache = defaults
+    _plan_defaults_mtime = current_mtime
     return defaults
 
 

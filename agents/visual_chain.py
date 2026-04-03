@@ -78,15 +78,15 @@ VISUAL_DIMENSIONS: dict[str, VisualDimension] = {
         "visual_chain.diffusion",
         "Scatters visual output — ambient, sourceless, environmental.",
         [
-            _PM("physarum", "sensor_dist", [(0.0, 0.0), (0.5, 4.0), (1.0, 12.0)]),
-            _PM("rd", "diffusion_a", [(0.0, 0.0), (0.5, 0.05), (1.0, 0.2)]),
+            _PM("rd", "diffusion_a", [(0.0, 0.0), (0.5, 0.1), (1.0, 0.4)]),
+            _PM("drift", "amplitude", [(0.0, 0.0), (0.5, 0.3), (1.0, 0.8)]),
         ],
     ),
     "visual_chain.degradation": VisualDimension(
         "visual_chain.degradation",
         "Corrupts visual signal — noise, disruption, broken patterns.",
         [
-            _PM("physarum", "deposit_amount", [(0.0, 0.0), (0.5, 2.0), (1.0, 6.0)]),
+            _PM("noise", "octaves", [(0.0, 0.0), (0.5, 1.0), (1.0, 3.0)]),
             _PM("post", "sediment_strength", [(0.0, 0.0), (0.5, 0.02), (1.0, 0.08)]),
         ],
     ),
@@ -109,7 +109,7 @@ VISUAL_DIMENSIONS: dict[str, VisualDimension] = {
         "Stretches or accelerates visual animation in time.",
         [
             _PM("noise", "speed", [(0.0, 0.0), (0.3, -0.03), (0.7, 0.0), (1.0, 0.15)]),
-            _PM("physarum", "move_speed", [(0.0, 0.0), (0.3, -0.3), (0.7, 0.0), (1.0, 1.5)]),
+            _PM("drift", "speed", [(0.0, 0.0), (0.3, -0.1), (0.7, 0.0), (1.0, 0.5)]),
         ],
     ),
     "visual_chain.spectral_color": VisualDimension(
@@ -126,7 +126,7 @@ VISUAL_DIMENSIONS: dict[str, VisualDimension] = {
         [
             _PM("noise", "frequency_x", [(0.0, 0.0), (0.5, -0.5), (1.0, -1.5)]),
             _PM("rd", "feed_rate", [(0.0, 0.0), (0.5, -0.005), (1.0, -0.015)]),
-            _PM("physarum", "turn_speed", [(0.0, 0.0), (0.5, 0.15), (1.0, 0.5)]),
+            _PM("fb", "decay", [(0.0, 0.0), (0.5, 0.05), (1.0, 0.15)]),
         ],
     ),
 }
