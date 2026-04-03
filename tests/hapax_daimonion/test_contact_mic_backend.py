@@ -6,7 +6,6 @@ All tests use synthetic PCM frames — no audio hardware or PipeWire needed.
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -196,43 +195,39 @@ class TestGestureDetection:
 
 class TestContactMicBackendProtocol:
     def test_name(self):
-        with patch("agents.hapax_daimonion.backends.contact_mic.pyaudio", None):
-            backend = ContactMicBackend(source_name="Test Mic")
-            assert backend.name == "contact_mic"
+        backend = ContactMicBackend(source_name="Test Mic")
+        assert backend.name == "contact_mic"
 
     def test_provides(self):
-        with patch("agents.hapax_daimonion.backends.contact_mic.pyaudio", None):
-            backend = ContactMicBackend(source_name="Test Mic")
-            assert backend.provides == frozenset(
-                {
-                    "desk_activity",
-                    "desk_energy",
-                    "desk_onset_rate",
-                    "desk_tap_gesture",
-                    "desk_spectral_centroid",
-                    "desk_autocorr_peak",
-                }
-            )
+        backend = ContactMicBackend(source_name="Test Mic")
+        assert backend.provides == frozenset(
+            {
+                "desk_activity",
+                "desk_energy",
+                "desk_onset_rate",
+                "desk_tap_gesture",
+                "desk_spectral_centroid",
+                "desk_autocorr_peak",
+            }
+        )
 
     def test_tier_is_fast(self):
         from agents.hapax_daimonion.perception import PerceptionTier
 
-        with patch("agents.hapax_daimonion.backends.contact_mic.pyaudio", None):
-            backend = ContactMicBackend(source_name="Test Mic")
-            assert backend.tier == PerceptionTier.FAST
+        backend = ContactMicBackend(source_name="Test Mic")
+        assert backend.tier == PerceptionTier.FAST
 
     def test_contribute_updates_behaviors(self):
-        with patch("agents.hapax_daimonion.backends.contact_mic.pyaudio", None):
-            backend = ContactMicBackend(source_name="Test Mic")
-            behaviors: dict[str, Behavior] = {}
-            backend.contribute(behaviors)
-            assert "desk_activity" in behaviors
-            assert "desk_energy" in behaviors
-            assert "desk_onset_rate" in behaviors
-            assert "desk_tap_gesture" in behaviors
-            assert "desk_spectral_centroid" in behaviors
-            assert "desk_autocorr_peak" in behaviors
-            assert behaviors["desk_activity"].value == "idle"
+        backend = ContactMicBackend(source_name="Test Mic")
+        behaviors: dict[str, Behavior] = {}
+        backend.contribute(behaviors)
+        assert "desk_activity" in behaviors
+        assert "desk_energy" in behaviors
+        assert "desk_onset_rate" in behaviors
+        assert "desk_tap_gesture" in behaviors
+        assert "desk_spectral_centroid" in behaviors
+        assert "desk_autocorr_peak" in behaviors
+        assert behaviors["desk_activity"].value == "idle"
 
 
 class TestEnvelopeAutocorrelation:

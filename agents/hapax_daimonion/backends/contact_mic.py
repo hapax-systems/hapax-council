@@ -23,10 +23,7 @@ from shared.control_signal import ControlSignal, publish_health
 
 log = logging.getLogger(__name__)
 
-try:
-    import pyaudio
-except ImportError:
-    pyaudio = None  # type: ignore[assignment]
+import subprocess
 
 # ── DSP constants ─────────────────────────────────────────────────────────────
 
@@ -266,7 +263,7 @@ class ContactMicBackend:
         self._stop_event = threading.Event()
         self._capture_failed = False
         self._thread: threading.Thread | None = None
-        self._stream: object | None = None  # pyaudio.Stream (optional dep)
+        self._capture_failed = False
 
         # Behaviors (created once, updated in contribute)
         self._b_activity: Behavior[str] = Behavior("idle")
@@ -298,17 +295,19 @@ class ContactMicBackend:
         return PerceptionTier.FAST
 
     def available(self) -> bool:
-        """Check if the contact mic PipeWire source exists and capture is alive.
-
-        Disabled: PyAudio's ALSA backend triggers SEGV under PipeWire.
-        Contact mic needs migration to pw-cat (like audio_input.py).
-        """
-        return False
+        """Check if the contact mic PipeWire source exists."""
+        try:
+            result = subprocess.run(
+                ["pw-cli", "ls", "Node"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            return self._source_name in result.stdout
+        except Exception:
+            return False
 
     def start(self) -> None:
-        if pyaudio is None:
-            log.info("ContactMicBackend: pyaudio not available")
-            return
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._capture_loop,
@@ -316,19 +315,12 @@ class ContactMicBackend:
             name="contact-mic-capture",
         )
         self._thread.start()
-        log.info("ContactMicBackend started (source=%s)", self._source_name)
+        log.info("ContactMicBackend started (source=%s, pw-cat)", self._source_name)
 
     def stop(self) -> None:
         self._stop_event.set()
-        # Close stream directly to unblock any pending read()
-        stream = self._stream
-        if stream is not None:
-            try:
-                stream.close()
-            except Exception:
-                pass
         if self._thread is not None:
-            self._thread.join(timeout=2)
+            self._thread.join(timeout=5)
             self._thread = None
         log.info("ContactMicBackend stopped")
 
@@ -365,55 +357,53 @@ class ContactMicBackend:
         self._prev_activity_hash = activity_hash
 
     def _capture_loop(self) -> None:
-        """Background thread: capture audio, compute DSP, update cache.
+        """Background thread: capture audio via pw-cat, compute DSP, update cache.
 
-        Uses pactl to set the PipeWire default source to the contact mic
-        node, then opens the default PyAudio device. PyAudio cannot see
-        PipeWire virtual sources by name — only the default source works.
+        Spawns pw-cat subprocess targeting the named PipeWire source directly
+        (no pactl default-source manipulation needed). Reads int16 PCM frames
+        from stdout. Retries with exponential backoff on failure.
         """
-        try:
-            import subprocess
+        retry_delay = 2.0
 
-            # Set contact_mic as the default PipeWire source for this capture
+        while not self._stop_event.is_set():
+            proc = None
             try:
-                subprocess.run(
-                    ["pactl", "set-default-source", "contact_mic"],
-                    capture_output=True,
-                    timeout=5,
-                )
-            except Exception:
-                log.warning("Failed to set contact_mic as default source")
+                cmd = [
+                    "pw-cat",
+                    "--record",
+                    "--target",
+                    self._source_name,
+                    "--format",
+                    "s16",
+                    "--rate",
+                    str(_SAMPLE_RATE),
+                    "--channels",
+                    "1",
+                    "-",
+                ]
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                log.info("Contact mic capturing via pw-cat (target=%s)", self._source_name)
 
-            pa = pyaudio.PyAudio()
+                # State for onset detection and gesture classification
+                smoothed_energy = 0.0
+                prev_energy = 0.0
+                onset_times: deque[float] = deque(maxlen=20)
+                gesture_onset_burst: list[float] = []
+                last_onset_time = 0.0
+                last_gesture_check = time.monotonic()
+                frame_count = 0
+                centroid = 0.0
+                current_gesture = "none"
+                energy_buffer: deque[float] = deque(maxlen=_ENERGY_BUFFER_SIZE)
+                autocorr_peak = 0.0
+                retry_delay = 2.0  # reset on successful start
 
-            # Use default device (now routed to contact_mic via PipeWire)
-            stream = pa.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=_SAMPLE_RATE,
-                input=True,
-                frames_per_buffer=_FRAME_SAMPLES,
-            )
-            self._stream = stream
+                while not self._stop_event.is_set():
+                    assert proc.stdout is not None
+                    data = proc.stdout.read(_FRAME_BYTES)
+                    if not data or len(data) < _FRAME_BYTES:
+                        break  # stream ended, retry outer loop
 
-            log.info("Contact mic capturing from %s", self._source_name)
-
-            # State for onset detection and gesture classification
-            smoothed_energy = 0.0
-            prev_energy = 0.0
-            onset_times: deque[float] = deque(maxlen=20)
-            gesture_onset_burst: list[float] = []
-            last_onset_time = 0.0
-            last_gesture_check = time.monotonic()
-            frame_count = 0
-            centroid = 0.0
-            current_gesture = "none"
-            energy_buffer: deque[float] = deque(maxlen=_ENERGY_BUFFER_SIZE)
-            autocorr_peak = 0.0
-
-            while not self._stop_event.is_set():
-                try:
-                    data = stream.read(_FRAME_SAMPLES, exception_on_overflow=False)
                     now = time.monotonic()
                     frame_count += 1
 
@@ -422,7 +412,6 @@ class ContactMicBackend:
                     smoothed_energy = (
                         _RMS_SMOOTHING * raw_energy + (1 - _RMS_SMOOTHING) * smoothed_energy
                     )
-
                     energy_buffer.append(smoothed_energy)
 
                     # Onset detection
@@ -431,7 +420,6 @@ class ContactMicBackend:
                         and prev_energy <= _ONSET_THRESHOLD
                         and (now - last_onset_time) >= _ONSET_MIN_INTERVAL_S
                     ):
-                        # New onset arriving after a classified gesture resets it
                         if current_gesture != "none":
                             current_gesture = "none"
                         onset_times.append(now)
@@ -447,7 +435,6 @@ class ContactMicBackend:
                     onset_rate = float(len(recent_onsets))
 
                     # Spectral centroid (every 4th frame to save CPU)
-                    # centroid persists from last computation on non-FFT frames
                     if frame_count % 4 == 0:
                         centroid = _compute_spectral_centroid(data)
                         autocorr_peak = _compute_envelope_autocorrelation(energy_buffer)
@@ -511,21 +498,23 @@ class ContactMicBackend:
                     self._cl_ok = _cm_ok
                     self._cl_degraded = _cm_deg
 
-                except Exception:
-                    if self._stop_event.is_set():
-                        break
-                    time.sleep(0.1)
-
-            self._stream = None
-            try:
-                stream.stop_stream()
-                stream.close()
             except Exception:
-                pass
-            pa.terminate()
+                if self._stop_event.is_set():
+                    break
+                log.warning(
+                    "Contact mic pw-cat failed — retrying in %.0fs", retry_delay, exc_info=True
+                )
+            finally:
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
 
-        except Exception:
-            log.warning(
-                "Contact mic capture thread failed — marking backend degraded", exc_info=True
-            )
-            self._capture_failed = True
+            if not self._stop_event.is_set():
+                self._stop_event.wait(timeout=retry_delay)
+                retry_delay = min(retry_delay * 2, 30.0)

@@ -41,6 +41,10 @@ DEFAULT_SIGNAL_WEIGHTS: dict[str, tuple[float, float]] = {
         0.85,
         0.10,
     ),  # IR hand detection on desk — works even when person detection broken
+    "desk_active": (
+        0.90,
+        0.05,
+    ),  # Contact mic desk vibration — typing/tapping/drumming on Cortado MKIII
 }
 
 
@@ -276,6 +280,14 @@ class PresenceEngine:
             obs["ir_hand_active"] = True
         else:
             obs["ir_hand_active"] = None
+
+        # Contact mic desk activity: positive-only. Typing/tapping/drumming on Cortado
+        # MKIII = strong presence. Idle/unknown = neutral.
+        b = behaviors.get("desk_activity")
+        if b is not None and isinstance(b.value, str) and b.value not in ("idle", "unknown", ""):
+            obs["desk_active"] = True
+        else:
+            obs["desk_active"] = None
 
         return obs
 
