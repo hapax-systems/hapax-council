@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 ACTIVATION_STATE = Path.home() / ".cache" / "hapax" / "affordance-activation-state.json"
 CHRONICLE_API = "http://localhost:8051/api/chronicle"
-PERCEPTION_STATE = Path("/dev/shm/hapax-daimonion/perception-state.json")
+PERCEPTION_STATE = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 PREDICTIONS_SHM = Path("/dev/shm/hapax-reverie/predictions.json")
 PREDICTIONS_JSONL = Path.home() / "hapax-state" / "monitors" / "reverie-predictions.jsonl"
 DEPLOY_TS_FILE = Path("/dev/shm/hapax-reverie/fix-deploy-ts")
@@ -328,16 +328,17 @@ def p5_content_vocabulary_balance(chronicle_events: list[dict]) -> PredictionRes
 def p6_presence_differentiation(perception: dict) -> PredictionResult:
     """P6: Check whether presence is actually reaching the system."""
     presence = perception.get("presence_probability", 0.0)
-    input_active = perception.get("input_active", False)
+    presence_state = perception.get("presence_state", "UNKNOWN")
 
-    # For now, just report current state — long-term comparison needs history
     actual = float(presence)
 
-    if input_active and presence < 0.3:
-        alert = f"Keyboard active but presence={presence:.2f} — IR still poisoning?"
+    # Simple health check: presence should be non-zero when system is running
+    # (input_active isn't written to perception-state.json, so we use presence_state)
+    if presence_state == "AWAY" and presence > 0.5:
+        alert = f"State=AWAY but posterior={presence:.2f} — hysteresis mismatch?"
         healthy = False
-    elif not input_active and presence > 0.8:
-        alert = f"No input but presence={presence:.2f} — false positive?"
+    elif presence_state == "PRESENT" and presence < 0.3:
+        alert = f"State=PRESENT but posterior={presence:.2f} — signal dropout?"
         healthy = False
     else:
         alert = None
@@ -349,7 +350,7 @@ def p6_presence_differentiation(perception: dict) -> PredictionResult:
         actual=actual,
         healthy=healthy,
         alert=alert,
-        detail=json.dumps({"presence_probability": presence, "input_active": input_active}),
+        detail=json.dumps({"presence_probability": presence, "presence_state": presence_state}),
     )
 
 

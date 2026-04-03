@@ -276,7 +276,9 @@ class ReverieMixer:
                 # competition). Recording activation as success prevents Thompson
                 # death spiral for cold-start affordances while the combined score
                 # determines response intensity via slot opacity.
-                self._pipeline.record_outcome(name, success=True)
+                # Context enables Hebbian association learning (source → capability).
+                ctx = {"source": imp.source, "metric": imp.content.get("metric", "")}
+                self._pipeline.record_outcome(name, success=True, context=ctx)
                 self._apply_shader_impingement(imp)
                 break
             elif name.startswith("content."):
@@ -289,7 +291,8 @@ class ReverieMixer:
                 self._chronicle_technique(name, c.combined)
                 # Same rationale as node.*: pipeline selection IS the quality gate.
                 # Activation level (c.combined) drives opacity, not learning signal.
-                self._pipeline.record_outcome(name, success=True)
+                ctx = {"source": imp.source, "metric": imp.content.get("metric", "")}
+                self._pipeline.record_outcome(name, success=True, context=ctx)
                 self._apply_shader_impingement(imp)
                 break
             elif name == "shader_graph":
