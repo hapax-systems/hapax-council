@@ -188,6 +188,12 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                             )
                         elif c.capability_name == "system_awareness":
                             if hasattr(daemon, "_system_awareness"):
+                                # can_resolve() is an intentional secondary gate here, NOT a
+                                # pipeline bypass. The pipeline selected this affordance by
+                                # embedding similarity; can_resolve() checks live stimmung
+                                # stance (degraded/critical) + 300s cooldown that the pipeline
+                                # cannot encode. Removing it would fire on any impingement
+                                # that semantically resembles "system health."
                                 score = daemon._system_awareness.can_resolve(imp)
                                 if score > 0:
                                     daemon._system_awareness.activate(imp, score)

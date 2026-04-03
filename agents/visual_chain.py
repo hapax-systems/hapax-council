@@ -24,7 +24,7 @@ SHM_PATH = Path("/dev/shm/hapax-visual/visual-chain-state.json")
 class ParameterMapping:
     """Maps an activation level to a specific shader graph node uniform."""
 
-    technique: str  # vocabulary node ID: "noise", "fb", "post", "rd", "physarum"
+    technique: str  # vocabulary node ID: "noise", "rd", "color", "drift", "breath", "fb", "post"
     param: str
     breakpoints: list[tuple[float, float]]
 
