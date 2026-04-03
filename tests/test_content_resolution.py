@@ -33,11 +33,13 @@ def test_unknown_content_returns_false(tmp_path):
 def test_resolver_dispatch_table_has_all_content_types():
     from agents.reverie._content_resolvers import CONTENT_RESOLVERS
 
+    # Keys must match names in shared/affordance_registry.py
     expected = {
         "content.narrative_text",
-        "content.episodic_recall",
-        "content.knowledge_recall",
-        "content.profile_recall",
         "content.waveform_viz",
+        "knowledge.episodic_recall",
+        "knowledge.document_search",
+        "knowledge.vault_search",
+        "knowledge.profile_facts",
     }
     assert expected.issubset(set(CONTENT_RESOLVERS.keys()))

@@ -80,7 +80,7 @@ exceptions:
     next_review: "2026-07-03"
 
   - id: exception-duckduckgo-instant
-    component: agents/reverie/content_injector.py
+    component: agents/hapax_daimonion/discovery_affordance.py
     axiom_id: corporate_boundary
     implication_id: cb-network-001
     reason: >

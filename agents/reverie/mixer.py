@@ -309,7 +309,11 @@ class ReverieMixer:
                     self._chronicle_technique(name, c.combined)
                     ctx = {"source": imp.source, "metric": imp.content.get("metric", "")}
                     self._pipeline.record_outcome(name, success=True, context=ctx)
-                    break
+                # Non-camera space.* affordances (ir_presence, posture, etc.) are
+                # perception signals — they inform the pipeline's learning but don't
+                # produce visual output. Break to prevent fall-through to lower-ranked
+                # candidates (preserves biased competition).
+                break
             elif name == "shader_graph":
                 self._shader_cap.activate(imp, imp.strength)
                 self._apply_shader_impingement(imp)

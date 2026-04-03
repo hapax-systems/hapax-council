@@ -81,12 +81,12 @@ class TestFragmentToVisual(unittest.TestCase):
         fragment = {"dimensions": {"intensity": 0.8, "diffusion": 0.5}}
         result = map_fragment_to_visual(fragment)
         assert result["noise.amplitude"] == 0.8
-        assert result["physarum.sensor_dist"] == 0.5
+        assert result["rd.diffusion_a"] == 0.5
 
     def test_missing_dimensions_skipped(self):
         fragment = {"dimensions": {"intensity": 0.8}}
         result = map_fragment_to_visual(fragment)
-        assert "physarum.sensor_dist" not in result
+        assert "rd.diffusion_a" not in result
 
     def test_no_dimensions_returns_empty(self):
         assert map_fragment_to_visual({}) == {}

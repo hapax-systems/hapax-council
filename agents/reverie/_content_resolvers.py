@@ -150,15 +150,14 @@ def _fallback_text(source_suffix: str, text: str, level: float) -> bool:
     )
 
 
-# Dispatch table: affordance name → resolver function
+# Dispatch table: affordance name → resolver function.
+# Keys must match names in shared/affordance_registry.py — only names
+# indexed in Qdrant can be recruited by the pipeline.
 CONTENT_RESOLVERS: dict[str, Callable[..., bool]] = {
     "content.narrative_text": resolve_narrative_text,
-    "content.episodic_recall": resolve_episodic_recall,
+    "content.waveform_viz": resolve_waveform_viz,
     "knowledge.episodic_recall": resolve_episodic_recall,
-    "content.knowledge_recall": resolve_knowledge_recall,
     "knowledge.document_search": resolve_knowledge_recall,
     "knowledge.vault_search": resolve_knowledge_recall,
-    "content.profile_recall": resolve_profile_recall,
     "knowledge.profile_facts": resolve_profile_recall,
-    "content.waveform_viz": resolve_waveform_viz,
 }

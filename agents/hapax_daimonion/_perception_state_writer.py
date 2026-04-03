@@ -471,6 +471,9 @@ def write_perception_state(
             "hand_gesture",
             "posture",
             "pose_summary",
+            "phone_sms_latest_sender",  # names a non-operator person
+            "phone_sms_latest_text",  # may contain person-identifying content
+            "phone_call_number",  # identifies a non-operator person
         }
         for key in _PERSON_ADJACENT_KEYS:
             if key in state:

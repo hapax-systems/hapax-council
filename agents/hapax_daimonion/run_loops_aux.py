@@ -126,6 +126,7 @@ _WORLD_DOMAIN_PREFIXES = (
     "system.",
     "knowledge.",
     "space.",
+    "world.",
 )
 
 
@@ -143,14 +144,32 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
 
     while daemon._running:
         try:
+            _world_enabled = _world_routing_enabled()  # cache per poll cycle
             for imp in consumer.read_new():
                 try:
                     candidates = await asyncio.to_thread(daemon._affordance_pipeline.select, imp)
                     for c in candidates:
+                        # --- Notification dispatch ---
+                        if c.capability_name == "system.notify_operator":
+                            if c.combined >= 0.4:
+                                from agents.notification_capability import (
+                                    activate_notification,
+                                )
+
+                                narrative = imp.content.get("narrative", imp.source)
+                                material = imp.content.get("material", "void")
+                                activate_notification(narrative, c.combined, material)
+                                daemon._affordance_pipeline.record_outcome(
+                                    c.capability_name,
+                                    success=True,
+                                    context={"source": imp.source},
+                                )
+                            continue
+
                         # --- World domain routing (feature-flagged) ---
                         if (
                             any(c.capability_name.startswith(p) for p in _WORLD_DOMAIN_PREFIXES)
-                            and _world_routing_enabled()
+                            and _world_enabled
                         ):
                             if c.combined >= 0.3:
                                 log.info(
@@ -228,7 +247,7 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     cap_obj = getattr(daemon, f"_{cap_name}", None)
                                     if cap_obj is not None and hasattr(cap_obj, "activate"):
                                         try:
-                                            cap_obj.activate(imp, 0.5)
+                                            cap_obj.activate(imp, imp.strength)
                                             log.info(
                                                 "Cross-modal dispatch: %s (%s)",
                                                 cap_name,
