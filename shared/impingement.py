@@ -58,8 +58,10 @@ class Impingement(BaseModel, frozen=True):
 def render_impingement_text(imp: Impingement) -> str:
     """Render impingement content as embeddable text for affordance retrieval.
 
-    Includes narrative when present — this is the primary semantic content
-    for imagination-sourced impingements and must not be dropped.
+    The rendered text is what gets embedded for Qdrant cosine similarity against
+    affordance descriptions. Every semantically meaningful field should be included
+    so the pipeline can match against the right affordances. Content-free renders
+    (just "source: exploration.dmn_pulse") produce near-random matches.
     """
     parts = [f"source: {imp.source}"]
     narrative = imp.content.get("narrative")
@@ -69,9 +71,23 @@ def render_impingement_text(imp: Impingement) -> str:
         parts.append(f"signal: {imp.content['metric']}")
     if imp.content.get("value") is not None:
         parts.append(f"value: {imp.content['value']}")
+    # Exploration signals: include mode and what triggered the signal
+    if imp.content.get("mode"):
+        parts.append(f"mode: {imp.content['mode']}")
+    if imp.content.get("max_novelty_edge"):
+        parts.append(f"novelty: {imp.content['max_novelty_edge']}")
+    # DMN evaluative: include trajectory and concerns
+    if imp.content.get("trajectory"):
+        parts.append(f"trajectory: {imp.content['trajectory']}")
+    if imp.content.get("concerns"):
+        concerns = imp.content["concerns"]
+        if isinstance(concerns, list):
+            parts.append(f"concern: {concerns[0][:80]}" if concerns else "")
+        elif isinstance(concerns, str):
+            parts.append(f"concern: {concerns[:80]}")
     if imp.interrupt_token:
         parts.append(f"critical: {imp.interrupt_token}")
-    return "; ".join(parts)
+    return "; ".join(p for p in parts if p)
 
 
 def cascade_depth(imp: Impingement) -> int:
