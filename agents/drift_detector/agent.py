@@ -8,7 +8,7 @@ from opentelemetry import trace
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from .config import get_model
+from .config import get_model_adaptive
 from .context_tools import get_context_tools
 from .docs import load_docs
 from .introspect import generate_manifest
@@ -58,7 +58,7 @@ Call lookup_constraints() for additional operator constraints.
 """
 
 drift_agent = Agent(
-    get_model("fast"),
+    get_model_adaptive("fast"),
     system_prompt=get_system_prompt_fragment("drift-detector") + "\n\n" + SYSTEM_PROMPT,
     output_type=DriftReport,
 )

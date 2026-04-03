@@ -40,7 +40,7 @@ class TTSManager:
         if self._pipeline is None:
             from kokoro import KPipeline
 
-            self._pipeline = KPipeline(lang_code="a")  # American English
+            self._pipeline = KPipeline(lang_code="a", device="cpu")
         return self._pipeline
 
     def synthesize(self, text: str, use_case: str = "conversation") -> bytes:

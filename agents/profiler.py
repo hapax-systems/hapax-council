@@ -59,6 +59,35 @@ def get_model(alias_or_id: str = "balanced"):
     )
 
 
+def get_model_adaptive(alias: str = "balanced"):
+    """Stimmung-aware model selection (vendored from shared.config)."""
+    import json
+    from pathlib import Path
+
+    try:
+        raw = json.loads(Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
+        stance = raw.get("overall_stance", "nominal")
+        cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
+        resource = raw.get("resource_pressure", {}).get("value", 0.0)
+
+        if stance == "critical":
+            return get_model("local-fast")
+
+        if resource > 0.7:
+            downgraded = {"balanced": "fast", "fast": "local-fast", "reasoning": "local-fast"}
+            if alias in downgraded:
+                return get_model(downgraded[alias])
+
+        if cost > 0.6:
+            downgraded = {"balanced": "fast"}
+            if alias in downgraded:
+                return get_model(downgraded[alias])
+    except Exception:
+        pass  # stimmung unavailable — use requested alias as-is
+
+    return get_model(alias)
+
+
 # ── End vendored ────────────────────────────────────────────────────────────
 
 # Import Langfuse OTel config (side-effect: configures exporter)
@@ -150,7 +179,7 @@ class SynthesisOutput(BaseModel):
 # ── Agents ───────────────────────────────────────────────────────────────────
 
 extraction_agent = Agent(
-    get_model("fast"),  # classification task — flash is sufficient
+    get_model_adaptive("fast"),  # classification task — flash is sufficient
     output_type=ChunkExtraction,
     system_prompt=(
         get_system_prompt_fragment("profiler") + "\n\n"
@@ -274,7 +303,7 @@ class DimensionCuration(BaseModel):
 
 
 curator_agent = Agent(
-    get_model("fast"),  # curation is classification — flash is sufficient
+    get_model_adaptive("fast"),  # curation is classification — flash is sufficient
     output_type=DimensionCuration,
     system_prompt=(
         "You are a profile quality curator. Given a set of facts for one dimension of a "
@@ -1176,7 +1205,7 @@ async def generate_digest(profile: UserProfile) -> dict:
     confidence per dimension for summarization. Returns the digest dict
     and saves it to profiles/operator-digest.json.
     """
-    _get_model = get_model  # use module-level vendored get_model
+    _get_model = get_model_adaptive  # use stimmung-aware model selection
 
     grouped = group_facts_by_dimension([f for dim in profile.dimensions for f in dim.facts])
 

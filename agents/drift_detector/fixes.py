@@ -47,9 +47,9 @@ CATEGORY GUIDANCE:
 
 
 def _get_fix_model():
-    from .config import get_model
+    from .config import get_model_adaptive
 
-    return get_model("fast")
+    return get_model_adaptive("fast")
 
 
 fix_agent = Agent(

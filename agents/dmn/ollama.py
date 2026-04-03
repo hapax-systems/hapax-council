@@ -15,8 +15,8 @@ import httpx
 log = logging.getLogger("dmn.ollama")
 
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
-DMN_MODEL_FAST = "qwen3:4b"
-DMN_MODEL_THINK = "qwen3.5:4b"
+DMN_MODEL_FAST = "qwen3:8b"
+DMN_MODEL_THINK = "qwen3:8b"
 
 SENSORY_SYSTEM = (
     "You are a continuous situation monitor. Report WHAT is happening in one sentence. "

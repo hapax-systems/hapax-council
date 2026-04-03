@@ -460,11 +460,11 @@ async def add_summary(report: MaintenanceReport) -> MaintenanceReport:
     """Add a human-readable summary via LLM."""
     from pydantic_ai import Agent
 
-    from agents._config import get_model
+    from agents._config import get_model_adaptive
     from agents._operator import get_system_prompt_fragment
 
     agent = Agent(
-        get_model("fast"),
+        get_model_adaptive("fast"),
         system_prompt=get_system_prompt_fragment("knowledge-maint")
         + "\n\nSummarize this knowledge base maintenance report in 2-3 sentences. Be specific about numbers.",
     )

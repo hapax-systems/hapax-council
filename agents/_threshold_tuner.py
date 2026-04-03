@@ -89,10 +89,10 @@ async def tune_thresholds(
 
     from pydantic_ai import Agent
 
-    from agents._config import get_model
+    from agents._config import get_model_adaptive
 
     agent = Agent(
-        get_model("fast"),
+        get_model_adaptive("fast"),
         output_type=list[ThresholdOverride],
         system_prompt=(
             "You are tuning health check thresholds. For each noisy check, recommend "

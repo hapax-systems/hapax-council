@@ -63,6 +63,35 @@ def get_model(alias_or_id: str = "balanced"):
     )
 
 
+def get_model_adaptive(alias: str = "balanced"):
+    """Stimmung-aware model selection (vendored from shared.config)."""
+    import json
+    from pathlib import Path
+
+    try:
+        raw = json.loads(Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
+        stance = raw.get("overall_stance", "nominal")
+        cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
+        resource = raw.get("resource_pressure", {}).get("value", 0.0)
+
+        if stance == "critical":
+            return get_model("local-fast")
+
+        if resource > 0.7:
+            downgraded = {"balanced": "fast", "fast": "local-fast", "reasoning": "local-fast"}
+            if alias in downgraded:
+                return get_model(downgraded[alias])
+
+        if cost > 0.6:
+            downgraded = {"balanced": "fast"}
+            if alias in downgraded:
+                return get_model(downgraded[alias])
+    except Exception:
+        pass  # stimmung unavailable — use requested alias as-is
+
+    return get_model(alias)
+
+
 # ── End vendored ────────────────────────────────────────────────────────────
 
 # Import Langfuse OTel config (side-effect: configures exporter)
@@ -223,7 +252,7 @@ GUIDELINES:
 """
 
 briefing_agent = Agent(
-    get_model("fast"),
+    get_model_adaptive("fast"),
     system_prompt=get_system_prompt_fragment("briefing") + "\n\n" + SYSTEM_PROMPT,
     output_type=Briefing,
 )

@@ -779,8 +779,35 @@ async def synthesize_report(report: ActivityReport) -> str:
             model_id, provider=LiteLLMProvider(api_base=_litellm_base, api_key=_litellm_key)
         )
 
+    def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
+        import json
+        from pathlib import Path as _Path
+
+        try:
+            raw = json.loads(
+                _Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8")
+            )
+            stance = raw.get("overall_stance", "nominal")
+            cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
+            resource = raw.get("resource_pressure", {}).get("value", 0.0)
+
+            if stance == "critical":
+                return get_model("local-fast")
+            if resource > 0.7:
+                downgraded = {"balanced": "fast", "fast": "local-fast", "reasoning": "local-fast"}
+                if alias in downgraded:
+                    return get_model(downgraded[alias])
+            if cost > 0.6:
+                downgraded = {"balanced": "fast"}
+                if alias in downgraded:
+                    return get_model(downgraded[alias])
+        except Exception:
+            pass
+
+        return get_model(alias)
+
     agent = Agent(
-        get_model("fast"),
+        get_model_adaptive("fast"),
         system_prompt=get_system_prompt_fragment("activity-analyzer")
         + "\n\n"
         + """\

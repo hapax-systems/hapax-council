@@ -135,13 +135,13 @@ async def extract_patterns(
     """
     from pydantic_ai import Agent
 
-    from agents._config import get_model
+    from agents._config import get_model_adaptive
     from agents._operator import get_system_prompt_fragment
 
     system_prompt = get_system_prompt_fragment("pattern-consolidation") + "\n\n" + _EXTRACT_PROMPT
 
     agent = Agent(
-        get_model("fast"),
+        get_model_adaptive("fast"),
         system_prompt=system_prompt,
         output_type=ConsolidationResult,
     )

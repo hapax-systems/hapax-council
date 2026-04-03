@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from agents._config import PROFILES_DIR, get_model, get_qdrant
+from agents._config import PROFILES_DIR, get_model_adaptive, get_qdrant
 from agents._operator import get_system_prompt_fragment
 
 # Import Langfuse OTel config (side-effect: configures exporter)
@@ -177,7 +177,7 @@ Call lookup_constraints() for additional operator constraints.
 """
 
 digest_agent = Agent(
-    get_model("fast"),
+    get_model_adaptive("fast"),
     system_prompt=get_system_prompt_fragment("digest") + "\n\n" + SYSTEM_PROMPT,
     output_type=Digest,
 )
