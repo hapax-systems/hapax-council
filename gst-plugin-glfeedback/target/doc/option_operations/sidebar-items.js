@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["add","div","eq","error","min_max","mul","ord","prelude","rem","sub"],"trait":["OptionOperations"]};
