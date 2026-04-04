@@ -118,7 +118,7 @@ def collect_thinking(key: str) -> str | None:
         return ""
 
 
-def _format_sensor_prompt(snapshot: dict, deltas: list[str]) -> str:
+def _format_sensor_prompt(snapshot: dict, deltas: list[str], visual_observation: str = "") -> str:
     parts = []
     p = snapshot.get("perception", {})
     parts.append(f"Activity: {p.get('activity', '?')}. Flow: {p.get('flow_score', 0):.1f}.")
@@ -134,6 +134,8 @@ def _format_sensor_prompt(snapshot: dict, deltas: list[str]) -> str:
     w = snapshot.get("watch", {})
     if w.get("heart_rate", 0) > 0:
         parts.append(f"Heart rate: {w['heart_rate']} bpm.")
+    if visual_observation:
+        parts.append(f"Visual surface: {visual_observation}.")
     if deltas:
         parts.append("Changes: " + "; ".join(deltas) + ".")
     return " ".join(parts)
