@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import time
 from pathlib import Path
 
 from shared.control_signal import ControlSignal, publish_health
@@ -76,7 +77,7 @@ class ReverieDaemon:
         """Main loop — never stops unless signalled."""
         global TICK_INTERVAL_S
         log.info("Reverie daemon starting")
-        self._save_counter = 0
+        self._last_save = time.monotonic()
         while self._running:
             try:
                 await self.tick()
@@ -100,16 +101,6 @@ class ReverieDaemon:
                     TICK_INTERVAL_S = self._cl_original_tick
                     self._cl_degraded = False
                     log.info("Control law [reverie]: recovered")
-
-                # Periodic state persistence (every ~1 min at 1s tick)
-                self._save_counter += 1
-                if self._save_counter >= 60 and self._mixer is not None:
-                    self._save_counter = 0
-                    try:
-                        self._mixer.pipeline.save_activation_state()
-                        self._save_exploration_state()
-                    except Exception:
-                        log.debug("Periodic save failed", exc_info=True)
             await asyncio.sleep(TICK_INTERVAL_S)
         log.info("Reverie daemon stopped")
 
@@ -176,6 +167,23 @@ async def main() -> None:
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
+
+    # Periodic save in a background thread (event loop may be starved by tick I/O)
+    import threading
+
+    def _save_thread() -> None:
+        while daemon._running:
+            time.sleep(60)
+            if daemon._mixer is not None:
+                try:
+                    daemon._mixer.pipeline.save_activation_state()
+                    daemon._save_exploration_state()
+                    log.info("Periodic state saved")
+                except Exception:
+                    log.warning("Periodic save failed", exc_info=True)
+
+    saver = threading.Thread(target=_save_thread, daemon=True)
+    saver.start()
 
     await daemon.run()
 
