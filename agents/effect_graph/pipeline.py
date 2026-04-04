@@ -302,21 +302,56 @@ class SlotPipeline:
             log.exception("Temporal render failed for slot %d", slot_idx)
             return True
 
-    @staticmethod
-    def _draw_quad() -> None:
-        """Draw a fullscreen textured quad using legacy GL (compatibility profile)."""
+    _quad_vao: int = 0
+    _quad_vbo: int = 0
+
+    def _draw_quad(self) -> None:
+        """Draw a fullscreen textured quad (core profile compatible)."""
+        import ctypes
+
+        import numpy as np
         from OpenGL import GL
 
-        GL.glBegin(GL.GL_TRIANGLE_STRIP)
-        GL.glTexCoord2f(0.0, 0.0)
-        GL.glVertex2f(-1.0, -1.0)
-        GL.glTexCoord2f(1.0, 0.0)
-        GL.glVertex2f(1.0, -1.0)
-        GL.glTexCoord2f(0.0, 1.0)
-        GL.glVertex2f(-1.0, 1.0)
-        GL.glTexCoord2f(1.0, 1.0)
-        GL.glVertex2f(1.0, 1.0)
-        GL.glEnd()
+        if SlotPipeline._quad_vao == 0:
+            # Create VAO + VBO on first use
+            # Triangle strip: position (x,y) + texcoord (u,v)
+            verts = np.array(
+                [
+                    -1.0,
+                    -1.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    -1.0,
+                    1.0,
+                    0.0,
+                    -1.0,
+                    1.0,
+                    0.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                ],
+                dtype=np.float32,
+            )
+            SlotPipeline._quad_vao = GL.glGenVertexArrays(1)
+            SlotPipeline._quad_vbo = GL.glGenBuffers(1)
+            GL.glBindVertexArray(SlotPipeline._quad_vao)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, SlotPipeline._quad_vbo)
+            GL.glBufferData(GL.GL_ARRAY_BUFFER, verts.nbytes, verts, GL.GL_STATIC_DRAW)
+            # position = attribute 0
+            GL.glEnableVertexAttribArray(0)
+            GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, 16, ctypes.c_void_p(0))
+            # texcoord = attribute 1
+            GL.glEnableVertexAttribArray(1)
+            GL.glVertexAttribPointer(1, 2, GL.GL_FLOAT, GL.GL_FALSE, 16, ctypes.c_void_p(8))
+            GL.glBindVertexArray(0)
+
+        GL.glBindVertexArray(SlotPipeline._quad_vao)
+        GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+        GL.glBindVertexArray(0)
 
     def link_chain(self, upstream: Any, downstream: Any) -> None:
         """Link slots between upstream and downstream. Call after pipeline.add()."""
