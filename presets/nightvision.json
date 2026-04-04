@@ -3,20 +3,12 @@
   "description": "Green phosphor",
   "transition_ms": 500,
   "nodes": {
-    "colorgrade": {
-      "type": "colorgrade",
-      "params": {
-        "saturation": 0.3,
-        "brightness": 1.2,
-        "hue_rotate": 120
-      }
-    },
     "bloom": {
       "type": "bloom",
       "params": {
-        "threshold": 0.3,
-        "radius": 8,
-        "alpha": 0.3
+        "threshold": 0.2,
+        "radius": 12,
+        "alpha": 0.4
       }
     },
     "scanlines": {
@@ -35,7 +27,8 @@
     "mask": {
       "type": "circular_mask",
       "params": {
-        "radius": 0.42
+        "radius": 0.38,
+        "softness": 0.08
       }
     },
     "out": {
@@ -52,15 +45,23 @@
         "vignette_strength": 0.3,
         "sediment_strength": 0.1
       }
+    },
+    "nvtint": {
+      "type": "nightvision_tint",
+      "params": {
+        "green_intensity": 0.85,
+        "brightness": 2.5,
+        "contrast": 1.5
+      }
     }
   },
   "edges": [
     [
       "@live",
-      "colorgrade"
+      "nvtint"
     ],
     [
-      "colorgrade",
+      "nvtint",
       "bloom"
     ],
     [

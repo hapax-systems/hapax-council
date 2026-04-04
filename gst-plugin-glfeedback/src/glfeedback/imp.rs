@@ -257,6 +257,27 @@ impl GLFilterImpl for GlFeedback {
             }
         }
 
+        // Lazy-recompile shader on GL thread if fragment property changed
+        {
+            let mut props = self.props.lock().unwrap();
+            if props.shader_dirty {
+                props.shader_dirty = false;
+                if let Some(frag_src) = props.fragment.clone() {
+                    drop(props); // release lock before GL calls
+                    if let Some(context) = gst_gl::prelude::GLBaseFilterExt::context(&*filter) {
+                        match self.compile_shader(&context, &frag_src) {
+                            Ok(new_shader) => {
+                                self.state.lock().unwrap().as_mut().unwrap().shader = new_shader;
+                            }
+                            Err(_e) => {
+                                // Keep existing shader on failure — don't crash
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Snapshot what we need from state (minimise lock duration)
         let (prev_tex, next_fbo, next_idx, uniforms) = {
             let guard = self.state.lock().unwrap();

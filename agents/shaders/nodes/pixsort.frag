@@ -43,7 +43,7 @@ void main() {
 
     // Walk backward to find interval start
     int intervalStart = 0;
-    for (int i = 1; i < 64; i++) {
+    for (int i = 1; i < 256; i++) {
         vec2 sUV = uv - dir * texel * float(i);
         if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0) break;
         float sLum = luma(texture2D(tex, sUV).rgb);
@@ -53,7 +53,7 @@ void main() {
 
     // Walk forward to find interval end
     int intervalEnd = 0;
-    for (int i = 1; i < 64; i++) {
+    for (int i = 1; i < 256; i++) {
         vec2 sUV = uv + dir * texel * float(i);
         if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0) break;
         float sLum = luma(texture2D(tex, sUV).rgb);
@@ -68,11 +68,11 @@ void main() {
     }
 
     // Sample 12 evenly-spaced pixels within the interval
-    vec3 samples[12];
-    float sampleLums[12];
-    float stepSize = float(intervalLen) / 12.0;
+    vec3 samples[32];
+    float sampleLums[32];
+    float stepSize = float(intervalLen) / 32.0;
 
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 32; i++) {
         float pos = -float(intervalStart) + stepSize * float(i);
         vec2 sUV = uv + dir * texel * pos;
         sUV = clamp(sUV, vec2(0.0), vec2(1.0));
@@ -81,9 +81,9 @@ void main() {
     }
 
     // Bubble sort the 12 samples by luminance (ascending)
-    for (int pass = 0; pass < 11; pass++) {
-        for (int j = 0; j < 11; j++) {
-            if (j >= 11 - pass) break;
+    for (int pass = 0; pass < 31; pass++) {
+        for (int j = 0; j < 31; j++) {
+            if (j >= 31 - pass) break;
             if (sampleLums[j] > sampleLums[j + 1]) {
                 vec3 tmpC = samples[j];
                 samples[j] = samples[j + 1];
@@ -97,17 +97,17 @@ void main() {
 
     // Map current pixel position to sorted array index
     float posInInterval = float(intervalStart) / float(intervalLen);
-    float idx = posInInterval * 11.0;
+    float idx = posInInterval * 31.0;
     int idxLow = int(floor(idx));
     int idxHigh = int(ceil(idx));
-    if (idxHigh > 11) idxHigh = 11;
+    if (idxHigh > 31) idxHigh = 31;
     if (idxLow < 0) idxLow = 0;
     float frac = idx - float(idxLow);
 
     // Loop-based lookup for GLSL ES 1.0 compliance (no non-constant array indexing)
     vec3 valLow = samples[0];
     vec3 valHigh = samples[0];
-    for (int k = 0; k < 12; k++) {
+    for (int k = 0; k < 32; k++) {
         if (k == idxLow) valLow = samples[k];
         if (k == idxHigh) valHigh = samples[k];
     }
