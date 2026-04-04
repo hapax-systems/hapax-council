@@ -124,11 +124,18 @@ class GraphCompiler:
         for nid in order:
             n = graph.nodes[nid]
             d = self._registry.get(n.type)
+            # Merge registry defaults with instance overrides so unset params
+            # get their declared defaults (e.g. zoom=1.0) instead of GLSL 0.0
+            merged_params: dict[str, object] = {}
+            if d:
+                for pname, pdef in d.params.items():
+                    merged_params[pname] = pdef.default
+            merged_params.update(n.params)
             steps.append(
                 ExecutionStep(
                     node_id=nid,
                     node_type=n.type,
-                    params=dict(n.params),
+                    params=merged_params,
                     shader_source=d.glsl_source if d else None,
                     input_edges=[e for e in edges if e.target_node == nid],
                     output_edges=[e for e in edges if e.source_node == nid],
