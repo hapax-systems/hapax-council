@@ -3,7 +3,7 @@ import { PresetChip } from "./PresetChip";
 import { PRESET_CATEGORIES } from "./presetData";
 import { useStudioGraph } from "../../stores/studioGraphStore";
 import { activatePresets } from "./SequenceBar";
-import { fetchPresetGraph, type EffectGraphJson } from "./presetLoader";
+import { fetchPresetGraph } from "./presetLoader";
 import { countSlots, MAX_SLOTS } from "./presetMerger";
 
 const allPresetNames = PRESET_CATEGORIES.flatMap((cat) => cat.presets);
