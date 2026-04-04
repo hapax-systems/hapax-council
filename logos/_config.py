@@ -58,9 +58,9 @@ MODELS: dict[str, str] = {
     "fast": "gemini-flash",
     "balanced": "claude-sonnet",
     "long-context": "gemini-flash",
-    "reasoning": "qwen3:8b",
-    "coding": "qwen3:8b",
-    "local-fast": "qwen3:8b",
+    "reasoning": "reasoning",
+    "coding": "coding",
+    "local-fast": "local-fast",
 }
 
 # ── Qdrant collections ─────────────────────────────────────────────────────
