@@ -7,6 +7,7 @@ from typing import Any
 
 from .compiler import ExecutionPlan
 from .registry import ShaderRegistry
+from .temporal_slot import TemporalSlotState
 
 log = logging.getLogger(__name__)
 
@@ -37,17 +38,49 @@ class SlotPipeline:
         self._slot_assignments: list[str | None] = [None] * num_slots
         self._slot_base_params: list[dict[str, Any]] = [{} for _ in range(num_slots)]
         self._slot_pending_frag: list[str | None] = [None] * num_slots
+        self._temporal_states: list[TemporalSlotState | None] = [None] * num_slots
+        self._temporal_shaders: list[object | None] = [None] * num_slots
 
-    def create_slots(self, Gst: Any) -> list[Any]:
-        """Create N glshader slot elements with create-shader callbacks."""
+    def create_slots(self, Gst: Any, plan: ExecutionPlan | None = None) -> list[Any]:
+        """Create slot elements. Temporal steps get glfilterapp; others get glshader."""
         self._slots = []
         self._slot_base_params = [{} for _ in range(self._num_slots)]
         self._slot_pending_frag = [None] * self._num_slots
+        self._temporal_states = [None] * self._num_slots
+        self._temporal_shaders = [None] * self._num_slots
+
+        # Determine which slot indices need temporal support
+        temporal_slots: set[int] = set()
+        if plan:
+            idx = 0
+            for step in plan.steps:
+                if step.node_type == "output":
+                    continue
+                if idx >= self._num_slots:
+                    break
+                if step.temporal:
+                    temporal_slots.add(idx)
+                    self._temporal_states[idx] = TemporalSlotState(
+                        num_buffers=max(1, step.temporal_buffers)
+                    )
+                idx += 1
 
         for i in range(self._num_slots):
-            slot = Gst.ElementFactory.make("glshader", f"effect-slot-{i}")
-            slot.set_property("fragment", PASSTHROUGH_SHADER)
-            slot.connect("create-shader", self._on_create_shader, i)
+            if i in temporal_slots:
+                slot = Gst.ElementFactory.make("glfilterapp", f"effect-slot-{i}")
+                if slot is None:
+                    log.warning("glfilterapp unavailable for slot %d — falling back to glshader", i)
+                    slot = Gst.ElementFactory.make("glshader", f"effect-slot-{i}")
+                    slot.set_property("fragment", PASSTHROUGH_SHADER)
+                    slot.connect("create-shader", self._on_create_shader, i)
+                    self._temporal_states[i] = None
+                else:
+                    slot.connect("client-draw", self._on_temporal_render, i)
+                    log.info("Slot %d: glfilterapp (temporal)", i)
+            else:
+                slot = Gst.ElementFactory.make("glshader", f"effect-slot-{i}")
+                slot.set_property("fragment", PASSTHROUGH_SHADER)
+                slot.connect("create-shader", self._on_create_shader, i)
             self._slots.append(slot)
         return list(self._slots)
 
@@ -87,6 +120,156 @@ class SlotPipeline:
             log.exception("Failed to compile shader for slot %d", slot_idx)
             return None
 
+    def _compile_temporal_shader(self, slot_idx: int, ctx: Any) -> Any:
+        """Compile a temporal shader on the GL thread."""
+        frag = self._slot_pending_frag[slot_idx]
+        if frag is None:
+            return None
+        try:
+            import gi
+
+            gi.require_version("GstGL", "1.0")
+            from gi.repository import GstGL
+
+            shader = GstGL.GLShader.new(ctx)
+            vert_stage = GstGL.GLSLStage.new_default_vertex(ctx)
+            frag_stage = GstGL.GLSLStage.new_with_string(
+                ctx,
+                GL_FRAGMENT_SHADER,
+                GstGL.GLSLVersion.NONE,
+                GstGL.GLSLProfile.ES | GstGL.GLSLProfile.COMPATIBILITY,
+                frag,
+            )
+            shader.compile_attach_stage(vert_stage)
+            shader.compile_attach_stage(frag_stage)
+            shader.link()
+            node = self._slot_assignments[slot_idx] or "?"
+            log.info("GL compiled temporal shader for slot %d (%s)", slot_idx, node)
+            return shader
+        except Exception:
+            log.exception("Failed to compile temporal shader for slot %d", slot_idx)
+            return None
+
+    def _on_temporal_render(
+        self, element: Any, texture_id: int, width: int, height: int, slot_idx: int
+    ) -> bool:
+        """GL-thread callback for temporal slots (glfilterapp client-draw).
+
+        Binds the accumulation texture as tex_accum, renders through the
+        compiled shader, then copies the output to the accumulation texture.
+        """
+        try:
+            from OpenGL import GL
+
+            state = self._temporal_states[slot_idx]
+            if state is None:
+                return True
+
+            # Lazy-init accumulation texture on first frame
+            if not state.initialized:
+                accum_tex = GL.glGenTextures(1)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, accum_tex)
+                GL.glTexImage2D(
+                    GL.GL_TEXTURE_2D,
+                    0,
+                    GL.GL_RGBA8,
+                    width,
+                    height,
+                    0,
+                    GL.GL_RGBA,
+                    GL.GL_UNSIGNED_BYTE,
+                    None,
+                )
+                GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+                GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+                GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+                GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+                state.initialize(width, height, accum_tex)
+                log.info(
+                    "Temporal slot %d: allocated accum texture %d (%dx%d)",
+                    slot_idx,
+                    accum_tex,
+                    width,
+                    height,
+                )
+
+            # Lazy-compile shader on GL thread
+            shader = self._temporal_shaders[slot_idx]
+            if shader is None and self._slot_pending_frag[slot_idx]:
+                ctx = element.get_property("context")
+                if ctx:
+                    shader = self._compile_temporal_shader(slot_idx, ctx)
+                    self._temporal_shaders[slot_idx] = shader
+            if shader is None:
+                return True  # passthrough
+
+            # Use the shader program
+            prog_id = shader.get_program_handle()
+            GL.glUseProgram(prog_id)
+
+            # Bind tex (current frame) on texture unit 0
+            tex_loc = GL.glGetUniformLocation(prog_id, "tex")
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
+            if tex_loc >= 0:
+                GL.glUniform1i(tex_loc, 0)
+
+            # Bind tex_accum (previous frame) on texture unit 1
+            accum_loc = GL.glGetUniformLocation(prog_id, "tex_accum")
+            if accum_loc >= 0 and state.accum_texture_id is not None:
+                GL.glActiveTexture(GL.GL_TEXTURE1)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, state.accum_texture_id)
+                GL.glUniform1i(accum_loc, 1)
+
+            # Set float uniforms
+            params = self._slot_base_params[slot_idx]
+            for key, value in params.items():
+                if isinstance(value, (int, float)):
+                    loc = GL.glGetUniformLocation(prog_id, f"u_{key}")
+                    if loc >= 0:
+                        GL.glUniform1f(loc, float(value))
+                elif isinstance(value, str):
+                    defn = self._registry.get(self._slot_assignments[slot_idx] or "")
+                    if defn and key in defn.params and defn.params[key].enum_values:
+                        vals = defn.params[key].enum_values or []
+                        idx = vals.index(value) if value in vals else 0
+                        loc = GL.glGetUniformLocation(prog_id, f"u_{key}")
+                        if loc >= 0:
+                            GL.glUniform1f(loc, float(idx))
+
+            # Set time uniform
+            import time as time_mod
+
+            time_loc = GL.glGetUniformLocation(prog_id, "u_time")
+            if time_loc >= 0:
+                GL.glUniform1f(time_loc, time_mod.monotonic() % 3600.0)
+
+            # Set resolution uniforms
+            for uname, uval in [("u_width", float(width)), ("u_height", float(height))]:
+                loc = GL.glGetUniformLocation(prog_id, uname)
+                if loc >= 0:
+                    GL.glUniform1f(loc, uval)
+
+            # Draw fullscreen quad
+            GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+
+            # Copy rendered output to accum texture for next frame
+            if state.accum_texture_id is not None:
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, state.accum_texture_id)
+                GL.glCopyTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height)
+
+            # Clean up GL state
+            GL.glUseProgram(0)
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+
+            return True
+        except Exception:
+            log.exception("Temporal render failed for slot %d", slot_idx)
+            return True
+
     def link_chain(self, upstream: Any, downstream: Any) -> None:
         """Link slots between upstream and downstream. Call after pipeline.add()."""
         prev = upstream
@@ -98,9 +281,16 @@ class SlotPipeline:
             log.error("Failed to link %s → %s", prev.get_name(), downstream.get_name())
         log.info("Built %d-slot shader pipeline", self._num_slots)
 
-    def build_chain(self, pipeline: Any, Gst: Any, upstream: Any, downstream: Any) -> None:
-        """Create N glshader elements, link them between upstream and downstream."""
-        slots = self.create_slots(Gst)
+    def build_chain(
+        self,
+        pipeline: Any,
+        Gst: Any,
+        upstream: Any,
+        downstream: Any,
+        plan: ExecutionPlan | None = None,
+    ) -> None:
+        """Create slot elements, link them between upstream and downstream."""
+        slots = self.create_slots(Gst, plan=plan)
         for slot in slots:
             pipeline.add(slot)
         self.link_chain(upstream, downstream)
@@ -131,13 +321,18 @@ class SlotPipeline:
                 self._slot_assignments[slot_idx] = step.node_type
                 self._slot_base_params[slot_idx] = dict(step.params)
                 self._set_uniforms(slot_idx, step.params)
+                if step.temporal and self._temporal_states[slot_idx] is not None:
+                    # Temporal: shader compiled lazily in _on_temporal_render
+                    self._temporal_shaders[slot_idx] = None
                 slot_idx += 1
 
         # Trigger GL recompilation in a single pass after all assignments are final.
         # Avoids race where GL thread compiles a stale passthrough before the actual
         # shader is assigned (create-shader signals fire asynchronously on GL thread).
+        # Only non-temporal slots use glshader's update-shader property.
         for i in range(self._num_slots):
-            self._slots[i].set_property("update-shader", True)
+            if self._temporal_states[i] is None:
+                self._slots[i].set_property("update-shader", True)
 
         log.info("Activated plan '%s': %d/%d slots used", plan.name, slot_idx, self._num_slots)
 
@@ -160,6 +355,8 @@ class SlotPipeline:
 
     def _set_uniforms(self, slot_idx: int, params: dict[str, Any]) -> None:
         """Build uniform string from params and set on slot element."""
+        if self._temporal_states[slot_idx] is not None:
+            return  # temporal slots set uniforms in the render callback
         parts = []
         for key, value in params.items():
             if isinstance(value, bool):
