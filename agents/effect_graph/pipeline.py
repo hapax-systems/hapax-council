@@ -37,17 +37,34 @@ class SlotPipeline:
         self._slot_assignments: list[str | None] = [None] * num_slots
         self._slot_base_params: list[dict[str, Any]] = [{} for _ in range(num_slots)]
         self._slot_pending_frag: list[str | None] = [None] * num_slots
+        self._slot_is_temporal: list[bool] = [False] * num_slots
 
-    def create_slots(self, Gst: Any) -> list[Any]:
-        """Create N glshader slot elements with create-shader callbacks."""
+    def create_slots(self, Gst: Any, plan: ExecutionPlan | None = None) -> list[Any]:
+        """Create N slot elements using glfeedback (if available) for temporal readiness.
+
+        glfeedback works for both temporal and non-temporal shaders. When the
+        shader doesn't use tex_accum, the ping-pong FBO is a no-op (copying
+        identical frames). This avoids needing to know the plan at build time.
+        Falls back to glshader if glfeedback is not installed.
+        """
         self._slots = []
         self._slot_base_params = [{} for _ in range(self._num_slots)]
         self._slot_pending_frag = [None] * self._num_slots
+        self._slot_is_temporal = [False] * self._num_slots
+
+        has_glfeedback = Gst.ElementFactory.find("glfeedback") is not None
+        if has_glfeedback:
+            log.info("glfeedback available — all slots support temporal feedback")
 
         for i in range(self._num_slots):
-            slot = Gst.ElementFactory.make("glshader", f"effect-slot-{i}")
-            slot.set_property("fragment", PASSTHROUGH_SHADER)
-            slot.connect("create-shader", self._on_create_shader, i)
+            if has_glfeedback:
+                slot = Gst.ElementFactory.make("glfeedback", f"effect-slot-{i}")
+                slot.set_property("fragment", PASSTHROUGH_SHADER)
+                self._slot_is_temporal[i] = True
+            else:
+                slot = Gst.ElementFactory.make("glshader", f"effect-slot-{i}")
+                slot.set_property("fragment", PASSTHROUGH_SHADER)
+                slot.connect("create-shader", self._on_create_shader, i)
             self._slots.append(slot)
         return list(self._slots)
 
@@ -98,9 +115,16 @@ class SlotPipeline:
             log.error("Failed to link %s → %s", prev.get_name(), downstream.get_name())
         log.info("Built %d-slot shader pipeline", self._num_slots)
 
-    def build_chain(self, pipeline: Any, Gst: Any, upstream: Any, downstream: Any) -> None:
-        """Create N glshader elements, link them between upstream and downstream."""
-        slots = self.create_slots(Gst)
+    def build_chain(
+        self,
+        pipeline: Any,
+        Gst: Any,
+        upstream: Any,
+        downstream: Any,
+        plan: ExecutionPlan | None = None,
+    ) -> None:
+        """Create slot elements, link them between upstream and downstream."""
+        slots = self.create_slots(Gst, plan=plan)
         for slot in slots:
             pipeline.add(slot)
         self.link_chain(upstream, downstream)
@@ -133,11 +157,16 @@ class SlotPipeline:
                 self._set_uniforms(slot_idx, step.params)
                 slot_idx += 1
 
-        # Trigger GL recompilation in a single pass after all assignments are final.
-        # Avoids race where GL thread compiles a stale passthrough before the actual
-        # shader is assigned (create-shader signals fire asynchronously on GL thread).
+        # Apply changes: glfeedback uses set_property, glshader uses update-shader
         for i in range(self._num_slots):
-            self._slots[i].set_property("update-shader", True)
+            if self._slot_is_temporal[i]:
+                # glfeedback: set fragment and uniforms via properties
+                frag = self._slot_pending_frag[i] or PASSTHROUGH_SHADER
+                self._slots[i].set_property("fragment", frag)
+                self._apply_glfeedback_uniforms(i)
+            else:
+                # glshader: trigger GL-thread recompilation
+                self._slots[i].set_property("update-shader", True)
 
         log.info("Activated plan '%s': %d/%d slots used", plan.name, slot_idx, self._num_slots)
 
@@ -151,12 +180,15 @@ class SlotPipeline:
     def update_node_uniforms(self, node_type: str, params: dict[str, Any]) -> None:
         """Update uniforms for a node by finding its slot.
 
-        Merges into base params so subsequent _set_uniforms calls include everything.
+        Merges into base params so subsequent calls include everything.
         """
         slot_idx = self.find_slot_for_node(node_type)
         if slot_idx is not None:
             self._slot_base_params[slot_idx].update(params)
-            self._set_uniforms(slot_idx, self._slot_base_params[slot_idx])
+            if self._slot_is_temporal[slot_idx]:
+                self._apply_glfeedback_uniforms(slot_idx)
+            else:
+                self._set_uniforms(slot_idx, self._slot_base_params[slot_idx])
 
     def _set_uniforms(self, slot_idx: int, params: dict[str, Any]) -> None:
         """Build uniform string from params and set on slot element."""
@@ -191,6 +223,27 @@ class SlotPipeline:
                 log.warning("Failed to parse uniform string: %s", uniform_str)
         except (ImportError, ValueError):
             log.exception("Failed to set uniforms on slot %d", slot_idx)
+
+    def _apply_glfeedback_uniforms(self, slot_idx: int) -> None:
+        """Set uniforms on a glfeedback element via its 'uniforms' property.
+
+        The glfeedback element accepts comma-separated key=value pairs.
+        """
+        params = self._slot_base_params[slot_idx]
+        parts = []
+        for key, value in params.items():
+            if isinstance(value, bool):
+                parts.append(f"u_{key}={1.0 if value else 0.0}")
+            elif isinstance(value, (int, float)):
+                parts.append(f"u_{key}={float(value)}")
+            elif isinstance(value, str):
+                defn = self._registry.get(self._slot_assignments[slot_idx] or "")
+                if defn and key in defn.params and defn.params[key].enum_values:
+                    vals = defn.params[key].enum_values or []
+                    idx = vals.index(value) if value in vals else 0
+                    parts.append(f"u_{key}={float(idx)}")
+        if parts:
+            self._slots[slot_idx].set_property("uniforms", ", ".join(parts))
 
     @property
     def num_slots(self) -> int:
