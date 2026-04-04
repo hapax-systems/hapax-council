@@ -2,7 +2,7 @@
 Description=Hapax Visual Stack — all visual surface services
 # The complete visual pipeline: imagination renders, logos displays,
 # DMN generates content, VLA bridges perception, compositor feeds cameras.
-Wants=hapax-imagination.service hapax-logos.service hapax-dmn.service hapax-reverie.service visual-layer-aggregator.service studio-compositor.service
+Wants=hapax-imagination.service hapax-imagination-loop.service hapax-logos.service hapax-dmn.service hapax-reverie.service hapax-content-resolver.service visual-layer-aggregator.service studio-compositor.service
 After=logos-api.service hapax-daimonion.service
 
 [Install]
