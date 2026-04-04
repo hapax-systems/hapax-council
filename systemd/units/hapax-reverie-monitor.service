@@ -1,0 +1,10 @@
+[Unit]
+Description=Reverie prediction monitor — sample 6 behavioral predictions
+After=logos-api.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.reverie_prediction_monitor
+Environment=HOME=/home/hapax
+TimeoutSec=30

@@ -1,0 +1,11 @@
+[Unit]
+Description=Hapax Logos/Reverie — rebuild binaries from main
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/rebuild-logos.sh
+TimeoutStartSec=600
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+SyslogIdentifier=hapax-rebuild

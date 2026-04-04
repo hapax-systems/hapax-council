@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax Logos Vite dev server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hapax/projects/hapax-council/hapax-logos
+ExecStartPre=/usr/bin/pnpm install --frozen-lockfile
+ExecStart=/usr/bin/pnpm dev --port 5173
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=development
+
+[Install]
+WantedBy=default.target

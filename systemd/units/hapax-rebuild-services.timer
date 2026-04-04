@@ -1,0 +1,10 @@
+[Unit]
+Description=Rebuild Hapax Python services (5 min check)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

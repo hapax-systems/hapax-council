@@ -1,0 +1,18 @@
+[Unit]
+Description=Hapax Imagination — GPU visual surface
+After=hapax-secrets.service
+Requires=hapax-secrets.service
+PartOf=hapax-visual-stack.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hapax-imagination
+Restart=always
+RestartSec=2
+MemoryMax=4G
+Environment=XDG_RUNTIME_DIR=%t
+Environment=__NV_DISABLE_EXPLICIT_SYNC=1
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

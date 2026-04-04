@@ -1,0 +1,25 @@
+[Unit]
+Description=Hapax Python services — rebuild from main
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+SyslogIdentifier=hapax-rebuild-services
+TimeoutStartSec=120
+
+# hapax-dmn: restart if DMN, imagination, or reverie code changed
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-dmn.service --watch "agents/dmn/ agents/imagination.py agents/imagination_resolver.py agents/imagination_context.py agents/reverie/ agents/visual_chain.py agents/effect_graph/ shared/" --sha-key dmn
+
+# hapax-daimonion: restart if voice agent or shared code changed
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-daimonion.service --watch "agents/hapax_daimonion/ shared/" --sha-key voice
+
+# logos-api: restart if logos backend code changed
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service logos-api.service --watch "logos/" --sha-key logos-api
+
+# officium-api: restart if officium code changed (separate repo)
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-officium --service officium-api.service --sha-key officium
+
+# hapax-mcp: pull-only (MCP server restarts on Claude Code reconnect)
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-mcp --sha-key hapax-mcp --pull-only

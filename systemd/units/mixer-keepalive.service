@@ -1,0 +1,9 @@
+[Unit]
+Description=Send sub-audible pulse to Studio 24c to keep L-12 alive
+After=pipewire.service
+
+[Service]
+Type=oneshot
+# 10Hz @ -80dB — inaudible, below monitor noise floor
+# No longer mutes/unmutes — voice daemon needs the sink active
+ExecStart=/usr/bin/pw-play --target=alsa_output.usb-PreSonus_Studio_24c_SC1E24390244-00.analog-stereo /home/hapax/.local/share/mixer-keepalive.wav

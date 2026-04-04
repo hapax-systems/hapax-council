@@ -1,0 +1,13 @@
+[Unit]
+Description=Reload Logos/Reverie/API after new build
+# Triggered by hapax-build-reload.path when binaries or sentinel change
+# Don't start on boot — only via path trigger
+RefuseManualStop=no
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/reload-after-build.sh
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+SyslogIdentifier=hapax-build-reload
+TimeoutStartSec=60

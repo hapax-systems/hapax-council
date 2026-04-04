@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic pulse to keep L-12 mixer from auto power off
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=2h
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target
