@@ -94,9 +94,9 @@ MODELS: dict[str, str] = {
     "fast": "gemini-flash",
     "balanced": "claude-sonnet",
     "long-context": "gemini-flash",  # 1M context, for prompts that exceed 200K
-    "reasoning": "qwen3:8b",
-    "coding": "qwen3:8b",
-    "local-fast": "qwen3:8b",
+    "reasoning": "reasoning",
+    "coding": "coding",
+    "local-fast": "local-fast",
 }
 
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
