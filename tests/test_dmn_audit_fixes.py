@@ -145,15 +145,15 @@ class TestSensorReadFailures:
         assert result is None
 
 
-class TestOllamaLogLevel:
-    """Tests that Ollama failures are logged at WARNING, not DEBUG."""
+class TestTabbyFailureLogLevel:
+    """Tests that TabbyAPI failures are logged at WARNING, not DEBUG."""
 
-    async def test_ollama_failure_logs_warning(self, caplog):
+    async def test_tabby_failure_logs_warning(self, caplog):
         import logging
 
         import httpx
 
-        from agents.dmn.ollama import _ollama_fast
+        from agents.dmn.ollama import _tabby_fast
 
         with (
             caplog.at_level(logging.DEBUG, logger="dmn.ollama"),
@@ -162,7 +162,7 @@ class TestOllamaLogLevel:
                 side_effect=httpx.ConnectError("test connection refused"),
             ),
         ):
-            result = await _ollama_fast("test prompt", "test system")
+            result = await _tabby_fast("test prompt", "test system")
         assert result == ""
         ollama_records = [r for r in caplog.records if r.name == "dmn.ollama"]
         assert any(r.levelno >= logging.WARNING for r in ollama_records)

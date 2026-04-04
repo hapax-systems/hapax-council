@@ -48,9 +48,9 @@ _MODELS: dict[str, str] = {
     "fast": "gemini-flash",
     "balanced": "claude-sonnet",
     "long-context": "gemini-flash",
-    "reasoning": "qwen3:8b",
-    "coding": "qwen3:8b",
-    "local-fast": "qwen3:8b",
+    "reasoning": "reasoning",
+    "coding": "coding",
+    "local-fast": "local-fast",
 }
 
 
@@ -428,12 +428,13 @@ def _build_usage_map() -> dict[str, str]:
 
             for model, count in sorted(model_counts.items(), key=lambda x: -x[1])[:5]:
                 if "ollama" in model.lower() or model in (
-                    "qwen3:8b",
-                    "qwen3:8b",
+                    "local-fast",
+                    "coding",
+                    "reasoning",
                     "nomic-embed",
                 ):
                     usage_map.setdefault(
-                        "ollama", f"Serving local models, {count}+ calls in 7 days"
+                        "local-inference", f"Serving local models, {count}+ calls in 7 days"
                     )
                 if "embed" in model.lower():
                     usage_map.setdefault("embedding-model", f"{count} embedding calls in 7 days")

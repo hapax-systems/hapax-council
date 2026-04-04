@@ -7,7 +7,7 @@ from agents.dmn.pulse import DMNPulse
 
 
 class TestDMNPulseIntegration:
-    async def test_sensory_tick_with_ollama(self):
+    async def test_sensory_tick_with_tabby(self):
         buf = DMNBuffer()
         pulse = DMNPulse(buf)
         snapshot = {
@@ -16,8 +16,8 @@ class TestDMNPulseIntegration:
             "fortress": None,
             "watch": {"heart_rate": 72, "age_s": 1.0},
         }
-        with patch("agents.dmn.pulse._ollama_fast", new_callable=AsyncMock) as mock_ollama:
-            mock_ollama.return_value = "Operator coding with moderate flow."
+        with patch("agents.dmn.pulse._tabby_fast", new_callable=AsyncMock) as mock_tabby:
+            mock_tabby.return_value = "Operator coding with moderate flow."
             await pulse._sensory_tick(snapshot)
         assert len(buf) == 1
         obs = list(buf._observations)[0]

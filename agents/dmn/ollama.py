@@ -4,7 +4,8 @@ Sensory ticks use _tabby_fast (OpenAI-compatible, ~1-3s).
 Evaluative/consolidation use start_thinking/collect_thinking (fire-and-forget,
 result collected on next tick cycle).
 
-Backend: TabbyAPI (EXL3) on :5000, fallback to Ollama on :11434.
+Backend: TabbyAPI (EXL3) on :5000. No Ollama fallback — loading a second model
+causes VRAM exhaustion when TabbyAPI is already resident.
 """
 
 from __future__ import annotations
@@ -17,9 +18,7 @@ import httpx
 log = logging.getLogger("dmn.ollama")
 
 TABBY_CHAT_URL = "http://localhost:5000/v1/chat/completions"
-OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 DMN_MODEL = "Qwen3.5-35B-A3B-exl3-3.00bpw"
-DMN_MODEL_OLLAMA_FALLBACK = "qwen3:8b"
 
 SENSORY_SYSTEM = (
     "You are a continuous situation monitor. Report WHAT is happening in one sentence. "
@@ -62,11 +61,11 @@ async def _tabby_fast(prompt: str, system: str) -> str:
             if resp.status_code == 200:
                 data = resp.json()
                 return data["choices"][0]["message"]["content"].strip()
-            log.warning("TabbyAPI fast returned %d, falling back to Ollama", resp.status_code)
+            log.warning("TabbyAPI fast returned %d, skipping tick", resp.status_code)
     except Exception as exc:
-        log.warning("TabbyAPI fast failed (%s), falling back to Ollama", exc)
+        log.warning("TabbyAPI fast unavailable (%s), skipping tick", exc)
 
-    return await _ollama_fallback(prompt, system)
+    return ""
 
 
 async def _tabby_think(prompt: str, system: str) -> str:
@@ -89,35 +88,10 @@ async def _tabby_think(prompt: str, system: str) -> str:
             if resp.status_code == 200:
                 data = resp.json()
                 return data["choices"][0]["message"]["content"].strip()
-            log.warning("TabbyAPI think returned %d, falling back to Ollama", resp.status_code)
+            log.warning("TabbyAPI think returned %d, skipping tick", resp.status_code)
     except Exception as exc:
-        log.warning("TabbyAPI think failed (%s), falling back to Ollama", exc)
+        log.warning("TabbyAPI think unavailable (%s), skipping tick", exc)
 
-    return await _ollama_fallback(prompt, system)
-
-
-async def _ollama_fallback(prompt: str, system: str) -> str:
-    """Fallback to Ollama if TabbyAPI is unavailable."""
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                OLLAMA_CHAT_URL,
-                json={
-                    "model": DMN_MODEL_OLLAMA_FALLBACK,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "stream": False,
-                    "keep_alive": "10m",
-                    "options": {"temperature": 0.3},
-                },
-            )
-            if resp.status_code == 200:
-                msg = resp.json().get("message", {})
-                return msg.get("content", "").strip()
-    except Exception as exc:
-        log.warning("Ollama fallback also failed: %s", exc)
     return ""
 
 
