@@ -63,9 +63,6 @@ def build_reverie_pipeline():
 
     p = AffordancePipeline()
     records = build_reverie_pipeline_affordances()
-    registered = 0
-    for rec in records:
-        if p.index_capability(rec):
-            registered += 1
+    registered = p.index_capabilities_batch(records)
     log.info("Registered %d/%d affordances in Reverie pipeline", registered, len(records))
     return p

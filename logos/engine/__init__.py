@@ -464,15 +464,15 @@ class ReactiveEngine:
             # Affordance pipeline: convert event and select capabilities
             try:
                 if not self._cascade_initialized:
-                    for rule in self._registry:
-                        desc = self._generate_rule_description(rule)
-                        self._affordance_pipeline.index_capability(
-                            self._rule_capability_record_class(
-                                name=rule.name,
-                                description=desc,
-                                daemon="logos_engine",
-                            )
+                    rule_records = [
+                        self._rule_capability_record_class(
+                            name=rule.name,
+                            description=self._generate_rule_description(rule),
+                            daemon="logos_engine",
                         )
+                        for rule in self._registry
+                    ]
+                    self._affordance_pipeline.index_capabilities_batch(rule_records)
                     self._cascade_initialized = True
                     _log.info(
                         "Affordance pipeline: %d rule capabilities indexed", len(self._registry)
