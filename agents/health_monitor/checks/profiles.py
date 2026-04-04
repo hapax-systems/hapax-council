@@ -100,9 +100,11 @@ async def check_profile_staleness() -> list[CheckResult]:
             last_run = last_run.replace(tzinfo=UTC)
         age_hours = (now - last_run).total_seconds() / 3600
 
-        if age_hours < 24:
+        # Timer runs every 12h — a single failure means 24h gap.
+        # DEGRADED at 48h (missed 3+ cycles), FAILED at 96h.
+        if age_hours < 48:
             status = Status.HEALTHY
-        elif age_hours < 72:
+        elif age_hours < 96:
             status = Status.DEGRADED
         else:
             status = Status.FAILED

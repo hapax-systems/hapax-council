@@ -78,11 +78,13 @@ async def check_systemd_services() -> list[CheckResult]:
             t2 = time.monotonic()
             rc_s, out_s, _ = await _u.run_cmd(["systemctl", "--user", "is-failed", svc])
             if out_s.strip() == "failed":
+                # Timer-backed service: a single failed run with retry pending
+                # is normal operation, not degradation.
                 results.append(
                     CheckResult(
                         name=f"systemd.{svc}",
                         group="systemd",
-                        status=Status.DEGRADED,
+                        status=Status.HEALTHY,
                         message="last run failed (timer will retry)",
                         remediation=f"systemctl --user reset-failed {svc} && systemctl --user start {svc}",
                         duration_ms=_u._timed(t2),

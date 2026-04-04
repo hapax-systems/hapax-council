@@ -232,13 +232,14 @@ async def check_watch_connected() -> list[CheckResult]:
     age = time.time() - data.get("last_seen_epoch", 0)
     battery = data.get("battery_pct")
     bat_str = f", battery {battery}%" if battery is not None else ""
-    # Wear OS Doze defers WorkManager tasks — 30min threshold is realistic
+    # Watch is tier 3 (non-critical) and routinely off-wrist overnight.
+    # Report as HEALTHY with informational message, not DEGRADED.
     if age > 1800:
         return [
             CheckResult(
                 name="connectivity.watch",
                 group="connectivity",
-                status=Status.DEGRADED,
+                status=Status.HEALTHY,
                 message=f"Watch last seen {age / 60:.0f}m ago{bat_str}",
                 duration_ms=_u._timed(t),
                 tier=3,
