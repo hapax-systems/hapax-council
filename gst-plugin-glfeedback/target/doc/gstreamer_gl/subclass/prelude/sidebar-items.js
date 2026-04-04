@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"trait":["GLBaseFilterImpl","GLBaseFilterImplExt","GLBaseSrcImpl","GLBaseSrcImplExt","GLFilterImpl","GLFilterImplExt"]};

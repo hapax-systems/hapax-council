@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"struct":["InNegotiation","Readable","VideoCodecState"],"trait":["VideoCodecStateContext"]};

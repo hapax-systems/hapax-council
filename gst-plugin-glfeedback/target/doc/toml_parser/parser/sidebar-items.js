@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["EventKind"],"fn":["parse_document","parse_key","parse_simple_key","parse_value"],"struct":["Event","RecursionGuard","ValidateWhitespace"],"trait":["EventReceiver"]};
