@@ -52,7 +52,8 @@ async def _call_vision_model(frame_b64: str, narrative: str) -> str:
             {"role": "user", "content": user_content},
         ],
         temperature=0.1,
-        max_tokens=100,
+        max_tokens=150,
+        extra_body={"thinking": {"type": "disabled", "budget_tokens": 0}},
     )
     return resp.choices[0].message.content.strip()
 
