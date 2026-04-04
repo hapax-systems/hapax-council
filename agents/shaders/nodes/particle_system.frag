@@ -15,7 +15,7 @@ uniform float u_time;
 uniform float u_width;
 uniform float u_height;
 
-float hash(float n) { return fract(sin(mod(n, 289.0) * 127.1) * 43758.5453); }
+float hash(float n) { float p = fract(n * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
 
 void main() {
     vec4 base = texture2D(tex, v_texcoord);

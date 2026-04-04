@@ -9,7 +9,11 @@ uniform float u_animated;
 uniform float u_time;
 uniform float u_width;
 uniform float u_height;
-float hash(vec2 p){vec3 p3=fract(vec3(p.xyx)*0.1031);p3+=dot(p3,p3.yzx+33.33);return fract((p3.x+p3.y)*p3.z);}
+float hash(vec2 p){
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 19.19);
+    return fract((p3.x + p3.y) * p3.z);
+}
 void main() {
     vec4 c = texture2D(tex, v_texcoord);
     vec2 uv = floor(v_texcoord*vec2(u_width,u_height)/8.0);
