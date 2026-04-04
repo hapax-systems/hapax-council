@@ -32,8 +32,16 @@ export async function activatePresets(
   await api.put("/studio/effect/graph", merged);
 }
 
-const BAR_HEIGHT = 32;
-const MIN_BLOCK_WIDTH = 60;
+const BLOCK_HEIGHT = 52;
+const MIN_BLOCK_WIDTH = 120;
+
+/** Summarize preset list to fit in a small block */
+function summarizePresets(presets: string[]): string {
+  if (presets.length === 0) return "empty";
+  if (presets.length === 1) return presets[0];
+  if (presets.length === 2) return `${presets[0]} → ${presets[1]}`;
+  return `${presets.length} presets`;
+}
 
 function SequenceBarInner() {
   const sequence = useStudioGraph((s) => s.sequence);
@@ -54,7 +62,7 @@ function SequenceBarInner() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { chains, activeChainIndex, playing, looping } = sequence;
-  const activeChain = chains[activeChainIndex];
+  const activeChain = activeChainIndex >= 0 ? chains[activeChainIndex] : undefined;
 
   // Activate a chain by index
   const activateIndex = useCallback(
@@ -84,6 +92,7 @@ function SequenceBarInner() {
 
   // Advance to next chain
   const advanceChain = useCallback(() => {
+    if (chains.length === 0) return;
     const nextIdx = activeChainIndex + 1;
     if (nextIdx >= chains.length) {
       if (looping) {
@@ -131,14 +140,14 @@ function SequenceBarInner() {
   }, [activeChainIndex]);
 
   const handlePlayPause = useCallback(() => {
+    if (chains.length === 0) return;
     if (!playing) {
-      // Activate current chain immediately when starting playback
-      activateIndex(activeChainIndex);
+      if (activeChainIndex >= 0) activateIndex(activeChainIndex);
       elapsedRef.current = 0;
       setElapsed(0);
     }
     setSequencePlaying(!playing);
-  }, [playing, activeChainIndex, activateIndex, setSequencePlaying]);
+  }, [playing, activeChainIndex, chains.length, activateIndex, setSequencePlaying]);
 
   const handleDurationClick = useCallback(
     (e: React.MouseEvent, idx: number) => {
@@ -174,6 +183,10 @@ function SequenceBarInner() {
     [removeChain],
   );
 
+  const handleAddChain = useCallback(() => {
+    addChain();
+  }, [addChain]);
+
   // Total duration for proportional widths
   const totalDuration = chains.reduce((sum, c) => sum + c.durationSeconds, 0) || 1;
   const currentDuration = activeChain?.durationSeconds ?? 30;
@@ -194,9 +207,8 @@ function SequenceBarInner() {
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 4,
-          padding: "4px 8px",
-          height: BAR_HEIGHT + 8,
+          gap: 6,
+          padding: "6px 8px",
           borderBottom: "1px solid #3c3836",
         }}
       >
@@ -204,14 +216,15 @@ function SequenceBarInner() {
         <button
           onClick={handlePlayPause}
           title={playing ? "Pause sequence" : "Play sequence"}
+          disabled={chains.length === 0}
           style={{
             background: "none",
             border: "1px solid #504945",
             borderRadius: 2,
-            padding: "1px 6px",
+            padding: "2px 8px",
             fontSize: 13,
-            color: playing ? "#fabd2f" : "#928374",
-            cursor: "pointer",
+            color: chains.length === 0 ? "#3c3836" : playing ? "#fabd2f" : "#928374",
+            cursor: chains.length === 0 ? "not-allowed" : "pointer",
             flexShrink: 0,
             lineHeight: 1,
           }}
@@ -225,35 +238,39 @@ function SequenceBarInner() {
             flex: 1,
             display: "flex",
             alignItems: "center",
-            gap: 2,
-            overflow: "hidden",
+            gap: 4,
+            overflowX: "auto",
+            overflowY: "hidden",
           }}
         >
+          {chains.length === 0 && (
+            <span style={{ fontSize: 9, color: "#504945", paddingLeft: 4 }}>
+              no chains — press [+] to add one
+            </span>
+          )}
           {chains.map((chain, idx) => {
             const isActive = idx === activeChainIndex;
             const widthPct = (chain.durationSeconds / totalDuration) * 100;
-            const minW = MIN_BLOCK_WIDTH;
+            const presetSummary = summarizePresets(chain.presets);
             return (
               <div
                 key={chain.id}
                 onClick={() => handleSelectChain(idx)}
-                title={`Chain ${idx + 1}: ${chain.presets.length} preset(s), ${chain.durationSeconds}s`}
+                title={`Chain ${idx + 1}: ${chain.presets.join(" → ") || "empty"}, ${chain.durationSeconds}s`}
                 style={{
                   position: "relative",
                   flexShrink: 0,
-                  width: `max(${minW}px, ${widthPct}%)`,
-                  maxWidth: 200,
-                  height: BAR_HEIGHT,
+                  width: `max(${MIN_BLOCK_WIDTH}px, ${widthPct}%)`,
+                  maxWidth: 240,
+                  height: BLOCK_HEIGHT,
                   background: isActive ? "rgba(250,189,47,0.10)" : "rgba(60,56,54,0.5)",
-                  border: isActive
-                    ? "1px solid #fabd2f"
-                    : "1px solid #504945",
-                  borderRadius: 2,
+                  border: isActive ? "1.5px solid #fabd2f" : "1px solid #504945",
+                  borderRadius: 3,
                   cursor: "pointer",
                   display: "flex",
                   flexDirection: "column",
-                  justifyContent: "center",
-                  padding: "0 4px",
+                  justifyContent: "space-between",
+                  padding: "4px 6px",
                   overflow: "hidden",
                 }}
               >
@@ -266,33 +283,64 @@ function SequenceBarInner() {
                       left: 0,
                       height: "100%",
                       width: `${progressPct}%`,
-                      background: "rgba(250,189,47,0.15)",
+                      background: "rgba(250,189,47,0.12)",
                       pointerEvents: "none",
                       transition: "width 0.4s linear",
                     }}
                   />
                 )}
 
-                {/* Chain label */}
+                {/* Top row: chain number + remove button */}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    zIndex: 1,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: "bold",
+                      color: isActive ? "#fabd2f" : "#928374",
+                    }}
+                  >
+                    C{idx + 1}
+                  </span>
+                  <button
+                    onClick={(e) => handleRemoveChain(e, idx)}
+                    title="Remove chain"
+                    style={{
+                      background: "none",
+                      border: "none",
+                      fontSize: 10,
+                      color: "#504945",
+                      cursor: "pointer",
+                      padding: 0,
+                      lineHeight: 1,
+                      zIndex: 2,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+
+                {/* Preset names */}
                 <div
                   style={{
                     fontSize: 9,
-                    color: isActive ? "#fabd2f" : "#928374",
+                    color: isActive ? "#ebdbb2" : "#665c54",
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     zIndex: 1,
                   }}
                 >
-                  {`C${idx + 1}`}
-                  {chain.presets.length > 0 && (
-                    <span style={{ color: "#665c54", marginLeft: 3 }}>
-                      {chain.presets.length}p
-                    </span>
-                  )}
+                  {presetSummary}
                 </div>
 
-                {/* Duration (click to edit) */}
+                {/* Duration row */}
                 <div style={{ zIndex: 1 }}>
                   {editingDurationIdx === idx ? (
                     <input
@@ -303,7 +351,7 @@ function SequenceBarInner() {
                       onKeyDown={handleDurationKeyDown}
                       onClick={(e) => e.stopPropagation()}
                       style={{
-                        width: 36,
+                        width: 40,
                         fontSize: 9,
                         background: "#1d2021",
                         border: "1px solid #fabd2f",
@@ -318,7 +366,7 @@ function SequenceBarInner() {
                       onClick={(e) => handleDurationClick(e, idx)}
                       style={{
                         fontSize: 9,
-                        color: "#665c54",
+                        color: "#504945",
                         cursor: "text",
                         textDecoration: "underline dotted",
                       }}
@@ -327,47 +375,29 @@ function SequenceBarInner() {
                     </span>
                   )}
                 </div>
-
-                {/* Remove button */}
-                {chains.length > 1 && (
-                  <button
-                    onClick={(e) => handleRemoveChain(e, idx)}
-                    title="Remove chain"
-                    style={{
-                      position: "absolute",
-                      top: 1,
-                      right: 2,
-                      background: "none",
-                      border: "none",
-                      fontSize: 8,
-                      color: "#665c54",
-                      cursor: "pointer",
-                      padding: 0,
-                      lineHeight: 1,
-                      zIndex: 2,
-                    }}
-                  >
-                    ×
-                  </button>
-                )}
               </div>
             );
           })}
         </div>
 
-        {/* Add chain */}
+        {/* Add chain — prominent dashed button */}
         <button
-          onClick={addChain}
+          onClick={handleAddChain}
           title="Add chain"
           style={{
             background: "none",
-            border: "1px solid #504945",
-            borderRadius: 2,
-            padding: "1px 6px",
-            fontSize: 12,
+            border: "1.5px dashed #928374",
+            borderRadius: 3,
+            width: 40,
+            height: BLOCK_HEIGHT,
+            fontSize: 18,
             color: "#928374",
             cursor: "pointer",
             flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            lineHeight: 1,
           }}
         >
           +
@@ -386,8 +416,8 @@ function SequenceBarInner() {
             background: "none",
             border: "1px solid #504945",
             borderRadius: 2,
-            padding: "1px 6px",
-            fontSize: 9,
+            padding: "2px 6px",
+            fontSize: 10,
             color: looping ? "#b8bb26" : "#504945",
             cursor: "pointer",
             flexShrink: 0,
@@ -396,6 +426,25 @@ function SequenceBarInner() {
           ↺
         </button>
       </div>
+
+      {/* Visual connector: downward arrow from active chain to ChainBuilder */}
+      {activeChainIndex >= 0 && (
+        <div
+          style={{
+            height: 6,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#fabd2f",
+            fontSize: 8,
+            lineHeight: 1,
+            background: "rgba(250,189,47,0.04)",
+            borderBottom: "1px solid #3c3836",
+          }}
+        >
+          ▼
+        </div>
+      )}
     </div>
   );
 }
