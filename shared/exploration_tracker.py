@@ -252,6 +252,59 @@ class ExplorationTrackerBundle:
 
         return sig
 
+    def state_dict(self) -> dict:
+        """Serialize tracker state for persistence across restarts."""
+        return {
+            "component": self.component,
+            "habituation": {
+                "weights": dict(self.habituation._weights),
+                "edge_mean": dict(self.habituation._edge_mean),
+                "edge_m2": dict(self.habituation._edge_m2),
+                "edge_n": dict(self.habituation._edge_n),
+            },
+            "interest": {
+                "last_value": {k: v for k, v in self.interest._last_value.items()},
+                "time_unchanged": dict(self.interest._time_unchanged),
+            },
+            "learning": {
+                "chronic_error": self.learning._chronic_error,
+                "prev_chronic": self.learning._prev_chronic,
+                "initialized": self.learning._initialized,
+            },
+            "coherence": {
+                "dwell": self.coherence._dwell,
+            },
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore tracker state from a persisted state dict."""
+        if hab := state.get("habituation"):
+            for edge, w in hab.get("weights", {}).items():
+                if edge in self.habituation._weights:
+                    self.habituation._weights[edge] = w
+            for edge, v in hab.get("edge_mean", {}).items():
+                if edge in self.habituation._edge_mean:
+                    self.habituation._edge_mean[edge] = v
+            for edge, v in hab.get("edge_m2", {}).items():
+                if edge in self.habituation._edge_m2:
+                    self.habituation._edge_m2[edge] = v
+            for edge, v in hab.get("edge_n", {}).items():
+                if edge in self.habituation._edge_n:
+                    self.habituation._edge_n[edge] = v
+        if intr := state.get("interest"):
+            for trace, v in intr.get("time_unchanged", {}).items():
+                if trace in self.interest._time_unchanged:
+                    self.interest._time_unchanged[trace] = v
+            for trace, v in intr.get("last_value", {}).items():
+                if trace in self.interest._last_value:
+                    self.interest._last_value[trace] = v
+        if lrn := state.get("learning"):
+            self.learning._chronic_error = lrn.get("chronic_error", 0.0)
+            self.learning._prev_chronic = lrn.get("prev_chronic", 0.0)
+            self.learning._initialized = lrn.get("initialized", False)
+        if coh := state.get("coherence"):
+            self.coherence._dwell = coh.get("dwell", 0.0)
+
     def evaluate_action(
         self, signal: ExplorationSignal | None = None, sigma_explore: float | None = None
     ) -> ExplorationAction:

@@ -102,3 +102,41 @@ class TestReverieMixerSeeking:
             mixer._pipeline.set_seeking(ctx.stimmung_stance == "seeking")
 
             mixer._pipeline.set_seeking.assert_called_with(False)
+
+
+class TestExplorationTrackerPersistence:
+    """Verify exploration tracker state survives serialization round-trip."""
+
+    def test_state_dict_round_trip(self):
+        from shared.exploration_tracker import ExplorationTrackerBundle
+
+        bundle = ExplorationTrackerBundle(
+            component="test",
+            edges=["e1", "e2"],
+            traces=["t1"],
+            neighbors=["n1"],
+        )
+        # Feed some data to build state
+        bundle.feed_habituation("e1", 0.5, 0.3, 0.1)
+        bundle.feed_habituation("e2", 0.8, 0.8, 0.1)
+        bundle.feed_interest("t1", 0.5, 0.1)
+        bundle.feed_error(0.3)
+        bundle.feed_error(0.2)
+
+        state = bundle.state_dict()
+
+        # Create fresh bundle, restore state
+        bundle2 = ExplorationTrackerBundle(
+            component="test",
+            edges=["e1", "e2"],
+            traces=["t1"],
+            neighbors=["n1"],
+        )
+        bundle2.load_state_dict(state)
+
+        assert bundle2.habituation._weights["e1"] == bundle.habituation._weights["e1"]
+        assert bundle2.habituation._weights["e2"] == bundle.habituation._weights["e2"]
+        assert bundle2.habituation._edge_n["e1"] == 1
+        assert bundle2.interest._time_unchanged["t1"] == bundle.interest._time_unchanged["t1"]
+        assert bundle2.learning._chronic_error == bundle.learning._chronic_error
+        assert bundle2.learning._initialized is True

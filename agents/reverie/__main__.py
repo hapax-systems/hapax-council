@@ -21,6 +21,7 @@ from shared.impingement_consumer import ImpingementConsumer
 log = logging.getLogger("reverie")
 
 IMPINGEMENT_PATH = Path("/dev/shm/hapax-dmn/impingements.jsonl")
+EXPLORATION_STATE_PATH = Path.home() / ".cache" / "hapax" / "exploration-tracker-state.json"
 TICK_INTERVAL_S = 1.0
 
 
@@ -58,6 +59,8 @@ class ReverieDaemon:
             self._mixer = ReverieMixer()
         else:
             self._mixer = None
+
+        self._load_exploration_state()
 
     async def tick(self) -> None:
         """One daemon cycle: consume impingements, tick mixer."""
@@ -98,16 +101,55 @@ class ReverieDaemon:
                     self._cl_degraded = False
                     log.info("Control law [reverie]: recovered")
 
-                # Periodic state persistence (every ~5 min at 1s tick)
+                # Periodic state persistence (every ~1 min at 1s tick)
                 self._save_counter += 1
-                if self._save_counter >= 300 and self._mixer is not None:
+                if self._save_counter >= 60 and self._mixer is not None:
                     self._save_counter = 0
                     try:
                         self._mixer.pipeline.save_activation_state()
+                        self._save_exploration_state()
                     except Exception:
                         log.debug("Periodic save failed", exc_info=True)
             await asyncio.sleep(TICK_INTERVAL_S)
         log.info("Reverie daemon stopped")
+
+    def _save_exploration_state(self) -> None:
+        """Persist exploration tracker state to disk."""
+        if self._mixer is None:
+            return
+        import json
+
+        tracker = getattr(self._mixer, "_exploration", None)
+        if tracker is None:
+            return
+        try:
+            EXPLORATION_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = EXPLORATION_STATE_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(tracker.state_dict()), encoding="utf-8")
+            tmp.rename(EXPLORATION_STATE_PATH)
+        except Exception:
+            log.debug("Exploration state save failed", exc_info=True)
+
+    def _load_exploration_state(self) -> None:
+        """Restore exploration tracker state from disk."""
+        if self._mixer is None:
+            log.debug("No mixer, skipping exploration state load")
+            return
+        import json
+
+        tracker = getattr(self._mixer, "_exploration", None)
+        if tracker is None:
+            log.debug("No _exploration on mixer, skipping load")
+            return
+        try:
+            if EXPLORATION_STATE_PATH.exists():
+                state = json.loads(EXPLORATION_STATE_PATH.read_text(encoding="utf-8"))
+                tracker.load_state_dict(state)
+                log.info("Loaded exploration tracker state from %s", EXPLORATION_STATE_PATH)
+            else:
+                log.info("No exploration state file yet at %s", EXPLORATION_STATE_PATH)
+        except Exception:
+            log.warning("Exploration state load failed", exc_info=True)
 
     def stop(self) -> None:
         self._running = False
@@ -115,9 +157,10 @@ class ReverieDaemon:
         if self._mixer is not None:
             try:
                 self._mixer.pipeline.save_activation_state()
-                log.info("Saved recruitment learning state")
+                self._save_exploration_state()
+                log.info("Saved recruitment learning + exploration state")
             except Exception:
-                log.debug("Failed to save activation state", exc_info=True)
+                log.debug("Failed to save state", exc_info=True)
 
 
 async def main() -> None:
